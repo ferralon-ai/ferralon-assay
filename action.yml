@@ -46,11 +46,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.1.1"
+    default: "v0.1.2"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "9bb6e4ac1e1a3d100311df26c5d5570446b4302dfb793692934582bb8aa3f72b"
+    default: "c73083a123c149430fa9712162645969fad9b1b184c503eb7230568a1edc170b"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false

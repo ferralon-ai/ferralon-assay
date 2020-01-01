@@ -54,11 +54,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.1.3"
+    default: "v0.1.4"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "48ba81abe9b0ad37685192e6b8ffce1ac0fb1953abcea39378f96ea42703ac94"
+    default: "428f9bc4d497ead0f11d9e319eb31650cfce47cbfd3b822831c895380286b5bc"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -132,6 +132,17 @@ inputs:
       revoke can ever actuate — a transient outage never does.
     required: false
     default: ""
+  runs-url:
+    description: >-
+      Ferralon run-snapshot endpoint (the backend /runs push). On a DEFAULT-BRANCH run the scan
+      pushes its own tegron.report.v1 verdict layer here at run time, under the workflow's
+      GitHub-Actions OIDC token (audience ferralon-ingest, id-token: write) — the push the console
+      fleet view renders a live assessment from (ADR 0023: the push is the ONLY run-frozen source).
+      A PR / non-default-branch run stays stateless and NEVER files a run. The push is FAIL-OPEN: a
+      rejected or unreachable endpoint only warns, it never fails the scan job. Overridable; set to
+      "" to disable the push entirely (pure local scanner).
+    required: false
+    default: "https://api.ferralon.com/runs"
 
 outputs:
   out-dir:
@@ -245,6 +256,11 @@ runs:
         # ACTIONS_ID_TOKEN_REQUEST_* pair (present when the caller grants id-token: write) are default
         # Actions env vars already visible to this step, so they are not re-mapped here.
         FERRALON_INGEST_URL: ${{ inputs.ingest-url }}
+        # FERRALON_RUNS_URL presence + the default-branch gate (GITHUB_REF_NAME == the default
+        # branch below) enable the run-snapshot report push. GITHUB_REF_NAME and the
+        # ACTIONS_ID_TOKEN_REQUEST_* OIDC pair are default Actions env vars already visible to this
+        # step (the caller must grant id-token: write), so only the endpoint is mapped here.
+        FERRALON_RUNS_URL: ${{ inputs.runs-url }}
         FERRALON_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         FERRALON_EVENT_ACTION: ${{ github.event.action }}
         FERRALON_CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}

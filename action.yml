@@ -30,6 +30,14 @@
 # transitive: pinning this action by commit SHA (`@<sha>`) pins the scanner version + checksum
 # below along with it. A future corpus-updated scanner is a one-line bump of the two defaults here
 # + a re-cut action release; consumers bump their `@<sha>`.
+#
+# SELF-CLEANUP (TEG-023): the pinned scanner release also carries the Ferralon revoke-signing PUBLIC
+# key, baked at build time by the same publish pipeline (deploy/assay/publish.sh, ASSAY_REVOKE_PUBKEY
+# ldflag). When `ingest-url` is set, the scan beacons that endpoint after each run; a signed HTTP-410
+# install-revoke (App uninstalled) confirmed on N=2 consecutive runs makes the scan remove its own
+# footprint — delete the workflow file (direct push, else a removal PR), then delete `refs/tegron/state`
+# — degrading to self-disable + a one-manual-step Issue only if git/API writes are refused. Only a
+# cryptographically-signed, key-id-matched revoke bound to THIS repo actuates; transient outages never do.
 
 name: Ferralon Assay
 description: Free, deterministic dependency-advisory scan — fetches a pinned, checksummed scanner release at run time (no committed binary).
@@ -46,11 +54,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.1.2"
+    default: "v0.1.3"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "c73083a123c149430fa9712162645969fad9b1b184c503eb7230568a1edc170b"
+    default: "48ba81abe9b0ad37685192e6b8ffce1ac0fb1953abcea39378f96ea42703ac94"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -113,6 +121,17 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
+  ingest-url:
+    description: >-
+      Ferralon ingest endpoint (e.g. https://api.ferralon.com/v1/ingest). Setting it ENABLES the
+      post-scan self-cleanup path: the scan beacons this endpoint, and if the endpoint returns a
+      cryptographically-signed HTTP-410 install-revoke for N=2 consecutive runs (i.e. the backing
+      Ferralon App was uninstalled), the scan removes its own footprint (workflow file + state ref).
+      Empty (default) = beacon disabled; the scan behaves as a pure local scanner. The revoke public
+      key is baked into the pinned scanner release (TEG-022 pipeline), so only a genuine, signed
+      revoke can ever actuate — a transient outage never does.
+    required: false
+    default: ""
 
 outputs:
   out-dir:
@@ -217,6 +236,18 @@ runs:
         IN_STATE_REPO: ${{ inputs.state-repo }}
         IN_STATE_REF: ${{ inputs.state-ref }}
         IN_STATE_TOKEN: ${{ inputs.state-token }}
+        # --- self-cleanup + advisory-rescan plumbing (TEG-023) --------------------------------------
+        # FERRALON_INGEST_URL presence gates the whole revoke check (empty → the scanner never
+        # beacons and behaves exactly as before). The rest give the scanner the run context it needs to
+        # (a) forward advisory-rescan correlation metadata on the beacon and surface it in the summary,
+        # and (b) actuate the removal ladder (delete the workflow file / open the removal PR / disable
+        # + Issue) against the RIGHT branch. GITHUB_REPOSITORY / GITHUB_WORKSPACE / GITHUB_SHA and the
+        # ACTIONS_ID_TOKEN_REQUEST_* pair (present when the caller grants id-token: write) are default
+        # Actions env vars already visible to this step, so they are not re-mapped here.
+        FERRALON_INGEST_URL: ${{ inputs.ingest-url }}
+        FERRALON_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        FERRALON_EVENT_ACTION: ${{ github.event.action }}
+        FERRALON_CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
       run: |
         set -euo pipefail
         BIN="$BIN_DIR/ferralon-assay-scan"

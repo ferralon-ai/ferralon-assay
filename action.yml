@@ -9,9 +9,12 @@
 #
 # Placement / publish note: this file is authored in the source monorepo under `ferralon-assay/`
 # and is the file that publishes to the standalone, codename-free `ferralon-ai/ferralon-assay`
-# repository (via `git subtree split`, mirroring how the root `action.yml` publishes to
-# `ferralon-ai/open-tegron`). Consumers pin `ferralon-ai/ferralon-assay@<sha>`. Keep it
-# self-contained: it reads nothing outside this directory and fetches only the release asset.
+# repository. `deploy/assay/publish.sh` cuts that publish as ONE squashed, fixed-identity,
+# fast-forward commit of the `ferralon-assay/` prefix tree — taken directly with
+# `git rev-parse HEAD:ferralon-assay`, with a fixed author/committer + commit date so the cut sha is
+# reproducible and a re-cut is an idempotent no-op. It is deliberately a single synthetic commit, not
+# a per-commit replay of the prefix's history. Consumers pin `ferralon-ai/ferralon-assay@<sha>`. Keep
+# it self-contained: it reads nothing outside this directory and fetches only the release asset.
 #
 # WHAT IT DELIVERS — a stealth-branded scanner, for report-spine parity with the demo's former
 # vendored binary. The fetched release is a `-tags stealth` build (see open-tegron/brand): its

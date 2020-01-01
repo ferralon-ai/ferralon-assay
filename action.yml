@@ -34,11 +34,14 @@ author: ferralon-ai
 
 inputs:
   # --- the pin (the two load-bearing lines a corpus re-point bumps) ----------------------------
-  # Values below are the authoritative release-cut pin for scanner v0.1.0. Before relying on them,
-  # independently re-verify with
-  # `gh release view v0.1.0 --repo ferralon-ai/ferralon-assay` against the linux/amd64 tarball.
+  # The two `default:` values below are the authoritative release-cut pin. Before relying on them,
+  # independently re-verify the pinned scanner-version's release against its linux/amd64 tarball:
+  #   gh release view <the scanner-version default below> --repo ferralon-ai/ferralon-assay
+  # No version is named in this prose on purpose. The auto-pin rewrites ONLY the two `default:` lines,
+  # so any version literal elsewhere in this file would silently drift out of date on the next cut —
+  # the `default:` lines ARE the pin; re-verify against them, not against a version copied into prose.
   scanner-version:
-    description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. v0.1.0)."
+    description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
     default: "v0.1.1"
   scanner-sha256:

@@ -54,11 +54,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.1.7"
+    default: "v0.1.8"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "50b00a16390a3066f07c2f8330d252639a56e72952d81f2c1deb60b37bc073cc"
+    default: "9111590471ccda0a6255b1becc2db9f2f90ce2a9d1ec59751b17d78f0fe657c7"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -109,6 +109,17 @@ inputs:
     description: "Optional explicit path to a prebuilt analyzer plugin binary, applied to the detected language (override). Default: the per-language plugins unpacked from the fetched release are resolved automatically via PATH."
     required: false
     default: ""
+  include-house-canaries:
+    description: >-
+      Set to 'true' to include the first-party house-canary advisories (the FERRALON-APP-*
+      application-sink findings) in the scan corpus, forwarding -include-house-canaries to the
+      scanner. OFF by default so a normal scan never evaluates them; the Ferralon demo scan sets it
+      so the app-level DOS canary surfaces as a reachable_candidate the pipeline can enumerate and
+      fire. Requires a scanner release that carries the flag (>= TEG-051); setting this 'true'
+      against an older pinned scanner-version fails the scan loudly ("flag provided but not
+      defined: -include-house-canaries"), so bump the pin alongside opting in.
+    required: false
+    default: "false"
   issue:
     description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
     required: false
@@ -263,6 +274,7 @@ runs:
         IN_STATE_REPO: ${{ inputs.state-repo }}
         IN_STATE_REF: ${{ inputs.state-ref }}
         IN_STATE_TOKEN: ${{ inputs.state-token }}
+        IN_INCLUDE_HOUSE_CANARIES: ${{ inputs.include-house-canaries }}
         # --- self-cleanup + advisory-rescan plumbing (TEG-023) --------------------------------------
         # FERRALON_INGEST_URL presence gates the whole revoke check (empty → the scanner never
         # beacons and behaves exactly as before). The rest give the scanner the run context it needs to
@@ -313,6 +325,11 @@ runs:
         fi
         if [ -n "$IN_STATE_TOKEN" ]; then
           args+=(-token "$IN_STATE_TOKEN")
+        fi
+        # First-party house-canary opt-in (TEG-051): default off so a normal scan is unchanged; the
+        # Ferralon demo scan sets it so the app-level DOS canary surfaces as a reachable_candidate.
+        if [ "$IN_INCLUDE_HOUSE_CANARIES" = "true" ]; then
+          args+=(-include-house-canaries)
         fi
 
         "$BIN" "${args[@]}"

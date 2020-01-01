@@ -7,7 +7,7 @@
 # distribution shape (Operator decision, 2026-07-06): "source never leaves the runner" (the scan
 # runs locally); the partner-repo footprint is a few lines of reviewable, SHA-pinned YAML.
 #
-# Placement / publish note: this file is authored in the tegron monorepo under `ferralon-assay/`
+# Placement / publish note: this file is authored in the source monorepo under `ferralon-assay/`
 # and is the file that publishes to the standalone, codename-free `ferralon-ai/ferralon-assay`
 # repository (via `git subtree split`, mirroring how the root `action.yml` publishes to
 # `ferralon-ai/open-tegron`). Consumers pin `ferralon-ai/ferralon-assay@<sha>`. Keep it
@@ -34,14 +34,17 @@ author: ferralon-ai
 
 inputs:
   # --- the pin (the two load-bearing lines a corpus re-point bumps) ----------------------------
+  # Values below are the authoritative release-cut pin for scanner v0.1.0. Before relying on them,
+  # independently re-verify with
+  # `gh release view v0.1.0 --repo ferralon-ai/ferralon-assay` against the linux/amd64 tarball.
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. v0.1.0)."
     required: false
-    default: "v0.1.0"
+    default: "v0.1.1"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "4001f539610e88bbf6c2f033eb599ce25195fbb77cbaf77bd40eaccb39d4b30c"
+    default: "9bb6e4ac1e1a3d100311df26c5d5570446b4302dfb793692934582bb8aa3f72b"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false

@@ -1,6 +1,0 @@
-# Shared anonymous identity for this public repo.
-# Every commit's author AND committer must match these exactly.
-# Enforced locally by .githooks/pre-commit and .githooks/pre-push,
-# and on the server by a GitHub repository ruleset (commit metadata).
-NAME="Ferralon Team"
-EMAIL="300669142+ferralon-team@users.noreply.github.com"

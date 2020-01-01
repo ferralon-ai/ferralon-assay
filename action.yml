@@ -54,11 +54,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.1.4"
+    default: "v0.1.5"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "428f9bc4d497ead0f11d9e319eb31650cfce47cbfd3b822831c895380286b5bc"
+    default: "984d9608e0e073c53728ab83bb92ee07c43e7b8e18d02d5d01ca689e9503326f"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -106,7 +106,7 @@ inputs:
     required: false
     default: ""
   plugin-go:
-    description: "Path to a prebuilt Go analyzer plugin binary (default: the plugin unpacked from the fetched release)."
+    description: "Optional explicit path to a prebuilt analyzer plugin binary, applied to the detected language (override). Default: the per-language plugins unpacked from the fetched release are resolved automatically via PATH."
     required: false
     default: ""
   issue:
@@ -215,8 +215,23 @@ runs:
 
         tar -xzf "$DEST" -C "$WORK"
         # Codename-free asset layout (publish.sh packages the stealth binaries under neutral names):
-        chmod +x "$WORK/ferralon-assay-scan" "$WORK/ferralon-assay-scan-plugin"
+        # the CLI + the per-language analyzer plugins (Go, Python, JS).
+        chmod +x "$WORK/ferralon-assay-scan" \
+          "$WORK/ferralon-assay-scan-plugin" \
+          "$WORK/ferralon-assay-scan-plugin-python" \
+          "$WORK/ferralon-assay-scan-plugin-js"
+        # Per-language plugin discovery: the CLI resolves its analyzer for the DETECTED language via
+        # exec.LookPath("tegron-plugin-<lang>"). The released assets are deliberately codename-free,
+        # so symlink each baked plugin to its lookup name in a TRANSIENT plugin dir (never in the
+        # released tarball) and expose that dir on PATH. This routes a Python tree to the Python
+        # analyzer, a JS tree to the JS analyzer, and a Go tree to the Go analyzer — zero engine change.
+        PLUGIN_PATH_DIR="$WORK/plugin-path"
+        mkdir -p "$PLUGIN_PATH_DIR"
+        ln -sf "$WORK/ferralon-assay-scan-plugin" "$PLUGIN_PATH_DIR/tegron-plugin-go"
+        ln -sf "$WORK/ferralon-assay-scan-plugin-python" "$PLUGIN_PATH_DIR/tegron-plugin-python"
+        ln -sf "$WORK/ferralon-assay-scan-plugin-js" "$PLUGIN_PATH_DIR/tegron-plugin-js"
         echo "bin-dir=$WORK" >> "$GITHUB_OUTPUT"
+        echo "plugin-path-dir=$PLUGIN_PATH_DIR" >> "$GITHUB_OUTPUT"
 
     - name: Run the Ferralon Assay
       id: run
@@ -237,6 +252,7 @@ runs:
         # evaluated — the classic Actions template-injection footgun. Passing through env makes the
         # value plain data the shell never re-parses.
         BIN_DIR: ${{ steps.fetch.outputs.bin-dir }}
+        PLUGIN_PATH_DIR: ${{ steps.fetch.outputs.plugin-path-dir }}
         IN_PLUGIN_GO: ${{ inputs.plugin-go }}
         IN_MODE: ${{ inputs.mode }}
         IN_TARGET: ${{ inputs.target }}
@@ -267,10 +283,13 @@ runs:
       run: |
         set -euo pipefail
         BIN="$BIN_DIR/ferralon-assay-scan"
-        PLUGIN="$IN_PLUGIN_GO"
-        if [ -z "$PLUGIN" ]; then
-          PLUGIN="$BIN_DIR/ferralon-assay-scan-plugin"
-        fi
+
+        # Expose the per-language plugin symlinks (tegron-plugin-<lang>) on PATH so the CLI resolves
+        # the analyzer for the DETECTED language itself. -plugin-go is a single-path override applied
+        # to WHATEVER language is detected, so it must NOT be passed unconditionally — a forced Go
+        # plugin path would exec the Go analyzer against a Python or JS tree. Pass it ONLY when the
+        # caller explicitly set the plugin-go input (an escape hatch for a prebuilt Go plugin).
+        export PATH="$PLUGIN_PATH_DIR:$PATH"
 
         mkdir -p "$IN_OUT"
         args=(
@@ -278,10 +297,12 @@ runs:
           -target "$IN_TARGET"
           -out "$IN_OUT"
           -subject-repo "$IN_SUBJECT_REPO"
-          -plugin-go "$PLUGIN"
           -revision "$IN_REVISION"
           -commit "$IN_COMMIT"
         )
+        if [ -n "$IN_PLUGIN_GO" ]; then
+          args+=(-plugin-go "$IN_PLUGIN_GO")
+        fi
         # StateStore selection: the consumer pins the ref (cross-team contract) and, on the default
         # branch, the owner/repo to persist to. Omitting -repo keeps a PR run stateless.
         if [ -n "$IN_STATE_REPO" ]; then

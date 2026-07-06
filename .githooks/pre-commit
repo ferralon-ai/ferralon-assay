@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Guarantee the anonymous identity BEFORE a commit is created.
+# Catches a misconfigured user.name/user.email early with a clear message.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$here/identity"
+
+# What git will actually stamp on this commit (honours env overrides).
+author="$(git var GIT_AUTHOR_IDENT   | sed -E 's/ [0-9]+ [-+][0-9]+$//')"
+committer="$(git var GIT_COMMITTER_IDENT | sed -E 's/ [0-9]+ [-+][0-9]+$//')"
+expected="$NAME <$EMAIL>"
+
+fail() {
+  echo "pre-commit: commit identity is not the shared anonymous identity." >&2
+  echo "  expected : $expected" >&2
+  echo "  author   : $author" >&2
+  echo "  committer: $committer" >&2
+  echo "" >&2
+  echo "Fix with:" >&2
+  echo "  git config user.name  \"$NAME\"" >&2
+  echo "  git config user.email \"$EMAIL\"" >&2
+  exit 1
+}
+
+[ "$author" = "$expected" ]    || fail
+[ "$committer" = "$expected" ] || fail

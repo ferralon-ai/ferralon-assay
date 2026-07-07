@@ -1,0 +1,245 @@
+# ferralon-assay — the partner-facing composite GitHub Action.
+#
+# Runs the free, deterministic Ferralon Assay scan against a Go module in the calling repository.
+# UNLIKE the sibling root `action.yml` (the OSS `open-tegron` action, which BUILDS the scanner
+# from source in the runner), this action fetches a PINNED, CHECKSUMMED scanner release at run
+# time — it commits NO binary into the consumer repo and builds nothing. That is the partner
+# distribution shape (Operator decision, 2026-07-06): "source never leaves the runner" (the scan
+# runs locally); the partner-repo footprint is a few lines of reviewable, SHA-pinned YAML.
+#
+# Placement / publish note: this file is authored in the tegron monorepo under `ferralon-assay/`
+# and is the file that publishes to the standalone, codename-free `ferralon-ai/ferralon-assay`
+# repository (via `git subtree split`, mirroring how the root `action.yml` publishes to
+# `ferralon-ai/open-tegron`). Consumers pin `ferralon-ai/ferralon-assay@<sha>`. Keep it
+# self-contained: it reads nothing outside this directory and fetches only the release asset.
+#
+# WHAT IT DELIVERS — a stealth-branded scanner, for report-spine parity with the demo's former
+# vendored binary. The fetched release is a `-tags stealth` build (see open-tegron/brand): its
+# provenance analyzer_version is "nucleon/dev", its Tier-0 customer panel reads "Ferralon Assay",
+# and its own surface-toggle env prefix is NUCLEON (the deliberately-neutral stealth placeholder,
+# which "implies nothing about what the tool does" — NOT the engine codename). This action maps
+# its own codename-free surface inputs (issue / pr-comment / code-scanning) onto that NUCLEON_*
+# prefix internally, so the CALLER's workflow YAML carries no engine identifier at all.
+#
+# DRIFT GUARD (fail loud, never silently under-report): the fetched tarball's sha256 is verified
+# against the pinned `scanner-sha256` BEFORE the scanner is unpacked or run. A stale, tampered, or
+# mismatched artifact aborts the run — it never falls through to a partial/silent scan. The pin is
+# transitive: pinning this action by commit SHA (`@<sha>`) pins the scanner version + checksum
+# below along with it. A future corpus-updated scanner is a one-line bump of the two defaults here
+# + a re-cut action release; consumers bump their `@<sha>`.
+
+name: Ferralon Assay
+description: Free, deterministic dependency-advisory scan — fetches a pinned, checksummed scanner release at run time (no committed binary).
+author: ferralon-ai
+
+inputs:
+  # --- the pin (the two load-bearing lines a corpus re-point bumps) ----------------------------
+  scanner-version:
+    description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. v0.1.0)."
+    required: false
+    default: "v0.1.0"
+  scanner-sha256:
+    description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
+    required: false
+    default: "4001f539610e88bbf6c2f033eb599ce25195fbb77cbaf77bd40eaccb39d4b30c"
+  scanner-repo:
+    description: "owner/repo hosting the pinned scanner release assets."
+    required: false
+    default: "ferralon-ai/ferralon-assay"
+  scanner-token:
+    description: "Token used to download the release asset (default: the job's github.token; sufficient for a public scanner-repo)."
+    required: false
+    default: ""
+
+  # --- scan surface (all codename-free; mapped onto the fetched build's NUCLEON_* prefix) ------
+  mode:
+    description: "Run mode: baseline | pr-inherit | cve-watch."
+    required: false
+    default: baseline
+  target:
+    description: "Go module root to scan, relative to the workspace."
+    required: false
+    default: .
+  out:
+    description: "Output directory for report.json / report.html / report.sarif.json / openvex.json."
+    required: false
+    default: ferralon-assay-out
+  subject-repo:
+    description: "Neutral repository identity recorded on the Report."
+    required: false
+    default: ${{ github.repository }}
+  revision:
+    description: "Revision recorded on the Report (e.g. a branch or PR head)."
+    required: false
+    default: ${{ github.ref_name }}
+  commit:
+    description: "Resolved commit SHA recorded on the Report."
+    required: false
+    default: ${{ github.sha }}
+  state-repo:
+    description: "GitHub Refs-API StateStore as owner/repo (passed as -repo). Persists the baseline on the default branch."
+    required: false
+    default: ""
+  state-ref:
+    description: "State ref to read/write (passed as -ref). The consumer sets this to its cross-team-contract ref."
+    required: false
+    default: ""
+  state-token:
+    description: "GitHub token for the Refs-API StateStore (passed as -token; default: the job's github.token)."
+    required: false
+    default: ""
+  plugin-go:
+    description: "Path to a prebuilt Go analyzer plugin binary (default: the plugin unpacked from the fetched release)."
+    required: false
+    default: ""
+  issue:
+    description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
+    required: false
+    default: "true"
+  pr-comment:
+    description: "Set to 'false' to disable the scanner's own sticky PR-comment surface. Default enabled."
+    required: false
+    default: "true"
+  code-scanning:
+    description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
+    required: false
+    default: "true"
+
+outputs:
+  out-dir:
+    description: "Absolute path to the output directory holding the Report + projections."
+    value: ${{ steps.run.outputs.out-dir }}
+  sarif-file:
+    description: "Path to the materialized SARIF file (for a codeql-action upload step)."
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch + verify the pinned, checksummed scanner release (drift guard)
+      id: fetch
+      shell: bash
+      env:
+        # github.token is not auto-injected into a composite action's step env — map it explicitly.
+        GH_TOKEN: ${{ inputs.scanner-token != '' && inputs.scanner-token || github.token }}
+        SCANNER_VERSION: ${{ inputs.scanner-version }}
+        SCANNER_SHA256: ${{ inputs.scanner-sha256 }}
+        SCANNER_REPO: ${{ inputs.scanner-repo }}
+      run: |
+        set -euo pipefail
+
+        # Refuse an unpinned run. An empty or still-placeholder version/checksum means the release
+        # was never cut (or the pin was never filled in). Fail LOUD here rather than fetch-and-run
+        # something unverifiable — a missing pin is exactly the drift this guard exists to catch.
+        if [ -z "$SCANNER_VERSION" ] || [ "$SCANNER_VERSION" = "REPLACE_WITH_RELEASE_TAG" ]; then
+          echo "::error::ferralon-assay: scanner-version is unpinned (still '$SCANNER_VERSION')." >&2
+          echo "  Cut the scanner release (deploy/assay/publish.sh --execute) and pin scanner-version + scanner-sha256." >&2
+          exit 1
+        fi
+        if [ -z "$SCANNER_SHA256" ] || [ "$SCANNER_SHA256" = "REPLACE_WITH_RELEASE_SHA256" ]; then
+          echo "::error::ferralon-assay: scanner-sha256 is unpinned (still '$SCANNER_SHA256')." >&2
+          echo "  Paste the sha256 that deploy/assay/publish.sh --execute prints for the linux/amd64 tarball." >&2
+          exit 1
+        fi
+
+        WORK="$RUNNER_TEMP/ferralon-assay"
+        mkdir -p "$WORK"
+        TARBALL="ferralon-assay-scanner_${SCANNER_VERSION}_linux_amd64.tar.gz"
+        DEST="$WORK/$TARBALL"
+
+        echo "==> Fetching $TARBALL @ $SCANNER_VERSION from $SCANNER_REPO"
+        if command -v gh >/dev/null 2>&1; then
+          # gh handles public + private release-asset download and auth uniformly.
+          gh release download "$SCANNER_VERSION" --repo "$SCANNER_REPO" \
+            --pattern "$TARBALL" --output "$DEST" --clobber
+        else
+          # Fallback: the public release-asset URL (works unauthenticated for a public repo).
+          url="https://github.com/${SCANNER_REPO}/releases/download/${SCANNER_VERSION}/${TARBALL}"
+          auth=()
+          [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
+          curl -fSL --retry 3 "${auth[@]}" -o "$DEST" "$url"
+        fi
+
+        # --- the pin check: computed sha256 MUST equal the pinned scanner-sha256 -----------------
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "$DEST" | awk '{print $1}')"
+        else
+          actual="$(shasum -a 256 "$DEST" | awk '{print $1}')"
+        fi
+        if [ "$actual" != "$SCANNER_SHA256" ]; then
+          echo "::error::ferralon-assay: scanner checksum MISMATCH — refusing to run a stale/tampered scanner." >&2
+          echo "  expected (pinned): $SCANNER_SHA256" >&2
+          echo "  actual   (fetched): $actual" >&2
+          exit 1
+        fi
+        echo "==> Checksum verified — $actual"
+
+        tar -xzf "$DEST" -C "$WORK"
+        # Codename-free asset layout (publish.sh packages the stealth binaries under neutral names):
+        chmod +x "$WORK/ferralon-assay-scan" "$WORK/ferralon-assay-scan-plugin"
+        echo "bin-dir=$WORK" >> "$GITHUB_OUTPUT"
+
+    - name: Run the Ferralon Assay
+      id: run
+      shell: bash
+      env:
+        # The fetched build reads its own surface toggles under the NUCLEON_* prefix (its stealth
+        # brand seam). Map this action's codename-free inputs onto that prefix so the caller never
+        # writes the prefix itself. '0' = off, '1' = on; keep the non-empty value on the truthy
+        # branch (the GitHub ternary footgun).
+        NUCLEON_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
+        NUCLEON_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
+        NUCLEON_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}
+        GITHUB_TOKEN: ${{ github.token }}
+        # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
+        # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined
+        # expression is substituted as literal text before bash parses the line, so an input whose
+        # value happens to contain shell syntax (e.g. a branch/ref name feeding `revision`) would be
+        # evaluated — the classic Actions template-injection footgun. Passing through env makes the
+        # value plain data the shell never re-parses.
+        BIN_DIR: ${{ steps.fetch.outputs.bin-dir }}
+        IN_PLUGIN_GO: ${{ inputs.plugin-go }}
+        IN_MODE: ${{ inputs.mode }}
+        IN_TARGET: ${{ inputs.target }}
+        IN_OUT: ${{ inputs.out }}
+        IN_SUBJECT_REPO: ${{ inputs.subject-repo }}
+        IN_REVISION: ${{ inputs.revision }}
+        IN_COMMIT: ${{ inputs.commit }}
+        IN_STATE_REPO: ${{ inputs.state-repo }}
+        IN_STATE_REF: ${{ inputs.state-ref }}
+        IN_STATE_TOKEN: ${{ inputs.state-token }}
+      run: |
+        set -euo pipefail
+        BIN="$BIN_DIR/ferralon-assay-scan"
+        PLUGIN="$IN_PLUGIN_GO"
+        if [ -z "$PLUGIN" ]; then
+          PLUGIN="$BIN_DIR/ferralon-assay-scan-plugin"
+        fi
+
+        mkdir -p "$IN_OUT"
+        args=(
+          "$IN_MODE"
+          -target "$IN_TARGET"
+          -out "$IN_OUT"
+          -subject-repo "$IN_SUBJECT_REPO"
+          -plugin-go "$PLUGIN"
+          -revision "$IN_REVISION"
+          -commit "$IN_COMMIT"
+        )
+        # StateStore selection: the consumer pins the ref (cross-team contract) and, on the default
+        # branch, the owner/repo to persist to. Omitting -repo keeps a PR run stateless.
+        if [ -n "$IN_STATE_REPO" ]; then
+          args+=(-repo "$IN_STATE_REPO")
+        fi
+        if [ -n "$IN_STATE_REF" ]; then
+          args+=(-ref "$IN_STATE_REF")
+        fi
+        if [ -n "$IN_STATE_TOKEN" ]; then
+          args+=(-token "$IN_STATE_TOKEN")
+        fi
+
+        "$BIN" "${args[@]}"
+
+        OUT_ABS="$(cd "$IN_OUT" && pwd)"
+        echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"

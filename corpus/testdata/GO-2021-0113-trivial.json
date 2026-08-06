@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "GO-2021-0113-trivial",
+  "category": "trivially_exploitable",
+  "advisory": {
+    "id": "GO-2021-0113",
+    "source": "osv",
+    "summary": "Out-of-bounds read in golang.org/x/text/language when parsing a malformed language tag, causing panic (DoS). Affects versions < 0.3.7. Aliases: CVE-2021-38561, GHSA-ppp9-7jff-5vj2.",
+    "references": [
+      "https://pkg.go.dev/vuln/GO-2021-0113",
+      "https://osv.dev/vulnerability/GO-2021-0113",
+      "https://go.dev/cl/340830"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "GO-2021-0113-trivial-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/GO-2021-0113-trivial/",
+      "notes": "Minimal HTTP handler that passes an untrusted Accept-Language header value directly to language.Parse from golang.org/x/text@v0.3.6 (vulnerable). Attacker-controlled input reaches the vulnerable symbol on every request."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "proven",
+    "completion_status": "completed",
+    "label": "exploitable",
+    "expected_flags": ["canary_triggered", "static_taint_path_complete"],
+    "rationale": "The vulnerable symbol language.Parse is called directly on an attacker-controlled HTTP header value with no sanitisation, on golang.org/x/text@v0.3.6 (< fixed 0.3.7). A crafted malformed language tag causes an out-of-bounds read and panic. The taint path from HTTP ingress to vulnerable call is trivial and direct. A canary/side-effect should be observable once F3 (sandbox) is real. Advisory verified against osv.dev on 2026-06-02.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

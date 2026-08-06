@@ -1,0 +1,56 @@
+{
+  "Module": "",
+  "Aliases": [
+    "CVE-2024-9264",
+    "GHSA-q99m-qcv4-fpm7"
+  ],
+  "UpperExclusive": "",
+  "FixedVersion": "",
+  "VersionScheme": "",
+  "Coordinate": "",
+  "PURL": "pkg:golang/github.com/grafana/grafana",
+  "Symbols": [
+    "main.runDuckQuery"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-94",
+    "CWE-78"
+  ],
+  "Summary": "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

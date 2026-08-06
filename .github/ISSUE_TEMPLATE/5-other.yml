@@ -1,0 +1,10 @@
+name: 🧭 Something else
+description: Anything that does not fit the other categories.
+labels: ["needs-triage"]
+body:
+  - type: textarea
+    id: body
+    attributes:
+      label: What is on your mind?
+    validations:
+      required: true

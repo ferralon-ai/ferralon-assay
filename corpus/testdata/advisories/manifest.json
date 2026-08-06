@@ -1,0 +1,158 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "advisories": {
+    "CVE-2019-0820": {
+      "file": "CVE-2019-0820.json",
+      "digest": "sha256:8232d4b276dd0b53ffe3a2bd86ba24199dd44ec4fc03c8fd929d18d6aa61156a"
+    },
+    "CVE-2019-14540": {
+      "file": "CVE-2019-14540.json",
+      "digest": "sha256:6b032b39526e37f53518218e6be435559d78c9247237dc822a14fe762f354d04"
+    },
+    "CVE-2020-36518": {
+      "file": "CVE-2020-36518.json",
+      "digest": "sha256:14d4c40fcea659067b5b3db883a55ff3bb4b981abefb32be89bea084cd9037b6"
+    },
+    "CVE-2020-36569": {
+      "file": "CVE-2020-36569.json",
+      "digest": "sha256:815edaef386d2257d5d8e4370b553e4c1e36aa632f36d0696d4fe1dd571f1910"
+    },
+    "CVE-2020-5234": {
+      "file": "CVE-2020-5234.json",
+      "digest": "sha256:5c7a3bf6168601f6ba09c83fc3b202784ff530f80d1c27098109cef7bb7347af"
+    },
+    "CVE-2022-46175": {
+      "file": "CVE-2022-46175.json",
+      "digest": "sha256:21cc15353519f438cedcdaa9d038ad22953749ecbabe9d8cddb12b23f921c3e1"
+    },
+    "CVE-2023-26136": {
+      "file": "CVE-2023-26136.json",
+      "digest": "sha256:0b237744763b7b729f0949c4f3f46704ba5773c4165fa3699380185c0880a8c3"
+    },
+    "CVE-2023-39325": {
+      "file": "CVE-2023-39325.json",
+      "digest": "sha256:fbca349911142bec750d76b0263f940a0ee8135de5f4a8ebc5230694f5aca6f5"
+    },
+    "CVE-2023-45283": {
+      "file": "CVE-2023-45283.json",
+      "digest": "sha256:2e1b796e754f58f3260d7bc449ba36a3b4ee0bba66aca553964d215a1567abf4"
+    },
+    "CVE-2024-21907": {
+      "file": "CVE-2024-21907.json",
+      "digest": "sha256:d210479c04332ca85c2d0c25c7db49472810504ea8f38b56ee25abec2cb84b66"
+    },
+    "CVE-2024-22195": {
+      "file": "CVE-2024-22195.json",
+      "digest": "sha256:6772256556f20dbe4debc6b67d57c297b1b8be07eecd346e07f4fb725fc0f203"
+    },
+    "CVE-2024-22243": {
+      "file": "CVE-2024-22243.json",
+      "digest": "sha256:026b58f0b6676289bf9cd04cea988885ef014c4b3eb23402e9aede5e262ccbee"
+    },
+    "CVE-2024-23334": {
+      "file": "CVE-2024-23334.json",
+      "digest": "sha256:b3ae0d20d1a0561708917cc18196766e97e439ad859bf61e436b9164518fe7fd"
+    },
+    "CVE-2024-24790": {
+      "file": "CVE-2024-24790.json",
+      "digest": "sha256:d877be84f5e7faa52038015ad0341bb5b75712c5c2897e456f704e59f9d93fec"
+    },
+    "CVE-2024-29041": {
+      "file": "CVE-2024-29041.json",
+      "digest": "sha256:68c6feeaa2945d816069878bad01eb4005d24b2bde7e88708d338c449f20e1a7"
+    },
+    "CVE-2024-3772": {
+      "file": "CVE-2024-3772.json",
+      "digest": "sha256:ece44059629d49762e59ef5b043930d83b2117bc6f022b49067a677f6c7a34ec"
+    },
+    "CVE-2024-45337": {
+      "file": "CVE-2024-45337.json",
+      "digest": "sha256:5cbee0894ae9e6409a77a2b6f4350809497061df8f46900e6c98aa11bdd7bfa9"
+    },
+    "CVE-2024-55947": {
+      "file": "CVE-2024-55947.json",
+      "digest": "sha256:80f652cdb5c061a5a3337403bb07c6eb119cde20dbf1513c86db85bece7a5251"
+    },
+    "CVE-2025-8110": {
+      "file": "CVE-2025-8110.json",
+      "digest": "sha256:d0444aefb0d1fda3e27d19d907aab626a89571bcdb76ea12a301c642427f8d69"
+    },
+    "CVE-2026-39821": {
+      "file": "CVE-2026-39821.json",
+      "digest": "sha256:0f6539b83d66d821a112e9c61d4b7f0987225ea9f48b0ea06c92cedb94fe76ca"
+    },
+    "CVE-2026-39831": {
+      "file": "CVE-2026-39831.json",
+      "digest": "sha256:4a2b5f6a604318de7a6189b67d5a93b2ff99a2307d2f3ed38380630853f7de31"
+    },
+    "CVE-2026-46595": {
+      "file": "CVE-2026-46595.json",
+      "digest": "sha256:e7b901772e3202d6b302053a247dd7be9be4e0a696e64080a5d222dd3e152eb2"
+    },
+    "FERRALON-APP-DOS-0001": {
+      "file": "FERRALON-APP-DOS-0001.json",
+      "digest": "sha256:d3679dde7f46196b38c301474165cdc3ee8b55e6d0a9c7cb8de6e3956c016ea3"
+    },
+    "FERRALON-APP-SSRF-0001": {
+      "file": "FERRALON-APP-SSRF-0001.json",
+      "digest": "sha256:763ebe82c5dd8a2de4dfaf945695e8f59b57c8ec012a4f3ee54dee943338ccb9"
+    },
+    "GO-2021-0113": {
+      "file": "GO-2021-0113.json",
+      "digest": "sha256:78b65e8b8182bb5b713ed20ce86220c071c96468175ed30a282527c524cd482d"
+    },
+    "GO-2021-0264": {
+      "file": "GO-2021-0264.json",
+      "digest": "sha256:2f75473757f976cd421dbf09f443301f0dc9c31c0b3fae087db8a8cefcbfa749"
+    },
+    "GO-2022-0322": {
+      "file": "GO-2022-0322.json",
+      "digest": "sha256:26bd71100e83d9fb5a59be1f454f1ba188835ffdc7319ac540b8a2f279df388b"
+    },
+    "TEGRON-GO-GRAFANA-DUCKDB-0001": {
+      "file": "TEGRON-GO-GRAFANA-DUCKDB-0001.json",
+      "digest": "sha256:a3f08d027d437609478374fd994610919d712da33f3e52991a9e26d0cafb3d5a"
+    },
+    "TEGRON-JAVA-DEP-0001": {
+      "file": "TEGRON-JAVA-DEP-0001.json",
+      "digest": "sha256:b0de9e2e138cadec56540a56b0c380f300d5d3d67bdb0a7d076f6f499aed06b2"
+    },
+    "TEGRON-JAVA-SPRING-SSRF-0001": {
+      "file": "TEGRON-JAVA-SPRING-SSRF-0001.json",
+      "digest": "sha256:f96d7774b376bcb839bd8a205f568eb4df8518183dc321d01978ed25108d0c04"
+    },
+    "TEGRON-JAVA-SSRF-0001": {
+      "file": "TEGRON-JAVA-SSRF-0001.json",
+      "digest": "sha256:72f0e9cde052500a9e284f96f3c64c8bbb30c819bb48f32d1c1fc9205a925f36"
+    },
+    "TEGRON-JS-DEP-0001": {
+      "file": "TEGRON-JS-DEP-0001.json",
+      "digest": "sha256:197bd30338a9c4d0e0339e0af3b9ded9651854b078dd17e1044212ba92e4638d"
+    },
+    "TEGRON-JS-NEXTRCE-0001": {
+      "file": "TEGRON-JS-NEXTRCE-0001.json",
+      "digest": "sha256:0088ac68d7bda1a510d391247274d35dc89bd57f7d3e162ce5ea4d871c569758"
+    },
+    "TEGRON-JS-SSRF-0001": {
+      "file": "TEGRON-JS-SSRF-0001.json",
+      "digest": "sha256:3722a2edb499460e0c19dc00bcf53c68aae027e9c6e9b6af3e7d737904c33d5b"
+    },
+    "TEGRON-NET-DEP-0001": {
+      "file": "TEGRON-NET-DEP-0001.json",
+      "digest": "sha256:60fb6cd9345f07ba7acde35c5c467d84b37f00bd3652984d616189c4e14df85c"
+    },
+    "TEGRON-PY-AIRFLOW-EXPAPI-0001": {
+      "file": "TEGRON-PY-AIRFLOW-EXPAPI-0001.json",
+      "digest": "sha256:8c87cb4a59ad0127230ac232fe0ff823e39f735195d1756c1d7d45bc9e9dad3f"
+    },
+    "TEGRON-PY-DEP-0001": {
+      "file": "TEGRON-PY-DEP-0001.json",
+      "digest": "sha256:13525cbb029e05893791bf399f412d735afecc0fd0791dcd30532486e7088235"
+    },
+    "TEGRON-PY-FIRSTPARTY-0001": {
+      "file": "TEGRON-PY-FIRSTPARTY-0001.json",
+      "digest": "sha256:da7770f4c2ed2802c336a962dff9f8bea6a4cc0b8ed6460f02460c32d196287e"
+    }
+  },
+  "corpus_digest": "sha256:d7479e8dd1dabf354255de4ba52ba650275f3335034661b445a86c79bdaf985b"
+}

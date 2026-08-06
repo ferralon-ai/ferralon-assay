@@ -1,0 +1,8 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "vuln_id": "TEGRON-TEST-BADDIGEST",
+  "purl": "pkg:npm/tegron-test-baddigest",
+  "symbols": ["fetchUrl"],
+  "cwes": ["CWE-918"],
+  "summary": "well-formed advisory whose manifest digest is deliberately wrong (tamper/stale-regen simulation)"
+}

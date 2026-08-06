@@ -1,0 +1,12 @@
+{
+  "schema_version": "tegron.corpus.vulnclass.v1",
+  "id": "TEGRON-JAVA-SPRING-SSRF-0001",
+  "vuln_class": "ssrf",
+  "source": "osv",
+  "summary": "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired UrlService interface field; the sink issues an outbound HTTP request with no allowlist. The ingress->sink path crosses an interface dispatch that pure-Go lexical analysis cannot resolve (Partial(dynamic_dispatch)); only the Prove-only scip-java analyzer container resolves it.",
+  "cwe": "CWE-918",
+  "vulnerable_path": "testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-vulnerable",
+  "patched_path": "testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-patched",
+  "expected_signal": "canary",
+  "ownership_token": "owner-tegron-java-spring-ssrf-0001"
+}

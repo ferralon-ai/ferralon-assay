@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-repro</artifactId>
+  <version>1.0.0</version>
+
+  <!-- PATCHED variant: com.example.lib:widget is declared at 1.4.0, which is AT the
+       advisory's fixed version (affects < 1.4.0). The disqualification predicate must
+       prove the declared version outside the affected range and DISQUALIFY (not-affected)
+       before any expensive proof. -->
+  <dependencies>
+    <dependency>
+      <groupId>com.example.lib</groupId>
+      <artifactId>widget</artifactId>
+      <version>1.4.0</version>
+    </dependency>
+  </dependencies>
+</project>

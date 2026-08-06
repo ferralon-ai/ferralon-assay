@@ -1,0 +1,41 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "gogs-symlink-vulnerable",
+  "category": "trivially_exploitable",
+  "advisory": {
+    "id": "CVE-2025-8110",
+    "source": "ghsa",
+    "summary": "Arbitrary file write in Gogs via a committed in-repo symlink followed by the file-edit sink UpdateRepoFile (internal/db). A repository file write through a symlink at an INTERIOR path component escapes the working tree and writes to an out-of-repo path. This is the symlink bypass CVE-2025-8110 (GHSA-mq8m-42gh-wq7r; CISA KEV), not its predecessor: it evades the v0.13.1 fix for the CVE-2024-55947 path traversal, and it also evades v0.13.3's leaf-only osutil.IsSymlink check, so it still fires through v0.13.3 and is closed only by the full-hierarchy walk in v0.13.4. Affects gogs.io/gogs through v0.13.3.",
+    "references": [
+      "https://github.com/advisories/GHSA-mq8m-42gh-wq7r",
+      "https://osv.dev/vulnerability/CVE-2025-8110",
+      "https://nvd.nist.gov/vuln/detail/CVE-2025-8110",
+      "https://github.com/gogs/gogs/commit/553707f3fd5f68f47f531cfcff56aa3ec294c6f6",
+      "https://github.com/gogs/gogs/security/advisories/GHSA-qf5v-rp47-55gg"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/gogs/gogs",
+    "revision": "v0.13.0",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/gogs-symlink-vulnerable/",
+      "notes": "Real Gogs v0.13.0 (the pre-fix predecessor of the v0.13.4 patched leg). The committed repro dir holds ONLY the Docker build context (Dockerfile + poe_driver_beacon.py); the real gogs SOURCE TREE (go.mod) is materialized at the pinned tag by the live harness (materializeGogsRepro in gogs_pone_live_test.go: git-clone gogs@v0.13.0, overlay this context) so codebase_inventory + first-party reachability read a real gogs module while the same dir is the Docker build context — gogs is far too large to vendor into testdata. The file-edit route reaches internal/db.UpdateRepoFile with no symlink guard whatsoever, so a committed in-repo symlink pointing outside the working tree is followed on write: an attacker-controlled contents-API PUT writes a benign per-trial canary to an out-of-repo sentinel path. The intrinsic $TEGRON_OOB_URL beacon fires only after the out-of-repo write is confirmed (the sentinel bytes match the seed); HTTP-500 alone is excluded as it also fires on the patched build."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "proven",
+    "completion_status": "completed",
+    "label": "exploitable",
+    "expected_flags": ["canary_triggered", "static_taint_path_complete"],
+    "rationale": "Gogs v0.13.0 has no symlink guard on the file-edit path at all. A committed symlink pointing at an out-of-repo sentinel directory is followed by internal/db.UpdateRepoFile when the contents API PUTs file content through it, escaping the repository working tree and writing the per-trial canary to the sentinel. The out-of-repo write is the observable side-effect (RFC 0009); the intrinsic beacon exfils the planted seed only once the escape is confirmed. Keyed to CVE-2025-8110 and not to CVE-2024-55947 because the effect-trial fired on v0.13.1 and v0.13.3 — versions at which the predecessor traversal is already fixed (v0.13.1). What fires here is the symlink bypass. Verified against GHSA-mq8m-42gh-wq7r / GO-2025-4225 (last_affected v0.13.3); fired live in the effect-trial (v0.13.0/.1/.3 fired, v0.13.4 dark).",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

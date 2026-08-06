@@ -1,0 +1,6 @@
+{
+  "schema_version": "tegron.normalized_advisory.v2",
+  "vuln_id": "TEGRON-TEST-MALFORMED",
+  "purl": "pkg:pypi/tegron-test-malformed",
+  "summary": "digest matches but the declared schema_version is the OLD pre-rename tegron.* tag; the reader now accepts only ferralon.normalized_advisory.v2, so this must fail open"
+}

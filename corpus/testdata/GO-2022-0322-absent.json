@@ -1,0 +1,38 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "GO-2022-0322-absent",
+  "category": "absent_not_exploitable",
+  "advisory": {
+    "id": "GO-2022-0322",
+    "source": "osv",
+    "summary": "Uncontrolled resource consumption in github.com/prometheus/client_golang promhttp handlers when processing non-standard HTTP methods. Affects versions < 1.11.1. Aliases: CVE-2022-21698, GHSA-cg3q-j54f-5p7p.",
+    "references": [
+      "https://pkg.go.dev/vuln/GO-2022-0322",
+      "https://osv.dev/vulnerability/GO-2022-0322"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "GO-2022-0322-absent-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/GO-2022-0322-absent/",
+      "notes": "Program that imports github.com/prometheus/client_golang@v1.11.0 (vulnerable version) but never calls any promhttp handler — it only uses the metrics registration API (prometheus.NewCounter etc.). The vulnerable symbols in promhttp are present in the dependency tree but unreachable from any call path in this codebase."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": ["static_taint_path_complete"],
+    "rationale": "The advisory-affected module is imported but no call path reaches any of the vulnerable promhttp symbols (Handler, HandlerFor, InstrumentHandlerCounter, etc.). Static reachability analysis finds no candidate pair. The verdict is reasoned (not proven) because absence of a call path is a static property — no runtime observation is required, but PoNE proof requires two-trace (Phase 3). Advisory verified against osv.dev on 2026-06-02.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

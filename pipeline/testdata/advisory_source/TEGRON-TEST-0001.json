@@ -1,0 +1,22 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "vuln_id": "TEGRON-TEST-0001",
+  "module": "",
+  "aliases": ["CVE-2099-0001"],
+  "upper_exclusive": "1.4.0",
+  "fixed_version": "1.4.0",
+  "version_scheme": "maven",
+  "coordinate": "com.example.lib:widget",
+  "purl": "pkg:maven/com.example.lib/widget",
+  "symbols": ["com.example.lib.Widget.deserialize"],
+  "cwes": ["CWE-502"],
+  "summary": "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
+  "affected_ranges": [
+    {"introduced": "0", "fixed": "1.4.0", "fixed_version": "1.4.0"}
+  ],
+  "provenance": {
+    "source": "tegron-test-corpus",
+    "input_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "trust_tier": "first_party"
+  }
+}

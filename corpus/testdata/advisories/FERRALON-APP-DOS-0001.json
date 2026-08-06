@@ -1,0 +1,52 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "",
+  "FixedVersion": "",
+  "VersionScheme": "",
+  "Coordinate": "",
+  "PURL": "pkg:golang/tegron/corpus/dos",
+  "Symbols": [
+    "main.expandHandler"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-400"
+  ],
+  "Summary": "uncontrolled resource consumption: expandHandler allocates a slice sized by an attacker-controlled count with no upper bound, faulting the process",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

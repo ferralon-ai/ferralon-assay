@@ -1,0 +1,41 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "gogs-symlink-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "CVE-2025-8110",
+    "source": "ghsa",
+    "summary": "Arbitrary file write in Gogs via a committed in-repo symlink followed by the file-edit sink UpdateRepoFile (internal/db) — the same symlink bypass exercised by gogs-symlink-vulnerable (CVE-2025-8110 / GHSA-mq8m-42gh-wq7r, CISA KEV, the successor that evades the v0.13.1 fix for CVE-2024-55947 and v0.13.3's leaf-only symlink check). This fixture uses the FIXED release v0.13.4, whose full-hierarchy symlink guard hasSymlinkInPath refuses the out-of-repo write, so the negative-control trace stays dark.",
+    "references": [
+      "https://github.com/advisories/GHSA-mq8m-42gh-wq7r",
+      "https://osv.dev/vulnerability/CVE-2025-8110",
+      "https://nvd.nist.gov/vuln/detail/CVE-2025-8110",
+      "https://github.com/gogs/gogs/commit/553707f3fd5f68f47f531cfcff56aa3ec294c6f6",
+      "https://github.com/gogs/gogs/security/advisories/GHSA-qf5v-rp47-55gg"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/gogs/gogs",
+    "revision": "v0.13.4",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/gogs-symlink-patched/",
+      "notes": "Real Gogs v0.13.4 (the fix release). The committed repro dir holds ONLY the Docker build context (Dockerfile + poe_driver_beacon.py); the real gogs SOURCE TREE (go.mod) is materialized at the pinned tag by the live harness (materializeGogsRepro in gogs_pone_live_test.go: git-clone gogs@v0.13.4, overlay this context) so codebase_inventory + first-party reachability read a real gogs module while the same dir is the Docker build context — gogs is far too large to vendor into testdata. The file-edit route still reaches internal/db.UpdateRepoFile, but the v0.13.4 full-hierarchy symlink guard (hasSymlinkInPath, which supersedes v0.13.3's leaf-only osutil.IsSymlink check) refuses to follow the committed in-repo symlink on write, so the contents-API PUT never escapes the working tree and the out-of-repo sentinel stays absent. The intrinsic beacon therefore never fires (HTTP-500, which also occurs here, is deliberately not the signal). Pairs with gogs-symlink-vulnerable as the vulnerable-vs-patched two-trace ground truth for the platform PoNE."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "proven",
+    "completion_status": "completed",
+    "label": "not_exploitable",
+    "expected_flags": ["static_taint_path_complete"],
+    "rationale": "Gogs v0.13.4 added hasSymlinkInPath, the full-hierarchy symlink walk that internal/db.UpdateRepoFile consults before a file write. Although the file-edit route still reaches UpdateRepoFile on attacker-controlled input (the call path is identical to the vulnerable fixture), the guard rejects a symlink at any component of the path, so the write cannot escape the working tree and the out-of-repo sentinel is never written. The strength is proven (not reasoned) because non-exploitability is established by the live two-trace negative control (PoNE): the same exploit that fires on v0.13.0 stays dark on v0.13.4. Pairs with gogs-symlink-vulnerable for the platform-verdict two-trace. Keyed to CVE-2025-8110: v0.13.4 is the release that closes the SUCCESSOR, and its distinguishing guard is hasSymlinkInPath. Verified against GHSA-mq8m-42gh-wq7r / GO-2025-4225; v0.13.4 confirmed dark in the effect-trial.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

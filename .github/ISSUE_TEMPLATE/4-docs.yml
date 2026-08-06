@@ -1,0 +1,23 @@
+name: 📖 Docs are wrong or missing
+description: Something in the README or docs is unclear, outdated, or absent.
+labels: ["documentation", "needs-triage"]
+body:
+  - type: input
+    id: where
+    attributes:
+      label: Which page or file?
+      description: A link or a filename. Leave blank if it is about something missing.
+      placeholder: README.md, "Getting started" section
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What would have helped?
+      description: Optional.

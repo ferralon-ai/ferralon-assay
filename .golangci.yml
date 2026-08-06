@@ -1,0 +1,57 @@
+# golangci-lint configuration for the ferralon-assay OSS module.
+#
+# Enforcement layer 4 of 4 (defense-in-depth): depguard in Strict mode guarantees nothing under
+# ferralon-assay/ imports the proprietary service module. The primary boundary is already
+# compiler-enforced (ferralon-assay is its own Go module with no require on the service module) and
+# re-checked by the keystone CI gate (GOWORK=off go build/test); this lint is the cheap, fast hygiene
+# net that names an off-allowlist import directly in review.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+
+  settings:
+    depguard:
+      rules:
+        ferralon-assay:
+          # Apply to every Go file in this module.
+          files:
+            - "$all"
+          # Strict allow-list: standard library is always permitted; the module's own packages and
+          # the vetted third-party deps it already uses are allowed; everything else (notably the
+          # proprietary service module) is denied by omission + the explicit deny below.
+          allow:
+            - "$gostd"
+            # depguard's $gostd expander lists GOROOT top-level dirs only (e.g. "go", the parent
+            # of go/ast, go/parser, go/token, go/types, ...), and its allow-list matcher is a
+            # sorted binary search that checks only the single nearest predecessor of the import
+            # path — not every entry that could prefix-match. Any allow entry whose sort position
+            # falls between "go" and "go/" (e.g. "go.opentelemetry.io/otel" below, since '.' sorts
+            # before '/') hijacks that predecessor slot and silently breaks "go"'s match for every
+            # go/* stdlib import. Adding "go/" explicitly re-establishes it as the immediate
+            # predecessor for any go/* import no matter what else is in this list. A "go/" prefix
+            # matches only stdlib: no third-party import path lacks a domain segment.
+            - "go/"
+            - github.com/ferralon-ai/ferralon-assay
+            - github.com/google/uuid
+            - golang.org/x/mod
+            - golang.org/x/tools
+            - golang.org/x/vuln
+            # OTEL SDK + OTLP exporter. The shared provider
+            # lives in ferralon-assay/telemetry (service → ferralon-assay dep direction), so the
+            # OSS tree imports the otel libraries directly; the boundary that matters here is
+            # the deny below (no proprietary service module), which these public deps do not
+            # cross.
+            - go.opentelemetry.io/otel
+          deny:
+            - pkg: github.com/ferralon-ai/tegron
+              desc: >-
+                ferralon-assay (OSS) must never import the proprietary service module
+                (github.com/ferralon-ai/tegron). The boundary is one-directional: service →
+                ferralon-assay only.
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

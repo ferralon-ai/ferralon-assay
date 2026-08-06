@@ -1,0 +1,32 @@
+name: 🙋 Ask a question / get help
+description: Not sure how something works, or cannot get it running.
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions are welcome here — asking is not an imposition. If the answer
+        turns out to be "the docs should have said so", that is a docs bug on
+        our side, not a mistake on yours.
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What have you tried so far?
+      description: Optional.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Config, workflow file, or output
+      description: >-
+        Optional. **Please redact tokens, credentials, and internal hostnames** —
+        this issue is public.
+      render: shell

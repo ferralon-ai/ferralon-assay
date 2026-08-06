@@ -1,0 +1,22 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "vuln_id": "TEGRON-TEST-DATED",
+  "aliases": ["CVE-2021-99999"],
+  "upper_exclusive": "2.3.1",
+  "fixed_version": "2.3.1",
+  "version_scheme": "maven",
+  "coordinate": "com.example.lib:dated",
+  "purl": "pkg:maven/com.example.lib/dated",
+  "symbols": ["com.example.lib.Dated.lookup"],
+  "cwes": ["CWE-502"],
+  "sink_kind": "code_execution",
+  "summary": "date-partitioned corpus fixture exercising a manifest path with subdirectories",
+  "affected_ranges": [
+    {"introduced": "2.0-beta9", "fixed": "2.3.1", "fixed_version": "2.3.1"}
+  ],
+  "provenance": {
+    "source": "tegron-test-corpus",
+    "input_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "trust_tier": "first_party"
+  }
+}

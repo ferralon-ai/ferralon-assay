@@ -1,0 +1,48 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "1.4.0",
+  "FixedVersion": "1.4.0",
+  "VersionScheme": "npm",
+  "Coordinate": "left-pad",
+  "PURL": "pkg:npm/left-pad",
+  "Symbols": null,
+  "GuardSymbols": null,
+  "CWEs": null,
+  "Summary": "prototype pollution in left-pad fixed in 1.4.0",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

@@ -1,0 +1,4 @@
+{
+  "_comment": "Curated, upstream-verified expected fix-guarded sink symbols per CVE, in bare source-level (DisplayName) form (see package doc). Precision is measured ONLY against these annotations; do NOT copy the corpus `symbols` list here (that would make precision circular). Each entry must be verified against the upstream fix commit before it is added. Un-annotated CVEs are excluded from the precision denominator, honestly.",
+  "expected_sinks": {}
+}

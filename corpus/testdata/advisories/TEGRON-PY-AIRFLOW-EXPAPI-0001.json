@@ -1,0 +1,54 @@
+{
+  "Module": "",
+  "Aliases": [
+    "CVE-2020-13927"
+  ],
+  "UpperExclusive": "",
+  "FixedVersion": "",
+  "VersionScheme": "",
+  "Coordinate": "",
+  "PURL": "pkg:pypi/apache-airflow",
+  "Symbols": [
+    "airflow.api.common.experimental.get_code.get_code"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-306"
+  ],
+  "Summary": "missing authentication: the experimental REST API exposes an unauthenticated get_code sink that reads arbitrary DAG source off disk; the experimental API has no access control by default and was removed wholesale in Airflow 3.0.0",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

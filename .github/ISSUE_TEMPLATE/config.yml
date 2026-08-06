@@ -1,0 +1,11 @@
+# NOTE: the `url` values below are the only repo-specific content in this
+# template set. When copying this .github/ subtree into another repository,
+# update the owner/repo segment in each URL. Everything else drops in verbatim.
+blank_issues_enabled: false
+contact_links:
+  - name: 🔐 Report a security vulnerability (private)
+    url: https://github.com/ferralon-ai/ferralon-assay/security/advisories/new
+    about: >-
+      Found a vulnerability in our code? Please report it privately here, not as
+      a public issue. We will work with you on a fix and a coordinated
+      disclosure.

@@ -1,0 +1,10 @@
+{
+  "name": "tegron-fixture-pkg",
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  }
+}

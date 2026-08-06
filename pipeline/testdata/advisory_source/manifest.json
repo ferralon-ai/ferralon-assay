@@ -1,0 +1,43 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "record_count": 7,
+  "records": [
+    {
+      "identifier": "TEGRON-TEST-0001",
+      "path": "TEGRON-TEST-0001.json",
+      "output_digest": "sha256:7cc7b9eb242f9fb4ca238cea660520d01c204a3018b64c4bbc44d22a92497cd6"
+    },
+    {
+      "identifier": "TEGRON-TEST-ABSPATH",
+      "path": "/etc/passwd",
+      "output_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "identifier": "TEGRON-TEST-BACKSLASH",
+      "path": "sub\\TEGRON-TEST-BACKSLASH.json",
+      "output_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "identifier": "TEGRON-TEST-BADDIGEST",
+      "path": "TEGRON-TEST-BADDIGEST.json",
+      "output_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "identifier": "TEGRON-TEST-DATED",
+      "path": "2021/12/TEGRON-TEST-DATED.json",
+      "output_digest": "sha256:1095e15f7a1c807d14b2bb382ede9de219de9cb84c58a080b3f5d1b4a7a79a7c"
+    },
+    {
+      "identifier": "TEGRON-TEST-DOTDOT",
+      "path": "../TEGRON-TEST-DOTDOT.json",
+      "output_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "identifier": "TEGRON-TEST-MALFORMED",
+      "path": "TEGRON-TEST-MALFORMED.json",
+      "output_digest": "sha256:e3c50f946cd4f1bfcb67fa57ef2506bce65210c36db184f4e03d589f0e864546"
+    }
+  ],
+  "corpus_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

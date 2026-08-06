@@ -1,0 +1,12 @@
+{
+  "schema_version": "tegron.corpus.vulnclass.v1",
+  "id": "TEGRON-JS-SSRF-0001",
+  "vuln_class": "ssrf",
+  "source": "osv",
+  "summary": "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
+  "cwe": "CWE-918",
+  "vulnerable_path": "testdata/repros/TEGRON-JS-SSRF-0001-vulnerable",
+  "patched_path": "testdata/repros/TEGRON-JS-SSRF-0001-patched",
+  "expected_signal": "canary",
+  "ownership_token": "owner-tegron-js-ssrf-0001"
+}

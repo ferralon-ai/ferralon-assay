@@ -1,0 +1,38 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "GO-2021-0264-reachable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "GO-2021-0264",
+    "source": "osv",
+    "summary": "Panic in archive/zip (*Reader).Open when processing archives containing entries with names consisting only of slashes or '..' elements. Affects Go 1.16.0-1.16.9 and 1.17.0-1.17.2. Fixed in Go 1.16.10, 1.17.3. Aliases: CVE-2021-41772.",
+    "references": [
+      "https://pkg.go.dev/vuln/GO-2021-0264",
+      "https://osv.dev/vulnerability/GO-2021-0264"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "GO-2021-0264-reachable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/GO-2021-0264-reachable/",
+      "notes": "Service built with a vulnerable Go toolchain (1.17.1) that accepts ZIP file uploads and calls (*zip.Reader).Open on the uploaded archive. The vulnerable symbol is reachable from an HTTP handler. However, triggering the panic requires an attacker-supplied archive with a specially crafted entry name (all slashes or '..' only) — a precondition that depends on external input format constraints not automatically satisfiable by the current environment. The service is also deployable on patched Go toolchains where the vuln is absent. NOTE: GO-2021-0264 affects the Go stdlib (archive/zip), not a separately-versioned module; the repro models a service compiled on a vulnerable Go version. Advisory verified against osv.dev on 2026-06-02."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": ["static_taint_path_complete"],
+    "rationale": "The vulnerable (*zip.Reader).Open symbol is reachable from an HTTP handler that processes user-supplied ZIP uploads on an affected Go toolchain version. The taint path from ingress to vulnerable symbol is traceable statically. However, confirming exploitability requires: (a) the test environment uses a vulnerable Go toolchain build, and (b) a crafted archive with pathological entry names is injected as the upload. Neither precondition is satisfiable without toolchain pinning and controlled test-input delivery, so analysis stops at 'reachable but unconfirmed'. The completion status is stopped_capability (not environment_unavailable) because the limitation is sandbox capability, not environment availability. Advisory verified against osv.dev on 2026-06-02.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

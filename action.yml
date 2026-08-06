@@ -1,0 +1,586 @@
+# Ferralon Assay — the composite GitHub Action.
+#
+# Runs the free, deterministic Ferralon Assay scan against the calling repository. For each advisory
+# in scope it resolves the subject's dependency versions, maps the advisory onto vulnerable symbols,
+# builds a call graph, and reports whether that code is reachable from a framework entry point. The
+# scan runs entirely in your runner: it never executes code from the scanned repository and never
+# runs a model.
+#
+# WHAT IT NEEDS
+#   - The repository already checked out (run actions/checkout before this action).
+#   - Network access to GitHub releases, to fetch the pinned scanner artifact.
+#   - A write token only if you want the SARIF, PR-comment or Issue surfaces; the job summary is
+#     written regardless.
+#
+# WHAT IT PRODUCES
+#   Into the `out` directory: report.json (the neutral scan Report), report.html,
+#   report.sarif.json (SARIF 2.1.0) and openvex.json (OpenVEX). The `out-dir` and `sarif-file`
+#   outputs carry the resolved paths. Each Report records the analyzer identity that produced it —
+#   the tool name plus the version of the scanner release that ran.
+#
+# READING THE VERDICTS — this matters most on a repository whose analyzer is shallower than Go's.
+# The Report is three-valued, and the third value is the one to look for: a finding whose analysis
+# could not resolve and search the code the advisory names is published as `undetermined` with an
+# `undetermined_reason`, NOT as `not_exploitable`. An undetermined row is an open question, never a
+# clean bill — treat it as unassessed. `not_exploitable` and `disqualified` are the only verdicts
+# that assert a comparison ran against your repository and cleared it, and each carries the basis it
+# stands on. OpenVEX mirrors the split: `under_investigation` for the open rows, `not_affected` only
+# for the two that adjudicated.
+#
+# How deep the analysis goes for YOUR ecosystem is a property of the release you pin, not of this
+# file — the per-finding verdicts and the scan-level limits in the Report you get are the answer.
+#
+# A scan whose work set resolves to zero advisories FAILS the run rather than publishing a
+# findings-free Report a reader cannot tell apart from an assessed all-clear (see `scanWorkSet` in
+# cmd/ferralon-assay/run.go). That is a deliberate refusal to imply coverage that was not performed.
+#
+# NO COMMITTED BINARY. This action fetches a pinned, checksummed scanner release at run time and
+# builds nothing. Nothing is committed into your repository; the footprint is a few lines of
+# reviewable, SHA-pinned YAML.
+#
+# DRIFT GUARD (fail loud, never silently under-report): the fetched tarball's sha256 is verified
+# against the pinned `scanner-sha256` BEFORE the scanner is unpacked or run. A stale, tampered, or
+# mismatched artifact aborts the run — it never falls through to a partial/silent scan. The pin is
+# transitive: pinning this action by commit SHA (`@<sha>`) pins the scanner version + checksum
+# below along with it. Moving to a newer scanner is a bump of the two `default:` values below plus
+# a new action release; consumers bump their `@<sha>`.
+#
+# ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
+# PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
+# at it; `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty
+# by default, in which case the scan resolves advisory facts from the scanner's built-in table.
+# Setting either DECLARES the run requires a corpus, and that declaration is computed from these
+# inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
+# instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
+# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below.
+#
+# SURFACE TOGGLES. The `issue` / `pr-comment` / `code-scanning` inputs are mapped onto the
+# scanner's own ASSAY_* env vars inside this action, so a caller's workflow never writes them.
+# Any env name spelled literally here must track brand.EnvPrefix (internal/brand) — see the note
+# at the run step.
+#
+# SELF-CLEANUP. The pinned scanner release carries Ferralon's revoke-signing PUBLIC key and the
+# ingest + run-snapshot endpoints, baked in at build time — so a caller opts in with a boolean and
+# never writes a Ferralon hostname into their own repository. When `link-to-console` is true, the
+# scan beacons ingest after each run; a signed HTTP-410 install-revoke (the backing App was
+# uninstalled) confirmed on N=2 consecutive runs makes the scan remove its own footprint — it
+# deletes the workflow file (direct push, else a removal PR), then deletes `refs/assay/state`, the
+# default state ref (statestore.DefaultRef — note that it deletes THAT ref, not a `state-ref` you
+# set) — degrading to self-disable plus a one-manual-step Issue only if git/API writes are
+# refused. Only a
+# cryptographically-signed, key-id-matched revoke bound to THIS repo actuates; transient outages
+# never do.
+
+name: Ferralon Assay
+# QUOTED, and it must stay quoted: the value contains ": ", which a plain YAML scalar may not carry.
+# GitHub's parser accepts it unquoted; a spec-conforming one rejects the whole file, so a consumer
+# running any ordinary YAML tooling over their workflow dependencies would choke on this Action.
+description: 'Free, deterministic reachability scan — fetches a pinned, checksummed scanner release at run time (no committed binary). Three-valued verdicts: an advisory the analysis could not resolve is reported undetermined, never as a clean bill.'
+author: ferralon-ai
+
+# Marketplace listing metadata. GitHub accepts exactly two keys here, `icon` and `color`, and
+# rejects the LISTING (not the parse) on any value outside its accepted sets — so a wrong value
+# looks fine in every local check and fails only at submission time. `share-2` is the node-link
+# graph glyph: this scanner's answer comes from a call graph, not from a version comparison.
+# `blue` reads analytic rather than alerting, which is the right register for a three-valued
+# report whose most common row is an open question.
+branding:
+  icon: share-2
+  color: blue
+
+inputs:
+  # --- the pin (the two load-bearing lines a corpus re-point bumps) ----------------------------
+  # The two `default:` values below are the authoritative release-cut pin. Before relying on them,
+  # independently re-verify the pinned scanner-version's release against its linux/amd64 tarball:
+  #   gh release view <the scanner-version default below> --repo ferralon-ai/ferralon-assay
+  # No version is named in this prose on purpose. The auto-pin rewrites ONLY the two `default:` lines,
+  # so any version literal elsewhere in this file would silently drift out of date on the next cut —
+  # the `default:` lines ARE the pin; re-verify against them, not against a version copied into prose.
+  # The same rule covers CAPABILITY claims: nothing in this file may state what the pinned release
+  # does or does not carry. The auto-pin reaches those two `default:` lines and nothing else, so such
+  # a claim goes false at the first cut that changes the answer, with nothing to correct it. State a
+  # version requirement as a REQUIREMENT the reader checks against the pin, never as a fact about it.
+  scanner-version:
+    description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
+    required: false
+    default: "v0.2.0"
+  scanner-sha256:
+    description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
+    required: false
+    default: "182e25293201f411da6ed99cf525738ac96f5e70c584cf756a74dfc42b4596b6"
+  scanner-repo:
+    description: "owner/repo hosting the pinned scanner release assets."
+    required: false
+    default: "ferralon-ai/ferralon-assay"
+  scanner-token:
+    description: "Token used to download the release asset (default: the job's github.token; sufficient for a public scanner-repo)."
+    required: false
+    default: ""
+
+  # --- scan surface (mapped onto the fetched build's brand.EnvPrefix, ASSAY_*) ------------------
+  mode:
+    description: "Run mode: baseline | pr-inherit | cve-watch."
+    required: false
+    default: baseline
+  target:
+    description: "Go module root to scan, relative to the workspace."
+    required: false
+    default: .
+  out:
+    description: "Output directory for report.json / report.html / report.sarif.json / openvex.json."
+    required: false
+    default: ferralon-assay-out
+  subject-repo:
+    description: "Neutral repository identity recorded on the Report."
+    required: false
+    default: ${{ github.repository }}
+  revision:
+    description: "Revision recorded on the Report (e.g. a branch or PR head)."
+    required: false
+    default: ${{ github.ref_name }}
+  commit:
+    description: "Resolved commit SHA recorded on the Report."
+    required: false
+    default: ${{ github.sha }}
+  state-repo:
+    description: "GitHub Refs-API StateStore as owner/repo (passed as -repo). Persists the baseline on the default branch."
+    required: false
+    default: ""
+  state-ref:
+    description: "State ref to read/write (passed as -ref). The consumer sets this to its cross-team-contract ref."
+    required: false
+    default: ""
+  state-token:
+    description: "GitHub token for the Refs-API StateStore (passed as -token; default: the job's github.token)."
+    required: false
+    default: ""
+  plugin-go:
+    description: "Optional explicit path to a prebuilt analyzer plugin binary, applied to the detected language (override). Default: the per-language plugins unpacked from the fetched release are resolved automatically via PATH."
+    required: false
+    default: ""
+  include-house-canaries:
+    description: >-
+      Set to 'true' to include the first-party house-canary advisories (the FERRALON-APP-* Go
+      application-sink findings and the synthetic Java/JS/Python corpus advisories) in the scan
+      corpus, forwarding -include-house-canaries to the scanner. OFF by default so a normal scan
+      never evaluates them; the Ferralon demo scan sets it so the app-level DOS canary surfaces as
+      a reachable_candidate the pipeline can enumerate and fire. This flag is NOT the fix for the
+      empty non-Go advisory set — see LANGUAGE COVERAGE at the top of this file. The canaries are
+      synthetic first-party advisories over synthetic packages; turning them on to get a Java, JS
+      or Python scan to complete would report findings against packages the subject does not
+      depend on. VERSION REQUIREMENT: a scanner release carrying the -include-house-canaries flag. A
+      release that lacks it fails the scan loudly ("flag provided but not defined:
+      -include-house-canaries") rather than ignoring the input; if that is what you get, raise
+      scanner-version + scanner-sha256 to a release that carries it.
+    required: false
+    default: "false"
+  issue:
+    description: "Set to 'false' to disable the scanner's own pinned-Issue surface. Default enabled."
+    required: false
+    default: "true"
+  pr-comment:
+    description: "Set to 'false' to disable the scanner's own sticky PR-comment surface. Default enabled."
+    required: false
+    default: "true"
+  code-scanning:
+    description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
+    required: false
+    default: "true"
+  # --- advisory corpus (optional; default OFF = the built-in advisory table) --------------------
+  # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
+  # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
+  # the note on advisory-corpus-repo before wiring either.
+  advisory-corpus:
+    description: >-
+      Path to an ALREADY-checked-out advisory corpus (a directory holding manifest.json plus the
+      digest-pinned per-advisory JSON records it indexes), forwarded to the scanner as
+      -advisory-corpus. Use this when the workflow materializes the corpus itself; it takes
+      precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. Empty
+      (default) = no corpus, and the scan resolves advisory facts from the built-in table.
+    required: false
+    default: ""
+  advisory-corpus-repo:
+    description: >-
+      owner/repo of a PUBLIC advisory-corpus repository to fetch before the scan. The fetch is
+      UNAUTHENTICATED by construction — it presents no token, so the repository must be readable
+      anonymously — and is shallow (--depth 1) and sparse (the manifest and the record partitions
+      only). Empty (default) = no fetch. Setting this OR advisory-corpus DECLARES that this run
+      requires a corpus, which is forwarded to the scanner out of band
+      (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or carries zero records
+      FAILS the run rather than quietly falling back to the built-in table. VERSION REQUIREMENT: a
+      scanner release carrying the -advisory-corpus flag — confirm the release named by the
+      scanner-version default carries it before you opt in. A release that lacks it fails the scan
+      loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
+      input; if that is what you get, raise scanner-version + scanner-sha256 to a release that
+      carries it.
+    required: false
+    default: ""
+  advisory-corpus-ref:
+    description: >-
+      Branch, tag, or commit SHA of advisory-corpus-repo to fetch (all three resolve the same way).
+      A commit SHA is the reproducible choice. Independently of this ref, the scanner records the
+      corpus's own corpus_digest on the Report, which is what identifies the exact corpus state a
+      run read.
+    required: false
+    default: main
+  link-to-console:
+    description: >-
+      Link this run to your Ferralon console. The ONLY switch that decides whether the scan talks
+      to Ferralon at all: 'true' lets it post its scan results and a self-cleanup revoke beacon to
+      the endpoints baked into the pinned scanner release; anything else (including the 'false'
+      default) runs the scan fully standalone — nothing reaches Ferralon. Your code and your
+      credentials never leave the runner. The scan fetches dependencies and the Go vulnerability
+      database, the same as 'go build' and 'govulncheck' do. Which endpoints a linked run uses is a
+      property of the release you pinned, not something the workflow configures, so no Ferralon
+      hostname is written into your repository. Deleting this line DISABLES the link; it never
+      silently re-enables it.
+    required: false
+    default: "false"
+  ingest-url:
+    description: >-
+      OVERRIDE for the ingest endpoint a linked run beacons (GHE / substrate / dev). Empty (default)
+      = use the endpoint baked into the pinned scanner release. This does NOT enable anything on its
+      own — with link-to-console unset or false the scan never beacons, whatever is set here.
+      When a linked run does beacon, a cryptographically-signed HTTP-410 install-revoke returned for
+      N=2 consecutive runs (i.e. the backing Ferralon App was uninstalled) makes the scan remove its
+      own footprint (workflow file + state ref). The revoke public key is baked into the pinned
+      release at build time, so only a genuine, signed revoke can ever actuate — a transient
+      outage never does.
+    required: false
+    default: ""
+  runs-url:
+    description: >-
+      OVERRIDE for the run-snapshot endpoint a linked run pushes to (GHE / substrate / dev). Empty
+      (default) = use the endpoint baked into the pinned scanner release; like ingest-url it enables
+      nothing on its own. On a DEFAULT-BRANCH run a linked scan pushes its own tegron.report.v2
+      verdict layer there at run time, under the workflow's GitHub-Actions OIDC token (audience
+      ferralon-ingest, id-token: write) — the push the console fleet view renders a live assessment
+      from. A PR / non-default-branch run stays stateless and NEVER files a run. The push is
+      FAIL-OPEN: a rejected or unreachable endpoint only warns, it never fails the scan job.
+    required: false
+    default: ""
+
+outputs:
+  out-dir:
+    description: "Absolute path to the output directory holding the Report + projections."
+    value: ${{ steps.run.outputs.out-dir }}
+  sarif-file:
+    description: "Path to the materialized SARIF file (for a codeql-action upload step)."
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch + verify the pinned, checksummed scanner release (drift guard)
+      id: fetch
+      shell: bash
+      env:
+        # github.token is not auto-injected into a composite action's step env — map it explicitly.
+        GH_TOKEN: ${{ inputs.scanner-token != '' && inputs.scanner-token || github.token }}
+        SCANNER_VERSION: ${{ inputs.scanner-version }}
+        SCANNER_SHA256: ${{ inputs.scanner-sha256 }}
+        SCANNER_REPO: ${{ inputs.scanner-repo }}
+      run: |
+        set -euo pipefail
+
+        # Refuse an unpinned run. An empty or still-placeholder version/checksum means the release
+        # was never cut (or the pin was never filled in). Fail LOUD here rather than fetch-and-run
+        # something unverifiable — a missing pin is exactly the drift this guard exists to catch.
+        if [ -z "$SCANNER_VERSION" ] || [ "$SCANNER_VERSION" = "REPLACE_WITH_RELEASE_TAG" ]; then
+          echo "::error::ferralon-assay: scanner-version is unpinned (still '$SCANNER_VERSION')." >&2
+          echo "  Set scanner-version to a published release tag of $SCANNER_REPO, and scanner-sha256 to that release's linux/amd64 tarball checksum." >&2
+          exit 1
+        fi
+        if [ -z "$SCANNER_SHA256" ] || [ "$SCANNER_SHA256" = "REPLACE_WITH_RELEASE_SHA256" ]; then
+          echo "::error::ferralon-assay: scanner-sha256 is unpinned (still '$SCANNER_SHA256')." >&2
+          echo "  Set scanner-sha256 to the sha256 of ferralon-assay-scanner_<version>_linux_amd64.tar.gz on that release." >&2
+          exit 1
+        fi
+
+        WORK="$RUNNER_TEMP/ferralon-assay"
+        mkdir -p "$WORK"
+        TARBALL="ferralon-assay-scanner_${SCANNER_VERSION}_linux_amd64.tar.gz"
+        DEST="$WORK/$TARBALL"
+
+        echo "==> Fetching $TARBALL @ $SCANNER_VERSION from $SCANNER_REPO"
+        if command -v gh >/dev/null 2>&1; then
+          # gh handles public + private release-asset download and auth uniformly.
+          gh release download "$SCANNER_VERSION" --repo "$SCANNER_REPO" \
+            --pattern "$TARBALL" --output "$DEST" --clobber
+        else
+          # Fallback: the public release-asset URL (works unauthenticated for a public repo).
+          url="https://github.com/${SCANNER_REPO}/releases/download/${SCANNER_VERSION}/${TARBALL}"
+          auth=()
+          [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GH_TOKEN}")
+          curl -fSL --retry 3 "${auth[@]}" -o "$DEST" "$url"
+        fi
+
+        # --- the pin check: computed sha256 MUST equal the pinned scanner-sha256 -----------------
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual="$(sha256sum "$DEST" | awk '{print $1}')"
+        else
+          actual="$(shasum -a 256 "$DEST" | awk '{print $1}')"
+        fi
+        if [ "$actual" != "$SCANNER_SHA256" ]; then
+          echo "::error::ferralon-assay: scanner checksum MISMATCH — refusing to run a stale/tampered scanner." >&2
+          echo "  expected (pinned): $SCANNER_SHA256" >&2
+          echo "  actual   (fetched): $actual" >&2
+          exit 1
+        fi
+        echo "==> Checksum verified — $actual"
+
+        tar -xzf "$DEST" -C "$WORK"
+
+        # ---- wiring: DERIVED from what the tarball actually carried ----------------------------
+        # This block used to hold two hand-maintained literal lists — a chmod list and a symlink
+        # list — each naming three of the baked analyzer plugins. Every language added since was
+        # extracted onto disk and left unreachable, because nothing reconciled either list with the
+        # release's target table. Deriving from the extraction is strictly stronger than deriving
+        # from any declared list: it cannot drift from what the PINNED release really carries, so an
+        # asset missing from the download fails loudly here instead of presenting, much later, as a
+        # language that mysteriously cannot be analyzed.
+        #
+        # The block between the two markers is extracted and run VERBATIM by the in-module lock
+        # cmd/ferralon-assay/action_wiring_test.go. Keep it self-contained: its only input is $WORK
+        # and the files sitting in it.
+        # >>> BEGIN plugin wiring >>>
+        # The CLI is not optional — every later step execs it.
+        if [ ! -f "$WORK/ferralon-assay-scan" ]; then
+          echo "::error::ferralon-assay: the release tarball carried no scanner CLI (ferralon-assay-scan) — refusing to continue." >&2
+          echo "  extracted into $WORK:" >&2
+          ls -A "$WORK" | sed 's/^/    /' >&2
+          exit 1
+        fi
+        chmod +x "$WORK/ferralon-assay-scan"
+
+        # Per-language analyzer discovery. The CLI resolves the analyzer for the DETECTED language
+        # via exec.LookPath("tegron-plugin-<lang>") — a FROZEN internal lookup contract, and not the
+        # name the release ships the binaries under. So each extracted plugin is symlinked to its
+        # lookup name in a TRANSIENT plugin dir (never part of the released tarball) and that dir is
+        # exposed on PATH. Two namespaces, one bridge: this loop.
+        PLUGIN_PATH_DIR="$WORK/plugin-path"
+        mkdir -p "$PLUGIN_PATH_DIR"
+        wired=0
+        for asset in "$WORK"/ferralon-assay-scan-plugin*; do
+          [ -f "$asset" ] || continue   # nothing matched: the glob stayed literal
+          suffix="${asset#"$WORK"/ferralon-assay-scan-plugin}"
+          if [ -z "$suffix" ]; then
+            # THE ONE ASYMMETRY, and the reason this is not a plain "${asset##*-}" split. Go's
+            # analyzer ships as the bare name `ferralon-assay-scan-plugin`: it was the only analyzer
+            # when the asset names were frozen, so it never got a `-go` suffix. The names cannot be
+            # regularized after the fact either — `publish.sh --action-only` re-cuts this Action
+            # against an ALREADY-PUBLISHED release, so an Action expecting tidier asset names would
+            # break against the very tarball it is pinned to. The asymmetry stays; this arm absorbs
+            # it, and every other plugin is `ferralon-assay-scan-plugin-<lang>`.
+            lang=go
+          else
+            lang="${suffix#-}"
+          fi
+          chmod +x "$asset"
+          ln -sf "$asset" "$PLUGIN_PATH_DIR/tegron-plugin-$lang"
+          echo "==> wired tegron-plugin-$lang -> $(basename "$asset")"
+          wired=$((wired + 1))
+        done
+
+        # Fail closed. Exporting an empty plugin dir hands the CLI a PATH with nothing on it, which
+        # turns a packaging failure into a confusing analysis failure several steps downstream.
+        if [ "$wired" -eq 0 ]; then
+          echo "::error::ferralon-assay: the release tarball carried no analyzer plugins — refusing to export an empty plugin dir." >&2
+          echo "  extracted into $WORK:" >&2
+          ls -A "$WORK" | sed 's/^/    /' >&2
+          exit 1
+        fi
+        echo "==> $wired analyzer plugin(s) reachable by lookup name"
+        # <<< END plugin wiring <<<
+        echo "bin-dir=$WORK" >> "$GITHUB_OUTPUT"
+        echo "plugin-path-dir=$PLUGIN_PATH_DIR" >> "$GITHUB_OUTPUT"
+
+    # The corpus checkout directory is a FIXED, configuration-derived path, spelled out identically
+    # here and in the run step below. It is deliberately NOT passed between the steps as a step
+    # output: a step output only exists when the step ran and succeeded, so consuming one would make
+    # "the corpus was requested" indistinguishable from "the fetch worked" — and a failed fetch would
+    # then present as an unconfigured run and silently downgrade to built-in intel. The duplication
+    # is the point; keep the two literals in sync.
+    - name: Fetch the advisory corpus (unauthenticated, shallow + sparse)
+      # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
+      # never whether anything succeeded.
+      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != ''
+      shell: bash
+      env:
+        CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
+      run: |
+        set -euo pipefail
+        DEST="$RUNNER_TEMP/ferralon-assay-corpus"
+        rm -rf "$DEST"
+        mkdir -p "$DEST"
+
+        # Present NO credential. The corpus is a public repository by design — a stranger's runner
+        # has to be able to fetch it with nothing — so any token that happens to be in scope is
+        # withheld on purpose. An accidentally-authenticated fetch here would make a PRIVATE corpus
+        # appear to work for us and 404 for every real consumer, which is exactly the failure this
+        # withholding is meant to surface at once.
+        export GIT_TERMINAL_PROMPT=0
+        unset GITHUB_TOKEN GH_TOKEN GIT_ASKPASS SSH_ASKPASS || true
+
+        git init -q "$DEST"
+        git -C "$DEST" remote add origin "https://github.com/${CORPUS_REPO}.git"
+
+        # Sparse BEFORE any checkout, so excluded paths are never materialized. Non-cone
+        # (gitignore-style) patterns: records are filed as <YYYY>/<MM>/<ID>.json plus
+        # unknown/<ID>.json and are resolved through the root manifest. LICENSE and NOTICE carry the
+        # corpus's CC-BY attribution terms and travel with the data they cover.
+        git -C "$DEST" sparse-checkout set --no-cone \
+          '/manifest.json' \
+          '/LICENSE' \
+          '/NOTICE' \
+          '/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.json' \
+          '/unknown/*.json'
+
+        # --depth 1 bounds history (the corpus is small today but its history only grows);
+        # --filter=blob:none makes the sparse selection bound the BYTES fetched rather than merely
+        # the working tree; --no-tags drops refs that are never read. Fetching by ref name handles a
+        # branch, a tag and a commit SHA uniformly.
+        git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
+          fetch --depth 1 --no-tags --filter=blob:none origin "$CORPUS_REF"
+        git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
+          checkout -q FETCH_HEAD
+
+        # Fail loud on a fetch that "succeeded" and delivered nothing readable. This is a
+        # convenience diagnostic, NOT the safety net — the scanner's own requirement gate (declared
+        # below from configuration) is what actually guarantees a corpus-less run cannot pass.
+        if [ ! -f "$DEST/manifest.json" ]; then
+          echo "::error::ferralon-assay: advisory corpus fetched from $CORPUS_REPO@$CORPUS_REF has no manifest.json." >&2
+          echo "  Check that advisory-corpus-repo is PUBLIC and that advisory-corpus-ref exists." >&2
+          exit 1
+        fi
+        echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
+
+    - name: Run the Ferralon Assay
+      id: run
+      shell: bash
+      env:
+        # The fetched build reads its own surface toggles under brand.EnvPrefix, which is ASSAY.
+        # Map this action's inputs onto that prefix so the caller never writes the prefix itself.
+        # '0' = off, '1' = on; keep the non-empty value on the truthy branch (the GitHub ternary
+        # footgun).
+        #
+        # These three names MUST track brand.EnvPrefix. Unlike the CLI env vars in
+        # cmd/ferralon-assay/run.go, which resolve through an EnvOrLegacy chain, detect.go reads
+        # these with a plain os.Getenv (resultsink/github/detect.go:177-179) and has no fallback --
+        # so a stale prefix here is not a warning, it is a silently ignored opt-out. That is safe
+        # only because action.yml and the scanner-version it pins are cut together and pinned by
+        # one commit SHA, so a consumer always gets a matched pair.
+        ASSAY_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
+        ASSAY_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
+        ASSAY_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}
+        GITHUB_TOKEN: ${{ github.token }}
+        # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
+        # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined
+        # expression is substituted as literal text before bash parses the line, so an input whose
+        # value happens to contain shell syntax (e.g. a branch/ref name feeding `revision`) would be
+        # evaluated — the classic Actions template-injection footgun. Passing through env makes the
+        # value plain data the shell never re-parses.
+        BIN_DIR: ${{ steps.fetch.outputs.bin-dir }}
+        PLUGIN_PATH_DIR: ${{ steps.fetch.outputs.plugin-path-dir }}
+        IN_PLUGIN_GO: ${{ inputs.plugin-go }}
+        IN_MODE: ${{ inputs.mode }}
+        IN_TARGET: ${{ inputs.target }}
+        IN_OUT: ${{ inputs.out }}
+        IN_SUBJECT_REPO: ${{ inputs.subject-repo }}
+        IN_REVISION: ${{ inputs.revision }}
+        IN_COMMIT: ${{ inputs.commit }}
+        IN_STATE_REPO: ${{ inputs.state-repo }}
+        IN_STATE_REF: ${{ inputs.state-ref }}
+        IN_STATE_TOKEN: ${{ inputs.state-token }}
+        IN_INCLUDE_HOUSE_CANARIES: ${{ inputs.include-house-canaries }}
+        IN_ADVISORY_CORPUS: ${{ inputs.advisory-corpus }}
+        IN_ADVISORY_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE — it names no step,
+        # reads no step output, and consults no step status, so it says "this workflow was
+        # configured to scan against a corpus", never "a fetch worked". That distinction is the
+        # whole mechanism: if the requirement were derived from the fetch's success, a failed fetch
+        # would be byte-identical to an unconfigured run and the scan would silently degrade to
+        # built-in intel with nothing to show for it. Under a declared requirement the scanner fails
+        # the run when no corpus resolves, and equally when one resolves with zero records.
+        # '1'/'0' rather than '1'/'': the scanner parses this as a boolean and REFUSES to guess on an
+        # unparseable value, so the falsey branch has to be a real boolean literal, not an empty
+        # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
+        # — a supported, unchanged configuration — working for every consumer who sets no corpus.
+        ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
+        # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
+        # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
+        # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two
+        # URL overrides below say. The endpoint a linked run actually uses is baked into the pinned
+        # release at build time, which is why the caller's workflow names no host.
+        FERRALON_LINK_TO_CONSOLE: ${{ inputs.link-to-console }}
+        # The rest give the scanner the run context it needs to
+        # (a) forward advisory-rescan correlation metadata on the beacon and surface it in the summary,
+        # and (b) actuate the removal ladder (delete the workflow file / open the removal PR / disable
+        # + Issue) against the RIGHT branch. GITHUB_REPOSITORY / GITHUB_WORKSPACE / GITHUB_SHA and the
+        # ACTIONS_ID_TOKEN_REQUEST_* pair (present when the caller grants id-token: write) are default
+        # Actions env vars already visible to this step, so they are not re-mapped here.
+        FERRALON_INGEST_URL: ${{ inputs.ingest-url }}
+        # A linked run's report push is ALSO default-branch-gated (GITHUB_REF_NAME == the default
+        # branch below). GITHUB_REF_NAME and the ACTIONS_ID_TOKEN_REQUEST_* OIDC pair are default
+        # Actions env vars already visible to this step (the caller must grant id-token: write), so
+        # only the endpoint override is mapped here.
+        FERRALON_RUNS_URL: ${{ inputs.runs-url }}
+        FERRALON_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        FERRALON_EVENT_ACTION: ${{ github.event.action }}
+        FERRALON_CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+      run: |
+        set -euo pipefail
+        BIN="$BIN_DIR/ferralon-assay-scan"
+
+        # Expose the per-language plugin symlinks (tegron-plugin-<lang>) on PATH so the CLI resolves
+        # the analyzer for the DETECTED language itself. -plugin-go is a single-path override applied
+        # to WHATEVER language is detected, so it must NOT be passed unconditionally — a forced Go
+        # plugin path would exec the Go analyzer against a Python or JS tree. Pass it ONLY when the
+        # caller explicitly set the plugin-go input (an escape hatch for a prebuilt Go plugin).
+        export PATH="$PLUGIN_PATH_DIR:$PATH"
+
+        mkdir -p "$IN_OUT"
+        args=(
+          "$IN_MODE"
+          -target "$IN_TARGET"
+          -out "$IN_OUT"
+          -subject-repo "$IN_SUBJECT_REPO"
+          -revision "$IN_REVISION"
+          -commit "$IN_COMMIT"
+        )
+        if [ -n "$IN_PLUGIN_GO" ]; then
+          args+=(-plugin-go "$IN_PLUGIN_GO")
+        fi
+        # StateStore selection: the consumer pins the ref (cross-team contract) and, on the default
+        # branch, the owner/repo to persist to. Omitting -repo keeps a PR run stateless.
+        if [ -n "$IN_STATE_REPO" ]; then
+          args+=(-repo "$IN_STATE_REPO")
+        fi
+        if [ -n "$IN_STATE_REF" ]; then
+          args+=(-ref "$IN_STATE_REF")
+        fi
+        if [ -n "$IN_STATE_TOKEN" ]; then
+          args+=(-token "$IN_STATE_TOKEN")
+        fi
+        # First-party house-canary opt-in: default off so a normal scan is unchanged; the
+        # Ferralon demo scan sets it so the app-level DOS canary surfaces as a reachable_candidate.
+        if [ "$IN_INCLUDE_HOUSE_CANARIES" = "true" ]; then
+          args+=(-include-house-canaries)
+        fi
+        # Advisory corpus. An explicit path wins; otherwise a requested repo fetch lands at the
+        # fixed path the fetch step above uses. That path is RECOMPUTED here from configuration
+        # rather than read back from the fetch step, so a fetch that failed or was skipped still
+        # produces the flag and the scanner hits its own missing-corpus error under the requirement
+        # declared above — instead of the flag quietly disappearing and the run downgrading.
+        if [ -n "$IN_ADVISORY_CORPUS" ]; then
+          args+=(-advisory-corpus "$IN_ADVISORY_CORPUS")
+        elif [ -n "$IN_ADVISORY_CORPUS_REPO" ]; then
+          args+=(-advisory-corpus "$RUNNER_TEMP/ferralon-assay-corpus")
+        fi
+
+        "$BIN" "${args[@]}"
+
+        OUT_ABS="$(cd "$IN_OUT" && pwd)"
+        echo "out-dir=$OUT_ABS" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=$OUT_ABS/report.sarif.json" >> "$GITHUB_OUTPUT"

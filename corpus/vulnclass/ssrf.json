@@ -1,0 +1,12 @@
+{
+  "schema_version": "tegron.corpus.vulnclass.v1",
+  "id": "FERRALON-APP-SSRF-0001",
+  "vuln_class": "ssrf",
+  "source": "osv",
+  "summary": "server-side request forgery: fetchHandler forwards an attacker-controlled url parameter to http.Get with no allowlist",
+  "cwe": "CWE-918",
+  "vulnerable_path": "testdata/repros/FERRALON-APP-SSRF-0001-vulnerable",
+  "patched_path": "testdata/repros/FERRALON-APP-SSRF-0001-patched",
+  "expected_signal": "canary",
+  "ownership_token": "owner-ferralon-app-ssrf-0001"
+}

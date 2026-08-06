@@ -1,0 +1,5 @@
+{
+  "name": "tegron-js-fixture",
+  "private": true,
+  "main": "src/app.js"
+}

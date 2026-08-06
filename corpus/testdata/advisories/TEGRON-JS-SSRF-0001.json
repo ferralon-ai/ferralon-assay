@@ -1,0 +1,52 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "",
+  "FixedVersion": "",
+  "VersionScheme": "",
+  "Coordinate": "",
+  "PURL": "pkg:npm/tegron-corpus-ssrf",
+  "Symbols": [
+    "fetchUrl"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-918"
+  ],
+  "Summary": "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

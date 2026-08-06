@@ -1,0 +1,48 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "13.0.1",
+  "FixedVersion": "13.0.1",
+  "VersionScheme": "",
+  "Coordinate": "Newtonsoft.Json",
+  "PURL": "pkg:nuget/Newtonsoft.Json",
+  "Symbols": null,
+  "GuardSymbols": null,
+  "CWEs": null,
+  "Summary": "insecure default deserialization in Newtonsoft.Json fixed in 13.0.1",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

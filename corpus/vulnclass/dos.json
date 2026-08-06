@@ -1,0 +1,12 @@
+{
+  "schema_version": "tegron.corpus.vulnclass.v1",
+  "id": "FERRALON-APP-DOS-0001",
+  "vuln_class": "dos",
+  "source": "osv",
+  "summary": "uncontrolled resource consumption: expandHandler allocates a slice sized by an attacker-controlled count with no upper bound, faulting the process",
+  "cwe": "CWE-400",
+  "vulnerable_path": "testdata/repros/FERRALON-APP-DOS-0001-vulnerable",
+  "patched_path": "testdata/repros/FERRALON-APP-DOS-0001-patched",
+  "expected_signal": "fault",
+  "ownership_token": "owner-ferralon-app-dos-0001"
+}

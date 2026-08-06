@@ -1,0 +1,112 @@
+name: release
+
+# Cut the pinned, checksum-verified scanner asset that action.yml fetches.
+#
+# action.yml does not build anything at run time: it downloads a release asset at a pinned version
+# and refuses to proceed unless its sha256 matches the pinned scanner-sha256. This workflow is what
+# produces that asset, and it is deliberately readable — a consumer who wants to know what is inside
+# the binary they are about to run can read scripts/build-release.sh, re-run it, and get the same
+# bytes. That is the whole value of a reproducible build, and it is worth nothing if the recipe is
+# somewhere they cannot see.
+#
+# ONE RECIPE. Every build flag, every baked asset name and the packaging live in
+# scripts/build-release.sh, not here. This file resolves the version, runs that script twice, and
+# publishes. Re-listing the binaries or the ldflags in these steps would put the same values in two
+# places with nothing reconciling them.
+#
+# REPRODUCIBILITY IS A GATE, NOT A CLAIM. The payload is built twice into two directories and the
+# two sha256 digests must agree. A nondeterministic build would make the pin in action.yml
+# meaningless — it would name a checksum only the machine that happened to cut it can produce — so
+# a divergence aborts with nothing published.
+#
+# THE GO TOOLCHAIN IS PART OF THE RECIPE. Two toolchain versions produce two different binaries,
+# correctly. The pin below is therefore load-bearing for byte-identity with any other build of the
+# same tag, including the operator's.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the release and uploading its assets.
+      contents: write
+    env:
+      # The tag IS the version. It is stamped into the binaries as brand.Version, which is what the
+      # CLI `version` subcommand, report.json's provenance, the SARIF driver block and the analyzer
+      # line all report — so a tag and the thing it names cannot drift.
+      VERSION: ${{ github.ref_name }}
+      # Bake inputs: properties of THIS cut, not of a consumer's repository, folded into the same
+      # -ldflags string as the version stamp. None is a secret — a public key, a key id and two
+      # public hostnames — so they are repository variables, and unset means an inert-but-valid
+      # release (the plain open-source build). They must match the values any other build of this
+      # tag uses, or the two builds are reproducibly different.
+      ASSAY_REVOKE_PUBKEY: ${{ vars.ASSAY_REVOKE_PUBKEY }}
+      ASSAY_REVOKE_KEY_ID: ${{ vars.ASSAY_REVOKE_KEY_ID }}
+      ASSAY_INGEST_URL: ${{ vars.ASSAY_INGEST_URL }}
+      ASSAY_RUNS_URL: ${{ vars.ASSAY_RUNS_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          cache: false
+
+      # Fail closed before anything is built. The version reaches customer-facing provenance and
+      # the asset filename, so a tag that is not a release version must never produce a release.
+      - name: The tag is a release version
+        run: |
+          if [[ ! "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${VERSION}' is not a vMAJOR.MINOR.PATCH release tag — refusing to build."
+            exit 1
+          fi
+
+      - name: Build the release payload
+        id: build
+        run: |
+          {
+            echo "sha256=$(./scripts/build-release.sh release "${VERSION}" "${RUNNER_TEMP}/release")"
+            echo "tarball=$(./scripts/build-release.sh name "${VERSION}")"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: The build is reproducible (build twice -> identical sha256)
+        env:
+          FIRST: ${{ steps.build.outputs.sha256 }}
+        run: |
+          SECOND="$(./scripts/build-release.sh release "${VERSION}" "${RUNNER_TEMP}/repro")"
+          if [[ "${FIRST}" != "${SECOND}" ]]; then
+            echo "::error::the build is NOT reproducible — two builds of the same version and source differ."
+            echo "  first:  ${FIRST}"
+            echo "  second: ${SECOND}"
+            exit 1
+          fi
+          echo "reproducible — both builds produced sha256 ${FIRST}"
+
+      # No --target: the tag already exists, because a tag is what triggered this run. The release
+      # therefore lands on the commit the tag names by construction.
+      #
+      # Idempotent: a re-run against an existing release does not attempt to re-create it. Releases
+      # are immutable once consumers pin them, and a second run of the same tag must be a no-op
+      # rather than an error or a mutation.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA256: ${{ steps.build.outputs.sha256 }}
+          TARBALL: ${{ steps.build.outputs.tarball }}
+        run: |
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "release ${VERSION} already exists — not re-creating (immutable)."
+            exit 0
+          fi
+          gh release create "${VERSION}" \
+            --title "Ferralon Assay scanner ${VERSION}" \
+            --notes "Pinned, checksummed Ferralon Assay scanner (linux/amd64), built by this repository's release workflow from scripts/build-release.sh. Reproducible: sha256 ${SHA256}, also carried in the .sha256 asset and pinned as scanner-sha256 in action.yml." \
+            "${RUNNER_TEMP}/release/${TARBALL}" \
+            "${RUNNER_TEMP}/release/${TARBALL}.sha256"

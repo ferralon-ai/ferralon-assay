@@ -1,0 +1,81 @@
+name: 🐞 Something is broken
+description: A crash, a wrong result, or behaviour that does not match the docs.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. You do not need to fill in
+        every box — tell us what happened and we will ask if we need more.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the problem in your own words.
+      placeholder: The scan finished but reported no findings, even though...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How can we reproduce it?
+      description: >-
+        Rough steps are fine. A link to a public repo or a failed CI run is the
+        single most useful thing you can give us.
+      placeholder: |
+        1. Add the action to a workflow with these inputs...
+        2. Push a commit
+        3. The run fails at...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        Which release or commit were you running? If you are not sure, paste the
+        line from your workflow file that pins it.
+      placeholder: v0.3.1
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Where were you running it?
+      options:
+        - GitHub Actions
+        - Another CI system
+        - On my own machine
+        - Not sure
+      default: 0
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: >-
+        Paste any relevant output. **Please redact tokens, credentials, internal
+        hostnames, and anything else you cannot share publicly** — this issue is
+        visible to everyone.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and did not find this one.
+          required: true
+        - label: >-
+            I have removed any secrets or private information from what I pasted
+            above.
+          required: true

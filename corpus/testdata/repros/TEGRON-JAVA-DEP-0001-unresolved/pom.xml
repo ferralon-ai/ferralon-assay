@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>dep-repro</artifactId>
+  <version>1.0.0</version>
+
+  <!-- UNRESOLVED variant: com.example.lib:widget's version is BOM-managed
+       (dependencyManagement only); the runtime <dependencies> declaration carries NO inline
+       version. The pure-Go resolver emits an UNRESOLVED marker (it never reads
+       dependencyManagement for a version and never guesses). The disqualification predicate
+       must FAIL OPEN on the unknown version — the case PROCEEDS, never a false not-affected. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.example.lib</groupId>
+        <artifactId>widget</artifactId>
+        <version>1.4.0</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.example.lib</groupId>
+      <artifactId>widget</artifactId>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,13 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "TEGRON-TEST-BADCOUNT",
+      "path": "TEGRON-TEST-BADCOUNT.json",
+      "output_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ],
+  "corpus_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

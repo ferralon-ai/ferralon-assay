@@ -1,0 +1,55 @@
+{
+  "Module": "golang.org/x/text",
+  "Aliases": [
+    "CVE-2021-38561",
+    "GHSA-ppp9-7jff-5vj2"
+  ],
+  "UpperExclusive": "v0.3.7",
+  "FixedVersion": "v0.3.7",
+  "VersionScheme": "",
+  "Coordinate": "",
+  "PURL": "pkg:golang/golang.org/x/text",
+  "Symbols": [
+    "golang.org/x/text/language.Parse"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-125"
+  ],
+  "Summary": "out-of-bounds read panic in language.Parse on a malformed BCP-47 tag",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null
+}

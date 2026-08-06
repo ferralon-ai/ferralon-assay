@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "GO-2021-0113-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "GO-2021-0113",
+    "source": "osv",
+    "summary": "Out-of-bounds read in golang.org/x/text/language when parsing a malformed language tag (same advisory as GO-2021-0113-trivial). This fixture uses the FIXED version (>= 0.3.7) to verify the corpus discriminates vulnerable vs patched. Aliases: CVE-2021-38561, GHSA-ppp9-7jff-5vj2.",
+    "references": [
+      "https://pkg.go.dev/vuln/GO-2021-0113",
+      "https://osv.dev/vulnerability/GO-2021-0113",
+      "https://go.dev/cl/340830"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "GO-2021-0113-patched-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/GO-2021-0113-patched/",
+      "notes": "Same HTTP handler as GO-2021-0113-trivial, pinned to golang.org/x/text@v0.3.7 (the fix release). The patch replaced the out-of-bounds index calculation. Reachability still finds the call to language.Parse from the HTTP handler, but the fixed implementation no longer panics on malformed input. Pairs with GO-2021-0113-trivial as the vulnerable-vs-patched discrimination pair."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": ["static_taint_path_complete"],
+    "rationale": "The codebase uses golang.org/x/text@v0.3.7 (fixed version). The fix commit (golang.org/x/text@383b2e75a7a4) corrected the index calculation in language tag parsing, eliminating the out-of-bounds read. Although language.Parse is still called on attacker-controlled input (the call path is identical to the vulnerable fixture), the symbol no longer exhibits the vulnerable behaviour on this version. The verdict is reasoned (not proven) because proving not-exploitability requires two-trace (Phase 3, PoNE). Pairs with GO-2021-0113-trivial for version-discrimination regression. Advisory verified against osv.dev on 2026-06-02.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

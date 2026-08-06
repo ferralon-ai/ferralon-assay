@@ -1,0 +1,18 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "TEGRON-TEST-DUP",
+      "path": "TEGRON-TEST-DUP-a.json",
+      "output_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "identifier": "TEGRON-TEST-DUP",
+      "path": "TEGRON-TEST-DUP-b.json",
+      "output_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "corpus_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -80,6 +80,7 @@ type reportHTMLCounts struct {
 	NotExploitable     int
 	ReachableCandidate int
 	Undetermined       int
+	MaliciousPresent   int
 }
 
 type reportHTMLFinding struct {
@@ -89,7 +90,7 @@ type reportHTMLFinding struct {
 	Package  string
 	Verdict  string
 	Label    string
-	Severity string // CSS class suffix: ok | info | candidate | notassessed
+	Severity string // CSS class suffix: affected | ok | info | candidate | notassessed
 	Detail   string
 	Path     string
 	// UndeterminedReason is the machine-readable code behind a "not assessed" row, rendered
@@ -164,6 +165,8 @@ func ProjectReportHTML(r report.Report) ([]byte, error) {
 		case report.VerdictUndetermined:
 			view.Counts.Undetermined++
 			view.UndeterminedCount++
+		case report.VerdictMaliciousPresent:
+			view.Counts.MaliciousPresent++
 		}
 	}
 
@@ -308,6 +311,10 @@ func reportHTMLGradeLabel(g report.ReachabilityGrade) string {
 
 func reportHTMLLabel(v report.Verdict) (label, severity string) {
 	switch v {
+	case report.VerdictMaliciousPresent:
+		// The one decisive OSS "affected": a known-malicious package is present. Its own badge
+		// class, the strongest in the palette — never the candidate colour.
+		return "Malicious package present", "affected"
 	case report.VerdictDisqualified:
 		return "Disqualified", "ok"
 	case report.VerdictNotExploitable:

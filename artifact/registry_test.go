@@ -27,6 +27,7 @@ var allTypes = []Type{
 	TypeTaint,
 	TypeHarness,
 	TypeExposureFootprint,
+	TypeMaliciousPresence,
 	// Standard projections.
 	TypeProjectionSARIF,
 	TypeProjectionVEX,
@@ -41,8 +42,8 @@ var allTypes = []Type{
 var schemaVersionRe = regexp.MustCompile(`^(tegron|ferralon)\.[a-z_]+\.v\d+$`)
 
 func TestRegistryCoversEveryType(t *testing.T) {
-	if len(allTypes) != 17 {
-		t.Fatalf("expected 17 frozen artifact types, allTypes has %d", len(allTypes))
+	if len(allTypes) != 18 {
+		t.Fatalf("expected 18 frozen artifact types, allTypes has %d", len(allTypes))
 	}
 	for _, ty := range allTypes {
 		meta, ok := Lookup(ty)

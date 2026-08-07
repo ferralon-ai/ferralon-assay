@@ -25,7 +25,7 @@ const reportHTMLSource = `<!DOCTYPE html>
     --bg: #0e1116; --panel: #161b22; --panel-2: #1c2230; --border: #2a313c;
     --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
     --ok: #3fb950; --info: #58a6ff; --candidate: #d29922; --candidate-strong: #e3b341;
-    --notassessed: #a371f7;
+    --notassessed: #a371f7; --affected: #f85149;
     --shadow: 0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.25);
   }
   * { box-sizing: border-box; }
@@ -57,7 +57,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   .legend li { display: flex; align-items: center; gap: 9px; }
   .legend .dot { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
   .legend .n { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 600; }
-  .dot.ok { background: var(--ok); } .dot.info { background: var(--info); } .dot.candidate { background: var(--candidate-strong); } .dot.notassessed { background: var(--notassessed); }
+  .dot.ok { background: var(--ok); } .dot.info { background: var(--info); } .dot.candidate { background: var(--candidate-strong); } .dot.notassessed { background: var(--notassessed); } .dot.affected { background: var(--affected); }
   .meta { display: grid; gap: 12px; }
   .meta .row { display: grid; grid-template-columns: 90px 1fr; gap: 10px; font-size: 13px; align-items: baseline; }
   .meta .k { color: var(--muted); }
@@ -80,6 +80,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
   .badge.info { color: var(--info); border-color: color-mix(in srgb, var(--info) 45%, transparent); background: color-mix(in srgb, var(--info) 12%, transparent); }
   .badge.candidate { color: var(--candidate-strong); border-color: color-mix(in srgb, var(--candidate) 55%, transparent); background: color-mix(in srgb, var(--candidate) 14%, transparent); }
+  .badge.affected { color: var(--affected); border-color: color-mix(in srgb, var(--affected) 55%, transparent); background: color-mix(in srgb, var(--affected) 14%, transparent); }
   .detail { color: var(--muted); margin-top: 5px; }
   .path { margin-top: 6px; }
   .path .mono { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; font-size: 12px; }
@@ -132,6 +133,7 @@ const reportHTMLSource = `<!DOCTYPE html>
       <div class="chart">
         <svg id="donut" width="132" height="132" viewBox="0 0 132 132" role="img" aria-label="Verdict breakdown chart"></svg>
         <ul class="legend">
+          <li><span class="dot affected"></span> Malicious package present <span class="n" id="n-malicious">0</span></li>
           <li><span class="dot ok"></span> Disqualified <span class="n" id="n-disqualified">0</span></li>
           <li><span class="dot info"></span> Not exploitable <span class="n" id="n-notexploitable">0</span></li>
           <li><span class="dot candidate"></span> Reachable candidate <span class="n" id="n-candidate">0</span></li>
@@ -251,7 +253,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   var prov = report.provenance || {};
   var findings = report.advisories || [];
 
-  var counts = { disqualified: 0, not_exploitable: 0, reachable_candidate: 0, undetermined: 0 };
+  var counts = { malicious_package_present: 0, disqualified: 0, not_exploitable: 0, reachable_candidate: 0, undetermined: 0 };
   findings.forEach(function (f) { if (counts[f.verdict] != null) counts[f.verdict]++; });
 
   text("m-total", String(findings.length));
@@ -263,6 +265,7 @@ const reportHTMLSource = `<!DOCTYPE html>
     var d = new Date(prov.timestamp);
     text("m-generated", isNaN(d.getTime()) ? prov.timestamp : d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z"));
   }
+  text("n-malicious", String(counts.malicious_package_present));
   text("n-disqualified", String(counts.disqualified));
   text("n-notexploitable", String(counts.not_exploitable));
   text("n-candidate", String(counts.reachable_candidate));
@@ -273,6 +276,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   // --- SVG donut chart ---
   var SVGNS = "http://www.w3.org/2000/svg";
   var segs = [
+    { v: counts.malicious_package_present, color: getComputedStyle(document.documentElement).getPropertyValue("--affected").trim() || "#f85149" },
     { v: counts.disqualified, color: getComputedStyle(document.documentElement).getPropertyValue("--ok").trim() || "#3fb950" },
     { v: counts.not_exploitable, color: getComputedStyle(document.documentElement).getPropertyValue("--info").trim() || "#58a6ff" },
     { v: counts.reachable_candidate, color: getComputedStyle(document.documentElement).getPropertyValue("--candidate-strong").trim() || "#e3b341" },

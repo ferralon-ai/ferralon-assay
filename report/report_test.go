@@ -112,7 +112,7 @@ func TestReportOmitsEmptyOptionalFields(t *testing.T) {
 }
 
 func TestVerdictValid(t *testing.T) {
-	for _, v := range []Verdict{VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined} {
+	for _, v := range []Verdict{VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined, VerdictMaliciousPresent} {
 		if !v.Valid() {
 			t.Errorf("%q should be valid", v)
 		}

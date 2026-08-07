@@ -1,0 +1,23 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 3,
+  "records": [
+    {
+      "identifier": "CVE-2020-8203",
+      "path": "2020/07/CVE-2020-8203.json",
+      "output_digest": "sha256:f32f1e1783277487e111bda0c92ea6ac29e9d8c0a6e7fb0f5461ebdd85def415"
+    },
+    {
+      "identifier": "CVE-2021-44228",
+      "path": "2021/12/CVE-2021-44228.json",
+      "output_digest": "sha256:7d2cd67797d2b07286698f7f95b3be8ab7177943ac6392e2064a3de8d492dbb8"
+    },
+    {
+      "identifier": "CVE-2023-39325",
+      "path": "2023/10/CVE-2023-39325.json",
+      "output_digest": "sha256:ec48f630142c48646b1cfb2948ee8999b9e80433403d6a7e1960c18b5cfec9f7"
+    }
+  ],
+  "corpus_digest": "sha256:2fce224684a94fd65e6c58288f470f266ab6dd4800d9c2d8d6b925f8a8c38ccd"
+}

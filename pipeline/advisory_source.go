@@ -314,6 +314,22 @@ type advisoryDoc struct {
 	// behavior (inv.5 fail-open). Advisory-level fields (aliases/cwes/sink_kind/trigger/…) are NOT
 	// repeated per element — they are shared across every package and stay top-level.
 	AffectedPackages []docAffectedPackage `json:"affected_packages,omitempty"`
+
+	// Affected is the SAME multi-package set under the key the PUBLISHED corpus emits it as. The two
+	// producers spell it differently and permanently: the internal enrichment surface (and this
+	// package's own testdata/ferralon-corpus fixtures) emit `affected_packages`, while
+	// ferralon-ai/vulnerability-corpus emits `affected` — a ruled producer-side design decision
+	// (INTEL-049 / DECISIONS.md A45), not a bug awaiting a fix upstream. Go's decoder drops unknown
+	// keys silently, so carrying only `affected_packages` left AffectedPackages nil on EVERY published
+	// record: select-by-target (stages.go codebase_inventory) had no array to iterate and every scan
+	// fell back to the lossy flat compat block, which names only the coordinate-sorted-FIRST package.
+	// On CVE-2021-44228 that primary is a shaded fork whose sole range is `last_affected`-only, so the
+	// reader got a package identity and zero usable version-range data.
+	//
+	// The member shapes are NOT identical, which is why this is a distinct type rather than a second
+	// tag on the same field — see docAffectedEntry. Precedence when both keys are present is defined
+	// by affectedPackageDocs: `affected` wins WHOLE, never merged.
+	Affected []docAffectedEntry `json:"affected,omitempty"`
 }
 
 // docAffectedPackage is one entry of the additive v3 affected_packages[] set. It mirrors the
@@ -329,6 +345,92 @@ type docAffectedPackage struct {
 	FixedVersion   string     `json:"fixed_version,omitempty"`
 	AffectedRanges []docRange `json:"affected_ranges,omitempty"`
 	Symbols        []string   `json:"symbols,omitempty"`
+}
+
+// docAffectedEntry is one entry of the PUBLISHED corpus's `affected[]` set. It is a separate type
+// from docAffectedPackage because the two wire shapes genuinely differ — verified against
+// ferralon-ai/vulnerability-corpus FIELDS.md and against live records (CVE-2021-44228,
+// CVE-2023-39325, CVE-2020-8203) on 2026-08-06:
+//
+//   - the range array is `ranges`, not `affected_ranges`;
+//   - a range's exclusive upper bound is `upper_exclusive`, not `fixed`;
+//   - a range's `fixed` is the FIXING RELEASE — i.e. what the flat block (and docRange) call
+//     `fixed_version`. The two keys are SWAPPED in meaning between the two shapes, so a naive
+//     field-name match would feed the fixing release into the engine's upper-exclusive bound. They
+//     frequently coincide, which is exactly what would make the mistake survive a spot check;
+//   - there is no `module` (the coordinate carries it — goModulePath projects it for gomod), and no
+//     per-entry `symbols` (see toPackage).
+//
+// `fixed_versions` (the entry's package-level list of fixing releases) is deliberately NOT carried:
+// the reader's per-package FixedVersion is a scalar with no production consumer, and the per-range
+// fixing release — which does have one, docRange.FixedVersion — is already sourced at the correct
+// granularity from `ranges[].fixed`. Collapsing the list to a scalar would name one branch's fix as
+// the whole package's.
+type docAffectedEntry struct {
+	Coordinate    string             `json:"coordinate,omitempty"`
+	PURL          string             `json:"purl,omitempty"`
+	VersionScheme string             `json:"version_scheme,omitempty"`
+	Ranges        []docAffectedRange `json:"ranges,omitempty"`
+}
+
+// docAffectedRange is one entry of a docAffectedEntry's `ranges[]`. See docAffectedEntry for why
+// Fixed and UpperExclusive do not mean what the identically-named docRange fields mean.
+type docAffectedRange struct {
+	Introduced     string `json:"introduced,omitempty"`
+	UpperExclusive string `json:"upper_exclusive,omitempty"` // exclusive upper bound → docRange.Fixed
+	LastAffected   string `json:"last_affected,omitempty"`
+	Fixed          string `json:"fixed,omitempty"` // the FIXING RELEASE → docRange.FixedVersion
+}
+
+// toPackage normalizes a published-corpus `affected[]` entry into the reader's uniform
+// docAffectedPackage shape, so BOTH wire keys converge on the single validation-and-mapping loop in
+// toFacts and neither can drift into a weaker shape check.
+//
+// advisorySymbols is the document's top-level `symbols[]`. The published corpus states symbols at
+// ADVISORY level (one list, shared across every affected package — FIELDS.md carries no
+// `affected[].symbols` key), whereas the reader models them per-package: downstream,
+// advisoryPURLAndSymbols returns the SELECTED element's symbols with no fallback to the top-level
+// list. Leaving them empty here would therefore go dark on the symbol axis for every published
+// record the moment select-by-target starts firing. Inheriting is also the zero-delta choice: the
+// scalar path this replaces fed those same top-level symbols to symbol mapping, so the symbol set
+// the engine sees is unchanged and only the PURL gets more accurate.
+func (e docAffectedEntry) toPackage(advisorySymbols []string) docAffectedPackage {
+	p := docAffectedPackage{
+		Coordinate:    e.Coordinate,
+		PURL:          e.PURL,
+		VersionScheme: e.VersionScheme,
+		Symbols:       advisorySymbols,
+	}
+	for _, r := range e.Ranges {
+		p.AffectedRanges = append(p.AffectedRanges, docRange{
+			Introduced:   r.Introduced,
+			Fixed:        r.UpperExclusive,
+			LastAffected: r.LastAffected,
+			FixedVersion: r.Fixed,
+		})
+	}
+	return p
+}
+
+// affectedPackageDocs resolves the two wire spellings of the multi-package set to the one the
+// document actually carries, normalized to a single shape.
+//
+// PRECEDENCE: `affected` wins, WHOLE. It is the authoritative and complete representation on the
+// published wire (FIELDS.md: "On a multi-package advisory it carries every affected package. Always
+// prefer it"), and a producer that emits it has said everything it has to say about the affected
+// set. The two sets are NEVER merged or topped up — the same partial-fact rule chainSource states
+// for facts applies to the set within one fact: a blended array is one no producer asserted and no
+// digest pins, and its elements would carry two producers' notions of a range bound side by side.
+// Neither key present → nil → the scalar-primary path, byte-identical to today (inv.5 fail-open).
+func (d advisoryDoc) affectedPackageDocs() []docAffectedPackage {
+	if len(d.Affected) == 0 {
+		return d.AffectedPackages
+	}
+	out := make([]docAffectedPackage, 0, len(d.Affected))
+	for _, e := range d.Affected {
+		out = append(out, e.toPackage(d.Symbols))
+	}
+	return out
 }
 
 // docTrigger is the v3 per-CVE reach descriptor. IngressKind is a closed set
@@ -618,9 +720,11 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// never the whole document — the opposite of the scalar path's whole-doc reject. Dropping a
 	// garbled element can only remove a select-by-target candidate (a target on it then falls back to
 	// the scalar primary → OPEN), never fabricate a not-affected (inv.5). The scalar-primary mapping
-	// below is UNCHANGED; the array decodes alongside it.
+	// below is UNCHANGED; the array decodes alongside it. The set comes from affectedPackageDocs, so
+	// BOTH wire spellings (`affected` and `affected_packages`) reach this one validation loop and the
+	// shape guarantees hold identically for either producer.
 	var affectedPkgs []AffectedPackage
-	for _, p := range d.AffectedPackages {
+	for _, p := range d.affectedPackageDocs() {
 		if !schemeRecognized(p.VersionScheme) {
 			continue // fail open: drop this element, keep the document
 		}

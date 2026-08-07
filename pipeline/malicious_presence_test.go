@@ -153,6 +153,22 @@ func TestMaliciousPresence_VersionNotListed_EmitsNothing(t *testing.T) {
 	}
 }
 
+// version near-miss: the resolved version differs from a listed version only by semver-style
+// spelling drift ("1.0.0" vs "v1.0.0") ⇒ NOTHING → OPEN. Membership is EXACT string equality, no
+// comparator, so drift fails toward NO match (safe), never a fabricated clear. Regression guard for
+// the ratified "spelling drift fails OPEN, never false-matches" invariant on the first decisive OSS
+// affected path — distinct from the clear-miss row above (a genuinely different version).
+func TestMaliciousPresence_VersionNearMissSpellingDrift_EmitsNothing(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := seedMaliciousAndInventory(t, store, []string{"v1.0.0"}, "1.0.0")
+	if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("malicious_presence: %v", err)
+	}
+	if _, ok := queryMaliciousPresence(t, store, c.ID); ok {
+		t.Error(`an artifact was emitted for a near-miss ("1.0.0" vs "v1.0.0"); exact-string membership must fail OPEN, never false-match`)
+	}
+}
+
 // unresolvable: resolved_version == "" (absent/unpinned) ⇒ NOTHING → OPEN, never clear.
 func TestMaliciousPresence_UnresolvableVersion_EmitsNothing(t *testing.T) {
 	store := artifact.NewMemStore()

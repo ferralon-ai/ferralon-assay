@@ -20,10 +20,14 @@
 //	                                                                   or _not_reachable, by Evidence.Basis)
 //	report.VerdictReachableCandidate → OpenVEX "under_investigation" (NEVER "affected")
 //	report.VerdictUndetermined       → OpenVEX "under_investigation" (no justification)
+//	report.VerdictMaliciousPresent   → OpenVEX "affected"             (action_statement: remove/replace)
 //
-// "affected" is reserved for a PROVEN exploitable verdict, which the OSS tool
-// cannot produce. A reachable candidate is exactly that — a candidate — and the
-// only honest OpenVEX status for it is "under_investigation".
+// "affected" was historically reserved for a PROVEN exploitable verdict the OSS
+// tool cannot produce — so a reachable candidate (a candidate, not a proof) is
+// "under_investigation", never "affected". VerdictMaliciousPresent is the ONE
+// honest OSS exception: a known-malicious package resolved to a listed affected
+// version is deterministic presence proof, not a reachability lean, so "affected"
+// is truthful here without laundering an execution claim (inv. 5).
 //
 // An undetermined finding lands on the same status from the opposite direction: a
 // candidate is "we found a path and cannot prove it fires", an undetermined finding
@@ -59,7 +63,7 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 	stmts := make([]VEXStatement, 0, len(r.Advisories))
 	for i := range r.Advisories {
 		f := r.Advisories[i]
-		status, just, impact := reportVEXStatus(f)
+		status, just, impact, action := reportVEXStatus(f)
 
 		stmt := VEXStatement{
 			Vulnerability: VEXVulnerability{
@@ -74,6 +78,9 @@ func ProjectReportVEX(r report.Report) (*VEXDocument, error) {
 		}
 		if impact != "" {
 			stmt.ImpactStatement = impact
+		}
+		if action != "" {
+			stmt.ActionStatement = action
 		}
 		stmts = append(stmts, stmt)
 	}
@@ -99,9 +106,21 @@ func MarshalReportVEX(r report.Report) ([]byte, error) {
 }
 
 // reportVEXStatus maps one deterministic finding to an OpenVEX status,
-// justification, and (for candidates) an impact statement.
-func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact string) {
+// justification, (for candidates) an impact statement, and (for affected) an
+// action statement.
+func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, action string) {
 	switch f.Verdict {
+	case report.VerdictMaliciousPresent:
+		// The ONE honest OSS "affected" (inv. 5). A known-malicious package is present at a listed
+		// affected version — deterministic presence proof, not a reachability lean. OpenVEX §3.1
+		// pairs "affected" with an action_statement (remediation), not a justification.
+		msg := brand.Name + " resolved a known-malicious package to a version the advisory lists as affected."
+		if f.Evidence.Detail != "" {
+			msg = fmt.Sprintf("%s %s.", msg, f.Evidence.Detail)
+		}
+		msg += " Remove or replace this dependency."
+		return VEXStatusAffected, "", "", msg
+
 	case report.VerdictDisqualified:
 		// A disqualification is not_affected under every axis; the status is verdict-driven
 		// (inv. 5) and does not vary. The JUSTIFICATION follows the Evidence basis, because
@@ -114,22 +133,22 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact st
 		// justification, and that is the honest cell.
 		switch f.Evidence.Basis {
 		case verdict.BasisSymbolAbsent, verdict.BasisVersionNotAffected:
-			return VEXStatusNotAffected, VEXJustNotPresent, ""
+			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
 		default:
-			return VEXStatusNotAffected, "", ""
+			return VEXStatusNotAffected, "", "", ""
 		}
 
 	case report.VerdictNotExploitable:
 		// Grounded refutation. The OpenVEX justification follows the Evidence basis.
 		switch f.Evidence.Basis {
 		case verdict.BasisSymbolAbsent:
-			return VEXStatusNotAffected, VEXJustNotPresent, ""
+			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
 		case verdict.BasisVersionNotAffected:
-			return VEXStatusNotAffected, VEXJustNotPresent, ""
+			return VEXStatusNotAffected, VEXJustNotPresent, "", ""
 		default:
 			// No structured symbol/version basis recorded → the grounded refutation
 			// is reachability-based.
-			return VEXStatusNotAffected, VEXJustNotReachable, ""
+			return VEXStatusNotAffected, VEXJustNotReachable, "", ""
 		}
 
 	case report.VerdictReachableCandidate:
@@ -140,7 +159,7 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact st
 		if f.Evidence.ReachablePath != "" {
 			msg = fmt.Sprintf("%s Candidate path: %s.", msg, f.Evidence.ReachablePath)
 		}
-		return VEXStatusUnderInvestigation, "", msg
+		return VEXStatusUnderInvestigation, "", msg, ""
 
 	case report.VerdictUndetermined:
 		// No verdict was established, so there is nothing to justify and nothing to
@@ -152,11 +171,11 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact st
 		// the same status: relying on the fallthrough would mean the correct mapping for a
 		// first-class verdict was an accident of the default, and the next verdict added
 		// would inherit it silently.
-		return VEXStatusUnderInvestigation, "", ""
+		return VEXStatusUnderInvestigation, "", "", ""
 
 	default:
 		// Unreachable: Report.Validate rejects any other verdict (inv. 5 structural guard).
-		return VEXStatusUnderInvestigation, "", ""
+		return VEXStatusUnderInvestigation, "", "", ""
 	}
 }
 

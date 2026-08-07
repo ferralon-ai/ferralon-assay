@@ -305,6 +305,15 @@ type advisoryDoc struct {
 	GadgetClasses    []string          `json:"gadget_classes,omitempty"`    // java.gadget_on_classpath predicate operand
 	GuardSufficiency []docGuardVariant `json:"guard_sufficiency,omitempty"` // Prove-side evidence-label upgrade only
 
+	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the ENUMERATED
+	// affected version set. Object presence (non-nil) IS the marker: "this advisory is a malicious
+	// package; the presence-verdict model applies; there is no reachability/symbol/detonation."
+	// Absent (a v2 doc or any non-MAL advisory) ⇒ nil ⇒ the presence path never fires (inv.5
+	// fail-open). It carries NO bounds — a MAL record enumerates versions[], never a range — so it
+	// cannot feed the range/version axis; it is exact-string membership only (see toFacts / the
+	// maliciousPresence stage). Same additive omitempty posture as trigger/fix/config_key.
+	MaliciousPackage *docMaliciousPackage `json:"malicious_package,omitempty"`
+
 	// AffectedPackages is the additive v3 multi-package set. It lists EVERY package the advisory affects — each with its own identity/version/symbol
 	// axes — so the reader's stage-2 select-by-target can pick the package the assessed codebase
 	// actually depends on (a target on a SECONDARY package resolves instead of falling OPEN). The
@@ -348,6 +357,14 @@ type docFix struct {
 	UpstreamCommit string `json:"upstream_commit,omitempty"`
 	GuardShape     string `json:"guard_shape,omitempty"`
 	FailedFixClass string `json:"failed_fix_class,omitempty"` // closed set (failedFixClassRecognized)
+}
+
+// docMaliciousPackage is the malicious-package marker's wire shape. AffectedVersions is the OSV
+// versions[] set copied verbatim, for exact-string membership (no comparator). An empty/absent set
+// inside a present object ⇒ un-decidable ⇒ OPEN both directions (mirror of the empty-set rule in
+// versionOutsideRanges). Maps onto AdvisoryFacts.MaliciousPackage (MaliciousPackageFacts).
+type docMaliciousPackage struct {
+	AffectedVersions []string `json:"affected_versions,omitempty"`
 }
 
 // docConfigKey is the core.config predicate operand: a config key plus the value that makes the
@@ -653,6 +670,23 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		})
 	}
 
+	// Malicious-package marker. Non-nil object ⇒ Declared=true (the presence-verdict model applies);
+	// copy the enumerated versions verbatim, dropping empty strings. ADDITIVE + zero-safe: a nil
+	// marker ⇒ Declared=false ⇒ today's exact behavior; a malformed/empty marker only adds a presence
+	// path that itself fails open — it NEVER rejects the document and NEVER touches the scalar/version
+	// axes. The explicit Declared bool distinguishes "declared malicious, empty set → OPEN" from "not
+	// malicious at all".
+	var malicious MaliciousPackageFacts
+	if d.MaliciousPackage != nil {
+		malicious.Declared = true
+		for _, v := range d.MaliciousPackage.AffectedVersions {
+			if v == "" {
+				continue
+			}
+			malicious.AffectedVersions = append(malicious.AffectedVersions, v)
+		}
+	}
+
 	// Prefer the `root_cause` spelling; fall back to `summary` (see SummaryCompat). Both name the
 	// same free-text narrative, so this is a spelling reconciliation, not a merge across facts.
 	summary := d.Summary
@@ -689,6 +723,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		GadgetClasses:    d.GadgetClasses,
 		GuardSufficiency: guardSuff,
 		AffectedPackages: affectedPkgs,
+		MaliciousPackage: malicious,
 	}, true
 }
 

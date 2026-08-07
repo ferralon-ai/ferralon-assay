@@ -45,14 +45,28 @@
 # below along with it. Moving to a newer scanner is a bump of the two `default:` values below plus
 # a new action release; consumers bump their `@<sha>`.
 #
-# ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
-# PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
-# at it; `advisory-corpus` instead takes a directory the workflow checked out itself. Both are empty
-# by default, in which case the scan resolves advisory facts from the scanner's built-in table.
-# Setting either DECLARES the run requires a corpus, and that declaration is computed from these
-# inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
-# instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
-# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below.
+# ADVISORY CORPUS (ON by default). Before the scan the run fetches a PUBLIC advisory corpus —
+# unauthenticated, shallow, sparse — and points the scanner at it, so a stock run resolves advisory
+# facts from a continuously-refreshed data set rather than from the scanner's small built-in table
+# alone. Set `advisory-corpus-repo: ""` to opt out; set `advisory-corpus` instead to hand the scanner
+# a directory the workflow checked out itself, which skips the fetch entirely. A corpus SUPPLEMENTS
+# the built-in table rather than replacing it — the two are chained, corpus first, so an id the
+# corpus does not carry still resolves from the table. It does NOT widen the work set: which
+# advisories a scan evaluates is decided by the built-in language floor and `-osv-work-set`, and the
+# corpus decides what is KNOWN about them. Every run records what it resolved under
+# `provenance.intel` on the Report.
+#
+# WHOSE CORPUS IT IS DECIDES WHAT A MISSING ONE COSTS. A corpus this workflow NAMED — an
+# `advisory-corpus` path, or an `advisory-corpus-repo` other than the default — is a declared
+# requirement: a fetch that fails, or a corpus that resolves with zero records, FAILS the run rather
+# than degrading to built-in intel behind a green check. That declaration is computed from these
+# inputs ALONE, never from whether the fetch step succeeded, because a failed fetch and an
+# unconfigured run are otherwise byte-identical at the scanner's seam. The DEFAULT corpus is
+# best-effort instead: an unreachable GitHub warns and the scan continues on the built-in table,
+# because an outage in a supplementary public data source must not turn every consumer's CI red.
+# That degradation is recorded, not silent — `provenance.intel.fact_source` reads `builtin_table`
+# rather than `corpus_then_builtin_table`. Both inputs require a scanner release carrying the
+# `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below.
 #
 # SURFACE TOGGLES. The `issue` / `pr-comment` / `code-scanning` inputs are mapped onto the
 # scanner's own ASSAY_* env vars inside this action, so a caller's workflow never writes them.
@@ -186,35 +200,43 @@ inputs:
     description: "Set to 'false' to disable the scanner's own SARIF code-scanning surface. Default enabled."
     required: false
     default: "true"
-  # --- advisory corpus (optional; default OFF = the built-in advisory table) --------------------
+  # --- advisory corpus (ON by default; set advisory-corpus-repo to "" for the built-in table) ---
   # Two ways to supply one, and a REQUIREMENT that is declared from configuration alone. Both carry
   # the same version requirement — a scanner release that carries the -advisory-corpus flag. Read
-  # the note on advisory-corpus-repo before wiring either.
+  # the note on advisory-corpus-repo before changing either.
   advisory-corpus:
     description: >-
       Path to an ALREADY-checked-out advisory corpus (a directory holding manifest.json plus the
       digest-pinned per-advisory JSON records it indexes), forwarded to the scanner as
       -advisory-corpus. Use this when the workflow materializes the corpus itself; it takes
       precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. Empty
-      (default) = no corpus, and the scan resolves advisory facts from the built-in table.
+      (default) = let advisory-corpus-repo's fetch supply the corpus. Setting this DECLARES that
+      this run requires a corpus — a workflow that went to the trouble of materializing one is not
+      asking to be quietly downgraded when it turns out to be unreadable.
     required: false
     default: ""
   advisory-corpus-repo:
     description: >-
-      owner/repo of a PUBLIC advisory-corpus repository to fetch before the scan. The fetch is
-      UNAUTHENTICATED by construction — it presents no token, so the repository must be readable
-      anonymously — and is shallow (--depth 1) and sparse (the manifest and the record partitions
-      only). Empty (default) = no fetch. Setting this OR advisory-corpus DECLARES that this run
-      requires a corpus, which is forwarded to the scanner out of band
-      (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or carries zero records
-      FAILS the run rather than quietly falling back to the built-in table. VERSION REQUIREMENT: a
-      scanner release carrying the -advisory-corpus flag — confirm the release named by the
-      scanner-version default carries it before you opt in. A release that lacks it fails the scan
+      owner/repo of a PUBLIC advisory-corpus repository to fetch before the scan. Defaults to
+      Ferralon's own public corpus, so a stock workflow scans against continuously-refreshed
+      advisory facts with nothing to configure; set it to "" to opt out and resolve every fact from
+      the scanner's built-in table. The fetch is UNAUTHENTICATED by construction — it presents no
+      token, so the repository must be readable anonymously — and is shallow (--depth 1) and sparse
+      (the manifest and the record partitions only). It pulls the WHOLE record set: tens of MB over
+      the wire and a few hundred MB of runner disk, both growing as the corpus does. The scope is
+      deliberately not narrowed — a corpus that covered fewer advisories than its manifest claims
+      would buy runner seconds with an unfalsifiable report. Naming a repo OTHER than this default,
+      or setting advisory-corpus, DECLARES that this run requires a corpus, which is forwarded to
+      the scanner out of band (ASSAY_ADVISORY_CORPUS_REQUIRED) so that a corpus which is missing or
+      carries zero records FAILS the run rather than quietly falling back to the built-in table; the
+      default corpus is best-effort and warns instead (see ADVISORY CORPUS at the top of this file).
+      VERSION REQUIREMENT: a scanner release carrying the -advisory-corpus flag. Because this input
+      is ON by default, a scanner-version pinned to a release that predates the flag fails EVERY run
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
       input; if that is what you get, raise scanner-version + scanner-sha256 to a release that
-      carries it.
+      carries it, or set this input to "".
     required: false
-    default: ""
+    default: "ferralon-ai/vulnerability-corpus"
   advisory-corpus-ref:
     description: >-
       Branch, tag, or commit SHA of advisory-corpus-repo to fetch (all three resolve the same way).
@@ -401,6 +423,11 @@ runs:
     # "the corpus was requested" indistinguishable from "the fetch worked" — and a failed fetch would
     # then present as an unconfigured run and silently downgrade to built-in intel. The duplication
     # is the point; keep the two literals in sync.
+    #
+    # The run step does test this path for a manifest, but that is not the banned inference wearing
+    # a disguise: it interrogates the ARTIFACT, which answers the same way whether this step failed,
+    # was skipped, or never existed, and it can only WITHDRAW the corpus flag on the fail-open
+    # default — never assert a requirement that configuration did not declare.
     - name: Fetch the advisory corpus (unauthenticated, shallow + sparse)
       # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
       # never whether anything succeeded.
@@ -409,11 +436,49 @@ runs:
       env:
         CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
         CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
+        # THE SAME EXPRESSION as ASSAY_ADVISORY_CORPUS_REQUIRED in the run step below, duplicated
+        # verbatim on purpose. This step's error-or-warn choice and the scanner's requirement gate
+        # must never disagree — a fetch that hard-fails under a requirement the scanner does not
+        # hold (or the reverse) is worse than either policy alone — and both are pure functions of
+        # this action's inputs, so duplicating the expression keeps them identical by construction
+        # rather than equal by argument. Re-deriving the answer in shell from CORPUS_REPO would not.
+        # The cost is that the default repo literal is written wherever the policy is decided — the
+        # `default:` under advisory-corpus-repo above, this expression in both steps, and the
+        # README Quickstart, which writes it out so the knob is visible rather than magic. Changing
+        # the default corpus means changing every one of them; grep the literal, do not trust this
+        # comment to have counted them.
+        #
+        # The README copy is the one with teeth, and it is why this comment names it. A consumer who
+        # pasted the Quickstart holds the OLD literal. Change the default and their workflow is
+        # suddenly naming a NON-default repo — which is precisely the signal this expression reads
+        # as a declared requirement — so they flip from best-effort to fail-closed against a repo
+        # that may no longer exist, on a run where they changed nothing. Retiring a default corpus
+        # therefore is not a one-line edit; it needs a deprecation window in which BOTH literals are
+        # treated as the default.
+        CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || (inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-repo != 'ferralon-ai/vulnerability-corpus')) && '1' || '0' }}
       run: |
         set -euo pipefail
         DEST="$RUNNER_TEMP/ferralon-assay-corpus"
         rm -rf "$DEST"
         mkdir -p "$DEST"
+
+        # A corpus that did not arrive is FATAL only when this workflow named it. On the default
+        # corpus the scan degrades to built-in intel with a warning instead: an outage in a
+        # supplementary public data source must not turn a stranger's CI red, and the Report says
+        # what it resolved (provenance.intel.fact_source) so the degradation is legible rather than
+        # silent. Removing DEST is what makes it legible to the run step too — that step looks for
+        # the manifest on disk, so an absent DEST is an unambiguous "no corpus here" and can never
+        # be confused with a half-fetched one.
+        corpus_unavailable() {
+          if [ "$CORPUS_REQUIRED" = "1" ]; then
+            echo "::error::ferralon-assay: the advisory corpus $CORPUS_REPO@$CORPUS_REF is required by this workflow's configuration, but it $1." >&2
+            echo "  Check that advisory-corpus-repo is PUBLIC and that advisory-corpus-ref exists, or set advisory-corpus-repo to \"\" to scan with built-in intel only." >&2
+            exit 1
+          fi
+          echo "::warning::ferralon-assay: the default advisory corpus ($CORPUS_REPO@$CORPUS_REF) $1 — continuing on the scanner's built-in advisory table. This scan covers what that table knows, not the corpus; the Report records it as provenance.intel.fact_source=builtin_table."
+          rm -rf "$DEST"
+          exit 0
+        }
 
         # Present NO credential. The corpus is a public repository by design — a stranger's runner
         # has to be able to fetch it with nothing — so any token that happens to be in scope is
@@ -441,18 +506,22 @@ runs:
         # --filter=blob:none makes the sparse selection bound the BYTES fetched rather than merely
         # the working tree; --no-tags drops refs that are never read. Fetching by ref name handles a
         # branch, a tag and a commit SHA uniformly.
-        git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
-          fetch --depth 1 --no-tags --filter=blob:none origin "$CORPUS_REF"
-        git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
-          checkout -q FETCH_HEAD
+        if ! git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
+          fetch --depth 1 --no-tags --filter=blob:none origin "$CORPUS_REF"; then
+          corpus_unavailable "could not be fetched"
+        fi
+        if ! git -C "$DEST" -c credential.helper= -c http.https://github.com/.extraheader= \
+          checkout -q FETCH_HEAD; then
+          corpus_unavailable "was fetched but could not be checked out"
+        fi
 
-        # Fail loud on a fetch that "succeeded" and delivered nothing readable. This is a
-        # convenience diagnostic, NOT the safety net — the scanner's own requirement gate (declared
-        # below from configuration) is what actually guarantees a corpus-less run cannot pass.
+        # A fetch that "succeeded" and delivered nothing readable takes the same route as one that
+        # failed outright. Under a declared requirement this is still only the convenience
+        # diagnostic — the scanner's own requirement gate (declared below from configuration) is
+        # what actually guarantees a corpus-less run cannot pass. Under the default corpus it is
+        # also the signal the run step reads, which is why the handler removes the directory.
         if [ ! -f "$DEST/manifest.json" ]; then
-          echo "::error::ferralon-assay: advisory corpus fetched from $CORPUS_REPO@$CORPUS_REF has no manifest.json." >&2
-          echo "  Check that advisory-corpus-repo is PUBLIC and that advisory-corpus-ref exists." >&2
-          exit 1
+          corpus_unavailable "delivered no manifest.json"
         fi
         echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
 
@@ -503,11 +572,24 @@ runs:
         # would be byte-identical to an unconfigured run and the scan would silently degrade to
         # built-in intel with nothing to show for it. Under a declared requirement the scanner fails
         # the run when no corpus resolves, and equally when one resolves with zero records.
+        #
+        # WHAT THE DEFAULT REPO IS EXCLUDED FOR. The requirement now asks WHOSE corpus this is, not
+        # merely whether one is configured, because the corpus is on by default and a declaration
+        # that fires for everyone would hand a public data source a veto over every consumer's CI.
+        # Excluded is the DEFAULT repo only: an advisory-corpus path, or any other repo, is a corpus
+        # this workflow went out of its way to name, and the original intent stands for it unchanged
+        # — such a corpus failing must be loud. The exclusion compares the input against the default
+        # literal rather than asking whether the caller set it, which Actions cannot answer; a
+        # workflow that spells the default out explicitly (as the README Quickstart does) is
+        # therefore treated the same as one that omits it, which is right — the policy is about
+        # which corpus, not about how it was spelled. Keep this literal in sync with the default:
+        # under advisory-corpus-repo and with CORPUS_REQUIRED in the fetch step.
+        #
         # '1'/'0' rather than '1'/'': the scanner parses this as a boolean and REFUSES to guess on an
         # unparseable value, so the falsey branch has to be a real boolean literal, not an empty
         # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
         # — a supported, unchanged configuration — working for every consumer who sets no corpus.
-        ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
+        ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || (inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-repo != 'ferralon-ai/vulnerability-corpus')) && '1' || '0' }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
         # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
         # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two
@@ -573,10 +655,22 @@ runs:
         # rather than read back from the fetch step, so a fetch that failed or was skipped still
         # produces the flag and the scanner hits its own missing-corpus error under the requirement
         # declared above — instead of the flag quietly disappearing and the run downgrading.
+        #
+        # Under the DEFAULT corpus, where no requirement is declared, the flag is passed only when a
+        # corpus is actually on disk. That test is a property of the ARTIFACT, not a step status: it
+        # asks "is there a readable corpus at this path", which a skipped step, a failed step and a
+        # successful one all answer honestly — unlike a step output, which only exists when the step
+        # ran and succeeded and would therefore make "requested" indistinguishable from "worked".
+        # Without this test a warned-off fetch would still hand the scanner a path to an empty
+        # directory, and the scanner would hard-fail it as an unusable corpus — turning the
+        # deliberate fail-open back into the hard fail it exists to avoid.
         if [ -n "$IN_ADVISORY_CORPUS" ]; then
           args+=(-advisory-corpus "$IN_ADVISORY_CORPUS")
         elif [ -n "$IN_ADVISORY_CORPUS_REPO" ]; then
-          args+=(-advisory-corpus "$RUNNER_TEMP/ferralon-assay-corpus")
+          CORPUS_DIR="$RUNNER_TEMP/ferralon-assay-corpus"
+          if [ -f "$CORPUS_DIR/manifest.json" ] || [ "$ASSAY_ADVISORY_CORPUS_REQUIRED" = "1" ]; then
+            args+=(-advisory-corpus "$CORPUS_DIR")
+          fi
         fi
 
         "$BIN" "${args[@]}"

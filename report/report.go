@@ -109,7 +109,7 @@ const (
 	VerdictMaliciousPresent Verdict = "malicious_package_present"
 )
 
-// Valid reports whether v is one of the four permitted deterministic verdicts.
+// Valid reports whether v is one of the five permitted deterministic verdicts.
 // It is the structural guard for inv. 5: any value outside this set (notably the
 // Service-tier `exploitable` / `reasoned_*`) is rejected.
 func (v Verdict) Valid() bool {

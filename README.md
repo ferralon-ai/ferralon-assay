@@ -50,6 +50,10 @@ jobs:
         with:
           mode: baseline
           target: .
+          # The public Ferralon advisory corpus, fetched unauthenticated before the scan.
+          # This IS the default — it is written out because it decides what the scan knows.
+          # Set it to "" to resolve every advisory from the scanner's built-in table alone.
+          advisory-corpus-repo: ferralon-ai/vulnerability-corpus
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
       # step, so drop it and the `code-scanning` surface produces a file and nothing else.
@@ -69,6 +73,26 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
+Before the scan, the Action clones `advisory-corpus-repo` — unauthenticated, shallow and sparse; no
+token is presented and none is needed, because the corpus is a public repository — and the scanner
+resolves each advisory's facts from it, falling through to its own built-in table for any identifier
+the corpus does not carry. The corpus **supplements** the table; it never replaces it. The fetch
+costs tens of MB over the wire and a few hundred MB of runner disk, both growing as the corpus does.
+
+What a corpus changes is what the scan **knows**, not what it **covers**: the set of advisories a
+`baseline` run evaluates is the built-in language floor either way — see
+[Scope](#scope--what-this-does-not-do), which is also where the switch that widens it lives. Every
+`report.json` records which fact source the run actually resolved through, under `provenance.intel`:
+`fact_source` reads `corpus_then_builtin_table` when a corpus resolved and `builtin_table` when none
+did, and `corpus_digest` identifies the exact corpus state that run read.
+
+If the default corpus cannot be fetched, the run **warns and continues** on the built-in table
+rather than failing your build — an outage in a public data source is not a reason to turn your CI
+red, and `fact_source` on the Report says plainly that it happened. A corpus you name yourself is
+treated as a requirement instead: point `advisory-corpus-repo` at your own mirror, or
+`advisory-corpus` at a directory the workflow checked out, and a corpus that does not resolve — or
+that resolves with no records — fails the run.
+
 Pin the Action by **commit SHA** (`@<sha>`). The SHA transitively pins the exact scanner bytes the
 Action fetches — the `scanner-version` and `scanner-sha256` are baked into the Action itself — and a
 built-in **drift guard** fails the run loudly on any checksum mismatch. Nothing runs that you did not
@@ -81,12 +105,32 @@ Requires Go (see `go.mod` for the minimum version):
 ```sh
 go build -o ferralon-assay ./cmd/ferralon-assay
 go build -o tegron-plugin-go ./cmd/tegron-plugin-go
-./ferralon-assay baseline -target /path/to/repo -out ./scan-out
+
+git clone --depth 1 --filter=blob:none \
+  https://github.com/ferralon-ai/vulnerability-corpus.git ./advisory-corpus
+
+./ferralon-assay baseline -target /path/to/repo \
+  -advisory-corpus ./advisory-corpus -out ./scan-out
 ```
 
-This scans every advisory in the built-in Go advisory set against the target and writes `report.json`
-plus its projections — `report.html`, `report.sarif.json` (SARIF 2.1.0), and `openvex.json`
-(OpenVEX) — into `-out`.
+This evaluates the built-in Go advisory floor against the target — resolving each advisory's facts
+from the corpus, and from the built-in table for any identifier the corpus does not carry — and
+writes `report.json` plus its projections — `report.html`, `report.sarif.json` (SARIF 2.1.0), and
+`openvex.json` (OpenVEX) — into `-out`. Drop the clone and the `-advisory-corpus` flag and the scan
+still runs, resolving every fact from the built-in table; the floor it evaluates is the same either
+way. See [Scope](#scope--what-this-does-not-do).
+
+**The CLI fetches no corpus on your behalf.** Unlike the Action, `-advisory-corpus` reads a local
+directory and nothing else, so materializing one is your step. The clone is unauthenticated — the
+corpus is a public repository, and no token is involved — and the command above costs about 500 MB
+on disk (measured 2026-08-06; it grows with the corpus). The Action's fetch is sparser and lands
+nearer 400 MB, so the two are not interchangeable figures.
+
+There is also no release, tag, or packaged artifact for the corpus: `main` floats and gains
+advisories continuously. To make a scan reproducible, record the commit you read yourself with
+`git -C ./advisory-corpus rev-parse HEAD` — nothing hands you a version to cite. The `Report`
+independently carries the corpus's own `corpus_digest` under `provenance.intel`, which identifies
+the exact corpus state the run resolved facts through.
 
 A language analyzer is a separate subprocess binary spoken to over a small stdin/stdout JSON
 protocol; the scanner never links analysis libraries such as `golang.org/x/tools` into its own
@@ -96,9 +140,9 @@ other analyzers build the same way (`./cmd/tegron-plugin-java`, `-js`, `-python`
 building one does not make a scan of that ecosystem complete — the advisory set it would work
 through is empty, and the run halts on that. See [Scope](#scope--what-this-does-not-do).
 
-Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
-against a filesystem corpus instead of the built-in table, and `-subject-go-version` to state the
-target's Go toolchain explicitly.
+Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to consult a
+filesystem corpus ahead of the built-in table, `-osv-work-set` to widen the set of advisories the
+run evaluates, and `-subject-go-version` to state the target's Go toolchain explicitly.
 
 ## What it reports
 
@@ -132,6 +176,24 @@ step did not run, and OpenVEX carries the same row as `under_investigation`.
 
 The floors differ in size too: Go carries ten real public advisories, the other four carry three
 each ([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)).
+
+**Those floors are the whole default work set, and they grow only by a code change.** They are real
+public CVE/GHSA/OSV records — not test data — but they are compiled into the binary, so a default
+scan covers what the release you pinned was built knowing about, and nothing published since.
+
+**An advisory corpus moves a different axis, and the distinction is the one to hold onto.** A corpus
+supplies *facts* — affected version ranges, vulnerable symbols, the metadata a finding is decided on
+— for the advisories already in the work set. The scanner chains it ahead of the built-in table and
+takes the first whole answer either source resolves, never merging across them. So a corpus makes
+the verdicts current; it does not, on its own, make the scan cover more advisories. Widening the
+work set is a separate switch (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default) that asks
+OSV.dev which advisories affect this repository's real dependencies. The two compose: OSV names the
+identifiers, the corpus answers for them.
+
+The Action fetches Ferralon's public corpus by default; the CLI reads whatever directory
+`-advisory-corpus` names and fetches nothing. Either way, `provenance.intel` on the `Report` records
+the fact source the run actually resolved through, so a scan that fell back to the built-in table
+says so rather than presenting as a corpus-backed one.
 
 The one thing a scan will never do is emit a findings-free `Report` from a work set that resolved to
 nothing: that halts the run instead — see `scanWorkSet` in
@@ -180,7 +242,7 @@ a pinned dashboard Issue.
 **Your code and your credentials never leave the runner.** No run mode is offline, though, and it is
 worth being precise about what does leave.
 
-A default `baseline` or `pr-inherit` run contacts two public hosts:
+A default `baseline` or `pr-inherit` scan contacts two public hosts:
 
 - **`proxy.golang.org`** — when it resolves the subject's module graph.
 - **`vuln.go.dev`** — the Go analyzer's reachability stage runs govulncheck with no `-db` flag
@@ -188,6 +250,11 @@ A default `baseline` or `pr-inherit` run contacts two public hosts:
   database, uncached, on every run. The module paths it looks up are visible to that host.
 
 These are the same fetches `go build` and `govulncheck` perform.
+
+The Action adds one more before the scan starts: an unauthenticated clone of **`github.com`** for
+the advisory corpus named by `advisory-corpus-repo`, which is on by default. That request names a
+public repository and a ref and carries nothing else — no token, and nothing about your code. The
+CLI makes no such fetch; it reads whatever directory you point `-advisory-corpus` at.
 
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
 on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default); that query sends package
@@ -240,10 +307,19 @@ implementation detail with no compatibility promise; the packages below are the 
 | `checkout` | The codebase-acquisition seam (`Checkout`) and its git implementation. |
 | `statestore` | The persisted-state seam (`StateStore`) and its git-ref implementations. |
 | `resultsink` | The publish seam (`ResultSink`) and the GitHub adapters under `resultsink/github`. |
-| `corpus` | The built-in advisory corpus and its loader. |
+| `corpus` | Checked-in regression fixtures — the golden set and the vulnerability-class set — and the embedded loader that validates them. Not the advisory floor a scan runs against; see below. |
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |
+
+Two different things in this repository answer to "built-in", and the `corpus` package is not the
+one a scan reads. The advisory floor a run evaluates is the per-language identifier sets in
+[`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go), and the facts those identifiers
+resolve against are `pipeline.AdvisoryTable` — the table a corpus is chained in front of. Neither is
+in the list above: `acquire.go` is `package main`, and `AdvisoryTable` is reached through
+`pipeline`. The `corpus` package holds regression fixtures and is exported only because Go's
+`internal/` visibility cannot cross a module boundary; it carries no compatibility promise and
+nothing outside this repository should import it.
 
 ## Extending Assay
 
@@ -291,7 +367,7 @@ stages do not collect.
 `AdvisorySource` ([`pipeline/advisory_source.go`](pipeline/advisory_source.go)) is a single
 `Lookup(vulnID) (AdvisoryFacts, bool)`, and it is the only route S1 reads advisories through.
 Implement it to feed Assay a private advisory set, an internal mirror, or an enrichment layer over
-the built-in corpus. `NewChainSource` composes several — it tries each in order and returns the first
+the built-in table. `NewChainSource` composes several — it tries each in order and returns the first
 whole fact any of them resolves, never merging across sources; `NewArtifactSource` reads a
 digest-pinned directory of facts.
 

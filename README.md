@@ -100,6 +100,36 @@ Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-
 against a filesystem corpus instead of the built-in table, and `-subject-go-version` to state the
 target's Go toolchain explicitly.
 
+## Try it: the bundled advisory corpus
+
+The default CLI scan works through a small built-in advisory floor (ten Go advisories, three each
+for the other four languages — see [Scope](#scope--what-this-does-not-do)). For something to chew
+on out of the box, the repository ships a frozen **demonstration snapshot** under
+[`demo/`](demo/): a deduplicated corpus of **8,546 real advisories** (schema
+`ferralon.normalized_advisory.v3`) plus a few **precomputed policies** — each a ready
+`-advisory-corpus` root selected by time window, language, and severity.
+
+Point a scan at the flagship policy — the last 90 days of high/critical **Go** advisories:
+
+```sh
+./ferralon-assay baseline \
+  -target /path/to/a/go/repo \
+  -advisory-corpus demo/policies/last-90d-go-high-critical \
+  -out ./scan-out
+```
+
+That policy holds **314** advisories, **45 of which carry vulnerable-symbol data** — so the run
+evaluates a materially richer, recent, high-severity set than the built-in floor, and those 45
+give the reachability stage real symbols to resolve wherever the target actually depends on the
+affected module (rather than every finding stopping at the dependency version axis). Every record is
+content-pinned by SHA-256 and verified on load; a drifted record is rejected, never silently
+scanned.
+
+Other precomputed policies sit beside it — Python, JavaScript, Java, and .NET slices across 24h / 7d
+/ 30d / 60d / 90d windows — and [`demo/README.md`](demo/README.md) documents the corpus, the
+per-record provenance index, how severity and dates are sourced (and where they are honestly
+`unspecified` rather than guessed), and why the freshest windows carry no symbols yet.
+
 ## What it reports
 
 The output is a neutral scan `Report`: one finding per advisory, each backed by the evidence the

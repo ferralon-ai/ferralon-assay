@@ -1,0 +1,95 @@
+{
+  "t0_latest_published": "2026-08-07T17:16:13+00:00",
+  "flagship": "last-90d-go-high-critical",
+  "policies": [
+    {
+      "name": "last-24h-all-high-critical",
+      "window": "24h",
+      "languages": "all",
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 3,
+      "symbol_bearing": 0
+    },
+    {
+      "name": "last-7d-javascript-high-critical",
+      "window": "7d",
+      "languages": [
+        "javascript"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 48,
+      "symbol_bearing": 0
+    },
+    {
+      "name": "last-30d-python-high-critical",
+      "window": "30d",
+      "languages": [
+        "python"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 103,
+      "symbol_bearing": 17
+    },
+    {
+      "name": "last-90d-go-high-critical",
+      "window": "90d",
+      "languages": [
+        "go"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 314,
+      "symbol_bearing": 45
+    },
+    {
+      "name": "last-90d-python-high-critical",
+      "window": "90d",
+      "languages": [
+        "python"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 410,
+      "symbol_bearing": 31
+    },
+    {
+      "name": "last-60d-java-high-critical",
+      "window": "60d",
+      "languages": [
+        "java"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 110,
+      "symbol_bearing": 0
+    },
+    {
+      "name": "last-60d-dotnet-high-critical",
+      "window": "60d",
+      "languages": [
+        "dotnet"
+      ],
+      "tiers": [
+        "critical",
+        "high"
+      ],
+      "records": 43,
+      "symbol_bearing": 0
+    }
+  ]
+}

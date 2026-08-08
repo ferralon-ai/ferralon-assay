@@ -1,0 +1,23 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 3,
+  "records": [
+    {
+      "identifier": "CVE-2026-16633",
+      "path": "records/javascript/CVE-2026-16633.json",
+      "output_digest": "sha256:1cc2173064db7d3993448ef47497708b42bf5e7ecf93e6420f5b0448cebd944f"
+    },
+    {
+      "identifier": "CVE-2026-71476",
+      "path": "records/javascript/CVE-2026-71476.json",
+      "output_digest": "sha256:96e16a07338fe929ff60603c4916c90d6cfa3a031bf1690e6a144cf1b67dbea0"
+    },
+    {
+      "identifier": "CVE-2026-71556",
+      "path": "records/go/CVE-2026-71556.json",
+      "output_digest": "sha256:d729c9b50686803b39e6f2ae18cb27b468e72d60d1977d96c56b8a9835afbe06"
+    }
+  ],
+  "corpus_digest": "sha256:7ec3da6c8fc2e1fe7c65d8358e533dad5610b29e10efc4317f26da3802e72614"
+}

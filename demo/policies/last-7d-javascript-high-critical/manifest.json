@@ -1,0 +1,248 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 48,
+  "records": [
+    {
+      "identifier": "CVE-2026-13697",
+      "path": "records/javascript/CVE-2026-13697.json",
+      "output_digest": "sha256:5caeab23470aa47a3dbce8d17023a536a96186b089bd12dc7265a105efa5d073"
+    },
+    {
+      "identifier": "CVE-2026-16633",
+      "path": "records/javascript/CVE-2026-16633.json",
+      "output_digest": "sha256:1cc2173064db7d3993448ef47497708b42bf5e7ecf93e6420f5b0448cebd944f"
+    },
+    {
+      "identifier": "CVE-2026-18446",
+      "path": "records/javascript/CVE-2026-18446.json",
+      "output_digest": "sha256:fda854cbef12864979dcab9460b5f560bc883adc24417ea60792f398e90edb22"
+    },
+    {
+      "identifier": "CVE-2026-52887",
+      "path": "records/javascript/CVE-2026-52887.json",
+      "output_digest": "sha256:4fe45ea58b9ac955253cda3535bf6a3ae13f282dfeff4bd32d78bc4c8ddc6107"
+    },
+    {
+      "identifier": "CVE-2026-53608",
+      "path": "records/javascript/CVE-2026-53608.json",
+      "output_digest": "sha256:7ea898fd318f26d740dcc6e3596023968b0cef8c72d22480bd477746c2ceb98f"
+    },
+    {
+      "identifier": "CVE-2026-53609",
+      "path": "records/javascript/CVE-2026-53609.json",
+      "output_digest": "sha256:ffc1beec350d76a968b677445ab5be5c50cf7b573e90265af2b86c80d21a89dd"
+    },
+    {
+      "identifier": "CVE-2026-53950",
+      "path": "records/javascript/CVE-2026-53950.json",
+      "output_digest": "sha256:16e3d6472c19e21c2c2dab07c87927c5181392c91ac82893c30b3a5481b3f24b"
+    },
+    {
+      "identifier": "CVE-2026-54737",
+      "path": "records/javascript/CVE-2026-54737.json",
+      "output_digest": "sha256:47fd2565a327ef455713f3ed7c55fe752af2ffcd94229f826007ab991afba148"
+    },
+    {
+      "identifier": "CVE-2026-58263",
+      "path": "records/javascript/CVE-2026-58263.json",
+      "output_digest": "sha256:ebd10b9353d0c4fe9bb6216f0fc411da27b148606cf3bc98fe3501a5c90a16be"
+    },
+    {
+      "identifier": "CVE-2026-68945",
+      "path": "records/javascript/CVE-2026-68945.json",
+      "output_digest": "sha256:71ccf4dcadf76d92083737b4ee043d11164354e2f9e80a7f885294ec022c2013"
+    },
+    {
+      "identifier": "CVE-2026-69149",
+      "path": "records/javascript/CVE-2026-69149.json",
+      "output_digest": "sha256:d30e2ed4a22318b8ab23a68b387797d6dbe1a18a422bc6e9db0d68fbff067675"
+    },
+    {
+      "identifier": "CVE-2026-69151",
+      "path": "records/javascript/CVE-2026-69151.json",
+      "output_digest": "sha256:0299b2b3e0a5dbd2e016c3c09c72e49da43324ed89b7e4f3a4cdc17ce281b24c"
+    },
+    {
+      "identifier": "CVE-2026-69152",
+      "path": "records/javascript/CVE-2026-69152.json",
+      "output_digest": "sha256:d1016356637dc0876218c38fb138b70f6199e87d9d7e54a14928ce229f82b416"
+    },
+    {
+      "identifier": "CVE-2026-69185",
+      "path": "records/javascript/CVE-2026-69185.json",
+      "output_digest": "sha256:a1fcfefd05534f5861a5d1c032f83d8035e1618a557e271880bbba93d90d5250"
+    },
+    {
+      "identifier": "CVE-2026-69192",
+      "path": "records/javascript/CVE-2026-69192.json",
+      "output_digest": "sha256:5539d378b3ec3e5663fb73fe03dad3c2f3c04771b0b6ce80a99d78b477e99e74"
+    },
+    {
+      "identifier": "CVE-2026-69240",
+      "path": "records/javascript/CVE-2026-69240.json",
+      "output_digest": "sha256:0a3af9c1eab90d29db0728aa663659398193e9c05c8927a89efbd890cc79416c"
+    },
+    {
+      "identifier": "CVE-2026-69250",
+      "path": "records/javascript/CVE-2026-69250.json",
+      "output_digest": "sha256:e86ed6c4a5d42c081bdf1514137607697ee6e57271d134f55f0f29144dea7c84"
+    },
+    {
+      "identifier": "CVE-2026-69251",
+      "path": "records/javascript/CVE-2026-69251.json",
+      "output_digest": "sha256:cb0916ecca86f43a203e08e199e662002d32746965bd99004a98821bdbdea9d9"
+    },
+    {
+      "identifier": "CVE-2026-69252",
+      "path": "records/javascript/CVE-2026-69252.json",
+      "output_digest": "sha256:f03f74388a9cc4fd79090dbbccd9663544149d3b24b0264214e3fab4bf3d612a"
+    },
+    {
+      "identifier": "CVE-2026-69253",
+      "path": "records/javascript/CVE-2026-69253.json",
+      "output_digest": "sha256:88049e425c4a38385e1599ee7d684a95c2dc28bf0b2688eea9622ed96997f47a"
+    },
+    {
+      "identifier": "CVE-2026-69254",
+      "path": "records/javascript/CVE-2026-69254.json",
+      "output_digest": "sha256:c1686c61070d9e331b6302c69cbe5d589fef2656d897f4f36b41d44c399a84fa"
+    },
+    {
+      "identifier": "CVE-2026-69255",
+      "path": "records/javascript/CVE-2026-69255.json",
+      "output_digest": "sha256:8f554006ddf98095c9a428a89bee07b71559f3b70606aa63674554623528ba8a"
+    },
+    {
+      "identifier": "CVE-2026-69256",
+      "path": "records/javascript/CVE-2026-69256.json",
+      "output_digest": "sha256:ed4a7ce9de5abf49155fde9bffa704f116baa2de4977815083c64934f872d1a2"
+    },
+    {
+      "identifier": "CVE-2026-69257",
+      "path": "records/javascript/CVE-2026-69257.json",
+      "output_digest": "sha256:18d3d9f718bb87c4675b9b4ef0632ff8cfa8c99c1b8b3d980eff6b0b1448c8c1"
+    },
+    {
+      "identifier": "CVE-2026-69258",
+      "path": "records/javascript/CVE-2026-69258.json",
+      "output_digest": "sha256:df963c4980f7f371ac14641e7776cd9589e209d6376cab05616addf0344c6eda"
+    },
+    {
+      "identifier": "CVE-2026-69259",
+      "path": "records/javascript/CVE-2026-69259.json",
+      "output_digest": "sha256:9ec0a32f2514c48c9ef39ce55adb8e8b223738843ceb5ce1b0fe925357db78a4"
+    },
+    {
+      "identifier": "CVE-2026-69262",
+      "path": "records/javascript/CVE-2026-69262.json",
+      "output_digest": "sha256:6eb8061877365a6eff273c4e77f90cac583301be8a6e2e6f364030bdd4a69096"
+    },
+    {
+      "identifier": "CVE-2026-69263",
+      "path": "records/javascript/CVE-2026-69263.json",
+      "output_digest": "sha256:7f508b2aba4b4c269f23bad9d9a188da410f94e5a72d340efa3b1a56ffdba16d"
+    },
+    {
+      "identifier": "CVE-2026-69264",
+      "path": "records/javascript/CVE-2026-69264.json",
+      "output_digest": "sha256:df5166b03f0780f41fce0d8b1549eda25144e0cdf5f06fd4bdf4677756129472"
+    },
+    {
+      "identifier": "CVE-2026-70470",
+      "path": "records/javascript/CVE-2026-70470.json",
+      "output_digest": "sha256:53acdf6d6d9685ed37aa9422d80055c2ea18fb3f3212171f633f0757acaaae02"
+    },
+    {
+      "identifier": "CVE-2026-70471",
+      "path": "records/javascript/CVE-2026-70471.json",
+      "output_digest": "sha256:0d01cadb1dc00af432fe2d3227d4df3075d9a1c287a1d8e862be0675b1dd6ead"
+    },
+    {
+      "identifier": "CVE-2026-70472",
+      "path": "records/javascript/CVE-2026-70472.json",
+      "output_digest": "sha256:02d8bacce47be20392e9c7043e097cfb93416f91245bdfbcd6b7f53e146299ba"
+    },
+    {
+      "identifier": "CVE-2026-70473",
+      "path": "records/javascript/CVE-2026-70473.json",
+      "output_digest": "sha256:5958c2ae776b41650270ed1453e917a2f0853a2bc02726eca17f632585b0f0a3"
+    },
+    {
+      "identifier": "CVE-2026-70474",
+      "path": "records/javascript/CVE-2026-70474.json",
+      "output_digest": "sha256:35bf2a1a34f7da1302b9625a23c4f14cce2b3e5af5d5c3ec6756b3891f8b93a2"
+    },
+    {
+      "identifier": "CVE-2026-70475",
+      "path": "records/javascript/CVE-2026-70475.json",
+      "output_digest": "sha256:d5379078f819f80906dab10ddf2b6985bc32726d25ec17bdc8001e52000604e7"
+    },
+    {
+      "identifier": "CVE-2026-70476",
+      "path": "records/javascript/CVE-2026-70476.json",
+      "output_digest": "sha256:10dde4ea04a430233463d05a75eefbc07fbf7aad3a993177609290d5e942b402"
+    },
+    {
+      "identifier": "CVE-2026-70477",
+      "path": "records/javascript/CVE-2026-70477.json",
+      "output_digest": "sha256:c9620857acd98fd3f1eabb28006418367f67c856df486ab208a516f9c2e75a45"
+    },
+    {
+      "identifier": "CVE-2026-70478",
+      "path": "records/javascript/CVE-2026-70478.json",
+      "output_digest": "sha256:447e55bf59b290794f369d09ae1d7ea785143a5e299b45ce0824634b38133f1f"
+    },
+    {
+      "identifier": "CVE-2026-70601",
+      "path": "records/javascript/CVE-2026-70601.json",
+      "output_digest": "sha256:4a855f6644a053838d42f4a741a13c3cf340058ada2cd804140987b644e9b2f4"
+    },
+    {
+      "identifier": "CVE-2026-70604",
+      "path": "records/javascript/CVE-2026-70604.json",
+      "output_digest": "sha256:9d4ee811428249e05b8b48279376bd1270cd455397b635aca3fb6d31261cfa24"
+    },
+    {
+      "identifier": "CVE-2026-70608",
+      "path": "records/javascript/CVE-2026-70608.json",
+      "output_digest": "sha256:60a2661864645fac6eccef21c3f64596360e61827395630d81238693f5d70e83"
+    },
+    {
+      "identifier": "CVE-2026-71314",
+      "path": "records/javascript/CVE-2026-71314.json",
+      "output_digest": "sha256:76e93db744f48869e462e995a8fefc9fae254b6f24edc255cc36940ac59a8048"
+    },
+    {
+      "identifier": "CVE-2026-71315",
+      "path": "records/javascript/CVE-2026-71315.json",
+      "output_digest": "sha256:ff3e43246bd6d2a775caa0eb0d4655a77cc860e27a35cc38f8d44c06f928052c"
+    },
+    {
+      "identifier": "CVE-2026-71316",
+      "path": "records/javascript/CVE-2026-71316.json",
+      "output_digest": "sha256:0d2612214b7cc3db5f4165add1ef2f42f69ed23e4a1c498b557cf53f3eef4d81"
+    },
+    {
+      "identifier": "CVE-2026-71319",
+      "path": "records/javascript/CVE-2026-71319.json",
+      "output_digest": "sha256:4ee0347f2cb0506ac04334cb80f9ec0d16d98cbe43181707899a872b7a5f1c50"
+    },
+    {
+      "identifier": "CVE-2026-71320",
+      "path": "records/javascript/CVE-2026-71320.json",
+      "output_digest": "sha256:b4d73ce538c63a559b3c9cc58e74eef035c4f4d61fc23d1d12da2490ff862c1d"
+    },
+    {
+      "identifier": "CVE-2026-71321",
+      "path": "records/javascript/CVE-2026-71321.json",
+      "output_digest": "sha256:f4a33eef84b8a90b0cd8826ba7a377ac9aa4e06b2f3b761140ffb5c05cc6cfab"
+    },
+    {
+      "identifier": "CVE-2026-71476",
+      "path": "records/javascript/CVE-2026-71476.json",
+      "output_digest": "sha256:96e16a07338fe929ff60603c4916c90d6cfa3a031bf1690e6a144cf1b67dbea0"
+    }
+  ],
+  "corpus_digest": "sha256:945316e0c1e099c48aacfe00c3ab8e80385746690d9f603d8cfe1b17b621ee9f"
+}

@@ -1,0 +1,223 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 43,
+  "records": [
+    {
+      "identifier": "CVE-2026-32203",
+      "path": "records/dotnet/CVE-2026-32203.json",
+      "output_digest": "sha256:cd81bd37f8bbe57cfad84f811b6574482b7af0810d101ad39641328e7f0e53d3"
+    },
+    {
+      "identifier": "CVE-2026-45591",
+      "path": "records/dotnet/CVE-2026-45591.json",
+      "output_digest": "sha256:1b7cc34ad77fec9aaf38525b484e6b84639ddb23c4ba2efbc0a54b7d04f7ed3e"
+    },
+    {
+      "identifier": "CVE-2026-47300",
+      "path": "records/dotnet/CVE-2026-47300.json",
+      "output_digest": "sha256:2632221b34ccc0e8a0adba120f8fd2e9746d25b83341fe9e6a813bfad8c67c5d"
+    },
+    {
+      "identifier": "CVE-2026-47302",
+      "path": "records/dotnet/CVE-2026-47302.json",
+      "output_digest": "sha256:8f02416ab7a3222ddc0987cd450f9a3be661c735f427b842e9cdea029fb0b409"
+    },
+    {
+      "identifier": "CVE-2026-47303",
+      "path": "records/dotnet/CVE-2026-47303.json",
+      "output_digest": "sha256:8e759967884618e70f0b39edf7bcc0960f5ece7d42aa2e5d190853f551bbc25e"
+    },
+    {
+      "identifier": "CVE-2026-47304",
+      "path": "records/dotnet/CVE-2026-47304.json",
+      "output_digest": "sha256:ee9b78b6783518db07e45902bec97d35105d8473485131a5236702eed6faa5f2"
+    },
+    {
+      "identifier": "CVE-2026-48109",
+      "path": "records/dotnet/CVE-2026-48109.json",
+      "output_digest": "sha256:9525a1dd5f681c51dbd282ea7f8afa2dbbdbdf58d2a4fd29ced1b1ad0cde4db0"
+    },
+    {
+      "identifier": "CVE-2026-48502",
+      "path": "records/dotnet/CVE-2026-48502.json",
+      "output_digest": "sha256:4052b47fe0c2fa7c15af97f63b93d782342d3e92a8ed4969da44bee9e821c116"
+    },
+    {
+      "identifier": "CVE-2026-48506",
+      "path": "records/dotnet/CVE-2026-48506.json",
+      "output_digest": "sha256:20b4e8b97d56ce6e4dbd7c0ef6fbfce500d24011c917e0f43f06a6690b7dab9c"
+    },
+    {
+      "identifier": "CVE-2026-49218",
+      "path": "records/dotnet/CVE-2026-49218.json",
+      "output_digest": "sha256:bbf0cd3e5267c6958c5928f353bc6ac4fff138f937202db1d5ac806610580a24"
+    },
+    {
+      "identifier": "CVE-2026-49451",
+      "path": "records/dotnet/CVE-2026-49451.json",
+      "output_digest": "sha256:fb510630064b44360769ab8cc55333fff1f64f5215f9c8372312b7c03dbc76d6"
+    },
+    {
+      "identifier": "CVE-2026-50194",
+      "path": "records/dotnet/CVE-2026-50194.json",
+      "output_digest": "sha256:32611c65ef237d7b960f3d86b33c7e9149b9ed2286a76226d6835c78f1c63812"
+    },
+    {
+      "identifier": "CVE-2026-50196",
+      "path": "records/dotnet/CVE-2026-50196.json",
+      "output_digest": "sha256:6f5e721a90ef4c5ac65c6a267879a00462937538f3c5a08ac3393bdd493a9165"
+    },
+    {
+      "identifier": "CVE-2026-50200",
+      "path": "records/dotnet/CVE-2026-50200.json",
+      "output_digest": "sha256:415200a11d2b5810cd4b9e33b371845b067d96c4e884ef73fed4e018e47f9ef8"
+    },
+    {
+      "identifier": "CVE-2026-50273",
+      "path": "records/dotnet/CVE-2026-50273.json",
+      "output_digest": "sha256:e98704eb0c9e0d1eb152512ac827efcee208314b8255a0fa0bf4132796867514"
+    },
+    {
+      "identifier": "CVE-2026-50524",
+      "path": "records/dotnet/CVE-2026-50524.json",
+      "output_digest": "sha256:970ba2c129c5caeb2214ecf98e939260251fb0aeb2998022fad0c067003d75ab"
+    },
+    {
+      "identifier": "CVE-2026-50525",
+      "path": "records/dotnet/CVE-2026-50525.json",
+      "output_digest": "sha256:dd9f49a301c629eeee16755dce1249e3ac85a6e0a078c57740a8b063437ec327"
+    },
+    {
+      "identifier": "CVE-2026-50526",
+      "path": "records/dotnet/CVE-2026-50526.json",
+      "output_digest": "sha256:21c32a8fade2622dfaa77caba741b381cc35ccc52df1e0713eda0cb9806a256b"
+    },
+    {
+      "identifier": "CVE-2026-50527",
+      "path": "records/dotnet/CVE-2026-50527.json",
+      "output_digest": "sha256:42b799fa927f31482af9ab7c5b3f97734fc072ea172bf1330c57a5239671e1de"
+    },
+    {
+      "identifier": "CVE-2026-50528",
+      "path": "records/dotnet/CVE-2026-50528.json",
+      "output_digest": "sha256:0614da0b2285a0ffff0c52719148b117fb7181cc5f5e2dda491d52e7db268e4e"
+    },
+    {
+      "identifier": "CVE-2026-50648",
+      "path": "records/dotnet/CVE-2026-50648.json",
+      "output_digest": "sha256:f2b483376c18de7950abfdb4d99d446e24f9ab89164f9539b03df555fdf45c21"
+    },
+    {
+      "identifier": "CVE-2026-50650",
+      "path": "records/dotnet/CVE-2026-50650.json",
+      "output_digest": "sha256:6a088a563f691393c3b1ac85c6626756e242e11a95a04295e74b5488c3b08b94"
+    },
+    {
+      "identifier": "CVE-2026-50651",
+      "path": "records/dotnet/CVE-2026-50651.json",
+      "output_digest": "sha256:bdc8f82eb6a3f742a0a26c28553f1535d2ddd8bfd203da2699693d7ccacc5a35"
+    },
+    {
+      "identifier": "CVE-2026-53460",
+      "path": "records/dotnet/CVE-2026-53460.json",
+      "output_digest": "sha256:cfcc204f691194712139c90d8cf165275a01c6e027f7e162e9e1a4f3e1317e09"
+    },
+    {
+      "identifier": "CVE-2026-53461",
+      "path": "records/dotnet/CVE-2026-53461.json",
+      "output_digest": "sha256:3f9bdb3f11eea52594a983449dffe3545c579a3c9bf2b669ab8d5dad5d2700fa"
+    },
+    {
+      "identifier": "CVE-2026-54632",
+      "path": "records/dotnet/CVE-2026-54632.json",
+      "output_digest": "sha256:e0a9a525a516ff2d6a79c2dd1342919bd6e95b0497e19b7267afc87021a2742b"
+    },
+    {
+      "identifier": "CVE-2026-54772",
+      "path": "records/dotnet/CVE-2026-54772.json",
+      "output_digest": "sha256:e672fd63fc71730309f58552ecaa2c0150ad38f56063f823c8f7e50e495d06d4"
+    },
+    {
+      "identifier": "CVE-2026-54774",
+      "path": "records/dotnet/CVE-2026-54774.json",
+      "output_digest": "sha256:f4548d699f98f7a9a4d66b889ccb9e0ff84d6c74139bd77957236b47ad9f1888"
+    },
+    {
+      "identifier": "CVE-2026-54781",
+      "path": "records/dotnet/CVE-2026-54781.json",
+      "output_digest": "sha256:116168663cf895d5fa0489183d4ac70f42defb749f47b01d3866c968cd08a43a"
+    },
+    {
+      "identifier": "CVE-2026-54782",
+      "path": "records/dotnet/CVE-2026-54782.json",
+      "output_digest": "sha256:21c69715979ed0316947fd1be98804fee7bc1c4a4af3698868c4f46bc7cd25c3"
+    },
+    {
+      "identifier": "CVE-2026-54783",
+      "path": "records/dotnet/CVE-2026-54783.json",
+      "output_digest": "sha256:bbf848834ad5d04a78378d53417421850b2f649181db86402c9a92cc9056ac59"
+    },
+    {
+      "identifier": "CVE-2026-54784",
+      "path": "records/dotnet/CVE-2026-54784.json",
+      "output_digest": "sha256:d1e9397b8dadf9143cab6f15760ee416eea7f3dbd8efe325a56a84a1bb3bb505"
+    },
+    {
+      "identifier": "CVE-2026-56170",
+      "path": "records/dotnet/CVE-2026-56170.json",
+      "output_digest": "sha256:7f8ee96f6a75cbaa74b586bd828ee2358051655e82e63599edde949e81f18cf4"
+    },
+    {
+      "identifier": "CVE-2026-57108",
+      "path": "records/dotnet/CVE-2026-57108.json",
+      "output_digest": "sha256:4f1ff3c69289e11d740300985caff1c11b5c6b44d6e67a9b3e61d6957f31d7fd"
+    },
+    {
+      "identifier": "CVE-2026-59859",
+      "path": "records/dotnet/CVE-2026-59859.json",
+      "output_digest": "sha256:bd6f41e9f0c7631a4d8862669326c87c83a6056f22610d5df3ccbb3b276668ce"
+    },
+    {
+      "identifier": "CVE-2026-59860",
+      "path": "records/dotnet/CVE-2026-59860.json",
+      "output_digest": "sha256:53ea74afc70c9706ca009505e6a5871f3f4b60c820f5ef20e49678cc5821c159"
+    },
+    {
+      "identifier": "CVE-2026-59861",
+      "path": "records/dotnet/CVE-2026-59861.json",
+      "output_digest": "sha256:db16cd4e7294f657bee7ce62cfaa4f945b32f985177d1786b078643558c299c8"
+    },
+    {
+      "identifier": "CVE-2026-59862",
+      "path": "records/dotnet/CVE-2026-59862.json",
+      "output_digest": "sha256:9b789672d568eef4c0e5e9b361fe6d2bb77db4312640dbb80861c3ffb64553bd"
+    },
+    {
+      "identifier": "CVE-2026-59863",
+      "path": "records/dotnet/CVE-2026-59863.json",
+      "output_digest": "sha256:d9a61d5b3fb2e40a4f8a703a7db970ae17b5e922674f3818b8330e2db479be2c"
+    },
+    {
+      "identifier": "CVE-2026-59864",
+      "path": "records/dotnet/CVE-2026-59864.json",
+      "output_digest": "sha256:898ec2046f87cebbb2ecb3f43a283333bc1636c54429342abf98841eab256d24"
+    },
+    {
+      "identifier": "CVE-2026-59865",
+      "path": "records/dotnet/CVE-2026-59865.json",
+      "output_digest": "sha256:57e4ef913a165a107d2aafd4d23356a0b436851bff52e66f2c58df4ba444bb2c"
+    },
+    {
+      "identifier": "CVE-2026-59866",
+      "path": "records/dotnet/CVE-2026-59866.json",
+      "output_digest": "sha256:ec2d89b7c2c9c039b127dda162ea9ec47963e81e71dc746df8bed90833f86f01"
+    },
+    {
+      "identifier": "CVE-2026-59867",
+      "path": "records/dotnet/CVE-2026-59867.json",
+      "output_digest": "sha256:0537b213da747a24fc219c6c2ba0bf73f2d4a6d9b4c65a38dbc90d3e7a6961da"
+    }
+  ],
+  "corpus_digest": "sha256:fcacebccf4fb439450db8694b07e785b62ff39280da0bb09720a668814a279f2"
+}

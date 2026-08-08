@@ -1,0 +1,2058 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 410,
+  "records": [
+    {
+      "identifier": "CVE-2021-47935",
+      "path": "records/python/CVE-2021-47935.json",
+      "output_digest": "sha256:b07cb7554d6f7ebcca34dec459ab535301fb5e9cc1e07a8f908984f1d1871769"
+    },
+    {
+      "identifier": "CVE-2022-37331",
+      "path": "records/python/CVE-2022-37331.json",
+      "output_digest": "sha256:2fc034698b968901f2f0c51fa6d99980530e974d9b3628daf21f4836ee93823f"
+    },
+    {
+      "identifier": "CVE-2022-41793",
+      "path": "records/python/CVE-2022-41793.json",
+      "output_digest": "sha256:d2fe82f46eb646112b03d6813f2bab67384e000fffc0234f200797285ff50942"
+    },
+    {
+      "identifier": "CVE-2022-42885",
+      "path": "records/python/CVE-2022-42885.json",
+      "output_digest": "sha256:90c0e089af6854c234afe007eb621509d77f23192ad9e09db5839458d5397ea9"
+    },
+    {
+      "identifier": "CVE-2022-43467",
+      "path": "records/python/CVE-2022-43467.json",
+      "output_digest": "sha256:5218bcc8668ac0e8744962da80727b4b77560961770b88404c57f312fdf4408f"
+    },
+    {
+      "identifier": "CVE-2022-43607",
+      "path": "records/python/CVE-2022-43607.json",
+      "output_digest": "sha256:7fec6607db469b32af9c203750fda8f67644921e9f0539e4ead2c8527bad48f1"
+    },
+    {
+      "identifier": "CVE-2022-44451",
+      "path": "records/python/CVE-2022-44451.json",
+      "output_digest": "sha256:caea2c371dd88627e82d01365b29e5381ef53ef0e8f1845ce53d45038ef930a5"
+    },
+    {
+      "identifier": "CVE-2022-46280",
+      "path": "records/python/CVE-2022-46280.json",
+      "output_digest": "sha256:75c9f0bacfa03d418c7bb37449d25b7b3db08c8b118c5c3a84f4af29cfc114d8"
+    },
+    {
+      "identifier": "CVE-2022-46289",
+      "path": "records/python/CVE-2022-46289.json",
+      "output_digest": "sha256:5bce6a0739726141e792351cb4f74500605457d88b89f52ff51dd190efe786cc"
+    },
+    {
+      "identifier": "CVE-2022-46290",
+      "path": "records/python/CVE-2022-46290.json",
+      "output_digest": "sha256:78052c4b50450acca0c1fa85d3f62530fa911503cd9db021832eb506920f186a"
+    },
+    {
+      "identifier": "CVE-2022-46291",
+      "path": "records/python/CVE-2022-46291.json",
+      "output_digest": "sha256:e424c7dd876a94d385bedd662ada2e1c0efd9f884c76b36eddd4fb45f6065d17"
+    },
+    {
+      "identifier": "CVE-2022-46292",
+      "path": "records/python/CVE-2022-46292.json",
+      "output_digest": "sha256:b55c226b7bf935bf3caa3f426ad0f4e285fc665a760e848f220b6e746d254abb"
+    },
+    {
+      "identifier": "CVE-2022-46293",
+      "path": "records/python/CVE-2022-46293.json",
+      "output_digest": "sha256:7c2957de7cd6ce6dec317230627051160005ae9a476c9a192d498a71e94c6b0a"
+    },
+    {
+      "identifier": "CVE-2022-46294",
+      "path": "records/python/CVE-2022-46294.json",
+      "output_digest": "sha256:612dd170e90b661ac18030217ab388af2c12b765efa6857244c8bc4094e11977"
+    },
+    {
+      "identifier": "CVE-2022-46295",
+      "path": "records/python/CVE-2022-46295.json",
+      "output_digest": "sha256:f66d052390ef89bd9fa729a550ed63bc5d4fe1b64109ef98afdec121c3f548f0"
+    },
+    {
+      "identifier": "CVE-2025-10996",
+      "path": "records/python/CVE-2025-10996.json",
+      "output_digest": "sha256:d425417420aab15d155436e1555ab87074d39ce6da660e68c7a75d50660625eb"
+    },
+    {
+      "identifier": "CVE-2025-10997",
+      "path": "records/python/CVE-2025-10997.json",
+      "output_digest": "sha256:60e268c02ad35960e61598b4df26a53d0e6c1e98c3b9a946683ffdced2e9bf8c"
+    },
+    {
+      "identifier": "CVE-2025-26240",
+      "path": "records/python/CVE-2025-26240.json",
+      "output_digest": "sha256:babc6f87d5fad6b4989897943cff9acc9ba0e22d27fe4025ec6754207338d5a8"
+    },
+    {
+      "identifier": "CVE-2025-46719",
+      "path": "records/python/CVE-2025-46719.json",
+      "output_digest": "sha256:1798eb802a1fd9872edc28f441cd0a8254fc062d2d370a3875810c10bfd7c591"
+    },
+    {
+      "identifier": "CVE-2025-51427",
+      "path": "records/python/CVE-2025-51427.json",
+      "output_digest": "sha256:b1559b1ea6d89ea3d7226f4f5986c51f02088c4d0e7629ea90d3eeb27b52db50"
+    },
+    {
+      "identifier": "CVE-2025-67303",
+      "path": "records/python/CVE-2025-67303.json",
+      "output_digest": "sha256:fe70f471960b7d3027bfd888514a452cefa53f7638ce446a6448f83a5ab0bb3b"
+    },
+    {
+      "identifier": "CVE-2025-67725",
+      "path": "records/python/CVE-2025-67725.json",
+      "output_digest": "sha256:af43b54810dc6a196be0dd176fd3a4afd19229603f14838eb07362bd58a0fd39"
+    },
+    {
+      "identifier": "CVE-2025-67726",
+      "path": "records/python/CVE-2025-67726.json",
+      "output_digest": "sha256:404ffa6ca087395e04f7a78e31bd6ec0afe52c659cec45dcf9c327f300350f50"
+    },
+    {
+      "identifier": "CVE-2026-10105",
+      "path": "records/python/CVE-2026-10105.json",
+      "output_digest": "sha256:7732ab19430cf13b7ed3d3e4c091d856b96e6aa5a0de9a54371f6322b08cf86e"
+    },
+    {
+      "identifier": "CVE-2026-10108",
+      "path": "records/python/CVE-2026-10108.json",
+      "output_digest": "sha256:966ddb17b8c033cb07d6ed844f3f29e27fef3231f8bddcfb3b4b221890590592"
+    },
+    {
+      "identifier": "CVE-2026-11332",
+      "path": "records/python/CVE-2026-11332.json",
+      "output_digest": "sha256:fbaad477379b44fe1a3d5ca314da0107bc925b8ff98a1f76896743e5b67bee27"
+    },
+    {
+      "identifier": "CVE-2026-12061",
+      "path": "records/python/CVE-2026-12061.json",
+      "output_digest": "sha256:a73e99c9d0c0a8b9b158a08da1cba1d731efaa10d5b551285d52d34f096a16af"
+    },
+    {
+      "identifier": "CVE-2026-12072",
+      "path": "records/python/CVE-2026-12072.json",
+      "output_digest": "sha256:51bd687ce5d155ae91e8214f42d4cd8d838c376a5f2a290345d1eaeb7740b32c"
+    },
+    {
+      "identifier": "CVE-2026-12074",
+      "path": "records/python/CVE-2026-12074.json",
+      "output_digest": "sha256:ad8decf08334548bcd0195a47523da14b7a7b8587e7800edd262617be8810968"
+    },
+    {
+      "identifier": "CVE-2026-12075",
+      "path": "records/python/CVE-2026-12075.json",
+      "output_digest": "sha256:828d63b3bde07e2b57b4a0b943576ee628853c3cb6bcdc19d5538f6d38d9d4ae"
+    },
+    {
+      "identifier": "CVE-2026-12398",
+      "path": "records/python/CVE-2026-12398.json",
+      "output_digest": "sha256:9daf6597eb5d612966c6eb2f914fb143c34f1aeff8a11c441cae97d5618836c1"
+    },
+    {
+      "identifier": "CVE-2026-12530",
+      "path": "records/python/CVE-2026-12530.json",
+      "output_digest": "sha256:bea6a0db569288b70a8abacbbebddb8177a0ef5a4a7d155e3af33a3c8e3870e2"
+    },
+    {
+      "identifier": "CVE-2026-16584",
+      "path": "records/python/CVE-2026-16584.json",
+      "output_digest": "sha256:d90b010ef039451aa1db5e402bdb7049eea18116c17efe1e2266e8b81ee2affe"
+    },
+    {
+      "identifier": "CVE-2026-16796",
+      "path": "records/python/CVE-2026-16796.json",
+      "output_digest": "sha256:b3b7ebba3035919f64cbe676b56081f66f6df4371759db3b02cb230a937e3791"
+    },
+    {
+      "identifier": "CVE-2026-21887",
+      "path": "records/python/CVE-2026-21887.json",
+      "output_digest": "sha256:9bbfa4e4a35411fb529346a2ed5db2062857e2e10a66f2242c8e19fde0ebc6e6"
+    },
+    {
+      "identifier": "CVE-2026-23879",
+      "path": "records/python/CVE-2026-23879.json",
+      "output_digest": "sha256:763f7ae9376ce7187289c5c7c2f30820471c88093336155dd24704507e3f9d2a"
+    },
+    {
+      "identifier": "CVE-2026-2393",
+      "path": "records/python/CVE-2026-2393.json",
+      "output_digest": "sha256:35e040f7f901cda0a18235c1fbe2aa630de548fb9ec9dabae71495b0511a6101"
+    },
+    {
+      "identifier": "CVE-2026-25879",
+      "path": "records/python/CVE-2026-25879.json",
+      "output_digest": "sha256:1fee004663b38e5504a7e253e21cd5f7a5d96316ed5c9fcc1987dca23b1d5f97"
+    },
+    {
+      "identifier": "CVE-2026-2611",
+      "path": "records/python/CVE-2026-2611.json",
+      "output_digest": "sha256:222a86f7ac727c5a9f83181dbae408cfebf5fa6fd02cd44b91c55a325a7dc528"
+    },
+    {
+      "identifier": "CVE-2026-2614",
+      "path": "records/python/CVE-2026-2614.json",
+      "output_digest": "sha256:dac41e783b55d6d589e646d562bf395821a1d46fb0b3737d828cf3b464300273"
+    },
+    {
+      "identifier": "CVE-2026-26192",
+      "path": "records/python/CVE-2026-26192.json",
+      "output_digest": "sha256:34396db1a31baabc81ac8679fd640db87dd6509dc44d414e1c0e2cd20ff17b45"
+    },
+    {
+      "identifier": "CVE-2026-26193",
+      "path": "records/python/CVE-2026-26193.json",
+      "output_digest": "sha256:121f666d713f9ba9ac160b69274f1426fdc24e2bf08ef61d68bfe255a36ee095"
+    },
+    {
+      "identifier": "CVE-2026-2651",
+      "path": "records/python/CVE-2026-2651.json",
+      "output_digest": "sha256:de62ec8e78ee6c2bb38c0feb23dc3ac48bb6b6b9523197523801daa1059523d1"
+    },
+    {
+      "identifier": "CVE-2026-2652",
+      "path": "records/python/CVE-2026-2652.json",
+      "output_digest": "sha256:b64be2c85eaf2b0b962a92982ac9270b7df6357ac7a70fcd91f3d21016de1d25"
+    },
+    {
+      "identifier": "CVE-2026-27173",
+      "path": "records/python/CVE-2026-27173.json",
+      "output_digest": "sha256:69908661e5417336b845752ef8faebedf39d66acc76f4be85cf1bad329b99fcb"
+    },
+    {
+      "identifier": "CVE-2026-31072",
+      "path": "records/python/CVE-2026-31072.json",
+      "output_digest": "sha256:cbc71ccbce62012af0d28c239d8986bc6d686521c51ef4311a1e93e3f828c86c"
+    },
+    {
+      "identifier": "CVE-2026-31220",
+      "path": "records/python/CVE-2026-31220.json",
+      "output_digest": "sha256:bdd36bfe77cec7a1c2342e23f201abf962bc80e726fa20316d5f6b10b27be5c1"
+    },
+    {
+      "identifier": "CVE-2026-31221",
+      "path": "records/python/CVE-2026-31221.json",
+      "output_digest": "sha256:d3435f266cfcee01ca7a5763bd339ada453767506601753ef98516c84d26e1ba"
+    },
+    {
+      "identifier": "CVE-2026-31222",
+      "path": "records/python/CVE-2026-31222.json",
+      "output_digest": "sha256:354ac5d56a1037870f438e58ad49c09ad5366ed8362794a3be30a420ac56906c"
+    },
+    {
+      "identifier": "CVE-2026-31223",
+      "path": "records/python/CVE-2026-31223.json",
+      "output_digest": "sha256:8fba4302e87214bcaf16e5f3495aa28d7fd6b18177a8b7f296fde162ee50b8df"
+    },
+    {
+      "identifier": "CVE-2026-31224",
+      "path": "records/python/CVE-2026-31224.json",
+      "output_digest": "sha256:76e8e180e9f876986080b72329cfca5622a44c8f84c92fe42d7d246fc60e0d6d"
+    },
+    {
+      "identifier": "CVE-2026-31225",
+      "path": "records/python/CVE-2026-31225.json",
+      "output_digest": "sha256:1bedaa07748646d5bdd84899d2c4dc6c8e8ddd5cedf20b4fea49c68c15151d29"
+    },
+    {
+      "identifier": "CVE-2026-31233",
+      "path": "records/python/CVE-2026-31233.json",
+      "output_digest": "sha256:736b36298a09a950e6931ac4f6fb4ecb0d4626e636fcefb00fbd6451ec0bd9aa"
+    },
+    {
+      "identifier": "CVE-2026-31234",
+      "path": "records/python/CVE-2026-31234.json",
+      "output_digest": "sha256:9aa1fcbd40a81c072c274edfe0995d761ca851f112422faa8f9f2c81e1f87fad"
+    },
+    {
+      "identifier": "CVE-2026-31235",
+      "path": "records/python/CVE-2026-31235.json",
+      "output_digest": "sha256:eaa941fa5add971e083285625a8850c393655225fc0abd27f52fdbc99ca3cdc9"
+    },
+    {
+      "identifier": "CVE-2026-31236",
+      "path": "records/python/CVE-2026-31236.json",
+      "output_digest": "sha256:312ece6de1c6d80ea0d6fa620f07e3b555a967ce0b75210abbd61d19b2ef1142"
+    },
+    {
+      "identifier": "CVE-2026-31237",
+      "path": "records/python/CVE-2026-31237.json",
+      "output_digest": "sha256:1ee4fedc0a47c5b4861526b8a6084ed490ea689cc061806c8d4922e28429998b"
+    },
+    {
+      "identifier": "CVE-2026-31238",
+      "path": "records/python/CVE-2026-31238.json",
+      "output_digest": "sha256:d0ec9c37fe289b9a8df51b00a655103f6d6cb7ca19310c33cc97fa384bdda7b9"
+    },
+    {
+      "identifier": "CVE-2026-31239",
+      "path": "records/python/CVE-2026-31239.json",
+      "output_digest": "sha256:12f153c3bbfbab2d4e2b0272225324a3a534cc4629ac00d85c7fbcfaa799f487"
+    },
+    {
+      "identifier": "CVE-2026-31240",
+      "path": "records/python/CVE-2026-31240.json",
+      "output_digest": "sha256:c7afe43abeb7ee2e20cc177d71f2c1a0271773608f692310c9146236ad8281bb"
+    },
+    {
+      "identifier": "CVE-2026-31247",
+      "path": "records/python/CVE-2026-31247.json",
+      "output_digest": "sha256:bf5f2507d24686d61b92ed084ccc8cd0469da6a95585cdb2c4d330957013180e"
+    },
+    {
+      "identifier": "CVE-2026-31248",
+      "path": "records/python/CVE-2026-31248.json",
+      "output_digest": "sha256:9a20f0c5882cbb28ba542a7e6b09df0e243f6012d388f619de7bdcf4b2b77eab"
+    },
+    {
+      "identifier": "CVE-2026-31253",
+      "path": "records/python/CVE-2026-31253.json",
+      "output_digest": "sha256:a590666a2126eae6b73b35b967af05b7643e84fe35a8e63a100bf943f2d6d485"
+    },
+    {
+      "identifier": "CVE-2026-33760",
+      "path": "records/python/CVE-2026-33760.json",
+      "output_digest": "sha256:02a28ccbf159e347d77c4b2592b7a739167083fa1410f2f1e1c38fa8d12af1a5"
+    },
+    {
+      "identifier": "CVE-2026-3514",
+      "path": "records/python/CVE-2026-3514.json",
+      "output_digest": "sha256:86de02a0dd0d7addcc28d520979218b3f0256348bb2bd5b05b76b7c9eb09012b"
+    },
+    {
+      "identifier": "CVE-2026-3515",
+      "path": "records/python/CVE-2026-3515.json",
+      "output_digest": "sha256:454ee0b055181b4d876d48e94492e32157869a958581a84116d54d1552555746"
+    },
+    {
+      "identifier": "CVE-2026-40217",
+      "path": "records/python/CVE-2026-40217.json",
+      "output_digest": "sha256:286df8e28527ed8652cb55f6e18a89081301ac8e4a10c0e423d420862e45eeae"
+    },
+    {
+      "identifier": "CVE-2026-4035",
+      "path": "records/python/CVE-2026-4035.json",
+      "output_digest": "sha256:fd5e40656df974fd6a49103035e91cfb69dc6a644fc7e1e4178274aa843e0988"
+    },
+    {
+      "identifier": "CVE-2026-40961",
+      "path": "records/python/CVE-2026-40961.json",
+      "output_digest": "sha256:32791a35dd36bdf0bc8939554c8547bc0dc593234ee9be0a3e23f0bc46be04fa"
+    },
+    {
+      "identifier": "CVE-2026-41084",
+      "path": "records/python/CVE-2026-41084.json",
+      "output_digest": "sha256:39b7d5e92aa2c89a0506487b75f9e6b5b7072bffc583386d9ca450ce5dead5c2"
+    },
+    {
+      "identifier": "CVE-2026-41283",
+      "path": "records/python/CVE-2026-41283.json",
+      "output_digest": "sha256:367fe79314e1117fc7dd6c4570330a3392b8e15fd05984257c7cef58a4ba77b7"
+    },
+    {
+      "identifier": "CVE-2026-4137",
+      "path": "records/python/CVE-2026-4137.json",
+      "output_digest": "sha256:dc3e85dc82d363891198a3d037500b5b15a4ff55f2a86fc2702c8f286eb4e468"
+    },
+    {
+      "identifier": "CVE-2026-41523",
+      "path": "records/python/CVE-2026-41523.json",
+      "output_digest": "sha256:874ec66fa60becb8a61ff292ce48dda08c10c60d55a8c13ec00cf9c22dc633e2"
+    },
+    {
+      "identifier": "CVE-2026-42252",
+      "path": "records/python/CVE-2026-42252.json",
+      "output_digest": "sha256:43e31520719807012ef02a445bf4e509cf6b2e376a2dc1ca24f3187f116e29a9"
+    },
+    {
+      "identifier": "CVE-2026-42305",
+      "path": "records/python/CVE-2026-42305.json",
+      "output_digest": "sha256:471adb68a992e0e9210b6b4942c1ab3811257b58740ff7dfaaf18bd14f6a156f"
+    },
+    {
+      "identifier": "CVE-2026-42359",
+      "path": "records/python/CVE-2026-42359.json",
+      "output_digest": "sha256:bf6d7b20226d74a5ee3a8e3a922c30f08114aca01aae312046750cc7fc6168c2"
+    },
+    {
+      "identifier": "CVE-2026-42563",
+      "path": "records/python/CVE-2026-42563.json",
+      "output_digest": "sha256:d91886068e16664c5b5088bdefe846e7ec8b3a34596ec82ec79ab4e5e98865f5"
+    },
+    {
+      "identifier": "CVE-2026-4372",
+      "path": "records/python/CVE-2026-4372.json",
+      "output_digest": "sha256:603f9b5d4a47c71ba5068e72b416de60d4e3ab694d2b0096f07ca95e1312823e"
+    },
+    {
+      "identifier": "CVE-2026-43977",
+      "path": "records/python/CVE-2026-43977.json",
+      "output_digest": "sha256:58b3ecd8696280ead83692512c19a8419c622b9300bfdf2a471c37a421a158ce"
+    },
+    {
+      "identifier": "CVE-2026-43978",
+      "path": "records/python/CVE-2026-43978.json",
+      "output_digest": "sha256:f6dfc65b5cae297c86fc31eac927c71379a528e4c246b18c643741f857257455"
+    },
+    {
+      "identifier": "CVE-2026-44016",
+      "path": "records/python/CVE-2026-44016.json",
+      "output_digest": "sha256:1d2ad9b8eef919a9154d883a049f0b079195a3971ffe67045d00424944697db7"
+    },
+    {
+      "identifier": "CVE-2026-44017",
+      "path": "records/python/CVE-2026-44017.json",
+      "output_digest": "sha256:23e7e33f3335c56d9a338dad57bdfbd9a88f9df16f0ccee139ca882c6f7c282f"
+    },
+    {
+      "identifier": "CVE-2026-44019",
+      "path": "records/python/CVE-2026-44019.json",
+      "output_digest": "sha256:9a9d5ce0972fcedc086b970f33122b91a4cf465287090e17de94ff94790df5b4"
+    },
+    {
+      "identifier": "CVE-2026-44020",
+      "path": "records/python/CVE-2026-44020.json",
+      "output_digest": "sha256:c1717fc6ef39c264256b2c47ed7cbb38640a7ee75ea4cf0924a600dd740e47d5"
+    },
+    {
+      "identifier": "CVE-2026-44023",
+      "path": "records/python/CVE-2026-44023.json",
+      "output_digest": "sha256:3757d6e5729f98427a1b68f3993d6ca17291750878eaeffa5c3c38f2dbce8dab"
+    },
+    {
+      "identifier": "CVE-2026-44180",
+      "path": "records/python/CVE-2026-44180.json",
+      "output_digest": "sha256:1c2b7b17a302a024902fe739fbaebb8da5a07876a8a7df669c29da4399215965"
+    },
+    {
+      "identifier": "CVE-2026-44181",
+      "path": "records/python/CVE-2026-44181.json",
+      "output_digest": "sha256:468bd12fe4772f94cba6c6761aedd70c66caa7a664546f02173d014b79ed3293"
+    },
+    {
+      "identifier": "CVE-2026-44182",
+      "path": "records/python/CVE-2026-44182.json",
+      "output_digest": "sha256:807a83e2bf6300b1de6f2609122334a31ba84d5d6a8cd1f421da205519df89de"
+    },
+    {
+      "identifier": "CVE-2026-44336",
+      "path": "records/python/CVE-2026-44336.json",
+      "output_digest": "sha256:070187ec761d61269998701a0eb4f3b5255abcd8273f8c5ff9a36f903e6ab388"
+    },
+    {
+      "identifier": "CVE-2026-44338",
+      "path": "records/python/CVE-2026-44338.json",
+      "output_digest": "sha256:8b99f87083cfd67780675fd2bf92816cf3db0ea6d4f4740ad0ad4112388de22f"
+    },
+    {
+      "identifier": "CVE-2026-44339",
+      "path": "records/python/CVE-2026-44339.json",
+      "output_digest": "sha256:3d29a9aa2301e33d5f15bb2e076dc5cf66ab7392a3f8ba798aaa2fd7fdbb9173"
+    },
+    {
+      "identifier": "CVE-2026-44340",
+      "path": "records/python/CVE-2026-44340.json",
+      "output_digest": "sha256:207885b0a6295906013750cbde0e5a373119a75539a61683ea937624a226ab64"
+    },
+    {
+      "identifier": "CVE-2026-44345",
+      "path": "records/python/CVE-2026-44345.json",
+      "output_digest": "sha256:d4bcc62d6c8ee1232a28e4b4449da2b4c8ea7a76767e442a7826a4a011e6e740"
+    },
+    {
+      "identifier": "CVE-2026-44346",
+      "path": "records/python/CVE-2026-44346.json",
+      "output_digest": "sha256:eaf0fadcbc1b0702da01611bd874f7b1c9f9d4594ec9419960991f6a107bfdfd"
+    },
+    {
+      "identifier": "CVE-2026-44393",
+      "path": "records/python/CVE-2026-44393.json",
+      "output_digest": "sha256:02ffa13fd42fd08927f101e61e26c6deb344d25342ebfbb90690792f1e1abde8"
+    },
+    {
+      "identifier": "CVE-2026-44431",
+      "path": "records/python/CVE-2026-44431.json",
+      "output_digest": "sha256:bdc3f537a6a6c351787e4fb981b771ee195baa1efd3a4f53cd4f5747415be08b"
+    },
+    {
+      "identifier": "CVE-2026-44432",
+      "path": "records/python/CVE-2026-44432.json",
+      "output_digest": "sha256:09a133ca6e95143ba6e86f6ea422e924cb96b041245f2bcdc7bdd822b93ecc2b"
+    },
+    {
+      "identifier": "CVE-2026-44541",
+      "path": "records/python/CVE-2026-44541.json",
+      "output_digest": "sha256:c397fca16301a9ea264a26b6db4f0b6052a5f6f015d47f26bd419e4094799740"
+    },
+    {
+      "identifier": "CVE-2026-44565",
+      "path": "records/python/CVE-2026-44565.json",
+      "output_digest": "sha256:8be7f81c020dd0ed20e390e9b7b8df57fc42338737d196f13eb93c5036dde75a"
+    },
+    {
+      "identifier": "CVE-2026-44569",
+      "path": "records/python/CVE-2026-44569.json",
+      "output_digest": "sha256:aa75106118677558772eba476f9e3fea14b39968dcdf52c276116f9d21962289"
+    },
+    {
+      "identifier": "CVE-2026-44570",
+      "path": "records/python/CVE-2026-44570.json",
+      "output_digest": "sha256:6be2b083f7b0f98e2861525f076d298e9cd2d4aa2fa4bf3638c6509458b78057"
+    },
+    {
+      "identifier": "CVE-2026-44660",
+      "path": "records/python/CVE-2026-44660.json",
+      "output_digest": "sha256:a7f6c011aa25c54a9648fa1d3d7e13d0f68fa15d5b1afb0f54e28bcd2ccfe21d"
+    },
+    {
+      "identifier": "CVE-2026-44716",
+      "path": "records/python/CVE-2026-44716.json",
+      "output_digest": "sha256:98d27b8359be2fa6bfd00a3f0a1b39d0de9ab33111aea124d08cc23596f8214b"
+    },
+    {
+      "identifier": "CVE-2026-44727",
+      "path": "records/python/CVE-2026-44727.json",
+      "output_digest": "sha256:9389bddfb15f1798c53150e8c372c8745a5fab1892e96be97a72986714ae41bd"
+    },
+    {
+      "identifier": "CVE-2026-44730",
+      "path": "records/python/CVE-2026-44730.json",
+      "output_digest": "sha256:56ad148032f118fccfc3b0b64399611ebc4391b1070150d38a84183fcf0c9bca"
+    },
+    {
+      "identifier": "CVE-2026-44797",
+      "path": "records/python/CVE-2026-44797.json",
+      "output_digest": "sha256:c065ae7cb63bc54336b64aa8598515c5eeb2ff8dd4b700478488ebeceae17a26"
+    },
+    {
+      "identifier": "CVE-2026-44798",
+      "path": "records/python/CVE-2026-44798.json",
+      "output_digest": "sha256:fb8ce1568a9d68e6b0f71cd2fc71557d7cfdcb0662fdee7c7fc698502f510cb2"
+    },
+    {
+      "identifier": "CVE-2026-44971",
+      "path": "records/python/CVE-2026-44971.json",
+      "output_digest": "sha256:a0eb4ba276f1c9afa667cf4b80c44ad710336a28845facaf406372cbe89fbfac"
+    },
+    {
+      "identifier": "CVE-2026-45017",
+      "path": "records/python/CVE-2026-45017.json",
+      "output_digest": "sha256:df2afd739858f49ce8f3183bd7edb5440751cb932d7e3b4cb05be6315088abf0"
+    },
+    {
+      "identifier": "CVE-2026-45078",
+      "path": "records/python/CVE-2026-45078.json",
+      "output_digest": "sha256:a37adc8d1cc7e2d6cbb22dc7c29eb254ffe134e978b23160ca03af994b35668c"
+    },
+    {
+      "identifier": "CVE-2026-45134",
+      "path": "records/python/CVE-2026-45134.json",
+      "output_digest": "sha256:ad2b01a5d02435170dba66d47840c376a2b7a31eb63a0da2e5fc18b9cdaec6b6"
+    },
+    {
+      "identifier": "CVE-2026-45301",
+      "path": "records/python/CVE-2026-45301.json",
+      "output_digest": "sha256:4880ecf3df6b7cee9fa49caac8a5d9a29635edf9a9ea47cd460f242f2d9da687"
+    },
+    {
+      "identifier": "CVE-2026-45303",
+      "path": "records/python/CVE-2026-45303.json",
+      "output_digest": "sha256:d5a8206a66af6f2671c7e3ca3685f0cd2abe1714ad81d5326a7819275af1598f"
+    },
+    {
+      "identifier": "CVE-2026-45314",
+      "path": "records/python/CVE-2026-45314.json",
+      "output_digest": "sha256:9852e8dbac9e26e7773b898b3a50f812fba4d7052aaf0d1eb934f74f7f7ff444"
+    },
+    {
+      "identifier": "CVE-2026-45315",
+      "path": "records/python/CVE-2026-45315.json",
+      "output_digest": "sha256:3497442c4ac50d044ba80a1662efc08798afa83ac6e69a405153824cf65b08c0"
+    },
+    {
+      "identifier": "CVE-2026-45331",
+      "path": "records/python/CVE-2026-45331.json",
+      "output_digest": "sha256:ceb764989b46c6e8ce04332aeafba8fa53a842966d83c85de26465e78a3cae64"
+    },
+    {
+      "identifier": "CVE-2026-45338",
+      "path": "records/python/CVE-2026-45338.json",
+      "output_digest": "sha256:96ffcf84459d9fb0f26315be3ba72d28447bc7ee9623e760ca30f0c8e31998f0"
+    },
+    {
+      "identifier": "CVE-2026-45348",
+      "path": "records/python/CVE-2026-45348.json",
+      "output_digest": "sha256:ab03fbff8912c3efdb04453ea5ecd3d5d7a6a65e97d9f99e24f71a882bf25d42"
+    },
+    {
+      "identifier": "CVE-2026-45349",
+      "path": "records/python/CVE-2026-45349.json",
+      "output_digest": "sha256:1aa9e598cf0041792686a2904a6ca51c4f70e7e7f9fa3647178bf9ed47337193"
+    },
+    {
+      "identifier": "CVE-2026-45350",
+      "path": "records/python/CVE-2026-45350.json",
+      "output_digest": "sha256:de5731ea59b0d0d32b4b30c10fb619881621b80beb6c918d6ce80a6cfc197ffa"
+    },
+    {
+      "identifier": "CVE-2026-45360",
+      "path": "records/python/CVE-2026-45360.json",
+      "output_digest": "sha256:1562385c8cf8c7f824b18ac60746b04e3302122850eb61589d76710accbd63dc"
+    },
+    {
+      "identifier": "CVE-2026-45361",
+      "path": "records/python/CVE-2026-45361.json",
+      "output_digest": "sha256:14a4da270a81e3fbf53735b68911fe4a457e1dab4675c79add837fbc5a300386"
+    },
+    {
+      "identifier": "CVE-2026-45369",
+      "path": "records/python/CVE-2026-45369.json",
+      "output_digest": "sha256:7f171c1aeced9e191c5ff28fffe4e1666db1322f009e413e69604cfb772bc20d"
+    },
+    {
+      "identifier": "CVE-2026-45370",
+      "path": "records/python/CVE-2026-45370.json",
+      "output_digest": "sha256:81b0a0e002fb6761ceb4dc0fa3b83e5b159526ee4f21c6cb2721cc540c402cd2"
+    },
+    {
+      "identifier": "CVE-2026-45398",
+      "path": "records/python/CVE-2026-45398.json",
+      "output_digest": "sha256:420d9e3ab35c388ebff16552c82d4687285dc46e66d6d852ad21b49c204b63b0"
+    },
+    {
+      "identifier": "CVE-2026-45399",
+      "path": "records/python/CVE-2026-45399.json",
+      "output_digest": "sha256:f5e9e59a1846ec70d7d60b0b2e36f952a889b5b8bec0361316d4ab6ec3d0bba0"
+    },
+    {
+      "identifier": "CVE-2026-45400",
+      "path": "records/python/CVE-2026-45400.json",
+      "output_digest": "sha256:52f1840897df3b3b825de65f73b4999f5d2a60f9a9c69681ca17f75e7c6a67c6"
+    },
+    {
+      "identifier": "CVE-2026-45401",
+      "path": "records/python/CVE-2026-45401.json",
+      "output_digest": "sha256:c376f09217545be931c0798b3e141b74388d1ed30930c65b7d385b4ac26fde2b"
+    },
+    {
+      "identifier": "CVE-2026-45402",
+      "path": "records/python/CVE-2026-45402.json",
+      "output_digest": "sha256:0e816dc1a6cd2599c9460883d86ef7c01cc6460de54b5928b5bd43996a64b6be"
+    },
+    {
+      "identifier": "CVE-2026-45539",
+      "path": "records/python/CVE-2026-45539.json",
+      "output_digest": "sha256:548ba2e6dd64f886ec0ee69afc7e2eba4574bf1dc9bf1c565c785694cd809361"
+    },
+    {
+      "identifier": "CVE-2026-45553",
+      "path": "records/python/CVE-2026-45553.json",
+      "output_digest": "sha256:88cd2bc3fe2149f411160de42892595c6eadb8a34300b069c779fb8854bdc11a"
+    },
+    {
+      "identifier": "CVE-2026-45568",
+      "path": "records/python/CVE-2026-45568.json",
+      "output_digest": "sha256:ff77ea8795210fd92080b44ac1d2aa6cb372c54244e0b749fef1aa5b59dd6bb2"
+    },
+    {
+      "identifier": "CVE-2026-45579",
+      "path": "records/python/CVE-2026-45579.json",
+      "output_digest": "sha256:8a69d70c246e1d35952f43f45a5b6573e36223abb276cef75a5dd5c493cce451"
+    },
+    {
+      "identifier": "CVE-2026-45671",
+      "path": "records/python/CVE-2026-45671.json",
+      "output_digest": "sha256:d8f90cc10d578ae2f2fb8f30cb06b6c311b182ac1bb46e6ef5077ab15503fb78"
+    },
+    {
+      "identifier": "CVE-2026-45672",
+      "path": "records/python/CVE-2026-45672.json",
+      "output_digest": "sha256:b49fa3e715ae4afeb14aaee2bb2a132dd23ad37fad8bcb7ee65cb73cdb96c80d"
+    },
+    {
+      "identifier": "CVE-2026-45675",
+      "path": "records/python/CVE-2026-45675.json",
+      "output_digest": "sha256:fb84a5e765a005d8c22808ae2469aa22fec4f60d179d565d56f055d12ed7a05e"
+    },
+    {
+      "identifier": "CVE-2026-45725",
+      "path": "records/python/CVE-2026-45725.json",
+      "output_digest": "sha256:60297398c11eb8cb38919f97cf44c1ca448f7c2c1cd116c83cfddcccb6aac4ab"
+    },
+    {
+      "identifier": "CVE-2026-45727",
+      "path": "records/python/CVE-2026-45727.json",
+      "output_digest": "sha256:ef23cf7e9a6dd5b7849e33ff167d0209b560786629d9edf96c80d94a3c481a1f"
+    },
+    {
+      "identifier": "CVE-2026-45758",
+      "path": "records/python/CVE-2026-45758.json",
+      "output_digest": "sha256:0a1152840d4c8d10f0a15a8243555b6100f1836ac9ed8625aed5bf5c85ab2592"
+    },
+    {
+      "identifier": "CVE-2026-45804",
+      "path": "records/python/CVE-2026-45804.json",
+      "output_digest": "sha256:3aede8f43eb7ec48138e682d72b3b0bc6778b343440383a14822cfdd9e785b22"
+    },
+    {
+      "identifier": "CVE-2026-45829",
+      "path": "records/python/CVE-2026-45829.json",
+      "output_digest": "sha256:bdbac99d09de476f7f007d78de13a36dfce5ff7c7d3f6a99bb7acb28c70e556c"
+    },
+    {
+      "identifier": "CVE-2026-46345",
+      "path": "records/python/CVE-2026-46345.json",
+      "output_digest": "sha256:e2b6fe9ae0fe9436ba0b14ba276a07c75c1e2674e51e2c409fc0ea43901ab1f2"
+    },
+    {
+      "identifier": "CVE-2026-46373",
+      "path": "records/python/CVE-2026-46373.json",
+      "output_digest": "sha256:ca3f9c2e406b4248b9184a7598791c5e0b5c6d60b4b82f50d8817b6cd6e55f2f"
+    },
+    {
+      "identifier": "CVE-2026-46374",
+      "path": "records/python/CVE-2026-46374.json",
+      "output_digest": "sha256:36c705c62d197a767cc26c8dbda6baf5a6f3debfd52807a442d31c407d1beca9"
+    },
+    {
+      "identifier": "CVE-2026-46432",
+      "path": "records/python/CVE-2026-46432.json",
+      "output_digest": "sha256:e4433a3974970ae48983a71342918484aeda439ecc0ec66251fee29f9dd9c1c4"
+    },
+    {
+      "identifier": "CVE-2026-46439",
+      "path": "records/python/CVE-2026-46439.json",
+      "output_digest": "sha256:83d7eb9d0048f5866ffc0a6c3488043a5149af6bcc45e8ee847c9b4e4971e3ab"
+    },
+    {
+      "identifier": "CVE-2026-46488",
+      "path": "records/python/CVE-2026-46488.json",
+      "output_digest": "sha256:c2c3a49b7cf40fef7e995bdca06f72ec3988aae5f10daa997091868fe3530290"
+    },
+    {
+      "identifier": "CVE-2026-46517",
+      "path": "records/python/CVE-2026-46517.json",
+      "output_digest": "sha256:61464d122caa17cd879b750ddc16bdaed1be9df4e0dd70246aa92cdb3010ac2c"
+    },
+    {
+      "identifier": "CVE-2026-46606",
+      "path": "records/python/CVE-2026-46606.json",
+      "output_digest": "sha256:236c100c7c2c9f7587cdf61d05c5301d572a579305fd42c672bbe8cd65abf5a1"
+    },
+    {
+      "identifier": "CVE-2026-46607",
+      "path": "records/python/CVE-2026-46607.json",
+      "output_digest": "sha256:c2950b9687808f887e3af05a1de462f83759da56606b400ce3e5c0d6c6f0f01b"
+    },
+    {
+      "identifier": "CVE-2026-46608",
+      "path": "records/python/CVE-2026-46608.json",
+      "output_digest": "sha256:91924628cd9447efed8ddf6f76eb8b25ebc9421c50eb112aa3af48b0f48794ff"
+    },
+    {
+      "identifier": "CVE-2026-46695",
+      "path": "records/python/CVE-2026-46695.json",
+      "output_digest": "sha256:8c604770ed4d3c31493ee28f8a6e712930396ae337ae5c3ca53c5dad666deedd"
+    },
+    {
+      "identifier": "CVE-2026-46703",
+      "path": "records/python/CVE-2026-46703.json",
+      "output_digest": "sha256:eed7477b52bebc7b97bb9fb77a97b6a4a3e0ca2cb06dccd382e86bf99c89a62c"
+    },
+    {
+      "identifier": "CVE-2026-47101",
+      "path": "records/python/CVE-2026-47101.json",
+      "output_digest": "sha256:6d1e9bc823fe29278763e06cb333be610cc63fad3aba5e425c7ef999d7f3a216"
+    },
+    {
+      "identifier": "CVE-2026-47102",
+      "path": "records/python/CVE-2026-47102.json",
+      "output_digest": "sha256:a1bc09d1a4db3179ca8bb788cece1d54401542f23a651b9185955c1a233e5f92"
+    },
+    {
+      "identifier": "CVE-2026-47103",
+      "path": "records/python/CVE-2026-47103.json",
+      "output_digest": "sha256:b511aae671eb792c16901e4ae5095f03fc166d65cc745028e11bb2c9f0603e5e"
+    },
+    {
+      "identifier": "CVE-2026-47117",
+      "path": "records/python/CVE-2026-47117.json",
+      "output_digest": "sha256:100cde1a8a9d27ab08e17eb81f3d54a941bb19e4dd4bb45731ff18a2d74e9c15"
+    },
+    {
+      "identifier": "CVE-2026-47211",
+      "path": "records/python/CVE-2026-47211.json",
+      "output_digest": "sha256:8d1789b825fe9ee63e0be23182bd2a0d543c7ed1b2a5cef962eca36360ff8281"
+    },
+    {
+      "identifier": "CVE-2026-47214",
+      "path": "records/python/CVE-2026-47214.json",
+      "output_digest": "sha256:cc8fbbf7784274f286f526800f0ca3f0eef80ce5b988fcf7a42eafe2bf5b7f80"
+    },
+    {
+      "identifier": "CVE-2026-47391",
+      "path": "records/python/CVE-2026-47391.json",
+      "output_digest": "sha256:147b69156ad0b56f3d508753fff95ed7102baee2c82ee2c1861c3b5bff153b26"
+    },
+    {
+      "identifier": "CVE-2026-47392",
+      "path": "records/python/CVE-2026-47392.json",
+      "output_digest": "sha256:3cc0521c0f9c0208cd8c3353fc27708c6c1736e472791aabc5769b1374528074"
+    },
+    {
+      "identifier": "CVE-2026-47393",
+      "path": "records/python/CVE-2026-47393.json",
+      "output_digest": "sha256:4eea43d92d457ce4bad3403a3b2e1baab1b29c83783476fa040fe43c34b89d20"
+    },
+    {
+      "identifier": "CVE-2026-47394",
+      "path": "records/python/CVE-2026-47394.json",
+      "output_digest": "sha256:6956d7b79f81778bf2726df38f818e1677366899964795e1c318a7195df72fba"
+    },
+    {
+      "identifier": "CVE-2026-47396",
+      "path": "records/python/CVE-2026-47396.json",
+      "output_digest": "sha256:f31d1e87b6b440230649cdb84c9ed29746195b8c021a3d57c1f23618bf0ef6f5"
+    },
+    {
+      "identifier": "CVE-2026-47397",
+      "path": "records/python/CVE-2026-47397.json",
+      "output_digest": "sha256:6eb17d4bb2fa6a149e20fad2b5331e3c2ab7707785079ef9e1e17546e4ff2fde"
+    },
+    {
+      "identifier": "CVE-2026-47399",
+      "path": "records/python/CVE-2026-47399.json",
+      "output_digest": "sha256:1ed52d9635c4263ccd685cf1c5a980c69a30b874fbe796eb1cc5306e1f476b5f"
+    },
+    {
+      "identifier": "CVE-2026-47405",
+      "path": "records/python/CVE-2026-47405.json",
+      "output_digest": "sha256:1ec86eaeace05167bd8ced043505549df6959d2688e93e21435a289238b932a1"
+    },
+    {
+      "identifier": "CVE-2026-47406",
+      "path": "records/python/CVE-2026-47406.json",
+      "output_digest": "sha256:f18e9ddf32901ea9c239889d14b93d4b9286eee1c0854bd20e022208e6fe6613"
+    },
+    {
+      "identifier": "CVE-2026-47407",
+      "path": "records/python/CVE-2026-47407.json",
+      "output_digest": "sha256:41af7d93e2237c0071a76eb99156e3f5a35bcfd2e4f8314ecb29ff3221a2dbbd"
+    },
+    {
+      "identifier": "CVE-2026-47409",
+      "path": "records/python/CVE-2026-47409.json",
+      "output_digest": "sha256:3e94a3e7e5dd2b326c8282ddd2475ced37ac83a05fa1d1f9121c13abdc95b78c"
+    },
+    {
+      "identifier": "CVE-2026-47410",
+      "path": "records/python/CVE-2026-47410.json",
+      "output_digest": "sha256:aa8ec7dd0a08de3792d03535d8820cf2b14e18236126bd991a65a9d97c3e6013"
+    },
+    {
+      "identifier": "CVE-2026-47412",
+      "path": "records/python/CVE-2026-47412.json",
+      "output_digest": "sha256:f76d7e05c47bc8d8e97ded7eaac5a677907b1dc5e0fd5d16f0ed838c717690ad"
+    },
+    {
+      "identifier": "CVE-2026-47413",
+      "path": "records/python/CVE-2026-47413.json",
+      "output_digest": "sha256:6b12e31ac6ff62e97e4f3e80af03fece819dd5cb282974308e2d1814412a1439"
+    },
+    {
+      "identifier": "CVE-2026-47414",
+      "path": "records/python/CVE-2026-47414.json",
+      "output_digest": "sha256:1f850e029e074260da8bac85b388a92fce4f67a5943957d5e318d269e72958d7"
+    },
+    {
+      "identifier": "CVE-2026-47415",
+      "path": "records/python/CVE-2026-47415.json",
+      "output_digest": "sha256:b77b9c81d9313fc38a411ad404095034c734b688b9ea4e7ca046a161632fe25b"
+    },
+    {
+      "identifier": "CVE-2026-47416",
+      "path": "records/python/CVE-2026-47416.json",
+      "output_digest": "sha256:881d8b1a1c2b4e4d5b8742886249659f0d930d4a570d0d22196659ac6deef4df"
+    },
+    {
+      "identifier": "CVE-2026-47417",
+      "path": "records/python/CVE-2026-47417.json",
+      "output_digest": "sha256:5ee5688299e610291cf91b89d5c5764eee2487c86d813cf8fa5ee08b642e72c4"
+    },
+    {
+      "identifier": "CVE-2026-47418",
+      "path": "records/python/CVE-2026-47418.json",
+      "output_digest": "sha256:133cac73f875b750d522b55ef40afda9a5880e1c5da787913ec15630cc06a181"
+    },
+    {
+      "identifier": "CVE-2026-47419",
+      "path": "records/python/CVE-2026-47419.json",
+      "output_digest": "sha256:978531f451f785d7c281dfa728c20aee1278548e19c9d57a224bbe7eb26b77f9"
+    },
+    {
+      "identifier": "CVE-2026-47708",
+      "path": "records/python/CVE-2026-47708.json",
+      "output_digest": "sha256:6e2f6ad2013ae0670218aa8f1b0fb71f87f0b085d3d833af6577bad2849ecaa6"
+    },
+    {
+      "identifier": "CVE-2026-47731",
+      "path": "records/python/CVE-2026-47731.json",
+      "output_digest": "sha256:0c7d55d7dae77cc2987747d1d11212765562783eb8c8cbb0f838c2fd604e44b3"
+    },
+    {
+      "identifier": "CVE-2026-47764",
+      "path": "records/python/CVE-2026-47764.json",
+      "output_digest": "sha256:e8a5bebf87e91648e69037bb4acf1184437cc196eb335f4f0383b491c519f10e"
+    },
+    {
+      "identifier": "CVE-2026-47781",
+      "path": "records/python/CVE-2026-47781.json",
+      "output_digest": "sha256:8a2087e87b305cbc0502e3b0d15a5cb26cd193386a33ebb1363cc7e872327a99"
+    },
+    {
+      "identifier": "CVE-2026-48039",
+      "path": "records/python/CVE-2026-48039.json",
+      "output_digest": "sha256:aec883665e82918d47f1d1d09f613ffd99f34a6311487387d2f87621db6fad8f"
+    },
+    {
+      "identifier": "CVE-2026-48060",
+      "path": "records/python/CVE-2026-48060.json",
+      "output_digest": "sha256:1f9638f3870d716c8f74b3b66a58cc1ee87b4fd0eaff69cbc4b950b76b22ec3d"
+    },
+    {
+      "identifier": "CVE-2026-48099",
+      "path": "records/python/CVE-2026-48099.json",
+      "output_digest": "sha256:710786bb779fa558fd8137cc1932d2277318d9d879a9ebed6265d27742120b14"
+    },
+    {
+      "identifier": "CVE-2026-48169",
+      "path": "records/python/CVE-2026-48169.json",
+      "output_digest": "sha256:2dfc3c54f268e17c4f468d98fa3f21a3be7bce3b86fb00f82eed763a57fa1895"
+    },
+    {
+      "identifier": "CVE-2026-48207",
+      "path": "records/python/CVE-2026-48207.json",
+      "output_digest": "sha256:30d993c96188d6f47c6a83662f1f4f608d12ba5ff2d3b10d10c0c8892d1a64dc"
+    },
+    {
+      "identifier": "CVE-2026-48508",
+      "path": "records/python/CVE-2026-48508.json",
+      "output_digest": "sha256:8ef6af29f0ede022e2a463f61eb2dca76fd53767f6359498374f62a1584425e3"
+    },
+    {
+      "identifier": "CVE-2026-48519",
+      "path": "records/python/CVE-2026-48519.json",
+      "output_digest": "sha256:a1ff3fe5576d6a2df7eb3c3a7781203e63727684148cdfaac7cf69944ec4b9fd"
+    },
+    {
+      "identifier": "CVE-2026-48526",
+      "path": "records/python/CVE-2026-48526.json",
+      "output_digest": "sha256:0dc97cfac6333e11e3acbc5265e925ade9f06869a0899b852b6946a76e81f8f8"
+    },
+    {
+      "identifier": "CVE-2026-48544",
+      "path": "records/python/CVE-2026-48544.json",
+      "output_digest": "sha256:7f6b885544646f74ba8a722434474218fc141ea481c09257bec810006d512587"
+    },
+    {
+      "identifier": "CVE-2026-48545",
+      "path": "records/python/CVE-2026-48545.json",
+      "output_digest": "sha256:ad38dc4dcdd09ae336deaf87d4c0a1b8888b8f4b9d5785409a2f818b9a823f02"
+    },
+    {
+      "identifier": "CVE-2026-48746",
+      "path": "records/python/CVE-2026-48746.json",
+      "output_digest": "sha256:dd4b73259560f3b6a07666a77da0728b89071a4cd69ae6c8895c2d0b90226b31"
+    },
+    {
+      "identifier": "CVE-2026-48797",
+      "path": "records/python/CVE-2026-48797.json",
+      "output_digest": "sha256:ef537dc01077327d21971f1a59e8c1622f3836b4da8a8270e3904cdb1d784848"
+    },
+    {
+      "identifier": "CVE-2026-48802",
+      "path": "records/python/CVE-2026-48802.json",
+      "output_digest": "sha256:17b0845b5b47b8c5a869932e9a8786d61598c1f2b57fdcade84d9338e0572679"
+    },
+    {
+      "identifier": "CVE-2026-48804",
+      "path": "records/python/CVE-2026-48804.json",
+      "output_digest": "sha256:ebf045de80a0d3085c1870ba46be8ec8d05b8649bdd53512fd8808ebc587c1c3"
+    },
+    {
+      "identifier": "CVE-2026-48809",
+      "path": "records/python/CVE-2026-48809.json",
+      "output_digest": "sha256:d4644c940ca82067cd3e76c1e0a9ed49227ae1d4518dfb0dbedf4e16db07690b"
+    },
+    {
+      "identifier": "CVE-2026-48818",
+      "path": "records/python/CVE-2026-48818.json",
+      "output_digest": "sha256:3d2e6a6a5a037a01f2bcd6b204fa68caac348c2c9b67ba670a26956ee13798a9"
+    },
+    {
+      "identifier": "CVE-2026-48989",
+      "path": "records/python/CVE-2026-48989.json",
+      "output_digest": "sha256:f1d4b6f6786da3958c9c95cf9c7853d9e94e01b669c6e1e6e3cbd8ad06b484d3"
+    },
+    {
+      "identifier": "CVE-2026-49014",
+      "path": "records/python/CVE-2026-49014.json",
+      "output_digest": "sha256:5619b95272f292d38574e93841fbdac699f74b34150c5fcd560af46187f85005"
+    },
+    {
+      "identifier": "CVE-2026-49017",
+      "path": "records/python/CVE-2026-49017.json",
+      "output_digest": "sha256:b65b30520c93ad4527b077729b08c3d02b5a261ba1f71a612ec9ce2a38fdb5d7"
+    },
+    {
+      "identifier": "CVE-2026-49257",
+      "path": "records/python/CVE-2026-49257.json",
+      "output_digest": "sha256:d39caefc5c00a9f86c2774b7c9f04153653ebc60b3fbd4f8ae0e01f8b24f90cc"
+    },
+    {
+      "identifier": "CVE-2026-49291",
+      "path": "records/python/CVE-2026-49291.json",
+      "output_digest": "sha256:f6bed5e8a560b56f930f5a569b81def35f4fd39f4ec6e40e1cd4785cd45b7793"
+    },
+    {
+      "identifier": "CVE-2026-49298",
+      "path": "records/python/CVE-2026-49298.json",
+      "output_digest": "sha256:1bbb0030dba88e3f1f704925a7795011282c6547be46fd47789a73ea352b4f03"
+    },
+    {
+      "identifier": "CVE-2026-49360",
+      "path": "records/python/CVE-2026-49360.json",
+      "output_digest": "sha256:84a8538a900d1f371419d4e3752298ada0e0b330fa8127b66503010977fb64b7"
+    },
+    {
+      "identifier": "CVE-2026-49468",
+      "path": "records/python/CVE-2026-49468.json",
+      "output_digest": "sha256:11a9240e5a7f4ce264a3cb09ed07814df3c76994ad4ee81245c8a0779d299960"
+    },
+    {
+      "identifier": "CVE-2026-49471",
+      "path": "records/python/CVE-2026-49471.json",
+      "output_digest": "sha256:901f07c8237c9138928ecb074c8795dc1374420ab4ccf675d24126741bf62aac"
+    },
+    {
+      "identifier": "CVE-2026-49476",
+      "path": "records/python/CVE-2026-49476.json",
+      "output_digest": "sha256:8fe7175543e30cdf3f057594624619af3823b8b52273c94946c6de41498bf15b"
+    },
+    {
+      "identifier": "CVE-2026-49477",
+      "path": "records/python/CVE-2026-49477.json",
+      "output_digest": "sha256:825bae75b3cd59a93f1a35cc82f78397e57a10224a7133d7acbae9e5dc886b3f"
+    },
+    {
+      "identifier": "CVE-2026-49825",
+      "path": "records/python/CVE-2026-49825.json",
+      "output_digest": "sha256:e0748de1542042be4fa39c2d3b609c541ce9317cc77c91801c77488ba6c8a342"
+    },
+    {
+      "identifier": "CVE-2026-49851",
+      "path": "records/python/CVE-2026-49851.json",
+      "output_digest": "sha256:70681c906c032cd004586e164163c4b0201dd6165b2976088d400b3f3fecdca4"
+    },
+    {
+      "identifier": "CVE-2026-49852",
+      "path": "records/python/CVE-2026-49852.json",
+      "output_digest": "sha256:d7849b0305332fabb51c45b9119d427ee9d0d96a8a345bb0a6924a0609b1b29b"
+    },
+    {
+      "identifier": "CVE-2026-49853",
+      "path": "records/python/CVE-2026-49853.json",
+      "output_digest": "sha256:ff87d378d9a3c3ad63f4d4c4cc73cecfa88b41aaa08035aa6e1e376497e8b6f8"
+    },
+    {
+      "identifier": "CVE-2026-49855",
+      "path": "records/python/CVE-2026-49855.json",
+      "output_digest": "sha256:575a0b4ac569e91f080a50a375038a6e8651fcf1b4fc5b497d019dc226916087"
+    },
+    {
+      "identifier": "CVE-2026-49986",
+      "path": "records/python/CVE-2026-49986.json",
+      "output_digest": "sha256:260fb19fa29ff7457bc9df0c63009a931cde18d64a5eef29c282c8f47eca7dd6"
+    },
+    {
+      "identifier": "CVE-2026-50023",
+      "path": "records/python/CVE-2026-50023.json",
+      "output_digest": "sha256:ca72472ce0a70e0688e3181ef1480fdf97e5dc7384cc72e32fe0262d5130f93d"
+    },
+    {
+      "identifier": "CVE-2026-50027",
+      "path": "records/python/CVE-2026-50027.json",
+      "output_digest": "sha256:8406505cf406e222be2203a403599ebfb5946e78bc4bfa133d382411a64d37da"
+    },
+    {
+      "identifier": "CVE-2026-50180",
+      "path": "records/python/CVE-2026-50180.json",
+      "output_digest": "sha256:e3d763995cd2ff92bd7c1e58dd4a96bb27de5d50713fab3a718e1cbfb2b074cc"
+    },
+    {
+      "identifier": "CVE-2026-50181",
+      "path": "records/python/CVE-2026-50181.json",
+      "output_digest": "sha256:f3726b74bb39fe7ac8d26c4edd16a697c013b40eb31efad43e2785c1607038de"
+    },
+    {
+      "identifier": "CVE-2026-50203",
+      "path": "records/python/CVE-2026-50203.json",
+      "output_digest": "sha256:e5dcf212a5175184815a4202528110c12864849a1116688235df0f05dfd9f15c"
+    },
+    {
+      "identifier": "CVE-2026-50271",
+      "path": "records/python/CVE-2026-50271.json",
+      "output_digest": "sha256:8bb8168e465359f43df2e156f3c45709cae4af24cd08d20cc651661552ce411d"
+    },
+    {
+      "identifier": "CVE-2026-50574",
+      "path": "records/python/CVE-2026-50574.json",
+      "output_digest": "sha256:85947aa45dd2a67b94109e6549f9ac72a8912eaf3e5897d99441688f35e0c29b"
+    },
+    {
+      "identifier": "CVE-2026-5241",
+      "path": "records/python/CVE-2026-5241.json",
+      "output_digest": "sha256:6319a77ad768439eb9318b52afed801863626dbcd58c3fc66a2fa13ac8edf586"
+    },
+    {
+      "identifier": "CVE-2026-52726",
+      "path": "records/python/CVE-2026-52726.json",
+      "output_digest": "sha256:63d674b840c570386186452bf3031747381a43449ab47737322d8e9026a3a862"
+    },
+    {
+      "identifier": "CVE-2026-52817",
+      "path": "records/python/CVE-2026-52817.json",
+      "output_digest": "sha256:eb7496f2dc932171a06bdf75d44f367307d79e49e93977bd2a8562a2560012e6"
+    },
+    {
+      "identifier": "CVE-2026-52830",
+      "path": "records/python/CVE-2026-52830.json",
+      "output_digest": "sha256:d73cfc75f414409994a19a86bc6fbe177ddaf0bbc7c78cbb65a47e47ff08fdfe"
+    },
+    {
+      "identifier": "CVE-2026-52869",
+      "path": "records/python/CVE-2026-52869.json",
+      "output_digest": "sha256:388221532358b6adf94fda1a61e82f4acde3ccb93300d13bfb3616e95386008a"
+    },
+    {
+      "identifier": "CVE-2026-52870",
+      "path": "records/python/CVE-2026-52870.json",
+      "output_digest": "sha256:8b750a9d17407229a939aa6451104ea269565ee911575562f38be39e17cf536b"
+    },
+    {
+      "identifier": "CVE-2026-53500",
+      "path": "records/python/CVE-2026-53500.json",
+      "output_digest": "sha256:558e40cdac2434f1e692641fd62a9067cfe9cd87c1ba628c4b63c33c656c29c6"
+    },
+    {
+      "identifier": "CVE-2026-53501",
+      "path": "records/python/CVE-2026-53501.json",
+      "output_digest": "sha256:dfaeb8837767e40e50fc7bb0fa14bb72d85e6261ed43ab947f356b4416e6b6db"
+    },
+    {
+      "identifier": "CVE-2026-53502",
+      "path": "records/python/CVE-2026-53502.json",
+      "output_digest": "sha256:8fc4954fdb3b217f889cf39de098b427ceb02a3b35b144bcc6a2d8234167f863"
+    },
+    {
+      "identifier": "CVE-2026-53503",
+      "path": "records/python/CVE-2026-53503.json",
+      "output_digest": "sha256:fd55178160b9f4decb0255a5d56cebab8a2f0530d747c60bb5e0b91692006141"
+    },
+    {
+      "identifier": "CVE-2026-53504",
+      "path": "records/python/CVE-2026-53504.json",
+      "output_digest": "sha256:4cc6531c7f800c8459bec30817ce4bd77daeb0e3e5d57ff4886065b6b57d716e"
+    },
+    {
+      "identifier": "CVE-2026-53505",
+      "path": "records/python/CVE-2026-53505.json",
+      "output_digest": "sha256:228fcdc71aee4301bb13b9f565701c1761807f5bc3fe51a6cb665804cb7f6518"
+    },
+    {
+      "identifier": "CVE-2026-53539",
+      "path": "records/python/CVE-2026-53539.json",
+      "output_digest": "sha256:41c357076650bdc5194652836eaf6f2f93004d0dea025aa45a67a74ab8bffb3c"
+    },
+    {
+      "identifier": "CVE-2026-53598",
+      "path": "records/python/CVE-2026-53598.json",
+      "output_digest": "sha256:c03744378bf59927959306341dddc67fec16d480c78b7394778a89efd8805eef"
+    },
+    {
+      "identifier": "CVE-2026-53753",
+      "path": "records/python/CVE-2026-53753.json",
+      "output_digest": "sha256:6de190a0d4748e3fee5d1a8d2dd7c1a5fbe89c6eb85b57ba604c5d25a76357dc"
+    },
+    {
+      "identifier": "CVE-2026-53754",
+      "path": "records/python/CVE-2026-53754.json",
+      "output_digest": "sha256:9525ae094383569193c984948cd294ad0e7a9f07b095426dd2d95e1d9bb2a68c"
+    },
+    {
+      "identifier": "CVE-2026-53755",
+      "path": "records/python/CVE-2026-53755.json",
+      "output_digest": "sha256:3cd6ea26c92ce5d999aff32ba9697e6425cb3e81ef9336553f06907ef98a8f73"
+    },
+    {
+      "identifier": "CVE-2026-53869",
+      "path": "records/python/CVE-2026-53869.json",
+      "output_digest": "sha256:de29b7987619452d2a30c3f92383bb804d13c5f34faabb616ac999b96137d3d1"
+    },
+    {
+      "identifier": "CVE-2026-53925",
+      "path": "records/python/CVE-2026-53925.json",
+      "output_digest": "sha256:d6b04149591a5f93a8567cafbdcb288393ffef1d61f4a195762ef6747c0077af"
+    },
+    {
+      "identifier": "CVE-2026-54007",
+      "path": "records/python/CVE-2026-54007.json",
+      "output_digest": "sha256:84770897ab45a3ffb372b518b6b742fb187f633646cff99e88e273e652f78450"
+    },
+    {
+      "identifier": "CVE-2026-54008",
+      "path": "records/python/CVE-2026-54008.json",
+      "output_digest": "sha256:83469a4259fef3165800f94c0eb346f510d2a49a5f26f12fadbc834f63ec9fa2"
+    },
+    {
+      "identifier": "CVE-2026-54010",
+      "path": "records/python/CVE-2026-54010.json",
+      "output_digest": "sha256:c0577b71ef993e5116fe3892df02af42fcb255d282dff26a10abbebd506c1620"
+    },
+    {
+      "identifier": "CVE-2026-54011",
+      "path": "records/python/CVE-2026-54011.json",
+      "output_digest": "sha256:dc2f74358701242141df7aeedc971945e86b4628f5c2aa7bcd4cbe7bd58f87f5"
+    },
+    {
+      "identifier": "CVE-2026-54012",
+      "path": "records/python/CVE-2026-54012.json",
+      "output_digest": "sha256:c68ab85c789755377d7918bc077a046a31c8891757bc2652e4a8cb5f2ce9b688"
+    },
+    {
+      "identifier": "CVE-2026-54013",
+      "path": "records/python/CVE-2026-54013.json",
+      "output_digest": "sha256:2e0d4e7603e215cc2f73f42c65b1b242ce8fb0618229dd8946eff866b3789b04"
+    },
+    {
+      "identifier": "CVE-2026-54017",
+      "path": "records/python/CVE-2026-54017.json",
+      "output_digest": "sha256:4b482a9eacab9b7979b4e07359884213f28556f2a759c92b48ad30c8882b5489"
+    },
+    {
+      "identifier": "CVE-2026-54018",
+      "path": "records/python/CVE-2026-54018.json",
+      "output_digest": "sha256:2bc7fea5189e601455f0fc146ad7ef3d20d962435dbf034ee05701e1f8cc491f"
+    },
+    {
+      "identifier": "CVE-2026-54058",
+      "path": "records/python/CVE-2026-54058.json",
+      "output_digest": "sha256:839f04d80c3526fb9dd55a7e20ecd0ad016904f6226d0b1825cd8597c4f06513"
+    },
+    {
+      "identifier": "CVE-2026-54059",
+      "path": "records/python/CVE-2026-54059.json",
+      "output_digest": "sha256:e1e3dd4a441b30497e8291111ac28388030b64a5b5831755d039d03c9cc1620c"
+    },
+    {
+      "identifier": "CVE-2026-54060",
+      "path": "records/python/CVE-2026-54060.json",
+      "output_digest": "sha256:c565a37cc0db1b442d7cf672690872456dc6486c0120db8c17635c9e5bf50208"
+    },
+    {
+      "identifier": "CVE-2026-54071",
+      "path": "records/python/CVE-2026-54071.json",
+      "output_digest": "sha256:0100f67e6a86687928e7f986dd65a03851230d6a60c5b440b495a633a3cce7be"
+    },
+    {
+      "identifier": "CVE-2026-54134",
+      "path": "records/python/CVE-2026-54134.json",
+      "output_digest": "sha256:01b69b863bd57610a6ded777edb30aa1959420768915f61fa439a01e735e7d6f"
+    },
+    {
+      "identifier": "CVE-2026-54234",
+      "path": "records/python/CVE-2026-54234.json",
+      "output_digest": "sha256:d2b7686c4918f4ad563a7b25c2bca8f225573b3409790519623723867805cd78"
+    },
+    {
+      "identifier": "CVE-2026-54283",
+      "path": "records/python/CVE-2026-54283.json",
+      "output_digest": "sha256:3b4f4b27d7c6c6aa9102328236f1a991439967cf8d704275ca6efb5288b3c75c"
+    },
+    {
+      "identifier": "CVE-2026-54293",
+      "path": "records/python/CVE-2026-54293.json",
+      "output_digest": "sha256:0bf239f8a4fb0157335b5038350f7b37410921bde1cec0dfc7ee3e3d9ad927ed"
+    },
+    {
+      "identifier": "CVE-2026-54317",
+      "path": "records/python/CVE-2026-54317.json",
+      "output_digest": "sha256:898fbcda3116d9459bb900afca158e7af47652ca31542c7375f4a7be735aa42c"
+    },
+    {
+      "identifier": "CVE-2026-54446",
+      "path": "records/python/CVE-2026-54446.json",
+      "output_digest": "sha256:560bf1698f7cc4736fd5f65303c13174ffcca5ae7046002313f4fc50bacf630e"
+    },
+    {
+      "identifier": "CVE-2026-54447",
+      "path": "records/python/CVE-2026-54447.json",
+      "output_digest": "sha256:2b307500e9e79fe4a7f216e1a028819d76e6507497d4de0d5a080a18c2f66493"
+    },
+    {
+      "identifier": "CVE-2026-54449",
+      "path": "records/python/CVE-2026-54449.json",
+      "output_digest": "sha256:d56ab850fb43a8569d8b1a6ee451cc46345b0e913f0295c0c8389a72cd7548dd"
+    },
+    {
+      "identifier": "CVE-2026-54457",
+      "path": "records/python/CVE-2026-54457.json",
+      "output_digest": "sha256:6d0cd0a85daf1990b146a64b4d654a661a02470ccb44ea84ccab21206de6e3a0"
+    },
+    {
+      "identifier": "CVE-2026-54499",
+      "path": "records/python/CVE-2026-54499.json",
+      "output_digest": "sha256:003b515d3ee94683f42c6a70f4d5198ea6e9045d5ec29b9400838cb3fbd82f56"
+    },
+    {
+      "identifier": "CVE-2026-54527",
+      "path": "records/python/CVE-2026-54527.json",
+      "output_digest": "sha256:a22f3db12e93729e06d18c3b30d14ebb03cb9fd6b9e53b790a839a0315fd713d"
+    },
+    {
+      "identifier": "CVE-2026-54528",
+      "path": "records/python/CVE-2026-54528.json",
+      "output_digest": "sha256:4f82bae8231a56dd05e418ab72a622b91f445d67262f6072bf9f0c9f65f45cca"
+    },
+    {
+      "identifier": "CVE-2026-54547",
+      "path": "records/python/CVE-2026-54547.json",
+      "output_digest": "sha256:039b3dd113525bf5bcbfb463bc3a555431f7850cb18101993b9fdae2d67a539c"
+    },
+    {
+      "identifier": "CVE-2026-54549",
+      "path": "records/python/CVE-2026-54549.json",
+      "output_digest": "sha256:9df852ed72b0c71dcd1a33be80c78e9530aa383f34df1cc1bbe845cf91f2ef54"
+    },
+    {
+      "identifier": "CVE-2026-54552",
+      "path": "records/python/CVE-2026-54552.json",
+      "output_digest": "sha256:487518a2b5512e6149240b7fa3aaf40429b18de50c83d8e6c1b7af87f7721963"
+    },
+    {
+      "identifier": "CVE-2026-54567",
+      "path": "records/python/CVE-2026-54567.json",
+      "output_digest": "sha256:5f8b359d744c004ce9615a1a8c4817180206167ccc36bc1a29c13dbc2d6d3d4a"
+    },
+    {
+      "identifier": "CVE-2026-54574",
+      "path": "records/python/CVE-2026-54574.json",
+      "output_digest": "sha256:dd1e8a76ba8f7268d2980e30aef349b5c7e04abb50477ec6b2bc5cf5b77de59c"
+    },
+    {
+      "identifier": "CVE-2026-54621",
+      "path": "records/python/CVE-2026-54621.json",
+      "output_digest": "sha256:135ccae9776a09f51a8d8f1a64935e9aa5f55bb6f0207db871ca4cf8d4d7bdf1"
+    },
+    {
+      "identifier": "CVE-2026-54635",
+      "path": "records/python/CVE-2026-54635.json",
+      "output_digest": "sha256:06050755194e9c0ef91ca26cb6682f83df04f8d57a7ae623952cb61d7b58920a"
+    },
+    {
+      "identifier": "CVE-2026-54653",
+      "path": "records/python/CVE-2026-54653.json",
+      "output_digest": "sha256:309c8cfc4bf2a12ad8f85e371bf0049e2b2e00d74922bc2c0ceb24d00dfdf8fa"
+    },
+    {
+      "identifier": "CVE-2026-54654",
+      "path": "records/python/CVE-2026-54654.json",
+      "output_digest": "sha256:523c8305272524d199db48c9647b614045f199db6dee60f4fbd1b2d6d672eeb1"
+    },
+    {
+      "identifier": "CVE-2026-54655",
+      "path": "records/python/CVE-2026-54655.json",
+      "output_digest": "sha256:e54530091eb1a78a925c5c4d594888dc7e1e4aded899c67c8f0d3a9cf0ad344f"
+    },
+    {
+      "identifier": "CVE-2026-54656",
+      "path": "records/python/CVE-2026-54656.json",
+      "output_digest": "sha256:ed9c8f38f6720fa1584c13b663028f74a89c3aebfb9d89a2aa6e2c006d53369b"
+    },
+    {
+      "identifier": "CVE-2026-54690",
+      "path": "records/python/CVE-2026-54690.json",
+      "output_digest": "sha256:0d9606a3f6ee247605eca082f104b0280de76e333559aba7c693d7ef8b049a4a"
+    },
+    {
+      "identifier": "CVE-2026-54691",
+      "path": "records/python/CVE-2026-54691.json",
+      "output_digest": "sha256:05228a0b1389a8c1cf9f776daf67e48410d2d076d4cd08e391d1c45921407ca7"
+    },
+    {
+      "identifier": "CVE-2026-54695",
+      "path": "records/python/CVE-2026-54695.json",
+      "output_digest": "sha256:0dd8235cef24e435f4cacae58b7c2acb9ab8f9248469739210ec7524b2e7cf6b"
+    },
+    {
+      "identifier": "CVE-2026-54727",
+      "path": "records/python/CVE-2026-54727.json",
+      "output_digest": "sha256:ca04be57972c38895639218adbbaa2dc574a7d24d0ab4c4d2e39df6c1ec9f489"
+    },
+    {
+      "identifier": "CVE-2026-54760",
+      "path": "records/python/CVE-2026-54760.json",
+      "output_digest": "sha256:c23859a29d2fe50ec667a50b759b7885d25f8fa516d15d149439eedebf206eff"
+    },
+    {
+      "identifier": "CVE-2026-54769",
+      "path": "records/python/CVE-2026-54769.json",
+      "output_digest": "sha256:cef6d13993492e00cc81d6065be7b51228fd9b048785bcb8275a412ef8a1bb05"
+    },
+    {
+      "identifier": "CVE-2026-54771",
+      "path": "records/python/CVE-2026-54771.json",
+      "output_digest": "sha256:70812922ae35ca2c874d826579cd3b9e0f696feccebc3d82e7130e4f4ef69688"
+    },
+    {
+      "identifier": "CVE-2026-55166",
+      "path": "records/python/CVE-2026-55166.json",
+      "output_digest": "sha256:cfd1e4ad54393878ca51bf2791d79ed0118ebc5f7e0909b24deaebce39ff95b8"
+    },
+    {
+      "identifier": "CVE-2026-55255",
+      "path": "records/python/CVE-2026-55255.json",
+      "output_digest": "sha256:36a38edb38f30d4c1ce8344b8da9bca09aa1bc8acfbac8a15010623a7c560f2d"
+    },
+    {
+      "identifier": "CVE-2026-55379",
+      "path": "records/python/CVE-2026-55379.json",
+      "output_digest": "sha256:2ac2e52500ba26326bd800eeb7338a95e3b6ccc4b60e746e702b6843188ba856"
+    },
+    {
+      "identifier": "CVE-2026-55380",
+      "path": "records/python/CVE-2026-55380.json",
+      "output_digest": "sha256:dc2540e45e31c788c6d21d2e66dc69f9cbc774fa87a38a856973b57d8d230a3a"
+    },
+    {
+      "identifier": "CVE-2026-55389",
+      "path": "records/python/CVE-2026-55389.json",
+      "output_digest": "sha256:b250a7e67423321f3395deb8c0d3527cc3b3b1a295970aafae73f53c5940ad35"
+    },
+    {
+      "identifier": "CVE-2026-55390",
+      "path": "records/python/CVE-2026-55390.json",
+      "output_digest": "sha256:7b50e7982093b5a170b5d1ed392f6017ef6492275cb80afa8984388a299e332c"
+    },
+    {
+      "identifier": "CVE-2026-55391",
+      "path": "records/python/CVE-2026-55391.json",
+      "output_digest": "sha256:b76663a538cc2a71e31283263b8e0fa1c78f59fff0c86207649b2ebad71eab0c"
+    },
+    {
+      "identifier": "CVE-2026-55404",
+      "path": "records/python/CVE-2026-55404.json",
+      "output_digest": "sha256:0ad672738fd0ad1b7b4b101d4b1ed64869849a82680692da5ea28de436322b7a"
+    },
+    {
+      "identifier": "CVE-2026-55415",
+      "path": "records/python/CVE-2026-55415.json",
+      "output_digest": "sha256:02d9146ee0a518b69436d51a272d2d52bc691e1060527d5ec6e57e85bcad0c3c"
+    },
+    {
+      "identifier": "CVE-2026-55426",
+      "path": "records/python/CVE-2026-55426.json",
+      "output_digest": "sha256:33c87e273cb077739d22c28306d144c97c62ae3530ef25115a4e2a019d3e7f01"
+    },
+    {
+      "identifier": "CVE-2026-55446",
+      "path": "records/python/CVE-2026-55446.json",
+      "output_digest": "sha256:69da4f595920c16ce344d25b1ed85bbee39c28437bc310bd1209331c17816a78"
+    },
+    {
+      "identifier": "CVE-2026-55447",
+      "path": "records/python/CVE-2026-55447.json",
+      "output_digest": "sha256:ffc70c16a273c3d5b49a29a7015cd2f01a5b9c8a7dc0328a940fe6acc20f81af"
+    },
+    {
+      "identifier": "CVE-2026-55450",
+      "path": "records/python/CVE-2026-55450.json",
+      "output_digest": "sha256:effed580cf119b991bf5b99a183fe984c14a5600be1bcd111624936054ea0d06"
+    },
+    {
+      "identifier": "CVE-2026-55488",
+      "path": "records/python/CVE-2026-55488.json",
+      "output_digest": "sha256:fdda55222d413add828d305dc5768fb0dd662b863d52411d413819ce7ad83678"
+    },
+    {
+      "identifier": "CVE-2026-55514",
+      "path": "records/python/CVE-2026-55514.json",
+      "output_digest": "sha256:b06f24ce94075221d4af0130e5d1d793b23b9bef12999729fe0891bd6177300e"
+    },
+    {
+      "identifier": "CVE-2026-55574",
+      "path": "records/python/CVE-2026-55574.json",
+      "output_digest": "sha256:79759c39743fb228a6886c525d7bccddb2ebf01f6a5dd5a327c9c0410e3f4ddc"
+    },
+    {
+      "identifier": "CVE-2026-55615",
+      "path": "records/python/CVE-2026-55615.json",
+      "output_digest": "sha256:bc31f10ef69369b6cd4b9d70377240ee25e235db5fc4cb4894da4268b5871a33"
+    },
+    {
+      "identifier": "CVE-2026-55786",
+      "path": "records/python/CVE-2026-55786.json",
+      "output_digest": "sha256:5f4ffc14a72015cbf54a726d1294e8f7f87df49dfea4be7e48d0fdbe92a35330"
+    },
+    {
+      "identifier": "CVE-2026-55787",
+      "path": "records/python/CVE-2026-55787.json",
+      "output_digest": "sha256:999c74af9d2ddda0ba19e6c09c3e60efa2dda1fad98a05539503ab1ef4baeca0"
+    },
+    {
+      "identifier": "CVE-2026-56258",
+      "path": "records/python/CVE-2026-56258.json",
+      "output_digest": "sha256:ab2d5b48f9e56bc8b898b26d198afcb91c56d29aa87c7f166c6b755c26f1fe2d"
+    },
+    {
+      "identifier": "CVE-2026-56259",
+      "path": "records/python/CVE-2026-56259.json",
+      "output_digest": "sha256:5db83eea7389c356d829d9053b34749f269f7f757c5dcbdb4d5e36831be5e197"
+    },
+    {
+      "identifier": "CVE-2026-56398",
+      "path": "records/python/CVE-2026-56398.json",
+      "output_digest": "sha256:e523d04c34b96291bd1221a971661e939f75e4d9b9c4cfcdb46a7534f32ef288"
+    },
+    {
+      "identifier": "CVE-2026-56400",
+      "path": "records/python/CVE-2026-56400.json",
+      "output_digest": "sha256:50d3d9e7adfd27bfcd9aa909600d7a77a4180ae6a5ff2ae27de0b46273af7b8d"
+    },
+    {
+      "identifier": "CVE-2026-56832",
+      "path": "records/python/CVE-2026-56832.json",
+      "output_digest": "sha256:78e5fda4cd757ac8b637aa2bef60c0cae58fd9f0a1bb93b26c4859383d4493fc"
+    },
+    {
+      "identifier": "CVE-2026-56833",
+      "path": "records/python/CVE-2026-56833.json",
+      "output_digest": "sha256:ecf354b586feaecc24dcbab2ac460390287a3737b6565b44819a8b7eb3eedb37"
+    },
+    {
+      "identifier": "CVE-2026-56834",
+      "path": "records/python/CVE-2026-56834.json",
+      "output_digest": "sha256:48dade6dac9549f844d5c64ae3ef64651714b5b313c2891d2e33e27f06d15565"
+    },
+    {
+      "identifier": "CVE-2026-56835",
+      "path": "records/python/CVE-2026-56835.json",
+      "output_digest": "sha256:d7a26d79cfd735e760f5c7fc2d89fbd1fcf23943fd65b22bb20009d4267b05b1"
+    },
+    {
+      "identifier": "CVE-2026-56836",
+      "path": "records/python/CVE-2026-56836.json",
+      "output_digest": "sha256:03499891e5dd2938ffe4f7272ad8fefd7e362cca0bc9ea523c85724a3692d361"
+    },
+    {
+      "identifier": "CVE-2026-56837",
+      "path": "records/python/CVE-2026-56837.json",
+      "output_digest": "sha256:81a29932058b3a44d1afddb6b940ef837341bf0cd8c48235bf76aa9620429148"
+    },
+    {
+      "identifier": "CVE-2026-56838",
+      "path": "records/python/CVE-2026-56838.json",
+      "output_digest": "sha256:2d36cafd060113e8f52ff9da9b0ce0b5ec66bc4950fe58ed7108fce3e39df875"
+    },
+    {
+      "identifier": "CVE-2026-56839",
+      "path": "records/python/CVE-2026-56839.json",
+      "output_digest": "sha256:7e49865ec071447f8a836e9cece10920525d9e6a699df5ca6642e66addbffa05"
+    },
+    {
+      "identifier": "CVE-2026-56840",
+      "path": "records/python/CVE-2026-56840.json",
+      "output_digest": "sha256:c6d43da1d5fed39efb4a58c2c74f683471ad2cad69159854319e0041c9105709"
+    },
+    {
+      "identifier": "CVE-2026-57112",
+      "path": "records/python/CVE-2026-57112.json",
+      "output_digest": "sha256:a59a03b741673e5645d9d9c527061fa7c8ab4a73b2f4dd194c305b6644d7d6f6"
+    },
+    {
+      "identifier": "CVE-2026-57113",
+      "path": "records/python/CVE-2026-57113.json",
+      "output_digest": "sha256:74caed95261970e25b33092b5020476c0b7512f47dcb5422aeecfa0b856ecf05"
+    },
+    {
+      "identifier": "CVE-2026-57114",
+      "path": "records/python/CVE-2026-57114.json",
+      "output_digest": "sha256:7d153642e00808d64e01cf14b69e60d889dc9707bc4004a644f3db27686e7e70"
+    },
+    {
+      "identifier": "CVE-2026-57116",
+      "path": "records/python/CVE-2026-57116.json",
+      "output_digest": "sha256:bbacbe466ea8b7c83862885852a7c7d73ae1a204ad75855e1e7af9ae3f7278ac"
+    },
+    {
+      "identifier": "CVE-2026-57117",
+      "path": "records/python/CVE-2026-57117.json",
+      "output_digest": "sha256:a0a6b26cdd9ea85d099b03440881fb9238b0191472279ad6dcdb320a7be587e2"
+    },
+    {
+      "identifier": "CVE-2026-57118",
+      "path": "records/python/CVE-2026-57118.json",
+      "output_digest": "sha256:4bfc6b7bc1aaeea30267617dae55673851df8af7707022f20de8c07b7a40c211"
+    },
+    {
+      "identifier": "CVE-2026-57119",
+      "path": "records/python/CVE-2026-57119.json",
+      "output_digest": "sha256:32f992f7ea42f6bafb95f575bc603da39d733fb99acbbe506d1896666eca6e05"
+    },
+    {
+      "identifier": "CVE-2026-57121",
+      "path": "records/python/CVE-2026-57121.json",
+      "output_digest": "sha256:b416b6f148b3c39184bf759c851602ae90c1ff5033926cf5b01b1a17bb45a425"
+    },
+    {
+      "identifier": "CVE-2026-57122",
+      "path": "records/python/CVE-2026-57122.json",
+      "output_digest": "sha256:57bb7d1f067e5d817a64458e897566fc79e3a526e209aa22a7446a04c2ec23bf"
+    },
+    {
+      "identifier": "CVE-2026-57123",
+      "path": "records/python/CVE-2026-57123.json",
+      "output_digest": "sha256:da0afdf1fd831f2d978b7e3695b39973a7b3934475e6c6b0e29ea7630d443ae7"
+    },
+    {
+      "identifier": "CVE-2026-57124",
+      "path": "records/python/CVE-2026-57124.json",
+      "output_digest": "sha256:aac8e3f84e06da9281fb40997f812d7142d9b750f79d55ddd1efd22299404534"
+    },
+    {
+      "identifier": "CVE-2026-57125",
+      "path": "records/python/CVE-2026-57125.json",
+      "output_digest": "sha256:2ff015992035379932ed101a74c644ce6bdc2964c99a418202be12018a0d68b1"
+    },
+    {
+      "identifier": "CVE-2026-57126",
+      "path": "records/python/CVE-2026-57126.json",
+      "output_digest": "sha256:de0e1047d765b647829de96860c2a4977cd3b2a22e1a00147a55bbd08381b579"
+    },
+    {
+      "identifier": "CVE-2026-57127",
+      "path": "records/python/CVE-2026-57127.json",
+      "output_digest": "sha256:f90d6b98eaee86d43827bb45af8b57d218152a603f8113ce24da7eaa004115fd"
+    },
+    {
+      "identifier": "CVE-2026-57129",
+      "path": "records/python/CVE-2026-57129.json",
+      "output_digest": "sha256:9aba4a1bfe21a214be78a1e7c97538482f6eecb674bfe4bd34494b353fe5cb91"
+    },
+    {
+      "identifier": "CVE-2026-57130",
+      "path": "records/python/CVE-2026-57130.json",
+      "output_digest": "sha256:f7526a209d4367f7d977cc15d9f3bfea33930d73e21d06658ccacd4485e24c02"
+    },
+    {
+      "identifier": "CVE-2026-57131",
+      "path": "records/python/CVE-2026-57131.json",
+      "output_digest": "sha256:fd255b33efb3465bc4703af1601e714ac6a70af342ed0a5d3f13c05a074240ef"
+    },
+    {
+      "identifier": "CVE-2026-57132",
+      "path": "records/python/CVE-2026-57132.json",
+      "output_digest": "sha256:2427a2e8524843ec83e792f6a6d390fd2340e809877ac3c59728079b11941a54"
+    },
+    {
+      "identifier": "CVE-2026-57142",
+      "path": "records/python/CVE-2026-57142.json",
+      "output_digest": "sha256:84902d9a00b2fe20cd2c5b9417a1ef023b88b6af1fd9c3cc2f5ff1f59b452d4a"
+    },
+    {
+      "identifier": "CVE-2026-57143",
+      "path": "records/python/CVE-2026-57143.json",
+      "output_digest": "sha256:44bcd7830285bd6b17108d20fd71d04755cbb45bddd7afa15f7b6d891c4d2dba"
+    },
+    {
+      "identifier": "CVE-2026-57144",
+      "path": "records/python/CVE-2026-57144.json",
+      "output_digest": "sha256:3ee24f43069e2cda97512a17f4bfeeaf068464c977a20ab876204b6310849d84"
+    },
+    {
+      "identifier": "CVE-2026-57145",
+      "path": "records/python/CVE-2026-57145.json",
+      "output_digest": "sha256:6aad51ea4c2bf64b16d459700e09e20c89d0bc90a4eb3ce4aef695db322064b9"
+    },
+    {
+      "identifier": "CVE-2026-57146",
+      "path": "records/python/CVE-2026-57146.json",
+      "output_digest": "sha256:4df163bfb5ecb491b6f50e8f61ba1be9a988793643dd59b58a5f91ee8d3bca1d"
+    },
+    {
+      "identifier": "CVE-2026-57147",
+      "path": "records/python/CVE-2026-57147.json",
+      "output_digest": "sha256:6ecbb32e0c473bfb731e79c403d15791ecbc8d7c7758930622e133c629bda035"
+    },
+    {
+      "identifier": "CVE-2026-57148",
+      "path": "records/python/CVE-2026-57148.json",
+      "output_digest": "sha256:337f64b65fc4e7bbf8275eddaac01c28abf41a221613508e4c3d513cbbf34cd4"
+    },
+    {
+      "identifier": "CVE-2026-57496",
+      "path": "records/python/CVE-2026-57496.json",
+      "output_digest": "sha256:8fa4e15f551cf7e80afb987428e5607c4e1164e4b11aa83f1395d6cf0287e87d"
+    },
+    {
+      "identifier": "CVE-2026-57516",
+      "path": "records/python/CVE-2026-57516.json",
+      "output_digest": "sha256:98373761947279bc3604b5eaf4a5a6e6481747323fcfa38ba2026023a13591e3"
+    },
+    {
+      "identifier": "CVE-2026-57571",
+      "path": "records/python/CVE-2026-57571.json",
+      "output_digest": "sha256:f1fd8ca8191c52695e6642b4e3ffd808b38dd656efc7b1a387eb96da1f14daff"
+    },
+    {
+      "identifier": "CVE-2026-57572",
+      "path": "records/python/CVE-2026-57572.json",
+      "output_digest": "sha256:bc368b224d356740f8d2db3b1120f51360ca3aa6546652a9f3ff0b5920870649"
+    },
+    {
+      "identifier": "CVE-2026-57573",
+      "path": "records/python/CVE-2026-57573.json",
+      "output_digest": "sha256:76d08a3b861654262e1d0178c97da246e83724a587d1d6e4033b0354fe40d2b8"
+    },
+    {
+      "identifier": "CVE-2026-57585",
+      "path": "records/python/CVE-2026-57585.json",
+      "output_digest": "sha256:32c72919e32ebed57857c28b28747b907ef6918be684a3aab28999e068826df7"
+    },
+    {
+      "identifier": "CVE-2026-58499",
+      "path": "records/python/CVE-2026-58499.json",
+      "output_digest": "sha256:03d28e1480df2c9d53d894153d99983dcad3e52c43cd680d51902bea7f982bff"
+    },
+    {
+      "identifier": "CVE-2026-59152",
+      "path": "records/python/CVE-2026-59152.json",
+      "output_digest": "sha256:81728a79a97a1cacdedbc1e8d20cde8fa04248b1b5f9e536e3c9a8a9231b2212"
+    },
+    {
+      "identifier": "CVE-2026-59153",
+      "path": "records/python/CVE-2026-59153.json",
+      "output_digest": "sha256:5ddca8d8bc8f8ba406201af8f5e1a388e1ca772f73f36fe54020aed1f797a22a"
+    },
+    {
+      "identifier": "CVE-2026-59197",
+      "path": "records/python/CVE-2026-59197.json",
+      "output_digest": "sha256:c24dc6edc5e37aa8cf42c3a3a9c111764deaaf3353d38a6805c7ddd4428a4b84"
+    },
+    {
+      "identifier": "CVE-2026-59199",
+      "path": "records/python/CVE-2026-59199.json",
+      "output_digest": "sha256:a8b2e5db29676709b44a8212d00baa907b881470e7d0b7920be10d4ce90838e2"
+    },
+    {
+      "identifier": "CVE-2026-59200",
+      "path": "records/python/CVE-2026-59200.json",
+      "output_digest": "sha256:fd2c354d489939cf571cef837d919deccdfdff8a76426155ac68ac1246ac86d4"
+    },
+    {
+      "identifier": "CVE-2026-59204",
+      "path": "records/python/CVE-2026-59204.json",
+      "output_digest": "sha256:104567de6e230f3481a4697f8bea021b0f175546db4913cbd6fec2d212c84aed"
+    },
+    {
+      "identifier": "CVE-2026-59205",
+      "path": "records/python/CVE-2026-59205.json",
+      "output_digest": "sha256:ee9027eb1bd732fdd77743bd33613d787f14b17e326b58b316b2a26c04b5ca93"
+    },
+    {
+      "identifier": "CVE-2026-59214",
+      "path": "records/python/CVE-2026-59214.json",
+      "output_digest": "sha256:3ca76ab7c9028c6d7e030cc3f1582bf4d0cc1135984db8bc70a70c16a268a9a4"
+    },
+    {
+      "identifier": "CVE-2026-59216",
+      "path": "records/python/CVE-2026-59216.json",
+      "output_digest": "sha256:63bbb29be8e5b0dc8962eb73d55e37fadcc9935638f6a52cfe48167929e8cda6"
+    },
+    {
+      "identifier": "CVE-2026-59219",
+      "path": "records/python/CVE-2026-59219.json",
+      "output_digest": "sha256:61a0f7a5adfbc66602c82ac45b42956e6a55db4e722a7692fd5f024077e3253e"
+    },
+    {
+      "identifier": "CVE-2026-59221",
+      "path": "records/python/CVE-2026-59221.json",
+      "output_digest": "sha256:70b0104abe5e591f2877364ed28392614f3c3f4e869e971523df501c51e2dc6d"
+    },
+    {
+      "identifier": "CVE-2026-59224",
+      "path": "records/python/CVE-2026-59224.json",
+      "output_digest": "sha256:f5b900163e503ae0740916835b4e74b88cd7edc79f5731ae6c00cacff8e099f8"
+    },
+    {
+      "identifier": "CVE-2026-59714",
+      "path": "records/python/CVE-2026-59714.json",
+      "output_digest": "sha256:7a7ac859ba95a174a7a7364c53c0410cda72a4ee77921ff6efa2b0000b25817b"
+    },
+    {
+      "identifier": "CVE-2026-59822",
+      "path": "records/python/CVE-2026-59822.json",
+      "output_digest": "sha256:15ea4220b78c566544a08624c8812c7d4312da7e57e6e97f85e12ab222533195"
+    },
+    {
+      "identifier": "CVE-2026-59884",
+      "path": "records/python/CVE-2026-59884.json",
+      "output_digest": "sha256:484f3d467c11c47e05fda6ce301210d12da2166e0e12300e8ed2c5b793dfcdfd"
+    },
+    {
+      "identifier": "CVE-2026-59885",
+      "path": "records/python/CVE-2026-59885.json",
+      "output_digest": "sha256:851b62a802f921ea308ddb597b88974f7bafa477f0abf2f360ef7b90b18a0dff"
+    },
+    {
+      "identifier": "CVE-2026-59886",
+      "path": "records/python/CVE-2026-59886.json",
+      "output_digest": "sha256:8eb215b24a423b5b400da2c31164314f852437360c8ea4141aed394eca2c6536"
+    },
+    {
+      "identifier": "CVE-2026-59922",
+      "path": "records/python/CVE-2026-59922.json",
+      "output_digest": "sha256:95eef3fa4424fdcf08c7c134957ec93956435148531fb96daea18ff5eefb2515"
+    },
+    {
+      "identifier": "CVE-2026-59925",
+      "path": "records/python/CVE-2026-59925.json",
+      "output_digest": "sha256:349f51c1febf83f859174d5c80a64039a985c1a6d6f32a4cd1511bb72741c448"
+    },
+    {
+      "identifier": "CVE-2026-59928",
+      "path": "records/python/CVE-2026-59928.json",
+      "output_digest": "sha256:4fcb08f4113ee762e4b68a16d57c3243e8c71a53c7fff7241422c530e0287936"
+    },
+    {
+      "identifier": "CVE-2026-59935",
+      "path": "records/python/CVE-2026-59935.json",
+      "output_digest": "sha256:3e9de8c34dc59d94ac45831b54787718684c1f7b4bd046587fbc18eeea6ce852"
+    },
+    {
+      "identifier": "CVE-2026-59936",
+      "path": "records/python/CVE-2026-59936.json",
+      "output_digest": "sha256:fd2d54f66aa23a4a47b693c4b2bdfcd1aa4ad027be4fd7eb9ff4d2e403c82910"
+    },
+    {
+      "identifier": "CVE-2026-59939",
+      "path": "records/python/CVE-2026-59939.json",
+      "output_digest": "sha256:e6e5b823b26d27bb095f245a8add68b955cc47bb5c08d6ab2dd4ab6943999f5a"
+    },
+    {
+      "identifier": "CVE-2026-59950",
+      "path": "records/python/CVE-2026-59950.json",
+      "output_digest": "sha256:649f0b01feb695c4102d6a658fff2661da5c4cfe81ebe4327932f0a3178e88dc"
+    },
+    {
+      "identifier": "CVE-2026-61667",
+      "path": "records/python/CVE-2026-61667.json",
+      "output_digest": "sha256:3a72e7ea2548886ced7b0efe0ce740c1c1908a0ad2de2ebf66cf9d31e9e59059"
+    },
+    {
+      "identifier": "CVE-2026-61668",
+      "path": "records/python/CVE-2026-61668.json",
+      "output_digest": "sha256:8ee06fd89a80ea71fe7a08468081d5b789eac2e54a2fd8b2de5dc8a53251ccb2"
+    },
+    {
+      "identifier": "CVE-2026-61736",
+      "path": "records/python/CVE-2026-61736.json",
+      "output_digest": "sha256:9ce025d73ca03e6f9e70130234c899ca7712e6701d11f46142524369689e671d"
+    },
+    {
+      "identifier": "CVE-2026-61740",
+      "path": "records/python/CVE-2026-61740.json",
+      "output_digest": "sha256:87792ca1aec9af4910f581528f237766a3f9edb04e259bd0cc9d870d6c03f6fc"
+    },
+    {
+      "identifier": "CVE-2026-66065",
+      "path": "records/python/CVE-2026-66065.json",
+      "output_digest": "sha256:c7d284b5907271586c4842d2930b9b8f9b06ea02c5ed30a99d70792a1bde1696"
+    },
+    {
+      "identifier": "CVE-2026-67322",
+      "path": "records/python/CVE-2026-67322.json",
+      "output_digest": "sha256:9248700524aa613940a8b78d2c572b801b02aa1caf3dd985b6d03b28c37d4a14"
+    },
+    {
+      "identifier": "CVE-2026-67323",
+      "path": "records/python/CVE-2026-67323.json",
+      "output_digest": "sha256:9b01a520a7fb51c1614194ffe1452c843f8d728baeca70a5e608ad457622bbd4"
+    },
+    {
+      "identifier": "CVE-2026-67324",
+      "path": "records/python/CVE-2026-67324.json",
+      "output_digest": "sha256:a148ab97c337bb419e4b4286e0eac7e7e82c36bf7b707211462ef0b67d5228d1"
+    },
+    {
+      "identifier": "CVE-2026-67325",
+      "path": "records/python/CVE-2026-67325.json",
+      "output_digest": "sha256:5ca27eb478d11272db8fcf121615f3a6605711fbeb0c0f0b961dd4ac10bb5824"
+    },
+    {
+      "identifier": "CVE-2026-67424",
+      "path": "records/python/CVE-2026-67424.json",
+      "output_digest": "sha256:e26637a7c7ff19dcfdd5d920d629d9096c80e2bd20c8780efdb9cf605ed9b759"
+    },
+    {
+      "identifier": "CVE-2026-67425",
+      "path": "records/python/CVE-2026-67425.json",
+      "output_digest": "sha256:6c56049e9bcebff585d9d070f952649f21711ead6c1bd84ccf472de039ca323c"
+    },
+    {
+      "identifier": "CVE-2026-67426",
+      "path": "records/python/CVE-2026-67426.json",
+      "output_digest": "sha256:962c5baef931523d7a75b918bb8f59c829827085cb55563f8b0a2c3dc95efe56"
+    },
+    {
+      "identifier": "CVE-2026-67427",
+      "path": "records/python/CVE-2026-67427.json",
+      "output_digest": "sha256:a361adf826b4ed5e4132e4fec921f64bbe7eace2543bf49ad2106cc21488d3b8"
+    },
+    {
+      "identifier": "CVE-2026-67428",
+      "path": "records/python/CVE-2026-67428.json",
+      "output_digest": "sha256:3af058ae4f0d6c17e7fd6ebbf3eff5215b9b7b6eaecc20536a23163c8a15039f"
+    },
+    {
+      "identifier": "CVE-2026-67429",
+      "path": "records/python/CVE-2026-67429.json",
+      "output_digest": "sha256:853a857f61e220d190a135abd0db32cfe0c710b0e0edbeb704d1b170c0afe666"
+    },
+    {
+      "identifier": "CVE-2026-69097",
+      "path": "records/python/CVE-2026-69097.json",
+      "output_digest": "sha256:1208a69f6e0b34ea3b088fe3d2332237b496cab1a1ec3845757ef088b86b9b99"
+    },
+    {
+      "identifier": "CVE-2026-69244",
+      "path": "records/python/CVE-2026-69244.json",
+      "output_digest": "sha256:318af9d3226ab51a1bb3928ea673681641e229ae143befaecc8e3880018b16f1"
+    },
+    {
+      "identifier": "CVE-2026-69247",
+      "path": "records/python/CVE-2026-69247.json",
+      "output_digest": "sha256:e0d15e01df0545fea2c9123d7f95a56560dab3ab5c561040b367050348d08704"
+    },
+    {
+      "identifier": "CVE-2026-69249",
+      "path": "records/python/CVE-2026-69249.json",
+      "output_digest": "sha256:1b9b8c9cce075a2e741cc69316cac1595f325ef42156dec953c88910e5811380"
+    },
+    {
+      "identifier": "CVE-2026-70479",
+      "path": "records/python/CVE-2026-70479.json",
+      "output_digest": "sha256:6ef8c0e40546c6b78abe365b4993e9d1c3bdec8eb4dcb7ecd44311329e6e0b41"
+    },
+    {
+      "identifier": "CVE-2026-70482",
+      "path": "records/python/CVE-2026-70482.json",
+      "output_digest": "sha256:91e28d64acc002713fdeceb30a6f9d30e43a16265e4ad4cce29c51654a8b502c"
+    },
+    {
+      "identifier": "CVE-2026-70485",
+      "path": "records/python/CVE-2026-70485.json",
+      "output_digest": "sha256:cbf86e5f368e75fc3941bf83927e791d54402f909c63a529d76e9bb1bf85e172"
+    },
+    {
+      "identifier": "CVE-2026-70486",
+      "path": "records/python/CVE-2026-70486.json",
+      "output_digest": "sha256:b6e918d6dc75dfd6c074cb0351bb1beae9e03838500dc1a65d2570026a8484c6"
+    },
+    {
+      "identifier": "CVE-2026-70492",
+      "path": "records/python/CVE-2026-70492.json",
+      "output_digest": "sha256:cbda0bae6129b9dbbd809bdc4bed1dcbc3c08c4994004f86624d5ba3aaf5f6cd"
+    },
+    {
+      "identifier": "CVE-2026-70494",
+      "path": "records/python/CVE-2026-70494.json",
+      "output_digest": "sha256:b00768f3ebd4b2551a73ce6a43f74cbea824b9a53173dc2312a8eb3eda0f61ff"
+    },
+    {
+      "identifier": "CVE-2026-70646",
+      "path": "records/python/CVE-2026-70646.json",
+      "output_digest": "sha256:002adc9f303e81c3569eb3ccae9c95562e70490de0cbf059b9ef08cdf0f700d7"
+    },
+    {
+      "identifier": "CVE-2026-7301",
+      "path": "records/python/CVE-2026-7301.json",
+      "output_digest": "sha256:80c74be1f5dcef23719504e4d1318cec284dd30b4e1f2742d01856cc90561f11"
+    },
+    {
+      "identifier": "CVE-2026-7302",
+      "path": "records/python/CVE-2026-7302.json",
+      "output_digest": "sha256:ecd1b8468540283556831313f7bb9c0be1624fa84bf4b1862784954cf3d80c3a"
+    },
+    {
+      "identifier": "CVE-2026-7304",
+      "path": "records/python/CVE-2026-7304.json",
+      "output_digest": "sha256:bba3ba8adf914123182765c2d8993a1697cbf4f1f321ffba07f6bb03dbf5237b"
+    },
+    {
+      "identifier": "CVE-2026-7813",
+      "path": "records/python/CVE-2026-7813.json",
+      "output_digest": "sha256:8eeb716753d2d9f1deaf291e71cc40204e36af8311f7a78e4471b674aed382d0"
+    },
+    {
+      "identifier": "CVE-2026-7815",
+      "path": "records/python/CVE-2026-7815.json",
+      "output_digest": "sha256:68d330413327d7f938b1cc690bd31b3b8410dd15f6f706d9541f93ffb131854e"
+    },
+    {
+      "identifier": "CVE-2026-7816",
+      "path": "records/python/CVE-2026-7816.json",
+      "output_digest": "sha256:32a720e8b80a4bcd04f0e648c9b3989de74d7ec747191d5abb248f827d8ff840"
+    },
+    {
+      "identifier": "CVE-2026-7817",
+      "path": "records/python/CVE-2026-7817.json",
+      "output_digest": "sha256:a82ca5a59c8d519d066e0d973d5aa81e8a343a8f0c36d14e1cc113bbfd021038"
+    },
+    {
+      "identifier": "CVE-2026-7818",
+      "path": "records/python/CVE-2026-7818.json",
+      "output_digest": "sha256:591dde1d3ce7516e1fe028f02dcc4f1a293f5396b07e8361e666b85dc6235eb8"
+    },
+    {
+      "identifier": "CVE-2026-7819",
+      "path": "records/python/CVE-2026-7819.json",
+      "output_digest": "sha256:f8a6077f7ac785d69a31e1bc0d73a199ecf33a3797d65f8bd4f22aa59a87a633"
+    },
+    {
+      "identifier": "CVE-2026-8596",
+      "path": "records/python/CVE-2026-8596.json",
+      "output_digest": "sha256:1cd355beabd9bb745c452503d97a34705ba29d28cfbf5e4bd40e118efba14f4b"
+    },
+    {
+      "identifier": "CVE-2026-8838",
+      "path": "records/python/CVE-2026-8838.json",
+      "output_digest": "sha256:6a05a2737ff372a2b01399e24be75bcbd492af7f43ae4f3334aaa6dc1b74b221"
+    },
+    {
+      "identifier": "CVE-2026-9291",
+      "path": "records/python/CVE-2026-9291.json",
+      "output_digest": "sha256:bf15dfdcc50040d123e177868a6524f470d8624e223b772d9dee8c3042f7309b"
+    }
+  ],
+  "corpus_digest": "sha256:7b817be88e4a3f006f8f06fc4e42a85eb98a4fbda8300eabfee0877642ce5e90"
+}

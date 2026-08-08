@@ -1,0 +1,558 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 110,
+  "records": [
+    {
+      "identifier": "CVE-2024-7708",
+      "path": "records/java/CVE-2024-7708.json",
+      "output_digest": "sha256:5f74189536569acbe8aa575273c249cc9ff538b965c1fd172692b409a767837c"
+    },
+    {
+      "identifier": "CVE-2025-27511",
+      "path": "records/java/CVE-2025-27511.json",
+      "output_digest": "sha256:01321765dfaa4bbaa28dd3472ee61ee383365069fb0e5f5183ae5fe122a2fd44"
+    },
+    {
+      "identifier": "CVE-2025-52465",
+      "path": "records/java/CVE-2025-52465.json",
+      "output_digest": "sha256:ce86edee3ac1814ee15f4d391e448c49d3265d6c1392e8049c4080c3624bb7d9"
+    },
+    {
+      "identifier": "CVE-2025-53114",
+      "path": "records/java/CVE-2025-53114.json",
+      "output_digest": "sha256:d2e0a89c404fcf82eaa25566b2750dc40c1bc91b2a703ba739ac564e91f37e6e"
+    },
+    {
+      "identifier": "CVE-2026-10050",
+      "path": "records/java/CVE-2026-10050.json",
+      "output_digest": "sha256:07a965953d92ff6b47d53083253c88f97d3b330f6cc941ff447b8408ecc13033"
+    },
+    {
+      "identifier": "CVE-2026-11400",
+      "path": "records/java/CVE-2026-11400.json",
+      "output_digest": "sha256:69a7b4f641e049088c3867dfe5b84a7c1409073f4701def830ec7eb7a8eee58f"
+    },
+    {
+      "identifier": "CVE-2026-2092",
+      "path": "records/java/CVE-2026-2092.json",
+      "output_digest": "sha256:a26d861bffa1008e027d5e243ee2b972704ef9abb969b7180c1c794e95b04c17"
+    },
+    {
+      "identifier": "CVE-2026-32966",
+      "path": "records/java/CVE-2026-32966.json",
+      "output_digest": "sha256:f2afa15bfa6e1155aec44a880f892710e2952091ca5e26238b283122c22f05fa"
+    },
+    {
+      "identifier": "CVE-2026-32967",
+      "path": "records/java/CVE-2026-32967.json",
+      "output_digest": "sha256:02f69704adc3a324974a4c5c776c12b5db13462ad5de8cef0d2987ba43802a41"
+    },
+    {
+      "identifier": "CVE-2026-34151",
+      "path": "records/java/CVE-2026-34151.json",
+      "output_digest": "sha256:7f47d1bd1a7ac1d76fec4ff2d8750e79c7e768ac82181643a9fa72c4b419721e"
+    },
+    {
+      "identifier": "CVE-2026-39379",
+      "path": "records/java/CVE-2026-39379.json",
+      "output_digest": "sha256:b5c49e2dd2a56ae9090e54610fcc3137e67dc54b19ce6992e505816b10edf714"
+    },
+    {
+      "identifier": "CVE-2026-40983",
+      "path": "records/java/CVE-2026-40983.json",
+      "output_digest": "sha256:c84b799e543a023fc63dca78f63b2a076f6eaf7b657d9ba5b4952258c48532a7"
+    },
+    {
+      "identifier": "CVE-2026-40984",
+      "path": "records/java/CVE-2026-40984.json",
+      "output_digest": "sha256:6b71dbba9ac462e3d540e1df3355d1ea3a44e418456cf394be3c9a3a9a21160c"
+    },
+    {
+      "identifier": "CVE-2026-40987",
+      "path": "records/java/CVE-2026-40987.json",
+      "output_digest": "sha256:d868f9a8fa90eb7d523014605f046538658f46b0467293878da2e4a57a114eb1"
+    },
+    {
+      "identifier": "CVE-2026-41006",
+      "path": "records/java/CVE-2026-41006.json",
+      "output_digest": "sha256:5535e3868a12c8953b3be97ea8a9e98403d029d34a5273648e3a82728c8a1aa0"
+    },
+    {
+      "identifier": "CVE-2026-41007",
+      "path": "records/java/CVE-2026-41007.json",
+      "output_digest": "sha256:d27e5e32371f9407f0d0475a2ad6b13404bfabb77aad65f91e208bc35a7d84b8"
+    },
+    {
+      "identifier": "CVE-2026-41573",
+      "path": "records/java/CVE-2026-41573.json",
+      "output_digest": "sha256:074e14b591f75950e5be1538b53c212b56b35871d0a21c09b5d8e79a7d621875"
+    },
+    {
+      "identifier": "CVE-2026-41695",
+      "path": "records/java/CVE-2026-41695.json",
+      "output_digest": "sha256:42de28305872f35a40a46aa0e040e8a393e6fa27042f65ff6092d5f380618182"
+    },
+    {
+      "identifier": "CVE-2026-41720",
+      "path": "records/java/CVE-2026-41720.json",
+      "output_digest": "sha256:71b42a692a9f92a406bcc05834e30ea24dc699fa8e512661b4022b8082864bb5"
+    },
+    {
+      "identifier": "CVE-2026-41731",
+      "path": "records/java/CVE-2026-41731.json",
+      "output_digest": "sha256:29de643c3effb3b9b960a40ce295a3601c2dddb7271ac01ee85c2ed3d2c4b1dc"
+    },
+    {
+      "identifier": "CVE-2026-41842",
+      "path": "records/java/CVE-2026-41842.json",
+      "output_digest": "sha256:8defb2552b8449c6615b3621997c00fff6ec2607618b51ede3cf151bb0d6bfc0"
+    },
+    {
+      "identifier": "CVE-2026-41845",
+      "path": "records/java/CVE-2026-41845.json",
+      "output_digest": "sha256:1f11fe03bcd1ece76b4c0c6562bfaae148106af78a5a510b421e1f391c582031"
+    },
+    {
+      "identifier": "CVE-2026-41849",
+      "path": "records/java/CVE-2026-41849.json",
+      "output_digest": "sha256:e6e053eac3fcb8ad2e634dc0b4f302fd9f4dfbab25c4a53b14dc73a08a752902"
+    },
+    {
+      "identifier": "CVE-2026-41850",
+      "path": "records/java/CVE-2026-41850.json",
+      "output_digest": "sha256:dc73aa91ca57d93be8efaded67cbc2b8c48071be7ffb65057278d03df9edec64"
+    },
+    {
+      "identifier": "CVE-2026-43910",
+      "path": "records/java/CVE-2026-43910.json",
+      "output_digest": "sha256:e7e5b8a6ffe9af4e3ab37efbafbb477faea3764b099c2d34dc6552cbad35827d"
+    },
+    {
+      "identifier": "CVE-2026-44179",
+      "path": "records/java/CVE-2026-44179.json",
+      "output_digest": "sha256:317f9d3121c3a0f2aedc1a98234e7eace8d8e8c8ec564bef5726a60ea28a8146"
+    },
+    {
+      "identifier": "CVE-2026-44203",
+      "path": "records/java/CVE-2026-44203.json",
+      "output_digest": "sha256:99bd9f99a0aad0f7dacf82924ae7363f286a2bdcabff0358ff9d516a3784017a"
+    },
+    {
+      "identifier": "CVE-2026-44249",
+      "path": "records/java/CVE-2026-44249.json",
+      "output_digest": "sha256:662271e6b994c93babb3b0c895dc203db044c170c2ef16a07fbbbccc9581e6ef"
+    },
+    {
+      "identifier": "CVE-2026-44250",
+      "path": "records/java/CVE-2026-44250.json",
+      "output_digest": "sha256:bdfbe8f1f8c42284d3dd679461b4d0ff2859c56f5492575c4e232de343878a6e"
+    },
+    {
+      "identifier": "CVE-2026-44795",
+      "path": "records/java/CVE-2026-44795.json",
+      "output_digest": "sha256:9dbed81810844fc1db83575dc9625bb9d5fdc5e6710f57fed0f05e212888e07b"
+    },
+    {
+      "identifier": "CVE-2026-44890",
+      "path": "records/java/CVE-2026-44890.json",
+      "output_digest": "sha256:9b3f9bf7ebb3f8b429c4d3b3988903cc3ddc4fc97a859465ef2ed05a1b2e1ccc"
+    },
+    {
+      "identifier": "CVE-2026-44891",
+      "path": "records/java/CVE-2026-44891.json",
+      "output_digest": "sha256:5ab8e26a400c9a48cb2956ce34b2215e9e2028841f3950cfc59e87218fc6b414"
+    },
+    {
+      "identifier": "CVE-2026-44892",
+      "path": "records/java/CVE-2026-44892.json",
+      "output_digest": "sha256:90a4cc533fe7ceb0eaba209a61df9ada19a5340a9a05208cccc6f4bc0098dade"
+    },
+    {
+      "identifier": "CVE-2026-44893",
+      "path": "records/java/CVE-2026-44893.json",
+      "output_digest": "sha256:8abdd778ea2f30f38eada3ddf02008899760ce269501821e3dbd5a94e80db5c9"
+    },
+    {
+      "identifier": "CVE-2026-44894",
+      "path": "records/java/CVE-2026-44894.json",
+      "output_digest": "sha256:dc361c9eccd3ec59f2383ea005fa07c44c851597b6d29065502621fe322c574f"
+    },
+    {
+      "identifier": "CVE-2026-45048",
+      "path": "records/java/CVE-2026-45048.json",
+      "output_digest": "sha256:6eba61640c8b01c319fe9679e35e76eb134c7d0d0a961b5e091c9b93c9f2a836"
+    },
+    {
+      "identifier": "CVE-2026-45049",
+      "path": "records/java/CVE-2026-45049.json",
+      "output_digest": "sha256:9dc976f2e90873992b0731c9336b575e72ec3dd3bbf719a75c8dfd59ff09f3e4"
+    },
+    {
+      "identifier": "CVE-2026-45051",
+      "path": "records/java/CVE-2026-45051.json",
+      "output_digest": "sha256:5d4d7fe54a25c2bc4dcd95f1245dcc7a88f3ec3b07c41edd1281d17a147e6de2"
+    },
+    {
+      "identifier": "CVE-2026-45052",
+      "path": "records/java/CVE-2026-45052.json",
+      "output_digest": "sha256:abd456e3071f83aedc395e19f020e9d7ba33ecbdf8b5a1e72f9d58299ba090dc"
+    },
+    {
+      "identifier": "CVE-2026-45416",
+      "path": "records/java/CVE-2026-45416.json",
+      "output_digest": "sha256:09b859857c955e5aa705a8efaf18f394ac7c48bcb55900dc6870d9a93ffdfada"
+    },
+    {
+      "identifier": "CVE-2026-45674",
+      "path": "records/java/CVE-2026-45674.json",
+      "output_digest": "sha256:5b708f7ddedf5c394eeab92f0ddef5ea32114bf0943671723504b25894ad0c1c"
+    },
+    {
+      "identifier": "CVE-2026-45794",
+      "path": "records/java/CVE-2026-45794.json",
+      "output_digest": "sha256:1a5e1f33d8387d3f21f68ec1597cfe1c60e6027ff19aad89c262889b64836cca"
+    },
+    {
+      "identifier": "CVE-2026-46340",
+      "path": "records/java/CVE-2026-46340.json",
+      "output_digest": "sha256:9be3b60bc0b857ffc86c7bce67eed7198b096f52b8d6bc9fe5e084e1fd9232b4"
+    },
+    {
+      "identifier": "CVE-2026-46487",
+      "path": "records/java/CVE-2026-46487.json",
+      "output_digest": "sha256:24ffabfb2ee99f8fd5ec09e58697ecfd64da2f19adc587a558fc579b45485c42"
+    },
+    {
+      "identifier": "CVE-2026-46495",
+      "path": "records/java/CVE-2026-46495.json",
+      "output_digest": "sha256:8c42cb8763ef2c72618c6f7555a8ebddbdccd7f6ec05f94bb9199a2c219276ec"
+    },
+    {
+      "identifier": "CVE-2026-46498",
+      "path": "records/java/CVE-2026-46498.json",
+      "output_digest": "sha256:fbf7fb37b5185946f84a8b7c1157c1799e4907b2efaad8b2a649bd924dc51609"
+    },
+    {
+      "identifier": "CVE-2026-46560",
+      "path": "records/java/CVE-2026-46560.json",
+      "output_digest": "sha256:85909d6a39eb2c2d8a12e998eb7085f5c1a6689dbfd105fbdc92a2bd5a128359"
+    },
+    {
+      "identifier": "CVE-2026-46619",
+      "path": "records/java/CVE-2026-46619.json",
+      "output_digest": "sha256:401b2139e3a65512c438fec0f6d1856a73446fa61e44a7ee3a6e35526fa61c07"
+    },
+    {
+      "identifier": "CVE-2026-46623",
+      "path": "records/java/CVE-2026-46623.json",
+      "output_digest": "sha256:90e46e5171c50bf6be2a8d226a54238416735bfc93c386554aaf27418e997beb"
+    },
+    {
+      "identifier": "CVE-2026-47424",
+      "path": "records/java/CVE-2026-47424.json",
+      "output_digest": "sha256:e1df85342fbf23e9fb09dbd7e94d37628a1b2d4f62336a84e58b91afb29afad2"
+    },
+    {
+      "identifier": "CVE-2026-47426",
+      "path": "records/java/CVE-2026-47426.json",
+      "output_digest": "sha256:e8634870fac7d8c4e4f43cd51f9f1ab0180f49bb4e4731c3e4d9b96256e52eee"
+    },
+    {
+      "identifier": "CVE-2026-47691",
+      "path": "records/java/CVE-2026-47691.json",
+      "output_digest": "sha256:f396335e754cdd27b0d206d1ad7c3ed1f2bd9b589b4a35cffddd5be2ab479692"
+    },
+    {
+      "identifier": "CVE-2026-48006",
+      "path": "records/java/CVE-2026-48006.json",
+      "output_digest": "sha256:36aeac2d9da8c1ba564604972be2e220b09493c0825755cb347c82868a12f958"
+    },
+    {
+      "identifier": "CVE-2026-48059",
+      "path": "records/java/CVE-2026-48059.json",
+      "output_digest": "sha256:3ccc55ece6bf5fefa47a01ea1685af6b5832226833f4b57b11ca113d9077b1bd"
+    },
+    {
+      "identifier": "CVE-2026-48204",
+      "path": "records/java/CVE-2026-48204.json",
+      "output_digest": "sha256:caa0b7126cc0904d4afb3c3ff0ca26a4362a1e0bd7f37172752c5977bbf1863f"
+    },
+    {
+      "identifier": "CVE-2026-48205",
+      "path": "records/java/CVE-2026-48205.json",
+      "output_digest": "sha256:377ec93adaf82ff6b5a51c09d7cc20e722c10d79898785860873dec44df13dd9"
+    },
+    {
+      "identifier": "CVE-2026-48748",
+      "path": "records/java/CVE-2026-48748.json",
+      "output_digest": "sha256:20e5dbb75b1243e10acfe2ec8df57555cfb647f7a1255204226c992629371350"
+    },
+    {
+      "identifier": "CVE-2026-49268",
+      "path": "records/java/CVE-2026-49268.json",
+      "output_digest": "sha256:715a9166c3dea3e92606727097edbd8f276c4b8ed1e2b8ace388a312c4aadbd0"
+    },
+    {
+      "identifier": "CVE-2026-49464",
+      "path": "records/java/CVE-2026-49464.json",
+      "output_digest": "sha256:b9ea2c41e9b44b62474e3e7b503d0129d1ba203f4ffeb7c5a5daf57c569a8101"
+    },
+    {
+      "identifier": "CVE-2026-49485",
+      "path": "records/java/CVE-2026-49485.json",
+      "output_digest": "sha256:b6010a05a228ad738f3910cb99c16dde6c3d99498836b1b67fb37ee0565ebcb5"
+    },
+    {
+      "identifier": "CVE-2026-49832",
+      "path": "records/java/CVE-2026-49832.json",
+      "output_digest": "sha256:8c93ed34020a07faa74b89b901d0c240ca6d14fb8edb80f9121bab6c9415caba"
+    },
+    {
+      "identifier": "CVE-2026-50010",
+      "path": "records/java/CVE-2026-50010.json",
+      "output_digest": "sha256:e3f6eb2033499ab8fd3f93bb8f6a06618bbd96493d48306a7d3bfa8a89527b27"
+    },
+    {
+      "identifier": "CVE-2026-50011",
+      "path": "records/java/CVE-2026-50011.json",
+      "output_digest": "sha256:0fb9976c067b8844ae5f46d563a4affa373b6db2f3e6b6a0ed8c04146ed7d630"
+    },
+    {
+      "identifier": "CVE-2026-50270",
+      "path": "records/java/CVE-2026-50270.json",
+      "output_digest": "sha256:af2e41873a3005e89caa01f947d13e6314b234a854fd215c52163357b0183217"
+    },
+    {
+      "identifier": "CVE-2026-50559",
+      "path": "records/java/CVE-2026-50559.json",
+      "output_digest": "sha256:e802c4be4dcc96995f0f60431f96bce23493db8c819ab8b89fe1d34ab8f87268"
+    },
+    {
+      "identifier": "CVE-2026-50645",
+      "path": "records/java/CVE-2026-50645.json",
+      "output_digest": "sha256:88372326d21f8a30bfe072437434ca0d6abfa289e17dd7feda5f0cff85cc22c3"
+    },
+    {
+      "identifier": "CVE-2026-53441",
+      "path": "records/java/CVE-2026-53441.json",
+      "output_digest": "sha256:dd8ebcc4c352eaad26ecad099f1f20c0c3c576956cd8644e573cf431ccdcf809"
+    },
+    {
+      "identifier": "CVE-2026-53712",
+      "path": "records/java/CVE-2026-53712.json",
+      "output_digest": "sha256:7acd2fd7f84d864e46c81b83fc18a4857a88cb9949ea475eb7e2d606f922f5dd"
+    },
+    {
+      "identifier": "CVE-2026-53913",
+      "path": "records/java/CVE-2026-53913.json",
+      "output_digest": "sha256:de1c8f3880d500d6e2b905104d31f473cc48e33b503c45cde1616529f27c17a3"
+    },
+    {
+      "identifier": "CVE-2026-54076",
+      "path": "records/java/CVE-2026-54076.json",
+      "output_digest": "sha256:17ed61896f0ea813441ee701e5e17467edac4967eb9c04d3c2577d70f9512d5d"
+    },
+    {
+      "identifier": "CVE-2026-54077",
+      "path": "records/java/CVE-2026-54077.json",
+      "output_digest": "sha256:a711973da842f1d9f0c78a89c3d1de3cffb6af985c04aaaf66d8fff325af4dd4"
+    },
+    {
+      "identifier": "CVE-2026-54078",
+      "path": "records/java/CVE-2026-54078.json",
+      "output_digest": "sha256:adc1fd5c12b61b747fb13a88a403a5221854c987c21c04ebd7434d143245f6f4"
+    },
+    {
+      "identifier": "CVE-2026-54079",
+      "path": "records/java/CVE-2026-54079.json",
+      "output_digest": "sha256:77f565f6f87f4e96bc59203217f11efa1dcf1f0867cae49aaace85f44c5e1cbe"
+    },
+    {
+      "identifier": "CVE-2026-54291",
+      "path": "records/java/CVE-2026-54291.json",
+      "output_digest": "sha256:02b9182e8fcb883c6d1a8a2fac9c02986d2bc25ea50d8e341617f1b9fcd27244"
+    },
+    {
+      "identifier": "CVE-2026-54512",
+      "path": "records/java/CVE-2026-54512.json",
+      "output_digest": "sha256:4020a04360675aa323732489a0c442a4377f429f14941503b5b3aaf5062f2a9e"
+    },
+    {
+      "identifier": "CVE-2026-54513",
+      "path": "records/java/CVE-2026-54513.json",
+      "output_digest": "sha256:ad7e157ec312eae49535198987ca3747a545cdb7279a6fb04171c4dd3215706a"
+    },
+    {
+      "identifier": "CVE-2026-54609",
+      "path": "records/java/CVE-2026-54609.json",
+      "output_digest": "sha256:7baa3ab6e625e8bfc16f38d98e86363c3efa80667412eecac088797ee3903adb"
+    },
+    {
+      "identifier": "CVE-2026-54617",
+      "path": "records/java/CVE-2026-54617.json",
+      "output_digest": "sha256:5ad23e12456ee56a632b3c77fcab1592409809804336437eb03fde05191fe6fd"
+    },
+    {
+      "identifier": "CVE-2026-54640",
+      "path": "records/java/CVE-2026-54640.json",
+      "output_digest": "sha256:342a2aff7d761e92789d2c953b6cfeb86c99f4f1e1a399b2b4d1915f9b9bf50e"
+    },
+    {
+      "identifier": "CVE-2026-54641",
+      "path": "records/java/CVE-2026-54641.json",
+      "output_digest": "sha256:91efe1da60e319a4ffd61a806835a0f6d732b4c15ac9c46cbb4d82cebaa5dc31"
+    },
+    {
+      "identifier": "CVE-2026-55225",
+      "path": "records/java/CVE-2026-55225.json",
+      "output_digest": "sha256:7badaea1b5220cce7679e406c75cb44a2eaea045523df9a22baa2f9325f0681f"
+    },
+    {
+      "identifier": "CVE-2026-55405",
+      "path": "records/java/CVE-2026-55405.json",
+      "output_digest": "sha256:160fa425c50b53d9ec6876130289cfceeef1384eb32c66db7ec01b8ebcb703e4"
+    },
+    {
+      "identifier": "CVE-2026-55470",
+      "path": "records/java/CVE-2026-55470.json",
+      "output_digest": "sha256:3a96cbd5da1a4e4ef4abf5ea93fa6b3810a26877f2ffd0498e9424ddc8006ba7"
+    },
+    {
+      "identifier": "CVE-2026-55471",
+      "path": "records/java/CVE-2026-55471.json",
+      "output_digest": "sha256:4c0b9679562dff13d027e702d1d742a505a8501eb42213c56686e67614da3f10"
+    },
+    {
+      "identifier": "CVE-2026-55760",
+      "path": "records/java/CVE-2026-55760.json",
+      "output_digest": "sha256:8390fd538ebfc05ce0419ae36e63840de1afc5e3919245429cf6530724b23d15"
+    },
+    {
+      "identifier": "CVE-2026-55771",
+      "path": "records/java/CVE-2026-55771.json",
+      "output_digest": "sha256:4893c052bf279d0893191ad9a008627e309204ac4d685f9f372dae88a7d20541"
+    },
+    {
+      "identifier": "CVE-2026-55772",
+      "path": "records/java/CVE-2026-55772.json",
+      "output_digest": "sha256:16771f5bfbd2704a35c8b22b473dae1a170180004d660d9b6fffeb9c6542a404"
+    },
+    {
+      "identifier": "CVE-2026-55773",
+      "path": "records/java/CVE-2026-55773.json",
+      "output_digest": "sha256:ede7f724f377d34b7386d6e0dfa37cf9b4eb00cbe37be702ca5b9d30b5f990dd"
+    },
+    {
+      "identifier": "CVE-2026-55831",
+      "path": "records/java/CVE-2026-55831.json",
+      "output_digest": "sha256:acc8b2febad089fdfa7249dc4eecb576b4236d7dd929aed3b38b5fa4e3bd69c2"
+    },
+    {
+      "identifier": "CVE-2026-55833",
+      "path": "records/java/CVE-2026-55833.json",
+      "output_digest": "sha256:6c9af537583fe6d606ab32389829611757a03cc47548f9d03fe77f9cf57eca0e"
+    },
+    {
+      "identifier": "CVE-2026-55851",
+      "path": "records/java/CVE-2026-55851.json",
+      "output_digest": "sha256:b7e9b1ada1eba6cd19d7ece4919963a0e740ba6a3718706326f96a03791191e2"
+    },
+    {
+      "identifier": "CVE-2026-56740",
+      "path": "records/java/CVE-2026-56740.json",
+      "output_digest": "sha256:9fab8577f964e3c2b402159803405581a6b12155d68527e9d38c0acae82d43de"
+    },
+    {
+      "identifier": "CVE-2026-56741",
+      "path": "records/java/CVE-2026-56741.json",
+      "output_digest": "sha256:6c9607745bfbc300dea3f62bd0ff2e5ab0f4be187c612fadf11252c485347b2d"
+    },
+    {
+      "identifier": "CVE-2026-56745",
+      "path": "records/java/CVE-2026-56745.json",
+      "output_digest": "sha256:276851958fd92f3c04587b0e725859eb42ef97a187952e4b9231b529f5610ae6"
+    },
+    {
+      "identifier": "CVE-2026-56816",
+      "path": "records/java/CVE-2026-56816.json",
+      "output_digest": "sha256:6e10456c8f8d1a5f0396d8c08d23525f36d7dcf69194f6143dc0f1c310ff4b70"
+    },
+    {
+      "identifier": "CVE-2026-56817",
+      "path": "records/java/CVE-2026-56817.json",
+      "output_digest": "sha256:5653cab15900942c564ef9b0f26046d204f92d92cdda018e4cc4b91fbf6a3a20"
+    },
+    {
+      "identifier": "CVE-2026-56819",
+      "path": "records/java/CVE-2026-56819.json",
+      "output_digest": "sha256:ffe6617469241ca5fb69b7c53bd096b5d98701bc0020f516478a011a262cb489"
+    },
+    {
+      "identifier": "CVE-2026-56820",
+      "path": "records/java/CVE-2026-56820.json",
+      "output_digest": "sha256:9cfd05187c1a70c6bb831ba49d1ee559b4b7d8a320bff3f0bea4b82226f13974"
+    },
+    {
+      "identifier": "CVE-2026-56821",
+      "path": "records/java/CVE-2026-56821.json",
+      "output_digest": "sha256:687e6fa0c9fbcf7e8c17a065a0656f9aab08a40c347fb257934ace617360182b"
+    },
+    {
+      "identifier": "CVE-2026-56822",
+      "path": "records/java/CVE-2026-56822.json",
+      "output_digest": "sha256:e83a8bc43a77b985b695bfc11b758d4f1b6f39960d779c8faf24072b25435b5e"
+    },
+    {
+      "identifier": "CVE-2026-59901",
+      "path": "records/java/CVE-2026-59901.json",
+      "output_digest": "sha256:40a54a374c06c8335d616805ad89cc4361d420ad3fc37b6800b882013e499cce"
+    },
+    {
+      "identifier": "CVE-2026-59954",
+      "path": "records/java/CVE-2026-59954.json",
+      "output_digest": "sha256:ff64c6ea31dfca4d78f5144c7338b06edfdafc126480001152c1c4bfb2ee5e7c"
+    },
+    {
+      "identifier": "CVE-2026-59955",
+      "path": "records/java/CVE-2026-59955.json",
+      "output_digest": "sha256:46c649fa0055f1813e1f259b78a04123cddd76188b765860f3e0a67ae00cc1ae"
+    },
+    {
+      "identifier": "CVE-2026-62238",
+      "path": "records/java/CVE-2026-62238.json",
+      "output_digest": "sha256:2e461688f30a2bcdd71c95d7c789af25b03bc657bd81b73dea6164b08e68cfdc"
+    },
+    {
+      "identifier": "CVE-2026-62263",
+      "path": "records/java/CVE-2026-62263.json",
+      "output_digest": "sha256:6de2216f80c65ea63f28c60698d037a1a524d598de240ac8efeb6f9180ded426"
+    },
+    {
+      "identifier": "CVE-2026-62379",
+      "path": "records/java/CVE-2026-62379.json",
+      "output_digest": "sha256:7beac60e779763164b2b7b718541538bc066cd83d6eb7138f03f69801a071f62"
+    },
+    {
+      "identifier": "CVE-2026-67340",
+      "path": "records/java/CVE-2026-67340.json",
+      "output_digest": "sha256:03e797c0117988a9ce39f58c079b2264f4cd610e7e43646858f468795ed6ff04"
+    },
+    {
+      "identifier": "CVE-2026-67341",
+      "path": "records/java/CVE-2026-67341.json",
+      "output_digest": "sha256:a303206c86788922969c9ef85e72f9ae3c2968651cd7afb18fa603876bc6dc61"
+    },
+    {
+      "identifier": "CVE-2026-67342",
+      "path": "records/java/CVE-2026-67342.json",
+      "output_digest": "sha256:4b649ca0b00478d1b36ad3f81031aaad20ec18f7c3290ca3c8938b83c1fb8a62"
+    },
+    {
+      "identifier": "CVE-2026-9795",
+      "path": "records/java/CVE-2026-9795.json",
+      "output_digest": "sha256:2ee7c7b0683f9a4cb8a583b04318085eb98d97b223d213432ff00c47af6eddc2"
+    }
+  ],
+  "corpus_digest": "sha256:9f164d2cc864587742e4870e7c3c6f7a2e997a152b5b439b90806dc186657947"
+}

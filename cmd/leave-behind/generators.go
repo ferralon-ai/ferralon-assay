@@ -360,8 +360,9 @@ func genDataFlow(ctx context.Context, c *cgxClient, b *bundle, pkg string) (*gen
 	}
 	if qr.Count == 0 {
 		art.EmptySemantics = "This index returned zero DATA_FLOW edges. Empty is NOT proof that no value flows " +
-			"exist: this index appears built without the dataflow layer (cgx index --no-dataflow, or a " +
-			"dataflow-absent build) — derives-from value nodes are absent. Rebuild with `cgx index` to populate."
+			"exist. Cause undetermined: DATA_FLOW is empty while IMPLEMENTS is populated on this same index, so " +
+			"this is index-build-dependent, not a fixed cgx limitation. A `cgx index` rebuild is the reproduction " +
+			"step (a dataflow-absent build, e.g. `cgx index --no-dataflow`, is one hypothesis)."
 	}
 	n, err := b.writeJSON(fileDataFlow, art)
 	if err != nil {

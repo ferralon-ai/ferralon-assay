@@ -43,6 +43,13 @@ query)
   printf '%s' '{"approximation":{"direction":"exact","reasons":[]},"columns":["a.fqn","b.fqn"],"count":0,"rows":[],"vacuous":false}'
   ;;
 diff)
+  # $2 is the base ref. Reject an unresolvable base (mirrors cgx's git layer
+  # rejecting HEAD~1 on a shallow/single-commit history) so the degenerate
+  # self-diff fallback is exercised; a base==head self-diff succeeds empty.
+  if [ "$2" = "HEAD~1" ]; then
+    echo 'cgx: resolving base ref "HEAD~1": git error' >&2
+    exit 2
+  fi
   printf '%s' '{"added_edges":[],"removed_edges":[],"changed_edges":[],"added_nodes":[],"removed_nodes":[]}'
   ;;
 *)
@@ -119,7 +126,7 @@ func TestDiscoverPkgSymbolsFiltersNoise(t *testing.T) {
 }
 
 // TestEnvelopePreservation asserts the approximation envelope reaches the written
-// artifact byte-for-byte-equivalent (semantically identical) to what cgx emitted.
+// artifact semantically identical (whitespace-normalized) to what cgx emitted.
 func TestEnvelopePreservation(t *testing.T) {
 	dir := t.TempDir()
 	c := &cgxClient{bin: fakeCgx(t), repo: "."}
@@ -172,6 +179,35 @@ func TestDataFlowEmptySemantics(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "STRUCTURAL") {
 		t.Fatalf("structural-not-taint label missing")
+	}
+}
+
+// TestPRDiffDegenerateDisclosed: when the requested base is unresolvable, the
+// artifact must still emit AND disclose the degenerate self-diff — a dropped note
+// would let a regression read an empty diff as "no PR changes."
+func TestPRDiffDegenerateDisclosed(t *testing.T) {
+	dir := t.TempDir()
+	c := &cgxClient{bin: fakeCgx(t), repo: "."}
+	b := &bundle{dir: dir}
+	if _, err := genPRDiff(context.Background(), c, b, "HEAD~1", "HEAD"); err != nil {
+		t.Fatalf("genPRDiff: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, filePRDiff))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var art struct {
+		Degenerate bool   `json:"degenerate"`
+		Note       string `json:"note"`
+	}
+	if err := json.Unmarshal(raw, &art); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !art.Degenerate {
+		t.Fatal("degenerate flag not set on unresolvable-base fallback")
+	}
+	if !strings.Contains(art.Note, "degenerate self-diff") || !strings.Contains(art.Note, "not a proven") {
+		t.Fatalf("degradation note missing/weakened: %q", art.Note)
 	}
 }
 

@@ -2,7 +2,7 @@
 
 `leave-behind` generates a bundle of pre-computed, addressable answers to the
 structural questions a coding agent would otherwise derive by grep → read →
-infer. It drives the [`cgx`](https://github.com/ferralon-ai) CLI over a
+infer. It drives the `cgx` deterministic call-graph CLI over a
 repository's already-built call-graph index and writes one bundle of JSON
 artifacts an agent reads instead of rebuilding the graph in its head.
 

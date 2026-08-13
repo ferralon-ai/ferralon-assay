@@ -102,21 +102,50 @@ func (s *Tier0Summary) writeSummary(r report.Report) error {
 	return nil
 }
 
-// writeAnnotations emits one ::warning:: workflow command per reachable_candidate.
-// Only candidates are annotated: disqualified / not_exploitable are grounded-safe
-// and would be annotation noise. inv. 5 keeps this to honest "candidate" framing —
-// never "error", never "vulnerable".
+// writeAnnotations emits one workflow command per decisive or candidate finding:
+// ::error:: for a malicious_package_present (a decisive determination that a
+// known-malicious package is installed) and ::warning:: for a reachable_candidate.
+// disqualified / not_exploitable / undetermined are not annotated — grounded-safe or
+// unassessed rows would be annotation noise. inv. 5 keeps "error" to the one decisive
+// verdict; a candidate is never "error" and never "vulnerable".
 func (s *Tier0Summary) writeAnnotations(r report.Report) error {
 	for i := range r.Advisories {
 		f := r.Advisories[i]
-		if f.Verdict != report.VerdictReachableCandidate {
-			continue
-		}
-		if _, err := io.WriteString(s.Annotations, s.annotationLine(f)+"\n"); err != nil {
-			return fmt.Errorf("resultsink/github: write annotation: %w", err)
+		switch f.Verdict {
+		case report.VerdictMaliciousPresent:
+			if _, err := io.WriteString(s.Annotations, s.maliciousAnnotationLine(f)+"\n"); err != nil {
+				return fmt.Errorf("resultsink/github: write annotation: %w", err)
+			}
+		case report.VerdictReachableCandidate:
+			if _, err := io.WriteString(s.Annotations, s.annotationLine(f)+"\n"); err != nil {
+				return fmt.Errorf("resultsink/github: write annotation: %w", err)
+			}
 		}
 	}
 	return nil
+}
+
+// maliciousAnnotationLine builds a single ::error file=...::message workflow command
+// for a malicious-present finding, anchored to the dependency manifest where the
+// package is declared. The message is decisive (a known-malicious package is present)
+// and clinical — remediation, not alarm.
+func (s *Tier0Summary) maliciousAnnotationLine(f report.AdvisoryFinding) string {
+	msg := maliciousMessage(f)
+	if file := s.manifestPath(f.Package); file != "" {
+		return fmt.Sprintf("::error file=%s::%s", escapeProp(file), escapeData(msg))
+	}
+	return fmt.Sprintf("::error::%s", escapeData(msg))
+}
+
+// maliciousMessage builds the honest one-line annotation message for a malicious-present finding.
+func maliciousMessage(f report.AdvisoryFinding) string {
+	var b strings.Builder
+	b.WriteString(f.Advisory.ID)
+	if f.Package != nil {
+		fmt.Fprintf(&b, " (%s@%s)", f.Package.Name, f.Package.Version)
+	}
+	b.WriteString(": known-malicious package present at a listed affected version. Remove or replace this dependency.")
+	return b.String()
 }
 
 // annotationLine builds a single ::warning file=...::message workflow command for a
@@ -160,7 +189,7 @@ func candidateMessage(f report.AdvisoryFinding) string {
 
 // counts tallies findings by verdict for the summary headline.
 type counts struct {
-	candidate, notExploitable, disqualified, undetermined int
+	candidate, notExploitable, disqualified, undetermined, maliciousPresent int
 }
 
 func tally(r report.Report) counts {
@@ -175,6 +204,8 @@ func tally(r report.Report) counts {
 			c.disqualified++
 		case report.VerdictUndetermined:
 			c.undetermined++
+		case report.VerdictMaliciousPresent:
+			c.maliciousPresent++
 		}
 	}
 	return c
@@ -272,6 +303,16 @@ const partialHeadlineTail = "This run is not a complete assessment of the codeba
 func headline(c counts, partial bool) string {
 	partial = partial || c.undetermined > 0
 	switch {
+	case c.maliciousPresent > 0:
+		// The decisive OSS "affected" leads the headline: a known-malicious package is present.
+		// This is not a candidate owing follow-up — it is a determined finding that owes
+		// remediation, so it outranks every other line.
+		h := fmt.Sprintf("**%d known-malicious package(s) present** — remove or replace. (%d reachable candidate(s), %d not exploitable, %d disqualified%s.)",
+			c.maliciousPresent, c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
+		if partial {
+			h += " " + partialHeadlineTail
+		}
+		return h
 	case c.candidate > 0:
 		h := fmt.Sprintf("**%d reachable candidate(s)** found — review below. (%d not exploitable, %d disqualified%s.)",
 			c.candidate, c.notExploitable, c.disqualified, notAssessedTail(c))
@@ -477,6 +518,9 @@ func limitsFooter(r report.Report) string {
 func countsTable(c counts) string {
 	var b strings.Builder
 	b.WriteString("| Verdict | Count |\n|---|---:|\n")
+	if c.maliciousPresent > 0 {
+		fmt.Fprintf(&b, "| Malicious package present | %d |\n", c.maliciousPresent)
+	}
 	fmt.Fprintf(&b, "| Reachable candidate | %d |\n", c.candidate)
 	fmt.Fprintf(&b, "| Not exploitable | %d |\n", c.notExploitable)
 	fmt.Fprintf(&b, "| Disqualified | %d |\n", c.disqualified)

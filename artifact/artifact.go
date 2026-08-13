@@ -25,6 +25,10 @@ const (
 	TypeHarness            Type = "harness"                 // deterministic scaffolding around a sink; NEVER proof
 	TypePoE                Type = "proof_of_exploitability" // apex
 	TypeExposureFootprint  Type = "exposure_footprint"      // deterministic exposure report
+	// TypeMaliciousPresence is the decisive OSS "affected" signal: a known-malicious package
+	// resolved to a version the advisory enumerates as affected. It is emitted ONLY on an
+	// affirmative presence match; absence/version-not-listed/unresolvable emit nothing (fail-open).
+	TypeMaliciousPresence Type = "malicious_presence"
 	// Standard projections — generated from a PoE, read-only views.
 	TypeProjectionSARIF       Type = "projection_sarif"        // SARIF 2.1.0 projection of a PoE
 	TypeProjectionVEX         Type = "projection_vex"          // OpenVEX projection of a PoE

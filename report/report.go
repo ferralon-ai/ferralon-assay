@@ -16,11 +16,14 @@
 //     does not make.
 //   - VerdictUndetermined     — the advisory applies and the scan established NOTHING
 //     about it. The absence of a verdict, stated explicitly.
+//   - VerdictMaliciousPresent — a known-malicious package (OSV MAL advisory) resolved
+//     to a listed affected version. The one decisive OSS "affected": deterministic
+//     presence proof, not a reachability lean, so it does not cross inv. 5.
 //
 // The Report MUST NOT carry `exploitable` or `reasoned_*` verdicts — those are
 // Service-tier concepts. There is no model in the runner that could produce them,
 // so the boundary is structural. AdvisoryFinding.Verdict is constrained to the
-// four values above by construction; see Verdict.Valid.
+// values above by construction; see Verdict.Valid.
 //
 // # Role
 //
@@ -94,14 +97,24 @@ const (
 	// carries the machine-readable reason; Evidence.Basis MUST be empty (there are no
 	// refutation grounds to state — Validate enforces it).
 	VerdictUndetermined Verdict = "undetermined"
+
+	// VerdictMaliciousPresent — the codebase resolved a KNOWN-MALICIOUS package (an OSV MAL
+	// advisory) to a version the advisory enumerates as affected. It is the ONE decisive OSS
+	// "affected": unlike reachable_candidate (a lean) it rests on deterministic proof that the
+	// bad artifact is installed — exact-version membership, no reachability inference — so its
+	// OpenVEX projection is honestly "affected" without crossing inv. 5 (no execution claim is
+	// laundered; this is the deterministic-no-execution mirror of VerdictDisqualified, pointed
+	// the other way). It is affirmative-only: the presence stage emits it or nothing, and it
+	// never mints a not-affected, so disqualify's first_party trust gate stays untouched.
+	VerdictMaliciousPresent Verdict = "malicious_package_present"
 )
 
-// Valid reports whether v is one of the four permitted deterministic verdicts.
+// Valid reports whether v is one of the five permitted deterministic verdicts.
 // It is the structural guard for inv. 5: any value outside this set (notably the
 // Service-tier `exploitable` / `reasoned_*`) is rejected.
 func (v Verdict) Valid() bool {
 	switch v {
-	case VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined:
+	case VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined, VerdictMaliciousPresent:
 		return true
 	default:
 		return false

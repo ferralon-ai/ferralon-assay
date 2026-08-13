@@ -62,6 +62,22 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
 	var f report.AdvisoryFinding
 	switch {
+	case maliciousPresent(store, assessmentID):
+		// The one new signal: an AFFIRMATIVE, decisive OSS "affected". A known-malicious package
+		// resolved to a version the advisory enumerates as affected. Ordered FIRST so it wins over a
+		// co-present reachability candidate or disqualification — presence is deterministic proof the
+		// bad artifact is installed, not a reachability lean. Affirmatives are never trust-gated
+		// (inv.5), and the whole design keeps disqualify's trust gate untouched by never minting a
+		// not-affected here.
+		res, _ := maliciousPresenceResult(store, assessmentID)
+		f = report.AdvisoryFinding{
+			Advisory: adv,
+			Package:  pkg,
+			Verdict:  report.VerdictMaliciousPresent,
+			Evidence: report.EvidenceSummary{
+				Detail: maliciousPresentDetail(res.MatchedVersion),
+			},
+		}
 	case disqualified(store, assessmentID):
 		_, reason := disqualResult(store, assessmentID)
 		f = report.AdvisoryFinding{
@@ -237,6 +253,37 @@ func disqualified(store artifact.Store, assessmentID string) bool {
 func hasCandidate(store artifact.Store, assessmentID string) bool {
 	_, ok := candidatePath(store, assessmentID)
 	return ok
+}
+
+// maliciousPresenceResult reads the affirmative TypeMaliciousPresence artifact the maliciousPresence
+// Assess stage emits ONLY on a decisive match (a known-malicious package resolved to a listed
+// affected version). Absent artifact ⇒ (zero, false): the stage emits nothing for every non-match
+// (not malicious / unresolvable / version-not-listed), so absence is the fail-open path (inv.5).
+func maliciousPresenceResult(store artifact.Store, assessmentID string) (pipeline.MaliciousPresenceResult, bool) {
+	arts, err := store.Query(assessmentID, artifact.TypeMaliciousPresence)
+	if err != nil || len(arts) == 0 {
+		return pipeline.MaliciousPresenceResult{}, false
+	}
+	var res pipeline.MaliciousPresenceResult
+	if err := json.Unmarshal(arts[0].Payload, &res); err != nil || !res.Present {
+		return pipeline.MaliciousPresenceResult{}, false
+	}
+	return res, true
+}
+
+func maliciousPresent(store artifact.Store, assessmentID string) bool {
+	_, ok := maliciousPresenceResult(store, assessmentID)
+	return ok
+}
+
+// maliciousPresentDetail renders the customer-visible basis for a malicious-present finding: the
+// exact resolved version that matched the advisory's enumerated malicious set. The presence itself
+// is the grounds — no reachability/symbol comparison is run or claimed.
+func maliciousPresentDetail(matchedVersion string) string {
+	if matchedVersion != "" {
+		return fmt.Sprintf("the resolved dependency version %s is listed by the advisory as a known-malicious package release", matchedVersion)
+	}
+	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
 }
 
 // priorityFor looks the advisory up in the pinned EPSS/KEV snapshot by its id and

@@ -123,6 +123,7 @@ func AssessStages(opts ...AssessOption) []Stage {
 	return []Stage{
 		advisoryIntake{src: cfg.Source},
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
+		maliciousPresence{},
 		disqualificationDiscovery{},
 		symbolMapping{plugin: cfg.Plugin},
 		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
@@ -324,6 +325,23 @@ type AdvisoryFacts struct {
 	// per-package block above equals one element), so selection is one uniform match loop.
 	// Empty ⇒ v2/single-package behavior (fail-open, inv.5). Advisory-only framing.
 	AffectedPackages []AffectedPackage
+
+	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the enumerated
+	// affected version set. Declared=false (the zero) ⇒ not a malicious package ⇒ the presence path
+	// never fires and every existing stage runs unchanged (inv.5). Declared=true with an empty
+	// AffectedVersions ⇒ un-decidable ⇒ OPEN. This is the ONLY axis that can drive a decisive OSS
+	// "affected" (VerdictMaliciousPresent); it is exact-string membership, never a comparator.
+	MaliciousPackage MaliciousPackageFacts
+}
+
+// MaliciousPackageFacts is the normalized malicious-package marker. Declared is load-bearing and
+// distinct from a non-empty version set: it distinguishes "declared malicious, empty version set →
+// OPEN" from "not malicious". AffectedVersions is the OSV versions[] set for exact-string membership
+// (no semver comparator — MAL versions are enumerated, and the harm is "this exact bad artifact is
+// installed"). Zero value ⇒ not malicious ⇒ today's exact behavior.
+type MaliciousPackageFacts struct {
+	Declared         bool
+	AffectedVersions []string
 }
 
 // AffectedPackage is one package of a multi-package advisory's affected set — the per-package
@@ -1104,6 +1122,15 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 			MalformedToken: facts.Trigger.MalformedToken,
 		}
 	}
+	// Carry the malicious-package marker onto the artifact so the maliciousPresence stage can read
+	// the enumerated affected set back. Emitted IFF the advisory DECLARED the marker — a nil marker
+	// (v2/non-MAL advisory) is omitted, so no presence path exists (inv.5 fail-open). An
+	// empty-but-declared set carries through as an empty array, which the stage reads as un-decidable
+	// → OPEN.
+	var advMalicious *advisoryMaliciousPackage
+	if facts.MaliciousPackage.Declared {
+		advMalicious = &advisoryMaliciousPackage{AffectedVersions: facts.MaliciousPackage.AffectedVersions}
+	}
 	advisory := struct {
 		VulnID           string                    `json:"vuln_id"`
 		Source           string                    `json:"source"`
@@ -1119,6 +1146,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TrustTier        string                    `json:"trust_tier,omitempty"` // gates refute eligibility (inv.5); "" ⇒ untrusted
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`    // v3 per-CVE reach descriptor (row 1)
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages,omitempty"`
+		MaliciousPackage *advisoryMaliciousPackage `json:"malicious_package,omitempty"` // MAL presence-verdict marker
 	}{
 		VulnID:           vulnID,
 		Source:           c.Request.Vulnerability.Source,
@@ -1134,6 +1162,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TrustTier:        string(facts.Provenance.TrustTier),
 		Trigger:          advTrigger,
 		AffectedPackages: affectedPackages,
+		MaliciousPackage: advMalicious,
 	}
 	if _, err := PutArtifact(store, c, s.Name(), artifact.TypeNormalizedAdvisory, "normalized advisory", advisory); err != nil {
 		return err
@@ -1463,6 +1492,79 @@ func InventoryBuildDir(store artifact.Store, caseID string) (string, error) {
 	return inv.BuildDir, nil
 }
 
+// --- Stage 2b: malicious_presence ---------------------------------------------
+
+// maliciousPresence is the decisive OSS "affected" stage. It fires ONLY on an affirmative match: a
+// malicious-package (MAL) advisory whose enumerated affected set contains the version the codebase
+// resolved. It reads two already-produced artifacts — the normalized-advisory malicious_package
+// marker and the codebase-inventory resolved_version — and NEVER re-Lookups.
+//
+// It is inserted after codebase_inventory (it needs resolved_version) and before
+// disqualification_discovery. It emits the affirmative TypeMaliciousPresence artifact or NOTHING;
+// it can never mint a not-affected. Every non-match case (not malicious, unresolvable version,
+// version-not-listed) falls through to the existing reconcile path unchanged (inv.5 fail-open):
+//
+//   - not declared malicious ⇒ no-op ⇒ every existing stage runs as today.
+//   - declared + resolved_version == "" (unresolvable/absent) ⇒ no match ⇒ OPEN, never clear.
+//   - declared + resolved_version NOT in the enumerated set ⇒ no affirmative ⇒ existing fail-open.
+//   - declared + resolved_version IN the set (EXACT string equality, no comparator) ⇒ affirmative.
+//
+// Exact string equality is deliberate: MAL versions are enumerated, not ranged, and any spelling
+// drift between the resolved-version and corpus-version fails toward NO match ⇒ OPEN (safe), never a
+// fabricated clear. An empty enumerated set (declared but no versions) is un-decidable ⇒ no match ⇒
+// OPEN.
+type maliciousPresence struct{}
+
+func (maliciousPresence) Name() string              { return "malicious_presence" }
+func (maliciousPresence) Status() assessment.Status { return assessment.StatusInventory }
+
+// MaliciousPresenceResult is the affirmative payload (schema tegron.malicious_presence.v1). It is
+// only ever written with Present=true; the stage emits no artifact at all for a non-match. Present
+// is carried explicitly so a reader keys on the value, not on mere artifact existence.
+type MaliciousPresenceResult struct {
+	Present        bool   `json:"present"`
+	MatchedVersion string `json:"matched_version"`
+}
+
+func (s maliciousPresence) Run(_ context.Context, c *assessment.Assessment, store artifact.Store) error {
+	versions, declared := extractMaliciousAffectedVersions(store, c.ID)
+	if !declared {
+		return nil // not a malicious-package advisory → no presence path (inv.5)
+	}
+	resolved, ok := extractResolvedVersion(store, c.ID)
+	if !ok {
+		return nil // resolved_version == "" (unresolvable/absent) → no match → OPEN
+	}
+	for _, v := range versions {
+		if v == resolved { // exact string membership — no semver comparator
+			res := MaliciousPresenceResult{Present: true, MatchedVersion: resolved}
+			_, err := PutArtifact(store, c, s.Name(), artifact.TypeMaliciousPresence, "malicious package present at listed version", res)
+			return err
+		}
+	}
+	return nil // version not in the enumerated set (or empty set) → no affirmative → OPEN
+}
+
+// extractMaliciousAffectedVersions reads the malicious-package marker off the normalized-advisory
+// artifact. declared reports whether the advisory carried the marker at all (the object was present),
+// distinct from an empty version set — the same load-bearing distinction as MaliciousPackageFacts.
+// Declared. Any miss/malformed ⇒ (nil, false) ⇒ no presence path (inv.5 fail-open).
+func extractMaliciousAffectedVersions(store artifact.Store, caseID string) (versions []string, declared bool) {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil, false
+	}
+	var adv struct {
+		MaliciousPackage *struct {
+			AffectedVersions []string `json:"affected_versions"`
+		} `json:"malicious_package"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil || adv.MaliciousPackage == nil {
+		return nil, false
+	}
+	return adv.MaliciousPackage.AffectedVersions, true
+}
+
 // --- Stage 3: disqualification_discovery --------------------------------------
 
 type disqualificationDiscovery struct{}
@@ -1513,6 +1615,13 @@ type advisoryAffectedPackage struct {
 	PURL           string          `json:"purl,omitempty"`
 	AffectedRanges []affectedRange `json:"affected_ranges,omitempty"`
 	Symbols        []string        `json:"symbols,omitempty"`
+}
+
+// advisoryMaliciousPackage is the normalized-advisory artifact's malicious-package marker — what the
+// maliciousPresence stage reads back (stages read facts off the artifact, never re-Lookup). Present
+// on the artifact IFF the advisory declared the marker (facts.MaliciousPackage.Declared).
+type advisoryMaliciousPackage struct {
+	AffectedVersions []string `json:"affected_versions,omitempty"`
 }
 
 // buildAffectedRanges projects an advisory's OSV-shaped Range set (or the legacy single

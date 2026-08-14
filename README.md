@@ -46,10 +46,16 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@<sha>
+        uses: ferralon-ai/ferralon-assay@dc1b84a896aa0bdcefe6c98dd8bb7ab125152c0d # v0.2.0
         with:
           mode: baseline
           target: .
+          # Recommended: consume the public advisory corpus for real coverage.
+          # Left on its default ref (main) on purpose — new advisories land there
+          # continuously, so pinning this ref would freeze your vulnerability intel.
+          # Omit it and the scan falls back to a small built-in table (a standalone
+          # floor, not coverage).
+          advisory-corpus-repo: ferralon-ai/vulnerability-corpus
 
       # The Action materializes report.sarif.json; the upload to code scanning is this
       # step, so drop it and the `code-scanning` surface produces a file and nothing else.
@@ -69,12 +75,30 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
-**Pinning by commit SHA** (`@<sha>`) is the strict-supply-chain choice: the SHA transitively pins the
-exact scanner bytes the Action fetches — `scanner-version` and `scanner-sha256` are baked into the
-Action itself — so nothing runs that you did not pin, and no binary is ever committed into your
-repository. Tracking a moving ref instead (a branch, or a release tag you let float) is a legitimate
-trade for auto-updates: the built-in **drift guard** verifies the fetched scanner tarball's checksum
-on every run **regardless of which ref you use**, and fails the run loudly on any mismatch.
+**Pinning by commit SHA** (`@dc1b84a896aa0bdcefe6c98dd8bb7ab125152c0d # v0.2.0`) is the
+strict-supply-chain choice: the SHA transitively pins the exact scanner bytes the Action fetches —
+`scanner-version` and `scanner-sha256` are baked into the Action itself — so nothing runs that you did
+not pin, and no binary is ever committed into your repository. Tracking a moving ref instead (a branch,
+or a release tag you let float) is a legitimate trade for auto-updates: the built-in **drift guard**
+verifies the fetched scanner tarball's checksum on every run **regardless of which ref you use**, and
+fails the run loudly on any mismatch.
+
+### Self-cleanup / console-link disclosure
+
+The pinned scanner release also carries an opt-in link to the Ferralon console, controlled by a
+single Action input, **`link-to-console`, default `"false"`**
+([action.yml](action.yml)). On the default, the scan runs fully standalone and never contacts
+Ferralon.
+
+| | |
+|---|---|
+| **What turns it on** | Setting `link-to-console: true` in the workflow. It is the *only* switch — no other input or default enables any part of this. |
+| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). On a **default-branch** run only, it also pushes a `tegron.report.v2` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR and non-default-branch runs stay stateless and never file a run. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
+| **What data leaves** | Your scan results (the `Report`) and, on the default branch, the run-snapshot verdict layer — sent to the ingest/run-snapshot endpoints baked into the pinned release. Your code and credentials never leave the runner regardless of this switch. |
+| **How to keep it permanently off** | Leave `link-to-console` unset, or delete the line entirely. Deleting it disables the link outright; it never silently re-enables. |
+
+This is a factual account of what the switch does today, not a design decision — see
+[docs/threat-model.md](docs/threat-model.md) for the wider network-egress picture.
 
 ## Quickstart — command line
 
@@ -114,6 +138,19 @@ A finding the pipeline could not soundly resolve is reported as exactly that. As
 it never narrates an absence of evidence as "not affected." That distinction is the whole point of
 the report — an unresolved advisory and a disqualified one are different claims, and conflating them
 is how a scanner quietly loses your trust.
+
+See [docs/sample-report.md](docs/sample-report.md) for an illustrative, shape-only excerpt of the
+`Report` JSON — no golden fixture ships in this repository yet, so the excerpt is hand-written from
+the `report` package's Go types rather than a captured scan.
+
+### Expected scan duration
+
+No published benchmark exists yet, so this section names what dominates the cost rather than a
+number. Two fetches drive most of it on a default `baseline` or `pr-inherit` run: resolving the
+subject module graph against `proxy.golang.org`, and the Go analyzer's uncached fetch of the
+`vuln.go.dev` vulnerability database on every run (see [Network egress](#network-egress) and
+[docs/threat-model.md](docs/threat-model.md)). Both scale with the size of the target's module
+graph and dependency set, so timing varies by repository rather than being fixed by the tool.
 
 ## Advisory corpus
 
@@ -157,6 +194,19 @@ defining the whole grammar up front keeps a verdict's shape stable as the analys
 instead of renegotiating the contract every time a new stage lands. Several terms are declared here
 and reserved for implementation.
 
+## When should I use this?
+
+**Fit:** CI reachability triage — resolving whether a CVE's vulnerable code is actually callable in
+your build, not just present in your dependency tree. Go gets the deepest analysis, dependency-level
+reachability into the code an advisory names; Java, JavaScript, Python and .NET resolve dependency
+versions and disqualify advisories your pinned version is provably outside. [Language
+support](docs/language-support.md) has the per-language specifics.
+
+**Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
+scanned codebase, run a detonation harness, or synthesize an exploit; a `reachable_candidate`
+verdict is a candidate, never a proof of exploitability. It is pre-1.0 — see
+[API stability](#api-stability) before depending on it as a Go library.
+
 ## Run modes
 
 Three run modes, all built on the same S1–S6 pipeline:
@@ -179,33 +229,14 @@ a pinned dashboard Issue.
 
 ## Network egress
 
-**Your code and your credentials never leave the runner.** No run mode is offline, though, and it is
-worth being precise about what does leave.
-
-A default `baseline` or `pr-inherit` run contacts two public hosts:
-
-- **`proxy.golang.org`** — when it resolves the subject's module graph.
-- **`vuln.go.dev`** — the Go analyzer's reachability stage runs govulncheck with no `-db` flag
-  (`internal/plugin/goanalysis/reach.go`), so it resolves `golang.org/x/vuln`'s default vulnerability
-  database, uncached, on every run. The module paths it looks up are visible to that host.
-
-These are the same fetches `go build` and `govulncheck` perform.
-
-`cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
-on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default); that query sends package
-coordinates — ecosystem, name, version — and nothing else. Enabling subject-toolchain reachability
-(`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
-from the module proxy.
-
-What all of these carry is dependency metadata — module paths, versions, package coordinates — never
-source, and never analysis results.
-
-Findings do travel to GitHub, by design: the StateStore ref and the publish surfaces above write the
-`Report` and its projections into **your own** repository, under a token you supply.
-
-Talking to Ferralon is a separate, explicit switch. The Action's `link-to-console` input is the only
-control that decides whether a scan contacts Ferralon at all; it defaults to `false`, and on that
-default the scan runs fully standalone.
+**Your code and your credentials never leave the runner.** No run mode is offline: a default
+`baseline` or `pr-inherit` run resolves the subject's module graph against `proxy.golang.org` and
+fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
+`go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
+[Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
+`api.osv.dev`. What any of this carries is dependency metadata — module paths, versions, package
+coordinates — never source, never analysis results. The full picture, including where the
+`link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 
 ## Automatic upgrades
 

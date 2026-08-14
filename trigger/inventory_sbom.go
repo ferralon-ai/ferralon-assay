@@ -136,7 +136,17 @@ func ecosystemAndNameFromPURL(purl, fallbackEcosystem string) (ecosystem, name s
 	if slash < 0 {
 		return fallbackEcosystem, ""
 	}
-	return purlTypeToEcosystem(body[:slash], fallbackEcosystem), body[slash+1:]
+	ptype := body[:slash]
+	name = body[slash+1:]
+	if ptype == "maven" {
+		// OSV addresses Maven packages as "group:artifact", but the PURL path form spells the same
+		// coordinate "group/artifact". Left as-is, the SBOM would query OSV under a name that never
+		// matches and silently miss advisories. A Maven group contains no '/', so the single
+		// separator here is the group↔artifact boundary to rewrite. Go and npm keep their slashes
+		// (that IS their OSV name); PyPI and NuGet carry no namespace.
+		name = strings.Replace(name, "/", ":", 1)
+	}
+	return purlTypeToEcosystem(ptype, fallbackEcosystem), name
 }
 
 // purlTypeToEcosystem maps a PURL type to the OSV ecosystem name, mirroring ecosystemFor but keyed

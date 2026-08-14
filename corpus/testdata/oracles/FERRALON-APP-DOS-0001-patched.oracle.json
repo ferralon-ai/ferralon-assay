@@ -1,0 +1,14 @@
+{
+  "fixture_id": "FERRALON-APP-DOS-0001-patched",
+  "category": "patched",
+  "nodes": null,
+  "edges": [],
+  "capture": {
+    "tool": "go mod",
+    "tool_version": "go version go1.26.3 darwin/arm64",
+    "command": "go list -m -json all  +  go mod graph  (GOWORK=off)",
+    "operator": "anvil (L1 platform-core, out-of-band per capture-procedure.md)",
+    "captured_at": "2026-08-12T20:04:58Z",
+    "fixture_digest": "sha256:e91c48a0ca68d84771ad25407e5acbbcb6de0b9a1f52f30b92dfc3bbee164aae"
+  }
+}

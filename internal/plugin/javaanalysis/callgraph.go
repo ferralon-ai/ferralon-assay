@@ -169,6 +169,22 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 		Roots:      roots,
 	}
 
+	// Dependency-inclusive augmentation: append the opened dependency closure's call
+	// edges so the persisted graph reflects that dependency bytecode was actually
+	// parsed and searched, not just the first-party sources. Their presence is what
+	// distinguishes a searched-negative (COMPLETE closure, sink unreached →
+	// not_exploitable) from an empty graph the refutation never ran on (→ undetermined,
+	// the analysisDidNotRun arm). This is best-effort and additive: a build with no
+	// resolvable/cached dependencies contributes nothing and the graph is unchanged,
+	// and a dependency-resolution failure is swallowed here — the depreach completeness
+	// account (surfaced through reachability partiality) is where an unopened
+	// dependency becomes a Gap/hazard, never a fabricated edge (inv.5).
+	if dg, derr := buildDependencyGraph(ctx, req.BuildDir); derr == nil {
+		if depEdges := dg.callEdges(); len(depEdges) > 0 {
+			lexical = appendCallEdges(lexical, depEdges)
+		}
+	}
+
 	// Prove-path enrichment (gated by TEGRON_JAVA_ANALYZER_IMAGE). The pure-Go
 	// lexical graph above is the Assess baseline AND the fallback; only when the
 	// analyzer container resolves a semantic graph do we MERGE its type-resolved
@@ -262,6 +278,35 @@ func reconcileResolvedArity(prog *program, g scipGraph) scipGraph {
 	for i := range g.ingresses {
 		g.ingresses[i].Symbol = sym(fix(g.ingresses[i].Symbol.SCIP))
 	}
+	return g
+}
+
+// appendCallEdges returns g with extra edges merged into its edge set — deduped
+// against the existing edges and re-sorted for a stable payload. Partiality and
+// roots are untouched: the added edges are extra reachability structure, not a
+// change to what the graph declares it could not resolve.
+func appendCallEdges(g plugin.CallGraphResult, extra []plugin.CallEdge) plugin.CallGraphResult {
+	seen := make(map[plugin.CallEdge]bool, len(g.Edges)+len(extra))
+	merged := make([]plugin.CallEdge, 0, len(g.Edges)+len(extra))
+	for _, e := range g.Edges {
+		if !seen[e] {
+			seen[e] = true
+			merged = append(merged, e)
+		}
+	}
+	for _, e := range extra {
+		if !seen[e] {
+			seen[e] = true
+			merged = append(merged, e)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Caller.SCIP != merged[j].Caller.SCIP {
+			return merged[i].Caller.SCIP < merged[j].Caller.SCIP
+		}
+		return merged[i].Callee.SCIP < merged[j].Callee.SCIP
+	})
+	g.Edges = merged
 	return g
 }
 

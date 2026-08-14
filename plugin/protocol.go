@@ -1,5 +1,7 @@
 package plugin
 
+import "github.com/ferralon-ai/ferralon-assay/capability"
+
 // Request is the one-shot subprocess request envelope. Op selects the operation; exactly
 // one of the per-op request fields is populated, matching Op.
 type Request struct {
@@ -16,6 +18,8 @@ type Request struct {
 	GenerateHarness  *GenerateHarnessRequest  `json:"generate_harness,omitempty"`
 	BuildManifest    *BuildManifestRequest    `json:"build_manifest,omitempty"`
 	ResolveInventory *ResolveInventoryRequest `json:"resolve_inventory,omitempty"`
+
+	CapabilityManifest *CapabilityManifestRequest `json:"capability_manifest,omitempty"`
 }
 
 // Response is the one-shot subprocess response envelope. Exactly one payload field is set on
@@ -36,6 +40,8 @@ type Response struct {
 	Harness          *HarnessResult           `json:"harness,omitempty"`
 	BuildManifest    *BuildManifestResult     `json:"build_manifest,omitempty"`
 	Inventory        *DependencyInventory     `json:"inventory,omitempty"`
+
+	Manifest *capability.Manifest `json:"manifest,omitempty"`
 }
 
 // ProtocolVersion is the wire-format version both client and subprocess must agree on.
@@ -44,14 +50,15 @@ const ProtocolVersion = "tegron.plugin.v1"
 
 // Op* are the operation selectors carried in Request.Op, matching the LanguagePlugin op names.
 const (
-	OpIndexSymbols     = "index_symbols"
-	OpResolveSymbols   = "resolve_symbols"
-	OpResolveVersions  = "resolve_versions"
-	OpCallGraph        = "call_graph"
-	OpFindIngresses    = "find_ingresses"
-	OpReachability     = "reachability"
-	OpComputeTaint     = "compute_taint"
-	OpGenerateHarness  = "generate_harness"
-	OpBuildManifest    = "build_manifest"
-	OpResolveInventory = "resolve_inventory"
+	OpIndexSymbols       = "index_symbols"
+	OpResolveSymbols     = "resolve_symbols"
+	OpResolveVersions    = "resolve_versions"
+	OpCallGraph          = "call_graph"
+	OpFindIngresses      = "find_ingresses"
+	OpReachability       = "reachability"
+	OpComputeTaint       = "compute_taint"
+	OpGenerateHarness    = "generate_harness"
+	OpBuildManifest      = "build_manifest"
+	OpResolveInventory   = "resolve_inventory"
+	OpCapabilityManifest = "capability_manifest"
 )

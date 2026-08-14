@@ -9,7 +9,11 @@
 // the cmd/tegron-plugin-go subprocess binary, never in-process in the daemon.
 package plugin
 
-import "context"
+import (
+	"context"
+
+	"github.com/ferralon-ai/ferralon-assay/capability"
+)
 
 // LanguagePlugin is the contract for one language's evidence production. Every operation
 // returns artifacts (as typed results the pipeline marshals), never verdicts: the
@@ -63,6 +67,13 @@ type LanguagePlugin interface {
 	// without a resolver returns DependencyInventory{Partiality: Unsupported()} (honest absence,
 	// never an empty-but-successful inventory).
 	ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error)
+
+	// CapabilityManifest returns the lane's static capability manifest — the up-front
+	// declaration of what this analyzer supports (the compile-time complement to the per-run
+	// Partiality). This cycle lands the operation only; no lane publishes content yet, so every
+	// plugin returns capability.Manifest{Supported:false} (honest absence, never a Supported:true
+	// manifest with empty axes). Content is authored per-lane in Phase-4.
+	CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error)
 }
 
 // Partiality declares whether an operation fully resolved its answer. A plugin that cannot
@@ -274,6 +285,10 @@ type ReachabilityResult struct {
 type ResolveInventoryRequest struct {
 	BuildDir string `json:"build_dir"` // checked-out module/workspace root
 }
+
+// CapabilityManifestRequest carries no inputs: a capability manifest is a static per-lane fact,
+// independent of any checked-out build. The type exists for protocol uniformity/extensibility.
+type CapabilityManifestRequest struct{}
 
 // DependencyInventory is the whole-graph resolver result (§4.1). This cycle lands the TYPE only;
 // no plugin populates it (four+ plugins return Unsupported() — see §5). Nodes and Edges are
@@ -517,4 +532,10 @@ func (StubPlugin) BuildManifest(_ context.Context, _ BuildManifestRequest) (Buil
 // one — a zero-node Complete() inventory would read downstream as "this build has no dependencies".
 func (StubPlugin) ResolveInventory(_ context.Context, _ ResolveInventoryRequest) (DependencyInventory, error) {
 	return DependencyInventory{Partiality: Unsupported()}, nil
+}
+
+// CapabilityManifest is honest absence this cycle: no lane publishes a manifest yet, so it returns
+// capability.Manifest{Supported:false} — never a Supported:true manifest with empty axes.
+func (StubPlugin) CapabilityManifest(_ context.Context, _ CapabilityManifestRequest) (capability.Manifest, error) {
+	return capability.Manifest{Supported: false}, nil
 }

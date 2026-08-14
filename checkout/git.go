@@ -52,18 +52,18 @@ func (g *GitCheckout) bin() string {
 // the materialized tree. On any failure it removes the partial dir and returns an error
 // (inv.5: no silent half-checkout). A clone that is neither a Go module nor a Java source tree
 // is rejected the same way (no recognizable source to inventory).
-func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (string, string, error) {
+func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (WorkspacePlan, error) {
 	// The per-fire ownership token (if any) rides in-flight on the context — never on the
 	// Checkout seam signature, never on this struct, never on disk. An empty credential (public
 	// repo / hermetic fake / local ambient-cred dev) takes the bare-clone path unchanged.
 	cred := CredentialFrom(ctx)
 	dir, err := os.MkdirTemp("", "tegron-checkout-")
 	if err != nil {
-		return "", "", fmt.Errorf("checkout: mkdtemp: %w", err)
+		return WorkspacePlan{}, fmt.Errorf("checkout: mkdtemp: %w", err)
 	}
-	cleanup := func(cause error) (string, string, error) {
+	cleanup := func(cause error) (WorkspacePlan, error) {
 		_ = os.RemoveAll(dir)
-		return "", "", cause
+		return WorkspacePlan{}, cause
 	}
 	url := normalizeCloneURL(repo)
 	// PRESENTATION decision (flag #7). Admission ("may we clone here") ≠ presentation ("may the
@@ -123,7 +123,7 @@ func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (string,
 	if lang == LangUnknown {
 		return cleanup(fmt.Errorf("checkout: cloned repo %q@%q is not a recognized source tree (no go.mod and no .java sources)", repo, revision))
 	}
-	return dir, lang, nil
+	return singleProjectPlan(dir, lang), nil
 }
 
 func (g *GitCheckout) run(ctx context.Context, workdir string, cred Credential, credHost string, args ...string) (string, error) {

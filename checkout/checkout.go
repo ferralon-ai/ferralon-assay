@@ -12,11 +12,12 @@ import (
 // is a hermetic FakeCheckout resolving to a local fixture; GitCheckout is the real impl, exercised
 // only by a live-gated e2e test.
 type Checkout interface {
-	// Fetch materializes repo@revision into a directory and returns its absolute path (the
-	// BuildDir) plus the detected source language ("go" | "java"). The BuildDir is the source
-	// root (a Go module root containing go.mod, or a Java source tree). It returns an error
-	// rather than an empty partial dir on failure (inv.5: no silent half-checkout).
-	Fetch(ctx context.Context, repo, revision string) (buildDir, language string, err error)
+	// Fetch materializes repo@revision and returns the WorkspacePlan of detected projects.
+	// Today the plan holds exactly one project — the source root (a Go module root containing
+	// go.mod, or a source tree) and its detected language — projected via Primary() into the
+	// scalar build_dir/language the pipeline reads. It returns an error rather than an empty
+	// or partial plan on failure (inv.5: no silent half-checkout).
+	Fetch(ctx context.Context, repo, revision string) (WorkspacePlan, error)
 }
 
 // FakeCheckout is the hermetic default: it maps (repo, revision) to a subdirectory under
@@ -33,20 +34,20 @@ var _ Checkout = FakeCheckout{}
 // Fetch resolves the fixture subdir for repo@revision and returns its absolute path and the
 // detected source language. The fixture must present a recognized source tree (Go module or
 // Java sources); an unrecognized tree is an error, never an empty dir (inv.5).
-func (f FakeCheckout) Fetch(_ context.Context, repo, revision string) (string, string, error) {
+func (f FakeCheckout) Fetch(_ context.Context, repo, revision string) (WorkspacePlan, error) {
 	key := repo + "@" + revision
 	sub, ok := f.Map[key]
 	if !ok {
-		return "", "", fmt.Errorf("checkout: no fixture mapped for %q", key)
+		return WorkspacePlan{}, fmt.Errorf("checkout: no fixture mapped for %q", key)
 	}
 	dir := filepath.Join(f.FixtureRoot, sub)
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return "", "", fmt.Errorf("checkout: resolve %q: %w", dir, err)
+		return WorkspacePlan{}, fmt.Errorf("checkout: resolve %q: %w", dir, err)
 	}
 	lang := DetectLanguage(abs)
 	if lang == LangUnknown {
-		return "", "", fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod and no .java sources)", abs)
+		return WorkspacePlan{}, fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod and no .java sources)", abs)
 	}
-	return abs, lang, nil
+	return singleProjectPlan(abs, lang), nil
 }

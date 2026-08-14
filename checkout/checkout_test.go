@@ -17,10 +17,12 @@ func TestFakeCheckoutResolvesFixture(t *testing.T) {
 		FixtureRoot: root,
 		Map:         map[string]string{"example.com/repo@v1": "gomod-fixture"},
 	}
-	dir, lang, err := fc.Fetch(context.Background(), "example.com/repo", "v1")
+	plan, err := fc.Fetch(context.Background(), "example.com/repo", "v1")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
+	prim := plan.Primary()
+	dir, lang := prim.Root, prim.Language
 	if !filepath.IsAbs(dir) {
 		t.Fatalf("Fetch must return an absolute path, got %q", dir)
 	}
@@ -34,7 +36,7 @@ func TestFakeCheckoutResolvesFixture(t *testing.T) {
 
 func TestFakeCheckoutMissingFixtureIsError(t *testing.T) {
 	fc := FakeCheckout{FixtureRoot: "testdata"}
-	if _, _, err := fc.Fetch(context.Background(), "unknown", "rev"); err == nil {
-		t.Fatal("Fetch of an unmapped repo@rev must error, never return an empty dir (inv.5)")
+	if _, err := fc.Fetch(context.Background(), "unknown", "rev"); err == nil {
+		t.Fatal("Fetch of an unmapped repo@rev must error, never return an empty plan (inv.5)")
 	}
 }

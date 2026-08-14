@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -72,8 +73,8 @@ func (goManifestPlugin) Reachability(context.Context, plugin.ReachabilityRequest
 // fixedCheckout is a hermetic checkout returning a fixed build dir + language (no git, no network).
 type fixedCheckout struct{ dir, lang string }
 
-func (c fixedCheckout) Fetch(context.Context, string, string) (string, string, error) {
-	return c.dir, c.lang, nil
+func (c fixedCheckout) Fetch(context.Context, string, string) (checkout.WorkspacePlan, error) {
+	return checkout.WorkspacePlan{Root: c.dir, Projects: []checkout.Project{{Root: c.dir, Language: c.lang}}}, nil
 }
 
 // the four advisories whose disposition this change decides: three carry the explicit go-toolchain

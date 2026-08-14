@@ -86,10 +86,12 @@ func TestFetchAuthenticatedTokenNeverInArgvOrURL(t *testing.T) {
 
 	ctx := WithCredential(context.Background(), NewCredential(testToken))
 	url := "https://github.com/ferralon-demo/demo-go-svc"
-	dir, lang, err := gc.Fetch(ctx, url, "main")
+	plan, err := gc.Fetch(ctx, url, "main")
 	if err != nil {
 		t.Fatalf("Fetch (authenticated): %v", err)
 	}
+	prim := plan.Primary()
+	dir, lang := prim.Root, prim.Language
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	if lang != LangGo {
 		t.Fatalf("lang = %q, want %q", lang, LangGo)
@@ -134,7 +136,7 @@ func TestFetchAuthenticatedTokenAbsentFromError(t *testing.T) {
 
 	t.Setenv("TEGRON_FAKE_FAIL", "1")
 	ctx := WithCredential(context.Background(), NewCredential(testToken))
-	_, _, err := gc.Fetch(ctx, "https://github.com/ferralon-demo/demo-go-svc", "main")
+	_, err := gc.Fetch(ctx, "https://github.com/ferralon-demo/demo-go-svc", "main")
 	if err == nil {
 		t.Fatal("expected the simulated clone failure to surface an error")
 	}
@@ -153,10 +155,11 @@ func TestFetchAuthenticatedTokenNotOnDisk(t *testing.T) {
 	gc := &GitCheckout{Bin: fakeGit(t, capDir)}
 
 	ctx := WithCredential(context.Background(), NewCredential(testToken))
-	dir, _, err := gc.Fetch(ctx, "https://github.com/ferralon-demo/demo-go-svc", "main")
+	plan, err := gc.Fetch(ctx, "https://github.com/ferralon-demo/demo-go-svc", "main")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
+	dir := plan.Primary().Root
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -182,10 +185,11 @@ func TestFetchEmptyCredentialIsByteIdenticalBareClone(t *testing.T) {
 	gc := &GitCheckout{Bin: fakeGit(t, capDir)}
 
 	// A plain context with no credential.
-	dir, _, err := gc.Fetch(context.Background(), "https://github.com/ferralon-demo/demo-go-svc", "main")
+	plan, err := gc.Fetch(context.Background(), "https://github.com/ferralon-demo/demo-go-svc", "main")
 	if err != nil {
 		t.Fatalf("Fetch (empty cred): %v", err)
 	}
+	dir := plan.Primary().Root
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	cloneArgv := strings.Split(strings.TrimRight(readCap(t, filepath.Join(capDir, "clone.argv")), "\n"), "\n")
@@ -286,11 +290,11 @@ func TestFetchCredentialPresentationHostBinding(t *testing.T) {
 
 			var dir string
 			warn := captureStderr(t, func() {
-				var err error
-				dir, _, err = gc.Fetch(ctx, tc.url, "main")
+				plan, err := gc.Fetch(ctx, tc.url, "main")
 				if err != nil {
 					t.Fatalf("Fetch(%q): %v", tc.url, err)
 				}
+				dir = plan.Primary().Root
 			})
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 

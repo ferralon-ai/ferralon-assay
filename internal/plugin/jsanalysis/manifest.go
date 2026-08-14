@@ -13,10 +13,9 @@ import (
 // name, engines.node, scripts.build, and workspaces are consulted; everything else
 // is ignored.
 type packageJSON struct {
-	Name       string            `json:"name"`
-	Engines    map[string]string `json:"engines"`
-	Scripts    map[string]string `json:"scripts"`
-	Workspaces json.RawMessage   `json:"workspaces"`
+	Name    string            `json:"name"`
+	Engines map[string]string `json:"engines"`
+	Scripts map[string]string `json:"scripts"`
 }
 
 // lockfiles are the npm/yarn/pnpm lockfile names whose presence selects a
@@ -65,12 +64,13 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		res.Runtime = plugin.RuntimeSpec{Name: "node", Version: v}
 	}
 
-	// A workspaces/monorepo layout is not installable/buildable with a single
-	// package-root command, and a missing name means we cannot identify the
-	// package — declare the gap rather than overclaim.
-	complicated := hasWorkspaces(pkg.Workspaces) || res.ProjectRoot == ""
-
-	if complicated {
+	// A missing name means we cannot identify the package — declare the gap rather
+	// than overclaim. A workspaces/monorepo layout NO LONGER declines here (PLAN-160
+	// C4): detecting a monorepo in order to return Partial(tool_failure) was the
+	// behaviour that criterion removes — the whole-graph resolver (ResolveInventory)
+	// now speaks for per-member subgraphs, and `npm ci` at the root installs the
+	// workspace, so a named root remains a Complete, buildable manifest.
+	if res.ProjectRoot == "" {
 		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure)
 		return res, nil
 	}
@@ -94,24 +94,4 @@ func installCommand(dir string) string {
 		}
 	}
 	return "npm install"
-}
-
-// hasWorkspaces reports whether package.json declares a non-empty workspaces field
-// (array form or object form), marking a monorepo the single-package parse cannot
-// speak for. A null/absent/empty field is not a monorepo.
-func hasWorkspaces(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var arr []string
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		return len(arr) > 0
-	}
-	var obj struct {
-		Packages []string `json:"packages"`
-	}
-	if err := json.Unmarshal(raw, &obj); err == nil {
-		return len(obj.Packages) > 0
-	}
-	return false
 }

@@ -69,23 +69,25 @@ func TestBuildManifest_NoPackageJSONIsPartial(t *testing.T) {
 	}
 }
 
-// TestBuildManifest_WorkspacesIsPartial asserts a monorepo (workspaces) degrades to
-// Partial while still reporting the module name, with no fabricated command.
-func TestBuildManifest_WorkspacesIsPartial(t *testing.T) {
+// TestBuildManifest_WorkspacesNoLongerDeclines asserts the PLAN-160 C4 change: a
+// named workspaces root no longer degrades to Partial merely for being a monorepo.
+// It resolves to a Complete, buildable manifest (`npm ci` at the root installs the
+// workspace); the whole-graph resolver speaks for per-member subgraphs separately.
+func TestBuildManifest_WorkspacesNoLongerDeclines(t *testing.T) {
 	dir := t.TempDir()
 	writePkg(t, dir, `{"name":"monorepo-root","workspaces":["packages/*"]}`)
 	res, err := BuildManifest(context.Background(), plugin.BuildManifestRequest{BuildDir: dir})
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Partiality.Complete {
-		t.Error("a workspaces/monorepo package must declare Partial")
+	if !res.Partiality.Complete {
+		t.Errorf("a named workspaces root must NOT decline post-C4; got %+v", res.Partiality)
 	}
 	if res.ProjectRoot != "monorepo-root" {
 		t.Errorf("ProjectRoot = %q, want monorepo-root", res.ProjectRoot)
 	}
-	if res.Resolver.Command != "" {
-		t.Errorf("must not fabricate a build command for a monorepo; got %q", res.Resolver.Command)
+	if res.Resolver.Command != "npm install" {
+		t.Errorf("Resolver.Command = %q, want 'npm install' (no lockfile in temp dir)", res.Resolver.Command)
 	}
 }
 

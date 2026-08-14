@@ -1,0 +1,10 @@
+{
+  "name": "f6-pnpm-peerscope",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F6: C3(iii) mutation target. One coordinate (debug@4.3.4) is installed twice with two distinct resolved peers (supports-color@8.1.1 vs @9.0.0), yielding two peer-suffixed pnpm snapshot keys. Proves two distinct IDs by ?resolution_scope= suffix, and the mutation control: collapsing to (name,version) merges the two nodes. Structural fixture for peer-suffix ID logic (dispatch-sanctioned, hand-authorable); resolution digests intentionally omitted.",
+  "dependencies": {
+    "consumer-a": "1.0.0",
+    "consumer-b": "1.0.0"
+  }
+}

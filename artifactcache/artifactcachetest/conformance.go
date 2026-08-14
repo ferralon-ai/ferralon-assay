@@ -6,6 +6,7 @@ package artifactcachetest
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -25,6 +26,29 @@ var ProbeRef = artifactcache.Ref{
 	Digest: "sha256:" + strings.Repeat("0", 64),
 }
 
+// probeRawB64 is a 64-byte digest chosen so its base64-std encoding contains BOTH '+'
+// (leading byte 0xFB → 6-bit group 111110 = index 62) and '/' (0xFF bytes → index 63) plus
+// '=' padding — the three characters that are illegal in a path segment. It exercises the
+// npm/NuGet wire form (sha512:<base64-std>) through the decode-validate gate so the harness
+// proves those characters never reach a path (they are re-encoded to lowercase hex).
+var probeRawB64 = func() []byte {
+	b := make([]byte, 64)
+	for i := range b {
+		b[i] = 0xFF
+	}
+	b[0] = 0xFB
+	return b
+}()
+
+// ProbeRefBase64 is the additive base64 conformance probe (OQ1 / threat-4 re-score): a
+// sha512 digest whose payload is base64-std with '/', '+', '='. A Store MAY serve it or
+// return ErrDeclaredAbsent; either is conformant. Its purpose is to drive the gate and
+// canonicalization on the encoding that actually reaches path derivation for two real lanes.
+var ProbeRefBase64 = artifactcache.Ref{
+	PURL:   "pkg:generic/artifactcache/conformance-probe-b64@0",
+	Digest: "sha512:" + base64.StdEncoding.EncodeToString(probeRawB64),
+}
+
 // ConformanceTest is the exported layer-2 harness every Store implementation is held to.
 // It drives Lookup and, on a hit, a full io.ReaderAt read to EOF plus Close, and asserts
 // that ZERO processes are spawned during the operation. The spawn check is a PATH shim:
@@ -42,19 +66,23 @@ func ConformanceTest(t *testing.T, newStore func() artifactcache.Store) {
 	sentinel := installSpawnShim(t)
 
 	store := newStore()
-	h, err := store.Lookup(context.Background(), ProbeRef)
-	switch {
-	case errors.Is(err, artifactcache.ErrDeclaredAbsent):
-		// Inert miss — conformant. Nothing further to read.
-	case err != nil:
-		t.Fatalf("Lookup returned unexpected error: %v", err)
-	default:
-		if h == nil {
-			t.Fatalf("Lookup returned nil Handle with nil error")
-		}
-		readAllHandle(t, h)
-		if err := h.Close(); err != nil {
-			t.Fatalf("Handle.Close returned error: %v", err)
+	// Drive both the legacy hex probe and the additive base64 probe: a base64 wire digest
+	// (npm/NuGet) must pass the decode-validate gate and read inertly exactly like the hex one.
+	for _, ref := range []artifactcache.Ref{ProbeRef, ProbeRefBase64} {
+		h, err := store.Lookup(context.Background(), ref)
+		switch {
+		case errors.Is(err, artifactcache.ErrDeclaredAbsent):
+			// Inert miss — conformant. Nothing further to read.
+		case err != nil:
+			t.Fatalf("Lookup(%s) returned unexpected error: %v", ref.PURL, err)
+		default:
+			if h == nil {
+				t.Fatalf("Lookup(%s) returned nil Handle with nil error", ref.PURL)
+			}
+			readAllHandle(t, h)
+			if err := h.Close(); err != nil {
+				t.Fatalf("Handle.Close returned error: %v", err)
+			}
 		}
 	}
 

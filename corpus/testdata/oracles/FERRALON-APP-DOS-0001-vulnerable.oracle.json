@@ -1,0 +1,14 @@
+{
+  "fixture_id": "FERRALON-APP-DOS-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "nodes": null,
+  "edges": [],
+  "capture": {
+    "tool": "go mod",
+    "tool_version": "go version go1.26.3 darwin/arm64",
+    "command": "go list -m -json all  +  go mod graph  (GOWORK=off)",
+    "operator": "anvil (L1 platform-core, out-of-band per capture-procedure.md)",
+    "captured_at": "2026-08-12T20:04:58Z",
+    "fixture_digest": "sha256:29f7a21d13b912e8358e043d83b84ab35226606dc54c18fafa98071c7882a3ac"
+  }
+}

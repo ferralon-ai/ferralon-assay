@@ -1,0 +1,56 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "2.1.0",
+  "FixedVersion": "2.1.0",
+  "VersionScheme": "maven",
+  "Coordinate": "com.example.net:urlkit",
+  "PURL": "pkg:maven/com.example.net/urlkit",
+  "Symbols": [
+    "App.fetch"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-918"
+  ],
+  "Summary": "server-side request forgery: com.example.net:urlkit reaches an outbound HTTP GET to a caller-supplied URL with no allowlist; fixed in 2.1.0. In the unreachable repro the sink App.fetch is present but dead — never called from an ingress — so the case is not_exploitable at the reach axis.",
+  "AffectedRanges": null,
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null,
+  "MaliciousPackage": {
+    "Declared": false,
+    "AffectedVersions": null
+  }
+}

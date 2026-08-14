@@ -166,11 +166,13 @@ func TestDispatch_BuildManifestRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDispatch_ResolveInventoryUnsupported asserts the whole-graph dependency
-// resolver op is wired and returns a declared-Unsupported inventory this cycle
-// (Go's real resolver is PLAN-140) — never a Complete() zero-node graph that would
-// falsely claim the module has no dependencies.
-func TestDispatch_ResolveInventoryUnsupported(t *testing.T) {
+// TestDispatch_ResolveInventoryWired asserts PLAN-102's contract through the
+// subprocess: the whole-graph resolver is implemented (no longer the Unsupported
+// stub) and resolves the SELECTED graph of the fixture module. fixturemod declares
+// no external dependencies, so the honest outcome is a Complete() zero-node
+// inventory ("this build genuinely has no dependencies", C3 case (ii)) — NOT a
+// declared-Unsupported graph, and NOT a fabricated node.
+func TestDispatch_ResolveInventoryWired(t *testing.T) {
 	resp := roundTrip(t, plugin.Request{
 		Op:               plugin.OpResolveInventory,
 		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: fixtureDir(t)},
@@ -178,11 +180,14 @@ func TestDispatch_ResolveInventoryUnsupported(t *testing.T) {
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Error("Go inventory must be declared Unsupported this cycle, never Complete")
+	if hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Error("Go inventory must no longer be Unsupported through the subprocess (PLAN-102 implements it)")
 	}
-	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
-		t.Errorf("want unsupported partiality reason; got %v", resp.Inventory.Partiality.Reasons)
+	if !resp.Inventory.Partiality.Complete {
+		t.Errorf("fixturemod has no external deps; inventory must be Complete, got %v", resp.Inventory.Partiality.Reasons)
+	}
+	if len(resp.Inventory.Nodes) != 0 {
+		t.Errorf("fixturemod has no external deps; want zero nodes, got %d", len(resp.Inventory.Nodes))
 	}
 }
 

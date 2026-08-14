@@ -160,10 +160,14 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		// Go's whole-graph dependency resolver is PLAN-140; this cycle lands the op
-		// wired to a declared-Unsupported inventory (never a Complete() zero-node
-		// graph, which would falsely claim "no dependencies"). §5 C5.
-		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+		// PLAN-102: Go resolves the SELECTED dependency graph (go mod graph + go.mod),
+		// not go.mod's require list. A declared-partial result (e.g. no manifest) is a
+		// success payload; only a hard resolution failure is an error (inv.4).
+		res, err := goanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
 		// Go's capability manifest CONTENT is Phase-4 (PLAN-4x0); this cycle lands the op

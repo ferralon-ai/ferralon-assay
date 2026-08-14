@@ -125,6 +125,14 @@
       "file": "TEGRON-JAVA-SSRF-0001.json",
       "digest": "sha256:01ccfd541860a83ebd230082fb94a42ef7a9d9e525c972b7e2afb09927b5ff90"
     },
+    "TEGRON-JAVA-SSRF-0002": {
+      "file": "TEGRON-JAVA-SSRF-0002.json",
+      "digest": "sha256:fa7859551cdcb1ef9dc4c27a850ba9510d09e6a2eb46c0d9686bcda79b4a0973"
+    },
+    "TEGRON-JAVA-SSRF-0003": {
+      "file": "TEGRON-JAVA-SSRF-0003.json",
+      "digest": "sha256:58a71fa86b9953aaa49149c3ffc19d0331a5dc6c401cf3c3dcaaaff7534d0f61"
+    },
     "TEGRON-JS-DEP-0001": {
       "file": "TEGRON-JS-DEP-0001.json",
       "digest": "sha256:41c352a37d1cc74413efb4e9df1b853c3b1cee3ad192ec33f713b31b52b35db3"
@@ -141,6 +149,10 @@
       "file": "TEGRON-NET-DEP-0001.json",
       "digest": "sha256:4dde15e5796a677555060c6fc232c8a2f2304f19269f72adb7e409e7c6b39592"
     },
+    "TEGRON-NET-REACH-0001": {
+      "file": "TEGRON-NET-REACH-0001.json",
+      "digest": "sha256:52607534da92679f1f9f8ebd688de42120c7b2f5d113c3fec2efacf4c2187611"
+    },
     "TEGRON-PY-AIRFLOW-EXPAPI-0001": {
       "file": "TEGRON-PY-AIRFLOW-EXPAPI-0001.json",
       "digest": "sha256:907106a7cd60bf8a6b11b14aae34e52948e342520ab186ef848baf59089c39be"
@@ -154,5 +166,5 @@
       "digest": "sha256:b9a196bc6275fc300bc8237bfacb850ab2e01fb844ea3d5a57d0f02d33083862"
     }
   },
-  "corpus_digest": "sha256:f5ffe531f9d21d38bf2dac00248a053761ee08095e22853830af98c86df26b2a"
+  "corpus_digest": "sha256:6f9b6e76765ef364fe8c3783ccba096174db0bcc07f583eb4e200d3b1e4d5643"
 }

@@ -246,7 +246,7 @@ func TestAdvisoryIDs_ShippedCorpusIsWellFormed(t *testing.T) {
 	var files int
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".json") || name == "manifest.json" {
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || name == "manifest.json" || name == attributionStoreFile {
 			continue
 		}
 		files++

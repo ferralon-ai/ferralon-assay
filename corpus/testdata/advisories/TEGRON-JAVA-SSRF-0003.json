@@ -1,0 +1,63 @@
+{
+  "Module": "",
+  "Aliases": null,
+  "UpperExclusive": "",
+  "FixedVersion": "",
+  "VersionScheme": "maven",
+  "Coordinate": "com.example.svc:iface-fetch",
+  "PURL": "pkg:maven/com.example.svc/iface-fetch",
+  "Symbols": [
+    "SomeServiceImpl.fetch"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-918"
+  ],
+  "Summary": "server-side request forgery: com.example.svc:iface-fetch reaches SomeServiceImpl.fetch through an @Autowired SomeService interface field; the sink issues an outbound request with no allowlist. Fixed in 1.3.0 (affects [1.0.0, 1.3.0)). The tool-unavailable repro is undetermined under the analyzer-gated-but-absent overlay and not_exploitable ungated.",
+  "AffectedRanges": [
+    {
+      "Introduced": "1.0.0",
+      "Fixed": "1.3.0",
+      "LastAffected": "",
+      "FixedVersion": "1.3.0"
+    }
+  ],
+  "Provenance": {
+    "Source": "",
+    "InputDigest": "",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null,
+  "MaliciousPackage": {
+    "Declared": false,
+    "AffectedVersions": null
+  }
+}

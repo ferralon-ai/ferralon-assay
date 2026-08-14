@@ -61,7 +61,10 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		}
 		prim := plan.Primary()
 		buildDir, language = prim.Root, prim.Language
-		cleanup = func() { _ = os.RemoveAll(prim.Root) }
+		// Remove the whole checkout tree, not the primary project root: once a plan can
+		// enumerate several projects, the primary may be a subdirectory and removing it
+		// would leak the rest of the temp checkout.
+		cleanup = func() { _ = os.RemoveAll(plan.Root) }
 		repo = repoIdentity(target)
 	} else {
 		absTarget, err := filepath.Abs(target)

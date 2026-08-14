@@ -186,6 +186,19 @@ func TestDispatch_ResolveInventoryUnsupported(t *testing.T) {
 	}
 }
 
+// TestDispatch_ResolveInventoryNilPayloadFailsClosed asserts the whole-graph resolver op hard-fails
+// when the request carries no payload, exactly like every other op — never a success response
+// synthesized from a missing request (inv.4).
+func TestDispatch_ResolveInventoryNilPayloadFailsClosed(t *testing.T) {
+	_, err := dispatch(context.Background(), plugin.Request{Op: plugin.OpResolveInventory})
+	if err == nil {
+		t.Fatal("expected a hard error for a nil resolve_inventory payload, got a success response")
+	}
+	if !strings.Contains(err.Error(), "missing resolve_inventory request") {
+		t.Errorf("error = %q, want it to name the missing resolve_inventory request", err)
+	}
+}
+
 func hasReason(reasons []string, want string) bool {
 	for _, r := range reasons {
 		if r == want {

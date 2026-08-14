@@ -31,17 +31,43 @@ func readForUpdate(ctx context.Context, store statestore.StateStore) (*statestor
 	return state, nil
 }
 
-// changedPackages returns the names of packages that differ between the baseline and
-// the candidate SBOM: added, removed, or version-changed. The result is sorted and
-// de-duplicated. An empty result is the PR-inherit fast-path condition (deps + their
-// versions unchanged).
+// packageSignature captures every axis of a package that can change which advisories
+// apply to it (§4.1 / §8 checkbox 12 "relevant dependency ... changes"): its exact
+// version, whether it is a direct or transitive dependency, and its immediate
+// neighbourhood in the selected graph. It is the relevance predicate this cycle makes
+// explicit — a change in any field is a relevant change that forces re-analysis of the
+// package's advisories; nothing else is.
+//
+// The one deliberate suppression: neighbours are recorded by version-independent
+// ecosystem+name, not by Package.Key() (which embeds version). So a *descendant's*
+// version bump does not change this package's signature — that descendant re-runs on
+// its own version delta, and re-running its parent as well would evaluate the same
+// advisories against the same coordinate for no applicability change. This is the only
+// churn a whole-graph diff introduces that the rule quiets, and it is quieted by an
+// advisory-applicability argument, never by latency (C2). Every other delta — an added
+// or removed edge, a direct/transitive flip, a version change — falls through to
+// "changed", so the rule's failure direction is re-analysis, never inheritance.
+type packageSignature struct {
+	version  string
+	direct   bool
+	parents  string // sorted \x00-joined ecosystem+name of immediate parents
+	children string // sorted \x00-joined ecosystem+name of immediate children
+}
+
+// changedPackages returns the ecosystem\x00name keys of packages whose signature
+// differs between the baseline and the candidate SBOM — added, removed, version-,
+// direct/transitive-, or parent/child-edge-changed. The result is sorted and
+// de-duplicated. An empty result is the PR-inherit fast-path condition (nothing
+// relevant changed). Relationship changes are now visible: before this cycle the
+// comparison was keyed on {ecosystem, name} → version alone and a package that became
+// direct, or whose parent edge moved, inherited a stale Report silently.
 func changedPackages(baseline, candidate report.SBOM) []string {
-	base := indexSBOM(baseline)
-	cand := indexSBOM(candidate)
+	base := indexSignatures(baseline)
+	cand := indexSignatures(candidate)
 
 	changed := make(map[string]struct{})
-	for key, bv := range base {
-		if cv, ok := cand[key]; !ok || cv != bv {
+	for key, bsig := range base {
+		if csig, ok := cand[key]; !ok || csig != bsig {
 			changed[key] = struct{}{}
 		}
 	}
@@ -59,14 +85,58 @@ func changedPackages(baseline, candidate report.SBOM) []string {
 	return out
 }
 
-// indexSBOM keys packages by ecosystem+name → version so a version bump on the same
-// package counts as a change.
-func indexSBOM(s report.SBOM) map[string]string {
-	idx := make(map[string]string, len(s.Packages))
+// indexSignatures builds the per-package relevance signature for every package in an
+// SBOM, resolving the relationship edges (keyed by Package.Key()) onto version-
+// independent ecosystem+name neighbour lists. An edge whose endpoint names no package
+// in this SBOM is dropped here exactly as report.Validate rejects it at build time, so
+// a validated SBOM loses no edge.
+func indexSignatures(s report.SBOM) map[string]packageSignature {
+	keyToName := make(map[string]string, len(s.Packages))
 	for _, p := range s.Packages {
-		idx[p.Ecosystem+"\x00"+p.Name] = p.Version
+		keyToName[p.Key()] = p.Ecosystem + "\x00" + p.Name
 	}
-	return idx
+
+	parents := make(map[string][]string)
+	children := make(map[string][]string)
+	for _, e := range s.Relationships {
+		pn, pok := keyToName[e.Parent]
+		cn, cok := keyToName[e.Child]
+		if !pok || !cok {
+			continue
+		}
+		children[pn] = append(children[pn], cn)
+		parents[cn] = append(parents[cn], pn)
+	}
+
+	sigs := make(map[string]packageSignature, len(s.Packages))
+	for _, p := range s.Packages {
+		name := p.Ecosystem + "\x00" + p.Name
+		sigs[name] = packageSignature{
+			version:  p.Version,
+			direct:   p.Direct,
+			parents:  joinSortedUnique(parents[name]),
+			children: joinSortedUnique(children[name]),
+		}
+	}
+	return sigs
+}
+
+// joinSortedUnique sorts, de-duplicates, and \x00-joins neighbour names so the
+// signature is order-stable regardless of edge emission order.
+func joinSortedUnique(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	out := names[:0]
+	var last string
+	for i, n := range names {
+		if i == 0 || n != last {
+			out = append(out, n)
+			last = n
+		}
+	}
+	return strings.Join(out, "\x00")
 }
 
 // inheritBaseline produces the PR-inherit fast-path Report: it re-emits the baseline's
@@ -79,9 +149,26 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 		ResolvedCommit: req.Subject.ResolvedCommit,
 	})
 	b.AddPackages(baseline.SBOM.Packages...)
+	// Forward the whole-graph relationships (PLAN-100 added them to report.SBOM; the
+	// re-emit paths deferred forwarding them to this cycle). Without this the inherited
+	// SBOM would silently flatten to packages-only, and the next PR diff against it
+	// would see every relationship as newly-absent.
+	b.SetRelationships(baseline.SBOM.Relationships)
 	for i := range baseline.Advisories {
 		b.AddFinding(baseline.Advisories[i])
 	}
+	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
+	// resolve — so a diff that inherited because a lane's inventory was unavailable is
+	// distinguishable in the Report from one that inherited because nothing changed
+	// (C3). Same precedent as WorkSetLimits: an inherited Report is still a Report about
+	// THIS run, and a comparison it could not fully perform must be visible.
+	b.AddPartiality(req.DiffLimits...)
+	// The diff compared dependencies but not build context (§8 checkbox 12's second
+	// clause is unimplemented — see the note's doc). A build-context-only change would
+	// take this very fast path and inherit a stale Report silently, so the gap is
+	// disclosed HERE, on the inherited path, as a quiet inherent_limit (C6). Declaring
+	// it is the honest state; claiming the checkbox without it is the failure.
+	b.AddPartiality(buildContextNotComparedNote())
 	// The inherited verdicts were not re-derived, so the baseline's coverage limits
 	// are still exactly the limits of what this Report asserts. Dropping them here
 	// would make an inherited partial scan render clean on the PR surface.
@@ -154,6 +241,9 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		ResolvedCommit: req.Subject.ResolvedCommit,
 	})
 	b.AddPackages(req.PRSBOM.Packages...)
+	// The re-analyzed Report's SBOM is the PR head's — carry its relationships too, so
+	// the stored head SBOM stays a whole graph and the next diff has edges to compare.
+	b.SetRelationships(req.PRSBOM.Relationships)
 
 	for i := range baseline.Advisories {
 		f := baseline.Advisories[i]
@@ -242,6 +332,10 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		ResolvedCommit: stateCommit(prior, req.Subject.ResolvedCommit),
 	})
 	b.AddPackages(prior.SBOM.Packages...)
+	// CVE-watch re-resolves no dependencies; the prior whole-graph SBOM (packages AND
+	// relationships) is reused verbatim, so the stored inventory does not flatten
+	// across scheduled watches.
+	b.SetRelationships(prior.SBOM.Relationships)
 
 	for i := range prior.Advisories {
 		f := prior.Advisories[i]
@@ -295,6 +389,22 @@ func supersededByFresh(f report.AdvisoryFinding, freshIDs map[string]struct{}) b
 	}
 	_, ok := freshIDs[f.Advisory.ID]
 	return ok
+}
+
+// buildContextNotComparedNote is the standing disclosure that the PR-inherit diff does
+// not compare build context (§8 checkbox 12 second clause, C6). PLAN-004's WorkspacePlan
+// exists but is not persisted into report.SBOM — the object the diff compares — so a
+// build-context-only change is undetectable and would inherit silently. It is an
+// inherent_limit (quiet arm): a permanent methodology gap, not a failed run step, so it
+// discloses without firing the headline qualifier. Class is set explicitly so the note
+// stays quiet regardless of the reason classifier's default.
+func buildContextNotComparedNote() report.PartialityNote {
+	return report.PartialityNote{
+		Reason: report.ReasonBuildContextNotCompared,
+		Detail: "PR-inherit compared the dependency set; build-context changes " +
+			"(project/language/target/runtime/root) were not compared (unimplemented)",
+		Class: report.PartialityInherentLimit,
+	}
 }
 
 func baselinePointer(baseline *report.Report, state *statestore.State) report.BaselineRef {

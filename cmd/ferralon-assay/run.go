@@ -633,18 +633,18 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 // returns ErrNoBaseline and we exit non-zero with a clear "run a baseline first"
 // message — a PR run has nothing to inherit until the default branch is scanned once.
 //
-// PR-head SBOM resolution: the SBOM is resolved locally from -target by running only
-// the cheap S1+S2 slice (pipeline.SBOMStages, no analysis), then diffed against the
-// stored baseline SBOM — deps unchanged → the inherit fast path; else the affected
-// advisory slice is re-analyzed. No PR adapter and no GitHub API; and no OSV query
-// unless the work-set widening is explicitly switched on, which osvWorkSetDefault means
-// it is not. That is not the same as offline: resolving the SBOM contacts
-// proxy.golang.org, and re-analysis runs the Go reachability stage, which contacts
+// PR-head SBOM resolution: the SBOM is resolved locally from -target by resolving the
+// codebase's whole dependency inventory (pipeline.ResolveCodebaseInventory, no analysis),
+// then diffed against the stored baseline SBOM — deps unchanged → the inherit fast path;
+// else the affected advisory slice is re-analyzed. No PR adapter and no GitHub API; and no
+// OSV query unless the work-set widening is explicitly switched on, which osvWorkSetDefault
+// means it is not. That is not the same as offline: resolving the inventory may contact the
+// ecosystem's resolver, and re-analysis runs the Go reachability stage, which contacts
 // vuln.go.dev (see the Rung 0 doc on package trigger).
-// -target is the PR head tree already on disk (vendored_repro). The SBOM is advisory-keyed, so
-// "unchanged" means "no advisory-corpus dependency changed"; an empty corpus or a
-// target with no advisory-affected dependency yields an empty SBOM on both sides,
-// which is the inherit fast path (by design — nothing the corpus cares about moved).
+// -target is the PR head tree already on disk (vendored_repro). Post-PLAN-100 the SBOM is
+// INVENTORY-keyed, so "unchanged" means "no resolved dependency changed" — whether or not any
+// advisory names it. A target with no dependencies (or whose inventory could not be resolved,
+// yielding a declared-partial empty SBOM on both sides) takes the inherit fast path.
 func runPRInherit(args []string) error {
 	fs := flag.NewFlagSet("pr-inherit", flag.ContinueOnError)
 	f := registerRunFlags(fs)
@@ -660,9 +660,8 @@ func runPRInherit(args []string) error {
 	}
 	defer cfg.cleanup()
 
-	prSBOM, err := trigger.ResolveSBOM(ctx, trigger.ResolveSBOMRequest{
+	prSBOM, sbomLimits, err := trigger.ResolveSBOM(ctx, trigger.ResolveSBOMRequest{
 		Codebase:      cfg.codebase,
-		Advisories:    cfg.advisories,
 		AssessOptions: cfg.assessOptions,
 	})
 	if err != nil {
@@ -675,6 +674,9 @@ func runPRInherit(args []string) error {
 		PRSBOM:        prSBOM,
 		Advisories:    cfg.advisories,
 		WorkSetLimits: cfg.workSet.partiality,
+		// The head inventory's own partiality bounds the diff — disclosed on the fast
+		// path so an inherit forced by an unresolvable head SBOM is not read as "clean".
+		DiffLimits:    sbomLimits,
 		AssessOptions: cfg.assessOptions,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {

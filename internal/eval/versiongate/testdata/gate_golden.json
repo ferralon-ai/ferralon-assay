@@ -1,0 +1,315 @@
+{
+  "lane": "go",
+  "outcomes": [
+    {
+      "fixture_id": "FERRALON-APP-DOS-0001-patched",
+      "category": "patched",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "FERRALON-APP-DOS-0001-patched",
+        "category": "patched",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "FERRALON-APP-DOS-0001-vulnerable",
+      "category": "reachable_unconfirmable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "FERRALON-APP-DOS-0001-vulnerable",
+        "category": "reachable_unconfirmable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "FERRALON-APP-SSRF-0001-patched",
+      "category": "patched",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "FERRALON-APP-SSRF-0001-patched",
+        "category": "patched",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "FERRALON-APP-SSRF-0001-vulnerable",
+      "category": "reachable_unconfirmable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "FERRALON-APP-SSRF-0001-vulnerable",
+        "category": "reachable_unconfirmable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "GO-2021-0113-liveness",
+      "category": "reachable_unconfirmable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "GO-2021-0113-liveness",
+        "category": "reachable_unconfirmable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "unmeasurable",
+            "reason": "source_unpinned",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "GO-2021-0113-patched",
+      "category": "patched",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "GO-2021-0113-patched",
+        "category": "patched",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "unmeasurable",
+            "reason": "source_unpinned",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "GO-2021-0113-trivial",
+      "category": "trivially_exploitable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "GO-2021-0113-trivial",
+        "category": "trivially_exploitable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "unmeasurable",
+            "reason": "source_unpinned",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 1,
+              "denom": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "GO-2021-0264-reachable",
+      "category": "reachable_unconfirmable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "GO-2021-0264-reachable",
+        "category": "reachable_unconfirmable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "fixture_id": "GO-2022-0322-absent",
+      "category": "absent_not_exploitable",
+      "build_dir": "",
+      "resolved_complete": true,
+      "result": {
+        "fixture_id": "GO-2022-0322-absent",
+        "category": "absent_not_exploitable",
+        "state": "measured",
+        "scores": {
+          "exact_version": {
+            "state": "unmeasurable",
+            "reason": "source_unpinned",
+            "rate": {
+              "num": 0,
+              "denom": 0
+            }
+          },
+          "transitive_set": {
+            "state": "measured",
+            "rate": {
+              "num": 47,
+              "denom": 47
+            }
+          },
+          "parent_edge": {
+            "state": "measured",
+            "rate": {
+              "num": 87,
+              "denom": 87
+            }
+          }
+        }
+      }
+    }
+  ]
+}

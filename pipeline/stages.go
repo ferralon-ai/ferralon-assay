@@ -834,6 +834,27 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired interface field; the sink issues an outbound request with no allowlist",
 	},
+	"TEGRON-JAVA-SSRF-0002": {
+		Coordinate:     "com.example.net:urlkit",
+		UpperExclusive: "2.1.0",
+		FixedVersion:   "2.1.0",
+		VersionScheme:  "maven",
+		PURL:           "pkg:maven/com.example.net/urlkit",
+		Symbols:        []string{"App.fetch"},
+		CWEs:           []string{"CWE-918"},
+		Summary:        "server-side request forgery: com.example.net:urlkit reaches an outbound HTTP GET to a caller-supplied URL with no allowlist; fixed in 2.1.0. In the unreachable repro the sink App.fetch is present but dead — never called from an ingress — so the case is not_exploitable at the reach axis.",
+	},
+	"TEGRON-JAVA-SSRF-0003": {
+		Coordinate:    "com.example.svc:iface-fetch",
+		VersionScheme: "maven",
+		PURL:          "pkg:maven/com.example.svc/iface-fetch",
+		AffectedRanges: []Range{
+			{Introduced: "1.0.0", Fixed: "1.3.0", FixedVersion: "1.3.0"},
+		},
+		Symbols: []string{"SomeServiceImpl.fetch"},
+		CWEs:    []string{"CWE-918"},
+		Summary: "server-side request forgery: com.example.svc:iface-fetch reaches SomeServiceImpl.fetch through an @Autowired SomeService interface field; the sink issues an outbound request with no allowlist. Fixed in 1.3.0 (affects [1.0.0, 1.3.0)). The tool-unavailable repro is undetermined under the analyzer-gated-but-absent overlay and not_exploitable ungated.",
+	},
 	"TEGRON-JS-SSRF-0001": {
 		PURL:    "pkg:npm/tegron-corpus-ssrf",
 		Symbols: []string{"fetchUrl"},
@@ -881,6 +902,19 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		FixedVersion:   "13.0.1",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
 		Summary:        "insecure default deserialization in Newtonsoft.Json fixed in 13.0.1",
+	},
+	"TEGRON-NET-REACH-0001": {
+		Aliases:        []string{"CVE-2021-32840"},
+		UpperExclusive: "1.3.3",
+		FixedVersion:   "1.3.3",
+		VersionScheme:  "nuget",
+		Coordinate:     "SharpZipLib",
+		PURL:           "pkg:nuget/SharpZipLib",
+		Symbols:        []string{"ICSharpCode.SharpZipLib.Zip.FastZip.ExtractZip"},
+		CWEs:           []string{"CWE-22"},
+		Summary:        "path traversal (Zip-Slip) on archive extraction: ICSharpCode.SharpZipLib before 1.3.3 does not validate archive entry paths, so FastZip.ExtractZip writes files outside the destination directory, enabling arbitrary file write and possible remote code execution. GHSA-m22m-h4rf-pwq3 / CVE-2021-32840, fixed in 1.3.3.",
+		AffectedRanges: []Range{{Fixed: "1.3.3", FixedVersion: "1.3.3"}},
+		Provenance:     Provenance{Source: "GHSA-m22m-h4rf-pwq3", InputDigest: "provisional-symbol-spelling: authored before the .NET symbol profile was fixed; re-normalisation pending. The Symbols spelling above is NOT canonical yet. NOTE the identity split: Coordinate/PURL are keyed by the NuGet PACKAGE ID (SharpZipLib) so versions.go matches the .csproj PackageReference; Symbols are keyed by the CLR NAMESPACE path (ICSharpCode.SharpZipLib.*)."},
 	},
 	// First-party pypi advisory with a KNOWN scheme (pkg:pypi → pypi) but NO version-range
 	// fix — an open/unbounded affected range, like the gogs symlink CVE. schemeFromPURL

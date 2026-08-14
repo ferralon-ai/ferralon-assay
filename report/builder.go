@@ -16,12 +16,13 @@ import (
 // never embeds pipeline state. Build sorts the SBOM and findings into a stable order
 // so the serialized Report is deterministic (content-addressable in the StateStore).
 type Builder struct {
-	subject    Subject
-	packages   []Package
-	advisories []AdvisoryFinding
-	partiality []PartialityNote
-	provenance Provenance
-	baseline   *BaselineRef
+	subject       Subject
+	packages      []Package
+	relationships []Relationship
+	advisories    []AdvisoryFinding
+	partiality    []PartialityNote
+	provenance    Provenance
+	baseline      *BaselineRef
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -42,6 +43,16 @@ func (b *Builder) AddPackage(p Package) *Builder {
 // AddPackages records several resolved dependencies into the SBOM.
 func (b *Builder) AddPackages(pkgs ...Package) *Builder {
 	b.packages = append(b.packages, pkgs...)
+	return b
+}
+
+// SetRelationships records the SBOM's parent→child dependency edges (§4.1.2 / §8 checkbox 2).
+// Endpoints are Package.Key() values. Build sorts and de-duplicates them into a deterministic
+// order, so the caller may pass them unsorted; passing the same edge twice is collapsed. Replaces
+// (not appends to) any previously set relationships, mirroring how a whole-graph SBOM is produced
+// once from one inventory.
+func (b *Builder) SetRelationships(rels []Relationship) *Builder {
+	b.relationships = append([]Relationship(nil), rels...)
 	return b
 }
 
@@ -261,12 +272,38 @@ func (b *Builder) Build() Report {
 	return Report{
 		SchemaVersion: SchemaVersion,
 		Subject:       b.subject,
-		SBOM:          SBOM{Packages: pkgs},
+		SBOM:          SBOM{Packages: pkgs, Relationships: sortedUniqueRelationships(b.relationships)},
 		Advisories:    adv,
 		Partiality:    dedupPartiality(b.partiality),
 		Provenance:    prov,
 		Baseline:      b.baseline,
 	}
+}
+
+// sortedUniqueRelationships returns the edges sorted by (Parent, Child) and de-duplicated, or nil
+// when empty so the field is omitted rather than serialized as []. Explicit ordering — never map
+// iteration — is what keeps an unchanged SBOM byte-identical so the StateStore writes zero new git
+// objects (SBOM.Relationships' determinism contract).
+func sortedUniqueRelationships(rels []Relationship) []Relationship {
+	if len(rels) == 0 {
+		return nil
+	}
+	seen := make(map[Relationship]struct{}, len(rels))
+	out := make([]Relationship, 0, len(rels))
+	for _, r := range rels {
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Parent != out[j].Parent {
+			return out[i].Parent < out[j].Parent
+		}
+		return out[i].Child < out[j].Child
+	})
+	return out
 }
 
 // dedupPartiality collapses the accumulated notes to a stable, unique set keyed on

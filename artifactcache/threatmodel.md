@@ -72,3 +72,26 @@ its results carry sensitive findings about the customer's systems, which is why 
 must not leave the customer's trust boundary unredacted (`.github/SECURITY.md:21-30`). That
 exfiltration boundary is the thing zero-egress protects; a sanctioned artifact fetch is not
 a breach of it.
+
+## Q7 branch decision — Branch B (network acquisition), founder-attributed
+
+**Decided by Eric Stevens (founder), 2026-08-13.** Open Question 7 (registry credential
+policy) is resolved as **Branch B: network acquisition is supported**, with an
+operator-provided offline cache retained as a supported mode alongside it (§4.2 bullet 5) —
+B is a superset of A. Rationale of record:
+
+- This threat model already assumes B in substance: the Acquirer seam and the customer
+  private-registry credential (asset + scored threat 3) exist here precisely because a
+  network fetch is in the design.
+- Zero-egress is customer-data sovereignty, not a network ban (see "Explicitly NOT a
+  threat"); fetching public dependency artifacts/metadata is the same class of public
+  egress as `proxy.golang.org` / `vuln.go.dev`.
+- Free-tier Go-parity (no defer-to-Prove) rules out Branch A: a lane that can only index
+  operator-pre-staged artifacts is not at Assess-tier parity with Go.
+- Offline-mirror mode stays supported — PLAN-404's offline-mirror path needs it.
+
+**Credential custody: in-process-only (confirmed).** PLAN-200 inherits `checkout.Credential`
+verbatim (scored threat 3) — **no on-disk credential store**; per-ecosystem fetch backend
+sits behind the policy object; integrity verification runs against real ecosystem metadata.
+**Gate:** a security stage on the credential boundary must land **before any acquisition
+client ships** — the redaction posture cited in threat 3 is the bar.

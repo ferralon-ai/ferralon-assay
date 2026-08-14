@@ -164,24 +164,44 @@ func TestDispatch_ReachabilitySliceOps_Live(t *testing.T) {
 	}
 }
 
-// generate_harness and build_manifest stay CONTRACT-PRESENT Unsupported: the Python effect
-// rides the corpus repro-runtime sandbox, so the plugin never scaffolds a harness.
-func TestDispatch_HarnessOps_Unsupported(t *testing.T) {
+// generate_harness stays CONTRACT-PRESENT Unsupported: the Python effect rides the corpus
+// repro-runtime sandbox, so the plugin never scaffolds a harness. It appears in no §5.4
+// deliverable, so it is out of PLAN-173's scope and unchanged.
+func TestDispatch_GenerateHarness_Unsupported(t *testing.T) {
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}})
+	if !hasReason(reasons(resp.Harness), plugin.PartialReasonUnsupported) {
+		t.Errorf("generate_harness must stay CONTRACT-PRESENT Unsupported; got reasons %v", reasons(resp.Harness))
+	}
+}
+
+// build_manifest is LIVE (PLAN-173): over the subprocess protocol it derives the build
+// context from declared metadata. The fixture declares only requirements.txt (no
+// requires-python, no lockfile python constraint), so the interpreter version is
+// undeterminable — the op returns a PARTIAL manifest naming the missing input, never
+// Unsupported() and never a guessed version, with the pip resolver still detected.
+func TestDispatch_BuildManifest_LivePartial(t *testing.T) {
 	dir := fixtureDir(t)
-	for _, c := range []struct {
-		name string
-		req  plugin.Request
-		ok   func(plugin.Response) []string
-	}{
-		{"generate_harness", plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}},
-			func(r plugin.Response) []string { return reasons(r.Harness) }},
-		{"build_manifest", plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}},
-			func(r plugin.Response) []string { return reasons(r.BuildManifest) }},
-	} {
-		resp := roundTrip(t, c.req)
-		if !hasReason(c.ok(resp), plugin.PartialReasonUnsupported) {
-			t.Errorf("%s must stay CONTRACT-PRESENT Unsupported; got reasons %v", c.name, c.ok(resp))
-		}
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}})
+	if resp.BuildManifest == nil {
+		t.Fatal("missing build_manifest payload")
+	}
+	if hasReason(reasons(resp.BuildManifest), plugin.PartialReasonUnsupported) {
+		t.Fatalf("build_manifest must no longer be Unsupported (PLAN-173); got reasons %v", reasons(resp.BuildManifest))
+	}
+	if resp.BuildManifest.Partiality.Complete {
+		t.Errorf("build_manifest over a fixture with no requires-python must be partial; got %+v", resp.BuildManifest.Partiality)
+	}
+	if !hasReason(reasons(resp.BuildManifest), plugin.PartialReasonEnvConditionUnresolved+":requires_python") {
+		t.Errorf("partial reason must name the missing requires_python input; got %v", reasons(resp.BuildManifest))
+	}
+	if resp.BuildManifest.Runtime.Version != "" {
+		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", resp.BuildManifest.Runtime.Version)
+	}
+	if resp.BuildManifest.Resolver.Name != "pip" {
+		t.Errorf("Resolver.Name = %q, want pip (requirements.txt detected)", resp.BuildManifest.Resolver.Name)
+	}
+	if resp.BuildManifest.ProjectRoot != dir {
+		t.Errorf("ProjectRoot = %q, want %q", resp.BuildManifest.ProjectRoot, dir)
 	}
 }
 

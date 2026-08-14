@@ -131,6 +131,7 @@ type Assembly struct {
 
 	methodsByRID map[uint32]*MethodDef
 	md           *mdTables
+	pe           *peFile // retained for the IL-body RVA→bytes path (02b's ilBody seam)
 }
 
 // MethodByRID resolves a MethodDef RID (e.g. the low bits of a MethodDefOrRef
@@ -247,6 +248,7 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 		Flags:        pe.cli.flags,
 		EntryPoint:   pe.cli.entryPoint,
 		md:           m,
+		pe:           pe,
 		methodsByRID: map[uint32]*MethodDef{},
 	}
 

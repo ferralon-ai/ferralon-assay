@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
 )
 
@@ -164,13 +165,22 @@ const normalizedAdvisorySchemaVersion = "ferralon.normalized_advisory.v2"
 // documents coexist during migration. Rides the ferralon. base (feed is a Ferralon platform feature).
 const normalizedAdvisorySchemaVersionV3 = "ferralon.normalized_advisory.v3"
 
+// normalizedAdvisorySchemaVersionV4 is the additive successor to v3. It adds the typed-symbol axis
+// (§4.4.2/.3): `symbols_typed []plugin.Symbol`, the canonical comparable PLAN-000 identity, coexisting
+// with the existing bare `symbols []string` (mirrors the affected_packages[] additive precedent). It is
+// omitempty + zero-safe, so v2/v3 documents decode unchanged with it nil. DECLARED-AWAITING-EMIT: the
+// cve-enrichment producer (a separate repo) does not emit typed symbols today, so the field is nil on
+// every current document — nil means "producer has not emitted typed symbols," NOT "the advisory has no
+// symbols" (the bare `symbols` axis is unaffected). Producer ownership is escalated to Eric (anvil-q15).
+const normalizedAdvisorySchemaVersionV4 = "ferralon.normalized_advisory.v4"
+
 // schemaVersionRecognized is the closed set of accepted wire tags. It replaces the exact-match gate
-// (d.SchemaVersion != normalizedAdvisorySchemaVersion) so v2 and v3 documents both validate. A tag
+// (d.SchemaVersion != normalizedAdvisorySchemaVersion) so v2, v3, and v4 documents all validate. A tag
 // outside the set fails shape-validation → fail open (never a laundered fact). New wire majors are
 // added here, never as a silent prefix match.
 func schemaVersionRecognized(v string) bool {
 	switch v {
-	case normalizedAdvisorySchemaVersion, normalizedAdvisorySchemaVersionV3:
+	case normalizedAdvisorySchemaVersion, normalizedAdvisorySchemaVersionV3, normalizedAdvisorySchemaVersionV4:
 		return true
 	default:
 		return false
@@ -323,6 +333,14 @@ type advisoryDoc struct {
 	// behavior (inv.5 fail-open). Advisory-level fields (aliases/cwes/sink_kind/trigger/…) are NOT
 	// repeated per element — they are shared across every package and stay top-level.
 	AffectedPackages []docAffectedPackage `json:"affected_packages,omitempty"`
+
+	// --- ferralon.normalized_advisory.v4 additive block -----------------------------------------
+	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol identity
+	// (Kind/Package/Enclosing/Name/Descriptor/SCIP), coexisting with the bare `symbols []string` above.
+	// omitempty + zero-safe: absent (every v2/v3 document, and every v4 document until the producer emits)
+	// → nil. DECLARED-AWAITING-EMIT (anvil-q15): nil means "producer has not emitted typed symbols," NOT
+	// "no symbols" — the bare `symbols` axis carries the strings today. Carries no verdict.
+	SymbolsTyped []plugin.Symbol `json:"symbols_typed,omitempty"`
 }
 
 // docAffectedPackage is one entry of the additive v3 affected_packages[] set. It mirrors the
@@ -591,6 +609,10 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// v3 additive block. Each closed-set enum is validated fail-open: an unrecognized IngressKind /
 	// FailedFixClass drops to "" (the zero, constant-fallback) exactly the way schemeRecognized /
 	// trustTierRecognized gate — never rejecting the whole document, never a silent wrong operand.
+	// §4.4.6 absent-vs-none: the pointer nil/non-nil already carries the distinction on the wire;
+	// stamp it onto the projection so it is no longer collapsed. nil → PresenceAbsent (the zero, set
+	// by leaving the operand untouched); non-nil zero-valued → declared_empty; non-nil with values →
+	// declared_values. Representation-only — Zero() stays value-based, so no consumer branch flips.
 	var trigger TriggerRoute
 	if d.Trigger != nil {
 		ingress := d.Trigger.IngressKind
@@ -603,6 +625,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			Param:          d.Trigger.Param,
 			MalformedToken: d.Trigger.MalformedToken,
 		}
+		trigger.Declared = presenceFromZero(trigger.Zero())
 	}
 	var fix FixHint
 	if d.Fix != nil {
@@ -615,10 +638,12 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			GuardShape:     d.Fix.GuardShape,
 			FailedFixClass: ffc,
 		}
+		fix.Declared = presenceFromZero(fix.Zero())
 	}
 	var configKey ConfigOperand
 	if d.ConfigKey != nil {
 		configKey = ConfigOperand{Key: d.ConfigKey.Key, UnsafeValue: d.ConfigKey.UnsafeValue}
+		configKey.Declared = presenceFromZero(configKey.Zero())
 	}
 	var guardSuff []GuardVariant
 	for _, g := range d.GuardSufficiency {
@@ -723,6 +748,9 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		GadgetClasses:    d.GadgetClasses,
 		GuardSufficiency: guardSuff,
 		AffectedPackages: affectedPkgs,
+		// v4 additive field. Zero-safe passthrough: nil (producer has not emitted) stays nil —
+		// never conflated with an empty symbol set (anvil-q15 declared-awaiting-emit).
+		SymbolsTyped:     d.SymbolsTyped,
 		MaliciousPackage: malicious,
 	}, true
 }
@@ -787,6 +815,19 @@ func schemeRecognized(scheme string) bool {
 func trustTierRecognized(tier string) bool {
 	switch TrustTier(tier) {
 	case "", TrustByO, TrustThirdParty, TrustFirstParty:
+		return true
+	default:
+		return false
+	}
+}
+
+// attributionStatusRecognized allows the empty status (zero value, semantically unreviewed) plus the
+// closed AttributionStatus enum (§4.4.8). Any other value fails validation → fail open to unreviewed,
+// mirroring trustTierRecognized. Wired into per-symbol population by PLAN-220 (this cycle establishes
+// the type + validator + state model only); exercised now by TestAttributionStatusRecognized.
+func attributionStatusRecognized(status string) bool {
+	switch AttributionStatus(status) {
+	case "", AttributionUnreviewed, AttributionConfirmed, AttributionAmbiguous, AttributionDisputed:
 		return true
 	default:
 		return false

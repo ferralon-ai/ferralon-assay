@@ -9,7 +9,7 @@ import (
 
 func ingressFor(ings []plugin.Ingress, symbol string) (plugin.Ingress, bool) {
 	for _, in := range ings {
-		if in.Symbol == symbol {
+		if in.Symbol.SCIP == symbol {
 			return in, true
 		}
 	}

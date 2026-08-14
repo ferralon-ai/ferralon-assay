@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "FERRALON-APP-DOS-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "FERRALON-APP-DOS-0001",
+    "source": "osv",
+    "summary": "uncontrolled resource consumption: expandHandler allocates a slice sized by an attacker-controlled count with no upper bound, faulting the process",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "FERRALON-APP-DOS-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/FERRALON-APP-DOS-0001-vulnerable/",
+      "notes": "Vulnerable variant of the FERRALON-APP-DOS-0001 house canary: expandHandler (GET /expand) sizes make([]byte, n) directly from the attacker-controlled count query parameter with no upper bound, so an oversized count faults the allocation. A single-file Go module (go 1.26.3) built and served on 127.0.0.1:8080."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The attacker-controlled count flows unbounded into make([]byte, n) in expandHandler, so the ingress-to-sink taint path for CWE-400 resource exhaustion is statically complete and the row is reachable. Confirming the fault requires driving count to the recoverable makeslice ceiling under the sandbox's canary transport, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

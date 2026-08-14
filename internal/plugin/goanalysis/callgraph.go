@@ -168,12 +168,17 @@ func (s *ssaProgram) entryFunctions() []*ssa.Function {
 	return roots
 }
 
-func (s *ssaProgram) collectRoots() []string {
+func (s *ssaProgram) collectRoots() []plugin.Symbol {
 	set := map[string]bool{}
 	for _, fn := range s.entryFunctions() {
 		set[s.scipFunc(fn)] = true
 	}
-	return sortedKeys(set)
+	ids := sortedKeys(set)
+	roots := make([]plugin.Symbol, len(ids))
+	for i, id := range ids {
+		roots[i] = sym(id)
+	}
+	return roots
 }
 
 func (s *ssaProgram) collectEdges(graph *callgraph.Graph) []plugin.CallEdge {
@@ -192,14 +197,14 @@ func (s *ssaProgram) collectEdges(graph *callgraph.Graph) []plugin.CallEdge {
 			return nil
 		}
 		seen[p] = true
-		edges = append(edges, plugin.CallEdge{Caller: p.caller, Callee: p.callee})
+		edges = append(edges, plugin.CallEdge{Caller: sym(p.caller), Callee: sym(p.callee)})
 		return nil
 	})
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 	return edges
 }

@@ -43,17 +43,17 @@ func TestReachability_IngressToSinkPath(t *testing.T) {
 		t.Fatalf("want exactly one reach path to the sink, got %d: %+v", len(res.Paths), res.Paths)
 	}
 	p := res.Paths[0]
-	if p.Sink != sink {
-		t.Fatalf("path sink = %q, want %q", p.Sink, sink)
+	if p.Sink.SCIP != sink {
+		t.Fatalf("path sink = %q, want %q", p.Sink.SCIP, sink)
 	}
-	if p.Ingress == "" {
+	if p.Ingress.SCIP == "" {
 		t.Fatal("path must carry a non-empty ingress (the route handler entry)")
 	}
-	if p.Ingress != p.Trace[0] {
-		t.Fatalf("ingress %q must be the first trace frame %q", p.Ingress, p.Trace[0])
+	if p.Ingress.SCIP != p.Trace[0].SCIP {
+		t.Fatalf("ingress %q must be the first trace frame %q", p.Ingress.SCIP, p.Trace[0].SCIP)
 	}
-	if p.Trace[len(p.Trace)-1] != sink {
-		t.Fatalf("final trace frame must be the sink; got %q", p.Trace[len(p.Trace)-1])
+	if p.Trace[len(p.Trace)-1].SCIP != sink {
+		t.Fatalf("final trace frame must be the sink; got %q", p.Trace[len(p.Trace)-1].SCIP)
 	}
 	// The handle() utility hop must be on the path (handleFetch -> handle -> fetchUrl).
 	if len(p.Trace) < 3 {

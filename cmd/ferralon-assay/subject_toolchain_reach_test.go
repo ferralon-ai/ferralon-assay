@@ -11,11 +11,12 @@ import (
 
 // subjectToolchainReachEnv is the env var name action.yml exports on the run step, duplicated here
 // on purpose: a typo on either side of that seam would silently disable the M4 gate forever, with
-// no other test in the tree going red. This is both the brand-derived and legacy name on the OSS
-// default build (brand.EnvPrefix == "TEGRON") — see envSubjectToolchainReach/
-// legacyEnvSubjectToolchainReach in run.go. Precedence (derived wins, legacy honored) is proven
-// build-tag-independently in brand/brand_env_test.go.
-const subjectToolchainReachEnv = "TEGRON_SUBJECT_TOOLCHAIN_REACHABILITY"
+// no other test in the tree going red. This is the brand-derived name (brand.EnvPrefix == "ASSAY")
+// that action.yml exports on the run step; run.go also honors the legacy TEGRON_/NUCLEON_ names via
+// brand.EnvOrLegacy for a caller that hand-set one — see envSubjectToolchainReach/
+// legacyEnvSubjectToolchainReach in run.go. Precedence (derived wins, legacy honored) is proven in
+// brand/brand_env_test.go.
+const subjectToolchainReachEnv = "ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY"
 
 // TestSubjectToolchainReachOption covers the subject-toolchain reachability release gate. The default is
 // OFF, and the table pins that only an affirmative spelling opens it: this gate guards a
@@ -76,7 +77,7 @@ func TestSubjectToolchainReachIsUnsetByDefault(t *testing.T) {
 // side would otherwise disable the flag forever with nothing in the tree going red — the same shape
 // of dead wiring the toolchain fact exists to repair, which is why this is an assertion and not a note.
 func TestActionExportsTheReachGateEnv(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "action.yml")
+	path := filepath.Join("..", "..", "action.yml")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

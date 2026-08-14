@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
+
+	"github.com/ferralon-ai/ferralon-assay/capability"
 )
 
 // pythonPlugin is the out-of-process client for the Python language plugin. It is the
@@ -164,4 +166,26 @@ func (p *pythonPlugin) BuildManifest(ctx context.Context, req BuildManifestReque
 		return BuildManifestResult{}, fmt.Errorf("plugin: %s response missing build_manifest payload", OpBuildManifest)
 	}
 	return *resp.BuildManifest, nil
+}
+
+func (p *pythonPlugin) ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error) {
+	resp, err := p.run(ctx, Request{Op: OpResolveInventory, ResolveInventory: &req})
+	if err != nil {
+		return DependencyInventory{}, err
+	}
+	if resp.Inventory == nil {
+		return DependencyInventory{}, fmt.Errorf("plugin: %s response missing inventory payload", OpResolveInventory)
+	}
+	return *resp.Inventory, nil
+}
+
+func (p *pythonPlugin) CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error) {
+	resp, err := p.run(ctx, Request{Op: OpCapabilityManifest, CapabilityManifest: &req})
+	if err != nil {
+		return capability.Manifest{}, err
+	}
+	if resp.Manifest == nil {
+		return capability.Manifest{}, fmt.Errorf("plugin: %s response missing manifest payload", OpCapabilityManifest)
+	}
+	return *resp.Manifest, nil
 }

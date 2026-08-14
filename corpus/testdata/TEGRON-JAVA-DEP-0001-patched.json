@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JAVA-DEP-0001-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-JAVA-DEP-0001",
+    "source": "osv",
+    "summary": "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JAVA-DEP-0001-patched-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JAVA-DEP-0001-patched/",
+      "notes": "Manifest-only Maven repro declaring com.example.lib:widget at 1.4.0 -- at the advisory's fixed version (affects < 1.4.0). Exercises the version-axis disqualification: the declared version is outside the affected range, so the case is not-affected before any reachability work."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [],
+    "rationale": "com.example.lib:widget is declared at 1.4.0, at/above the fixed version (< 1.4.0), so the version axis proves the dependency outside the affected range and the advisory is not-affected on this build. No taint path is asserted (version-axis only); reasoned rather than proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

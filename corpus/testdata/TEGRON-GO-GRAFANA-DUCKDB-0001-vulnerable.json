@@ -1,0 +1,40 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-GO-GRAFANA-DUCKDB-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "TEGRON-GO-GRAFANA-DUCKDB-0001",
+    "source": "ghsa",
+    "summary": "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2024-9264",
+      "https://github.com/advisories/GHSA-q99m-qcv4-fpm7"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/grafana/grafana",
+    "revision": "cbe1e7d63f098e306058c0fbcab2f5c30602fa7d",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-GO-GRAFANA-DUCKDB-0001-vulnerable/",
+      "notes": "Stdlib-only reduced repro of Grafana CVE-2024-9264 (SQL Expressions to DuckDB RCE/LFI) at the parent of the fix commit (cbe1e7d63f098e306058c0fbcab2f5c30602fa7d). The /api/ds/query http_route handler forwards the attacker-controlled sql parameter straight into the first-party sink runDuckQuery, which execs the DuckDB engine binary. Reduced to a single package-main file so the pure-Go call graph connects ingress to sink hermetically; the advisory names main.runDuckQuery as a first-party sink govulncheck never traces."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The /api/ds/query ingress reaches main.runDuckQuery, which passes attacker-controlled SQL to exec.Command('duckdb', ...) -- SQL injection plus DuckDB file functions yield LFI/RCE (CWE-94/CWE-78), so the first-party ingress-to-sink taint path is statically complete and reachable. Confirming command execution requires a live detonation the current sandbox capability does not exercise here, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

@@ -53,11 +53,11 @@ func TestReachabilityEvidenceAttackerTainted(t *testing.T) {
 	store := artifact.NewMemStore()
 	const aid = "a1"
 	putJSON(t, store, aid, artifact.TypeIngressMap, plugin.IngressResult{
-		Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: "ing", Selector: "GET /fetch"}},
+		Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: "ing"}, Selector: "GET /fetch"}},
 	})
 	putJSON(t, store, aid, artifact.TypeTaint, struct {
 		Result plugin.TaintResult `json:"result"`
-	}{Result: plugin.TaintResult{Paths: []plugin.ReachPath{{Sink: "sink", Ingress: "ing", Trace: []string{"ing", "mid", "sink"}}}}})
+	}{Result: plugin.TaintResult{Paths: []plugin.ReachPath{{Sink: plugin.Symbol{SCIP: "sink"}, Ingress: plugin.Symbol{SCIP: "ing"}, Trace: []plugin.Symbol{{SCIP: "ing"}, {SCIP: "mid"}, {SCIP: "sink"}}}}}})
 
 	grade, entry, frames := reachabilityEvidence(store, aid)
 	if grade != report.GradeAttackerTainted {
@@ -79,11 +79,11 @@ func TestReachabilityEvidenceAttackerOnReachPath(t *testing.T) {
 	store := artifact.NewMemStore()
 	const aid = "a2"
 	putJSON(t, store, aid, artifact.TypeIngressMap, plugin.IngressResult{
-		Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: "ing", Selector: "GET /x"}},
+		Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: "ing"}, Selector: "GET /x"}},
 	})
 	putJSON(t, store, aid, artifact.TypeReachability, struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
-	}{Reachability: plugin.ReachabilityResult{Paths: []plugin.ReachPath{{Sink: "sink", Ingress: "ing", Trace: []string{"ing", "sink"}}}}})
+	}{Reachability: plugin.ReachabilityResult{Paths: []plugin.ReachPath{{Sink: plugin.Symbol{SCIP: "sink"}, Ingress: plugin.Symbol{SCIP: "ing"}, Trace: []plugin.Symbol{{SCIP: "ing"}, {SCIP: "sink"}}}}}})
 
 	grade, entry, frames := reachabilityEvidence(store, aid)
 	if grade != report.GradeAttackerTainted {
@@ -100,11 +100,11 @@ func TestReachabilityEvidenceNonAttackerIngress(t *testing.T) {
 	store := artifact.NewMemStore()
 	const aid = "a3"
 	putJSON(t, store, aid, artifact.TypeIngressMap, plugin.IngressResult{
-		Ingresses: []plugin.Ingress{{Kind: "main", Symbol: "main.main"}},
+		Ingresses: []plugin.Ingress{{Kind: "main", Symbol: plugin.Symbol{SCIP: "main.main"}}},
 	})
 	putJSON(t, store, aid, artifact.TypeTaint, struct {
 		Result plugin.TaintResult `json:"result"`
-	}{Result: plugin.TaintResult{Paths: []plugin.ReachPath{{Sink: "sink", Ingress: "main.main", Trace: []string{"main.main", "sink"}}}}})
+	}{Result: plugin.TaintResult{Paths: []plugin.ReachPath{{Sink: plugin.Symbol{SCIP: "sink"}, Ingress: plugin.Symbol{SCIP: "main.main"}, Trace: []plugin.Symbol{{SCIP: "main.main"}, {SCIP: "sink"}}}}}})
 
 	if grade, _, _ := reachabilityEvidence(store, aid); grade != report.GradeControlFlowOnly {
 		t.Errorf("grade = %q, want control_flow_only for a non-attacker-controllable ingress", grade)

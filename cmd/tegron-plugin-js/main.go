@@ -13,8 +13,10 @@
 // call graph (declared Partial where the lexer cannot resolve dynamic dispatch / value
 // flow). generate_harness renders a Node/CommonJS reproducer SKELETON for the sink
 // (always Skeleton + Partial, never a working exploit); build_manifest parses the
-// package.json into module/Node-engine/install-command (Complete only on a clean
-// single-package parse, else declared Partial). No op remains Unsupported.
+// package.json into project-root/Node-runtime/resolver-command (Complete only on a
+// clean single-package parse, else declared Partial). resolve_inventory is the sole
+// Unsupported op: no whole-graph resolver exists yet, so it returns an honestly-partial
+// DependencyInventory{Unsupported}, never an empty-but-Complete inventory.
 //
 // The client (internal/plugin.jsPlugin) owns the timeout via exec.CommandContext;
 // this process runs to completion on a single request. A hard failure sets
@@ -28,6 +30,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -64,10 +67,11 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 	return writeResponse(stdout, resp)
 }
 
-// dispatch runs the requested operation. All nine ops — index_symbols,
+// dispatch runs the requested operation. The nine live ops — index_symbols,
 // resolve_symbols, call_graph, find_ingresses, resolve_versions, reachability,
 // compute_taint, generate_harness, and build_manifest — call the real source-level
-// JS analysis. An unknown op, or a missing per-op payload, is a hard failure (inv.4).
+// JS analysis; resolve_inventory is a contract stub returning Unsupported. An unknown
+// op, or a missing per-op payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -159,6 +163,21 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 			return plugin.Response{}, err
 		}
 		return plugin.Response{BuildManifest: &res}, nil
+
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		// No whole-graph resolver yet: return an honestly-partial inventory
+		// (Unsupported), never an empty-but-Complete one — a zero-node Complete()
+		// inventory would read downstream as "this build has no dependencies".
+		res := plugin.DependencyInventory{Partiality: plugin.Unsupported()}
+		return plugin.Response{Inventory: &res}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
+		// (Supported:false), never a Supported:true manifest with empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "js"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

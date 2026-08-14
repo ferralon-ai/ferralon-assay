@@ -126,6 +126,13 @@ inputs:
     description: "Go module root to scan, relative to the workspace."
     required: false
     default: .
+  subject-toolchain-reachability:
+    description: >-
+      Opt-in (default OFF). Set to 'true' to let a scan that genuinely ran under the subject's own
+      toolchain report a reachability verdict for a stdlib advisory it could adjudicate, instead of
+      withholding it as undetermined. OFF keeps every scan byte-identical to pre-M4 behavior.
+    required: false
+    default: "false"
   out:
     description: "Output directory for report.json / report.html / report.sarif.json / openvex.json."
     required: false
@@ -474,6 +481,10 @@ runs:
         ASSAY_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
         ASSAY_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
         ASSAY_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}
+        # M4 subject-toolchain-reachability gate (opt-in, default OFF). Read by run.go via
+        # brand.EnvOrLegacy; only an explicit affirmative ('true') enables it — the ternary yields
+        # the literal 'false' otherwise, which envEnabled reads as off.
+        ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,
         # never interpolating `${{ inputs.* }}` directly into the run script. A directly-inlined

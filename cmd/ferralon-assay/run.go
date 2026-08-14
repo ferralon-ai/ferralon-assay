@@ -660,7 +660,7 @@ func runPRInherit(args []string) error {
 	}
 	defer cfg.cleanup()
 
-	prSBOM, err := trigger.ResolveSBOM(ctx, trigger.ResolveSBOMRequest{
+	prSBOM, sbomLimits, err := trigger.ResolveSBOM(ctx, trigger.ResolveSBOMRequest{
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
 	})
@@ -674,6 +674,9 @@ func runPRInherit(args []string) error {
 		PRSBOM:        prSBOM,
 		Advisories:    cfg.advisories,
 		WorkSetLimits: cfg.workSet.partiality,
+		// The head inventory's own partiality bounds the diff — disclosed on the fast
+		// path so an inherit forced by an unresolvable head SBOM is not read as "clean".
+		DiffLimits:    sbomLimits,
 		AssessOptions: cfg.assessOptions,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {

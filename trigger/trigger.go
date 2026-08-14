@@ -189,6 +189,14 @@ type PRInheritRequest struct {
 	// Report about THIS run's work set, so a widening that failed on the PR run must be
 	// visible even when no re-analysis happened.
 	WorkSetLimits []report.PartialityNote
+	// DiffLimits is what the PR-head SBOM resolution could not resolve — the partiality
+	// the head inventory carried (a lane whose resolver was unavailable, an ecosystem
+	// left unresolved). It is what bounds the diff itself: an unresolved head inventory
+	// can make a changed dependency set look unchanged. Disclosed on BOTH paths (§4.1 /
+	// C3), and above all on the inherited fast path, so a run that inherited because it
+	// could not compare something is distinguishable in the Report from one that
+	// inherited because nothing changed. Populated by trigger.ResolveSBOM's partiality.
+	DiffLimits []report.PartialityNote
 	// AnalyzerVersion / Cursor mirror BaselineRequest.
 	AnalyzerVersion string
 	Cursor          string

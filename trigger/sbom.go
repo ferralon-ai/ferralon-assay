@@ -29,14 +29,18 @@ type ResolveSBOMRequest struct {
 //
 // It is the PR-inherit head-SBOM resolver: the result is diffed against the stored baseline SBOM to
 // decide the inherit fast path vs. re-analysis. It builds no Report and touches no StateStore, so a
-// PR run cannot mutate baseline state (Risk: a PR run must never write the baseline). The scan-level
-// partiality an unresolved inventory carries is not returned here — a diff input needs only the
-// package set; buildBaselineReport is where those notes reach the Report.
-func ResolveSBOM(ctx context.Context, req ResolveSBOMRequest) (report.SBOM, error) {
+// PR run cannot mutate baseline state (Risk: a PR run must never write the baseline).
+//
+// It returns the inventory's scan-level partiality alongside the package set (PLAN-104, revising
+// PLAN-100's choice to drop it here). The diff needs only the package set to decide inherit-vs-
+// reanalyze, but an unresolved head inventory can make a changed dependency set look unchanged — so
+// the caller forwards these notes as PRInheritRequest.DiffLimits, disclosed on the fast path (§4.1 /
+// C3). Absent means the inventory resolved cleanly, exactly as it does for buildBaselineReport.
+func ResolveSBOM(ctx context.Context, req ResolveSBOMRequest) (report.SBOM, []report.PartialityNote, error) {
 	inv, language, _, err := pipeline.ResolveCodebaseInventory(ctx, req.Codebase, "", req.AssessOptions...)
 	if err != nil {
-		return report.SBOM{}, err
+		return report.SBOM{}, nil, err
 	}
-	sbom, _ := sbomFromInventory(inv, ecosystemFor(language))
-	return sbom, nil
+	sbom, notes := sbomFromInventory(inv, ecosystemFor(language))
+	return sbom, notes, nil
 }

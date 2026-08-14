@@ -34,7 +34,7 @@ func goFixtureModule(t *testing.T) assessment.CodebaseRef {
 // from a corpus that names no dependency. (The scan-level partiality note declaring the gap is
 // asserted by the baseline producer's tests; ResolveSBOM returns only the package set for the diff.)
 func TestResolveSBOM_UnsupportedInventoryIsEmpty(t *testing.T) {
-	sbom, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+	sbom, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
 		Codebase: goFixtureModule(t),
 	})
 	if err != nil {
@@ -56,7 +56,7 @@ func TestResolveSBOM_BaselineParity(t *testing.T) {
 	opts := []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go", inv: inv})}
 	corpus := []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}}
 
-	resolved, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+	resolved, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
 		Codebase:      codebase,
 		AssessOptions: opts,
 	})
@@ -88,7 +88,7 @@ func TestResolveSBOM_BaselineParity(t *testing.T) {
 // resolved packages are still present — a dependency reaches the SBOM whether or not any advisory
 // names it. (On main this SBOM would be empty: the old producer keyed on the corpus.)
 func TestResolveSBOM_InventoryKeyedNotCorpusKeyed(t *testing.T) {
-	sbom, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+	sbom, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
 		Codebase:      goFixtureModule(t),
 		AssessOptions: []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go", inv: twoPackageInventory()})},
 	})

@@ -302,7 +302,7 @@ func TestV3Doc_NoVerdictKeyCarriable(t *testing.T) {
 	if facts.SinkKind != "ssrf" {
 		t.Errorf("SinkKind = %q, want ssrf", facts.SinkKind)
 	}
-	if facts.Trigger != (TriggerRoute{IngressKind: "http", Route: "/fetch", Param: "target", MalformedToken: "an internal-address URL"}) {
+	if facts.Trigger != (TriggerRoute{IngressKind: "http", Route: "/fetch", Param: "target", MalformedToken: "an internal-address URL", Declared: PresenceDeclaredValues}) {
 		t.Errorf("Trigger = %+v, want the declared http trigger", facts.Trigger)
 	}
 	if facts.Fix.FailedFixClass != "guard-keyed-away-from-sink" {

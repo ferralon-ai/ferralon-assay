@@ -326,6 +326,22 @@ type AdvisoryFacts struct {
 	// Empty ⇒ v2/single-package behavior (fail-open, inv.5). Advisory-only framing.
 	AffectedPackages []AffectedPackage
 
+	// --- ferralon.normalized_advisory.v4 additions -----------------------------
+	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol
+	// identity, coexisting with the bare Symbols []string above. DECLARED-AWAITING-EMIT
+	// (anvil-q15): the cve-enrichment producer does not emit typed symbols yet, so this is nil on
+	// every current advisory — nil means "producer has not emitted," NOT "no symbols" (Symbols
+	// still carries the strings). No consumer may read nil SymbolsTyped as an empty symbol set.
+	// Carries no verdict; advisory-only framing (inv.5).
+	//
+	// omitempty (unlike the other facts fields): the built-in AdvisoryTable corpus never carries
+	// typed symbols — they are emitted by the separate cve-enrichment producer for the PUBLISHED
+	// feed only — so a nil here is the permanent declared-awaiting-emit state for every table entry,
+	// not a field the corpus "fell behind on." Serializing it as null on ~40 built-in fixtures would
+	// be misrepresentative noise; the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does
+	// not apply to a producer-only axis. When the producer emits, a non-nil value round-trips.
+	SymbolsTyped []plugin.Symbol `json:",omitempty"`
+
 	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the enumerated
 	// affected version set. Declared=false (the zero) ⇒ not a malicious package ⇒ the presence path
 	// never fires and every existing stage runs unchanged (inv.5). Declared=true with an empty
@@ -360,6 +376,56 @@ type AffectedPackage struct {
 	Symbols        []string
 }
 
+// Presence is the §4.4.6 absent-vs-none tri-state for a pointer-backed advisory operand. It closes
+// the gap where toFacts collapsed a NIL wire operand (the advisory is SILENT about the constraint)
+// and an EMPTY-STRUCT wire operand (the advisory affirmatively DECLARES the constraint has no
+// values) to one indistinguishable zero struct — the wire already carries the distinction in the
+// *docTrigger/*docFix/*docConfigKey pointers, but the projection erased it.
+//
+// It is a REPRESENTATION-ONLY marker this cycle (PLAN-024): the distinction becomes readable, but no
+// consumer branches on it yet. Consumers still treat absent AND declared_empty as OPEN/Undetermined
+// via the value-based Zero() methods (both are value-zero); PLAN-220 is what exploits declared_empty
+// as an affirmative "declared none." The marker carries `json:"-"` so it never reaches the wire and
+// the advisory fixtures stay byte-identical (no regen). Zero value = PresenceAbsent, so an operand
+// left unset by the built-in AdvisoryTable path reads as "silent," unchanged.
+type Presence uint8
+
+const (
+	// PresenceAbsent: the wire operand pointer was nil — the advisory is silent about this
+	// constraint. The zero value, so an unset operand is "absent" with no explicit stamp.
+	PresenceAbsent Presence = iota
+	// PresenceDeclaredEmpty: the wire operand was present (non-nil) but projected to a zero value
+	// — the advisory affirmatively declares the constraint carries no operand values.
+	PresenceDeclaredEmpty
+	// PresenceDeclaredValues: the wire operand was present and carries at least one value.
+	PresenceDeclaredValues
+)
+
+func (p Presence) String() string {
+	switch p {
+	case PresenceAbsent:
+		return "absent"
+	case PresenceDeclaredEmpty:
+		return "declared_empty"
+	case PresenceDeclaredValues:
+		return "declared_values"
+	default:
+		return "unknown"
+	}
+}
+
+// presenceFromZero maps an operand's value-zero-ness onto the DECLARED half of the tri-state (the
+// caller has already established the wire operand was non-nil; nil is stamped PresenceAbsent
+// separately). A projected operand that is value-zero — including one whose only declared field was
+// an unrecognized closed-set member dropped fail-open — reads as declared_empty; anything carrying a
+// value reads as declared_values.
+func presenceFromZero(zero bool) Presence {
+	if zero {
+		return PresenceDeclaredEmpty
+	}
+	return PresenceDeclaredValues
+}
+
 // TriggerRoute is the advisory-declared per-CVE reach descriptor: the ingress kind, the ingress
 // route path, the tainted parameter on that route, and the clinical SHAPE of the malformed value
 // (never a weaponized payload — memory clinical-register-terminology). It frames the reach path the
@@ -369,10 +435,16 @@ type TriggerRoute struct {
 	Route          string // literal ingress path, e.g. "/fetch"
 	Param          string // tainted query/body key placed on the route
 	MalformedToken string // clinical SHAPE of the value on that key
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `trigger` operand was nil, declared_empty/declared_values when it was present. No consumer
+	// branches on it this cycle — Zero() stays value-based so behavior is preserved.
+	Declared Presence `json:"-"`
 }
 
-// Zero reports whether the descriptor carries no reach information (all fields empty), so the
-// per-class constant framing is used unchanged.
+// Zero reports whether the descriptor carries no reach information (all VALUE fields empty), so the
+// per-class constant framing is used unchanged. It deliberately ignores Declared: a declared_empty
+// trigger is value-zero and must still report Zero()==true so no consumer branch flips (inv.5,
+// §4.4.6 behavior-preserving — the Presence distinction is representable, not yet acted on).
 func (t TriggerRoute) Zero() bool {
 	return t.IngressKind == "" && t.Route == "" && t.Param == "" && t.MalformedToken == ""
 }
@@ -383,10 +455,15 @@ type FixHint struct {
 	UpstreamCommit string // upstream commit that fixed the vuln
 	GuardShape     string // shape of the guard the fix introduced
 	FailedFixClass string // closed set: "" | naive-dep-bump-insufficient | guard-keyed-away-from-sink
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `fix` operand was nil, declared_empty/declared_values when present. Zero() ignores it.
+	Declared Presence `json:"-"`
 }
 
-// Zero reports whether the hint carries no fix intelligence (all fields empty), so the synthesis
-// prompt omits the hint block and the predecessor baseline falls back to the version-derived anchor.
+// Zero reports whether the hint carries no fix intelligence (all VALUE fields empty), so the
+// synthesis prompt omits the hint block and the predecessor baseline falls back to the
+// version-derived anchor. It ignores Declared (see TriggerRoute.Zero): a declared_empty hint is
+// value-zero and must still report Zero()==true so no consumer branch flips (§4.4.6).
 func (f FixHint) Zero() bool {
 	return f.UpstreamCommit == "" && f.GuardShape == "" && f.FailedFixClass == ""
 }
@@ -459,10 +536,27 @@ const (
 
 // Provenance records the source and trust of one advisory fact. Trusted-or-nulled: a
 // fact whose provenance is unknown carries the zero TrustTier and can never refute.
+//
+// §4.4.4 (source provenance AND confidence) is discharged by this triple, NOT by a separate
+// synthesized per-fact confidence score — and that absence is deliberate, not a gap:
+//
+//   - Provenance = Source + InputDigest + TrustTier. Source names where the fact was read from,
+//     InputDigest pins the exact bytes, and TrustTier is the CONFIDENCE-IN-SOURCE axis (byo /
+//     third_party / first_party) that gates refute eligibility. Together they answer "how far may
+//     this fact be trusted," which is the confidence half of §4.4.4.
+//   - There is NO per-fact `Confidence` field, on purpose. Upstream advisories do not carry a
+//     confidence number, so any value here would be SYNTHESIZED by this reader — and a manufactured
+//     confidence score is a verdict-like judgment (a graded assertion about how true the fact is),
+//     exactly what the evidence-only record must never hold (§3 non-negotiable). TrustTier grades the
+//     SOURCE, which the source itself supplies; it never grades the fact's truth.
+//   - Per-SYMBOL attribution certainty — "is this the right vulnerable symbol" — is a distinct axis
+//     and is the §4.4.8 attribution-review concern (see AttributionStatus and
+//     attribution_status_model.md), not a field on this base record. An attribution's status IS its
+//     per-symbol confidence signal, kept out of the evidence record and in the review workflow.
 type Provenance struct {
 	Source      string    // corpus feed id
 	InputDigest string    // digest of the corpus artifact this fact was read from
-	TrustTier   TrustTier // gates refute eligibility
+	TrustTier   TrustTier // gates refute eligibility; the confidence-in-source axis (§4.4.4)
 }
 
 // Lineage names the incomplete-patch predecessor/successor CVEs for the two-trace PoNE
@@ -474,7 +568,48 @@ type Lineage struct {
 
 // ConfigOperand is the core.config predicate's advisory half: a config key plus the
 // value that makes the codebase unsafe.
-type ConfigOperand struct{ Key, UnsafeValue string }
+type ConfigOperand struct {
+	Key         string
+	UnsafeValue string
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `config_key` operand was nil, declared_empty/declared_values when present. Zero() ignores it.
+	Declared Presence `json:"-"`
+}
+
+// Zero reports whether the operand carries no config predicate (both VALUE fields empty). Like
+// TriggerRoute.Zero it ignores Declared: a declared_empty config_key is value-zero and must still
+// report Zero()==true so the predicate stays Undetermined/OPEN for every existing consumer (§4.4.6).
+func (c ConfigOperand) Zero() bool {
+	return c.Key == "" && c.UnsafeValue == ""
+}
+
+// AttributionStatus is the §4.4.8 review state of a symbol attribution — whether the advisory's
+// claim that a given symbol is the vulnerable one has been reviewed, and with what outcome. It is a
+// closed string enum (attributionStatusRecognized), fail-open like TrustTier: an unrecognized value
+// drops to the zero. This cycle (PLAN-024) establishes the TYPE and the state model
+// (attribution_status_model.md) ONLY; it is NOT yet wired onto the bare `symbols []string` axis —
+// per-symbol population rides on typed symbols (anvil-q15) + PLAN-220.
+//
+// An attribution's status IS its per-symbol confidence signal (the §4.4.4 tie-in): it is the axis a
+// synthesized per-fact confidence score would otherwise usurp, kept HONEST by living in a review
+// workflow with named states and evidence-driven transitions rather than a manufactured number.
+type AttributionStatus string
+
+const (
+	// AttributionUnreviewed: the attribution has not been reviewed. The zero-value default — an
+	// as-ingested attribution is unreviewed until a review moves it, and fail-open decode lands here.
+	AttributionUnreviewed AttributionStatus = "unreviewed"
+	// AttributionConfirmed: review established this symbol IS the vulnerable one for this advisory.
+	AttributionConfirmed AttributionStatus = "confirmed"
+	// AttributionAmbiguous: review found the symbol identity underdetermined — the advisory's symbol
+	// could resolve to more than one candidate (overload/rename/relocation) and evidence does not
+	// yet single one out. Distinct from disputed: no counter-claim, just insufficient resolution.
+	AttributionAmbiguous AttributionStatus = "ambiguous"
+	// AttributionDisputed: review surfaced positive counter-evidence that this symbol is NOT the
+	// vulnerable one (e.g. the named symbol never reaches the sink). A standing contradiction, not
+	// mere under-resolution.
+	AttributionDisputed AttributionStatus = "disputed"
+)
 
 // GuardVariant classifies a named guard variant against a specific bypass, for the
 // guard_sufficiency evidence framing. Assess never refutes on it (Prove adjudicates

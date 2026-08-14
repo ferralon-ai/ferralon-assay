@@ -1,0 +1,32 @@
+{
+  "fixture_id": "GO-2021-0113-trivial",
+  "category": "trivially_exploitable",
+  "nodes": [
+    {
+      "purl": "pkg:golang/golang.org/x/text@v0.3.6",
+      "version": "v0.3.6",
+      "direct": true,
+      "project": "tegron.corpus/go-2021-0113-trivial"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e",
+      "version": "v0.0.0-20180917221912-90fa682c2a6e",
+      "direct": false,
+      "project": "tegron.corpus/go-2021-0113-trivial"
+    }
+  ],
+  "edges": [
+    {
+      "parent": "pkg:golang/golang.org/x/text@v0.3.6\u001ftegron.corpus/go-2021-0113-trivial\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e\u001ftegron.corpus/go-2021-0113-trivial\u001f\u001f"
+    }
+  ],
+  "capture": {
+    "tool": "go mod",
+    "tool_version": "go version go1.26.3 darwin/arm64",
+    "command": "go list -m -json all  +  go mod graph  (GOWORK=off)",
+    "operator": "anvil (L1 platform-core, out-of-band per capture-procedure.md)",
+    "captured_at": "2026-08-12T20:04:58Z",
+    "fixture_digest": "sha256:8c16115cc292ac29d4df89f88e934aad391b5414f9f03b61ba8b85f0ac194300"
+  }
+}

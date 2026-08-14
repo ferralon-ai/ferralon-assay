@@ -1,0 +1,652 @@
+{
+  "fixture_id": "GO-2022-0322-absent",
+  "category": "absent_not_exploitable",
+  "nodes": [
+    {
+      "purl": "pkg:golang/cloud.google.com/go@v0.34.0",
+      "version": "v0.34.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/alecthomas/template@v0.0.0-20190718012654-fb15b899a751",
+      "version": "v0.0.0-20190718012654-fb15b899a751",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/alecthomas/units@v0.0.0-20190924025748-f65c72e2690d",
+      "version": "v0.0.0-20190924025748-f65c72e2690d",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/beorn7/perks@v1.0.1",
+      "version": "v1.0.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/cespare/xxhash/v2@v2.1.1",
+      "version": "v2.1.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/davecgh/go-spew@v1.1.1",
+      "version": "v1.1.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/go-kit/kit@v0.9.0",
+      "version": "v0.9.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/go-kit/log@v0.1.0",
+      "version": "v0.1.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/go-logfmt/logfmt@v0.5.0",
+      "version": "v0.5.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/go-stack/stack@v1.8.0",
+      "version": "v1.8.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/gogo/protobuf@v1.1.1",
+      "version": "v1.1.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/golang/protobuf@v1.4.3",
+      "version": "v1.4.3",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/google/go-cmp@v0.5.5",
+      "version": "v0.5.5",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/google/gofuzz@v1.0.0",
+      "version": "v1.0.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/jpillora/backoff@v1.0.0",
+      "version": "v1.0.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/json-iterator/go@v1.1.11",
+      "version": "v1.1.11",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/julienschmidt/httprouter@v1.3.0",
+      "version": "v1.3.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/konsorten/go-windows-terminal-sequences@v1.0.3",
+      "version": "v1.0.3",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/kr/logfmt@v0.0.0-20140226030751-b84e30acd515",
+      "version": "v0.0.0-20140226030751-b84e30acd515",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/kr/pretty@v0.1.0",
+      "version": "v0.1.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/kr/pty@v1.1.1",
+      "version": "v1.1.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/kr/text@v0.1.0",
+      "version": "v0.1.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/matttproud/golang_protobuf_extensions@v1.0.1",
+      "version": "v1.0.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/modern-go/concurrent@v0.0.0-20180306012644-bacd9c7ef1dd",
+      "version": "v0.0.0-20180306012644-bacd9c7ef1dd",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/modern-go/reflect2@v1.0.1",
+      "version": "v1.0.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/mwitkow/go-conntrack@v0.0.0-20190716064945-2f068394615f",
+      "version": "v0.0.0-20190716064945-2f068394615f",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/pkg/errors@v0.9.1",
+      "version": "v0.9.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/pmezard/go-difflib@v1.0.0",
+      "version": "v1.0.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/prometheus/client_golang@v1.11.0",
+      "version": "v1.11.0",
+      "direct": true,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/prometheus/client_model@v0.2.0",
+      "version": "v0.2.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/prometheus/common@v0.26.0",
+      "version": "v0.26.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/prometheus/procfs@v0.6.0",
+      "version": "v0.6.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/sirupsen/logrus@v1.6.0",
+      "version": "v1.6.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/stretchr/objx@v0.1.1",
+      "version": "v0.1.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/github.com/stretchr/testify@v1.4.0",
+      "version": "v1.4.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/crypto@v0.0.0-20200622213623-75b288015ac9",
+      "version": "v0.0.0-20200622213623-75b288015ac9",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344",
+      "version": "v0.0.0-20200625001655-4c5254603344",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421",
+      "version": "v0.0.0-20190226205417-e64efc72b421",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/sync@v0.0.0-20201207232520-09787c993a3a",
+      "version": "v0.0.0-20201207232520-09787c993a3a",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40",
+      "version": "v0.0.0-20210603081109-ebe580a85c40",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/text@v0.3.2",
+      "version": "v0.3.2",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e",
+      "version": "v0.0.0-20180917221912-90fa682c2a6e",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/xerrors@v0.0.0-20191204190536-9bdfabe68543",
+      "version": "v0.0.0-20191204190536-9bdfabe68543",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/google.golang.org/appengine@v1.4.0",
+      "version": "v1.4.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/google.golang.org/protobuf@v1.26.0-rc.1",
+      "version": "v1.26.0-rc.1",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/gopkg.in/alecthomas/kingpin.v2@v2.2.6",
+      "version": "v2.2.6",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/gopkg.in/check.v1@v1.0.0-20190902080502-41f04d3bba15",
+      "version": "v1.0.0-20190902080502-41f04d3bba15",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    },
+    {
+      "purl": "pkg:golang/gopkg.in/yaml.v2@v2.3.0",
+      "version": "v2.3.0",
+      "direct": false,
+      "project": "tegron.corpus/go-2022-0322-absent"
+    }
+  ],
+  "edges": [
+    {
+      "parent": "pkg:golang/github.com/alecthomas/units@v0.0.0-20190924025748-f65c72e2690d\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/go-kit/log@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-logfmt/logfmt@v0.5.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/go-kit/log@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-stack/stack@v1.8.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/go-logfmt/logfmt@v0.5.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/kr/logfmt@v0.0.0-20140226030751-b84e30acd515\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/google/go-cmp@v0.5.5\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/google.golang.org/protobuf@v1.26.0-rc.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/google/go-cmp@v0.5.5\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/xerrors@v0.0.0-20191204190536-9bdfabe68543\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/davecgh/go-spew@v1.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/google/gofuzz@v1.0.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/modern-go/concurrent@v0.0.0-20180306012644-bacd9c7ef1dd\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/modern-go/reflect2@v1.0.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/kr/pretty@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/kr/text@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/kr/text@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/kr/pty@v1.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/beorn7/perks@v1.0.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/cespare/xxhash/v2@v2.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/json-iterator/go@v1.1.11\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/kr/pretty@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/modern-go/concurrent@v0.0.0-20180306012644-bacd9c7ef1dd\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/modern-go/reflect2@v1.0.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/client_model@v0.2.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/procfs@v0.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/text@v0.3.2\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/google.golang.org/protobuf@v1.26.0-rc.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/check.v1@v1.0.0-20190902080502-41f04d3bba15\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/yaml.v2@v2.3.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_model@v0.2.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/client_model@v0.2.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sync@v0.0.0-20201207232520-09787c993a3a\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/alecthomas/template@v0.0.0-20190718012654-fb15b899a751\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/alecthomas/units@v0.0.0-20190924025748-f65c72e2690d\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/beorn7/perks@v1.0.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-kit/kit@v0.9.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-kit/log@v0.1.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-logfmt/logfmt@v0.5.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/go-stack/stack@v1.8.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/gogo/protobuf@v1.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/jpillora/backoff@v1.0.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/julienschmidt/httprouter@v1.3.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/kr/logfmt@v0.0.0-20140226030751-b84e30acd515\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/matttproud/golang_protobuf_extensions@v1.0.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/mwitkow/go-conntrack@v0.0.0-20190716064945-2f068394615f\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/pkg/errors@v0.9.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/client_golang@v1.11.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/client_model@v0.2.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/prometheus/procfs@v0.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sync@v0.0.0-20201207232520-09787c993a3a\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/alecthomas/kingpin.v2@v2.2.6\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/common@v0.26.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/yaml.v2@v2.3.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/procfs@v0.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/google/go-cmp@v0.5.5\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/procfs@v0.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sync@v0.0.0-20201207232520-09787c993a3a\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/prometheus/procfs@v0.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/davecgh/go-spew@v1.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/konsorten/go-windows-terminal-sequences@v1.0.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/pmezard/go-difflib@v1.0.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/objx@v0.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/crypto@v0.0.0-20200622213623-75b288015ac9\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/sirupsen/logrus@v1.6.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/davecgh/go-spew@v1.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/pmezard/go-difflib@v1.0.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/stretchr/objx@v0.1.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/github.com/stretchr/testify@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/yaml.v2@v2.3.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/crypto@v0.0.0-20200622213623-75b288015ac9\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/crypto@v0.0.0-20200622213623-75b288015ac9\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/crypto@v0.0.0-20200622213623-75b288015ac9\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sys@v0.0.0-20210603081109-ebe580a85c40\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/text@v0.3.2\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/cloud.google.com/go@v0.34.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/sync@v0.0.0-20201207232520-09787c993a3a\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/oauth2@v0.0.0-20190226205417-e64efc72b421\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/google.golang.org/appengine@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/golang.org/x/text@v0.3.2\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/google.golang.org/appengine@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/google.golang.org/appengine@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/net@v0.0.0-20200625001655-4c5254603344\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/google.golang.org/appengine@v1.4.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/text@v0.3.2\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/google.golang.org/protobuf@v1.26.0-rc.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/golang/protobuf@v1.4.3\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/google.golang.org/protobuf@v1.26.0-rc.1\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/github.com/google/go-cmp@v0.5.5\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    },
+    {
+      "parent": "pkg:golang/gopkg.in/yaml.v2@v2.3.0\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f",
+      "child": "pkg:golang/gopkg.in/check.v1@v1.0.0-20190902080502-41f04d3bba15\u001ftegron.corpus/go-2022-0322-absent\u001f\u001f"
+    }
+  ],
+  "capture": {
+    "tool": "go mod",
+    "tool_version": "go version go1.26.3 darwin/arm64",
+    "command": "go list -m -json all  +  go mod graph  (GOWORK=off)",
+    "operator": "anvil (L1 platform-core, out-of-band per capture-procedure.md)",
+    "captured_at": "2026-08-12T20:04:58Z",
+    "fixture_digest": "sha256:751c5044963b5d069872aa65cc12b17e8ba830ecb1a7866724eb141730152ecd"
+  }
+}

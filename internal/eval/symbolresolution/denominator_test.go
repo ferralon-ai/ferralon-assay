@@ -28,8 +28,9 @@ func TestDenominatorsSideBySide(t *testing.T) {
 	if len(reps) != len(wantNames) {
 		t.Fatalf("got %d denominators, want %d", len(reps), len(wantNames))
 	}
-	// Known corpus shape (verified this session): 16 golang / 16 symbol-bearing / 0 reviewed / 7
-	// buildable, over 38 total.
+	// Known corpus shape: 16 golang / 16 symbol-bearing / 0 reviewed / 7 buildable, over 41 total
+	// (the golang lane is unchanged by the consolidated .NET/Java advisory fixtures; only the
+	// whole-corpus total grew).
 	wantIncluded := map[string]int{
 		"ecosystem-in-lane":           16,
 		"symbol-bearing-in-lane":      16,
@@ -43,8 +44,8 @@ func TestDenominatorsSideBySide(t *testing.T) {
 		if rep.Lane != "go" {
 			t.Errorf("denominator %q lane = %q, want go", rep.Name, rep.Lane)
 		}
-		if rep.Total != 38 {
-			t.Errorf("denominator %q total = %d, want 38", rep.Name, rep.Total)
+		if rep.Total != 41 {
+			t.Errorf("denominator %q total = %d, want 41", rep.Name, rep.Total)
 		}
 		if rep.Included != wantIncluded[rep.Name] {
 			t.Errorf("denominator %q included = %d, want %d", rep.Name, rep.Included, wantIncluded[rep.Name])

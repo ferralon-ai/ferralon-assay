@@ -1,0 +1,65 @@
+{
+  "Module": "",
+  "Aliases": [
+    "CVE-2021-32840"
+  ],
+  "UpperExclusive": "1.3.3",
+  "FixedVersion": "1.3.3",
+  "VersionScheme": "nuget",
+  "Coordinate": "SharpZipLib",
+  "PURL": "pkg:nuget/SharpZipLib",
+  "Symbols": [
+    "ICSharpCode.SharpZipLib.Zip.FastZip.ExtractZip"
+  ],
+  "GuardSymbols": null,
+  "CWEs": [
+    "CWE-22"
+  ],
+  "Summary": "path traversal (Zip-Slip) on archive extraction: ICSharpCode.SharpZipLib before 1.3.3 does not validate archive entry paths, so FastZip.ExtractZip writes files outside the destination directory, enabling arbitrary file write and possible remote code execution. GHSA-m22m-h4rf-pwq3 / CVE-2021-32840, fixed in 1.3.3.",
+  "AffectedRanges": [
+    {
+      "Introduced": "",
+      "Fixed": "1.3.3",
+      "LastAffected": "",
+      "FixedVersion": "1.3.3"
+    }
+  ],
+  "Provenance": {
+    "Source": "GHSA-m22m-h4rf-pwq3",
+    "InputDigest": "provisional-symbol-spelling: authored before the .NET symbol profile was fixed; re-normalisation pending. The Symbols spelling above is NOT canonical yet. NOTE the identity split: Coordinate/PURL are keyed by the NuGet PACKAGE ID (SharpZipLib) so versions.go matches the .csproj PackageReference; Symbols are keyed by the CLR NAMESPACE path (ICSharpCode.SharpZipLib.*).",
+    "TrustTier": ""
+  },
+  "Lineage": {
+    "IncompleteFixOf": "",
+    "RefixedBy": ""
+  },
+  "SinkKind": "",
+  "TriggerCondition": "",
+  "Prerequisite": "",
+  "ConfigKey": {
+    "Key": "",
+    "UnsafeValue": ""
+  },
+  "FeatureFlag": "",
+  "GadgetClasses": null,
+  "GuardSufficiency": null,
+  "PocSignal": false,
+  "Withdrawn": false,
+  "Trigger": {
+    "IngressKind": "",
+    "Route": "",
+    "Param": "",
+    "MalformedToken": ""
+  },
+  "Fix": {
+    "UpstreamCommit": "",
+    "GuardShape": "",
+    "FailedFixClass": ""
+  },
+  "PocSummary": "",
+  "AffectedPackages": null,
+  "MaliciousPackage": {
+    "Declared": false,
+    "AffectedVersions": null
+  }
+}

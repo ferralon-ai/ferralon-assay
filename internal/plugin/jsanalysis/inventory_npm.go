@@ -114,8 +114,11 @@ func npmParseV2V3(sel selectedLock, lock npmLock, rootMan invManifest, rootManPa
 			continue // the root project itself, not a dependency node
 		}
 		if !strings.HasPrefix(path, "node_modules/") {
-			// A local/linked package (file:/link:) lives at a non-node_modules install path.
-			npmEmitLocal(path, pkg, sel, addNode)
+			// A local/linked package (file:/link:) lives at a non-node_modules install path
+			// (e.g. a file: workspace member at packages/*). Record its install path so its
+			// declared deps resolve to member→dep edges in the edge pass below.
+			local := npmEmitLocal(path, pkg, sel, addNode)
+			pathToID[path] = local.ID
 			continue
 		}
 		if pkg.Link {
@@ -153,9 +156,13 @@ func npmParseV2V3(sel selectedLock, lock npmLock, rootMan invManifest, rootManPa
 		pathToID[path] = id
 	}
 
-	// Edges: each dependency entry's declared deps, resolved by the hoisting walk.
+	// Edges: each dependency entry's declared deps, resolved by the hoisting walk. This covers
+	// both hoisted node_modules packages and file: workspace members (packages/*): a member's
+	// declared deps are recorded inline in its lockfile entry, and the hoisting walk from the
+	// member's own path resolves each to its installed instance (its private node_modules first,
+	// then ascending to the root), yielding the member→dep edges npm ls shows.
 	for path, pkg := range lock.Packages {
-		if path == "" || pkg.Link || !strings.HasPrefix(path, "node_modules/") {
+		if path == "" || pkg.Link {
 			continue
 		}
 		parentID, ok := pathToID[path]
@@ -311,7 +318,7 @@ func npmParseV1(sel selectedLock, lock npmLock, rootMan invManifest, rootManPath
 
 // npmEmitLocal emits a local/linked (file:/link:) dependency node: path identity, no registry
 // version/integrity guarantee, declared partial (§5, cell 8).
-func npmEmitLocal(path string, pkg npmLockPkg, sel selectedLock, addNode func(plugin.DependencyNode) *plugin.DependencyNode) {
+func npmEmitLocal(path string, pkg npmLockPkg, sel selectedLock, addNode func(plugin.DependencyNode) *plugin.DependencyNode) *plugin.DependencyNode {
 	name := pkg.Name
 	if name == "" {
 		name = strings.TrimPrefix(path, "./")
@@ -321,7 +328,7 @@ func npmEmitLocal(path string, pkg npmLockPkg, sel selectedLock, addNode func(pl
 		version = "0.0.0-local"
 	}
 	purl := makePURL(name, version)
-	addNode(plugin.DependencyNode{
+	return addNode(plugin.DependencyNode{
 		ID:         purl,
 		PURL:       purl,
 		Version:    pkg.Version, // may be empty: a local path carries no registry pin

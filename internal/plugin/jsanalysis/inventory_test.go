@@ -1,10 +1,9 @@
 package jsanalysis
 
 // inventory_test.go grades the whole-graph resolver against the PLAN-160 convergence criteria
-// (02-convergence.md C1/C3/C4/C5/C6). C2 (differential-vs-native) and the Yarn Berry adapter
-// are DEFERRED (see TestInventory_C2_Deferred and TestInventory_YarnBerry_Deferred): both need
-// a human/PM capture that agents cannot produce (§3.3), so their tests are t.Skip'd with the
-// reason rather than fabricated.
+// (02-convergence.md C1/C3/C4/C5/C6). C2 (differential-vs-native) and the verified Yarn Berry
+// adapter now run against the committed native package-manager captures — see
+// inventory_c2_test.go (TestInventory_C2_* and TestInventory_YarnBerry_F1).
 
 import (
 	"context"
@@ -551,22 +550,6 @@ func TestInventory_C6_SortedOutput(t *testing.T) {
 			t.Errorf("C6: edges not sorted by (Parent,Child) at %d: %v > %v", i, a, b)
 		}
 	}
-}
-
-// --- deferred (documented, not faked) ---------------------------------------
-
-// TestInventory_YarnBerry_Deferred: the Berry adapter is written against graph-rep §3c but its
-// virtual-locator identity is UNVERIFIED — zero Berry lockfiles exist in the corpus, and a
-// hand-authored virtual: hash would be fabricated metadata. Skipped pending fixture F1.
-func TestInventory_YarnBerry_Deferred(t *testing.T) {
-	t.Skip("PLAN-160 stage-4: Yarn Berry adapter UNVERIFIED — no F1 specimen; a fabricated Berry lockfile is not permitted (fixture-specs.md cold-fixture rule).")
-}
-
-// TestInventory_C2_Deferred: C2 differential-vs-native compares the inventory against native
-// npm/yarn/pnpm output, which requires a one-time human PM run per fixture (agents cannot
-// execute package managers, §3.3). Deferred to stage-4; native goldens must NOT be fabricated.
-func TestInventory_C2_Deferred(t *testing.T) {
-	t.Skip("PLAN-160 stage-4: C2 needs native npm ls/yarn list/pnpm list --json captured by a human outside the test run (§3.3); goldens are not fabricated here.")
 }
 
 // --- mutation / control helpers ---------------------------------------------

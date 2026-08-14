@@ -117,6 +117,13 @@ func TestSymbolsTypedDeclaredAwaitingEmit(t *testing.T) {
 // an orphan (every *.json under the corpus, except manifest.json, is named by exactly one manifest
 // entry). This closes "every published record has regression coverage" over the hash-pinned vendored
 // golden without duplicating each record as a separate hand-authored fixture.
+//
+// SCOPE (documented per the PLAN-024 contract's OQ4 ruling): the covered set is the in-repo vendored
+// golden corpus (testdata/ferralon-corpus/ — a small, hash-pinned, byte-for-byte snapshot of the
+// producer's emit, currently the Log4Shell + HTTP/2-rapid-reset records), NOT the full 72+ production
+// feed. The bijection is asserted over what the vendored manifest DECLARES it covers; extending the
+// covered set to the entire production feed (one committed, digest-pinned record per feed entry) is
+// PLAN-220's scale-out. This test guarantees no record inside the declared covered set lacks coverage.
 func TestPublishedFeedGoldenBijection(t *testing.T) {
 	src := artifactSource{root: ferralonCorpusRoot}
 	man, ok := src.loadManifest()

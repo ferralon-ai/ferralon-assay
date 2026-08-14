@@ -203,20 +203,31 @@ func TestDispatch_ReachabilityRoundTripIsAlwaysPartial(t *testing.T) {
 	}
 }
 
-// resolve_inventory is CONTRACT-PRESENT Unsupported through the subprocess: .NET ships no
-// whole-graph dependency resolver this cycle, so the op returns an Unsupported
-// DependencyInventory — never a hard error, never a Complete zero-node graph.
-func TestDispatch_ResolveInventoryIsUnsupported(t *testing.T) {
+// resolve_inventory is LIVE through the subprocess (PLAN-150): the .NET whole-graph resolver
+// runs over the checkout files and returns real data — no longer Unsupported. The fixtureDir
+// carries a .csproj (declared DotNetZip pin) but no restore output, so the honest result is the
+// declared-text tier: a populated DotNetZip node under Partial(no_resolver_output, no_lockfile),
+// never Unsupported, never a hard error, never a Complete zero-node graph.
+func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
 	dir := fixtureDir(t)
 	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Error("resolve_inventory must never be Complete")
+	if hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("resolve_inventory must be LIVE, not Unsupported; got %v", resp.Inventory.Partiality.Reasons)
 	}
-	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
-		t.Errorf("resolve_inventory must be CONTRACT-PRESENT Unsupported; got %v", resp.Inventory.Partiality.Reasons)
+	if len(resp.Inventory.Nodes) == 0 {
+		t.Fatal("resolve_inventory must return real data — the declared DotNetZip pin")
+	}
+	found := false
+	for _, n := range resp.Inventory.Nodes {
+		if n.PURL == "pkg:nuget/dotnetzip@1.16.0" && n.Version == "1.16.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a DotNetZip@1.16.0 node; got %+v", resp.Inventory.Nodes)
 	}
 }
 

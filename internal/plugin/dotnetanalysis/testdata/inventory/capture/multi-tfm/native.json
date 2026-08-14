@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "parameters": "--include-transitive",
+  "projects": [
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/multi-tfm/MultiTfm.csproj",
+      "frameworks": [
+        {
+          "framework": "netstandard2.0",
+          "topLevelPackages": [
+            {
+              "id": "NETStandard.Library",
+              "requestedVersion": "[2.0.3, )",
+              "resolvedVersion": "2.0.3",
+              "autoReferenced": "true"
+            },
+            {
+              "id": "System.Text.Json",
+              "requestedVersion": "8.0.0",
+              "resolvedVersion": "8.0.0"
+            }
+          ],
+          "transitivePackages": [
+            {
+              "id": "Microsoft.Bcl.AsyncInterfaces",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.NETCore.Platforms",
+              "resolvedVersion": "1.1.0"
+            },
+            {
+              "id": "System.Buffers",
+              "resolvedVersion": "4.5.1"
+            },
+            {
+              "id": "System.Memory",
+              "resolvedVersion": "4.5.5"
+            },
+            {
+              "id": "System.Numerics.Vectors",
+              "resolvedVersion": "4.4.0"
+            },
+            {
+              "id": "System.Runtime.CompilerServices.Unsafe",
+              "resolvedVersion": "6.0.0"
+            },
+            {
+              "id": "System.Text.Encodings.Web",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Threading.Tasks.Extensions",
+              "resolvedVersion": "4.5.4"
+            }
+          ]
+        },
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "System.Text.Json",
+              "requestedVersion": "8.0.0",
+              "resolvedVersion": "8.0.0"
+            }
+          ],
+          "transitivePackages": [
+            {
+              "id": "System.Text.Encodings.Web",
+              "resolvedVersion": "8.0.0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

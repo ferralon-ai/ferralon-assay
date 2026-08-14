@@ -153,6 +153,15 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		}
 		return plugin.Response{BuildManifest: &plugin.BuildManifestResult{Partiality: plugin.Unsupported()}}, nil
 
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		// CONTRACT-PRESENT stub: Java resolves no whole-graph dependency inventory in
+		// this phase. It declares Unsupported() — never Complete() with zero nodes,
+		// which would falsely assert an empty dependency graph.
+		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)
 	}

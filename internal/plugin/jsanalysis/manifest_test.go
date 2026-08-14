@@ -19,14 +19,14 @@ func TestBuildManifest_CleanPackageIsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Module != "tegron-fixture-pkg" {
-		t.Errorf("Module = %q, want tegron-fixture-pkg", res.Module)
+	if res.ProjectRoot != "tegron-fixture-pkg" {
+		t.Errorf("ProjectRoot = %q, want tegron-fixture-pkg", res.ProjectRoot)
 	}
-	if res.GoVersion != ">=18" {
-		t.Errorf("GoVersion (node engine) = %q, want >=18", res.GoVersion)
+	if res.Runtime.Name != "node" || res.Runtime.Version != ">=18" {
+		t.Errorf("Runtime = %+v, want {Name:node Version:>=18}", res.Runtime)
 	}
-	if res.BuildCommand != "npm ci && npm run build" {
-		t.Errorf("BuildCommand = %q, want 'npm ci && npm run build'", res.BuildCommand)
+	if res.Resolver.Command != "npm ci && npm run build" {
+		t.Errorf("Resolver.Command = %q, want 'npm ci && npm run build'", res.Resolver.Command)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a clean single-package package.json must be Complete; got %+v", res.Partiality)
@@ -42,8 +42,8 @@ func TestBuildManifest_NoLockfileUsesInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.BuildCommand != "npm install" {
-		t.Errorf("BuildCommand = %q, want 'npm install'", res.BuildCommand)
+	if res.Resolver.Command != "npm install" {
+		t.Errorf("Resolver.Command = %q, want 'npm install'", res.Resolver.Command)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a clean package with no build script must still be Complete; got %+v", res.Partiality)
@@ -61,8 +61,8 @@ func TestBuildManifest_NoPackageJSONIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a dir with no package.json must declare Partial")
 	}
-	if res.BuildCommand != "" {
-		t.Errorf("must not fabricate a build command without a package.json; got %q", res.BuildCommand)
+	if res.Resolver.Command != "" {
+		t.Errorf("must not fabricate a build command without a package.json; got %q", res.Resolver.Command)
 	}
 	if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
 		t.Errorf("no package.json must carry tool_failure; got %+v", res.Partiality)
@@ -81,11 +81,11 @@ func TestBuildManifest_WorkspacesIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a workspaces/monorepo package must declare Partial")
 	}
-	if res.Module != "monorepo-root" {
-		t.Errorf("Module = %q, want monorepo-root", res.Module)
+	if res.ProjectRoot != "monorepo-root" {
+		t.Errorf("ProjectRoot = %q, want monorepo-root", res.ProjectRoot)
 	}
-	if res.BuildCommand != "" {
-		t.Errorf("must not fabricate a build command for a monorepo; got %q", res.BuildCommand)
+	if res.Resolver.Command != "" {
+		t.Errorf("must not fabricate a build command for a monorepo; got %q", res.Resolver.Command)
 	}
 }
 
@@ -101,8 +101,8 @@ func TestBuildManifest_MissingNameIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a package.json with no name must declare Partial")
 	}
-	if res.BuildCommand != "" {
-		t.Errorf("must not fabricate a build command without a name; got %q", res.BuildCommand)
+	if res.Resolver.Command != "" {
+		t.Errorf("must not fabricate a build command without a name; got %q", res.Resolver.Command)
 	}
 }
 

@@ -185,6 +185,24 @@ func TestDispatch_HarnessOps_Unsupported(t *testing.T) {
 	}
 }
 
+// resolve_inventory stays CONTRACT-PRESENT Unsupported: Python has no whole-graph
+// dependency resolver, so the op returns an honestly-partial inventory (Complete=false,
+// unsupported_phase1) — NEVER an empty-but-successful one, which would read downstream as
+// "this build has no dependencies".
+func TestDispatch_ResolveInventory_Unsupported(t *testing.T) {
+	dir := fixtureDir(t)
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
+	if resp.Inventory == nil {
+		t.Fatal("missing inventory payload")
+	}
+	if resp.Inventory.Partiality.Complete {
+		t.Errorf("resolve_inventory must be honestly partial, never an empty-but-Complete inventory; got %+v", resp.Inventory.Partiality)
+	}
+	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("resolve_inventory must carry unsupported_phase1; got %v", resp.Inventory.Partiality.Reasons)
+	}
+}
+
 // reasons extracts the partiality reason codes from any result payload carrying a
 // Partiality field, via a tiny type switch.
 func reasons(payload any) []string {
@@ -200,6 +218,8 @@ func reasons(payload any) []string {
 	case *plugin.HarnessResult:
 		return p.Partiality.Reasons
 	case *plugin.BuildManifestResult:
+		return p.Partiality.Reasons
+	case *plugin.DependencyInventory:
 		return p.Partiality.Reasons
 	}
 	return nil

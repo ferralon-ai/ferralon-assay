@@ -165,3 +165,14 @@ func (p *dotnetPlugin) BuildManifest(ctx context.Context, req BuildManifestReque
 	}
 	return *resp.BuildManifest, nil
 }
+
+func (p *dotnetPlugin) ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error) {
+	resp, err := p.run(ctx, Request{Op: OpResolveInventory, ResolveInventory: &req})
+	if err != nil {
+		return DependencyInventory{}, err
+	}
+	if resp.Inventory == nil {
+		return DependencyInventory{}, fmt.Errorf("plugin: %s response missing inventory payload", OpResolveInventory)
+	}
+	return *resp.Inventory, nil
+}

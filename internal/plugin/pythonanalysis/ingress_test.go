@@ -9,7 +9,7 @@ import (
 
 func ingressFor(ings []plugin.Ingress, symbol string) (plugin.Ingress, bool) {
 	for _, in := range ings {
-		if in.Symbol == symbol {
+		if in.Symbol.SCIP == symbol {
 			return in, true
 		}
 	}
@@ -79,8 +79,8 @@ def handle_ws(ws):
 		{"create_item", 1},
 		{"ws_endpoint", 1},
 	} {
-		sym := funcSCIP("api", nil, want.name, want.arity)
-		in, ok := ingressFor(res.Ingresses, sym)
+		scip := funcSCIP("api", nil, want.name, want.arity)
+		in, ok := ingressFor(res.Ingresses, scip)
 		if !ok {
 			t.Errorf("FastAPI handler %s not found as ingress; got %+v", want.name, res.Ingresses)
 			continue

@@ -88,7 +88,7 @@ func TestLive_CallGraph(t *testing.T) {
 	}
 	var sawChain bool
 	for _, e := range res.Edges {
-		if strings.Contains(e.Caller, "Handle") && strings.Contains(e.Callee, "Sink") {
+		if strings.Contains(e.Caller.SCIP, "Handle") && strings.Contains(e.Callee.SCIP, "Sink") {
 			sawChain = true
 		}
 	}

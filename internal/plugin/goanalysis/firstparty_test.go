@@ -101,14 +101,14 @@ func TestFirstParty_ResolvedSinkIsIngressForCallGraphFallback(t *testing.T) {
 	}
 	ingressMatch := false
 	for _, in := range ing.Ingresses {
-		if in.Symbol == sink {
+		if in.Symbol.SCIP == sink {
 			ingressMatch = true
 		}
 	}
 	if !ingressMatch {
 		var got []string
 		for _, in := range ing.Ingresses {
-			got = append(got, in.Kind+":"+in.Symbol)
+			got = append(got, in.Kind+":"+in.Symbol.SCIP)
 		}
 		t.Fatalf("resolved sink SCIP is not among detected ingresses; the handler must be its own ingress.\nsink=%q\ningresses=%v", sink, got)
 	}
@@ -122,12 +122,12 @@ func TestFirstParty_ResolvedSinkIsIngressForCallGraphFallback(t *testing.T) {
 	}
 	inGraph := false
 	for _, r := range cg.Roots {
-		if r == sink {
+		if r.SCIP == sink {
 			inGraph = true
 		}
 	}
 	for _, e := range cg.Edges {
-		if e.Caller == sink || e.Callee == sink {
+		if e.Caller.SCIP == sink || e.Callee.SCIP == sink {
 			inGraph = true
 		}
 	}
@@ -144,7 +144,7 @@ func TestFirstParty_ResolvedSinkIsIngressForCallGraphFallback(t *testing.T) {
 func reachableFrom(roots []string, target string, edges []plugin.CallEdge) bool {
 	adj := map[string][]string{}
 	for _, e := range edges {
-		adj[e.Caller] = append(adj[e.Caller], e.Callee)
+		adj[e.Caller.SCIP] = append(adj[e.Caller.SCIP], e.Callee.SCIP)
 	}
 	seen := map[string]bool{}
 	queue := append([]string{}, roots...)
@@ -201,7 +201,7 @@ func TestFirstParty_GrafanaDuckDB_VulnerableResolvesReachableSink(t *testing.T) 
 	}
 	var ingressSyms []string
 	for _, in := range ing.Ingresses {
-		ingressSyms = append(ingressSyms, in.Symbol)
+		ingressSyms = append(ingressSyms, in.Symbol.SCIP)
 	}
 	if len(ingressSyms) == 0 {
 		t.Fatalf("vulnerable: no ingresses detected; expected the /api/ds/query http_route/handler")
@@ -214,7 +214,7 @@ func TestFirstParty_GrafanaDuckDB_VulnerableResolvesReachableSink(t *testing.T) 
 	if !reachableFrom(ingressSyms, sink, cg.Edges) {
 		var got []string
 		for _, in := range ing.Ingresses {
-			got = append(got, in.Kind+":"+in.Symbol)
+			got = append(got, in.Kind+":"+in.Symbol.SCIP)
 		}
 		t.Fatalf("vulnerable: sink %q is not reachable from any ingress over the call graph — no candidate would fire.\ningresses=%v", sink, got)
 	}

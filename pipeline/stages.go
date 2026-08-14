@@ -1338,10 +1338,10 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if err != nil {
 			return err
 		}
-		module = mani.Module
-		goVersion = mani.GoVersion
-		buildCommand = mani.BuildCommand
-		toolchainDirective = mani.ToolchainVersion
+		module = mani.ProjectRoot
+		goVersion = mani.Runtime.Version
+		buildCommand = mani.Resolver.Command
+		toolchainDirective = mani.Runtime.Toolchain
 	}
 
 	// The subject's Go toolchain as ONE resolved fact carrying its own strength (ADR 0014). This is
@@ -1352,9 +1352,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	//
 	// Go-only by construction. Both floors are go.mod directives and both exact tiers are statements
 	// about a Go build environment, so resolving this for a JS/Java/Python/.NET subject would label
-	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Note that
-	// BuildManifestResult.GoVersion is overloaded across lanes (jsanalysis puts a node engine range
-	// there), which is a second reason the language gate is load-bearing and not defensive.
+	// the RUNNER's Go as the subject's — the same category error the fact exists to close. (The prior
+	// BuildManifestResult.GoVersion overload — jsanalysis stuffing a node engine range into a Go-named
+	// field — is gone: PLAN-000's ecosystem-neutral rework carries it in Runtime{Name:"node"} instead.)
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	if language == "go" {
 		toolchain = resolveToolchainFact(toolchainInputs{
@@ -2471,7 +2471,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 			Path:          reachRef,
 			Partial:       firstParty || !reach.Partiality.Complete,
 		}
-		if p.Ingress != "" {
+		if p.Ingress.SCIP != "" {
 			pair.Ingress = &ingressRef
 		}
 		desc := "candidate pair (resolved)"
@@ -2517,20 +2517,30 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 		return nil
 	}
 
+	// The BFS runs over SCIP-id keys, reproducing the pre-Symbol identity exactly: CallEdge
+	// endpoints were bare SCIP ids, and the sink parameter is a SCIP id (resolvedSinkSCIP), so
+	// keying the graph on .SCIP is the same graph the old string-typed code built. symBySCIP
+	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
+	// now plugin.Symbol — are reconstructed at the return boundary.
+	symBySCIP := make(map[string]plugin.Symbol)
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		symBySCIP[e.Caller.SCIP] = e.Caller
+		symBySCIP[e.Callee.SCIP] = e.Callee
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 
 	ingressSyms := make(map[string]struct{}, len(ingresses.Ingresses))
 	for _, in := range ingresses.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = struct{}{}
+		if in.Symbol.SCIP != "" {
+			symBySCIP[in.Symbol.SCIP] = in.Symbol
+			ingressSyms[in.Symbol.SCIP] = struct{}{}
 		}
 	}
 	roots := make(map[string]struct{}, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = struct{}{}
+		symBySCIP[r.SCIP] = r
+		roots[r.SCIP] = struct{}{}
 	}
 
 	type node struct {
@@ -2546,15 +2556,15 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 		_, isIngress := ingressSyms[cur.sym]
 		_, isRoot := roots[cur.sym]
 		if isIngress || isRoot {
-			trace := make([]string, len(cur.path))
+			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = cur.path[len(cur.path)-1-i]
+				trace[i] = symBySCIP[cur.path[len(cur.path)-1-i]]
 			}
-			ingress := ""
+			var ingress plugin.Symbol
 			if isIngress {
-				ingress = cur.sym
+				ingress = symBySCIP[cur.sym]
 			}
-			return []plugin.ReachPath{{Sink: sink, Ingress: ingress, Trace: trace}}
+			return []plugin.ReachPath{{Sink: symBySCIP[sink], Ingress: ingress, Trace: trace}}
 		}
 
 		for _, caller := range callers[cur.sym] {

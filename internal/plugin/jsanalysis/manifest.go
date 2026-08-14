@@ -57,27 +57,29 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		}, nil
 	}
 
-	res := plugin.BuildManifestResult{Module: pkg.Name}
-	// BuildManifestResult carries a single Go-named toolchain-version field; for a
-	// JS package it holds the declared Node engine constraint (engines.node).
+	// ProjectRoot carries the package identity (pkg.Name); the declared Node engine
+	// constraint (engines.node) goes to the ecosystem-neutral Runtime{Name:"node"}
+	// descriptor — no longer overloaded onto the retired Go-named "go_version" field.
+	res := plugin.BuildManifestResult{ProjectRoot: pkg.Name}
 	if v := pkg.Engines["node"]; v != "" {
-		res.GoVersion = v
+		res.Runtime = plugin.RuntimeSpec{Name: "node", Version: v}
 	}
 
 	// A workspaces/monorepo layout is not installable/buildable with a single
 	// package-root command, and a missing name means we cannot identify the
 	// package — declare the gap rather than overclaim.
-	complicated := hasWorkspaces(pkg.Workspaces) || res.Module == ""
+	complicated := hasWorkspaces(pkg.Workspaces) || res.ProjectRoot == ""
 
 	if complicated {
 		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure)
 		return res, nil
 	}
 
-	res.BuildCommand = installCommand(req.BuildDir)
+	command := installCommand(req.BuildDir)
 	if pkg.Scripts["build"] != "" {
-		res.BuildCommand += " && npm run build"
+		command += " && npm run build"
 	}
+	res.Resolver = plugin.ResolverSpec{Name: "npm", Command: command}
 	res.Partiality = plugin.Complete()
 	return res, nil
 }

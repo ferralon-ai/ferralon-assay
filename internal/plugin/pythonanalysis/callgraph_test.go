@@ -9,7 +9,7 @@ import (
 
 func hasEdge(edges []plugin.CallEdge, caller, callee string) bool {
 	for _, e := range edges {
-		if e.Caller == caller && e.Callee == callee {
+		if e.Caller.SCIP == caller && e.Callee.SCIP == callee {
 			return true
 		}
 	}
@@ -81,7 +81,7 @@ func TestCallGraph_RouteHandlerIsRoot(t *testing.T) {
 	handleFetch := funcSCIP("app", nil, "handle_fetch", 0)
 	found := false
 	for _, r := range res.Roots {
-		if r == handleFetch {
+		if r.SCIP == handleFetch {
 			found = true
 		}
 	}
@@ -123,7 +123,7 @@ def pick():
 		t.Errorf("expected run->cond, run->loop, run->pick edges; edges=%+v", res.Edges)
 	}
 	for _, e := range res.Edges {
-		if e.Caller == "" || e.Callee == "" {
+		if e.Caller.SCIP == "" || e.Callee.SCIP == "" {
 			t.Errorf("empty endpoint in edge %+v", e)
 		}
 	}
@@ -182,7 +182,7 @@ def process(x):
 	}
 	entry := funcSCIP("a", nil, "entry", 1)
 	for _, e := range res.Edges {
-		if e.Caller == entry {
+		if e.Caller.SCIP == entry {
 			t.Errorf("ambiguous call fabricated an edge from entry: %+v", e)
 		}
 	}

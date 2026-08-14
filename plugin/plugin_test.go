@@ -197,7 +197,14 @@ func TestResponseJSONRoundTrip(t *testing.T) {
 		Reachability: &ReachabilityResult{
 			Partiality: Partial(PartialReasonReflection),
 			Paths: []ReachPath{
-				{Sink: "scip:sink", Ingress: "scip:main", Trace: []string{"scip:main", "scip:sink"}},
+				{
+					Sink:    Symbol{Kind: SymbolKindFunction, Package: "example.com/dep", Name: "sink", SCIP: "scip:sink"},
+					Ingress: Symbol{Kind: SymbolKindFunction, Package: "example.com/app", Name: "main", SCIP: "scip:main"},
+					Trace: []Symbol{
+						{Kind: SymbolKindFunction, Package: "example.com/app", Name: "main", SCIP: "scip:main"},
+						{Kind: SymbolKindFunction, Package: "example.com/dep", Name: "sink", SCIP: "scip:sink"},
+					},
+				},
 			},
 		},
 	}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "parameters": "--include-transitive",
+  "projects": [
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/cpm-solution/src/App/App.csproj",
+      "frameworks": [
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "Serilog",
+              "requestedVersion": "3.1.1",
+              "resolvedVersion": "3.1.1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/cpm-solution/src/Lib/Lib.csproj",
+      "frameworks": [
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "Serilog",
+              "requestedVersion": "3.1.1",
+              "resolvedVersion": "3.1.1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

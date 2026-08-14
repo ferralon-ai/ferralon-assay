@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "parameters": "--include-transitive",
+  "projects": [
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/single-transitive/App.csproj",
+      "frameworks": [
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "Microsoft.Extensions.Hosting",
+              "requestedVersion": "8.0.0",
+              "resolvedVersion": "8.0.0"
+            }
+          ],
+          "transitivePackages": [
+            {
+              "id": "Microsoft.Extensions.Configuration",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.Binder",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.CommandLine",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.EnvironmentVariables",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.FileExtensions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.Json",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.UserSecrets",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.DependencyInjection",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.DependencyInjection.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Diagnostics",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Diagnostics.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.FileProviders.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.FileProviders.Physical",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.FileSystemGlobbing",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Hosting.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.Configuration",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.Console",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.Debug",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.EventLog",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.EventSource",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Options",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Options.ConfigurationExtensions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Primitives",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Diagnostics.DiagnosticSource",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Diagnostics.EventLog",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Text.Encodings.Web",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Text.Json",
+              "resolvedVersion": "8.0.0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

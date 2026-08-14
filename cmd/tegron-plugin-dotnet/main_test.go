@@ -121,11 +121,11 @@ func TestDispatch_ResolveVersionsRoundTrip(t *testing.T) {
 	}
 }
 
-// batch-2 promotes call_graph, find_ingresses, reachability, and compute_taint to live
-// lexical analysis; generate_harness and build_manifest stay CONTRACT-PRESENT Unsupported
-// (Prove-tier). They must return the Unsupported stub, never a hard error.
+// batch-2 promotes call_graph, find_ingresses, reachability, and compute_taint to live lexical
+// analysis; build_manifest is now LIVE too (see TestDispatch_BuildManifestIsLive). generate_harness
+// stays CONTRACT-PRESENT Unsupported (Prove-tier): it must return the Unsupported stub, never a hard
+// error.
 func TestDispatch_ContractPresentUnsupportedOps(t *testing.T) {
-	dir := fixtureDir(t)
 	for _, c := range []struct {
 		name string
 		req  plugin.Request
@@ -133,13 +133,33 @@ func TestDispatch_ContractPresentUnsupportedOps(t *testing.T) {
 	}{
 		{"generate_harness", plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}},
 			func(r plugin.Response) []string { return reasons(r.Harness) }},
-		{"build_manifest", plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}},
-			func(r plugin.Response) []string { return reasons(r.BuildManifest) }},
 	} {
 		resp := roundTrip(t, c.req)
 		if !hasReason(c.ok(resp), plugin.PartialReasonUnsupported) {
 			t.Errorf("%s must be CONTRACT-PRESENT Unsupported this pass; got reasons %v", c.name, c.ok(resp))
 		}
+	}
+}
+
+// build_manifest is LIVE through the subprocess (PLAN-151): the flat, ecosystem-neutral manifest is
+// derived lexically from the checkout and returned populated — no longer Unsupported. The fixtureDir
+// carries a .csproj with no restore output, so the honest result names its partiality (e.g.
+// no_lockfile) while stamping the dotnet Resolver identity; it is never Unsupported and never a hard
+// error. Mirrors how PLAN-150 turned the ResolveInventory dispatch test into a live assertion.
+func TestDispatch_BuildManifestIsLive(t *testing.T) {
+	dir := fixtureDir(t)
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}})
+	if resp.BuildManifest == nil {
+		t.Fatal("missing build_manifest payload")
+	}
+	if hasReason(resp.BuildManifest.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("build_manifest must be LIVE, not Unsupported; got %v", resp.BuildManifest.Partiality.Reasons)
+	}
+	if resp.BuildManifest.Resolver.Name != "dotnet" {
+		t.Errorf("build_manifest must stamp the dotnet resolver; got Resolver.Name=%q", resp.BuildManifest.Resolver.Name)
+	}
+	if resp.BuildManifest.Runtime.Name != "dotnet" {
+		t.Errorf("build_manifest must return a populated result (Runtime.Name=dotnet); got %q", resp.BuildManifest.Runtime.Name)
 	}
 }
 
@@ -203,20 +223,31 @@ func TestDispatch_ReachabilityRoundTripIsAlwaysPartial(t *testing.T) {
 	}
 }
 
-// resolve_inventory is CONTRACT-PRESENT Unsupported through the subprocess: .NET ships no
-// whole-graph dependency resolver this cycle, so the op returns an Unsupported
-// DependencyInventory — never a hard error, never a Complete zero-node graph.
-func TestDispatch_ResolveInventoryIsUnsupported(t *testing.T) {
+// resolve_inventory is LIVE through the subprocess (PLAN-150): the .NET whole-graph resolver
+// runs over the checkout files and returns real data — no longer Unsupported. The fixtureDir
+// carries a .csproj (declared DotNetZip pin) but no restore output, so the honest result is the
+// declared-text tier: a populated DotNetZip node under Partial(no_resolver_output, no_lockfile),
+// never Unsupported, never a hard error, never a Complete zero-node graph.
+func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
 	dir := fixtureDir(t)
 	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Error("resolve_inventory must never be Complete")
+	if hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("resolve_inventory must be LIVE, not Unsupported; got %v", resp.Inventory.Partiality.Reasons)
 	}
-	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
-		t.Errorf("resolve_inventory must be CONTRACT-PRESENT Unsupported; got %v", resp.Inventory.Partiality.Reasons)
+	if len(resp.Inventory.Nodes) == 0 {
+		t.Fatal("resolve_inventory must return real data — the declared DotNetZip pin")
+	}
+	found := false
+	for _, n := range resp.Inventory.Nodes {
+		if n.PURL == "pkg:nuget/dotnetzip@1.16.0" && n.Version == "1.16.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a DotNetZip@1.16.0 node; got %+v", resp.Inventory.Nodes)
 	}
 }
 

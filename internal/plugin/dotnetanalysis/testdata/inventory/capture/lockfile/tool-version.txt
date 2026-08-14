@@ -1,0 +1,2 @@
+10.0.302
+10.0.302 [/usr/local/share/dotnet/sdk]

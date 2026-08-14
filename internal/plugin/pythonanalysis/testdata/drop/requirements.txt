@@ -1,0 +1,9 @@
+# PLAN-170 C3 drop fixture. One line of each shape the old parser dropped, plus a --hash
+# line whose hashes the old parser truncated. Every line must become exactly one node
+# (node count == line count) — a dropped line is a silent omission indistinguishable
+# downstream from a dependency that is not there (§3.1).
+-e ./localpkg
+-r other-requirements.txt
+git+https://github.com/example/foo@v1.2.3#egg=foo
+https://example.com/wheels/bar-1.0-py3-none-any.whl
+baz==1.0.0 --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-JINJA2-SSTI-0001-OUTOFRANGE",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-PY-JINJA2-SSTI-0001",
+    "source": "osv",
+    "summary": "Synthetic advisory affecting Jinja2 < 2.11.3. Out-of-range shape: the build declares Jinja2==3.1.2, which is provably >= the advisory upper bound 2.11.3 under PEP 440 ordering, so the PyPI disqualification predicate returns (outside=true, ok=true) -- version-disqualified independent of reachability. Both operands parse as PEP 440 (an un-parseable operand would fail open to (false,false), the wrong arm).",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/ferralon-corpus-repros",
+    "revision": "TEGRON-PY-JINJA2-SSTI-0001-OUTOFRANGE-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-JINJA2-SSTI-0001-OUTOFRANGE/",
+      "notes": "First-party Python repro. requirements.txt declares Jinja2==3.1.2 (the installed version); the advisory upper bound is 2.11.3 (affects < 2.11.3). The exercised arm is the pipeline PyPI comparator pypiVersionOutsideRange('3.1.2','2.11.3') == (true, true) (pipeline/pypi_version.go:42), NOT scanner reachability. src/app.py exists only so the repro is a real buildable tree. No target code is executed and no wheel/sdist is acquired."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "proven",
+    "completion_status": "completed",
+    "label": "not_exploitable",
+    "expected_flags": ["version_out_of_range"],
+    "rationale": "The declared installed version 3.1.2 is provably >= the advisory upper bound 2.11.3 under PEP 440 ordering, so the module is not within the affected set affects<2.11.3. The disqualification is a sound not-affected (the comparator returns ok=true only when both operands parse). Verdict correctness is out of scope for PLAN-070; C4 asserts the disqualification-predicate arm, not a pipeline verdict.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

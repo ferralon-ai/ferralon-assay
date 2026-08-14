@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-SSRF-0001-UNREACHABLE",
+  "category": "installed_undetermined",
+  "advisory": {
+    "id": "TEGRON-PY-SSRF-0001",
+    "source": "osv",
+    "summary": "Same synthetic SSRF sink open_conn(url) as TEGRON-PY-SSRF-0001-REACHABLE, but in a build where the vulnerable callable is PRESENT yet no recognized ingress or program root reaches it. Negative shape: installed-but-unreachable (UNKNOWN, never a confident 'safe'). F-B2: 'installed' means vendored first-party source, not environment-resolved (no dependency/environment indexer pre-PLAN-270).",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/ferralon-corpus-repros",
+    "revision": "TEGRON-PY-SSRF-0001-UNREACHABLE-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-SSRF-0001-UNREACHABLE/",
+      "notes": "First-party Python repro. src/app.py declares the vulnerable sink open_conn as a first-party def (so it resolves to a symbol and is a call-graph node), but the only route handler (health) calls harmless; open_conn is an orphan no ingress/root reaches. The scanner therefore emits an empty ReachPath AND declares no_known_ingress -- UNKNOWN, never 'safe'. The def MUST stay present: a fixture whose 'unreachable' property held because the symbol was absent would be a different case and would not satisfy C3. No target code is executed."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "undetermined",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "undetermined",
+    "expected_flags": ["no_known_ingress"],
+    "rationale": "The vulnerable sink open_conn is present in the build (resolves to exactly one first-party symbol) but no ingress or program root reaches it over the source-lexical call graph, so reachability yields no path and declares no_known_ingress. Under the inv.5 honesty boundary this is UNKNOWN, never a confident not-affected. Verdict correctness is out of scope for PLAN-070.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

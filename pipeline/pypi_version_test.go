@@ -97,14 +97,20 @@ func TestPEP440LocalNumericAboveAlpha(t *testing.T) {
 }
 
 func TestPEP440ImplicitPost(t *testing.T) {
-	// The implicit post form "1.0-1" == "1.0.post1".
+	// The implicit post form "1.0-1" == "1.0.post1", and a post-release sorts ABOVE its
+	// final release. Asserted behaviorally (via comparePEP440) so the test does not couple
+	// to the parsed struct's unexported fields, which now live in the shared pep440 package.
 	a, ok := parsePEP440("1.0-1")
-	if !ok || !a.hasPost || a.postNum != 1 {
-		t.Fatalf("1.0-1 must parse as post1; got %+v ok=%v", a, ok)
+	if !ok {
+		t.Fatalf("1.0-1 must parse")
 	}
-	b, _ := parsePEP440("1.0.post1")
-	if c := comparePEP440(a, b); c != 0 {
+	post1, _ := parsePEP440("1.0.post1")
+	if c := comparePEP440(a, post1); c != 0 {
 		t.Fatalf("1.0-1 must equal 1.0.post1; got %d", c)
+	}
+	final, _ := parsePEP440("1.0")
+	if c := comparePEP440(a, final); c <= 0 {
+		t.Fatalf("1.0-1 (post-release) must sort ABOVE 1.0; got %d", c)
 	}
 }
 

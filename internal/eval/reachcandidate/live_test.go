@@ -86,17 +86,8 @@ func TestLiveReachCandidateEval(t *testing.T) {
 		}
 		// Baseline symbols come from the current in-memory corpus (what S1 would read today).
 		facts := pipeline.AdvisoryTable[fix.Advisory.ID]
-		cases = append(cases, Case{
-			CaseID:        fix.ID, // unique fixture id (advisory id collides across variants)
-			VulnID:        fix.Advisory.ID,
-			Source:        fix.Advisory.Source,
-			Aliases:       facts.Aliases,
-			PURL:          facts.PURL,
-			Symbols:       facts.Symbols,
-			GuardSymbols:  facts.GuardSymbols,
-			BuildDir:      corpus.ReproPath(fix.Codebase.Acquisition.Path),
-			ExpectedSinks: expected[fix.Advisory.ID], // empty ⇒ precision unmeasured for this CVE
-		})
+		// empty expected ⇒ precision unmeasured for this CVE
+		cases = append(cases, CaseFrom(fix, facts, expected[fix.Advisory.ID]))
 	}
 	if len(cases) == 0 {
 		t.Fatal("no vendored_repro fixtures found to evaluate")

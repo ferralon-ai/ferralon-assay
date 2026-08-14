@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "TEGRON-PY-AIRFLOW-EXPAPI-0001",
+    "source": "ghsa",
+    "summary": "missing authentication: the experimental REST API exposes an unauthenticated get_code sink that reads arbitrary DAG source off disk; the experimental API has no access control by default and was removed wholesale in Airflow 3.0.0",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2020-13927"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable/",
+      "notes": "Reduced Airflow repro of the experimental REST API (CVE-2020-13927 family) at the parent of the removal commit (PR #41434). A Flask Blueprint route decorator (@api_experimental.route) on get_dag_code forwards its dag_id directly into the get_code sink, which reads arbitrary DAG source off disk with no access control by default. Faithful reduction: endpoints.py + get_code.py + init_views.py."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The @api_experimental.route ingress get_dag_code calls the get_code sink directly, which reads arbitrary DAG source off disk on an unauthenticated experimental-API path (CWE-306), so the ingress-to-sink taint path is statically complete and reachable. Confirming the unauthenticated read requires a live detonation the current sandbox capability does not exercise here, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

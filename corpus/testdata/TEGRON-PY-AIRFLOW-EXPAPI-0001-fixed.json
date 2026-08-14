@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-AIRFLOW-EXPAPI-0001-fixed",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-PY-AIRFLOW-EXPAPI-0001",
+    "source": "ghsa",
+    "summary": "missing authentication: the experimental REST API exposes an unauthenticated get_code sink that reads arbitrary DAG source off disk; the experimental API has no access control by default and was removed wholesale in Airflow 3.0.0",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2020-13927"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-PY-AIRFLOW-EXPAPI-0001-fixed-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-fixed/",
+      "notes": "Fixed variant applying the real upstream fix (PR #41434, 'Delete experimental API', Airflow 3.0.0): endpoints.py and get_code.py are deleted wholesale and the init_api_experimental blueprint registration is removed. Only the stable-API wiring remains -- no @api_experimental.route ingress and no get_code sink anywhere in the tree."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The fix deletes the experimental API outright: the get_code sink no longer resolves (symbol removal) and the route decorator plus blueprint registration are gone (path removal), so no ingress-to-sink path exists -- reachable_candidate flips to not_exploitable. Reasoned rather than proven because non-exploitability proof requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

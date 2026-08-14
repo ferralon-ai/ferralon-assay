@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JS-NEXTRCE-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "TEGRON-JS-NEXTRCE-0001",
+    "source": "ghsa",
+    "summary": "module-resolution RCE: the catch-all page route reaches requireModule, which require()s an attacker-controlled path with no bundles-directory containment (Next.js < 5.1.0)",
+    "references": [
+      "https://github.com/advisories/GHSA-5vj8-3v2h-h38v"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JS-NEXTRCE-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JS-NEXTRCE-0001-vulnerable/",
+      "notes": "Reduced Node repro of the Next.js < 5.1.0 module-resolution RCE (GHSA-5vj8-3v2h-h38v) at tag 5.0.0. A catch-all Express-shaped route (app.get('/:path*', handleRender)) forwards the attacker-controlled page path through render() into the RCE sink requireModule(), which require()s the caller-supplied path with no bundles-directory containment. Dependency-free (hand-rolled router over Node http) so the pure-Go call graph connects ingress to sink."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The catch-all route handleRender reaches requireModule through the render hop, and requireModule require()s an attacker-controlled path with no containment check (CWE-94), so the ingress-to-sink taint path is statically complete and reachable. Confirming arbitrary module execution requires a live detonation the current sandbox capability does not exercise here, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JAVA-SSRF-0001-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-JAVA-SSRF-0001",
+    "source": "osv",
+    "summary": "server-side request forgery: a servlet forwards an attacker-controlled target through UrlFetcher.fetch to an outbound HTTP request with no allowlist",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JAVA-SSRF-0001-patched-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JAVA-SSRF-0001-patched/",
+      "notes": "Patched variant of the servlet Java SSRF repro: UrlFetcher.fetch enforces an allowlist (only 'public') via resolveTarget, rejecting 'internal' before any seed read or outbound request. Same javac-compiled layout as the vulnerable variant except the allowlist."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "resolveTarget in UrlFetcher enforces an allowlist before the outbound request, so the CWE-918 SSRF sink is code-foreclosed for the exfiltrating target. The servlet-to-sink call path is preserved (static_taint_path_complete) but the guarded implementation is not exploitable; reasoned rather than proven because PoNE requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

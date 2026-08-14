@@ -1,0 +1,40 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "GO-2021-0113-liveness",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "GO-2021-0113",
+    "source": "osv",
+    "summary": "out-of-bounds read panic in language.Parse on a malformed BCP-47 tag",
+    "references": [
+      "https://pkg.go.dev/vuln/GO-2021-0113",
+      "https://osv.dev/vulnerability/GO-2021-0113"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "GO-2021-0113-liveness-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/GO-2021-0113-liveness/",
+      "notes": "Liveness-augmented counterpart of the GO-2021-0113 trivial repro: the same parseHandler route (GET / on 127.0.0.1:8080) pins the VULNERABLE golang.org/x/text v0.3.6 and passes the untrusted Accept-Language header straight into language.Parse inside a defer/recover. Adds a marker-gated benign liveness beacon (X-Tegron-Liveness) on the success path that the exploit trace never sends, so a patched-build detonation stays dark. Vendored with go.mod + vendor/ so the Go toolchain builds it hermetically."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "language.Parse (the GO-2021-0113 out-of-bounds-read sink) is reached directly from the HTTP handler on the affected x/text v0.3.6, so the ingress-to-sink taint path is statically complete and the row is reachable. Live confirmation of the panic requires a malformed BCP-47 tag delivered against a vulnerable-toolchain build under a controlled sandbox, so analysis stops at reachable-but-unconfirmed (stopped_capability); the verdict is reasoned, not proven -- the repro carries no proven live-canary flag. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

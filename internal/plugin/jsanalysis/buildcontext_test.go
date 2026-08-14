@@ -63,9 +63,11 @@ func TestBuildContext_WorkspaceRoots(t *testing.T) {
 	if !found {
 		t.Errorf("Roots = %v, want to contain declared member glob %q", bc.Roots, wantGlob)
 	}
-	// Stage-1 boundary: the stage-3 bundler extension fields stay zero.
-	if bc.AliasMap != nil || bc.Defines != nil || bc.EntryPoints != nil || bc.ServerSideRoots != nil {
-		t.Errorf("stage-3 extension fields must be zero at stage 1; got alias=%v defines=%v entry=%v server=%v",
-			bc.AliasMap, bc.Defines, bc.EntryPoints, bc.ServerSideRoots)
+	// Stage-1 boundary: newBuildContext populates only module mode + roots; the bundler
+	// extension fields stay zero until buildContextFor wires in the readers (stage 3).
+	if bc.Aliases != nil || bc.Defines != nil || bc.EntryPoints != nil || bc.ServerSideRoots != nil ||
+		bc.AliasConflicts != nil || bc.DefineConflicts != nil {
+		t.Errorf("bundler extension fields must be zero from newBuildContext alone; got alias=%v defines=%v entry=%v server=%v aliasConflicts=%v defineConflicts=%v",
+			bc.Aliases, bc.Defines, bc.EntryPoints, bc.ServerSideRoots, bc.AliasConflicts, bc.DefineConflicts)
 	}
 }

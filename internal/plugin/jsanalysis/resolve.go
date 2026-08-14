@@ -38,6 +38,13 @@ const (
 	// same-module edges need an honest label rather than a mislabel as cjs/esm. Flagged as
 	// frozen-contract friction in the final report.
 	algoLocal resolveAlgo = "local"
+	// algoBundlerAlias names a target selected because a bundler alias (webpack/vite/…
+	// resolve.alias, rollup/babel module-resolver, SWC jsc.paths) rewrote the specifier
+	// before module resolution ran. PLAN-163 EXPOSES the alias map carrying this producer
+	// label at the resolver injection point (resolver.bctx) so the bundler is recorded as
+	// the resolution's producer; PLAN-162 stamps this algo when it APPLIES an alias.
+	// PLAN-163 does not apply aliases and so emits no edge under this algo this cycle.
+	algoBundlerAlias resolveAlgo = "bundler_alias"
 )
 
 // provenance is the named rule that produced a resolved result (§2, C5).
@@ -80,9 +87,27 @@ type Resolver interface {
 // resolver is the concrete Resolver over a parsed program.
 type resolver struct {
 	prog *program
+	// bctx is the PLAN-163 build context exposed at this injection point: the bundler
+	// alias/define map (each entry carrying its producing tool + config file, §3.5),
+	// declared cross-config conflicts (C5), entry points, and server-side roots. It is
+	// the field/hook PLAN-162's resolver consults to apply an alias before module
+	// resolution and to stamp algoBundlerAlias as the producer. PLAN-163 PRODUCES and
+	// EXPOSES it; it does NOT apply it — the resolution methods below are unchanged this
+	// cycle. Consult it via lookupAlias.
+	bctx *buildContext
 }
 
-func (p *program) resolver() *resolver { return &resolver{prog: p} }
+// resolver constructs the resolver at PLAN-162's injection point, wiring in the exposed
+// PLAN-163 build context (bundler alias/define map with provenance and declared
+// conflicts). The build context is computed once per program and cached: reading the
+// static bundler configs is idempotent and executes nothing (C4).
+func (p *program) resolver() *resolver {
+	if p.buildCtx == nil {
+		bc := buildContextFor(p.root)
+		p.buildCtx = &bc
+	}
+	return &resolver{prog: p, bctx: p.buildCtx}
+}
 
 // ResolveCall implements the contract's name+arity entry point (a receiver-less bare
 // call). Receiver-based method calls run through resolveCallSite, which the call graph

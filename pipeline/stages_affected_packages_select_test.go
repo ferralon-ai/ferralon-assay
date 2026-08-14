@@ -26,6 +26,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
 )
 
 // multipkgSelectSource returns a fixed synthetic multi-package advisory. When withArray is false the
@@ -73,8 +74,8 @@ func (s multipkgSelectSource) Lookup(string) (AdvisoryFacts, bool) {
 // dirCheckout is a hermetic checkout returning a fixed build dir + language (no git, no network).
 type dirCheckout struct{ dir, lang string }
 
-func (d dirCheckout) Fetch(context.Context, string, string) (string, string, error) {
-	return d.dir, d.lang, nil
+func (d dirCheckout) Fetch(context.Context, string, string) (checkout.WorkspacePlan, error) {
+	return checkout.WorkspacePlan{Root: d.dir, Projects: []checkout.Project{{Root: d.dir, Language: d.lang}}}, nil
 }
 
 // writeGoModRequiringB creates a Go module tree whose go.mod requires ONLY example.com/b (the

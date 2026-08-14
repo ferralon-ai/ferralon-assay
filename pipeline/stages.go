@@ -1297,25 +1297,34 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 }
 func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
 	buildDir, language := "", ""
+	var plan checkout.WorkspacePlan
 	acq := c.Request.Codebase.Acquisition
 	switch {
 	case acq.Mode == "vendored_repro":
-		dir, lang, err := checkout.ResolveVendored(acq.Path)
+		p, err := checkout.ResolveVendored(acq.Path)
 		if err != nil {
 			return err
 		}
-		buildDir, language = dir, lang
+		plan = p
 	case s.checkout != nil:
 		// Thread the per-fire ownership token onto the context so GitCheckout can authenticate a
 		// PRIVATE-repo clone on the credential-fenced fire VM. It rides in-flight only;
 		// an empty token (public repo / hermetic FakeCheckout / local ambient-cred dev) is a no-op
 		// and takes today's bare-clone path unchanged.
 		fctx := checkout.WithCredential(ctx, checkout.NewCredential(c.Request.OwnershipProof.Token))
-		dir, lang, err := s.checkout.Fetch(fctx, c.Request.Codebase.Repo, c.Request.Codebase.Revision)
+		p, err := s.checkout.Fetch(fctx, c.Request.Codebase.Repo, c.Request.Codebase.Revision)
 		if err != nil {
 			return err
 		}
-		buildDir, language = dir, lang
+		plan = p
+	}
+	// Project the plan's single project into the scalar build_dir/language that S3–S6 already read.
+	// The plan holds exactly one project today (PLAN-004); PLAN-400 enumerates true monorepos and the
+	// per-project fan-out reads plan.Projects. An empty plan means no acquisition ran (nil checkout,
+	// non-vendored mode) — the historical no-op path, which leaves buildDir/language empty.
+	if len(plan.Projects) > 0 {
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
 	}
 
 	// Pin the concrete commit SHA the assessment was checked out at (T1 reproducibility anchor):
@@ -1409,15 +1418,21 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	}
 
 	inv := struct {
-		Repo            string   `json:"repo"`
-		Revision        string   `json:"revision"`
-		BuildDir        string   `json:"build_dir"`
-		Language        string   `json:"language,omitempty"`
-		ResolvedVersion string   `json:"resolved_version,omitempty"`
-		Module          string   `json:"module,omitempty"`
-		GoVersion       string   `json:"go_version,omitempty"`
-		BuildCommand    string   `json:"build_command,omitempty"`
-		PartialityFlags []string `json:"partiality_flags,omitempty"`
+		Repo     string `json:"repo"`
+		Revision string `json:"revision"`
+		BuildDir string `json:"build_dir"`
+		Language string `json:"language,omitempty"`
+		// WorkspacePlan is the full enumeration of detected projects (one today; PLAN-400 makes it
+		// hold true monorepos). It is PERSISTED but not yet read by any downstream stage — the scalar
+		// build_dir/language above remain the primary-project projection S3–S6 consume. Landing the
+		// field now (the PLAN-000 pattern) makes the contract real end-to-end; PLAN-400 wires the
+		// per-project readers. Not dead code: it is the on-disk half of the WorkspacePlan contract.
+		WorkspacePlan   checkout.WorkspacePlan `json:"workspace_plan"`
+		ResolvedVersion string                 `json:"resolved_version,omitempty"`
+		Module          string                 `json:"module,omitempty"`
+		GoVersion       string                 `json:"go_version,omitempty"`
+		BuildCommand    string                 `json:"build_command,omitempty"`
+		PartialityFlags []string               `json:"partiality_flags,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact (ADR 0014). Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
@@ -1435,6 +1450,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Revision:           c.Request.Codebase.Revision,
 		BuildDir:           buildDir,
 		Language:           language,
+		WorkspacePlan:      plan,
 		ResolvedVersion:    resolvedVersion,
 		Module:             module,
 		GoVersion:          goVersion,

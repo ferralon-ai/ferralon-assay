@@ -1,0 +1,10 @@
+{
+  "name": "f11-npm-git",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F11: git dependencies. widget is pinned to an exact commit sha (coordinate + commit representable, no integrity); gadget tracks a moving ref (branch) with no pinned sha. Proves git_ref_unpinned fires only on the unpinned variant. Synthetic git coordinates.",
+  "dependencies": {
+    "widget": "git+https://github.com/acme/widget.git#1111111111111111111111111111111111111111",
+    "gadget": "git+https://github.com/acme/gadget.git#main"
+  }
+}

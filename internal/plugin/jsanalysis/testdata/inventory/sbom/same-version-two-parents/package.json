@@ -1,0 +1,9 @@
+{
+  "name": "same-version-two-parents",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "pkg-a": "1.0.0",
+    "pkg-b": "1.0.0"
+  }
+}

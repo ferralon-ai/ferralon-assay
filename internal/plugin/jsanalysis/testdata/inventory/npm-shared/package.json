@@ -1,0 +1,10 @@
+{
+  "name": "f5-npm-shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F5: C3(ii) negative control. One hoisted version (shared-lib@2.0.0) is depended on by two distinct parents (pkg-a, pkg-b). Must collapse to ONE node with TWO parent edges. Synthetic coordinates (no real package is misrepresented); structural fixture for the dedup/edge logic, so registry digests are intentionally omitted.",
+  "dependencies": {
+    "pkg-a": "1.0.0",
+    "pkg-b": "1.0.0"
+  }
+}

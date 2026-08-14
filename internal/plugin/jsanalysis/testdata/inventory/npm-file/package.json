@@ -1,0 +1,9 @@
+{
+  "name": "f12-npm-file",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F12: file: local dependency. locallib is a path dependency (link) with no registry version/integrity guarantee. Proves local_path_dep. Synthetic local package.",
+  "dependencies": {
+    "locallib": "file:./locallib"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "f3-npm-diamond",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F3: npm v3 two-version diamond. Two versions of ms are installed at distinct install paths (ms@2.1.3 hoisted, ms@2.0.0 nested under debug), reached by distinct parents (debug@2.6.9->ms@2.0.0, send@0.18.0->ms@2.1.3). Real coordinates/edges; send's dependency set is reduced to ms only for a minimal diamond. Proves C3(i) for npm.",
+  "dependencies": {
+    "debug": "2.6.9",
+    "send": "0.18.0"
+  }
+}

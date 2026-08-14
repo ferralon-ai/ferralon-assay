@@ -1,0 +1,66 @@
+lockfileVersion: '9.0'
+
+# A single package (shared@1.0.0) peer-resolved TWO ways: pkg-a supplies peer@1.0.0 and
+# pkg-b supplies peer@2.0.0, so pnpm v9 records two `snapshots:` instances of the SAME
+# name@version, distinguished only by the parenthesized peer suffix. The inventory adapter
+# emits one node per snapshots key, so the graph carries two shared@1.0.0 instances with
+# identical bare PURL but distinct ?resolution_scope= IDs — the exact input the report.SBOM
+# collapses to one package (see sbom_collapse_test.go).
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      pkg-a:
+        specifier: 1.0.0
+        version: 1.0.0
+      pkg-b:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+
+  peer@1.0.0:
+    resolution: {integrity: sha512-p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1p1===}
+
+  peer@2.0.0:
+    resolution: {integrity: sha512-p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2p2===}
+
+  pkg-a@1.0.0:
+    resolution: {integrity: sha512-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa==}
+
+  pkg-b@1.0.0:
+    resolution: {integrity: sha512-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb==}
+
+  shared@1.0.0:
+    resolution: {integrity: sha512-shshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshshsh==}
+    peerDependencies:
+      peer: '*'
+
+snapshots:
+
+  peer@1.0.0: {}
+
+  peer@2.0.0: {}
+
+  pkg-a@1.0.0:
+    dependencies:
+      shared: 1.0.0(peer@1.0.0)
+      peer: 1.0.0
+
+  pkg-b@1.0.0:
+    dependencies:
+      shared: 1.0.0(peer@2.0.0)
+      peer: 2.0.0
+
+  shared@1.0.0(peer@1.0.0):
+    dependencies:
+      peer: 1.0.0
+
+  shared@1.0.0(peer@2.0.0):
+    dependencies:
+      peer: 2.0.0

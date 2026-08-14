@@ -73,13 +73,28 @@ func (pnpmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.D
 	}
 	var edges []plugin.DependencyEdge
 
-	// Package nodes: per-instance identity + digest metadata.
-	for _, key := range lock.pkgOrder {
-		pkg := lock.packages[key]
+	// Package nodes: one node per `snapshots:` key. `snapshots:` is the authoritative
+	// per-resolved-instance block — each key is one installed instance carrying its
+	// peer-resolution context — while `packages:` holds shared version-level metadata
+	// (integrity, platform gate). Keying nodes off `snapshots:` is what makes every edge
+	// endpoint (also derived from `snapshots:`) correspond to an emitted node — the same
+	// distinct-instance-per-resolution-scope model the npm distinct-closure fix established.
+	//
+	// The pnpm-lock layout moved the peer suffix between blocks across versions: in the older
+	// layout the suffix lives in BOTH `packages:` and `snapshots:` keys; in lockfileVersion 9.0
+	// `packages:` keys are suffix-stripped (bare name@version) while `snapshots:` keys carry the
+	// suffix. So metadata is joined by the full snapshot key first (legacy: suffix-in-packages)
+	// and, failing that, by the bare name@version (v9: suffix-in-snapshots) — detected from where
+	// the key actually resolves rather than assuming a version.
+	for _, key := range lock.snapOrder {
 		name, version, peer := splitPnpmKey(key)
 		if name == "" || version == "" {
 			part = mergePartiality(part, plugin.Partial(plugin.PartialReasonToolFailure))
 			continue
+		}
+		pkg := lock.packages[key]
+		if pkg == nil {
+			pkg = lock.packages[name+"@"+version]
 		}
 		purl := makePURL(name, version)
 		node := plugin.DependencyNode{
@@ -88,16 +103,18 @@ func (pnpmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.D
 			Version: version,
 			Artifact: plugin.DependencyArtifact{
 				Identity: artifactIdentity("", name, version),
-				Digest:   mapIntegrity(pkg.integrity),
 			},
 			Provenance: plugin.DependencyProvenance{Lockfile: sel.path, Resolver: "pnpm"},
 			Partiality: plugin.Complete(),
 		}
-		if pkg.hasPlatform {
-			// Optional dep gated on os/cpu/libc: the gate is unevaluable from metadata
-			// without targeting a platform, so Target stays empty and the node is declared
-			// partial — never guessed active-on-target (§3.1, cell 5).
-			node.Partiality = plugin.Partial(plugin.PartialReasonPlatformCondition)
+		if pkg != nil {
+			node.Artifact.Digest = mapIntegrity(pkg.integrity)
+			if pkg.hasPlatform {
+				// Optional dep gated on os/cpu/libc: the gate is unevaluable from metadata
+				// without targeting a platform, so Target stays empty and the node is declared
+				// partial — never guessed active-on-target (§3.1, cell 5).
+				node.Partiality = plugin.Partial(plugin.PartialReasonPlatformCondition)
+			}
 		}
 		addNode(node)
 	}

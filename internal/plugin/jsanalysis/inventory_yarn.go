@@ -2,19 +2,27 @@ package jsanalysis
 
 // inventory_yarn.go — the yarn inventory adapter. It carries two edge-resolution MODES behind
 // one adapter (graph-representation.md §2): Yarn Classic (v1) descriptor-table resolution
-// (§3b, LIVE) and Yarn Berry (v2+) virtual-locator resolution (§3c, UNVERIFIED — see below).
-// No package manager is executed.
+// (§3b) and Yarn Berry (v2+) peer-virtualized resolution (§3c). No package manager is executed.
 //
-// ⚠ BERRY IS DEFERRED AND UNVERIFIED (PLAN-160 stage-4 dependency). Zero Berry lockfiles exist
-// in the corpus (stage-1 gap #1); the `virtual:<hash>#npm:<ver>` locator form and its
-// ?resolution_scope= token spelling are FORMAT-KNOWLEDGE ONLY, not confirmed against a
-// specimen. The Berry path below is written against graph-rep §3c but MUST be re-confirmed
-// against fixture F1 before it is trusted; its test is t.Skip'd pending that specimen. A Berry
-// lockfile is deliberately NOT fabricated here — a hand-authored virtual hash would be fake
-// metadata (fixture-specs.md cold-fixture rule).
+// Berry is VERIFIED against fixture F1 (the yarn-berry-virtual capture, Yarn 4.18.0,
+// nodeLinker: node-modules). The F1 specimen corrected two provisional assumptions from
+// instance-key-contract.md §2 (which flagged the Berry row UNVERIFIED):
+//
+//  1. The `virtual:<hash>#npm:<ver>` locator is NOT written to the yarn.lock under the
+//     node-modules linker. The lockfile stores the plain base locator (resolution:
+//     "react-dom@npm:18.2.0") plus a peerDependencies: block; the virtual hash is a Yarn
+//     install-time artifact that surfaces only in `yarn info` output. A lockfile-only analyzer
+//     therefore cannot reproduce the hash. Instead the resolution-scope suffix is derived from
+//     the RESOLVED PEER SET — the same lockfile-derivable, pnpm-consistent grammar the pnpm
+//     adapter uses (token "(react@18.2.0)"). berryVirtualToken remains the extractor for an
+//     explicit virtual: locator when one is present (PnP linker records it in the locator).
+//  2. The virtual hash is 128 hex chars (SHA-512), not the 64 the provisional note assumed.
+//
+// No Berry lockfile is fabricated; the F1 capture is consumed as cold bytes.
 
 import (
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -274,15 +282,65 @@ func yarnQuotedValue(s string) string {
 	return strings.Trim(strings.TrimSpace(s), "\"'")
 }
 
-// --- Yarn Berry v2+ (UNVERIFIED — deferred, no specimen) ---------------------
+// --- Yarn Berry v2+ (verified against fixture F1) ----------------------------
 
-// yarnBerryParse resolves a Berry yarn.lock against graph-rep §3c. UNVERIFIED: the virtual
-// locator spelling is format-knowledge, not confirmed against a specimen (fixture F1). Its
-// test is t.Skip'd. TODO(PLAN-160 stage-4): re-confirm the `virtual:<hash>` token and the
-// resolution/descriptor mapping against a real Berry lockfile before trusting this path.
+// yarnBerryParse resolves a Berry yarn.lock (graph-rep §3c). Node identity: the base
+// (name, version); a package that declares peerDependencies is peer-virtualized, so its ID
+// carries a ?resolution_scope= suffix built from its RESOLVED PEER SET (instance-key-contract
+// §2, corrected against F1 — see file header). The importer/workspace blocks (linkType: soft /
+// resolution "…@workspace:…") are the project itself, not registry dependencies, so they seed
+// membership/peer resolution but are not emitted as dependency nodes. No package manager is run.
 func yarnBerryParse(sel selectedLock, data []byte, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
 	blocks := parseYarnBerry(data)
 	part := plugin.Complete()
+
+	// Pass 1: descriptor → resolved version (closed in-file lookup, no network).
+	descToVersion := make(map[string]string)
+	for _, b := range blocks {
+		if b.version == "" {
+			continue
+		}
+		for _, d := range b.descriptors {
+			descToVersion[d] = b.version
+		}
+	}
+
+	// Pass 2: per-block resolved direct deps (childName → resolved version). A dep VALUE already
+	// carries its protocol ("npm:^1.1.0"), so the descriptor is childName + "@" + value verbatim.
+	resolvedDeps := make([]map[string]string, len(blocks))
+	for i, b := range blocks {
+		rd := make(map[string]string, len(b.depOrder))
+		for _, childName := range b.depOrder {
+			if ver, ok := descToVersion[childName+"@"+b.deps[childName]]; ok {
+				rd[childName] = ver
+			}
+		}
+		resolvedDeps[i] = rd
+	}
+
+	// Pass 3: node ID per block, minting the peer-set resolution-scope suffix for a virtualized
+	// package. A package with a non-empty peerDependencies block is virtualized per consumer; its
+	// peers are resolved in the scope of a consumer that also provides them. F1 has a single
+	// react across the whole lockfile and react-dom is a direct dep of the sole importer, so the
+	// peer set resolves unambiguously to (react@18.2.0). (Distinct peer sets across multiple
+	// consumers — multiple virtual instances of one package — are not exercised by F1.)
+	blockName := make([]string, len(blocks))
+	blockID := make([]string, len(blocks))
+	descToID := make(map[string]string)
+	for i, b := range blocks {
+		if b.version == "" {
+			continue
+		}
+		name := berryDescriptorName(b.descriptors[0])
+		blockName[i] = name
+		purl := makePURL(name, b.version)
+		token := berryPeerScopeToken(b, i, blocks, resolvedDeps, descToVersion)
+		id := makeID(purl, token)
+		blockID[i] = id
+		for _, d := range b.descriptors {
+			descToID[d] = id
+		}
+	}
 
 	nodesByID := make(map[string]*plugin.DependencyNode)
 	var order []string
@@ -295,38 +353,26 @@ func yarnBerryParse(sel selectedLock, data []byte, manifests []manifestFile) ([]
 		nodesByID[n.ID] = &cp
 		order = append(order, n.ID)
 	}
-	descToID := make(map[string]string) // descriptor "name@npm:range" → node ID
 	var edges []plugin.DependencyEdge
 
-	for _, b := range blocks {
-		if len(b.descriptors) == 0 || b.version == "" {
+	// Pass 4: emit dependency nodes + edges. Importer/workspace blocks are skipped as nodes.
+	for i, b := range blocks {
+		if b.version == "" || berryIsImporter(b) {
 			continue
 		}
-		name := berryDescriptorName(b.descriptors[0])
-		purl := makePURL(name, b.version)
-		scopeToken := berryVirtualToken(b.resolution)
-		id := makeID(purl, scopeToken)
+		name := blockName[i]
+		id := blockID[i]
 		addNode(plugin.DependencyNode{
 			ID:         id,
-			PURL:       purl,
+			PURL:       makePURL(name, b.version),
 			Version:    b.version,
-			Artifact:   plugin.DependencyArtifact{Identity: artifactIdentity("", name, b.version), Digest: mapIntegrity(b.integrity)},
+			Artifact:   plugin.DependencyArtifact{Identity: artifactIdentity(b.resolution, name, b.version), Digest: mapIntegrity(b.integrity)},
 			Provenance: plugin.DependencyProvenance{Lockfile: sel.path, Resolver: "yarn"},
 			Partiality: plugin.Complete(),
 		})
-		for _, d := range b.descriptors {
-			descToID[d] = id
-		}
-	}
-	for _, b := range blocks {
-		if len(b.descriptors) == 0 || b.version == "" {
-			continue
-		}
-		parentID := descToID[b.descriptors[0]]
 		for _, childName := range b.depOrder {
-			childDesc := childName + "@npm:" + b.deps[childName]
-			if cid, ok := descToID[childDesc]; ok {
-				edges = append(edges, plugin.DependencyEdge{Parent: parentID, Child: cid})
+			if cid, ok := descToID[childName+"@"+b.deps[childName]]; ok {
+				edges = append(edges, plugin.DependencyEdge{Parent: id, Child: cid})
 			}
 		}
 	}
@@ -338,21 +384,75 @@ func yarnBerryParse(sel selectedLock, data []byte, manifests []manifestFile) ([]
 	return out, edges, part
 }
 
+// berryIsImporter reports whether a block is an importer/workspace (the project itself), not a
+// registry dependency: Berry marks these linkType: soft with a "…@workspace:…" resolution.
+func berryIsImporter(b yarnBerryBlock) bool {
+	return b.linkType == "soft" || strings.Contains(b.resolution, "@workspace:")
+}
+
+// berryPeerScopeToken derives the resolution-scope token for block i. If the resolution already
+// carries an explicit virtual: locator (the PnP linker records it), that token is used verbatim.
+// Otherwise, when the block declares peerDependencies (node-modules linker — the F1 case), the
+// token is the resolved peer set "(peer@ver,…)", peers resolved in a consuming block's scope.
+// A plain package with no peers yields "" (ID == PURL).
+func berryPeerScopeToken(b yarnBerryBlock, i int, blocks []yarnBerryBlock, resolvedDeps []map[string]string, descToVersion map[string]string) string {
+	if v := berryVirtualToken(b.resolution); v != "" {
+		return v
+	}
+	if len(b.peerOrder) == 0 {
+		return ""
+	}
+	name := berryDescriptorName(b.descriptors[0])
+	scope := berryConsumerScope(name, b.version, i, blocks, resolvedDeps)
+	var parts []string
+	for _, peer := range b.peerOrder {
+		if ver, ok := scope[peer]; ok {
+			parts = append(parts, peer+"@"+ver)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	sort.Strings(parts)
+	return "(" + strings.Join(parts, ",") + ")"
+}
+
+// berryConsumerScope returns the resolved-dependency map of a block that consumes (name@version),
+// i.e. an ancestor whose scope provides the virtualized package's peers. In the hoisted
+// node-modules layout the direct consumer that also declares the peer is the provider. Falls back
+// to the block's own resolved deps when no distinct consumer is found.
+func berryConsumerScope(name, version string, self int, blocks []yarnBerryBlock, resolvedDeps []map[string]string) map[string]string {
+	for i := range blocks {
+		if i == self {
+			continue
+		}
+		if resolvedDeps[i][name] == version {
+			return resolvedDeps[i]
+		}
+	}
+	return resolvedDeps[self]
+}
+
 type yarnBerryBlock struct {
 	descriptors []string
 	version     string
 	resolution  string
 	integrity   string
-	deps        map[string]string
+	linkType    string
+	deps        map[string]string // childName → dep value ("npm:^1.1.0")
 	depOrder    []string
+	peers       map[string]string // peerName → peer range
+	peerOrder   []string
 }
 
-// parseYarnBerry lexically parses a Berry yarn.lock (YAML-ish). UNVERIFIED (see file header).
+// parseYarnBerry lexically parses a Berry yarn.lock (YAML-ish): comma-separated descriptor
+// headers, then version / resolution / checksum / linkType scalars and the dependencies +
+// peerDependencies maps. Verified against F1 (Yarn 4.18.0, __metadata version 10).
 func parseYarnBerry(data []byte) []yarnBerryBlock {
 	lines := strings.Split(string(data), "\n")
 	var blocks []yarnBerryBlock
 	var cur *yarnBerryBlock
-	subblock := ""
+	subblock := "" // "deps" | "peers" | ""
 	flush := func() {
 		if cur != nil {
 			blocks = append(blocks, *cur)
@@ -373,7 +473,7 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 				subblock = ""
 				continue
 			}
-			b := yarnBerryBlock{deps: make(map[string]string)}
+			b := yarnBerryBlock{deps: make(map[string]string), peers: make(map[string]string)}
 			for _, d := range strings.Split(header, ",") {
 				d = strings.Trim(strings.TrimSpace(d), "\"'")
 				if d != "" {
@@ -400,21 +500,38 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 			case "checksum":
 				cur.integrity = unquoteYAML(strings.TrimSpace(v))
 				subblock = ""
+			case "linkType":
+				cur.linkType = unquoteYAML(strings.TrimSpace(v))
+				subblock = ""
 			case "dependencies":
 				subblock = "deps"
+			case "peerDependencies":
+				subblock = "peers"
 			default:
 				subblock = ""
 			}
 			continue
 		}
-		if ind >= 4 && subblock == "deps" {
-			k, v := splitFirstColon(trimmed)
-			name := unquoteYAML(strings.TrimSpace(k))
-			if name != "" {
-				if _, dup := cur.deps[name]; !dup {
-					cur.depOrder = append(cur.depOrder, name)
+		if ind >= 4 {
+			switch subblock {
+			case "deps":
+				k, v := splitFirstColon(trimmed)
+				name := unquoteYAML(strings.TrimSpace(k))
+				if name != "" {
+					if _, dup := cur.deps[name]; !dup {
+						cur.depOrder = append(cur.depOrder, name)
+					}
+					cur.deps[name] = unquoteYAML(strings.TrimSpace(v))
 				}
-				cur.deps[name] = unquoteYAML(strings.TrimSpace(v))
+			case "peers":
+				k, v := splitFirstColon(trimmed)
+				name := unquoteYAML(strings.TrimSpace(k))
+				if name != "" {
+					if _, dup := cur.peers[name]; !dup {
+						cur.peerOrder = append(cur.peerOrder, name)
+					}
+					cur.peers[name] = unquoteYAML(strings.TrimSpace(v))
+				}
 			}
 		}
 	}
@@ -423,16 +540,26 @@ func parseYarnBerry(data []byte) []yarnBerryBlock {
 }
 
 // berryDescriptorName recovers the plain package name from a Berry descriptor
-// "name@npm:range" / "@scope/name@npm:range".
+// "name@npm:range" / "@scope/name@npm:range" / "name@workspace:…".
 func berryDescriptorName(desc string) string {
-	if i := strings.Index(desc, "@npm:"); i > 0 {
-		return desc[:i]
+	if scoped := strings.HasPrefix(desc, "@"); scoped {
+		if slash := strings.IndexByte(desc, '/'); slash > 0 {
+			if at := strings.IndexByte(desc[slash:], '@'); at > 0 {
+				return desc[:slash+at]
+			}
+		}
+	} else if at := strings.IndexByte(desc, '@'); at > 0 {
+		return desc[:at]
 	}
-	return yarnDescriptorName(desc)
+	return desc
 }
 
-// berryVirtualToken extracts the resolution-scope token from a Berry resolution locator of the
-// form "name@virtual:<hash>#npm:<ver>" → "virtual:<hash>". UNVERIFIED spelling (fixture F1).
+// berryVirtualToken extracts the scope token from an explicit Berry virtual locator of the form
+// "name@virtual:<hash>#npm:<ver>" → "virtual:<hash>", or "" when the resolution is a plain
+// locator. Under the node-modules linker the yarn.lock stores plain npm: locators and this
+// returns "" (the peer set supplies the token instead); the extractor is retained for PnP
+// lockfiles, which record the virtual locator directly, and to confirm the `yarn info` locator
+// spelling in tests. F1 confirmed the hash is 128 hex chars (SHA-512).
 func berryVirtualToken(resolution string) string {
 	i := strings.Index(resolution, "virtual:")
 	if i < 0 {

@@ -17,10 +17,12 @@ func TestGitCheckoutClonesShallow(t *testing.T) {
 		t.Skip("git not available")
 	}
 	gc := NewGitCheckout()
-	dir, lang, err := gc.Fetch(context.Background(), "https://github.com/golang/example", "master")
+	plan, err := gc.Fetch(context.Background(), "https://github.com/golang/example", "master")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
+	prim := plan.Primary()
+	dir, lang := prim.Root, prim.Language
 	defer os.RemoveAll(dir)
 	if lang != LangGo {
 		t.Fatalf("golang/example must detect as %q, got %q", LangGo, lang)

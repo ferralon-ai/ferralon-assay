@@ -62,17 +62,17 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 	ingressSyms := make(map[string]bool, len(ing.Ingresses))
 	for _, in := range ing.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = true
+		if in.Symbol.SCIP != "" {
+			ingressSyms[in.Symbol.SCIP] = true
 		}
 	}
 	roots := make(map[string]bool, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = true
+		roots[r.SCIP] = true
 	}
 
 	var paths []plugin.ReachPath
@@ -87,7 +87,7 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		if p.Ingress == "" {
+		if p.Ingress == (plugin.Symbol{}) {
 			// Reached a program root but no attacker-facing ingress on the path.
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
@@ -124,7 +124,9 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 			if isIngress {
 				ingress = cur.sym
 			}
-			return plugin.ReachPath{Sink: sink, Ingress: ingress, Trace: trace}, true
+			// Mint Symbols at the output boundary; sym("") == plugin.Symbol{}, so a
+			// root-only path carries the zero Ingress the contract's omitempty expects.
+			return plugin.ReachPath{Sink: sym(sink), Ingress: sym(ingress), Trace: symbols(trace)}, true
 		}
 
 		for _, caller := range callers[cur.sym] {
@@ -146,6 +148,16 @@ func reachabilityPartiality(reasons map[string]bool) plugin.Partiality {
 		return plugin.Complete()
 	}
 	return plugin.Partial(sortedKeys(reasons)...)
+}
+
+// symbols mints a Symbol for each SCIP id in order, converting an internal string trace to
+// the contract's []plugin.Symbol at the output boundary via the one per-package mint site.
+func symbols(ss []string) []plugin.Symbol {
+	out := make([]plugin.Symbol, len(ss))
+	for i, s := range ss {
+		out[i] = sym(s)
+	}
+	return out
 }
 
 // sortedKeys returns the set's keys in sorted order, for deterministic partiality lists.

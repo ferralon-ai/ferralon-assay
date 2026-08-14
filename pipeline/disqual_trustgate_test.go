@@ -18,10 +18,10 @@ import (
 // tier. The version axis is identical (v0.3.7 outside affects<v0.3.7); only trust differs.
 func TestDisqualify_OutOfRange_RefuteGatedByTrust(t *testing.T) {
 	cases := []struct {
-		name        string
-		trust       TrustTier
-		wantDisq    bool
-		wantReason  string
+		name       string
+		trust      TrustTier
+		wantDisq   bool
+		wantReason string
 	}{
 		{"first_party refutes", TrustFirstParty, true, ReasonVersionNotInRange},
 		{"byo suppressed", TrustByO, false, ReasonInsufficient},
@@ -72,10 +72,10 @@ func TestDisqualify_SymbolAbsent_RefuteGatedByTrust(t *testing.T) {
 // UNRECOGNIZED value fails OPEN (zero tier, ok=false) — never defaulting up to first_party.
 func TestExtractAdvisoryTrust_Recognition(t *testing.T) {
 	cases := []struct {
-		name      string
-		seed      any // nil ⇒ no advisory artifact at all
-		wantTier  TrustTier
-		wantOK    bool
+		name     string
+		seed     any // nil ⇒ no advisory artifact at all
+		wantTier TrustTier
+		wantOK   bool
 	}{
 		{"first_party", map[string]any{"trust_tier": "first_party"}, TrustFirstParty, true},
 		{"byo", map[string]any{"trust_tier": "byo"}, TrustByO, true},

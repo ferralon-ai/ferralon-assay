@@ -23,8 +23,8 @@ func sinkSCIPIn(t *testing.T, dir, sub string) string {
 		t.Fatalf("CallGraph(%s): %v", dir, err)
 	}
 	for _, e := range cg.Edges {
-		if strings.Contains(e.Callee, sub) {
-			return e.Callee
+		if strings.Contains(e.Callee.SCIP, sub) {
+			return e.Callee.SCIP
 		}
 	}
 	t.Fatalf("no callee containing %q in %s call graph edges", sub, dir)
@@ -48,14 +48,14 @@ func TestComputeTaint_PositiveValueFlowNonPartial(t *testing.T) {
 		t.Fatalf("expected a source->sink taint path for %q; got none: %+v", sink, res)
 	}
 	p := res.Paths[0]
-	if p.Sink != sink {
-		t.Errorf("path Sink = %q, want %q", p.Sink, sink)
+	if p.Sink.SCIP != sink {
+		t.Errorf("path Sink = %q, want %q", p.Sink.SCIP, sink)
 	}
-	if p.Ingress == "" {
+	if p.Ingress == (plugin.Symbol{}) {
 		t.Errorf("expected a non-empty ingress for a tainted sink; got %+v", p)
 	}
-	if !strings.Contains(p.Ingress, "TaintedHandler") {
-		t.Errorf("expected the TaintedHandler ingress to reach Sink; got ingress %q", p.Ingress)
+	if !strings.Contains(p.Ingress.SCIP, "TaintedHandler") {
+		t.Errorf("expected the TaintedHandler ingress to reach Sink; got ingress %q", p.Ingress.SCIP)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a fully-resolved clean value-flow path must be NON-Partial; got reasons %v", res.Partiality.Reasons)
@@ -87,7 +87,7 @@ func TestComputeTaint_SanitizerClears(t *testing.T) {
 		t.Fatalf("ComputeTaint: %v", err)
 	}
 	for _, p := range res.Paths {
-		if p.Sink == sink {
+		if p.Sink.SCIP == sink {
 			t.Fatalf("sanitized flow must yield NO taint path to %q; got %+v", sink, p)
 		}
 	}

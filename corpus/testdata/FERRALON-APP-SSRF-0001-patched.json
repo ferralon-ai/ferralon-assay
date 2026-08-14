@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "FERRALON-APP-SSRF-0001-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "FERRALON-APP-SSRF-0001",
+    "source": "osv",
+    "summary": "server-side request forgery: fetchHandler forwards an attacker-controlled url parameter to http.Get with no allowlist",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "FERRALON-APP-SSRF-0001-patched-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/FERRALON-APP-SSRF-0001-patched/",
+      "notes": "Patched variant of FERRALON-APP-SSRF-0001: resolveTarget enforces an allowlist (only 'public') and rejects 'internal' before any seed read or outbound request, so the SSRF sink is unreachable for the exfiltrating target. Single-file Go module, structurally matched to the vulnerable variant except the allowlist."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "resolveTarget rejects the exfiltrating target via an allowlist before the http.Get sink, so the CWE-918 SSRF path is code-foreclosed on this build. The route structure is preserved (static_taint_path_complete) but the guarded resolver is not exploitable; reasoned rather than proven because PoNE requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

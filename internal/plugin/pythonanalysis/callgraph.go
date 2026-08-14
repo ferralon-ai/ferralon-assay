@@ -76,6 +76,14 @@ func funcSCIP(module string, enclosing []string, name string, arity int) string 
 	return scipSymbol(module, enclosing, functionDescriptor(name, arity))
 }
 
+// sym wraps a minted SCIP id string into a plugin.Symbol for the graph-shaped results
+// (call edges, roots, ingress symbols, reach paths). The Python lexical analyzer works in
+// SCIP-id space, so both identity fields carry that id: SCIP is the canonical id and
+// DisplayName mirrors it. Minting every graph Symbol through this ONE helper keeps the
+// Symbol for a given id byte-identical everywhere, so map/set/== lookups over the graph
+// stay sound (plugin.Symbol compares ALL fields).
+func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s} }
+
 // loadProgram parses every Python file under buildDir into a whole-program view and builds
 // the (name, arity) → SCIP resolution index. A missing/empty build dir is a hard error
 // (inv.4), matching IndexSymbols; read failures and skipped constructs degrade partiality.
@@ -154,7 +162,7 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 				// covers this; never fabricate (inv.5).
 				continue
 			}
-			e := plugin.CallEdge{Caller: funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity), Callee: callee}
+			e := plugin.CallEdge{Caller: sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity)), Callee: sym(callee)}
 			if !seen[e] {
 				seen[e] = true
 				edges = append(edges, e)
@@ -169,17 +177,17 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 
-	roots := make([]string, 0, len(rootsSet))
+	roots := make([]plugin.Symbol, 0, len(rootsSet))
 	for r := range rootsSet {
-		roots = append(roots, r)
+		roots = append(roots, sym(r))
 	}
-	sort.Strings(roots)
+	sort.Slice(roots, func(i, j int) bool { return roots[i].SCIP < roots[j].SCIP })
 
 	return plugin.CallGraphResult{
 		Partiality: callGraphPartiality(prog),

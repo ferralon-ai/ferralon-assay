@@ -32,7 +32,7 @@ func TestTaint_SourceToSinkReportsPartial(t *testing.T) {
 		t.Fatal("taint result must carry the standing PrecisionNote stating the value-flow limit")
 	}
 	p := res.Paths[0]
-	if p.Sink != sink || p.Ingress == "" || p.Ingress != p.Trace[0] {
+	if p.Sink.SCIP != sink || p.Ingress.SCIP == "" || p.Ingress.SCIP != p.Trace[0].SCIP {
 		t.Fatalf("taint path malformed: %+v", p)
 	}
 }

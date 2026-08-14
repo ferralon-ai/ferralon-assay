@@ -55,23 +55,28 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	cleanup := func() {}
 
 	if isRemoteURL(target) {
-		dir, lang, err := checkout.NewGitCheckout().Fetch(ctx, target, revision)
+		plan, err := checkout.NewGitCheckout().Fetch(ctx, target, revision)
 		if err != nil {
 			return nil, fmt.Errorf("clone %q: %w", target, err)
 		}
-		buildDir, language = dir, lang
-		cleanup = func() { _ = os.RemoveAll(dir) }
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
+		// Remove the whole checkout tree, not the primary project root: once a plan can
+		// enumerate several projects, the primary may be a subdirectory and removing it
+		// would leak the rest of the temp checkout.
+		cleanup = func() { _ = os.RemoveAll(plan.Root) }
 		repo = repoIdentity(target)
 	} else {
 		absTarget, err := filepath.Abs(target)
 		if err != nil {
 			return nil, fmt.Errorf("resolve target: %w", err)
 		}
-		dir, lang, err := checkout.ResolveVendored(absTarget)
+		plan, err := checkout.ResolveVendored(absTarget)
 		if err != nil {
 			return nil, err
 		}
-		buildDir, language = dir, lang
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
 		repo = filepath.Base(absTarget)
 	}
 	if repoOverride != "" {

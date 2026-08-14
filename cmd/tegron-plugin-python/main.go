@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -67,10 +68,11 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 
 // dispatch runs the requested operation. index_symbols, resolve_symbols, resolve_versions,
 // call_graph, find_ingresses, reachability, and compute_taint call the real source-level
-// Python analysis (reachability/compute_taint always declared Partial). generate_harness
-// and build_manifest remain contract-present ops returning their result type with
-// Unsupported() partiality (the Python effect rides the corpus repro-runtime sandbox). An
-// unknown op, or a missing per-op payload, is a hard failure (inv.4).
+// Python analysis (reachability/compute_taint always declared Partial). generate_harness,
+// build_manifest, and resolve_inventory remain contract-present ops returning their result
+// type with Unsupported() partiality (the Python effect rides the corpus repro-runtime
+// sandbox; there is no whole-graph dependency resolver). An unknown op, or a missing per-op
+// payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -154,6 +156,20 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
 		return plugin.Response{BuildManifest: &plugin.BuildManifestResult{Partiality: plugin.Unsupported()}}, nil
+
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		// Python has no whole-graph dependency resolver: return an honestly-partial
+		// inventory (Complete=false, unsupported_phase1), NEVER an empty-but-successful one
+		// (which reads downstream as "this build has no dependencies").
+		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
+		// (Supported:false), never a Supported:true manifest with empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "python"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

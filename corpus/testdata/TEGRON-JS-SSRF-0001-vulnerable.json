@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JS-SSRF-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "TEGRON-JS-SSRF-0001",
+    "source": "osv",
+    "summary": "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JS-SSRF-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JS-SSRF-0001-vulnerable/",
+      "notes": "Reduced Node SSRF repro: an Express-shaped route (app.get('/fetch', handleFetch)) forwards the attacker-controlled target query parameter through a utility hop into the SSRF sink fetchUrl, which issues an unguarded outbound request with no allowlist. Dependency-free (hand-rolled router over Node http) and served on 127.0.0.1:8080."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The /fetch route reaches fetchUrl through a utility hop, forwarding an attacker-controlled target to an unguarded outbound request with no allowlist (CWE-918), so the ingress-to-sink taint path is statically complete and reachable. Confirming the outbound request requires the sandbox's OOB transport, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

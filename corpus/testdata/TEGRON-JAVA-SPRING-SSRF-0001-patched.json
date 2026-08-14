@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JAVA-SPRING-SSRF-0001-patched",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-JAVA-SPRING-SSRF-0001",
+    "source": "osv",
+    "summary": "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired interface field; the sink issues an outbound request with no allowlist",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JAVA-SPRING-SSRF-0001-patched-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-patched/",
+      "notes": "Patched variant of the Spring Java SSRF repro: UrlServiceImpl.fetch enforces an allowlist (only 'public') via resolveTarget, rejecting 'internal' before any seed read or outbound request. The @RestController-to-interface-to-impl call graph is preserved; only the sink's runtime allowlist forecloses the exfiltration."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "resolveTarget in UrlServiceImpl enforces an allowlist before the outbound request, so the CWE-918 SSRF sink is code-foreclosed for the exfiltrating target. The controller-to-service call path is preserved (static_taint_path_complete) but the guarded implementation is not exploitable; reasoned rather than proven because PoNE requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

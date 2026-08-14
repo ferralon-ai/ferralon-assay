@@ -16,17 +16,23 @@ func TestBuildManifest_SingleModuleIsComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Module != "tegron.test/fixturemod" {
-		t.Errorf("Module = %q, want tegron.test/fixturemod", res.Module)
+	if res.ProjectRoot != "tegron.test/fixturemod" {
+		t.Errorf("ProjectRoot = %q, want tegron.test/fixturemod", res.ProjectRoot)
 	}
-	if res.GoVersion != "1.26" {
-		t.Errorf("GoVersion = %q, want 1.26", res.GoVersion)
+	if res.Runtime.Version != "1.26" {
+		t.Errorf("Runtime.Version = %q, want 1.26", res.Runtime.Version)
 	}
-	if res.BuildCommand != "go build ./..." {
-		t.Errorf("BuildCommand = %q, want 'go build ./...'", res.BuildCommand)
+	if res.Runtime.Name != "go" {
+		t.Errorf("Runtime.Name = %q, want go", res.Runtime.Name)
 	}
-	if res.ToolchainVersion != "" {
-		t.Errorf("ToolchainVersion = %q, want empty — the fixture declares no toolchain directive", res.ToolchainVersion)
+	if res.Resolver.Command != "go build ./..." {
+		t.Errorf("Resolver.Command = %q, want 'go build ./...'", res.Resolver.Command)
+	}
+	if res.Resolver.Name != "go" {
+		t.Errorf("Resolver.Name = %q, want go", res.Resolver.Name)
+	}
+	if res.Runtime.Toolchain != "" {
+		t.Errorf("Runtime.Toolchain = %q, want empty — the fixture declares no toolchain directive", res.Runtime.Toolchain)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a clean single-module go.mod must be Complete; got %+v", res.Partiality)
@@ -46,11 +52,11 @@ func TestBuildManifest_ToolchainDirective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.GoVersion != "1.21" {
-		t.Errorf("GoVersion = %q, want 1.21 (the `go` directive, unchanged by the toolchain line)", res.GoVersion)
+	if res.Runtime.Version != "1.21" {
+		t.Errorf("Runtime.Version = %q, want 1.21 (the `go` directive, unchanged by the toolchain line)", res.Runtime.Version)
 	}
-	if res.ToolchainVersion != "go1.21.3" {
-		t.Errorf("ToolchainVersion = %q, want go1.21.3", res.ToolchainVersion)
+	if res.Runtime.Toolchain != "go1.21.3" {
+		t.Errorf("Runtime.Toolchain = %q, want go1.21.3", res.Runtime.Toolchain)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a toolchain directive does not complicate the build layout; want Complete, got %+v", res.Partiality)
@@ -68,8 +74,8 @@ func TestBuildManifest_NoGoModIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a dir with no go.mod must declare Partial")
 	}
-	if res.BuildCommand != "" {
-		t.Errorf("must not fabricate a build command without a go.mod; got %q", res.BuildCommand)
+	if res.Resolver.Command != "" {
+		t.Errorf("must not fabricate a build command without a go.mod; got %q", res.Resolver.Command)
 	}
 }
 
@@ -88,7 +94,7 @@ func TestBuildManifest_ReplaceDirectiveIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a replace directive must declare Partial")
 	}
-	if res.Module != "example.com/withreplace" {
-		t.Errorf("Module = %q, want example.com/withreplace", res.Module)
+	if res.ProjectRoot != "example.com/withreplace" {
+		t.Errorf("ProjectRoot = %q, want example.com/withreplace", res.ProjectRoot)
 	}
 }

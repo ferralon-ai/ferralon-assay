@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JAVA-DEP-0001-unresolved",
+  "category": "absent_not_exploitable",
+  "advisory": {
+    "id": "TEGRON-JAVA-DEP-0001",
+    "source": "osv",
+    "summary": "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JAVA-DEP-0001-unresolved-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JAVA-DEP-0001-unresolved/",
+      "notes": "Manifest-only Maven repro where com.example.lib:widget's version is BOM-managed (dependencyManagement only) and the runtime <dependencies> declaration carries no inline version. The pure-Go resolver emits an unresolved marker rather than guessing, exercising the fail-open-on-unknown-version path."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [],
+    "rationale": "The dependency version is BOM-managed with no inline version, so it is not resolvable and the resolver emits an unresolved marker. The version axis fails open (it never declares not-affected on an unknown version), so the case proceeds; but because the affected version cannot be confirmed present, exploitability is not established and the ground-truth verdict is not_exploitable (the vulnerability is not shown to be present). Reasoned, not proven; no taint path asserted. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

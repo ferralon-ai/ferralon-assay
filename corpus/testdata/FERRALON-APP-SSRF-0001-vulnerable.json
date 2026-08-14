@@ -1,0 +1,37 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "FERRALON-APP-SSRF-0001-vulnerable",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "FERRALON-APP-SSRF-0001",
+    "source": "osv",
+    "summary": "server-side request forgery: fetchHandler forwards an attacker-controlled url parameter to http.Get with no allowlist",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "FERRALON-APP-SSRF-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/FERRALON-APP-SSRF-0001-vulnerable/",
+      "notes": "Vulnerable variant of the FERRALON-APP-SSRF-0001 house canary: fetchHandler (GET /fetch) forwards the attacker-controlled target parameter through resolveTarget to an unguarded http.Get with no allowlist, so an 'internal' target reaches a server-side URL. Single-file Go module served on 127.0.0.1:8080."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The attacker-controlled target flows through resolveTarget into an unguarded http.Get in fetchHandler with no allowlist, so the ingress-to-sink SSRF taint path (CWE-918) is statically complete and reachable. Confirming the outbound request requires the sandbox's OOB endpoint and seed transport, so analysis stops at reachable-but-unconfirmed (stopped_capability); reasoned, not proven. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

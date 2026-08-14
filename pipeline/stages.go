@@ -326,6 +326,22 @@ type AdvisoryFacts struct {
 	// Empty ⇒ v2/single-package behavior (fail-open, inv.5). Advisory-only framing.
 	AffectedPackages []AffectedPackage
 
+	// --- ferralon.normalized_advisory.v4 additions -----------------------------
+	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol
+	// identity, coexisting with the bare Symbols []string above. DECLARED-AWAITING-EMIT
+	// (anvil-q15): the cve-enrichment producer does not emit typed symbols yet, so this is nil on
+	// every current advisory — nil means "producer has not emitted," NOT "no symbols" (Symbols
+	// still carries the strings). No consumer may read nil SymbolsTyped as an empty symbol set.
+	// Carries no verdict; advisory-only framing (inv.5).
+	//
+	// omitempty (unlike the other facts fields): the built-in AdvisoryTable corpus never carries
+	// typed symbols — they are emitted by the separate cve-enrichment producer for the PUBLISHED
+	// feed only — so a nil here is the permanent declared-awaiting-emit state for every table entry,
+	// not a field the corpus "fell behind on." Serializing it as null on ~40 built-in fixtures would
+	// be misrepresentative noise; the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does
+	// not apply to a producer-only axis. When the producer emits, a non-nil value round-trips.
+	SymbolsTyped []plugin.Symbol `json:",omitempty"`
+
 	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the enumerated
 	// affected version set. Declared=false (the zero) ⇒ not a malicious package ⇒ the presence path
 	// never fires and every existing stage runs unchanged (inv.5). Declared=true with an empty
@@ -360,6 +376,62 @@ type AffectedPackage struct {
 	Symbols        []string
 }
 
+// Presence is the §4.4.6 absent-vs-none tri-state for a pointer-backed advisory operand. It closes
+// the gap where toFacts collapsed a NIL wire operand (the advisory is SILENT about the constraint)
+// and an EMPTY-STRUCT wire operand (the advisory affirmatively DECLARES the constraint has no
+// values) to one indistinguishable zero struct — the wire already carries the distinction in the
+// *docTrigger/*docFix/*docConfigKey pointers, but the projection erased it.
+//
+// It is a REPRESENTATION-ONLY marker this cycle (PLAN-024): the distinction becomes readable, but no
+// consumer branches on it yet. Consumers still treat absent AND declared_empty as OPEN/Undetermined
+// via the value-based Zero() methods (both are value-zero); PLAN-220 is what exploits declared_empty
+// as an affirmative "declared none." The marker carries `json:"-"` so it never reaches the wire and
+// the advisory fixtures stay byte-identical (no regen). Zero value = PresenceAbsent, so an operand
+// left unset by the built-in AdvisoryTable path reads as "silent," unchanged.
+type Presence uint8
+
+const (
+	// PresenceAbsent: the wire operand pointer was nil — the advisory is silent about this
+	// constraint. The zero value, so an unset operand is "absent" with no explicit stamp.
+	PresenceAbsent Presence = iota
+	// PresenceDeclaredEmpty: the wire operand was present (non-nil) but projected to a zero value
+	// — the advisory affirmatively declares the constraint carries no operand values.
+	PresenceDeclaredEmpty
+	// PresenceDeclaredValues: the wire operand was present and carries at least one value.
+	PresenceDeclaredValues
+)
+
+func (p Presence) String() string {
+	switch p {
+	case PresenceAbsent:
+		return "absent"
+	case PresenceDeclaredEmpty:
+		return "declared_empty"
+	case PresenceDeclaredValues:
+		return "declared_values"
+	default:
+		return "unknown"
+	}
+}
+
+// presenceFromZero maps an operand's value-zero-ness onto the DECLARED half of the tri-state (the
+// caller has already established the wire operand was non-nil; nil is stamped PresenceAbsent
+// separately). A projected operand that is value-zero — including one whose only declared field was
+// an unrecognized closed-set member dropped fail-open — reads as declared_empty; anything carrying a
+// value reads as declared_values.
+//
+// KNOWN LIMITATION (PLAN-220): this reads the POST-fail-open Zero(), so an operand whose sole declared
+// field was an unrecognized value (dropped to zero at decode) is labeled declared_empty rather than
+// declared_values. Latent this cycle — no consumer reads Presence yet. When PLAN-220 wires consumers,
+// it decides whether a wire-present-but-all-dropped operand should be distinguished from a genuinely
+// empty one; doing so needs the pre-drop wire shape, not the projected zero.
+func presenceFromZero(zero bool) Presence {
+	if zero {
+		return PresenceDeclaredEmpty
+	}
+	return PresenceDeclaredValues
+}
+
 // TriggerRoute is the advisory-declared per-CVE reach descriptor: the ingress kind, the ingress
 // route path, the tainted parameter on that route, and the clinical SHAPE of the malformed value
 // (never a weaponized payload — memory clinical-register-terminology). It frames the reach path the
@@ -369,10 +441,16 @@ type TriggerRoute struct {
 	Route          string // literal ingress path, e.g. "/fetch"
 	Param          string // tainted query/body key placed on the route
 	MalformedToken string // clinical SHAPE of the value on that key
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `trigger` operand was nil, declared_empty/declared_values when it was present. No consumer
+	// branches on it this cycle — Zero() stays value-based so behavior is preserved.
+	Declared Presence `json:"-"`
 }
 
-// Zero reports whether the descriptor carries no reach information (all fields empty), so the
-// per-class constant framing is used unchanged.
+// Zero reports whether the descriptor carries no reach information (all VALUE fields empty), so the
+// per-class constant framing is used unchanged. It deliberately ignores Declared: a declared_empty
+// trigger is value-zero and must still report Zero()==true so no consumer branch flips (inv.5,
+// §4.4.6 behavior-preserving — the Presence distinction is representable, not yet acted on).
 func (t TriggerRoute) Zero() bool {
 	return t.IngressKind == "" && t.Route == "" && t.Param == "" && t.MalformedToken == ""
 }
@@ -383,10 +461,15 @@ type FixHint struct {
 	UpstreamCommit string // upstream commit that fixed the vuln
 	GuardShape     string // shape of the guard the fix introduced
 	FailedFixClass string // closed set: "" | naive-dep-bump-insufficient | guard-keyed-away-from-sink
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `fix` operand was nil, declared_empty/declared_values when present. Zero() ignores it.
+	Declared Presence `json:"-"`
 }
 
-// Zero reports whether the hint carries no fix intelligence (all fields empty), so the synthesis
-// prompt omits the hint block and the predecessor baseline falls back to the version-derived anchor.
+// Zero reports whether the hint carries no fix intelligence (all VALUE fields empty), so the
+// synthesis prompt omits the hint block and the predecessor baseline falls back to the
+// version-derived anchor. It ignores Declared (see TriggerRoute.Zero): a declared_empty hint is
+// value-zero and must still report Zero()==true so no consumer branch flips (§4.4.6).
 func (f FixHint) Zero() bool {
 	return f.UpstreamCommit == "" && f.GuardShape == "" && f.FailedFixClass == ""
 }
@@ -459,10 +542,27 @@ const (
 
 // Provenance records the source and trust of one advisory fact. Trusted-or-nulled: a
 // fact whose provenance is unknown carries the zero TrustTier and can never refute.
+//
+// §4.4.4 (source provenance AND confidence) is discharged by this triple, NOT by a separate
+// synthesized per-fact confidence score — and that absence is deliberate, not a gap:
+//
+//   - Provenance = Source + InputDigest + TrustTier. Source names where the fact was read from,
+//     InputDigest pins the exact bytes, and TrustTier is the CONFIDENCE-IN-SOURCE axis (byo /
+//     third_party / first_party) that gates refute eligibility. Together they answer "how far may
+//     this fact be trusted," which is the confidence half of §4.4.4.
+//   - There is NO per-fact `Confidence` field, on purpose. Upstream advisories do not carry a
+//     confidence number, so any value here would be SYNTHESIZED by this reader — and a manufactured
+//     confidence score is a verdict-like judgment (a graded assertion about how true the fact is),
+//     exactly what the evidence-only record must never hold (§3 non-negotiable). TrustTier grades the
+//     SOURCE, which the source itself supplies; it never grades the fact's truth.
+//   - Per-SYMBOL attribution certainty — "is this the right vulnerable symbol" — is a distinct axis
+//     and is the §4.4.8 attribution-review concern (see AttributionStatus and
+//     attribution_status_model.md), not a field on this base record. An attribution's status IS its
+//     per-symbol confidence signal, kept out of the evidence record and in the review workflow.
 type Provenance struct {
 	Source      string    // corpus feed id
 	InputDigest string    // digest of the corpus artifact this fact was read from
-	TrustTier   TrustTier // gates refute eligibility
+	TrustTier   TrustTier // gates refute eligibility; the confidence-in-source axis (§4.4.4)
 }
 
 // Lineage names the incomplete-patch predecessor/successor CVEs for the two-trace PoNE
@@ -474,7 +574,48 @@ type Lineage struct {
 
 // ConfigOperand is the core.config predicate's advisory half: a config key plus the
 // value that makes the codebase unsafe.
-type ConfigOperand struct{ Key, UnsafeValue string }
+type ConfigOperand struct {
+	Key         string
+	UnsafeValue string
+	// Declared is the §4.4.6 absent-vs-none marker (representation-only, json:"-"): absent when the
+	// wire `config_key` operand was nil, declared_empty/declared_values when present. Zero() ignores it.
+	Declared Presence `json:"-"`
+}
+
+// Zero reports whether the operand carries no config predicate (both VALUE fields empty). Like
+// TriggerRoute.Zero it ignores Declared: a declared_empty config_key is value-zero and must still
+// report Zero()==true so the predicate stays Undetermined/OPEN for every existing consumer (§4.4.6).
+func (c ConfigOperand) Zero() bool {
+	return c.Key == "" && c.UnsafeValue == ""
+}
+
+// AttributionStatus is the §4.4.8 review state of a symbol attribution — whether the advisory's
+// claim that a given symbol is the vulnerable one has been reviewed, and with what outcome. It is a
+// closed string enum (attributionStatusRecognized), fail-open like TrustTier: an unrecognized value
+// drops to the zero. This cycle (PLAN-024) establishes the TYPE and the state model
+// (attribution_status_model.md) ONLY; it is NOT yet wired onto the bare `symbols []string` axis —
+// per-symbol population rides on typed symbols (anvil-q15) + PLAN-220.
+//
+// An attribution's status IS its per-symbol confidence signal (the §4.4.4 tie-in): it is the axis a
+// synthesized per-fact confidence score would otherwise usurp, kept HONEST by living in a review
+// workflow with named states and evidence-driven transitions rather than a manufactured number.
+type AttributionStatus string
+
+const (
+	// AttributionUnreviewed: the attribution has not been reviewed. The zero-value default — an
+	// as-ingested attribution is unreviewed until a review moves it, and fail-open decode lands here.
+	AttributionUnreviewed AttributionStatus = "unreviewed"
+	// AttributionConfirmed: review established this symbol IS the vulnerable one for this advisory.
+	AttributionConfirmed AttributionStatus = "confirmed"
+	// AttributionAmbiguous: review found the symbol identity underdetermined — the advisory's symbol
+	// could resolve to more than one candidate (overload/rename/relocation) and evidence does not
+	// yet single one out. Distinct from disputed: no counter-claim, just insufficient resolution.
+	AttributionAmbiguous AttributionStatus = "ambiguous"
+	// AttributionDisputed: review surfaced positive counter-evidence that this symbol is NOT the
+	// vulnerable one (e.g. the named symbol never reaches the sink). A standing contradiction, not
+	// mere under-resolution.
+	AttributionDisputed AttributionStatus = "disputed"
+)
 
 // GuardVariant classifies a named guard variant against a specific bypass, for the
 // guard_sufficiency evidence framing. Assess never refutes on it (Prove adjudicates
@@ -1297,25 +1438,34 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 }
 func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
 	buildDir, language := "", ""
+	var plan checkout.WorkspacePlan
 	acq := c.Request.Codebase.Acquisition
 	switch {
 	case acq.Mode == "vendored_repro":
-		dir, lang, err := checkout.ResolveVendored(acq.Path)
+		p, err := checkout.ResolveVendored(acq.Path)
 		if err != nil {
 			return err
 		}
-		buildDir, language = dir, lang
+		plan = p
 	case s.checkout != nil:
 		// Thread the per-fire ownership token onto the context so GitCheckout can authenticate a
 		// PRIVATE-repo clone on the credential-fenced fire VM. It rides in-flight only;
 		// an empty token (public repo / hermetic FakeCheckout / local ambient-cred dev) is a no-op
 		// and takes today's bare-clone path unchanged.
 		fctx := checkout.WithCredential(ctx, checkout.NewCredential(c.Request.OwnershipProof.Token))
-		dir, lang, err := s.checkout.Fetch(fctx, c.Request.Codebase.Repo, c.Request.Codebase.Revision)
+		p, err := s.checkout.Fetch(fctx, c.Request.Codebase.Repo, c.Request.Codebase.Revision)
 		if err != nil {
 			return err
 		}
-		buildDir, language = dir, lang
+		plan = p
+	}
+	// Project the plan's single project into the scalar build_dir/language that S3–S6 already read.
+	// The plan holds exactly one project today (PLAN-004); PLAN-400 enumerates true monorepos and the
+	// per-project fan-out reads plan.Projects. An empty plan means no acquisition ran (nil checkout,
+	// non-vendored mode) — the historical no-op path, which leaves buildDir/language empty.
+	if len(plan.Projects) > 0 {
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
 	}
 
 	// Pin the concrete commit SHA the assessment was checked out at (T1 reproducibility anchor):
@@ -1338,10 +1488,10 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		if err != nil {
 			return err
 		}
-		module = mani.Module
-		goVersion = mani.GoVersion
-		buildCommand = mani.BuildCommand
-		toolchainDirective = mani.ToolchainVersion
+		module = mani.ProjectRoot
+		goVersion = mani.Runtime.Version
+		buildCommand = mani.Resolver.Command
+		toolchainDirective = mani.Runtime.Toolchain
 	}
 
 	// The subject's Go toolchain as ONE resolved fact carrying its own strength (ADR 0014). This is
@@ -1352,9 +1502,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	//
 	// Go-only by construction. Both floors are go.mod directives and both exact tiers are statements
 	// about a Go build environment, so resolving this for a JS/Java/Python/.NET subject would label
-	// the RUNNER's Go as the subject's — the same category error the fact exists to close. Note that
-	// BuildManifestResult.GoVersion is overloaded across lanes (jsanalysis puts a node engine range
-	// there), which is a second reason the language gate is load-bearing and not defensive.
+	// the RUNNER's Go as the subject's — the same category error the fact exists to close. (The prior
+	// BuildManifestResult.GoVersion overload — jsanalysis stuffing a node engine range into a Go-named
+	// field — is gone: PLAN-000's ecosystem-neutral rework carries it in Runtime{Name:"node"} instead.)
 	toolchain := ToolchainFact{Bound: ToolchainBoundNone, Source: ToolchainSourceUnresolved}
 	if language == "go" {
 		toolchain = resolveToolchainFact(toolchainInputs{
@@ -1409,15 +1559,21 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	}
 
 	inv := struct {
-		Repo            string   `json:"repo"`
-		Revision        string   `json:"revision"`
-		BuildDir        string   `json:"build_dir"`
-		Language        string   `json:"language,omitempty"`
-		ResolvedVersion string   `json:"resolved_version,omitempty"`
-		Module          string   `json:"module,omitempty"`
-		GoVersion       string   `json:"go_version,omitempty"`
-		BuildCommand    string   `json:"build_command,omitempty"`
-		PartialityFlags []string `json:"partiality_flags,omitempty"`
+		Repo     string `json:"repo"`
+		Revision string `json:"revision"`
+		BuildDir string `json:"build_dir"`
+		Language string `json:"language,omitempty"`
+		// WorkspacePlan is the full enumeration of detected projects (one today; PLAN-400 makes it
+		// hold true monorepos). It is PERSISTED but not yet read by any downstream stage — the scalar
+		// build_dir/language above remain the primary-project projection S3–S6 consume. Landing the
+		// field now (the PLAN-000 pattern) makes the contract real end-to-end; PLAN-400 wires the
+		// per-project readers. Not dead code: it is the on-disk half of the WorkspacePlan contract.
+		WorkspacePlan   checkout.WorkspacePlan `json:"workspace_plan"`
+		ResolvedVersion string                 `json:"resolved_version,omitempty"`
+		Module          string                 `json:"module,omitempty"`
+		GoVersion       string                 `json:"go_version,omitempty"`
+		BuildCommand    string                 `json:"build_command,omitempty"`
+		PartialityFlags []string               `json:"partiality_flags,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact (ADR 0014). Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
@@ -1435,6 +1591,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Revision:           c.Request.Codebase.Revision,
 		BuildDir:           buildDir,
 		Language:           language,
+		WorkspacePlan:      plan,
 		ResolvedVersion:    resolvedVersion,
 		Module:             module,
 		GoVersion:          goVersion,
@@ -2471,7 +2628,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 			Path:          reachRef,
 			Partial:       firstParty || !reach.Partiality.Complete,
 		}
-		if p.Ingress != "" {
+		if p.Ingress.SCIP != "" {
 			pair.Ingress = &ingressRef
 		}
 		desc := "candidate pair (resolved)"
@@ -2517,20 +2674,30 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 		return nil
 	}
 
+	// The BFS runs over SCIP-id keys, reproducing the pre-Symbol identity exactly: CallEdge
+	// endpoints were bare SCIP ids, and the sink parameter is a SCIP id (resolvedSinkSCIP), so
+	// keying the graph on .SCIP is the same graph the old string-typed code built. symBySCIP
+	// carries the structured Symbol for each node so the ReachPath.Sink/Ingress/Trace fields —
+	// now plugin.Symbol — are reconstructed at the return boundary.
+	symBySCIP := make(map[string]plugin.Symbol)
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		symBySCIP[e.Caller.SCIP] = e.Caller
+		symBySCIP[e.Callee.SCIP] = e.Callee
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 
 	ingressSyms := make(map[string]struct{}, len(ingresses.Ingresses))
 	for _, in := range ingresses.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = struct{}{}
+		if in.Symbol.SCIP != "" {
+			symBySCIP[in.Symbol.SCIP] = in.Symbol
+			ingressSyms[in.Symbol.SCIP] = struct{}{}
 		}
 	}
 	roots := make(map[string]struct{}, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = struct{}{}
+		symBySCIP[r.SCIP] = r
+		roots[r.SCIP] = struct{}{}
 	}
 
 	type node struct {
@@ -2546,15 +2713,15 @@ func firstPartyReachPaths(cg plugin.CallGraphResult, ingresses plugin.IngressRes
 		_, isIngress := ingressSyms[cur.sym]
 		_, isRoot := roots[cur.sym]
 		if isIngress || isRoot {
-			trace := make([]string, len(cur.path))
+			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = cur.path[len(cur.path)-1-i]
+				trace[i] = symBySCIP[cur.path[len(cur.path)-1-i]]
 			}
-			ingress := ""
+			var ingress plugin.Symbol
 			if isIngress {
-				ingress = cur.sym
+				ingress = symBySCIP[cur.sym]
 			}
-			return []plugin.ReachPath{{Sink: sink, Ingress: ingress, Trace: trace}}
+			return []plugin.ReachPath{{Sink: symBySCIP[sink], Ingress: ingress, Trace: trace}}
 		}
 
 		for _, caller := range callers[cur.sym] {

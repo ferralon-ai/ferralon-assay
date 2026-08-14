@@ -63,17 +63,17 @@ func (pythonFirstPartyStub) CallGraph(_ context.Context, _ plugin.CallGraphReque
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: pyHandleFetchSCIP, Callee: pyHandleSCIP},
-			{Caller: pyHandleSCIP, Callee: pyFetchURLSCIP},
+			{Caller: plugin.Symbol{SCIP: pyHandleFetchSCIP}, Callee: plugin.Symbol{SCIP: pyHandleSCIP}},
+			{Caller: plugin.Symbol{SCIP: pyHandleSCIP}, Callee: plugin.Symbol{SCIP: pyFetchURLSCIP}},
 		},
-		Roots: []string{pyHandleFetchSCIP},
+		Roots: []plugin.Symbol{{SCIP: pyHandleFetchSCIP}},
 	}, nil
 }
 
 func (pythonFirstPartyStub) FindIngresses(_ context.Context, _ plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
-		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: pyHandleFetchSCIP, Selector: "route"}},
+		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: pyHandleFetchSCIP}, Selector: "route"}},
 	}, nil
 }
 
@@ -127,9 +127,9 @@ func (pythonUnresolvedStub) CallGraph(_ context.Context, _ plugin.CallGraphReque
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: pyHandleFetchSCIP, Callee: pyHandleSCIP},
+			{Caller: plugin.Symbol{SCIP: pyHandleFetchSCIP}, Callee: plugin.Symbol{SCIP: pyHandleSCIP}},
 			// No handle -> fetch_url edge: the sink is unreachable (not fabricated).
 		},
-		Roots: []string{pyHandleFetchSCIP},
+		Roots: []plugin.Symbol{{SCIP: pyHandleFetchSCIP}},
 	}, nil
 }

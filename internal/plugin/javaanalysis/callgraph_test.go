@@ -27,7 +27,7 @@ func writeProgram(t *testing.T, files map[string]string) string {
 
 func hasEdge(edges []plugin.CallEdge, caller, callee string) bool {
 	for _, e := range edges {
-		if e.Caller == caller && e.Callee == callee {
+		if e.Caller.SCIP == caller && e.Callee.SCIP == callee {
 			return true
 		}
 	}
@@ -103,7 +103,7 @@ func TestCallGraph_ServletDoGetIsRoot(t *testing.T) {
 	doGet := methodSCIP("com.example.web", []string{"FetchServlet"}, "doGet", 2)
 	found := false
 	for _, r := range res.Roots {
-		if r == doGet {
+		if r.SCIP == doGet {
 			found = true
 		}
 	}
@@ -140,7 +140,7 @@ public class C {
 	for _, e := range res.Edges {
 		// No edge's callee should be a control-flow keyword node (those resolve to
 		// nothing, so they can never appear, but assert no spurious caller either).
-		if e.Caller == "" || e.Callee == "" {
+		if e.Caller.SCIP == "" || e.Callee.SCIP == "" {
 			t.Errorf("empty endpoint in edge %+v", e)
 		}
 	}
@@ -181,7 +181,7 @@ class B {
 	// The ambiguous call must NOT have produced an edge from entry to either process.
 	entry := methodSCIP("p", []string{"Caller"}, "entry", 1)
 	for _, e := range res.Edges {
-		if e.Caller == entry {
+		if e.Caller.SCIP == entry {
 			t.Errorf("ambiguous call fabricated an edge from entry: %+v", e)
 		}
 	}

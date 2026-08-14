@@ -69,19 +69,19 @@ func TestReachability_ReachableFromServletIngress(t *testing.T) {
 		t.Fatalf("expected exactly one reach path, got %d: %+v", len(res.Paths), res.Paths)
 	}
 	p := res.Paths[0]
-	if p.Sink != fetch {
-		t.Errorf("path sink = %q, want %q", p.Sink, fetch)
+	if p.Sink.SCIP != fetch {
+		t.Errorf("path sink = %q, want %q", p.Sink.SCIP, fetch)
 	}
-	if p.Ingress != doGet {
-		t.Errorf("path ingress = %q, want servlet doGet %q", p.Ingress, doGet)
+	if p.Ingress.SCIP != doGet {
+		t.Errorf("path ingress = %q, want servlet doGet %q", p.Ingress.SCIP, doGet)
 	}
 	wantTrace := []string{doGet, handle, fetch}
 	if len(p.Trace) != len(wantTrace) {
 		t.Fatalf("trace = %v, want %v", p.Trace, wantTrace)
 	}
 	for i := range wantTrace {
-		if p.Trace[i] != wantTrace[i] {
-			t.Errorf("trace[%d] = %q, want %q (full trace %v)", i, p.Trace[i], wantTrace[i], p.Trace)
+		if p.Trace[i].SCIP != wantTrace[i] {
+			t.Errorf("trace[%d] = %q, want %q (full trace %v)", i, p.Trace[i].SCIP, wantTrace[i], p.Trace)
 		}
 	}
 	// Every callee in this fixture resolves uniquely and no library call is made,

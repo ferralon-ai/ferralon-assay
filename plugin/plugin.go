@@ -146,6 +146,24 @@ const (
 	PartialReasonWorkspaceAttrib    = "workspace_attribution_incomplete" // workspace membership needs a manifest join that is missing/unreadable
 	PartialReasonPeerMetadataAbsent = "peer_metadata_absent"             // peer relationships not derivable from this dialect's lockfile (Yarn Classic)
 	PartialReasonLockfileAmbiguous  = "lockfile_ambiguous"               // two authoritative locks at one root, no packageManager signal; no nodes emitted for that root (graph-level)
+
+	// --- module-resolution reason codes (PLAN-162) ---
+	//
+	// These three codes name conditions the JS/TS import-scoped module resolver (CallGraph)
+	// cannot turn into a first-party edge, under the no-Node/no-package-manager, node_modules-
+	// excluded constraint (§3.3/§10.1). Each is a DECLARED gap, never a silent decline or a
+	// fabricated edge (§3.1). They split the former blanket dynamic_dispatch into three distinct,
+	// reviewer-legible conditions (PLAN-162 C5); dynamic_dispatch is NOT retired — it keeps its
+	// original meaning (a callee name resolved to >1 in-tree decl / prototype dispatch).
+	//
+	// CROSS-LANE VOCABULARY NOTE (quartz-q7): uninspectable_package names a condition every
+	// source-only lane hits (Python bare imports, .NET package refs), so it belongs in the shared
+	// cross-lane vocabulary (spine §3.4), not as a JS-private string. It lands here PROVISIONALLY,
+	// naming that conflict; anvil may canonicalize/relocate the block later. The string is the
+	// contract and must not diverge across lanes.
+	PartialReasonUninspectablePackage     = "uninspectable_package"      // static bare specifier into a package whose source is not in-tree (node_modules excluded); resolvePackage, declined-but-attributed, never an edge
+	PartialReasonDynamicImportSpecifier   = "dynamic_import_specifier"   // runtime-computed ESM target (import(expr)); never evaluated, never guessed
+	PartialReasonComputedRequireSpecifier = "computed_require_specifier" // runtime-computed CJS target (require(var)); never evaluated, never guessed
 )
 
 // Complete is the constructor for a fully-resolved result.

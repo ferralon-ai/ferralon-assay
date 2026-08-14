@@ -126,6 +126,47 @@ const (
 	// manifest/lock the resolver read (a transitive/optional/extra edge the lock does not record), so
 	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
 	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
+
+	// --- dependency-inventory reason localisers (PLAN-160) ---
+	//
+	// These name conditions a whole-graph dependency inventory (ResolveInventory, §4.1) cannot
+	// resolve from lockfile/manifest metadata alone, under the no-package-manager constraint
+	// (§3.3/§10.1). Each is a DECLARED gap on a node (or the graph), never a silent omission:
+	// §3.1 forbids inferring safety from missing evidence.
+	//
+	// RECONCILED to the onyx-q6 shared bases (§4 "code:suffix" naming): each value localises one
+	// canonical base above, so a cross-lane consumer reads the base and the JS suffix carries the
+	// lane specific. The named consts stay for call-site readability; their VALUES are the wire
+	// strings (base + ":" + suffix).
+	PartialReasonGitRefUnpinned     = PartialReasonSourceUnpinned + ":git_ref"                        // git dep, no pinned commit sha (moving ref); Artifact.Digest empty
+	PartialReasonLocalPathDep       = PartialReasonSourceUnpinned + ":local_path"                     // file:/link: local dependency; path identity, no registry version/integrity
+	PartialReasonPlatformCondition  = PartialReasonEnvConditionUnresolved + ":platform"               // optional dep gated on os/cpu/libc; Target unevaluable from metadata, never guessed
+	PartialReasonAliasTargetAbsent  = PartialReasonRelationshipUnexpressed + ":alias_target"          // npm: alias whose target is absent from the lockfile
+	PartialReasonWorkspaceAttrib    = PartialReasonRelationshipUnexpressed + ":workspace_attribution" // workspace membership needs a manifest join that is missing/unreadable
+	PartialReasonPeerMetadataAbsent = PartialReasonRelationshipUnexpressed + ":peer_metadata"         // peer relationships not derivable from this dialect's lockfile (Yarn Classic)
+
+	// lockfile_ambiguous is the one JS localiser that does NOT fit the three onyx bases
+	// (env/source/relationship): it names a root-level dialect-selection failure (two authoritative
+	// locks, no packageManager signal → no nodes emitted for that root), not a per-dependency gap.
+	// Mapped onto the existing tool_failure base and flagged to L0 (quartz-q14) for cross-lane
+	// adjudication — anvil may want a fourth base for "resolution could not proceed".
+	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
+
+	// --- module-resolution reason localisers (PLAN-162) ---
+	//
+	// These name conditions the JS/TS import-scoped module resolver (CallGraph) cannot turn into a
+	// first-party edge, under the no-Node/no-package-manager, node_modules-excluded constraint
+	// (§3.3/§10.1). Each is a DECLARED gap, never a silent decline or a fabricated edge (§3.1). They
+	// split the former blanket dynamic_dispatch into three reviewer-legible conditions (PLAN-162 C5);
+	// dynamic_dispatch is NOT retired — it keeps its meaning (a callee name resolved to >1 in-tree
+	// decl / prototype dispatch).
+	//
+	// RECONCILED to the onyx-q6 shared bases (quartz-q7 resolution): all three localise
+	// relationship_unexpressed — each is an import/call EDGE that could not be expressed. Cross-lane
+	// consumers (Python bare imports, .NET package refs) read the base; the suffix is the JS specific.
+	PartialReasonUninspectablePackage     = PartialReasonRelationshipUnexpressed + ":uninspectable_package" // static bare specifier into a package whose source is not in-tree (node_modules excluded); declined-but-attributed, never an edge
+	PartialReasonDynamicImportSpecifier   = PartialReasonRelationshipUnexpressed + ":dynamic_import"        // runtime-computed ESM target (import(expr)); never evaluated, never guessed
+	PartialReasonComputedRequireSpecifier = PartialReasonRelationshipUnexpressed + ":computed_require"      // runtime-computed CJS target (require(var)); never evaluated, never guessed
 )
 
 // Complete is the constructor for a fully-resolved result.

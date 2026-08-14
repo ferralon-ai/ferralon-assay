@@ -1,0 +1,6 @@
+{
+  "name": "locallib",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F12 local package target (file: dependency)."
+}

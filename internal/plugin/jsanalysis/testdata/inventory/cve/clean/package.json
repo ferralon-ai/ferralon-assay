@@ -1,0 +1,8 @@
+{
+  "name": "cve-clean",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "good-alias": "npm:ms@2.0.0"
+  }
+}

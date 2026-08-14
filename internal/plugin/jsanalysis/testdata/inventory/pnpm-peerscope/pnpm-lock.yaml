@@ -1,0 +1,73 @@
+# PLAN-160 fixture F6 (pnpm v9): peer-differentiated instance identity.
+# debug@4.3.4 appears twice with distinct peer suffixes -> two snapshot keys ->
+# two DependencyNode.ID values differing only by ?resolution_scope=. Structural
+# fixture for the ID/mutation logic; resolution integrity is intentionally omitted
+# (no package manager was run to source real digests).
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      consumer-a:
+        specifier: 1.0.0
+        version: 1.0.0
+      consumer-b:
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+
+  consumer-a@1.0.0: {}
+
+  consumer-b@1.0.0: {}
+
+  debug@4.3.4(supports-color@8.1.1):
+    peerDependencies:
+      supports-color: '*'
+    peerDependenciesMeta:
+      supports-color:
+        optional: true
+
+  debug@4.3.4(supports-color@9.0.0):
+    peerDependencies:
+      supports-color: '*'
+    peerDependenciesMeta:
+      supports-color:
+        optional: true
+
+  ms@2.1.3: {}
+
+  supports-color@8.1.1: {}
+
+  supports-color@9.0.0: {}
+
+snapshots:
+
+  consumer-a@1.0.0:
+    dependencies:
+      debug: 4.3.4(supports-color@8.1.1)
+
+  consumer-b@1.0.0:
+    dependencies:
+      debug: 4.3.4(supports-color@9.0.0)
+
+  debug@4.3.4(supports-color@8.1.1):
+    dependencies:
+      ms: 2.1.3
+      supports-color: 8.1.1
+
+  debug@4.3.4(supports-color@9.0.0):
+    dependencies:
+      ms: 2.1.3
+      supports-color: 9.0.0
+
+  ms@2.1.3: {}
+
+  supports-color@8.1.1: {}
+
+  supports-color@9.0.0: {}

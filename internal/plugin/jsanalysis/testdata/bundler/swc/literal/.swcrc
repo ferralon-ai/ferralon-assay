@@ -1,0 +1,19 @@
+{
+  "jsc": {
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["./src/app/*"],
+      "@lib/*": ["./src/lib/*"]
+    },
+    "transform": {
+      "optimizer": {
+        "globals": {
+          "vars": {
+            "__DEBUG__": "false",
+            "VERSION": "\"3.1.4\""
+          }
+        }
+      }
+    }
+  }
+}

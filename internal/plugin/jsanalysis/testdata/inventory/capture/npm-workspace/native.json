@@ -1,0 +1,73 @@
+{
+  "version": "1.0.0",
+  "name": "cap-npm-workspace-root",
+  "dependencies": {
+    "@cap/a": {
+      "version": "1.0.0",
+      "resolved": "file:../../packages/a",
+      "overridden": false,
+      "dependencies": {
+        "is-odd": {
+          "version": "3.0.1",
+          "resolved": "https://registry.npmjs.org/is-odd/-/is-odd-3.0.1.tgz",
+          "overridden": false,
+          "dependencies": {
+            "is-number": {
+              "version": "6.0.0",
+              "resolved": "https://registry.npmjs.org/is-number/-/is-number-6.0.0.tgz",
+              "overridden": false
+            }
+          }
+        },
+        "left-pad": {
+          "version": "1.3.0",
+          "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+          "overridden": false
+        }
+      }
+    },
+    "@cap/b": {
+      "version": "1.0.0",
+      "resolved": "file:../../packages/b",
+      "overridden": false,
+      "dependencies": {
+        "is-even": {
+          "version": "1.0.0",
+          "resolved": "https://registry.npmjs.org/is-even/-/is-even-1.0.0.tgz",
+          "overridden": false,
+          "dependencies": {
+            "is-odd": {
+              "version": "0.1.2",
+              "resolved": "https://registry.npmjs.org/is-odd/-/is-odd-0.1.2.tgz",
+              "overridden": false,
+              "dependencies": {
+                "is-number": {
+                  "version": "3.0.0",
+                  "resolved": "https://registry.npmjs.org/is-number/-/is-number-3.0.0.tgz",
+                  "overridden": false,
+                  "dependencies": {
+                    "kind-of": {
+                      "version": "3.2.2",
+                      "resolved": "https://registry.npmjs.org/kind-of/-/kind-of-3.2.2.tgz",
+                      "overridden": false,
+                      "dependencies": {
+                        "is-buffer": {
+                          "version": "1.1.6",
+                          "resolved": "https://registry.npmjs.org/is-buffer/-/is-buffer-1.1.6.tgz",
+                          "overridden": false
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "left-pad": {
+          "version": "1.3.0"
+        }
+      }
+    }
+  }
+}

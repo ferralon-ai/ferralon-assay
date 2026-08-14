@@ -117,8 +117,10 @@ func Diff(before, after Report) DiffReport {
 }
 
 // RecallDelta / PrecisionDelta return the before and after rates for the aggregate move.
-func (d DiffReport) RecallDelta() (before, after Rate)    { return d.Before.Recall(), d.After.Recall() }
-func (d DiffReport) PrecisionDelta() (before, after Rate) { return d.Before.Precision(), d.After.Precision() }
+func (d DiffReport) RecallDelta() (before, after Rate) { return d.Before.Recall(), d.After.Recall() }
+func (d DiffReport) PrecisionDelta() (before, after Rate) {
+	return d.Before.Precision(), d.After.Precision()
+}
 
 // Regressed reports whether the diff shows a regression that must fail the acceptance gate:
 // a lost candidate (recall went backward) or a broken sink (precision went backward), or the

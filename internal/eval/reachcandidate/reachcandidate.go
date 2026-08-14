@@ -66,7 +66,7 @@ type CaseResult struct {
 	SinkCorrect bool
 	// GuardsPresent lists the declared guard symbols the resolver matched into the program
 	// (presence candidates only — never a sufficiency claim).
-	ResolvedCount int // number of symbols the resolver matched (diagnostic)
+	ResolvedCount  int // number of symbols the resolver matched (diagnostic)
 	SinkApplicable bool
 	Err            error
 }

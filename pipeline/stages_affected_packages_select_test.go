@@ -105,8 +105,8 @@ func runMultipkgSelect(t *testing.T, withArray bool, bVersion string) (selectInv
 	c := &assessment.Assessment{ID: "case-multipkg-select", Request: assessment.Request{
 		Vulnerability: assessment.VulnRef{ID: "CVE-TEST-MULTIPKG", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
-			Repo:     "example.com/target",
-			Revision: "v1",
+			Repo:        "example.com/target",
+			Revision:    "v1",
 			Acquisition: assessment.Acquisition{Mode: "git"},
 		},
 	}}

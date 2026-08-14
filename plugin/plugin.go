@@ -107,6 +107,25 @@ const (
 	// happen. Overloading the quiet codes for it renders an unknown as a clean scan —
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
+
+	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
+	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
+	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason
+	// string), so the base codes stay language-agnostic while the suffix carries the lane specific.
+	//
+	// PartialReasonEnvConditionUnresolved: an environment-conditional dependency could not be
+	// resolved because the deciding environment fact is unknown (a marker/condition such as a target
+	// platform or language-version gate). The dependency's presence is undetermined, not absent —
+	// resolve it by supplying ResolveInventoryRequest.TargetEnv.
+	PartialReasonEnvConditionUnresolved = "env_condition_unresolved"
+	// PartialReasonSourceUnpinned: a dependency's source is not pinned to an exact, verifiable
+	// version/artifact (an unlocked range, a VCS/path source with no lock entry), so the installed
+	// identity cannot be established — undetermined, never guessed to a concrete version.
+	PartialReasonSourceUnpinned = "source_unpinned"
+	// PartialReasonRelationshipUnexpressed: a dependency relationship (edge) is not expressed in the
+	// manifest/lock the resolver read (a transitive/optional/extra edge the lock does not record), so
+	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
+	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
 )
 
 // Complete is the constructor for a fully-resolved result.
@@ -284,6 +303,19 @@ type ReachabilityResult struct {
 // ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
 type ResolveInventoryRequest struct {
 	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+
+	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
+	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay
+	// configuration, not a repo file, so a plugin must not read it from the checked-out tree. Keys are
+	// environment facts (platform, language/runtime version, …); an absent map (nil) means no override
+	// and preserves today's behavior — the resolver falls back to whatever the repo declares, and an
+	// unresolved condition is disclosed as PartialReasonEnvConditionUnresolved rather than assumed.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
+
+	// Selection restricts resolution to a named subset of the dependency set (optional groups / extras
+	// / features the request opts into), also Assay config carried on the request (onyx-q6). An absent
+	// slice (nil) means no restriction — the full declared set is resolved, today's behavior.
+	Selection []string `json:"selection,omitempty"`
 }
 
 // CapabilityManifestRequest carries no inputs: a capability manifest is a static per-lane fact,

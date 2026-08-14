@@ -325,6 +325,11 @@ type Provenance struct {
 	// AnalyzerVersion is the ferralon-assay tool version that produced the Report. Lets
 	// future readers reason about analyzer-driven verdict changes.
 	AnalyzerVersion string `json:"analyzer_version"`
+	// CapabilityManifestVersion cites the capability.Manifest CONTENT version this scan's
+	// evidence was produced under (which analyzer support surface was in force). Additive and
+	// omitempty; population is Phase-4 (each lane stamps a real version in its PLAN-4x0), so this
+	// cycle it stays empty. Kept a plain string so report needs no capability import.
+	CapabilityManifestVersion string `json:"capability_manifest_version,omitempty"`
 	// AdvisoryCursor is the advisory-corpus position this scan evaluated against. It
 	// is the CVE-watch cursor: a later run compares OSV.dev querybatch results to the
 	// stored cursor to decide heartbeat vs earnest run.

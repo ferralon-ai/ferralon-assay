@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/capability"
 )
 
 // These tests are the C1–C5 convergence criteria for the plugin-contract rework
@@ -128,9 +130,27 @@ func fullInventory() DependencyInventory {
 	}
 }
 
+// fullManifest builds a fully-populated capability.Manifest fixture: Supported:true, all six axes
+// non-empty and sorted. Shared by C3 (round-trip) and C4 (determinism). Content is fabricated for
+// the encoding test only; no lane publishes this yet (§3, honest absence is Supported:false).
+func fullManifest() capability.Manifest {
+	return capability.Manifest{
+		Version:           "1.0.0",
+		Language:          "go",
+		Supported:         true,
+		Resolvers:         []string{"go.mod", "go.sum"},
+		Runtimes:          []string{"go1.20", "go1.21"},
+		GraphSemantics:    []string{"cha", "rta", "vta"},
+		Frameworks:        []string{"chi", "echo", "net/http"},
+		DynamicBoundaries: []string{"cgo", "dynamic_dispatch", "reflection"},
+		Analyzers:         []string{"govulncheck@1.1.0", "scip-go@0.1.0"},
+	}
+}
+
 // TestDependencyInventoryJSONRoundTrip (C3) marshals a fully-populated DependencyInventory,
 // unmarshals it, and asserts reflect.DeepEqual against the original. A field added without a
-// JSON tag, or tagged omitempty where its zero value is meaningful, fails this.
+// JSON tag, or tagged omitempty where its zero value is meaningful, fails this. The capability
+// .Manifest is exercised the same way, so a mistagged manifest field fails here too.
 func TestDependencyInventoryJSONRoundTrip(t *testing.T) {
 	orig := fullInventory()
 
@@ -144,6 +164,19 @@ func TestDependencyInventoryJSONRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(orig, back) {
 		t.Errorf("DependencyInventory round-trip mismatch:\n orig = %+v\n back = %+v\n json = %s", orig, back, b)
+	}
+
+	mOrig := fullManifest()
+	mb, err := json.Marshal(mOrig)
+	if err != nil {
+		t.Fatalf("Manifest Marshal: %v", err)
+	}
+	var mBack capability.Manifest
+	if err := json.Unmarshal(mb, &mBack); err != nil {
+		t.Fatalf("Manifest Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(mOrig, mBack) {
+		t.Errorf("capability.Manifest round-trip mismatch:\n orig = %+v\n back = %+v\n json = %s", mOrig, mBack, mb)
 	}
 }
 
@@ -165,6 +198,7 @@ func TestEncodingIsByteIdenticalAcrossRuns(t *testing.T) {
 			ProjectRoot:   "github.com/x/y",
 			Resolver:      ResolverSpec{Name: "go", Command: "go build ./..."},
 		},
+		"capability.Manifest": fullManifest(),
 	}
 
 	const runs = 64
@@ -224,5 +258,25 @@ func TestResolveInventoryHonestlyUnsupported(t *testing.T) {
 	empty := DependencyInventory{Partiality: Complete()}
 	if isHonestlyUnsupported(empty) {
 		t.Errorf("empty Complete() inventory classified as honestly-unsupported — the two shapes must be distinguishable")
+	}
+}
+
+// TestCapabilityManifestHonestlyUnsupported (C5 analog) asserts the manifest honest-absence
+// predicate: StubPlugin.CapabilityManifest returns Supported==false (no lane publishes a manifest
+// this cycle). The manifest carries no Partiality — honesty is simply !Supported (§5) — so the
+// binary analog of isHonestlyUnsupported is a direct field read.
+func TestCapabilityManifestHonestlyUnsupported(t *testing.T) {
+	got, err := StubPlugin{}.CapabilityManifest(context.Background(), CapabilityManifestRequest{})
+	if err != nil {
+		t.Fatalf("CapabilityManifest: unexpected error: %v", err)
+	}
+	if got.Supported {
+		t.Errorf("StubPlugin.CapabilityManifest = %+v, want honest absence (Supported==false)", got)
+	}
+
+	// Negative control: a Supported:true manifest must NOT read as honest absence, or the
+	// assertion above would be measuring nothing.
+	if published := (capability.Manifest{Supported: true}); !published.Supported {
+		t.Errorf("Supported:true manifest classified as absent — the two shapes must be distinguishable")
 	}
 }

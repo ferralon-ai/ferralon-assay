@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -172,6 +173,11 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		// inventory would read downstream as "this build has no dependencies".
 		res := plugin.DependencyInventory{Partiality: plugin.Unsupported()}
 		return plugin.Response{Inventory: &res}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
+		// (Supported:false), never a Supported:true manifest with empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "js"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

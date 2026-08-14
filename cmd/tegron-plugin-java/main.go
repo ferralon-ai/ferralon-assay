@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -161,6 +162,11 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		// this phase. It declares Unsupported() — never Complete() with zero nodes,
 		// which would falsely assert an empty dependency graph.
 		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
+		// (Supported:false), never a Supported:true manifest with empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "java"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

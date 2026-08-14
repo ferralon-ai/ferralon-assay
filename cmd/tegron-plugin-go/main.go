@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -160,6 +161,12 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		// wired to a declared-Unsupported inventory (never a Complete() zero-node
 		// graph, which would falsely claim "no dependencies"). §5 C5.
 		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Go's capability manifest CONTENT is Phase-4 (PLAN-4x0); this cycle lands the op
+		// wired to honest absence (Supported:false), never a Supported:true manifest with
+		// empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "go"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

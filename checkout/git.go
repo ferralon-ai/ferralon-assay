@@ -121,7 +121,7 @@ func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (Workspa
 	}
 	lang := DetectLanguage(dir)
 	if lang == LangUnknown {
-		return cleanup(fmt.Errorf("checkout: cloned repo %q@%q is not a recognized source tree (no go.mod and no .java sources)", repo, revision))
+		return cleanup(fmt.Errorf("checkout: cloned repo %q@%q is not a recognized source tree (no go.mod, no .java, no .js/.ts, no .py, and no .cs/.csproj sources)", repo, revision))
 	}
 	return singleProjectPlan(dir, lang), nil
 }

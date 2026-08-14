@@ -29,6 +29,14 @@ type pyReq struct {
 	Selected   bool     // marker true (or no marker) → in the selected set
 	Unresolved bool     // marker referenced an unbound variable (§3.1 partial)
 	Partial    []string // lane-local partiality reason codes (see partiality.go)
+
+	// E2 extras: the extras group "[a,b]" declared on the requirement, and the subset the
+	// declared Selection selects (in declared order — C7 determinism). SelectedExtras is the
+	// provenance C2 requires: it records exactly which declared-selection entries produced the
+	// inclusion, so a reader can tell an unselected extra was evaluated-and-excluded, not
+	// missed. An unselected extra's subtree does not enter the selected set.
+	Extras         []string
+	SelectedExtras []string
 }
 
 // resolveRequirements parses a requirements file into the selected set for the declared
@@ -51,17 +59,19 @@ func resolveRequirements(data []byte, env map[string]string, selection []string)
 			line = strings.TrimSpace(line[:i])
 		}
 
-		name, version, resolved := parseRequirementSpec(line)
+		name, version, resolved, extras := parseRequirementSpec(line)
 		if name == "" {
 			continue
 		}
 
 		r := pyReq{
-			Name:     name,
-			Version:  version,
-			Resolved: resolved,
-			Source:   "requirements.txt",
-			Marker:   marker,
+			Name:           name,
+			Version:        version,
+			Resolved:       resolved,
+			Source:         "requirements.txt",
+			Marker:         marker,
+			Extras:         extras,
+			SelectedExtras: selectExtras(extras, selection),
 		}
 		applyMarker(&r, env, selection)
 		out = append(out, r)
@@ -87,6 +97,30 @@ func applyMarker(r *pyReq, env map[string]string, selection []string) {
 	default:
 		r.Selected = false // marker evaluated false: a resolved exclusion, not a drop
 	}
+}
+
+// selectExtras returns, in declared order, the subset of a requirement's extras group that
+// the declared Selection selects (PLAN-170 E2, C2). An extra not in the selection does not
+// enter the selected set; the returned slice is the provenance of the inclusion. Extra names
+// and selection entries are both PEP 503-normalized so matching is case/separator-insensitive.
+// selection is used only for membership lookup — never iterated on an output path (C7).
+func selectExtras(extras, selection []string) []string {
+	if len(extras) == 0 || len(selection) == 0 {
+		return nil
+	}
+	selSet := make(map[string]bool, len(selection))
+	for _, s := range selection {
+		if n := normalizePyCoordinate(s); n != "" {
+			selSet[n] = true
+		}
+	}
+	var out []string
+	for _, e := range extras { // declared order preserved (C7)
+		if selSet[normalizePyCoordinate(e)] {
+			out = append(out, normalizePyCoordinate(e))
+		}
+	}
+	return out
 }
 
 // envUnresolvedReason builds the partiality code for an unbound marker variable, appending

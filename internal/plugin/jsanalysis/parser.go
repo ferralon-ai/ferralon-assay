@@ -32,6 +32,8 @@ type callSite struct {
 	callerArity     int      // arity of the enclosing function (disambiguation)
 	calleeName      string   // simple name being invoked (last segment of a.b.name)
 	calleeArity     int      // argument count at the call site
+	receiver        string   // immediate receiver identifier of a `recv.name(...)` method call ("" for a bare call)
+	receiverThis    bool     // true when the call is `this.name(...)`
 }
 
 // ingressMarker is one entry-point signal found lexically: an Express/Koa route
@@ -39,9 +41,8 @@ type callSite struct {
 // or a Next.js default-export handler. The marker names the HANDLER function (the
 // call-graph node), so an ingress symbol coincides with a call-graph node.
 type ingressMarker struct {
-	enclosing []string // enclosing class chain of the handler function
-	name      string   // handler function simple name
-	arity     int      // handler arity
+	enclosing []string // enclosing class chain of the handler function (reserved; refs resolve by name)
+	name      string   // handler function simple name (resolved to a declaration by ResolveRef)
 	kind      string   // plugin.Ingress Kind: "http_route" | "http_server" | "handler"
 	selector  string   // route selector ("" — string literals are blanked by the lexer)
 }
@@ -54,6 +55,7 @@ type parseResult struct {
 	decls     []decl
 	calls     []callSite
 	ingresses []ingressMarker
+	bindings  moduleBindings // import/require/export-from bindings + instances (resolve.go input)
 	skipped   bool
 }
 
@@ -226,6 +228,9 @@ func parseFile(module, src string) parseResult {
 
 	res.decls = parseDecls(r)
 	res.calls, res.ingresses = parseCallsAndIngresses(r)
+	// Binding extraction scans the cleaned runes for structure and reads specifier
+	// literals from the position-identical raw source (stripJS is length-preserving).
+	res.bindings = extractModuleBindings(r, []rune(src))
 	return res
 }
 

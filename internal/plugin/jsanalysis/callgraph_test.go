@@ -151,6 +151,50 @@ function pick() { return 0; }
 	}
 }
 
+// TestCallGraph_DottedChainLeafResolvesAsBareCall covers a member-access call chain
+// "a.b.c(x)": the receiver expression "a.b" is a member expression, not a single local
+// instance, so the call must resolve as a bare call to a uniquely-declared module-level
+// c(1) — not be dropped as an unresolved receiver-method call on the intermediate "b".
+func TestCallGraph_DottedChainLeafResolvesAsBareCall(t *testing.T) {
+	src := `
+function caller(v) {
+    return a.b.c(v);
+}
+function c(x) {
+    return x;
+}
+`
+	dir := writeProgram(t, map[string]string{"m.js": src})
+	res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	caller := funcSCIP("m", nil, "caller", 1)
+	c := funcSCIP("m", nil, "c", 1)
+	if !hasEdge(res.Edges, caller, c) {
+		t.Errorf("dotted chain a.b.c() must resolve as a bare call to c; missing %s -> %s\nedges: %+v", caller, c, res.Edges)
+	}
+}
+
+// TestCallGraph_DottedChainLeafUnknownFabricatesNoEdge is the soundness control for the
+// case above: a member-chain leaf with no uniquely-declared module-level target must
+// fabricate no edge — the bare-name fallback stays fail-closed.
+func TestCallGraph_DottedChainLeafUnknownFabricatesNoEdge(t *testing.T) {
+	src := `
+function caller(v) {
+    return a.b.c(v);
+}
+`
+	dir := writeProgram(t, map[string]string{"m.js": src})
+	res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	if len(res.Edges) != 0 {
+		t.Errorf("chained leaf with no local declaration must fabricate no edge; got %+v", res.Edges)
+	}
+}
+
 // TestCallGraph_AmbiguousCalleeDoesNotFabricateEdge is the inv.5 honesty test: when
 // a callee's (name,arity) matches MORE THAN ONE declared function (two modules each
 // declare process(1)), the resolver cannot soundly pick one, so it fabricates NO

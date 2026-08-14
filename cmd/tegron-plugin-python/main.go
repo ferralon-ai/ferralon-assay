@@ -5,11 +5,14 @@
 // ONLY into this binary — never into tegrond.
 //
 // This binary deliberately mirrors cmd/tegron-plugin-js: same one-shot protocol, same
-// hard-error-vs-declared-partiality contract. Seven ops are LIVE, all backed by the real
+// hard-error-vs-declared-partiality contract. Eight ops are LIVE, all backed by the real
 // pure-Go lexical source analysis (no scip-python container on the Assess path):
 // index_symbols, resolve_symbols, resolve_versions (installed versions from
 // requirements.txt / poetry.lock / Pipfile.lock / PEP 621 pyproject.toml), call_graph,
-// find_ingresses (Flask/FastAPI route decorators), reachability, and compute_taint.
+// find_ingresses (Flask/FastAPI route decorators), reachability, compute_taint, and
+// resolve_inventory (the selected whole-graph dependency inventory — markers/extras evaluated
+// against the DECLARED target environment, six lockfile/manifest formats, declared integrity
+// digests; no resolver is launched — PLAN-170).
 // reachability and compute_taint are ALWAYS declared Partial(dynamic_dispatch) — Python
 // static reachability is structurally weak (dynamic dispatch, getattr, monkeypatching), so
 // "not reached" is UNKNOWN, never "safe", and the effect trial adjudicates. call_graph is
@@ -67,12 +70,13 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 }
 
 // dispatch runs the requested operation. index_symbols, resolve_symbols, resolve_versions,
-// call_graph, find_ingresses, reachability, and compute_taint call the real source-level
-// Python analysis (reachability/compute_taint always declared Partial). generate_harness,
-// build_manifest, and resolve_inventory remain contract-present ops returning their result
-// type with Unsupported() partiality (the Python effect rides the corpus repro-runtime
-// sandbox; there is no whole-graph dependency resolver). An unknown op, or a missing per-op
-// payload, is a hard failure (inv.4).
+// call_graph, find_ingresses, reachability, compute_taint, and resolve_inventory call the real
+// source-level Python analysis (reachability/compute_taint always declared Partial;
+// resolve_inventory reads declared manifests/lockfiles only, never launching a resolver —
+// PLAN-170). generate_harness and build_manifest remain contract-present ops returning their
+// result type with Unsupported() partiality (the Python effect rides the corpus repro-runtime
+// sandbox; build_manifest is PLAN-173). An unknown op, or a missing per-op payload, is a hard
+// failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -161,10 +165,11 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		// Python has no whole-graph dependency resolver: return an honestly-partial
-		// inventory (Complete=false, unsupported_phase1), NEVER an empty-but-successful one
-		// (which reads downstream as "this build has no dependencies").
-		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+		res, err := pythonanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
 		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence

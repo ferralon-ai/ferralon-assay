@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // lockParser is the selected-set parser for a captured lockfile format.
@@ -123,8 +125,8 @@ func TestParentEdgesC4(t *testing.T) {
 			if r.Relationship != relUnexpressed {
 				t.Errorf("%s: relationship = %s, want unexpressed", r.Name, relKindName(r.Relationship))
 			}
-			if got := r.relationshipReason(); got != reasonRelationshipUnexpressedPlaceholder {
-				t.Errorf("%s: relationshipReason = %q, want %q", r.Name, got, reasonRelationshipUnexpressedPlaceholder)
+			if got := r.relationshipReason(); got != plugin.PartialReasonRelationshipUnexpressed {
+				t.Errorf("%s: relationshipReason = %q, want %q", r.Name, got, plugin.PartialReasonRelationshipUnexpressed)
 			}
 			if len(r.Parents) != 0 {
 				t.Errorf("%s: flat node has parents %v, want none", r.Name, r.Parents)

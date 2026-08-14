@@ -15,7 +15,11 @@ package pythonanalysis
 // pyReq is intentionally a lane-local intermediate, not plugin.DependencyNode: the shared
 // inventory assembly + reason-code/field wiring is L0-gated (onyx-q6) and lands in E5.
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
 
 // reqKind classifies a requirements-file line by the source shape it declares. Every kind
 // other than reqNormal is a line the old parser dropped entirely (§3.1 silent omission); each
@@ -204,7 +208,7 @@ func buildSourceNode(line string, kind reqKind, hashes []string, env map[string]
 		Raw:     line,
 		Marker:  marker,
 		Hashes:  hashes,
-		Partial: []string{reasonSourceUnpinnedPlaceholder},
+		Partial: []string{plugin.PartialReasonSourceUnpinned},
 	}
 	applyMarker(&r, env, selection) // a marker still gates selection; may add env_unresolved
 	return r
@@ -312,7 +316,7 @@ func selectExtras(extras, selection []string) []string {
 // "unexpressed", never "direct".
 func (r pyReq) relationshipReason() string {
 	if r.Relationship == relUnexpressed {
-		return reasonRelationshipUnexpressedPlaceholder
+		return plugin.PartialReasonRelationshipUnexpressed
 	}
 	return ""
 }
@@ -322,7 +326,7 @@ func (r pyReq) relationshipReason() string {
 // bare code is used when the variable is unknown (malformed marker).
 func envUnresolvedReason(unboundVar string) string {
 	if unboundVar == "" {
-		return reasonEnvUnresolvedPlaceholder
+		return plugin.PartialReasonEnvConditionUnresolved
 	}
-	return reasonEnvUnresolvedPlaceholder + ":" + unboundVar
+	return plugin.PartialReasonEnvConditionUnresolved + ":" + unboundVar
 }

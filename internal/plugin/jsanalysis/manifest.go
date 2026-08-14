@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // packageJSON is the subset of package.json fields the manifest parse reads. Only
-// name, engines.node, scripts.build, and workspaces are consulted; everything else
-// is ignored.
+// name, engines.node, scripts.build, and the os/cpu platform-restriction arrays are
+// consulted; everything else is ignored.
 type packageJSON struct {
 	Name    string            `json:"name"`
 	Engines map[string]string `json:"engines"`
 	Scripts map[string]string `json:"scripts"`
+	OS      []string          `json:"os"`  // npm platform restriction: OS names ("linux", "darwin", "!win32")
+	CPU     []string          `json:"cpu"` // npm platform restriction: CPU architectures ("x64", "arm64")
 }
 
 // lockfiles are the npm/yarn/pnpm lockfile names whose presence selects a
@@ -63,6 +67,15 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	if v := pkg.Engines["node"]; v != "" {
 		res.Runtime = plugin.RuntimeSpec{Name: "node", Version: v}
 	}
+	// §4.6 target: the ecosystem-neutral target platform/architecture, sourced from
+	// package.json's npm `os`/`cpu` platform-restriction arrays (the only declared,
+	// statically readable target information a package.json carries). Left zero when
+	// neither is present — never guessed from the analyzer's own host.
+	//
+	// §4.6 configuration is deliberately left zero: package.json has no build-profile /
+	// configuration field, and reading the analyzer's own NODE_ENV would fabricate the
+	// customer's build configuration with wrong provenance and defeat determinism.
+	res.Target = platformTarget(pkg.OS, pkg.CPU)
 
 	// A missing name means we cannot identify the package — declare the gap rather
 	// than overclaim. A workspaces/monorepo layout NO LONGER declines here (PLAN-160
@@ -94,4 +107,42 @@ func installCommand(dir string) string {
 		}
 	}
 	return "npm install"
+}
+
+// platformTarget renders package.json's npm `os`/`cpu` platform-restriction arrays as
+// a neutral "os/cpu" target string (analogous to "linux/amd64"). Each side is sorted
+// and comma-joined for a deterministic, byte-stable value regardless of declaration
+// order. Returns "" when neither side is declared — the target is never inferred from
+// the analyzer's host.
+func platformTarget(oses, cpus []string) string {
+	o := joinSorted(oses)
+	c := joinSorted(cpus)
+	switch {
+	case o != "" && c != "":
+		return o + "/" + c
+	case o != "":
+		return o
+	default:
+		return c
+	}
+}
+
+// joinSorted returns the non-empty values of vs, sorted, de-duplicated, comma-joined.
+// Target is a canonical build-context value, so repeated os/cpu entries must collapse
+// to one (a package.json may declare a value more than once).
+func joinSorted(vs []string) string {
+	out := make([]string, 0, len(vs))
+	for _, v := range vs {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	uniq := out[:0]
+	for _, v := range out {
+		if len(uniq) == 0 || v != uniq[len(uniq)-1] {
+			uniq = append(uniq, v)
+		}
+	}
+	return strings.Join(uniq, ",")
 }

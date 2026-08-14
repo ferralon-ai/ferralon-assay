@@ -564,6 +564,15 @@ const (
 	// they say which fact was missing, and a reader can act on them. This one says only that a
 	// step did not run, and the scan-level PartialityNote list names which step.
 	ReasonAnalysisDidNotRun = "analysis_did_not_run"
+	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
+	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
+	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but
+	// is not persisted into report.SBOM, the object the diff compares, so a change confined to the
+	// build context is not detected and could inherit a stale Report silently. Carried as an
+	// inherent_limit (quiet methodology arm) on the inherited fast path so the gap is disclosed
+	// without asserting anything about this run's verdicts. A follow-on that persists build context
+	// into the compared state closes it.
+	ReasonBuildContextNotCompared = "build_context_not_compared"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is

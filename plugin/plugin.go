@@ -126,6 +126,26 @@ const (
 	// manifest/lock the resolver read (a transitive/optional/extra edge the lock does not record), so
 	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
 	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
+
+	// --- dependency-inventory reason codes (PLAN-160) ---
+	//
+	// These seven codes name conditions a whole-graph dependency inventory (ResolveInventory,
+	// §4.1) cannot resolve from lockfile/manifest metadata alone, under the no-package-manager
+	// constraint (§3.3/§10.1). Each is a DECLARED gap on a node (or the graph), never a silent
+	// omission: §3.1 forbids inferring safety from missing evidence.
+	//
+	// CROSS-LANE VOCABULARY NOTE (spine §3.4): these are shared, cross-lane canonical strings —
+	// PLAN-150 (.NET) and PLAN-170 (Python) inventory cycles inherit the same set. They are
+	// landed here (JS lane) additively because anvil deferred owning them this cycle; anvil may
+	// re-own/relocate the block later. The strings themselves are the contract and must not
+	// diverge across lanes.
+	PartialReasonGitRefUnpinned     = "git_ref_unpinned"                 // git dep with no pinned commit sha (moving ref); Artifact.Digest empty
+	PartialReasonLocalPathDep       = "local_path_dep"                   // file:/link: local dependency; path identity, no registry version/integrity
+	PartialReasonPlatformCondition  = "platform_condition_unevaluable"   // optional dep gated on os/cpu/libc; Target unevaluable from metadata, never guessed
+	PartialReasonAliasTargetAbsent  = "alias_target_absent"              // npm: alias whose target is absent from the lockfile
+	PartialReasonWorkspaceAttrib    = "workspace_attribution_incomplete" // workspace membership needs a manifest join that is missing/unreadable
+	PartialReasonPeerMetadataAbsent = "peer_metadata_absent"             // peer relationships not derivable from this dialect's lockfile (Yarn Classic)
+	PartialReasonLockfileAmbiguous  = "lockfile_ambiguous"               // two authoritative locks at one root, no packageManager signal; no nodes emitted for that root (graph-level)
 )
 
 // Complete is the constructor for a fully-resolved result.

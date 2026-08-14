@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TEGRON-JAVA-SSRF-0003-toolunavailable — §8.11 interface-dispatch characterization repro.
+
+  INTENDED BEHAVIOUR (this is a fixture directory ONLY; it decides nothing itself):
+    * ungated (pure-Go lexical pass, no analyzer)      -> not_exploitable
+    * analyzer GATED-BUT-UNAVAILABLE (run overlay)      -> undetermined, with
+                                                          tool_failure over RETAINED
+                                                          lexical edges — NEVER a
+                                                          clean empty graph.
+  The tool-unavailability is a RUN-ENVIRONMENT OVERLAY applied by the LATER consuming
+  test's harness (TEGRON_JAVA_ANALYZER_IMAGE set + the analyzer binary absent, so
+  exec.LookPath fails before any container starts). That overlay is NOT present in this
+  directory: there is no env var, gate, script, or Dockerfile here. This is a normal,
+  self-contained interface-dispatch Java checkout. The asymmetry between the two runs of
+  THIS SAME directory is the whole point of the fixture.
+
+  Synthetic SSRF-family advisory coordinate — com.example.svc:iface-fetch. Synthetic
+  advisory TEGRON-JAVA-SSRF-0003 affects the range [1.0.0, 1.3.0); the project version
+  below (1.2.0) is INSIDE that range, so the version axis does NOT disqualify — the
+  verdict must turn on reachability / tool availability, not on version.
+
+  DEPENDENCY-LIGHT on purpose: the Spring-shaped annotations are first-party stubs
+  (src/main/java/.../Stubs.java), so there are NO third-party dependencies to fetch and
+  the scip-java analyzer indexes fully offline. This pom drives ONLY the Prove-path
+  semantic index, never the free Assess path.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example.svc</groupId>
+  <artifactId>iface-fetch</artifactId>
+  <version>1.2.0</version>
+  <packaging>jar</packaging>
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+</project>

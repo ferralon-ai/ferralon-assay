@@ -11,10 +11,16 @@
 // versions from packages.lock.json / .csproj PackageReference / packages.config), call_graph,
 // find_ingresses, reachability, and compute_taint. reachability and compute_taint are
 // declared Partial(dynamic_dispatch) ALWAYS — never Complete — because a lexical C# scan
-// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). generate_harness and
-// build_manifest stay CONTRACT-PRESENT Unsupported permanently (Prove-tier: the .NET effect
-// rides the corpus repro-runtime sandbox, exactly as the Go/Java/JS/Python plugins ship
-// them). Every op keeps the nil-payload hard-error guard (inv.4).
+// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). resolve_inventory is LIVE
+// (PLAN-150): a pure-lexical whole-graph NuGet resolver over the checkout's
+// project.assets.json / packages.lock.json / declared PackageReference text — it never runs
+// dotnet/MSBuild/NuGet. build_manifest is LIVE (PLAN-151): a pure-lexical read of the checkout's
+// .csproj/.fsproj/.vbproj, Directory.Build.props/.targets, global.json, and restore-output
+// PRESENCE, projected into the flat ecosystem-neutral BuildManifestResult with declared partiality
+// where the shape cannot carry a fact — it too never runs dotnet/MSBuild/NuGet. generate_harness
+// stays CONTRACT-PRESENT Unsupported (Prove-tier; the .NET effect rides the corpus repro-runtime
+// sandbox, exactly as the Go/Java/JS/Python plugins ship it). Every op keeps the nil-payload
+// hard-error guard (inv.4).
 //
 // The client (internal/plugin.dotnetPlugin) owns the timeout via exec.CommandContext; this
 // process runs to completion on a single request. A hard failure sets Response.Error and
@@ -28,6 +34,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/dotnetanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -64,12 +71,12 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 	return writeResponse(stdout, resp)
 }
 
-// dispatch runs the requested operation. index_symbols, resolve_symbols, and
-// resolve_versions call the real source-level .NET analysis (Assess-foundation pass).
-// call_graph, find_ingresses, reachability, and compute_taint are contract-present but
-// return Unsupported() this pass (batch-2 promotes them); generate_harness and
-// build_manifest are permanently Unsupported (Prove-tier). An unknown op, or a missing
-// per-op payload, is a hard failure (inv.4).
+// dispatch runs the requested operation. index_symbols, resolve_symbols, and resolve_versions
+// call the real source-level .NET analysis (Assess-foundation pass); call_graph, find_ingresses,
+// reachability, and compute_taint are LIVE (reachability/compute_taint always Partial(dynamic_dispatch));
+// resolve_inventory is LIVE (PLAN-150) and build_manifest is LIVE (PLAN-151). generate_harness
+// remains Unsupported (Prove-tier). An unknown op, or a missing per-op payload, is a hard failure
+// (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -142,6 +149,16 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		}
 		return plugin.Response{Taint: &res}, nil
 
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		res, err := dotnetanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{Inventory: &res}, nil
+
 	case plugin.OpGenerateHarness:
 		if req.GenerateHarness == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing generate_harness request", req.Op)
@@ -152,7 +169,16 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.BuildManifest == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
-		return plugin.Response{BuildManifest: &plugin.BuildManifestResult{Partiality: plugin.Unsupported()}}, nil
+		res, err := dotnetanalysis.BuildManifest(ctx, *req.BuildManifest)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{BuildManifest: &res}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
+		// (Supported:false), never a Supported:true manifest with empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "dotnet"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

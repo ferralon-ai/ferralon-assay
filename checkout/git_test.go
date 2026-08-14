@@ -145,10 +145,12 @@ func TestGitCheckoutNonDefaultRef(t *testing.T) {
 	url := "file://" + origin
 
 	t.Run("non-default branch checks out", func(t *testing.T) {
-		dir, lang, err := gc.Fetch(ctx, url, "patched")
+		plan, err := gc.Fetch(ctx, url, "patched")
 		if err != nil {
 			t.Fatalf("Fetch(patched): %v", err)
 		}
+		prim := plan.Primary()
+		dir, lang := prim.Root, prim.Language
 		t.Cleanup(func() { _ = os.RemoveAll(dir) })
 		if lang != LangGo {
 			t.Fatalf("lang = %q, want %q", lang, LangGo)
@@ -163,10 +165,11 @@ func TestGitCheckoutNonDefaultRef(t *testing.T) {
 	})
 
 	t.Run("commit SHA checks out", func(t *testing.T) {
-		dir, _, err := gc.Fetch(ctx, url, patchedSHA)
+		plan, err := gc.Fetch(ctx, url, patchedSHA)
 		if err != nil {
 			t.Fatalf("Fetch(%s): %v", patchedSHA, err)
 		}
+		dir := plan.Primary().Root
 		t.Cleanup(func() { _ = os.RemoveAll(dir) })
 		got, err := os.ReadFile(filepath.Join(dir, "svc.go"))
 		if err != nil {
@@ -178,10 +181,11 @@ func TestGitCheckoutNonDefaultRef(t *testing.T) {
 	})
 
 	t.Run("default branch still checks out", func(t *testing.T) {
-		dir, _, err := gc.Fetch(ctx, url, "vulnerable")
+		plan, err := gc.Fetch(ctx, url, "vulnerable")
 		if err != nil {
 			t.Fatalf("Fetch(vulnerable): %v", err)
 		}
+		dir := plan.Primary().Root
 		t.Cleanup(func() { _ = os.RemoveAll(dir) })
 		got, err := os.ReadFile(filepath.Join(dir, "svc.go"))
 		if err != nil {

@@ -24,8 +24,8 @@ func TestComputeTaint_PathPresentIsAlwaysPartial(t *testing.T) {
 	if len(res.Paths) != 1 {
 		t.Fatalf("want exactly one taint path to the sink, got %d: %+v", len(res.Paths), res.Paths)
 	}
-	if res.Paths[0].Sink != sink {
-		t.Fatalf("path sink = %q, want %q", res.Paths[0].Sink, sink)
+	if res.Paths[0].Sink.SCIP != sink {
+		t.Fatalf("path sink = %q, want %q", res.Paths[0].Sink.SCIP, sink)
 	}
 	// The critical C# invariant: path presence is STILL Partial (never Complete).
 	if res.Partiality.Complete {

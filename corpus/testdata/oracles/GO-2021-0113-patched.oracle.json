@@ -1,0 +1,32 @@
+{
+  "fixture_id": "GO-2021-0113-patched",
+  "category": "patched",
+  "nodes": [
+    {
+      "purl": "pkg:golang/golang.org/x/text@v0.3.7",
+      "version": "v0.3.7",
+      "direct": true,
+      "project": "tegron.corpus/go-2021-0113-patched"
+    },
+    {
+      "purl": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e",
+      "version": "v0.0.0-20180917221912-90fa682c2a6e",
+      "direct": false,
+      "project": "tegron.corpus/go-2021-0113-patched"
+    }
+  ],
+  "edges": [
+    {
+      "parent": "pkg:golang/golang.org/x/text@v0.3.7\u001ftegron.corpus/go-2021-0113-patched\u001f\u001f",
+      "child": "pkg:golang/golang.org/x/tools@v0.0.0-20180917221912-90fa682c2a6e\u001ftegron.corpus/go-2021-0113-patched\u001f\u001f"
+    }
+  ],
+  "capture": {
+    "tool": "go mod",
+    "tool_version": "go version go1.26.3 darwin/arm64",
+    "command": "go list -m -json all  +  go mod graph  (GOWORK=off)",
+    "operator": "anvil (L1 platform-core, out-of-band per capture-procedure.md)",
+    "captured_at": "2026-08-12T20:04:58Z",
+    "fixture_digest": "sha256:feed15ed9d48ef628dbc6b98e72e40c16d3cca375164b5396e1487fb477a3909"
+  }
+}

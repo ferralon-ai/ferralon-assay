@@ -41,10 +41,36 @@ func TestLiveReachCandidateEval(t *testing.T) {
 	if _, err := exec.LookPath("tegron-plugin-go"); err != nil {
 		t.Skip("tegron-plugin-go not on PATH (run `make install` first)")
 	}
+	// Go is the floor: its LookPath skip above guarantees the constructor succeeds.
 	goPlugin, err := plugin.NewGoPlugin()
 	if err != nil {
 		t.Fatalf("go plugin: %v", err)
 	}
+	// Build a MultiPlugin from Go plus every non-Go plugin whose toolchain binary is present.
+	// Each non-Go constructor returns an error when its tegron-plugin-<lang> binary is absent
+	// from PATH — log-and-omit that language (unmeasured) exactly as the Go path t.Skips. A
+	// fixture whose language plugin was omitted then self-routes (by DetectLanguage(BuildDir))
+	// to the NoPlugin partiality path — recorded Complete:false, never an error and never a
+	// recall miss. Every environment lacks >=1 of the five toolchains, so a missing one must
+	// never abort the eval.
+	plugins := []plugin.LanguagePlugin{goPlugin}
+	for _, opt := range []struct {
+		lang string
+		ctor func() (plugin.LanguagePlugin, error)
+	}{
+		{"java", func() (plugin.LanguagePlugin, error) { return plugin.NewJavaPlugin() }},
+		{"js", func() (plugin.LanguagePlugin, error) { return plugin.NewJSPlugin() }},
+		{"python", func() (plugin.LanguagePlugin, error) { return plugin.NewPythonPlugin() }},
+		{"dotnet", func() (plugin.LanguagePlugin, error) { return plugin.NewDotNetPlugin() }},
+	} {
+		p, err := opt.ctor()
+		if err != nil {
+			t.Logf("omit %s plugin (toolchain absent): %v", opt.lang, err)
+			continue
+		}
+		plugins = append(plugins, p)
+	}
+	multi := plugin.NewMultiPlugin(plugins...)
 
 	fixtures, err := corpus.Load()
 	if err != nil {
@@ -60,23 +86,38 @@ func TestLiveReachCandidateEval(t *testing.T) {
 		}
 		// Baseline symbols come from the current in-memory corpus (what S1 would read today).
 		facts := pipeline.AdvisoryTable[fix.Advisory.ID]
-		cases = append(cases, Case{
-			VulnID:        fix.Advisory.ID,
-			Source:        fix.Advisory.Source,
-			Aliases:       facts.Aliases,
-			PURL:          facts.PURL,
-			Symbols:       facts.Symbols,
-			GuardSymbols:  facts.GuardSymbols,
-			BuildDir:      corpus.ReproPath(fix.Codebase.Acquisition.Path),
-			ExpectedSinks: expected[fix.Advisory.ID], // empty ⇒ precision unmeasured for this CVE
-		})
+		// empty expected ⇒ precision unmeasured for this CVE
+		cases = append(cases, CaseFrom(fix, facts, expected[fix.Advisory.ID]))
 	}
 	if len(cases) == 0 {
 		t.Fatal("no vendored_repro fixtures found to evaluate")
 	}
 
-	rep := Run(context.Background(), goPlugin, "current corpus (baseline)", cases)
+	rep := Run(context.Background(), multi, "current corpus (baseline)", cases)
 	t.Logf("\n%s", rep.Table())
+
+	// TEGRON_EVAL_UPDATE=1 regenerates the committed golden from this fresh run (the
+	// golden-update idiom). anvil runs this once to fill the empty seed with real numbers.
+	if os.Getenv("TEGRON_EVAL_UPDATE") == "1" {
+		if err := writeBaselineReport(baselinePath, rep); err != nil {
+			t.Fatalf("update baseline %s: %v", baselinePath, err)
+		}
+		t.Logf("wrote regenerated baseline to %s (%d results)", baselinePath, len(rep.Results))
+		return
+	}
+
+	// Diff the fresh run against the committed golden and fail the gate on a regression. An
+	// empty baseline makes every Go candidate a GainedCandidate (never a LostCandidate), so
+	// this is safe until anvil fills the golden with real numbers.
+	baseline, err := loadBaselineReport(baselinePath)
+	if err != nil {
+		t.Fatalf("load baseline %s: %v", baselinePath, err)
+	}
+	dr := Diff(baseline, rep)
+	t.Logf("%s", dr.String())
+	if dr.Regressed() {
+		t.Fatalf("reach-candidate baseline regressed:\n%s", dr)
+	}
 
 	annotated := 0
 	for _, c := range cases {

@@ -1,0 +1,12 @@
+{
+  "name": "yarn-peer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture: Yarn Classic v1 with a peerDependency. Yarn Classic omits peer relationships from the lockfile entirely (cell 4 = N), so the peer's classification is declared peer_metadata_absent; the ordinary dependency (widget) carries no such reason. Synthetic coordinates.",
+  "dependencies": {
+    "widget": "1.0.0"
+  },
+  "peerDependencies": {
+    "host-lib": "1.0.0"
+  }
+}

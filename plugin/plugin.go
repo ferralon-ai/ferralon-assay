@@ -9,7 +9,11 @@
 // the cmd/tegron-plugin-go subprocess binary, never in-process in the daemon.
 package plugin
 
-import "context"
+import (
+	"context"
+
+	"github.com/ferralon-ai/ferralon-assay/capability"
+)
 
 // LanguagePlugin is the contract for one language's evidence production. Every operation
 // returns artifacts (as typed results the pipeline marshals), never verdicts: the
@@ -57,6 +61,19 @@ type LanguagePlugin interface {
 
 	// BuildManifest produces enough to build and run the app under test. Phase-1 Go: Unsupported.
 	BuildManifest(ctx context.Context, req BuildManifestRequest) (BuildManifestResult, error)
+
+	// ResolveInventory resolves the whole dependency graph for the buildable module (§4.1).
+	// This cycle lands the operation; no plugin populates a real inventory yet — every plugin
+	// without a resolver returns DependencyInventory{Partiality: Unsupported()} (honest absence,
+	// never an empty-but-successful inventory).
+	ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error)
+
+	// CapabilityManifest returns the lane's static capability manifest — the up-front
+	// declaration of what this analyzer supports (the compile-time complement to the per-run
+	// Partiality). This cycle lands the operation only; no lane publishes content yet, so every
+	// plugin returns capability.Manifest{Supported:false} (honest absence, never a Supported:true
+	// manifest with empty axes). Content is authored per-lane in Phase-4.
+	CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error)
 }
 
 // Partiality declares whether an operation fully resolved its answer. A plugin that cannot
@@ -90,6 +107,66 @@ const (
 	// happen. Overloading the quiet codes for it renders an unknown as a clean scan —
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
+
+	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
+	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
+	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason
+	// string), so the base codes stay language-agnostic while the suffix carries the lane specific.
+	//
+	// PartialReasonEnvConditionUnresolved: an environment-conditional dependency could not be
+	// resolved because the deciding environment fact is unknown (a marker/condition such as a target
+	// platform or language-version gate). The dependency's presence is undetermined, not absent —
+	// resolve it by supplying ResolveInventoryRequest.TargetEnv.
+	PartialReasonEnvConditionUnresolved = "env_condition_unresolved"
+	// PartialReasonSourceUnpinned: a dependency's source is not pinned to an exact, verifiable
+	// version/artifact (an unlocked range, a VCS/path source with no lock entry), so the installed
+	// identity cannot be established — undetermined, never guessed to a concrete version.
+	PartialReasonSourceUnpinned = "source_unpinned"
+	// PartialReasonRelationshipUnexpressed: a dependency relationship (edge) is not expressed in the
+	// manifest/lock the resolver read (a transitive/optional/extra edge the lock does not record), so
+	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
+	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
+
+	// --- dependency-inventory reason localisers (PLAN-160) ---
+	//
+	// These name conditions a whole-graph dependency inventory (ResolveInventory, §4.1) cannot
+	// resolve from lockfile/manifest metadata alone, under the no-package-manager constraint
+	// (§3.3/§10.1). Each is a DECLARED gap on a node (or the graph), never a silent omission:
+	// §3.1 forbids inferring safety from missing evidence.
+	//
+	// RECONCILED to the onyx-q6 shared bases (§4 "code:suffix" naming): each value localises one
+	// canonical base above, so a cross-lane consumer reads the base and the JS suffix carries the
+	// lane specific. The named consts stay for call-site readability; their VALUES are the wire
+	// strings (base + ":" + suffix).
+	PartialReasonGitRefUnpinned     = PartialReasonSourceUnpinned + ":git_ref"                        // git dep, no pinned commit sha (moving ref); Artifact.Digest empty
+	PartialReasonLocalPathDep       = PartialReasonSourceUnpinned + ":local_path"                     // file:/link: local dependency; path identity, no registry version/integrity
+	PartialReasonPlatformCondition  = PartialReasonEnvConditionUnresolved + ":platform"               // optional dep gated on os/cpu/libc; Target unevaluable from metadata, never guessed
+	PartialReasonAliasTargetAbsent  = PartialReasonRelationshipUnexpressed + ":alias_target"          // npm: alias whose target is absent from the lockfile
+	PartialReasonWorkspaceAttrib    = PartialReasonRelationshipUnexpressed + ":workspace_attribution" // workspace membership needs a manifest join that is missing/unreadable
+	PartialReasonPeerMetadataAbsent = PartialReasonRelationshipUnexpressed + ":peer_metadata"         // peer relationships not derivable from this dialect's lockfile (Yarn Classic)
+
+	// lockfile_ambiguous is the one JS localiser that does NOT fit the three onyx bases
+	// (env/source/relationship): it names a root-level dialect-selection failure (two authoritative
+	// locks, no packageManager signal → no nodes emitted for that root), not a per-dependency gap.
+	// Mapped onto the existing tool_failure base and flagged to L0 (quartz-q14) for cross-lane
+	// adjudication — anvil may want a fourth base for "resolution could not proceed".
+	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
+
+	// --- module-resolution reason localisers (PLAN-162) ---
+	//
+	// These name conditions the JS/TS import-scoped module resolver (CallGraph) cannot turn into a
+	// first-party edge, under the no-Node/no-package-manager, node_modules-excluded constraint
+	// (§3.3/§10.1). Each is a DECLARED gap, never a silent decline or a fabricated edge (§3.1). They
+	// split the former blanket dynamic_dispatch into three reviewer-legible conditions (PLAN-162 C5);
+	// dynamic_dispatch is NOT retired — it keeps its meaning (a callee name resolved to >1 in-tree
+	// decl / prototype dispatch).
+	//
+	// RECONCILED to the onyx-q6 shared bases (quartz-q7 resolution): all three localise
+	// relationship_unexpressed — each is an import/call EDGE that could not be expressed. Cross-lane
+	// consumers (Python bare imports, .NET package refs) read the base; the suffix is the JS specific.
+	PartialReasonUninspectablePackage     = PartialReasonRelationshipUnexpressed + ":uninspectable_package" // static bare specifier into a package whose source is not in-tree (node_modules excluded); declined-but-attributed, never an edge
+	PartialReasonDynamicImportSpecifier   = PartialReasonRelationshipUnexpressed + ":dynamic_import"        // runtime-computed ESM target (import(expr)); never evaluated, never guessed
+	PartialReasonComputedRequireSpecifier = PartialReasonRelationshipUnexpressed + ":computed_require"      // runtime-computed CJS target (require(var)); never evaluated, never guessed
 )
 
 // Complete is the constructor for a fully-resolved result.
@@ -176,11 +253,29 @@ type ReachabilityRequest struct {
 
 // --- result payloads ---
 
-// Symbol is one SCIP-qualified symbol id plus its human-readable form.
+// SymbolKind discriminates the eight §4.3 symbol categories. Comparable (string kind).
+type SymbolKind string
+
+const (
+	SymbolKindPackage     SymbolKind = "package"     // packages / modules
+	SymbolKindType        SymbolKind = "type"        // types (incl. nested types)
+	SymbolKindFunction    SymbolKind = "function"    // free functions
+	SymbolKindMethod      SymbolKind = "method"      // methods on a type
+	SymbolKindConstructor SymbolKind = "constructor" // constructors (Java <init>, Go NewT idiom, …)
+	SymbolKindField       SymbolKind = "field"       // fields / properties / constants
+)
+
+// Symbol is the canonical, COMPARABLE symbol identity shared by first-party and dependency code.
+// Every field is scalar so Symbol is usable as a map key, == operand, and array element (see §1).
 type Symbol struct {
-	SCIP        string `json:"scip"`         // self-emitted SCIP symbol string
-	DisplayName string `json:"display_name"` // e.g. github.com/x/y.(*T).Method
-	Package     string `json:"package"`      // import path
+	Kind        SymbolKind `json:"kind"`                 // §4.3 discriminator; separates function/method/type/package/constructor and drives category distinction
+	Package     string     `json:"package"`              // §4.3 packages/modules: import path or module coordinate ("github.com/x/y", "com.fasterxml.jackson.core:jackson-databind")
+	Enclosing   string     `json:"enclosing,omitempty"`  // §4.3 nested declarations: enclosing type/decl chain, segments joined by "." (see separator spec below); empty for package- or file-scope symbols
+	Name        string     `json:"name,omitempty"`       // §4.3 member name (function/method/type/field/constructor); empty for a package Symbol
+	Descriptor  string     `json:"descriptor,omitempty"` // §4.3 overloads/generics: signature / type-argument descriptor that separates same-named members ("(int)", "<T>")
+	Generated   bool       `json:"generated,omitempty"`  // §4.3 generated symbols: true for compiler/codegen-synthesized symbols (accessors, proxies, protobuf, lombok, …)
+	DisplayName string     `json:"display_name"`         // human-readable rendering; the string projected into report.CallFrame/EntryPoint at the flatten seam
+	SCIP        string     `json:"scip"`                 // self-emitted canonical SCIP id; opaque wire/report bridge and the "load-bearing sink id source" (stages.go:2496). NOT the matching identity — matchers key on the structured fields (symbolform_guard_test contract)
 }
 
 // SymbolIndexResult is IndexSymbols' response: the SCIP-qualified symbols it found.
@@ -196,10 +291,10 @@ type SymbolResolutionResult struct {
 	Resolved   []Symbol   `json:"resolved"` // advisory symbol → concrete codebase symbols
 }
 
-// CallEdge is one directed call-graph edge by SCIP symbol id.
+// CallEdge is one directed call-graph edge between canonical symbols.
 type CallEdge struct {
-	Caller string `json:"caller"`
-	Callee string `json:"callee"`
+	Caller Symbol `json:"caller"`
+	Callee Symbol `json:"callee"`
 }
 
 // CallGraphResult is CallGraph's response: the graph edges and roots actually built,
@@ -208,13 +303,13 @@ type CallGraphResult struct {
 	Partiality Partiality `json:"partiality"`
 	Algorithm  string     `json:"algorithm"` // the algorithm actually used
 	Edges      []CallEdge `json:"edges"`
-	Roots      []string   `json:"roots"` // entrypoint symbols (main, init, etc.)
+	Roots      []Symbol   `json:"roots"` // entrypoint symbols (main, init, etc.)
 }
 
 // Ingress is one framework-idiomatic entry point.
 type Ingress struct {
 	Kind     string `json:"kind"`     // "http_route" | "main" | "handler" | ...
-	Symbol   string `json:"symbol"`   // SCIP id of the entry function
+	Symbol   Symbol `json:"symbol"`   // canonical symbol of the entry function
 	Selector string `json:"selector"` // e.g. "GET /users/{id}" when known
 }
 
@@ -226,9 +321,9 @@ type IngressResult struct {
 
 // ReachPath is one govulncheck-derived (ingress, sink, path) trace.
 type ReachPath struct {
-	Sink    string   `json:"sink"`              // vuln symbol SCIP id (the resolved sink)
-	Ingress string   `json:"ingress,omitempty"` // entrypoint symbol; empty if unknown (partial)
-	Trace   []string `json:"trace"`             // ordered SCIP ids ingress→sink
+	Sink    Symbol   `json:"sink"`              // vuln symbol (the resolved sink)
+	Ingress Symbol   `json:"ingress,omitempty"` // entrypoint symbol; zero value if unknown (partial)
+	Trace   []Symbol `json:"trace"`             // ordered symbols ingress→sink
 }
 
 // ReachabilityResult is Reachability's response: the candidate (ingress, sink, path)
@@ -242,6 +337,81 @@ type ReachabilityResult struct {
 	// and the caller must treat the empty path set as evidence about the analyzer's toolchain
 	// rather than the subject's. It is a measurement, never a promise: the caller compares.
 	ScanToolchain string `json:"scan_toolchain,omitempty"`
+}
+
+// --- whole-graph dependency inventory (§4.1) ---
+
+// ResolveInventoryRequest carries the buildable module to resolve the whole dependency graph for.
+type ResolveInventoryRequest struct {
+	BuildDir string `json:"build_dir"` // checked-out module/workspace root
+
+	// TargetEnv is the §4.6 target-environment override the resolver evaluates environment-conditional
+	// dependencies against (onyx-q6). It rides on the REQUEST, not on BuildDir: the override is Assay
+	// configuration, not a repo file, so a plugin must not read it from the checked-out tree. Keys are
+	// environment facts (platform, language/runtime version, …); an absent map (nil) means no override
+	// and preserves today's behavior — the resolver falls back to whatever the repo declares, and an
+	// unresolved condition is disclosed as PartialReasonEnvConditionUnresolved rather than assumed.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
+
+	// Selection restricts resolution to a named subset of the dependency set (optional groups / extras
+	// / features the request opts into), also Assay config carried on the request (onyx-q6). An absent
+	// slice (nil) means no restriction — the full declared set is resolved, today's behavior.
+	Selection []string `json:"selection,omitempty"`
+}
+
+// CapabilityManifestRequest carries no inputs: a capability manifest is a static per-lane fact,
+// independent of any checked-out build. The type exists for protocol uniformity/extensibility.
+type CapabilityManifestRequest struct{}
+
+// DependencyInventory is the whole-graph resolver result (§4.1). This cycle lands the TYPE only;
+// no plugin populates it (four+ plugins return Unsupported() — see §5). Nodes and Edges are
+// emitted in explicit sorted order (see §7); no map is an iteration source on the encoding path.
+type DependencyInventory struct {
+	Partiality Partiality       `json:"partiality"` // graph-level declared partiality for unresolved conditions (§4.1 "declared partiality")
+	Nodes      []DependencyNode `json:"nodes"`      // one per resolved package instance; sorted by Node.ID
+	Edges      []DependencyEdge `json:"edges"`      // parent→child relationships; sorted by (Parent, Child)
+}
+
+// DependencyNode is one resolved package instance in the dependency graph.
+type DependencyNode struct {
+	ID         string               `json:"id"`         // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
+	PURL       string               `json:"purl"`       // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
+	Version    string               `json:"version"`    // §4.1 exact resolved version
+	Direct     bool                 `json:"direct"`     // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
+	Membership DependencyMembership `json:"membership"` // §4.1 project/workspace/target membership
+	Artifact   DependencyArtifact   `json:"artifact"`   // §4.1 selected artifact identity + integrity digest
+	Provenance DependencyProvenance `json:"provenance"` // §4.1 manifest/lockfile/resolver/runtime-target provenance
+	Partiality Partiality           `json:"partiality"` // §4.1 per-node declared partiality (unresolved condition on THIS node)
+}
+
+// DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the
+// distinct field ResolvedDependency lacks today (plugin.go:143-148), enabling the package-instance
+// tree (§5.3 deliverable 9).
+type DependencyEdge struct {
+	Parent string `json:"parent"` // DependencyNode.ID of the depending instance
+	Child  string `json:"child"`  // DependencyNode.ID of the depended-on instance
+}
+
+// DependencyMembership records which project/workspace/target a node belongs to (§4.1).
+type DependencyMembership struct {
+	Project   string `json:"project,omitempty"`   // owning project/module root
+	Workspace string `json:"workspace,omitempty"` // enclosing workspace (monorepo), when applicable
+	Target    string `json:"target,omitempty"`    // build target/configuration the node is scoped to (e.g. "test", "runtime")
+}
+
+// DependencyArtifact identifies the selected artifact and its integrity digest (§4.1).
+type DependencyArtifact struct {
+	Identity string `json:"identity"` // selected artifact identity (chosen filename/coordinate, e.g. wheel/jar/zip name)
+	Digest   string `json:"digest"`   // integrity digest, algorithm-prefixed ("sha256:…", "sha512:…")
+}
+
+// DependencyProvenance records how the node's resolution was determined (§4.1).
+type DependencyProvenance struct {
+	Manifest string `json:"manifest,omitempty"` // manifest file that declared it (go.mod, package.json, pom.xml)
+	Lockfile string `json:"lockfile,omitempty"` // lockfile that pinned it (go.sum, package-lock.json)
+	Resolver string `json:"resolver"`           // resolver/tool that produced the resolution ("go mod", "npm", "pip")
+	Runtime  string `json:"runtime,omitempty"`  // runtime the resolution targeted ("go1.21", "node18")
+	Target   string `json:"target,omitempty"`   // target platform the resolution targeted ("linux/amd64")
 }
 
 // --- stub-only results ---
@@ -287,20 +457,28 @@ type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
 }
 
-// BuildManifestResult is BuildManifest's response: enough to build and run the app
-// under test.
+// RuntimeSpec is the ecosystem-neutral runtime descriptor (replaces GoVersion + ToolchainVersion).
+type RuntimeSpec struct {
+	Name      string `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
+	Version   string `json:"version,omitempty"`   // declared/minimum runtime version (replaces GoVersion; JS: node engine range — no longer overloaded onto a "go_version" field)
+	Toolchain string `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one (replaces ToolchainVersion); a stronger floor than Version
+}
+
+// ResolverSpec is the ecosystem-neutral resolver/build descriptor (replaces BuildCommand).
+type ResolverSpec struct {
+	Name    string `json:"name,omitempty"`    // resolver/build tool ("go", "npm", "maven", "gradle")
+	Command string `json:"command,omitempty"` // neutral build invocation (replaces BuildCommand, e.g. "go build ./...")
+}
+
+// BuildManifestResult carries ecosystem-neutral build context (§4.6). Breaking change from the
+// Go-named prior shape; four+ plugins still return Unsupported().
 type BuildManifestResult struct {
-	Partiality Partiality `json:"partiality"`
-	// Module/GoVersion/BuildCommand are derived from a single-module go.mod parse.
-	Module       string `json:"module,omitempty"`
-	GoVersion    string `json:"go_version,omitempty"`
-	BuildCommand string `json:"build_command,omitempty"`
-	// ToolchainVersion is the manifest's explicit toolchain declaration when it carries one,
-	// verbatim ("go1.21.3" from a go.mod `toolchain` directive). It is a DIFFERENT and stronger
-	// floor than GoVersion (the `go` directive, a minimum LANGUAGE version) and the two are
-	// reported separately so the caller can order them; neither pins the build. Empty when the
-	// manifest declares no toolchain, which is the common case.
-	ToolchainVersion string `json:"toolchain_version,omitempty"`
+	Partiality    Partiality   `json:"partiality"`
+	Runtime       RuntimeSpec  `json:"runtime"`                 // §4.6 runtime
+	Target        string       `json:"target,omitempty"`        // §4.6 target platform/architecture ("linux/amd64")
+	Configuration string       `json:"configuration,omitempty"` // §4.6 build configuration/profile ("release", "Debug")
+	ProjectRoot   string       `json:"project_root,omitempty"`  // §4.6 project root: module/package root identity (replaces Module)
+	Resolver      ResolverSpec `json:"resolver"`                // §4.6 resolver
 }
 
 // StubPlugin implements LanguagePlugin with canned, in-memory results — the analog of
@@ -317,6 +495,16 @@ type StubPlugin struct {
 }
 
 var _ LanguagePlugin = StubPlugin{}
+
+// Canned stub symbols. Symbol is comparable and == compares ALL fields, so each logical symbol
+// is minted ONCE here and reused across every canned result (index, graph, ingress, reach). That
+// keeps the same logical symbol byte-identical wherever it appears — the map-key/set/== identity
+// the graph consumers rely on — instead of re-spelling it per call site and silently diverging.
+var (
+	stubSymMain = Symbol{Kind: SymbolKindFunction, Package: "example.com/stub", Name: "main", DisplayName: "example.com/stub.main", SCIP: "scip:stub#main"}
+	stubSymFoo  = Symbol{Kind: SymbolKindFunction, Package: "example.com/stub", Name: "Foo", DisplayName: "example.com/stub.Foo", SCIP: "scip:stub#Foo"}
+	stubSymVuln = Symbol{Kind: SymbolKindFunction, Package: "example.com/dep", Name: "Vulnerable", DisplayName: "example.com/dep.Vulnerable", SCIP: "scip:vuln#Vulnerable"}
+)
 
 // stubLivePartiality returns the partiality the live ops should carry given the variant.
 func (p StubPlugin) stubLivePartiality() Partiality {
@@ -335,9 +523,7 @@ func (StubPlugin) Language() string { return "go" }
 func (p StubPlugin) IndexSymbols(_ context.Context, _ IndexSymbolsRequest) (SymbolIndexResult, error) {
 	return SymbolIndexResult{
 		Partiality: p.stubLivePartiality(),
-		Symbols: []Symbol{
-			{SCIP: "scip:stub#Foo", DisplayName: "example.com/stub.Foo", Package: "example.com/stub"},
-		},
+		Symbols:    []Symbol{stubSymFoo},
 	}, nil
 }
 
@@ -347,9 +533,7 @@ func (p StubPlugin) IndexSymbols(_ context.Context, _ IndexSymbolsRequest) (Symb
 func (p StubPlugin) ResolveDependencySymbols(_ context.Context, _ ResolveSymbolsRequest) (SymbolResolutionResult, error) {
 	return SymbolResolutionResult{
 		Partiality: p.stubLivePartiality(),
-		Resolved: []Symbol{
-			{SCIP: "scip:vuln#Vulnerable", DisplayName: "example.com/dep.Vulnerable", Package: "example.com/dep"},
-		},
+		Resolved:   []Symbol{stubSymVuln},
 	}, nil
 }
 
@@ -361,10 +545,10 @@ func (p StubPlugin) CallGraph(_ context.Context, _ CallGraphRequest) (CallGraphR
 		Partiality: p.stubLivePartiality(),
 		Algorithm:  "vta",
 		Edges: []CallEdge{
-			{Caller: "scip:stub#main", Callee: "scip:stub#Foo"},
-			{Caller: "scip:stub#Foo", Callee: "scip:vuln#Vulnerable"},
+			{Caller: stubSymMain, Callee: stubSymFoo},
+			{Caller: stubSymFoo, Callee: stubSymVuln},
 		},
-		Roots: []string{"scip:stub#main"},
+		Roots: []Symbol{stubSymMain},
 	}, nil
 }
 
@@ -375,7 +559,7 @@ func (p StubPlugin) FindIngresses(_ context.Context, _ FindIngressesRequest) (In
 	return IngressResult{
 		Partiality: p.stubLivePartiality(),
 		Ingresses: []Ingress{
-			{Kind: "main", Symbol: "scip:stub#main", Selector: ""},
+			{Kind: "main", Symbol: stubSymMain, Selector: ""},
 		},
 	}, nil
 }
@@ -388,9 +572,9 @@ func (p StubPlugin) Reachability(_ context.Context, _ ReachabilityRequest) (Reac
 		Partiality: p.stubLivePartiality(),
 		Paths: []ReachPath{
 			{
-				Sink:    "scip:vuln#Vulnerable",
-				Ingress: "scip:stub#main",
-				Trace:   []string{"scip:stub#main", "scip:stub#Foo", "scip:vuln#Vulnerable"},
+				Sink:    stubSymVuln,
+				Ingress: stubSymMain,
+				Trace:   []Symbol{stubSymMain, stubSymFoo, stubSymVuln},
 			},
 		},
 	}, nil
@@ -414,4 +598,17 @@ func (StubPlugin) GenerateHarness(_ context.Context, _ GenerateHarnessRequest) (
 // BuildManifest is a Phase-1 contract stub: it always returns Unsupported.
 func (StubPlugin) BuildManifest(_ context.Context, _ BuildManifestRequest) (BuildManifestResult, error) {
 	return BuildManifestResult{Partiality: Unsupported()}, nil
+}
+
+// ResolveInventory is a Phase-1 contract stub: it always returns Unsupported. It returns an
+// honestly-partial inventory (Complete=false, PartialReasonUnsupported), NOT an empty-but-successful
+// one — a zero-node Complete() inventory would read downstream as "this build has no dependencies".
+func (StubPlugin) ResolveInventory(_ context.Context, _ ResolveInventoryRequest) (DependencyInventory, error) {
+	return DependencyInventory{Partiality: Unsupported()}, nil
+}
+
+// CapabilityManifest is honest absence this cycle: no lane publishes a manifest yet, so it returns
+// capability.Manifest{Supported:false} — never a Supported:true manifest with empty axes.
+func (StubPlugin) CapabilityManifest(_ context.Context, _ CapabilityManifestRequest) (capability.Manifest, error) {
+	return capability.Manifest{Supported: false}, nil
 }

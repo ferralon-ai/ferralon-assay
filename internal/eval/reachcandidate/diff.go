@@ -45,7 +45,8 @@ func symbolMatches(a, b string) bool {
 
 // Transition is one CVE's before→after change across two runs of the same case set.
 type Transition struct {
-	VulnID string
+	CaseID string // unique fixture id — the pairing key (VulnID collides across variants)
+	VulnID string // advisory id, for display/grouping
 	// Recall transitions.
 	GainedCandidate bool // no candidate before, candidate after (the recall gain — completeness surfaced a dropped CVE)
 	LostCandidate   bool // candidate before, none after (a regression — should be empty on a populate)
@@ -62,14 +63,16 @@ type DiffReport struct {
 	Transitions   []Transition
 }
 
-// Diff pairs the two reports by VulnID and computes per-CVE transitions plus the aggregate
-// recall/precision deltas. Cases present in only one run are reported as a note, never
-// silently dropped.
+// Diff pairs the two reports by CaseID (the unique fixture id) and computes per-CVE
+// transitions plus the aggregate recall/precision deltas. Pairing on CaseID rather than VulnID
+// is what stops the vulnerable/fixed/patched/absent variants of one advisory from collapsing
+// onto a single map entry and masking per-variant recall regressions. Cases present in only one
+// run are reported as a note, never silently dropped.
 func Diff(before, after Report) DiffReport {
 	byID := func(r Report) map[string]CaseResult {
 		m := make(map[string]CaseResult, len(r.Results))
 		for _, res := range r.Results {
-			m[res.VulnID] = res
+			m[res.CaseID] = res
 		}
 		return m
 	}
@@ -94,7 +97,7 @@ func Diff(before, after Report) DiffReport {
 		if !hasB || !hasA {
 			continue // reported in String() as a coverage note, not a transition
 		}
-		t := Transition{VulnID: id}
+		t := Transition{CaseID: id, VulnID: bs.VulnID}
 		if !bs.CandidatePairFormed && as.CandidatePairFormed {
 			t.GainedCandidate = true
 		}
@@ -117,8 +120,10 @@ func Diff(before, after Report) DiffReport {
 }
 
 // RecallDelta / PrecisionDelta return the before and after rates for the aggregate move.
-func (d DiffReport) RecallDelta() (before, after Rate)    { return d.Before.Recall(), d.After.Recall() }
-func (d DiffReport) PrecisionDelta() (before, after Rate) { return d.Before.Precision(), d.After.Precision() }
+func (d DiffReport) RecallDelta() (before, after Rate) { return d.Before.Recall(), d.After.Recall() }
+func (d DiffReport) PrecisionDelta() (before, after Rate) {
+	return d.Before.Precision(), d.After.Precision()
+}
 
 // Regressed reports whether the diff shows a regression that must fail the acceptance gate:
 // a lost candidate (recall went backward) or a broken sink (precision went backward), or the
@@ -157,7 +162,7 @@ func (d DiffReport) String() string {
 		if t.SinkBroken {
 			tags = append(tags, "sink-broken(REGRESSION)")
 		}
-		fmt.Fprintf(&b, "  %-24s  %s\n", t.VulnID, strings.Join(tags, " "))
+		fmt.Fprintf(&b, "  %-32s  %-24s  %s\n", t.CaseID, t.VulnID, strings.Join(tags, " "))
 	}
 	if d.Regressed() {
 		fmt.Fprintf(&b, "  RESULT: REGRESSED\n")

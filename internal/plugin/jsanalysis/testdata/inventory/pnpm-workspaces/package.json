@@ -1,0 +1,9 @@
+{
+  "name": "ws-root",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F7: pnpm workspaces, >=2 members, with a root-hoisted dep (left-pad@1.3.0) declared by BOTH members. Proves C4: one project record per member, per-member direct deps, and hoisted-dep attribution to the declaring members rather than the root alone. Synthetic; digests omitted.",
+  "engines": {
+    "node": ">=18"
+  }
+}

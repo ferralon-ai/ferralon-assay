@@ -30,10 +30,10 @@ func TestMacaron_RegisteredHandlerIsIngress(t *testing.T) {
 	macaronOK := false
 	stdlibOK := false
 	for _, in := range res.Ingresses {
-		if in.Kind == "http_route" && strings.Contains(in.Symbol, "MyHandler") {
+		if in.Kind == "http_route" && strings.Contains(in.Symbol.SCIP, "MyHandler") {
 			macaronOK = true
 		}
-		if in.Kind == "http_route" && strings.Contains(in.Symbol, "stdlibHandler") {
+		if in.Kind == "http_route" && strings.Contains(in.Symbol.SCIP, "stdlibHandler") {
 			stdlibOK = true
 		}
 	}
@@ -41,14 +41,14 @@ func TestMacaron_RegisteredHandlerIsIngress(t *testing.T) {
 	if !macaronOK {
 		var got []string
 		for _, in := range res.Ingresses {
-			got = append(got, in.Kind+":"+in.Symbol)
+			got = append(got, in.Kind+":"+in.Symbol.SCIP)
 		}
 		t.Fatalf("macaron-registered MyHandler not surfaced as an http_route ingress; got %v", got)
 	}
 	if !stdlibOK {
 		var got []string
 		for _, in := range res.Ingresses {
-			got = append(got, in.Kind+":"+in.Symbol)
+			got = append(got, in.Kind+":"+in.Symbol.SCIP)
 		}
 		t.Errorf("net/http registrar regressed: stdlibHandler not an http_route ingress; got %v", got)
 	}

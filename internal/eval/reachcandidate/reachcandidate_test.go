@@ -38,15 +38,15 @@ func (p fakeProgramPlugin) ResolveDependencySymbols(_ context.Context, req plugi
 func (p fakeProgramPlugin) CallGraph(_ context.Context, _ plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	var edges []plugin.CallEdge
 	for sink := range p.reachable {
-		edges = append(edges, plugin.CallEdge{Caller: p.ingress, Callee: sink})
+		edges = append(edges, plugin.CallEdge{Caller: plugin.Symbol{SCIP: p.ingress}, Callee: plugin.Symbol{SCIP: sink}})
 	}
-	return plugin.CallGraphResult{Partiality: plugin.Complete(), Algorithm: "test", Edges: edges, Roots: []string{p.ingress}}, nil
+	return plugin.CallGraphResult{Partiality: plugin.Complete(), Algorithm: "test", Edges: edges, Roots: []plugin.Symbol{{SCIP: p.ingress}}}, nil
 }
 
 func (p fakeProgramPlugin) FindIngresses(_ context.Context, _ plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
-		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: p.ingress, Selector: "GET /"}},
+		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: p.ingress}, Selector: "GET /"}},
 	}, nil
 }
 

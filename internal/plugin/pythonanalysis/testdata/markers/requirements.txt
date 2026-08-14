@@ -1,0 +1,27 @@
+# PLAN-170 C1 fixture. Each requirement is guarded by an environment marker (or none).
+# Expected outcomes are authored from PEP 508 semantics (deterministic — the spec, not a
+# native-resolver capture). The test evaluates these against two declared descriptors.
+
+# marker-true shape + python_version (version-valued, routes through pep440).
+pkg-pyver==1.0.0 ; python_version >= "3.8"
+
+# marker-false shape + sys_platform (string equality).
+pkg-plat==1.0.0 ; sys_platform == "win32"
+
+# marker-unbound shape: platform_machine is not bound by either descriptor.
+pkg-unbound==1.0.0 ; platform_machine == "x86_64"
+
+# boolean structure: and / or / parentheses.
+pkg-bool==1.0.0 ; (python_version >= "3.8" and sys_platform == "linux") or os_name == "nt"
+
+# the `in` membership operator (substring).
+pkg-in==1.0.0 ; "linux" in sys_platform
+
+# python_full_version (version-valued, X.Y.Z).
+pkg-full==1.0.0 ; python_full_version >= "3.11.0"
+
+# reversed orientation: literal on the left, version variable on the right.
+pkg-reversed==1.0.0 ; "3.8" <= python_version
+
+# no marker → always selected.
+pkg-nomarker==1.0.0

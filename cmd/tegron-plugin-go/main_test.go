@@ -100,8 +100,8 @@ func TestDispatch_ComputeTaintRoundTrip(t *testing.T) {
 	}
 	var sink string
 	for _, e := range cgResp.CallGraph.Edges {
-		if strings.Contains(e.Callee, "Sink") {
-			sink = e.Callee
+		if strings.Contains(e.Callee.SCIP, "Sink") {
+			sink = e.Callee.SCIP
 		}
 	}
 	if sink == "" {
@@ -155,11 +155,52 @@ func TestDispatch_BuildManifestRoundTrip(t *testing.T) {
 		t.Fatal("missing build_manifest payload")
 	}
 	m := resp.BuildManifest
-	if m.Module != "tegron.test/fixturemod" || m.BuildCommand != "go build ./..." || !m.Partiality.Complete {
+	if m.ProjectRoot != "tegron.test/fixturemod" || m.Resolver.Command != "go build ./..." || !m.Partiality.Complete {
 		t.Errorf("expected a complete single-module manifest through the subprocess; got %+v", m)
+	}
+	if m.Runtime.Name != "go" {
+		t.Errorf("Runtime.Name = %q, want \"go\"", m.Runtime.Name)
 	}
 	if hasReason(m.Partiality.Reasons, plugin.PartialReasonUnsupported) {
 		t.Error("manifest must no longer be Unsupported through the subprocess")
+	}
+}
+
+// TestDispatch_ResolveInventoryWired asserts PLAN-102's contract through the
+// subprocess: the whole-graph resolver is implemented (no longer the Unsupported
+// stub) and resolves the SELECTED graph of the fixture module. fixturemod declares
+// no external dependencies, so the honest outcome is a Complete() zero-node
+// inventory ("this build genuinely has no dependencies", C3 case (ii)) — NOT a
+// declared-Unsupported graph, and NOT a fabricated node.
+func TestDispatch_ResolveInventoryWired(t *testing.T) {
+	resp := roundTrip(t, plugin.Request{
+		Op:               plugin.OpResolveInventory,
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: fixtureDir(t)},
+	})
+	if resp.Inventory == nil {
+		t.Fatal("missing inventory payload")
+	}
+	if hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Error("Go inventory must no longer be Unsupported through the subprocess (PLAN-102 implements it)")
+	}
+	if !resp.Inventory.Partiality.Complete {
+		t.Errorf("fixturemod has no external deps; inventory must be Complete, got %v", resp.Inventory.Partiality.Reasons)
+	}
+	if len(resp.Inventory.Nodes) != 0 {
+		t.Errorf("fixturemod has no external deps; want zero nodes, got %d", len(resp.Inventory.Nodes))
+	}
+}
+
+// TestDispatch_ResolveInventoryNilPayloadFailsClosed asserts the whole-graph resolver op hard-fails
+// when the request carries no payload, exactly like every other op — never a success response
+// synthesized from a missing request (inv.4).
+func TestDispatch_ResolveInventoryNilPayloadFailsClosed(t *testing.T) {
+	_, err := dispatch(context.Background(), plugin.Request{Op: plugin.OpResolveInventory})
+	if err == nil {
+		t.Fatal("expected a hard error for a nil resolve_inventory payload, got a success response")
+	}
+	if !strings.Contains(err.Error(), "missing resolve_inventory request") {
+		t.Errorf("error = %q, want it to name the missing resolve_inventory request", err)
 	}
 }
 

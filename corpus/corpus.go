@@ -62,7 +62,7 @@ func ReproPath(p string) string { return resolveReproPath(p) }
 // SchemaVersion is the only fixture schema version this loader accepts.
 const SchemaVersion = "tegron.corpus.v1"
 
-// Category is the canonical fixture taxonomy (mirrors the four ROADMAP categories).
+// Category is the canonical fixture taxonomy (mirrors the ROADMAP categories).
 type Category string
 
 const (
@@ -70,6 +70,14 @@ const (
 	CategoryAbsentNotExploitable   Category = "absent_not_exploitable"
 	CategoryReachableUnconfirmable Category = "reachable_unconfirmable"
 	CategoryPatched                Category = "patched"
+	// CategoryInstalledUndetermined: the vulnerable dependency version is present (inside the
+	// advisory's affected range) but NO reachability determination was made — the version-only DEP
+	// case with no symbols and no call graph. It is neither reachable_unconfirmable (nothing was
+	// reached) nor absent_not_exploitable (the version IS present); it pairs with the third Warrant
+	// direction "undetermined" (report.VerdictUndetermined: "the advisory applies and the scan
+	// established NOTHING about it"). This is the fleet-wide encoding for every lane's version-only
+	// DEP-vulnerable fixture (anvil-q12).
+	CategoryInstalledUndetermined Category = "installed_undetermined"
 )
 
 // validCategories is the closed set of allowed Category values.
@@ -78,6 +86,7 @@ var validCategories = map[Category]bool{
 	CategoryAbsentNotExploitable:   true,
 	CategoryReachableUnconfirmable: true,
 	CategoryPatched:                true,
+	CategoryInstalledUndetermined:  true,
 }
 
 // validSources is the closed set of allowed advisory source strings.
@@ -87,10 +96,15 @@ var validSources = map[string]bool{
 	"ghsa": true,
 }
 
-// validDirections is the closed set of allowed verdict directions.
+// validDirections is the closed set of allowed verdict directions. It mirrors the three-valued
+// Warrant engine: "undetermined" (report.VerdictUndetermined) is the honest label for a case where
+// the advisory applies but the scan established nothing — forcing such a case into either binary pole
+// would either assert exploitability from mere version-presence (the SCA false positive) or assert
+// safety from absent reachability evidence (a §3 violation). See anvil-q12.
 var validDirections = map[string]bool{
 	"exploitable":     true,
 	"not_exploitable": true,
+	"undetermined":    true,
 }
 
 // validStrengths is the closed set of allowed verdict strengths.
@@ -216,9 +230,14 @@ func (f Fixture) Validate() error {
 	return nil
 }
 
-// expectedLabel derives the four-name convenience label from direction and strength,
-// matching the verdict.PoE.Label() logic.
+// expectedLabel derives the convenience label from direction and strength, matching the
+// verdict.PoE.Label() logic. "undetermined" is the absence of a determination, not a graded
+// refutation or exploit claim, so it is never strength-prefixed — it labels as itself regardless of
+// strength (anvil-q12).
 func expectedLabel(direction, strength string) string {
+	if direction == "undetermined" {
+		return "undetermined"
+	}
 	if strength == "reasoned" {
 		return "reasoned_" + direction
 	}

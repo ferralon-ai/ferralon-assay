@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-SSRF-0001-REACHABLE",
+  "category": "reachable_unconfirmable",
+  "advisory": {
+    "id": "TEGRON-PY-SSRF-0001",
+    "source": "osv",
+    "summary": "Server-side request forgery in the netclient HTTP helper: open_conn(url) dials an attacker-influenced URL with no validation. Synthetic parity fixture (not a real CVE). The vulnerable callable lives in a transitive dependency (netclient) that is VENDORED AS FIRST-PARTY SOURCE into the build dir so the pure-Go lexical scanner can index it and build edges to it (see finding F-B1). Reachable shape: a Flask route ingress transitively reaches the sink via unique (name, arity) edges.",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/ferralon-corpus-repros",
+    "revision": "TEGRON-PY-SSRF-0001-REACHABLE-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-SSRF-0001-REACHABLE/",
+      "notes": "First-party Python repro. src/routes.py registers proxy_view as an http_route ingress via a Flask @app.route decorator applied directly on the handler def; the handler forwards into src/netclient.py, reaching the vulnerable sink open_conn over the source-lexical call graph. The ingress->sink path is proxy_view -> fetch_url -> open_conn (multi-hop, cross-module). F-B1: the sink is a TRANSITIVE-dependency callable modelled by vendoring netclient as first-party source; 'transitive' is a property of this metadata, NOT scanner-observable pre-PLAN-270 (there is no dependency-artifact indexer and every symbol carries '.' as distribution/version). This fixture therefore exercises the reachable arm honestly as first-party. No target code is executed; the scanner reads the source only."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "exploitable",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "reasoned_exploitable",
+    "expected_flags": ["static_taint_path_complete"],
+    "rationale": "The vulnerable sink open_conn resolves to a first-party call-graph node reachable from the Flask route ingress proxy_view over a directed, uniquely-resolved multi-hop path. Python static reachability is a candidate narrower, never an adjudicator, so the reachability op stays Partial(dynamic_dispatch) even with a path found. Verdict correctness is out of scope for PLAN-070 (needs the evaluation harness, PLAN-020/022).",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

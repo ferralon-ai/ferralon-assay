@@ -21,7 +21,7 @@ func callGraphMust(t *testing.T, algo string) plugin.CallGraphResult {
 // contains callerSub and whose callee SCIP id contains calleeSub.
 func hasEdge(edges []plugin.CallEdge, callerSub, calleeSub string) bool {
 	for _, e := range edges {
-		if strings.Contains(e.Caller, callerSub) && strings.Contains(e.Callee, calleeSub) {
+		if strings.Contains(e.Caller.SCIP, callerSub) && strings.Contains(e.Callee.SCIP, calleeSub) {
 			return true
 		}
 	}
@@ -45,7 +45,7 @@ func TestCallGraph_RootsIncludeMain(t *testing.T) {
 	res := callGraphMust(t, "")
 	found := false
 	for _, r := range res.Roots {
-		if strings.Contains(r, "fixturemod") && strings.Contains(r, "main") {
+		if strings.Contains(r.SCIP, "fixturemod") && strings.Contains(r.SCIP, "main") {
 			found = true
 		}
 	}
@@ -94,7 +94,7 @@ func ingressesMust(t *testing.T) plugin.IngressResult {
 
 func hasIngress(ings []plugin.Ingress, kind, symbolSub string) bool {
 	for _, in := range ings {
-		if in.Kind == kind && strings.Contains(in.Symbol, symbolSub) {
+		if in.Kind == kind && strings.Contains(in.Symbol.SCIP, symbolSub) {
 			return true
 		}
 	}
@@ -132,7 +132,7 @@ func TestFindIngresses_DoesNotGuessArbitraryExports(t *testing.T) {
 	res := ingressesMust(t)
 	for _, in := range res.Ingresses {
 		// util.Sink and service.New are exported but are NOT ingresses.
-		if strings.Contains(in.Symbol, "Sink") || strings.Contains(in.Symbol, "New(") {
+		if strings.Contains(in.Symbol.SCIP, "Sink") || strings.Contains(in.Symbol.SCIP, "New(") {
 			t.Errorf("must not fabricate ingress for arbitrary export: %+v", in)
 		}
 	}

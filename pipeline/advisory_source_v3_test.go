@@ -24,9 +24,10 @@ func TestSchemaVersionRecognized_Set(t *testing.T) {
 	}{
 		{"ferralon.normalized_advisory.v2", true},
 		{"ferralon.normalized_advisory.v3", true},
+		{"ferralon.normalized_advisory.v4", true}, // v4 adds the typed-symbol axis (symbols_typed), additive
 		{"", false},
 		{"tegron.normalized_advisory.v2", false},   // pre-rename tag stays rejected
-		{"ferralon.normalized_advisory.v4", false}, // an unseen major is not silently accepted
+		{"ferralon.normalized_advisory.v5", false}, // an unseen major is not silently accepted
 		{"ferralon.normalized_advisory.v2.1", false},
 	}
 	for _, tt := range tests {

@@ -1,0 +1,40 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-GO-GRAFANA-DUCKDB-0001-fixed",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-GO-GRAFANA-DUCKDB-0001",
+    "source": "ghsa",
+    "summary": "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2024-9264",
+      "https://github.com/advisories/GHSA-q99m-qcv4-fpm7"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/grafana/grafana",
+    "revision": "6e6ed73416ebed5e92c98963937a5f349534c76a",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-GO-GRAFANA-DUCKDB-0001-fixed/",
+      "notes": "Fixed variant applying the real upstream fix (PR #94942, 'disable sql expressions', commit 6e6ed73416ebed5e92c98963937a5f349534c76a): the go-duck dependency and the runDuckQuery exec sink are deleted and /api/ds/query returns an inert 501. The advisory sink main.runDuckQuery no longer resolves anywhere in the tree."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The upstream fix removes runDuckQuery and the exec sink outright and redirects /api/ds/query to a not-implemented stub, so ResolveDependencySymbols for main.runDuckQuery resolves nothing and no ingress-to-sink path exists -- reachable_candidate flips to not_exploitable by symbol removal. Reasoned rather than proven because non-exploitability proof requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

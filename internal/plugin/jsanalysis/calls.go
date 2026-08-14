@@ -103,7 +103,7 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 					if pendingExportDefault && isHandlerArity(marity) {
 						ingresses = append(ingresses, ingressMarker{
 							enclosing: append([]string(nil), enc...),
-							name:      mname, arity: marity, kind: "handler",
+							name:      mname, kind: "handler",
 						})
 					}
 					pendingExportDefault = false
@@ -120,7 +120,7 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 					if pendingExportDefault && isHandlerArity(marity) {
 						ingresses = append(ingresses, ingressMarker{
 							enclosing: append([]string(nil), enc...),
-							name:      mname, arity: marity, kind: "handler",
+							name:      mname, kind: "handler",
 						})
 					}
 					pendingExportDefault = false
@@ -160,17 +160,25 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 				pendingExportDefault = false
 				// A "ref.method(args)" or "name(args)" run: classify as a route
 				// registration / server factory (ingress) or a plain call.
-				if cname, leaf, carity, handler, after, isCall := callExprAt(r, i); isCall {
+				if cname, leaf, carity, handler, receiver, after, isCall := callExprAt(r, i); isCall {
 					if in, ok := routeIngress(leaf, handler); ok {
 						ingresses = append(ingresses, in)
 					}
 					if m := innermostFunc(); m != nil {
+						recv := receiver
+						recvThis := false
+						if recv == "this" {
+							recv = ""
+							recvThis = true
+						}
 						calls = append(calls, callSite{
 							callerEnclosing: append([]string(nil), m.enclosing...),
 							callerName:      m.funcName,
 							callerArity:     m.funcArity,
 							calleeName:      cname,
 							calleeArity:     carity,
+							receiver:        recv,
+							receiverThis:    recvThis,
 						})
 					}
 					i = after
@@ -217,20 +225,12 @@ func routeIngress(leaf string, h routeArg) (ingressMarker, bool) {
 	}
 	switch {
 	case routeMethods[leaf]:
-		return ingressMarker{name: h.handlerRef, arity: handlerRefArity, kind: "http_route"}, true
+		return ingressMarker{name: h.handlerRef, kind: "http_route"}, true
 	case serverFactories[leaf]:
-		return ingressMarker{name: h.handlerRef, arity: handlerRefArity, kind: "http_server"}, true
+		return ingressMarker{name: h.handlerRef, kind: "http_server"}, true
 	}
 	return ingressMarker{}, false
 }
-
-// handlerRefArity is the arity an ingress marker records for a named handler
-// reference. A request handler is matched against the declared handler function by
-// its declared arity, which we cannot read from the bare reference; the call-graph
-// resolver keys ingress symbols by the handler function's OWN declared arity, so
-// the ingress marker carries a sentinel that FindIngresses re-resolves against the
-// program's declared functions by name. See ingress.go resolveHandlerArity.
-const handlerRefArity = -1
 
 // callExprAt reports whether the identifier run starting at i is a call expression
 // ("name(args)" or "a.b.name(args)"). It returns: the callee simple name (last
@@ -239,13 +239,17 @@ const handlerRefArity = -1
 // index just past the closing ')', and ok. JS keywords that take a parenthesized
 // clause (if/for/while/switch/catch/return/...) are excluded so control flow is not
 // a call.
-func callExprAt(r []rune, i int) (name, leaf string, arity int, handler routeArg, after int, ok bool) {
+func callExprAt(r []rune, i int) (name, leaf string, arity int, handler routeArg, receiver string, after int, ok bool) {
 	n := len(r)
 	pos := i
 	last := ""
+	prev := "" // the member-access segment immediately before the leaf ("jar" in jar.setCookie)
+	segs := 0  // number of dotted segments consumed
 	for pos < n {
 		if isIdentStart(r[pos]) {
+			prev = last
 			last, pos = readWord(r, pos)
+			segs++
 		} else if r[pos] == '.' {
 			pos++
 		} else {
@@ -253,7 +257,7 @@ func callExprAt(r []rune, i int) (name, leaf string, arity int, handler routeArg
 		}
 	}
 	if last == "" || callKeywords[last] {
-		return "", "", 0, routeArg{}, 0, false
+		return "", "", 0, routeArg{}, "", 0, false
 	}
 	p := skipSpace(r, pos)
 	// Optional TS generic call witness "foo<T>(...)".
@@ -262,11 +266,22 @@ func callExprAt(r []rune, i int) (name, leaf string, arity int, handler routeArg
 		p = skipSpace(r, p)
 	}
 	if p >= n || r[p] != '(' {
-		return "", "", 0, routeArg{}, 0, false
+		return "", "", 0, routeArg{}, "", 0, false
 	}
 	ar, end := parseParamArity(r, p)
 	h := routeArg{leaf: last, handlerRef: lastArgNamedRef(r, p)}
-	return last, last, ar, h, end, true
+	// A receiver is genuine only when the whole prefix before the leaf is a single
+	// identifier ("recv.method", segs==2). For a longer chain ("a.b.c") the prefix is
+	// a member expression, not a local instance; reporting the intermediate segment
+	// ("b") as the receiver would route the call to receiver-method resolution, which
+	// fail-closes on the non-instance and drops the edge. Leave the receiver empty so
+	// the leaf resolves through the bare-name path (whose own ambiguity guard keeps it
+	// fail-closed against fabrication).
+	recv := ""
+	if segs == 2 {
+		recv = prev
+	}
+	return last, last, ar, h, recv, end, true
 }
 
 // lastArgNamedRef returns the name of a call's LAST argument when that argument is a

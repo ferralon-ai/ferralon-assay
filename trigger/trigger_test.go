@@ -277,7 +277,7 @@ func TestRunCVEWatch_OverlapEarnestRun(t *testing.T) {
 	pkg := report.Package{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.6"}
 
 	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{
-		{ID: "GO-2021-0113", Package: pkg},     // already in cursor
+		{ID: "GO-2021-0113", Package: pkg},           // already in cursor
 		{ID: "FERRALON-APP-SSRF-0001", Package: pkg}, // NEW → forces earnest run
 	}}}
 

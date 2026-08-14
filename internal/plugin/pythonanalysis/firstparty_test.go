@@ -26,7 +26,7 @@ const (
 func reverseReachable(edges []plugin.CallEdge, entries map[string]bool, sink string) bool {
 	callers := map[string][]string{}
 	for _, e := range edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 	visited := map[string]bool{sink: true}
 	queue := []string{sink}
@@ -82,7 +82,7 @@ func TestFirstParty_AirflowExpApiSinkReachableFromRouteIngress(t *testing.T) {
 	// emitter).
 	sinkIsNode := false
 	for _, e := range cg.Edges {
-		if e.Caller == sink || e.Callee == sink {
+		if e.Caller.SCIP == sink || e.Callee.SCIP == sink {
 			sinkIsNode = true
 		}
 	}
@@ -94,10 +94,10 @@ func TestFirstParty_AirflowExpApiSinkReachableFromRouteIngress(t *testing.T) {
 	// firstPartyReachPaths terminates its reverse BFS at.
 	entries := map[string]bool{}
 	for _, in := range ing.Ingresses {
-		entries[in.Symbol] = true
+		entries[in.Symbol.SCIP] = true
 	}
 	for _, r := range cg.Roots {
-		entries[r] = true
+		entries[r.SCIP] = true
 	}
 	if len(entries) == 0 {
 		t.Fatal("no ingress/root entries discovered for the repro")

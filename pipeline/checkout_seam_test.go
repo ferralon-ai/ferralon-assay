@@ -49,8 +49,8 @@ func TestInventoryRecordsResolvedBuildDir(t *testing.T) {
 // inventory stage's rev-parse pins a concrete SHA (the FakeCheckout fixture is not a git tree).
 type gitTreeCheckout struct{ dir string }
 
-func (g gitTreeCheckout) Fetch(context.Context, string, string) (string, string, error) {
-	return g.dir, checkout.LangGo, nil
+func (g gitTreeCheckout) Fetch(context.Context, string, string) (checkout.WorkspacePlan, error) {
+	return checkout.WorkspacePlan{Root: g.dir, Projects: []checkout.Project{{Root: g.dir, Language: checkout.LangGo}}}, nil
 }
 
 // After a branch-ref assessment whose checkout is a real git tree, the inventory stage must pin the

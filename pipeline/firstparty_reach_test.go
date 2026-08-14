@@ -53,8 +53,8 @@ func (p firstPartyStubPlugin) CallGraph(_ context.Context, _ plugin.CallGraphReq
 	return plugin.CallGraphResult{
 		Partiality: plugin.Complete(),
 		Algorithm:  "vta",
-		Edges:      []plugin.CallEdge{{Caller: p.ingress, Callee: p.sink}},
-		Roots:      []string{p.ingress},
+		Edges:      []plugin.CallEdge{{Caller: plugin.Symbol{SCIP: p.ingress}, Callee: plugin.Symbol{SCIP: p.sink}}},
+		Roots:      []plugin.Symbol{{SCIP: p.ingress}},
 	}, nil
 }
 
@@ -64,7 +64,7 @@ func (p firstPartyStubPlugin) FindIngresses(_ context.Context, _ plugin.FindIngr
 	}
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
-		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: p.ingress, Selector: "GET /fetch"}},
+		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: p.ingress}, Selector: "GET /fetch"}},
 	}, nil
 }
 
@@ -178,8 +178,8 @@ func (p disconnectedFirstPartyStub) CallGraph(_ context.Context, _ plugin.CallGr
 	return plugin.CallGraphResult{
 		Partiality: plugin.Complete(),
 		Algorithm:  "vta",
-		Edges:      []plugin.CallEdge{{Caller: p.ingress, Callee: "scip-go gomod tegron.corpus/app . tegron.corpus/app/otherFn()."}},
-		Roots:      []string{p.ingress},
+		Edges:      []plugin.CallEdge{{Caller: plugin.Symbol{SCIP: p.ingress}, Callee: plugin.Symbol{SCIP: "scip-go gomod tegron.corpus/app . tegron.corpus/app/otherFn()."}}},
+		Roots:      []plugin.Symbol{{SCIP: p.ingress}},
 	}, nil
 }
 
@@ -211,11 +211,11 @@ func TestFirstPartyReach_PersistsResolvedPathForReportBuilder(t *testing.T) {
 	if len(payload.Reachability.Paths) != 1 {
 		t.Fatalf("reachability artifact must carry the resolved first-party path, got %d paths (the dropped-ingress regression)", len(payload.Reachability.Paths))
 	}
-	if got := payload.Reachability.Paths[0].Ingress; got != p.ingress {
-		t.Errorf("persisted ReachPath.Ingress = %q, want the advisory-specific reaching ingress %q", got, p.ingress)
+	if got := payload.Reachability.Paths[0].Ingress; got.SCIP != p.ingress {
+		t.Errorf("persisted ReachPath.Ingress = %q, want the advisory-specific reaching ingress %q", got.SCIP, p.ingress)
 	}
-	if got := payload.Reachability.Paths[0].Sink; got != p.sink {
-		t.Errorf("persisted ReachPath.Sink = %q, want %q", got, p.sink)
+	if got := payload.Reachability.Paths[0].Sink; got.SCIP != p.sink {
+		t.Errorf("persisted ReachPath.Sink = %q, want %q", got.SCIP, p.sink)
 	}
 }
 

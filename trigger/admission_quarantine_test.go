@@ -72,9 +72,9 @@ func TestBandQuarantine_NoBandSymbolInPipelineSource(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot resolve test file path")
 	}
-	triggerDir := filepath.Dir(thisFile)            // .../ferralon-assay/trigger
-	openTegronDir := filepath.Dir(triggerDir)       // .../ferralon-assay
-	repoRoot := filepath.Dir(openTegronDir)         // .../<repo>
+	triggerDir := filepath.Dir(thisFile)      // .../ferralon-assay/trigger
+	openTegronDir := filepath.Dir(triggerDir) // .../ferralon-assay
+	repoRoot := filepath.Dir(openTegronDir)   // .../<repo>
 
 	pipelineDirs := []string{
 		filepath.Join(openTegronDir, "pipeline"),

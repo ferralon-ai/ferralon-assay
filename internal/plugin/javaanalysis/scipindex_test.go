@@ -56,7 +56,7 @@ func TestReadSCIPIndex_ResolvesInterfaceToImplEdge(t *testing.T) {
 
 	has := func(caller, callee string) bool {
 		for _, e := range g.edges {
-			if e.Caller == caller && e.Callee == callee {
+			if e.Caller.SCIP == caller && e.Callee.SCIP == callee {
 				return true
 			}
 		}
@@ -79,7 +79,7 @@ func TestReadSCIPIndex_ResolvesInterfaceToImplEdge(t *testing.T) {
 	// canonical id space.
 	gotIngress := false
 	for _, in := range g.ingresses {
-		if in.Symbol == canonCtrl && in.Kind == "http_route" {
+		if in.Symbol.SCIP == canonCtrl && in.Kind == "http_route" {
 			gotIngress = true
 		}
 	}
@@ -121,7 +121,7 @@ func TestReadSCIPIndex_CanonicalizationConnectsToPureGoSink(t *testing.T) {
 	// equal to the pure-Go sink — the CandidatePair (ingress→sink) the pipeline forms.
 	sinkIsNode := false
 	for _, e := range g.edges {
-		if e.Caller == pureGoSink || e.Callee == pureGoSink {
+		if e.Caller.SCIP == pureGoSink || e.Callee.SCIP == pureGoSink {
 			sinkIsNode = true
 		}
 	}

@@ -1,0 +1,10 @@
+{
+  "name": "cve-partial",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Same resolvable package as cve/clean (ms@2.0.0) plus ghost-alias, whose alias target is absent from the lockfile. The absent target makes ResolveInventory declare graph-level partiality (alias_target) while still resolving ms@2.0.0 — a genuinely PARTIAL inventory, not an empty one.",
+  "dependencies": {
+    "good-alias": "npm:ms@2.0.0",
+    "ghost-alias": "npm:absent-pkg@9.9.9"
+  }
+}

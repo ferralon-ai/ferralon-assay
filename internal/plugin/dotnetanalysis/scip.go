@@ -80,6 +80,12 @@ func namespaceDescriptor(namespace string) string {
 // functionDescriptor is the trailing descriptor for a method/constructor declaration.
 // Arity disambiguates same-named declarations, e.g. "Extract()." for zero params or
 // "Extract(2)." for two.
+//
+// Target spelling: the arity-only descriptor here (and the localCoordinate="." above) is the
+// pre-parity scheme. The canonical plugin.Symbol field-population contract these must move to —
+// versionless Package="pkg:nuget/<coordinate>", signature-based Descriptor, generated/state-machine
+// and explicit-interface handling — is specified in SYMBOLS.md (this directory), PLAN-051. PLAN-252
+// re-spells this emitter to it; this cycle changes no behavior.
 func functionDescriptor(name string, arity int) string {
 	if arity == 0 {
 		return name + "()."

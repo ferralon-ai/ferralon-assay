@@ -25,8 +25,8 @@ func TestComputeTaint_PathPresentFromIngress(t *testing.T) {
 	if len(res.Paths) != 1 {
 		t.Fatalf("expected one path-presence path, got %d: %+v", len(res.Paths), res.Paths)
 	}
-	if res.Paths[0].Ingress != doGet {
-		t.Errorf("taint path ingress = %q, want %q", res.Paths[0].Ingress, doGet)
+	if res.Paths[0].Ingress.SCIP != doGet {
+		t.Errorf("taint path ingress = %q, want %q", res.Paths[0].Ingress.SCIP, doGet)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("fully-resolved path presence should be Complete, got %+v", res.Partiality)

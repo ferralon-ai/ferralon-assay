@@ -1,0 +1,21 @@
+{
+  "jsc": {
+    "paths": {
+      "@lib/*": ["./src/lib/*"],
+      "@core": ["./src/core"],
+      "@a": ["./src/a"],
+      "@z": ["./src/z"]
+    },
+    "transform": {
+      "optimizer": {
+        "globals": {
+          "vars": {
+            "__BUILD__": "swc",
+            "__FLAG__": "true",
+            "__EDITION__": "pro"
+          }
+        }
+      }
+    }
+  }
+}

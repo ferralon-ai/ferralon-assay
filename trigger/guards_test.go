@@ -63,8 +63,8 @@ func TestGuardsOnPath(t *testing.T) {
 	put(artifact.TypeNormalizedAdvisory, `{"advisory_guards":["isRepositoryGitPath","hasSymlinkInPath"]}`)
 	// S5 reachability records the call graph; the on-path frame calls only one of them.
 	put(artifact.TypeReachability, `{"call_graph":{"edges":[`+
-		`{"caller":"`+frameSym+`","callee":"scip-go gomod m . pkg/isRepositoryGitPath()."},`+
-		`{"caller":"scip-go gomod m . pkg/other().","callee":"scip-go gomod m . pkg/hasSymlinkInPath()."}`+
+		`{"caller":{"scip":"`+frameSym+`"},"callee":{"scip":"scip-go gomod m . pkg/isRepositoryGitPath()."}},`+
+		`{"caller":{"scip":"scip-go gomod m . pkg/other()."},"callee":{"scip":"scip-go gomod m . pkg/hasSymlinkInPath()."}}`+
 		`]}}`)
 
 	frames := []report.CallFrame{{Symbol: frameSym}}
@@ -90,7 +90,7 @@ func TestGuardsOnPath_NoneOnPath(t *testing.T) {
 	}
 	put(artifact.TypeNormalizedAdvisory, `{"advisory_guards":["hasSymlinkInPath"]}`)
 	put(artifact.TypeReachability, `{"call_graph":{"edges":[`+
-		`{"caller":"scip-go gomod m . pkg/offPath().","callee":"scip-go gomod m . pkg/hasSymlinkInPath()."}`+
+		`{"caller":{"scip":"scip-go gomod m . pkg/offPath()."},"callee":{"scip":"scip-go gomod m . pkg/hasSymlinkInPath()."}}`+
 		`]}}`)
 
 	got := guardsOnPath(store, assessmentID, []report.CallFrame{{Symbol: "scip-go gomod m . pkg/onPath()."}})

@@ -9,6 +9,16 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// sym wraps a bare canonical id string into the comparable plugin.Symbol the
+// contract now carries on CallEdge.Caller/Callee, Ingress.Symbol, ReachPath's
+// Sink/Ingress/Trace, and CallGraphResult.Roots. EVERY site in this package that
+// mints one of those fields from a string routes through sym so the id lands in
+// SCIP and DisplayName identically. Symbol's == compares ALL fields, so uniform
+// construction is what keeps the edge/root/ingress set dedup and the ingress→sink
+// SCIP-equality reachability correct; the structured fields are deliberately left
+// zero (the matching identity remains the id string, not the 2x2 structure).
+func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s} }
+
 // program is the whole-build parse: every file's package + declarations + call
 // sites + ingress markers, plus a method index keyed by (simpleName, arity) used
 // to resolve lexical call sites to concrete declared methods.
@@ -115,7 +125,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 			candidates := prog.methodsByKey[methodKey(cs.calleeName, cs.calleeArity)]
 			switch len(candidates) {
 			case 1:
-				e := plugin.CallEdge{Caller: caller, Callee: candidates[0]}
+				e := plugin.CallEdge{Caller: sym(caller), Callee: sym(candidates[0])}
 				if !seen[e] {
 					seen[e] = true
 					edges = append(edges, e)
@@ -136,23 +146,43 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 
-	roots := make([]string, 0, len(rootsSet))
+	rootIDs := make([]string, 0, len(rootsSet))
 	for r := range rootsSet {
-		roots = append(roots, r)
+		rootIDs = append(rootIDs, r)
 	}
-	sort.Strings(roots)
+	sort.Strings(rootIDs)
+	roots := make([]plugin.Symbol, 0, len(rootIDs))
+	for _, r := range rootIDs {
+		roots = append(roots, sym(r))
+	}
 
 	lexical := plugin.CallGraphResult{
 		Partiality: callGraphPartiality(prog, unresolved),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      roots,
+	}
+
+	// Dependency-inclusive augmentation: append the opened dependency closure's call
+	// edges so the persisted graph reflects that dependency bytecode was actually
+	// parsed and searched, not just the first-party sources. Their presence is what
+	// distinguishes a searched-negative (COMPLETE closure, sink unreached →
+	// not_exploitable) from an empty graph the refutation never ran on (→ undetermined,
+	// the analysisDidNotRun arm). This is best-effort and additive: a build with no
+	// resolvable/cached dependencies contributes nothing and the graph is unchanged,
+	// and a dependency-resolution failure is swallowed here — the depreach completeness
+	// account (surfaced through reachability partiality) is where an unopened
+	// dependency becomes a Gap/hazard, never a fabricated edge (inv.5).
+	if dg, derr := buildDependencyGraph(ctx, req.BuildDir); derr == nil {
+		if depEdges := dg.callEdges(); len(depEdges) > 0 {
+			lexical = appendCallEdges(lexical, depEdges)
+		}
 	}
 
 	// Prove-path enrichment (gated by TEGRON_JAVA_ANALYZER_IMAGE). The pure-Go
@@ -235,16 +265,48 @@ func reconcileResolvedArity(prog *program, g scipGraph) scipGraph {
 		}
 		return id
 	}
+	// fix operates on the canonical id STRING; the now-Symbol edge/ingress fields
+	// carry that string in .SCIP, so read it in and re-wrap via sym to keep the
+	// transformation (and Symbol construction) identical. g.roots stays []string.
 	for i := range g.edges {
-		g.edges[i].Caller = fix(g.edges[i].Caller)
-		g.edges[i].Callee = fix(g.edges[i].Callee)
+		g.edges[i].Caller = sym(fix(g.edges[i].Caller.SCIP))
+		g.edges[i].Callee = sym(fix(g.edges[i].Callee.SCIP))
 	}
 	for i := range g.roots {
 		g.roots[i] = fix(g.roots[i])
 	}
 	for i := range g.ingresses {
-		g.ingresses[i].Symbol = fix(g.ingresses[i].Symbol)
+		g.ingresses[i].Symbol = sym(fix(g.ingresses[i].Symbol.SCIP))
 	}
+	return g
+}
+
+// appendCallEdges returns g with extra edges merged into its edge set — deduped
+// against the existing edges and re-sorted for a stable payload. Partiality and
+// roots are untouched: the added edges are extra reachability structure, not a
+// change to what the graph declares it could not resolve.
+func appendCallEdges(g plugin.CallGraphResult, extra []plugin.CallEdge) plugin.CallGraphResult {
+	seen := make(map[plugin.CallEdge]bool, len(g.Edges)+len(extra))
+	merged := make([]plugin.CallEdge, 0, len(g.Edges)+len(extra))
+	for _, e := range g.Edges {
+		if !seen[e] {
+			seen[e] = true
+			merged = append(merged, e)
+		}
+	}
+	for _, e := range extra {
+		if !seen[e] {
+			seen[e] = true
+			merged = append(merged, e)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].Caller.SCIP != merged[j].Caller.SCIP {
+			return merged[i].Caller.SCIP < merged[j].Caller.SCIP
+		}
+		return merged[i].Callee.SCIP < merged[j].Callee.SCIP
+	})
+	g.Edges = merged
 	return g
 }
 
@@ -271,24 +333,28 @@ func mergeResolvedCallGraph(lexical plugin.CallGraphResult, resolved scipGraph) 
 		}
 	}
 	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Caller != merged[j].Caller {
-			return merged[i].Caller < merged[j].Caller
+		if merged[i].Caller.SCIP != merged[j].Caller.SCIP {
+			return merged[i].Caller.SCIP < merged[j].Caller.SCIP
 		}
-		return merged[i].Callee < merged[j].Callee
+		return merged[i].Callee.SCIP < merged[j].Callee.SCIP
 	})
 
 	rootSet := map[string]bool{}
 	for _, r := range lexical.Roots {
-		rootSet[r] = true
+		rootSet[r.SCIP] = true
 	}
 	for _, r := range resolved.roots {
 		rootSet[r] = true
 	}
-	roots := make([]string, 0, len(rootSet))
+	rootIDs := make([]string, 0, len(rootSet))
 	for r := range rootSet {
-		roots = append(roots, r)
+		rootIDs = append(rootIDs, r)
 	}
-	sort.Strings(roots)
+	sort.Strings(rootIDs)
+	roots := make([]plugin.Symbol, 0, len(rootIDs))
+	for _, r := range rootIDs {
+		roots = append(roots, sym(r))
+	}
 
 	// The semantic pass resolved the dynamic-dispatch hop; carry only the residual
 	// partiality reasons (read/skip failures), dropping dynamic_dispatch.

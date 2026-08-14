@@ -28,7 +28,7 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 	seen := map[string]bool{}
 	var ingresses []plugin.Ingress
 	add := func(in plugin.Ingress) {
-		key := in.Kind + "\x00" + in.Symbol + "\x00" + in.Selector
+		key := in.Kind + "\x00" + in.Symbol.SCIP + "\x00" + in.Selector
 		if seen[key] {
 			return
 		}
@@ -52,25 +52,25 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 				continue
 			}
 			if fn.Name() == "main" && p.Name == "main" && sig.Recv() == nil {
-				add(plugin.Ingress{Kind: "main", Symbol: scipFromPackage(p, fn)})
+				add(plugin.Ingress{Kind: "main", Symbol: sym(scipFromPackage(p, fn))})
 				continue
 			}
 			if isHTTPHandlerSig(sig) {
-				add(plugin.Ingress{Kind: "handler", Symbol: scipFromPackage(p, fn)})
+				add(plugin.Ingress{Kind: "handler", Symbol: sym(scipFromPackage(p, fn))})
 			}
 		}
 	}
 
 	for _, route := range sp.discoverRoutes() {
-		add(plugin.Ingress{Kind: "http_route", Symbol: route.symbol, Selector: route.selector})
+		add(plugin.Ingress{Kind: "http_route", Symbol: sym(route.symbol), Selector: route.selector})
 	}
 
 	sort.Slice(ingresses, func(i, j int) bool {
 		if ingresses[i].Kind != ingresses[j].Kind {
 			return ingresses[i].Kind < ingresses[j].Kind
 		}
-		if ingresses[i].Symbol != ingresses[j].Symbol {
-			return ingresses[i].Symbol < ingresses[j].Symbol
+		if ingresses[i].Symbol.SCIP != ingresses[j].Symbol.SCIP {
+			return ingresses[i].Symbol.SCIP < ingresses[j].Symbol.SCIP
 		}
 		return ingresses[i].Selector < ingresses[j].Selector
 	})

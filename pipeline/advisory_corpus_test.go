@@ -175,7 +175,7 @@ func TestAdvisoryCorpus_Valid(t *testing.T) {
 	}
 	onDisk := map[string]bool{}
 	for _, de := range dirents {
-		if de.IsDir() || de.Name() == advisoryCorpusManifestFile || !strings.HasSuffix(de.Name(), ".json") {
+		if de.IsDir() || de.Name() == advisoryCorpusManifestFile || de.Name() == attributionStoreFile || !strings.HasSuffix(de.Name(), ".json") {
 			continue
 		}
 		onDisk[de.Name()] = true

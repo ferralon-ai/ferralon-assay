@@ -43,7 +43,7 @@ func (toolchainCandidatePlugin) FindIngresses(context.Context, plugin.FindIngres
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
 		Ingresses: []plugin.Ingress{{
-			Symbol:   toolchainCandidateIngress,
+			Symbol:   plugin.Symbol{SCIP: toolchainCandidateIngress},
 			Kind:     "http_route",
 			Selector: "/upload",
 		}},
@@ -54,8 +54,8 @@ func (toolchainCandidatePlugin) Reachability(context.Context, plugin.Reachabilit
 	return plugin.ReachabilityResult{
 		Partiality: plugin.Complete(),
 		Paths: []plugin.ReachPath{{
-			Ingress: toolchainCandidateIngress,
-			Trace:   []string{toolchainCandidateIngress, toolchainCandidateSink},
+			Ingress: plugin.Symbol{SCIP: toolchainCandidateIngress},
+			Trace:   []plugin.Symbol{{SCIP: toolchainCandidateIngress}, {SCIP: toolchainCandidateSink}},
 		}},
 	}, nil
 }

@@ -46,13 +46,15 @@ func (m *memStore) Write(ctx context.Context, next *statestore.State) (*statesto
 // fakeOSV is a fixture-backed OSVClient: it returns a pre-canned OSVResult and never
 // touches the network. It is how every CVE-watch test mocks OSV.dev.
 type fakeOSV struct {
-	result OSVResult
-	err    error
-	calls  int
+	result   OSVResult
+	err      error
+	calls    int
+	lastPkgs []report.Package // the coordinate set the last QueryBatch was handed
 }
 
 func (f *fakeOSV) QueryBatch(ctx context.Context, pkgs []report.Package) (OSVResult, error) {
 	f.calls++
+	f.lastPkgs = pkgs
 	if f.err != nil {
 		return OSVResult{}, f.err
 	}

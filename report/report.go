@@ -140,6 +140,38 @@ type Package struct {
 	// analyzer resolved one. Used as the OpenVEX/SARIF product identifier; omitted
 	// when unavailable.
 	PURL string `json:"purl,omitempty"`
+	// Direct distinguishes a direct dependency — one the scanned module itself declares —
+	// from a transitive one pulled in through the graph (§4.1.2 "direct/transitive
+	// relationship"). It mirrors plugin.DependencyNode.Direct and, like it, is NOT
+	// omitempty: false (transitive) is load-bearing and must serialize, or a transitive
+	// package would be byte-indistinguishable from a direct one. A stored v2 document
+	// written before this field decodes to false and is regenerated as direct/transitive
+	// on its next baseline run.
+	Direct bool `json:"direct"`
+	// PartialReason discloses a limit on THIS package's own resolution using the open
+	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
+	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
+	// the §4.1 "declared partiality for unresolved conditions" at package scope: a field
+	// that could not be established is declared here rather than emitted as an empty value
+	// masquerading as "nothing to resolve". Empty means the package resolved cleanly. It
+	// is DISCLOSURE, never a verdict (inv. 5) — no finding depends on it. When several
+	// limits apply to one package the primary code rides here and the full set stays in
+	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
+	// scan-level PartialityNote, not this field.
+	PartialReason string `json:"partial_reason,omitempty"`
+}
+
+// Key is this package's stable identity for Relationship endpoints: its PURL when the
+// analyzer resolved one, else the ecosystem-scoped coordinate triple. The report SBOM is
+// package-granularity — distinct plugin.DependencyNode instances of one PURL collapse to
+// one report package — so relationships are expressed over these keys, not over the
+// inventory's per-instance node IDs (which do not ride the report). Deterministic: two
+// packages with equal identity produce equal keys.
+func (p Package) Key() string {
+	if p.PURL != "" {
+		return p.PURL
+	}
+	return p.Ecosystem + ":" + p.Name + "@" + p.Version
 }
 
 // SBOM is the resolved dependency set of the scanned codebase. It is the input to
@@ -150,6 +182,26 @@ type SBOM struct {
 	// Packages is the resolved dependency set. Order is stable (callers sort before
 	// constructing) so the serialized form is deterministic for content addressing.
 	Packages []Package `json:"packages"`
+	// Relationships is the parent→child dependency-edge set over Packages (§4.1.2
+	// "parent edges"; §8 DoD checkbox 2 "and dependency relationships"). Each endpoint is
+	// a Package.Key(); a whole-graph SBOM keyed off plugin.DependencyInventory carries the
+	// edges the inventory resolved. Explicitly ordered (sorted by (Parent, Child)) and
+	// de-duplicated by the builder, never map-ordered, so an unchanged SBOM serializes
+	// byte-identically and the StateStore writes zero new git objects. omitempty: a lane
+	// whose resolver expresses no edges (or none yet) omits the field rather than emitting
+	// an empty array — absent edges are declared by a scan-level PartialityNote, not by [].
+	Relationships []Relationship `json:"relationships,omitempty"`
+}
+
+// Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are
+// Package.Key() values, not inventory node IDs: the report SBOM is package-granularity, so
+// an edge relates two package identities. It carries no analysis state — a relationship is
+// structural, never a verdict (inv. 5).
+type Relationship struct {
+	// Parent is the Package.Key() of the depending package (the one that pulls the child in).
+	Parent string `json:"parent"`
+	// Child is the Package.Key() of the depended-on package.
+	Child string `json:"child"`
 }
 
 // ReachabilityGrade refines a reachable_candidate by the STRENGTH of the
@@ -325,6 +377,11 @@ type Provenance struct {
 	// AnalyzerVersion is the ferralon-assay tool version that produced the Report. Lets
 	// future readers reason about analyzer-driven verdict changes.
 	AnalyzerVersion string `json:"analyzer_version"`
+	// CapabilityManifestVersion cites the capability.Manifest CONTENT version this scan's
+	// evidence was produced under (which analyzer support surface was in force). Additive and
+	// omitempty; population is Phase-4 (each lane stamps a real version in its PLAN-4x0), so this
+	// cycle it stays empty. Kept a plain string so report needs no capability import.
+	CapabilityManifestVersion string `json:"capability_manifest_version,omitempty"`
 	// AdvisoryCursor is the advisory-corpus position this scan evaluated against. It
 	// is the CVE-watch cursor: a later run compares OSV.dev querybatch results to the
 	// stored cursor to decide heartbeat vs earnest run.
@@ -507,6 +564,15 @@ const (
 	// they say which fact was missing, and a reader can act on them. This one says only that a
 	// step did not run, and the scan-level PartialityNote list names which step.
 	ReasonAnalysisDidNotRun = "analysis_did_not_run"
+	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
+	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
+	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but
+	// is not persisted into report.SBOM, the object the diff compares, so a change confined to the
+	// build context is not detected and could inherit a stale Report silently. Carried as an
+	// inherent_limit (quiet methodology arm) on the inherited fast path so the gap is disclosed
+	// without asserting anything about this run's verdicts. A follow-on that persists build context
+	// into the compared state closes it.
+	ReasonBuildContextNotCompared = "build_context_not_compared"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -616,6 +682,25 @@ func (r Report) Validate() error {
 		if f.Evidence.Grade != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries reachability grade %q but verdict is %q (a grade refines only a reachable_candidate, never asserts exploitability)",
 				f.Advisory.ID, f.Evidence.Grade, f.Verdict)
+		}
+	}
+	// SBOM relationships are referential: every edge endpoint must name a package present
+	// in this SBOM. A dangling edge is a resolver defect — it would let a PR-diff or a
+	// projection dereference a parent/child that is not in the package set — so it is a
+	// structural violation, not a tolerated partial. (An SBOM with zero relationships is
+	// valid: a lane may express no edges yet.)
+	if len(r.SBOM.Relationships) > 0 {
+		present := make(map[string]struct{}, len(r.SBOM.Packages))
+		for i := range r.SBOM.Packages {
+			present[r.SBOM.Packages[i].Key()] = struct{}{}
+		}
+		for _, rel := range r.SBOM.Relationships {
+			if _, ok := present[rel.Parent]; !ok {
+				return fmt.Errorf("report: SBOM relationship parent %q references no package in the SBOM (dangling edge)", rel.Parent)
+			}
+			if _, ok := present[rel.Child]; !ok {
+				return fmt.Errorf("report: SBOM relationship child %q references no package in the SBOM (dangling edge)", rel.Child)
+			}
 		}
 	}
 	return nil

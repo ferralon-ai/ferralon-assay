@@ -88,16 +88,16 @@ func runTaint(sp *ssaProgram, ingresses map[string]*ssa.Function, sinks map[stri
 	var paths []plugin.ReachPath
 	for sink, ingress := range ta.hits {
 		paths = append(paths, plugin.ReachPath{
-			Sink:    sink,
-			Ingress: ingress,
-			Trace:   []string{ingress, sink},
+			Sink:    sym(sink),
+			Ingress: sym(ingress),
+			Trace:   []plugin.Symbol{sym(ingress), sym(sink)},
 		})
 	}
 	sort.Slice(paths, func(i, j int) bool {
-		if paths[i].Sink != paths[j].Sink {
-			return paths[i].Sink < paths[j].Sink
+		if paths[i].Sink.SCIP != paths[j].Sink.SCIP {
+			return paths[i].Sink.SCIP < paths[j].Sink.SCIP
 		}
-		return paths[i].Ingress < paths[j].Ingress
+		return paths[i].Ingress.SCIP < paths[j].Ingress.SCIP
 	})
 	return paths, reasons
 }

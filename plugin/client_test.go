@@ -81,7 +81,14 @@ func TestHelperProcess(t *testing.T) {
 		resp.Reachability = &ReachabilityResult{
 			Partiality: Partial(PartialReasonDynamicDispatch),
 			Paths: []ReachPath{
-				{Sink: "scip:vuln#V", Ingress: "scip:helper#main", Trace: []string{"scip:helper#main", "scip:vuln#V"}},
+				{
+					Sink:    Symbol{Kind: SymbolKindFunction, Package: "example.com/dep", Name: "V", SCIP: "scip:vuln#V"},
+					Ingress: Symbol{Kind: SymbolKindFunction, Package: "example.com/helper", Name: "main", SCIP: "scip:helper#main"},
+					Trace: []Symbol{
+						{Kind: SymbolKindFunction, Package: "example.com/helper", Name: "main", SCIP: "scip:helper#main"},
+						{Kind: SymbolKindFunction, Package: "example.com/dep", Name: "V", SCIP: "scip:vuln#V"},
+					},
+				},
 			},
 		}
 	case "badproto":

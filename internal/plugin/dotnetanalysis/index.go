@@ -11,6 +11,16 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// sym mints a plugin.Symbol from a bare SCIP id — the ONE string→Symbol construction site
+// for this package's call-graph, ingress, and reach-path endpoints. Routing every mint
+// through here keeps identical SCIP ids yielding identical (comparable) Symbols, so map keys,
+// == and set membership stay sound (plugin.Symbol compares ALL fields). DisplayName mirrors
+// the SCIP id; the structured matcher fields (Kind/Package/Name/…) are deliberately left zero
+// — advisory matching keys on DisplayName via dotnetSymbolForms, never on these endpoints.
+func sym(s string) plugin.Symbol {
+	return plugin.Symbol{SCIP: s, DisplayName: s}
+}
+
 // IndexSymbols walks the C# sources under req.BuildDir, parses each source file for its
 // declared types (class/struct/interface/record/enum) and methods, and emits one stable
 // SCIP-shaped Symbol per declaration. Symbols are sorted by SCIP id so the result is

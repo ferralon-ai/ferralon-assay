@@ -46,17 +46,17 @@ func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
 		if len(st.Frames) == 0 {
 			continue
 		}
-		trace := make([]string, len(st.Frames))
+		trace := make([]plugin.Symbol, len(st.Frames))
 		for i, f := range st.Frames {
-			trace[i] = f.SCIP
+			trace[i] = sym(f.SCIP)
 		}
 		top := st.Frames[0]
-		ingress := ""
+		var ingress plugin.Symbol
 		if top.IsEntry {
-			ingress = top.SCIP
+			ingress = sym(top.SCIP)
 		}
 		paths = append(paths, plugin.ReachPath{
-			Sink:    st.Frames[len(st.Frames)-1].SCIP,
+			Sink:    sym(st.Frames[len(st.Frames)-1].SCIP),
 			Ingress: ingress,
 			Trace:   trace,
 		})
@@ -100,17 +100,17 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		}
 	}
 
-	edges := make(map[[2]string]bool, len(cg.Edges))
+	edges := make(map[[2]plugin.Symbol]bool, len(cg.Edges))
 	for _, e := range cg.Edges {
-		edges[[2]string{e.Caller, e.Callee}] = true
+		edges[[2]plugin.Symbol{e.Caller, e.Callee}] = true
 	}
 
 	for _, p := range paths {
-		if p.Ingress == "" {
+		if p.Ingress == (plugin.Symbol{}) {
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
 		for i := 0; i+1 < len(p.Trace); i++ {
-			if !edges[[2]string{p.Trace[i], p.Trace[i+1]}] {
+			if !edges[[2]plugin.Symbol{p.Trace[i], p.Trace[i+1]}] {
 				reasons[plugin.PartialReasonReachabilityUndetermined] = true
 				break
 			}

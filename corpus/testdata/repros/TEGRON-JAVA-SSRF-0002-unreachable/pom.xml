@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>ssrf-unreachable-repro</artifactId>
+  <version>1.0.0</version>
+
+  <!-- not_exploitable / UNREACHABLE variant for synthetic advisory TEGRON-JAVA-SSRF-0002.
+       The SSRF-family coordinate com.example.net:urlkit is declared at 2.0.3, INSIDE the
+       advisory's affected range (affects < 2.1.0, fixed in 2.1.0). The declared version sits
+       below the fixed version, so the version-range disqualification predicate must NOT
+       disqualify — unlike TEGRON-JAVA-DEP-0001 (whose advisory models no callable sink), this
+       coordinate DOES carry a real SSRF sink. The case therefore PROCEEDS past the version axis
+       to reachability analysis, where the sink is present but dead code (see
+       src/com/example/app/App.java) and the verdict is decided not_exploitable at the reach
+       axis. -->
+  <dependencies>
+    <dependency>
+      <groupId>com.example.net</groupId>
+      <artifactId>urlkit</artifactId>
+      <version>2.0.3</version>
+    </dependency>
+  </dependencies>
+</project>

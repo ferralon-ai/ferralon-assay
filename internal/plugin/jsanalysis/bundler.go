@@ -23,31 +23,32 @@ import (
 // drops it: it records a declared-partial result that NAMES the unreadable key
 // (§3.1/§3.6). No os/exec, no Node, no JS interpreter is used or imported.
 
-// --- provisional partiality reason codes (additive; cross-lane canonicalization pending) ---
+// --- bundler-config partiality reason localisers (PLAN-163) ---
 //
-// These name the conditions a static bundler-config read cannot resolve without
-// executing the configuration. Each is a DECLARED gap carrying the unreadable key
-// (see unreadableRef), never a silent omission. They join the JS lane's provisional
-// vocabulary set alongside the PLAN-160/PLAN-162 codes in plugin.go; anvil may
-// canonicalize/relocate them later. The strings are the contract.
+// These name the conditions a static bundler-config read cannot resolve without executing the
+// configuration. Each is a DECLARED gap carrying the unreadable key (see unreadableRef), never a
+// silent omission. RECONCILED to the onyx-q6 shared bases in plugin.go (§4 "code:suffix" naming):
+// an alias/entry is an unexpressible resolution EDGE (relationship_unexpressed); a define/target/
+// whole-config is an unresolved build-environment value (env_condition_unresolved); a read/parse
+// failure is a tool_failure. The suffix carries the JS bundler specific.
 const (
 	// reasonComputedBundlerAlias: an alias whose target is computed at load time
-	// (path.resolve, a variable, a template with interpolation, a spread).
-	reasonComputedBundlerAlias = "computed_bundler_alias"
+	// (path.resolve, a variable, a template with interpolation, a spread) — the alias→target edge.
+	reasonComputedBundlerAlias = plugin.PartialReasonRelationshipUnexpressed + ":bundler_alias"
 	// reasonComputedBundlerDefine: a define whose value is computed at load time
-	// (e.g. JSON.stringify(x), process.env.X, a ternary).
-	reasonComputedBundlerDefine = "computed_bundler_define"
-	// reasonComputedBundlerEntry: an entry point whose specifier is computed.
-	reasonComputedBundlerEntry = "computed_bundler_entry"
-	// reasonComputedBundlerTarget: a target/platform value computed at load time.
-	reasonComputedBundlerTarget = "computed_bundler_target"
+	// (e.g. JSON.stringify(x), process.env.X, a ternary) — a build-env value substitution.
+	reasonComputedBundlerDefine = plugin.PartialReasonEnvConditionUnresolved + ":bundler_define"
+	// reasonComputedBundlerEntry: an entry point whose specifier is computed — the graph-root edge.
+	reasonComputedBundlerEntry = plugin.PartialReasonRelationshipUnexpressed + ":bundler_entry"
+	// reasonComputedBundlerTarget: a target/platform value computed at load time (browser/node env).
+	reasonComputedBundlerTarget = plugin.PartialReasonEnvConditionUnresolved + ":bundler_target"
 	// reasonUninspectableBundlerConfig: the whole configuration value is computed —
 	// a config exported as a function (`module.exports = (env) => ({…})`) or an
-	// unreadable reference — so nothing beneath it can be read statically.
-	reasonUninspectableBundlerConfig = "uninspectable_bundler_config"
+	// unreadable reference — so nothing beneath it (an env of values) can be read statically.
+	reasonUninspectableBundlerConfig = plugin.PartialReasonEnvConditionUnresolved + ":bundler_config"
 	// reasonBundlerConfigUnreadable: the config file could not be read or parsed
 	// (I/O error, malformed JSON). A surfaced tool failure, never a clean empty read.
-	reasonBundlerConfigUnreadable = "bundler_config_unreadable"
+	reasonBundlerConfigUnreadable = plugin.PartialReasonToolFailure + ":bundler_config"
 )
 
 // bundlerKind identifies which of the six supported tools produced a reading.

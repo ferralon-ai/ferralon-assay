@@ -76,7 +76,7 @@ func TestSubjectToolchainReachIsUnsetByDefault(t *testing.T) {
 // side would otherwise disable the flag forever with nothing in the tree going red — the same shape
 // of dead wiring the toolchain fact exists to repair, which is why this is an assertion and not a note.
 func TestActionExportsTheReachGateEnv(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "action.yml")
+	path := filepath.Join("..", "..", "action.yml")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)

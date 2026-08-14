@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "parameters": "--include-transitive",
+  "projects": [
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/diamond/App.csproj",
+      "frameworks": [
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "Azure.Identity",
+              "requestedVersion": "1.10.4",
+              "resolvedVersion": "1.10.4"
+            },
+            {
+              "id": "Azure.Storage.Blobs",
+              "requestedVersion": "12.19.1",
+              "resolvedVersion": "12.19.1"
+            }
+          ],
+          "transitivePackages": [
+            {
+              "id": "Azure.Core",
+              "resolvedVersion": "1.36.0"
+            },
+            {
+              "id": "Azure.Storage.Common",
+              "resolvedVersion": "12.18.1"
+            },
+            {
+              "id": "Microsoft.Bcl.AsyncInterfaces",
+              "resolvedVersion": "1.1.1"
+            },
+            {
+              "id": "Microsoft.Identity.Client",
+              "resolvedVersion": "4.56.0"
+            },
+            {
+              "id": "Microsoft.Identity.Client.Extensions.Msal",
+              "resolvedVersion": "4.56.0"
+            },
+            {
+              "id": "Microsoft.IdentityModel.Abstractions",
+              "resolvedVersion": "6.22.0"
+            },
+            {
+              "id": "Microsoft.NETCore.Platforms",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "System.Diagnostics.DiagnosticSource",
+              "resolvedVersion": "6.0.1"
+            },
+            {
+              "id": "System.IO.FileSystem.AccessControl",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "System.IO.Hashing",
+              "resolvedVersion": "6.0.0"
+            },
+            {
+              "id": "System.Memory",
+              "resolvedVersion": "4.5.4"
+            },
+            {
+              "id": "System.Memory.Data",
+              "resolvedVersion": "1.0.2"
+            },
+            {
+              "id": "System.Numerics.Vectors",
+              "resolvedVersion": "4.5.0"
+            },
+            {
+              "id": "System.Runtime.CompilerServices.Unsafe",
+              "resolvedVersion": "6.0.0"
+            },
+            {
+              "id": "System.Security.AccessControl",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "System.Security.Cryptography.ProtectedData",
+              "resolvedVersion": "4.7.0"
+            },
+            {
+              "id": "System.Security.Principal.Windows",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "System.Text.Encodings.Web",
+              "resolvedVersion": "4.7.2"
+            },
+            {
+              "id": "System.Text.Json",
+              "resolvedVersion": "4.7.2"
+            },
+            {
+              "id": "System.Threading.Tasks.Extensions",
+              "resolvedVersion": "4.5.4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

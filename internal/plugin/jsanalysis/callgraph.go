@@ -24,6 +24,10 @@ type program struct {
 	// moduleSet is the set of in-tree module ids, used for extension/index resolution
 	// of a relative specifier.
 	moduleSet map[string]bool
+	// buildCtx caches the PLAN-163 build context (bundler alias/define map with
+	// provenance) the resolver injection point exposes; nil until the first resolver()
+	// call computes it once. It reads the static bundler configs and executes nothing (C4).
+	buildCtx *buildContext
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the

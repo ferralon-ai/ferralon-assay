@@ -121,11 +121,11 @@ func TestDispatch_ResolveVersionsRoundTrip(t *testing.T) {
 	}
 }
 
-// batch-2 promotes call_graph, find_ingresses, reachability, and compute_taint to live
-// lexical analysis; generate_harness and build_manifest stay CONTRACT-PRESENT Unsupported
-// (Prove-tier). They must return the Unsupported stub, never a hard error.
+// batch-2 promotes call_graph, find_ingresses, reachability, and compute_taint to live lexical
+// analysis; build_manifest is now LIVE too (see TestDispatch_BuildManifestIsLive). generate_harness
+// stays CONTRACT-PRESENT Unsupported (Prove-tier): it must return the Unsupported stub, never a hard
+// error.
 func TestDispatch_ContractPresentUnsupportedOps(t *testing.T) {
-	dir := fixtureDir(t)
 	for _, c := range []struct {
 		name string
 		req  plugin.Request
@@ -133,13 +133,33 @@ func TestDispatch_ContractPresentUnsupportedOps(t *testing.T) {
 	}{
 		{"generate_harness", plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}},
 			func(r plugin.Response) []string { return reasons(r.Harness) }},
-		{"build_manifest", plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}},
-			func(r plugin.Response) []string { return reasons(r.BuildManifest) }},
 	} {
 		resp := roundTrip(t, c.req)
 		if !hasReason(c.ok(resp), plugin.PartialReasonUnsupported) {
 			t.Errorf("%s must be CONTRACT-PRESENT Unsupported this pass; got reasons %v", c.name, c.ok(resp))
 		}
+	}
+}
+
+// build_manifest is LIVE through the subprocess (PLAN-151): the flat, ecosystem-neutral manifest is
+// derived lexically from the checkout and returned populated — no longer Unsupported. The fixtureDir
+// carries a .csproj with no restore output, so the honest result names its partiality (e.g.
+// no_lockfile) while stamping the dotnet Resolver identity; it is never Unsupported and never a hard
+// error. Mirrors how PLAN-150 turned the ResolveInventory dispatch test into a live assertion.
+func TestDispatch_BuildManifestIsLive(t *testing.T) {
+	dir := fixtureDir(t)
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}})
+	if resp.BuildManifest == nil {
+		t.Fatal("missing build_manifest payload")
+	}
+	if hasReason(resp.BuildManifest.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("build_manifest must be LIVE, not Unsupported; got %v", resp.BuildManifest.Partiality.Reasons)
+	}
+	if resp.BuildManifest.Resolver.Name != "dotnet" {
+		t.Errorf("build_manifest must stamp the dotnet resolver; got Resolver.Name=%q", resp.BuildManifest.Resolver.Name)
+	}
+	if resp.BuildManifest.Runtime.Name != "dotnet" {
+		t.Errorf("build_manifest must return a populated result (Runtime.Name=dotnet); got %q", resp.BuildManifest.Runtime.Name)
 	}
 }
 

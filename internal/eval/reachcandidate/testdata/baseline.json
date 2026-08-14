@@ -13,7 +13,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 3470
+      "runtime_ms": 3090
     },
     {
       "case_id": "FERRALON-APP-DOS-0001-vulnerable",
@@ -27,7 +27,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 3283
+      "runtime_ms": 2971
     },
     {
       "case_id": "FERRALON-APP-SSRF-0001-patched",
@@ -41,7 +41,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 3239
+      "runtime_ms": 3025
     },
     {
       "case_id": "FERRALON-APP-SSRF-0001-vulnerable",
@@ -55,7 +55,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 3265
+      "runtime_ms": 2983
     },
     {
       "case_id": "GO-2021-0113-liveness",
@@ -69,7 +69,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 2632
+      "runtime_ms": 2425
     },
     {
       "case_id": "GO-2021-0113-patched",
@@ -83,7 +83,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 2624
+      "runtime_ms": 2405
     },
     {
       "case_id": "GO-2021-0113-trivial",
@@ -97,7 +97,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 2507
+      "runtime_ms": 2383
     },
     {
       "case_id": "GO-2021-0264-reachable",
@@ -111,7 +111,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 2568
+      "runtime_ms": 2416
     },
     {
       "case_id": "GO-2022-0322-absent",
@@ -125,7 +125,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 3028
+      "runtime_ms": 2711
     },
     {
       "case_id": "TEGRON-GO-GRAFANA-DUCKDB-0001-fixed",
@@ -167,7 +167,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 29
+      "runtime_ms": 33
     },
     {
       "case_id": "TEGRON-JAVA-DEP-0001-unresolved",
@@ -184,6 +184,20 @@
       "runtime_ms": 14
     },
     {
+      "case_id": "TEGRON-JAVA-DEP-0001-vulnerable",
+      "vuln_id": "TEGRON-JAVA-DEP-0001",
+      "candidate_pair_formed": false,
+      "resolved_sink_scip": "",
+      "resolved_sink_display": "",
+      "sink_correct": false,
+      "resolved_count": 0,
+      "sink_applicable": false,
+      "measured": true,
+      "complete": false,
+      "partial_reason": "dynamic_dispatch",
+      "runtime_ms": 13
+    },
+    {
       "case_id": "TEGRON-JAVA-SPRING-SSRF-0001-patched",
       "vuln_id": "TEGRON-JAVA-SPRING-SSRF-0001",
       "candidate_pair_formed": false,
@@ -194,7 +208,7 @@
       "sink_applicable": false,
       "measured": false,
       "complete": false,
-      "runtime_ms": 8
+      "runtime_ms": 7
     },
     {
       "case_id": "TEGRON-JAVA-SPRING-SSRF-0001-vulnerable",
@@ -207,7 +221,7 @@
       "sink_applicable": false,
       "measured": false,
       "complete": false,
-      "runtime_ms": 8
+      "runtime_ms": 7
     },
     {
       "case_id": "TEGRON-JAVA-SSRF-0001-patched",
@@ -246,7 +260,7 @@
       "sink_applicable": false,
       "measured": false,
       "complete": false,
-      "runtime_ms": 15
+      "runtime_ms": 20
     },
     {
       "case_id": "TEGRON-JS-NEXTRCE-0001-vulnerable",
@@ -299,7 +313,7 @@
       "measured": true,
       "complete": false,
       "partial_reason": "dynamic_dispatch",
-      "runtime_ms": 22
+      "runtime_ms": 25
     },
     {
       "case_id": "TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable",
@@ -338,7 +352,7 @@
       "sink_applicable": false,
       "measured": false,
       "complete": false,
-      "runtime_ms": 6
+      "runtime_ms": 7
     }
   ]
 }

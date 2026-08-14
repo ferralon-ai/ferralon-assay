@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "parameters": "--include-transitive",
+  "projects": [
+    {
+      "path": "/private/tmp/dotnet-capture.6fx3jU/lockfile/App.csproj",
+      "frameworks": [
+        {
+          "framework": "net8.0",
+          "topLevelPackages": [
+            {
+              "id": "Serilog.AspNetCore",
+              "requestedVersion": "8.0.1",
+              "resolvedVersion": "8.0.1"
+            }
+          ],
+          "transitivePackages": [
+            {
+              "id": "Microsoft.Extensions.Configuration.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Configuration.Binder",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.DependencyInjection",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.DependencyInjection.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.DependencyModel",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Diagnostics.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.FileProviders.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Hosting.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Logging.Abstractions",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Options",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Microsoft.Extensions.Primitives",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Serilog",
+              "resolvedVersion": "3.1.1"
+            },
+            {
+              "id": "Serilog.Extensions.Hosting",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Serilog.Extensions.Logging",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Serilog.Formatting.Compact",
+              "resolvedVersion": "2.0.0"
+            },
+            {
+              "id": "Serilog.Settings.Configuration",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "Serilog.Sinks.Console",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "Serilog.Sinks.Debug",
+              "resolvedVersion": "2.0.0"
+            },
+            {
+              "id": "Serilog.Sinks.File",
+              "resolvedVersion": "5.0.0"
+            },
+            {
+              "id": "System.Diagnostics.DiagnosticSource",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Text.Encodings.Web",
+              "resolvedVersion": "8.0.0"
+            },
+            {
+              "id": "System.Text.Json",
+              "resolvedVersion": "8.0.0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

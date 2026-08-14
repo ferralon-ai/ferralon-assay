@@ -419,6 +419,12 @@ func (p Presence) String() string {
 // separately). A projected operand that is value-zero — including one whose only declared field was
 // an unrecognized closed-set member dropped fail-open — reads as declared_empty; anything carrying a
 // value reads as declared_values.
+//
+// KNOWN LIMITATION (PLAN-220): this reads the POST-fail-open Zero(), so an operand whose sole declared
+// field was an unrecognized value (dropped to zero at decode) is labeled declared_empty rather than
+// declared_values. Latent this cycle — no consumer reads Presence yet. When PLAN-220 wires consumers,
+// it decides whether a wire-present-but-all-dropped operand should be distinguished from a genuinely
+// empty one; doing so needs the pre-drop wire shape, not the projected zero.
 func presenceFromZero(zero bool) Presence {
 	if zero {
 		return PresenceDeclaredEmpty

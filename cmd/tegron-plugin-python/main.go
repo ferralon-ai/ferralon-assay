@@ -5,20 +5,23 @@
 // ONLY into this binary — never into tegrond.
 //
 // This binary deliberately mirrors cmd/tegron-plugin-js: same one-shot protocol, same
-// hard-error-vs-declared-partiality contract. Eight ops are LIVE, all backed by the real
+// hard-error-vs-declared-partiality contract. Nine ops are LIVE, all backed by the real
 // pure-Go lexical source analysis (no scip-python container on the Assess path):
 // index_symbols, resolve_symbols, resolve_versions (installed versions from
 // requirements.txt / poetry.lock / Pipfile.lock / PEP 621 pyproject.toml), call_graph,
-// find_ingresses (Flask/FastAPI route decorators), reachability, compute_taint, and
+// find_ingresses (Flask/FastAPI route decorators), reachability, compute_taint,
 // resolve_inventory (the selected whole-graph dependency inventory — markers/extras evaluated
 // against the DECLARED target environment, six lockfile/manifest formats, declared integrity
-// digests; no resolver is launched — PLAN-170).
+// digests; no resolver is launched — PLAN-170), and build_manifest (ecosystem-neutral build
+// context — declared interpreter/version, platform, project root, resolver provenance; an
+// undeterminable interpreter version is a partial manifest naming the missing input, never a
+// guess; declared metadata only, no interpreter/resolver launched — PLAN-173).
 // reachability and compute_taint are ALWAYS declared Partial(dynamic_dispatch) — Python
 // static reachability is structurally weak (dynamic dispatch, getattr, monkeypatching), so
 // "not reached" is UNKNOWN, never "safe", and the effect trial adjudicates. call_graph is
-// likewise always Partial. generate_harness and build_manifest stay CONTRACT-PRESENT
-// Unsupported (as on the Assess path; the Python effect rides the corpus repro-runtime
-// sandbox, exactly as the Go/Java/JS plugins ship them).
+// likewise always Partial. generate_harness stays CONTRACT-PRESENT Unsupported (as on the
+// Assess path; the Python effect rides the corpus repro-runtime sandbox, exactly as the
+// Go/Java/JS plugins ship it) — it appears in no §5.4 deliverable, so it is out of scope.
 //
 // The client (internal/plugin.pythonPlugin) owns the timeout via exec.CommandContext;
 // this process runs to completion on a single request. A hard failure sets
@@ -73,10 +76,11 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // call_graph, find_ingresses, reachability, compute_taint, and resolve_inventory call the real
 // source-level Python analysis (reachability/compute_taint always declared Partial;
 // resolve_inventory reads declared manifests/lockfiles only, never launching a resolver —
-// PLAN-170). generate_harness and build_manifest remain contract-present ops returning their
-// result type with Unsupported() partiality (the Python effect rides the corpus repro-runtime
-// sandbox; build_manifest is PLAN-173). An unknown op, or a missing per-op payload, is a hard
-// failure (inv.4).
+// PLAN-170). build_manifest derives the ecosystem-neutral build context from declared
+// metadata only (PLAN-173), partial-with-a-named-reason when the interpreter version is
+// undeterminable. generate_harness remains a contract-present op returning its result type
+// with Unsupported() partiality (the Python effect rides the corpus repro-runtime sandbox).
+// An unknown op, or a missing per-op payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -159,7 +163,11 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.BuildManifest == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
-		return plugin.Response{BuildManifest: &plugin.BuildManifestResult{Partiality: plugin.Unsupported()}}, nil
+		res, err := pythonanalysis.BuildManifest(ctx, *req.BuildManifest)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{BuildManifest: &res}, nil
 
 	case plugin.OpResolveInventory:
 		if req.ResolveInventory == nil {

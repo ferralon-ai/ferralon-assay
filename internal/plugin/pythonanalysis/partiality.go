@@ -22,4 +22,12 @@ const (
 	// VCS reference, an editable install, or a file include rather than a registry pin, so
 	// its exact identity is undeclared without a fetch (C3 / §3.1). Used by E3.
 	reasonSourceUnpinnedPlaceholder = "source_unpinned"
+
+	// reasonRelationshipUnexpressedPlaceholder marks a node whose source format expresses no
+	// parent relationship — a flat requirements.txt has no dependency edges, so its nodes are
+	// neither direct nor transitive by any evidence in the file. Per C4 such a node names the
+	// unexpressed relationship in its partiality rather than being defaulted to "direct". Used
+	// by E4 (pyReq.relationshipReason); the pdm.lock/uv.lock parsers, which DO carry edges,
+	// classify their nodes and never emit this.
+	reasonRelationshipUnexpressedPlaceholder = "relationship_unexpressed"
 )

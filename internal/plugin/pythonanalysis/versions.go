@@ -116,7 +116,7 @@ func manifestFiles(root string) []string {
 // split requirement files still resolve.
 func isManifest(name string) bool {
 	switch name {
-	case "poetry.lock", "Pipfile.lock", "pyproject.toml":
+	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock":
 		return true
 	}
 	return strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt")
@@ -136,6 +136,10 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 		return parsePoetryLock(data)
 	case base == "Pipfile.lock":
 		return parsePipfileLock(data)
+	case base == "pdm.lock":
+		return parsePDMLockAdvisory(data)
+	case base == "uv.lock":
+		return parseUVLockAdvisory(data)
 	case base == "pyproject.toml":
 		return parsePyproject(data)
 	default: // requirements*.txt

@@ -30,16 +30,36 @@ const (
 	reqURL                     // a direct-URL requirement ("…://…")
 )
 
-// pyReq is one parsed requirement line with the fields E1–E3 populate. It is the input E5
-// projects onto plugin.DependencyNode.
+// relKind classifies a node's parent relationship (C4). The zero value is deliberately
+// relUnexpressed, NOT relDirect: a node whose source format carries no edge data must never be
+// silently promoted to "direct" (C4 negative control). relDirect is only assigned on positive
+// evidence — a root/top-level dependency — and relTransitive only when a parent edge names the
+// node as another package's dependency.
+type relKind int
+
+const (
+	relUnexpressed relKind = iota // format expresses no parent relationship (requirements.txt)
+	relDirect                     // a root/top-level dependency
+	relTransitive                 // pulled in only as another package's dependency
+)
+
+// pyReq is one parsed requirement line (E1–E3) or resolved lockfile package (E4) with the
+// fields those stages populate. It is the input E5 projects onto plugin.DependencyNode.
 type pyReq struct {
 	Name     string // PyPI project name (or best-effort source identity for non-normal kinds)
 	Version  string // exact resolved version; "" when unresolved
 	Resolved bool   // an exact "==X.Y.Z" pin was found
-	Source   string // manifest/resolver label, e.g. "requirements.txt"
+	Source   string // manifest/resolver label, e.g. "requirements.txt", "pdm.lock", "uv.lock"
 	Kind     reqKind
 	Raw      string // original spec text for a non-normal line (VCS/URL/editable/include identity)
 	Marker   string // captured PEP 508 marker text ("" = none)
+
+	// E4 parent edges + classification (C4). Relationship is relUnexpressed for a format with
+	// no edge data (requirements.txt); the pdm.lock/uv.lock parsers set relDirect/relTransitive
+	// and populate Parents with the normalized names of the packages that declare this node as a
+	// dependency, sorted for deterministic emission (C7).
+	Relationship relKind
+	Parents      []string
 
 	Selected   bool     // marker true (or no marker) → in the selected set
 	Unresolved bool     // marker referenced an unbound variable (§3.1 partial)
@@ -282,6 +302,19 @@ func selectExtras(extras, selection []string) []string {
 		}
 	}
 	return out
+}
+
+// relationshipReason returns the declared partiality code for a node whose source format
+// expresses no parent relationship (C4), or "" for a node the format lets us classify. E5
+// folds this into the plugin.DependencyInventory node's Partiality alongside pyReq.Partial;
+// keeping it derived from Relationship (rather than eagerly stored in Partial) leaves the
+// E1–E3 source/marker partiality axis untouched and guarantees an unclassified node reads as
+// "unexpressed", never "direct".
+func (r pyReq) relationshipReason() string {
+	if r.Relationship == relUnexpressed {
+		return reasonRelationshipUnexpressedPlaceholder
+	}
+	return ""
 }
 
 // envUnresolvedReason builds the partiality code for an unbound marker variable, appending

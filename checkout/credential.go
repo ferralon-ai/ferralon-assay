@@ -1,7 +1,10 @@
 // internal/checkout/credential.go
 package checkout
 
-import "context"
+import (
+	"context"
+	"net/http"
+)
 
 // Credential is a per-fire clone credential — the ownership token that authenticates a
 // clone/fetch of a PRIVATE repo (the submit body's ownership_proof.token). It is carried
@@ -35,6 +38,33 @@ func (c Credential) String() string {
 
 // GoString redacts too, so a %#v cannot leak the token either.
 func (c Credential) GoString() string { return c.String() }
+
+// ApplyTo sets an `Authorization: Bearer <token>` header on req FROM the unexported token,
+// in place. It is the ONLY sanctioned egress of the token into a registry request (PLAN-200
+// artifact acquisition): it never returns the plaintext, never stores it in another struct,
+// and never logs it — so the token's only exit stays inside this package (threat 3). A value
+// receiver, so it works on a Credential held in a map/struct without a pointer. The empty
+// credential and a nil req are no-ops, leaving the request unauthenticated (bare fetch).
+//
+// There is deliberately NO token getter/serializer anywhere: header construction happens
+// here, in place, so no caller can obtain the raw token to leak it.
+func (c Credential) ApplyTo(req *http.Request) {
+	if c.token == "" || req == nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+}
+
+// ApplyBasicAuth is the sibling for registries that require HTTP Basic (the token as the
+// password under a fixed username). It uses (*http.Request).SetBasicAuth, which base64-encodes
+// in place and never surfaces the plaintext. Same custody guarantee as ApplyTo: value
+// receiver, no return of the token, no store, no log.
+func (c Credential) ApplyBasicAuth(req *http.Request, username string) {
+	if c.token == "" || req == nil {
+		return
+	}
+	req.SetBasicAuth(username, c.token)
+}
 
 // credentialContextKey is a private, unexported context-key type ⇒ collision-free with any
 // other package's context values.

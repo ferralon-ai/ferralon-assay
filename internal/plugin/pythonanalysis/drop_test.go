@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // countRequirementLines counts the non-blank, non-comment lines in a requirements fixture —
@@ -69,7 +71,7 @@ func TestDropRecoveryC3(t *testing.T) {
 		if r.Kind != c.wantKind {
 			t.Errorf("%s: kind = %d, want %d", c.name, r.Kind, c.wantKind)
 		}
-		if got := containsString(r.Partial, reasonSourceUnpinnedPlaceholder); got != c.wantUnpinned {
+		if got := containsString(r.Partial, plugin.PartialReasonSourceUnpinned); got != c.wantUnpinned {
 			t.Errorf("%s: source_unpinned partiality = %v, want %v", c.name, got, c.wantUnpinned)
 		}
 		// A dropped-shape node is still Selected (the dependency IS installed; only its exact

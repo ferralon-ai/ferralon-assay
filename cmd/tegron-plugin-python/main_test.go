@@ -185,21 +185,41 @@ func TestDispatch_HarnessOps_Unsupported(t *testing.T) {
 	}
 }
 
-// resolve_inventory stays CONTRACT-PRESENT Unsupported: Python has no whole-graph
-// dependency resolver, so the op returns an honestly-partial inventory (Complete=false,
-// unsupported_phase1) — NEVER an empty-but-successful one, which would read downstream as
-// "this build has no dependencies".
-func TestDispatch_ResolveInventory_Unsupported(t *testing.T) {
+// resolve_inventory is LIVE (PLAN-170): it resolves the selected whole-graph inventory from the
+// build dir's declared manifests, over the one-shot subprocess protocol. The fixture requirements
+// file pins deepdiff (== -> resolved) and ranges flask (>= -> fail-open UNRESOLVED). Assert the
+// round-trip yields a populated, graph-level-Complete inventory with the pinned node carrying its
+// exact PURL@version and the ranged node present but unresolved (never fabricated to a version).
+func TestDispatch_ResolveInventory_Live(t *testing.T) {
 	dir := fixtureDir(t)
 	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Errorf("resolve_inventory must be honestly partial, never an empty-but-Complete inventory; got %+v", resp.Inventory.Partiality)
+	if !resp.Inventory.Partiality.Complete {
+		t.Errorf("resolve_inventory over a parseable manifest must be graph-level Complete; got %+v", resp.Inventory.Partiality)
 	}
-	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
-		t.Errorf("resolve_inventory must carry unsupported_phase1; got %v", resp.Inventory.Partiality.Reasons)
+
+	byPURL := map[string]plugin.DependencyNode{}
+	byName := map[string]plugin.DependencyNode{}
+	for _, n := range resp.Inventory.Nodes {
+		byPURL[n.PURL] = n
+		byName[n.ID] = n
+	}
+	if _, ok := byPURL["pkg:pypi/deepdiff@8.0.1"]; !ok {
+		t.Errorf("pinned deepdiff missing its exact PURL@version; nodes=%+v", resp.Inventory.Nodes)
+	}
+	var flask *plugin.DependencyNode
+	for i := range resp.Inventory.Nodes {
+		if resp.Inventory.Nodes[i].PURL == "pkg:pypi/flask" {
+			flask = &resp.Inventory.Nodes[i]
+		}
+	}
+	if flask == nil {
+		t.Fatalf("ranged flask absent; a fail-open UNRESOLVED node must not be dropped; nodes=%+v", resp.Inventory.Nodes)
+	}
+	if flask.Version != "" {
+		t.Errorf("ranged flask fabricated a version %q; fail-open must leave it empty", flask.Version)
 	}
 }
 

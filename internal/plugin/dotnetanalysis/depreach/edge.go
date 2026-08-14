@@ -58,6 +58,13 @@ type BackingEdge struct {
 	Producer   string            // which pass emitted it ("cha", "il-callsite", ...)
 	Origin     EdgeOrigin        // call-site location
 	Confidence Confidence        // C3 decidability grade
+
+	// ⚑SM declared partiality: the edge is attributed through a generated async/iterator
+	// state machine (its MoveNext), so it reads through code the developer did not write.
+	// Recorded here — never a silent collapse, never an invented `<…>d__N` symbol — and,
+	// like all provenance, dropped by Compact(). Partial is false for an ordinary edge.
+	Partial       bool
+	PartialReason string
 }
 
 // Compact projects a BackingEdge to the public, compact plugin.CallEdge, carrying only

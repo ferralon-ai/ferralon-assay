@@ -396,7 +396,7 @@ func (m *mdTables) parseTableStream(b []byte) error {
 		tModule: true, tTypeRef: true, tTypeDef: true, tField: true, tMethodDef: true,
 		tParam: true, tInterfaceImpl: true, tMemberRef: true, tMethodImpl: true,
 		tTypeSpec: true, tMethodSpec: true, tNestedClass: true, tModuleRef: true,
-		tAssembly: true, tAssemblyRef: true,
+		tAssembly: true, tAssemblyRef: true, tCustomAttribute: true,
 	}
 	for _, t := range present {
 		cols := tableSchemas[t]

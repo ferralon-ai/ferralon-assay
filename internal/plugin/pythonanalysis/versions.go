@@ -172,7 +172,7 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 			line = line[:i]
 		}
 		line = strings.TrimSpace(line)
-		name, version, resolved := parseRequirementSpec(line)
+		name, version, resolved, _ := parseRequirementSpec(line) // advisory path ignores extras
 		if name == "" {
 			continue
 		}
@@ -181,10 +181,13 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 	return out, true
 }
 
-// parseRequirementSpec extracts (name, version, resolved) from a single requirement
+// parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement
 // spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix); anything else
-// (range, compatible, bare name) is UNRESOLVED.
-func parseRequirementSpec(spec string) (name, version string, resolved bool) {
+// (range, compatible, bare name) is UNRESOLVED. The extras group "[a,b]" is CAPTURED (PLAN-170
+// E2, replacing the old unconditional skip) and returned normalized; the advisory path
+// (parseRequirementsTxt, parsePyproject) ignores it, while the selected-set path resolves it
+// against the declared extras selection.
+func parseRequirementSpec(spec string) (name, version string, resolved bool, extras []string) {
 	// Name runs up to the first operator/extras/space.
 	end := len(spec)
 	for i, c := range spec {
@@ -195,17 +198,18 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool) {
 	}
 	name = strings.TrimSpace(spec[:end])
 	if name == "" {
-		return "", "", false
+		return "", "", false, nil
 	}
 	rest := strings.TrimSpace(spec[end:])
-	// Skip an extras group "[a,b]".
+	// Capture an extras group "[a,b]" (E2) instead of discarding it.
 	if strings.HasPrefix(rest, "[") {
 		if j := strings.IndexByte(rest, ']'); j >= 0 {
+			extras = parseExtrasGroup(rest[1:j])
 			rest = strings.TrimSpace(rest[j+1:])
 		}
 	}
 	if !strings.HasPrefix(rest, "==") {
-		return name, "", false // not an exact pin → UNRESOLVED
+		return name, "", false, extras // not an exact pin → UNRESOLVED
 	}
 	ver := strings.TrimSpace(rest[2:])
 	// A version with a further comma-clause or a "*" prefix is not a single exact pin.
@@ -213,9 +217,22 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool) {
 		ver = ver[:i]
 	}
 	if ver == "" || strings.Contains(ver, "*") {
-		return name, "", false
+		return name, "", false, extras
 	}
-	return name, ver, true
+	return name, ver, true, extras
+}
+
+// parseExtrasGroup splits the body of an extras group "a, b" into normalized extra names in
+// declared order (PEP 503-style normalization, so the group matches a declared selection the
+// same way regardless of case or separator). Empty entries are dropped.
+func parseExtrasGroup(body string) []string {
+	var out []string
+	for _, e := range strings.Split(body, ",") {
+		if n := normalizePyCoordinate(e); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // joinContinuations splits a requirements file into logical requirement strings, joining
@@ -374,7 +391,7 @@ func parsePyproject(data []byte) ([]plugin.ResolvedDependency, bool) {
 			entry = strings.Trim(entry, "[]")
 			entry = strings.TrimSpace(strings.Trim(strings.TrimSpace(entry), `"'`))
 			if entry != "" {
-				name, version, resolved := parseRequirementSpec(entry)
+				name, version, resolved, _ := parseRequirementSpec(entry) // advisory path ignores extras
 				if name != "" {
 					out = append(out, pyResolved(name, version, resolved, "pyproject.toml"))
 				}

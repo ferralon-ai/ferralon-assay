@@ -40,4 +40,13 @@ const (
 	// reasonNoRuntimeTarget: no RID/platform-specific asset selection is recorded on this node
 	// (a portable, RID-agnostic resolution). Per-node, never a guessed platform.
 	reasonNoRuntimeTarget = "no_runtime_target"
+
+	// reasonMultiTargetFramework: >1 TFM declared; the single Runtime.Version scalar can't carry the set.
+	reasonMultiTargetFramework = "multi_target_framework"
+
+	// reasonMultiProjectSolution: >1 member project; the flat BuildManifestResult can't enumerate them (PLAN-400).
+	reasonMultiProjectSolution = "multi_project_solution"
+
+	// reasonPropertySetUnhomed: analysis-relevant properties (DefineConstants/LangVersion/OutputType) with no frozen field (retire if §4's relay lands).
+	reasonPropertySetUnhomed = "property_set_unhomed"
 )

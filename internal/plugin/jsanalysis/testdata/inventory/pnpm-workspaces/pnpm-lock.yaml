@@ -1,0 +1,53 @@
+# PLAN-160 fixture F7 (pnpm v9): workspaces with two members (app, lib) both
+# declaring the same hoisted dep (left-pad@1.3.0). Structural fixture for the
+# importers/membership logic; resolution integrity intentionally omitted.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/app:
+    dependencies:
+      left-pad:
+        specifier: 1.3.0
+        version: 1.3.0
+      is-odd:
+        specifier: 3.0.1
+        version: 3.0.1
+    devDependencies:
+      rimraf:
+        specifier: 5.0.0
+        version: 5.0.0
+
+  packages/lib:
+    dependencies:
+      left-pad:
+        specifier: 1.3.0
+        version: 1.3.0
+
+packages:
+
+  is-number@6.0.0: {}
+
+  is-odd@3.0.1: {}
+
+  left-pad@1.3.0: {}
+
+  rimraf@5.0.0: {}
+
+snapshots:
+
+  is-number@6.0.0: {}
+
+  is-odd@3.0.1:
+    dependencies:
+      is-number: 6.0.0
+
+  left-pad@1.3.0: {}
+
+  rimraf@5.0.0: {}

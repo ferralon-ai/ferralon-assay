@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-PY-SSRF-0001-TOOLFAIL",
+  "category": "installed_undetermined",
+  "advisory": {
+    "id": "TEGRON-PY-SSRF-0001",
+    "source": "osv",
+    "summary": "Same synthetic SSRF sink as the reachable/unreachable legs, in a build where one source file the directory walk lists cannot be read. Tool-failure shape: the analysis degrades to Partial(tool_failure) rather than silently rendering an incomplete index as complete. Empirically confirmed reachable via a committed DANGLING SYMLINK named *.py whose target does not exist -- see finding F-B3 / the C4 table.",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/ferralon-corpus-repros",
+    "revision": "TEGRON-PY-SSRF-0001-TOOLFAIL-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-PY-SSRF-0001-TOOLFAIL/",
+      "notes": "First-party Python repro. src/app.py is a real, readable module (open_conn present and reachable). src/vendored_shim.py is a COMMITTED DANGLING SYMLINK (git mode 120000, target does_not_exist_sidecar.py) whose *.py name is listed by the scanner's directory walk but whose os.ReadFile follows the link and fails -> readFailed -> Partial(tool_failure) (index.go:62-64,80-82; callgraph.go:100-104,198-200). Empirically verified portable: git stores the symlink as mode 120000 and a fresh checkout re-creates it dangling (core.symlinks default true). This is NOT the missing/empty-build-dir case (that is a hard error, index.go:47-59). No target code is executed."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "undetermined",
+    "strength": "reasoned",
+    "completion_status": "stopped_capability",
+    "label": "undetermined",
+    "expected_flags": ["tool_failure"],
+    "rationale": "One source file listed by the directory walk cannot be read (a committed dangling symlink), so the index and call graph degrade to Partial(tool_failure) while still emitting the symbols from the readable file. The result never renders the unknown as a complete, successful index. Verdict correctness is out of scope for PLAN-070; C4 asserts the tool_failure partiality arm, not an empty successful result.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

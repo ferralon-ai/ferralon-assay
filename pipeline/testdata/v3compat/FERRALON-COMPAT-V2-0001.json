@@ -1,0 +1,17 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v2",
+  "vuln_id": "FERRALON-COMPAT-V2-0001",
+  "module": "com.example:single",
+  "coordinate": "com.example:single",
+  "purl": "pkg:maven/com.example/single",
+  "version_scheme": "maven",
+  "upper_exclusive": "3.2.1",
+  "fixed_version": "3.2.1",
+  "sink_kind": "code_execution",
+  "affected_ranges": [
+    {
+      "introduced": "0",
+      "fixed": "3.2.1"
+    }
+  ]
+}

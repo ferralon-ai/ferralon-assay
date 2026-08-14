@@ -27,18 +27,18 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 	var ingresses []plugin.Ingress
 	for _, f := range prog.files {
 		for _, in := range f.ingresses {
-			sym := prog.resolveIngressSymbol(f.module, in)
-			if sym == "" {
+			symID := prog.resolveIngressSymbol(f.module, in)
+			if symID == "" {
 				continue
 			}
-			key := in.kind + "\x00" + sym + "\x00" + in.selector
+			key := in.kind + "\x00" + symID + "\x00" + in.selector
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			ingresses = append(ingresses, plugin.Ingress{
 				Kind:     in.kind,
-				Symbol:   sym,
+				Symbol:   sym(symID),
 				Selector: in.selector,
 			})
 		}
@@ -48,8 +48,8 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 		if ingresses[i].Kind != ingresses[j].Kind {
 			return ingresses[i].Kind < ingresses[j].Kind
 		}
-		if ingresses[i].Symbol != ingresses[j].Symbol {
-			return ingresses[i].Symbol < ingresses[j].Symbol
+		if ingresses[i].Symbol.SCIP != ingresses[j].Symbol.SCIP {
+			return ingresses[i].Symbol.SCIP < ingresses[j].Symbol.SCIP
 		}
 		return ingresses[i].Selector < ingresses[j].Selector
 	})

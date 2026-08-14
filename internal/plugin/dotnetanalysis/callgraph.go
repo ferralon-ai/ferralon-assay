@@ -170,8 +170,8 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 				continue
 			}
 			e := plugin.CallEdge{
-				Caller: funcSCIP(cs.callerNamespace, cs.callerEnclosing, cs.callerName, cs.callerArity),
-				Callee: callee,
+				Caller: sym(funcSCIP(cs.callerNamespace, cs.callerEnclosing, cs.callerName, cs.callerArity)),
+				Callee: sym(callee),
 			}
 			if !seen[e] {
 				seen[e] = true
@@ -189,17 +189,21 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 
-	roots := make([]string, 0, len(rootsSet))
+	rootIDs := make([]string, 0, len(rootsSet))
 	for r := range rootsSet {
-		roots = append(roots, r)
+		rootIDs = append(rootIDs, r)
 	}
-	sort.Strings(roots)
+	sort.Strings(rootIDs)
+	roots := make([]plugin.Symbol, len(rootIDs))
+	for i, r := range rootIDs {
+		roots[i] = sym(r)
+	}
 
 	return plugin.CallGraphResult{
 		Partiality: callGraphPartiality(prog),

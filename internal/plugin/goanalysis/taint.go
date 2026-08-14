@@ -65,7 +65,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	// never "safe" (inv.5): declare no_known_ingress.
 	hit := make(map[string]bool, len(paths))
 	for _, p := range paths {
-		hit[p.Sink] = true
+		hit[p.Sink.SCIP] = true
 	}
 	for s := range sinks {
 		if !hit[s] {
@@ -100,11 +100,11 @@ func (s *ssaProgram) resolveIngressFuncs(ingresses []plugin.Ingress) map[string]
 
 	out := map[string]*ssa.Function{}
 	for _, in := range ingresses {
-		if in.Symbol == "" {
+		if in.Symbol.SCIP == "" {
 			continue
 		}
-		if fn, ok := bySymbol[in.Symbol]; ok {
-			out[in.Symbol] = fn
+		if fn, ok := bySymbol[in.Symbol.SCIP]; ok {
+			out[in.Symbol.SCIP] = fn
 		}
 	}
 	return out

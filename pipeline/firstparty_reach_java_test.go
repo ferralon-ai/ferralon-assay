@@ -53,17 +53,17 @@ func (javaFirstPartyStub) CallGraph(_ context.Context, _ plugin.CallGraphRequest
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: javaDoGetSCIP, Callee: javaHandleSCIP},
-			{Caller: javaHandleSCIP, Callee: javaFetchSCIP},
+			{Caller: plugin.Symbol{SCIP: javaDoGetSCIP}, Callee: plugin.Symbol{SCIP: javaHandleSCIP}},
+			{Caller: plugin.Symbol{SCIP: javaHandleSCIP}, Callee: plugin.Symbol{SCIP: javaFetchSCIP}},
 		},
-		Roots: []string{javaDoGetSCIP},
+		Roots: []plugin.Symbol{{SCIP: javaDoGetSCIP}},
 	}, nil
 }
 
 func (javaFirstPartyStub) FindIngresses(_ context.Context, _ plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
-		Ingresses:  []plugin.Ingress{{Kind: "servlet", Symbol: javaDoGetSCIP}},
+		Ingresses:  []plugin.Ingress{{Kind: "servlet", Symbol: plugin.Symbol{SCIP: javaDoGetSCIP}}},
 	}, nil
 }
 
@@ -119,9 +119,9 @@ func (javaUnresolvedStub) CallGraph(_ context.Context, _ plugin.CallGraphRequest
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: javaDoGetSCIP, Callee: javaHandleSCIP},
+			{Caller: plugin.Symbol{SCIP: javaDoGetSCIP}, Callee: plugin.Symbol{SCIP: javaHandleSCIP}},
 			// No handle -> fetch edge: the sink is unreachable (not fabricated).
 		},
-		Roots: []string{javaDoGetSCIP},
+		Roots: []plugin.Symbol{{SCIP: javaDoGetSCIP}},
 	}, nil
 }

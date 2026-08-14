@@ -64,17 +64,17 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 	ingressSyms := make(map[string]bool, len(ing.Ingresses))
 	for _, in := range ing.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = true
+		if in.Symbol.SCIP != "" {
+			ingressSyms[in.Symbol.SCIP] = true
 		}
 	}
 	roots := make(map[string]bool, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = true
+		roots[r.SCIP] = true
 	}
 
 	var paths []plugin.ReachPath
@@ -89,7 +89,7 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		if p.Ingress == "" {
+		if p.Ingress.SCIP == "" {
 			// Reached a program root but no attacker-facing ingress on the path.
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
@@ -128,7 +128,14 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 			if isIngress {
 				ingress = cur.sym
 			}
-			return plugin.ReachPath{Sink: sink, Ingress: ingress, Trace: trace}, true
+			// Sink/Ingress/Trace are now Symbol/[]Symbol; the BFS carries id strings,
+			// so wrap each via sym at the mint. A root-only path leaves ingress "",
+			// so sym("") is the zero Symbol the contract's "unknown ingress" case.
+			traceSyms := make([]plugin.Symbol, len(trace))
+			for i := range trace {
+				traceSyms[i] = sym(trace[i])
+			}
+			return plugin.ReachPath{Sink: sym(sink), Ingress: sym(ingress), Trace: traceSyms}, true
 		}
 
 		for _, caller := range callers[cur.sym] {

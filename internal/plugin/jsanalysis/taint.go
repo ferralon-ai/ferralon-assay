@@ -50,7 +50,8 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	}
 
 	var paths []plugin.ReachPath
-	for _, sink := range req.Sinks {
+	for _, s := range req.Sinks {
+		sink := sym(s)
 		trace := shortestPath(adj, sources, sink)
 		if trace == nil {
 			// A sink with no source path is UNKNOWN, never "safe" (inv.5).
@@ -76,9 +77,11 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	}, nil
 }
 
-// buildAdjacency builds caller→callees adjacency from the directed call edges.
-func buildAdjacency(edges []plugin.CallEdge) map[string][]string {
-	adj := make(map[string][]string, len(edges))
+// buildAdjacency builds caller→callees adjacency from the directed call edges. Keyed by
+// the comparable plugin.Symbol directly: every edge endpoint is minted through sym(), so
+// equal SCIP ids are byte-identical Symbols and adjacency lookups resolve correctly.
+func buildAdjacency(edges []plugin.CallEdge) map[plugin.Symbol][]plugin.Symbol {
+	adj := make(map[plugin.Symbol][]plugin.Symbol, len(edges))
 	for _, e := range edges {
 		adj[e.Caller] = append(adj[e.Caller], e.Callee)
 	}
@@ -88,13 +91,13 @@ func buildAdjacency(edges []plugin.CallEdge) map[string][]string {
 // shortestPath returns the shortest ordered source→sink path over the call graph (BFS
 // from all sources at once), or nil when no path exists. Determinism: CallGraph pre-sorts
 // edges, so neighbour order is stable.
-func shortestPath(adj map[string][]string, sources []string, sink string) []string {
-	prev := map[string]string{}
-	visited := map[string]bool{}
-	var queue []string
+func shortestPath(adj map[plugin.Symbol][]plugin.Symbol, sources []plugin.Symbol, sink plugin.Symbol) []plugin.Symbol {
+	prev := map[plugin.Symbol]plugin.Symbol{}
+	visited := map[plugin.Symbol]bool{}
+	var queue []plugin.Symbol
 	for _, s := range sources {
 		if s == sink {
-			return []string{s}
+			return []plugin.Symbol{s}
 		}
 		if !visited[s] {
 			visited[s] = true
@@ -121,12 +124,12 @@ func shortestPath(adj map[string][]string, sources []string, sink string) []stri
 
 // reconstruct walks the prev map back from sink to a source, returning the ordered
 // source→sink trace.
-func reconstruct(prev map[string]string, sources []string, sink string) []string {
-	srcSet := make(map[string]bool, len(sources))
+func reconstruct(prev map[plugin.Symbol]plugin.Symbol, sources []plugin.Symbol, sink plugin.Symbol) []plugin.Symbol {
+	srcSet := make(map[plugin.Symbol]bool, len(sources))
 	for _, s := range sources {
 		srcSet[s] = true
 	}
-	var rev []string
+	var rev []plugin.Symbol
 	for cur := sink; ; {
 		rev = append(rev, cur)
 		if srcSet[cur] {

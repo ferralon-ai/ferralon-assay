@@ -54,17 +54,21 @@ func TestReachability_Live(t *testing.T) {
 
 	var found bool
 	for _, p := range res.Paths {
-		if strings.Contains(p.Sink, "language") && strings.Contains(p.Sink, "Parse") {
+		if strings.Contains(p.Sink.SCIP, "language") && strings.Contains(p.Sink.SCIP, "Parse") {
 			found = true
 			if len(p.Trace) < 2 {
 				t.Errorf("expected a multi-frame trace ingress->sink, got %v", p.Trace)
 			}
-			traceJoined := strings.Join(p.Trace, "\n")
+			traceIDs := make([]string, len(p.Trace))
+			for i, s := range p.Trace {
+				traceIDs[i] = s.SCIP
+			}
+			traceJoined := strings.Join(traceIDs, "\n")
 			if !strings.Contains(traceJoined, "Trigger") {
 				t.Errorf("expected the trace to pass through Trigger; got %v", p.Trace)
 			}
 			if p.Sink != p.Trace[len(p.Trace)-1] {
-				t.Errorf("sink should be the bottom trace frame: sink=%q trace=%v", p.Sink, p.Trace)
+				t.Errorf("sink should be the bottom trace frame: sink=%q trace=%v", p.Sink.SCIP, p.Trace)
 			}
 		}
 	}

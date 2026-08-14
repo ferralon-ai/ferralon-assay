@@ -61,10 +61,10 @@ func TestSpringRepro_LexicalDynamicDispatch(t *testing.T) {
 	}
 	entries := map[string]bool{}
 	for _, in := range ing.Ingresses {
-		entries[in.Symbol] = true
+		entries[in.Symbol.SCIP] = true
 	}
 	for _, r := range cg.Roots {
-		entries[r] = true
+		entries[r.SCIP] = true
 	}
 
 	if reverseReachable(cg.Edges, entries, sink) {

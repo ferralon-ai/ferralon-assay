@@ -100,8 +100,8 @@ func TestDispatch_ComputeTaintRoundTrip(t *testing.T) {
 	}
 	var sink string
 	for _, e := range cgResp.CallGraph.Edges {
-		if strings.Contains(e.Callee, "Sink") {
-			sink = e.Callee
+		if strings.Contains(e.Callee.SCIP, "Sink") {
+			sink = e.Callee.SCIP
 		}
 	}
 	if sink == "" {
@@ -155,11 +155,34 @@ func TestDispatch_BuildManifestRoundTrip(t *testing.T) {
 		t.Fatal("missing build_manifest payload")
 	}
 	m := resp.BuildManifest
-	if m.Module != "tegron.test/fixturemod" || m.BuildCommand != "go build ./..." || !m.Partiality.Complete {
+	if m.ProjectRoot != "tegron.test/fixturemod" || m.Resolver.Command != "go build ./..." || !m.Partiality.Complete {
 		t.Errorf("expected a complete single-module manifest through the subprocess; got %+v", m)
+	}
+	if m.Runtime.Name != "go" {
+		t.Errorf("Runtime.Name = %q, want \"go\"", m.Runtime.Name)
 	}
 	if hasReason(m.Partiality.Reasons, plugin.PartialReasonUnsupported) {
 		t.Error("manifest must no longer be Unsupported through the subprocess")
+	}
+}
+
+// TestDispatch_ResolveInventoryUnsupported asserts the whole-graph dependency
+// resolver op is wired and returns a declared-Unsupported inventory this cycle
+// (Go's real resolver is PLAN-140) — never a Complete() zero-node graph that would
+// falsely claim the module has no dependencies.
+func TestDispatch_ResolveInventoryUnsupported(t *testing.T) {
+	resp := roundTrip(t, plugin.Request{
+		Op:               plugin.OpResolveInventory,
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: fixtureDir(t)},
+	})
+	if resp.Inventory == nil {
+		t.Fatal("missing inventory payload")
+	}
+	if resp.Inventory.Partiality.Complete {
+		t.Error("Go inventory must be declared Unsupported this cycle, never Complete")
+	}
+	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("want unsupported partiality reason; got %v", resp.Inventory.Partiality.Reasons)
 	}
 }
 

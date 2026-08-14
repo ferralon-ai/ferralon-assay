@@ -28,10 +28,10 @@ const (
 // see — expandHandler ahead of fetchHandler, each present as both a handler and a route.
 func twoRouteIngressMap() plugin.IngressResult {
 	return plugin.IngressResult{Ingresses: []plugin.Ingress{
-		{Kind: "handler", Symbol: dosHandler},
-		{Kind: "handler", Symbol: ssrfHandler},
-		{Kind: "http_route", Symbol: dosHandler, Selector: "/expand"},
-		{Kind: "http_route", Symbol: ssrfHandler, Selector: "/preview"},
+		{Kind: "handler", Symbol: plugin.Symbol{SCIP: dosHandler}},
+		{Kind: "handler", Symbol: plugin.Symbol{SCIP: ssrfHandler}},
+		{Kind: "http_route", Symbol: plugin.Symbol{SCIP: dosHandler}, Selector: "/expand"},
+		{Kind: "http_route", Symbol: plugin.Symbol{SCIP: ssrfHandler}, Selector: "/preview"},
 	}}
 }
 
@@ -43,7 +43,7 @@ func seedTwoRouteCandidate(t *testing.T, store artifact.Store, aid, ingress, sin
 	putJSON(t, store, aid, artifact.TypeReachability, struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
 	}{Reachability: plugin.ReachabilityResult{Paths: []plugin.ReachPath{
-		{Sink: sink, Ingress: ingress, Trace: []string{ingress, sink}},
+		{Sink: plugin.Symbol{SCIP: sink}, Ingress: plugin.Symbol{SCIP: ingress}, Trace: []plugin.Symbol{{SCIP: ingress}, {SCIP: sink}}},
 	}}})
 }
 

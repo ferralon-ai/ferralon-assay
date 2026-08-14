@@ -23,6 +23,17 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// sym wraps a bare emitted SCIP id string into a plugin.Symbol at the graph mint
+// sites (call-graph edges/roots, ingresses, reach/taint paths). It sets SCIP and
+// DisplayName to the SAME id and leaves every structured field (Kind/Package/
+// Enclosing/Name/Descriptor/Generated) zero. Because plugin.Symbol is compared by
+// == across ALL fields (map keys, [2]Symbol composite keys, set membership), every
+// mint from a bare id MUST go through this one helper: two sites that populated
+// DisplayName differently would produce Symbols that never compare equal and would
+// silently break the reach/taint edge lookups. The index-side mints (IndexSymbols/
+// methodSymbols) carry a REAL DisplayName/Package and intentionally do NOT use this.
+func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s} }
+
 // loadMode is the go/packages mode covering names, files, types, syntax, type
 // info, and the dependency/import/module graph — everything the SCIP emitter and
 // the symbol walk need from a single offline load.

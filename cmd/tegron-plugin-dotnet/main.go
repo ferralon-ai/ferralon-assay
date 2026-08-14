@@ -11,8 +11,9 @@
 // versions from packages.lock.json / .csproj PackageReference / packages.config), call_graph,
 // find_ingresses, reachability, and compute_taint. reachability and compute_taint are
 // declared Partial(dynamic_dispatch) ALWAYS — never Complete — because a lexical C# scan
-// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). generate_harness and
-// build_manifest stay CONTRACT-PRESENT Unsupported permanently (Prove-tier: the .NET effect
+// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). resolve_inventory,
+// generate_harness, and build_manifest stay CONTRACT-PRESENT Unsupported permanently
+// (Prove-tier / §4.1: no whole-graph resolver on the Assess path; the .NET effect
 // rides the corpus repro-runtime sandbox, exactly as the Go/Java/JS/Python plugins ship
 // them). Every op keeps the nil-payload hard-error guard (inv.4).
 //
@@ -141,6 +142,14 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 			return plugin.Response{}, err
 		}
 		return plugin.Response{Taint: &res}, nil
+
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		// .NET ships no whole-graph dependency resolver this cycle: return the honest
+		// Unsupported inventory (never a Complete zero-node graph).
+		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
 
 	case plugin.OpGenerateHarness:
 		if req.GenerateHarness == nil {

@@ -57,19 +57,21 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 		reasons[r] = true
 	}
 
+	// The BFS matches sinks (given as raw SCIP-id strings, req.Symbols) against the graph, so
+	// it keys on the SCIP id: every now-Symbol graph field contributes its .SCIP.
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 	ingressSyms := make(map[string]bool, len(ing.Ingresses))
 	for _, in := range ing.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = true
+		if in.Symbol.SCIP != "" {
+			ingressSyms[in.Symbol.SCIP] = true
 		}
 	}
 	roots := make(map[string]bool, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = true
+		roots[r.SCIP] = true
 	}
 
 	var paths []plugin.ReachPath
@@ -84,7 +86,7 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		if p.Ingress == "" {
+		if p.Ingress.SCIP == "" {
 			// Reached a program root but no attacker-facing ingress on the path.
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
@@ -100,37 +102,38 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 	if sink == "" {
 		return plugin.ReachPath{}, false
 	}
-	// A sink that is itself an ingress/root is trivially reachable.
+	// A sink that is itself an ingress/root is trivially reachable. The BFS travels in
+	// SCIP-id space (id); the resulting endpoints are wrapped into plugin.Symbol at return.
 	type node struct {
-		sym  string
+		id   string
 		path []string
 	}
 	visited := map[string]bool{sink: true}
-	queue := []node{{sym: sink, path: []string{sink}}}
+	queue := []node{{id: sink, path: []string{sink}}}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 
-		isIngress := ingressSyms[cur.sym]
-		isRoot := roots[cur.sym]
+		isIngress := ingressSyms[cur.id]
+		isRoot := roots[cur.id]
 		if isIngress || isRoot {
-			trace := make([]string, len(cur.path))
+			trace := make([]plugin.Symbol, len(cur.path))
 			for i := range cur.path {
-				trace[i] = cur.path[len(cur.path)-1-i]
+				trace[i] = sym(cur.path[len(cur.path)-1-i])
 			}
-			ingress := ""
+			var ingress plugin.Symbol
 			if isIngress {
-				ingress = cur.sym
+				ingress = sym(cur.id)
 			}
-			return plugin.ReachPath{Sink: sink, Ingress: ingress, Trace: trace}, true
+			return plugin.ReachPath{Sink: sym(sink), Ingress: ingress, Trace: trace}, true
 		}
 
-		for _, caller := range callers[cur.sym] {
+		for _, caller := range callers[cur.id] {
 			if visited[caller] {
 				continue
 			}
 			visited[caller] = true
-			queue = append(queue, node{sym: caller, path: append(append([]string{}, cur.path...), caller)})
+			queue = append(queue, node{id: caller, path: append(append([]string{}, cur.path...), caller)})
 		}
 	}
 	return plugin.ReachPath{}, false

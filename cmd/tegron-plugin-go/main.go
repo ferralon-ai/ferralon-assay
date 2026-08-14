@@ -155,6 +155,12 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		}
 		return plugin.Response{BuildManifest: &res}, nil
 
+	case plugin.OpResolveInventory:
+		// Go's whole-graph dependency resolver is PLAN-140; this cycle lands the op
+		// wired to a declared-Unsupported inventory (never a Complete() zero-node
+		// graph, which would falsely claim "no dependencies"). §5 C5.
+		return plugin.Response{Inventory: &plugin.DependencyInventory{Partiality: plugin.Unsupported()}}, nil
+
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)
 	}

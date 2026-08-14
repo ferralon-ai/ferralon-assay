@@ -163,10 +163,10 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 	}
 	found := make(map[string]bool, len(declared))
 	for _, e := range edges {
-		if !onPath[e.Caller] {
+		if !onPath[e.Caller.SCIP] {
 			continue
 		}
-		if name := symbolLeaf(e.Callee); declaredSet[name] {
+		if name := symbolLeaf(e.Callee.SCIP); declaredSet[name] {
 			found[name] = true
 		}
 	}
@@ -343,8 +343,8 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 func attackerIngressInTrace(frames []report.CallFrame, ingresses []plugin.Ingress) *report.EntryPoint {
 	bySym := make(map[string]plugin.Ingress, len(ingresses))
 	for _, in := range ingresses {
-		if in.Symbol != "" {
-			bySym[in.Symbol] = in
+		if in.Symbol.SCIP != "" {
+			bySym[in.Symbol.SCIP] = in
 		}
 	}
 	for _, fr := range frames {
@@ -358,7 +358,7 @@ func attackerIngressInTrace(frames []report.CallFrame, ingresses []plugin.Ingres
 // entryPointOf maps a plugin ingress onto the neutral report EntryPoint, preferring
 // the human-readable route selector over the raw SCIP symbol.
 func entryPointOf(in plugin.Ingress) *report.EntryPoint {
-	sym := in.Symbol
+	sym := in.Symbol.SCIP
 	if in.Selector != "" {
 		sym = in.Selector
 	}
@@ -401,21 +401,21 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 // (populated for first-party taint flows), then the govulncheck reachability paths.
 func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
 	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress
+		return framesOf(p.Trace), p.Ingress.SCIP
 	}
 	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress
+		return framesOf(p.Trace), p.Ingress.SCIP
 	}
 	return nil, ""
 }
 
-func framesOf(trace []string) []report.CallFrame {
+func framesOf(trace []plugin.Symbol) []report.CallFrame {
 	if len(trace) == 0 {
 		return nil
 	}
 	frames := make([]report.CallFrame, 0, len(trace))
 	for _, sym := range trace {
-		frames = append(frames, report.CallFrame{Symbol: sym})
+		frames = append(frames, report.CallFrame{Symbol: sym.SCIP})
 	}
 	return frames
 }
@@ -433,7 +433,7 @@ func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryP
 	// 1. The advisory-specific reaching ingress (ReachPath.Ingress for the resolved sink).
 	if ingressSym != "" {
 		for _, in := range ingresses {
-			if in.Symbol == ingressSym {
+			if in.Symbol.SCIP == ingressSym {
 				return entryPointOf(in)
 			}
 		}

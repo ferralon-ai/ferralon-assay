@@ -203,6 +203,23 @@ func TestDispatch_ReachabilityRoundTripIsAlwaysPartial(t *testing.T) {
 	}
 }
 
+// resolve_inventory is CONTRACT-PRESENT Unsupported through the subprocess: .NET ships no
+// whole-graph dependency resolver this cycle, so the op returns an Unsupported
+// DependencyInventory — never a hard error, never a Complete zero-node graph.
+func TestDispatch_ResolveInventoryIsUnsupported(t *testing.T) {
+	dir := fixtureDir(t)
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
+	if resp.Inventory == nil {
+		t.Fatal("missing inventory payload")
+	}
+	if resp.Inventory.Partiality.Complete {
+		t.Error("resolve_inventory must never be Complete")
+	}
+	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
+		t.Errorf("resolve_inventory must be CONTRACT-PRESENT Unsupported; got %v", resp.Inventory.Partiality.Reasons)
+	}
+}
+
 // A missing per-op payload is a hard failure (inv.4): run() returns a non-nil error and the
 // Response carries a structured Error.
 func TestDispatch_NilPayload_HardError(t *testing.T) {

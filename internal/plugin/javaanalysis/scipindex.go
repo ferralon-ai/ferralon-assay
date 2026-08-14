@@ -158,7 +158,7 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 		if caller == "" || callee == "" || caller == callee {
 			return
 		}
-		e := plugin.CallEdge{Caller: canonical(caller), Callee: canonical(callee)}
+		e := plugin.CallEdge{Caller: sym(canonical(caller)), Callee: sym(canonical(callee))}
 		if !edgeSet[e] {
 			edgeSet[e] = true
 			edges = append(edges, e)
@@ -211,7 +211,7 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 				continue
 			}
 			cid := canonical(method)
-			ingressSet[cid] = plugin.Ingress{Kind: "http_route", Symbol: cid, Selector: sel}
+			ingressSet[cid] = plugin.Ingress{Kind: "http_route", Symbol: sym(cid), Selector: sel}
 		}
 	}
 
@@ -219,18 +219,18 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 	var ingresses []plugin.Ingress
 	for _, in := range ingressSet {
 		ingresses = append(ingresses, in)
-		rootSet[in.Symbol] = true
+		rootSet[in.Symbol.SCIP] = true
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 	sort.Slice(ingresses, func(i, j int) bool {
-		if ingresses[i].Symbol != ingresses[j].Symbol {
-			return ingresses[i].Symbol < ingresses[j].Symbol
+		if ingresses[i].Symbol.SCIP != ingresses[j].Symbol.SCIP {
+			return ingresses[i].Symbol.SCIP < ingresses[j].Symbol.SCIP
 		}
 		return ingresses[i].Selector < ingresses[j].Selector
 	})

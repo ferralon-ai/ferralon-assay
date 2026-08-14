@@ -51,7 +51,8 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}
 
 	var paths []plugin.ReachPath
-	for _, sink := range req.Symbols {
+	for _, s := range req.Symbols {
+		sink := sym(s)
 		trace := shortestPath(adj, sources, sink)
 		if trace == nil {
 			// A sink the lexical graph cannot connect to any ingress is UNKNOWN, never
@@ -63,7 +64,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		ingress := ""
+		var ingress plugin.Symbol
 		if len(trace) > 0 {
 			ingress = trace[0]
 		}
@@ -83,11 +84,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // entrySymbols is the set of static-reachability entry points: every discovered ingress
 // handler symbol plus every call-graph root (which the JS CallGraph populates with
 // resolved ingress handlers). Empty symbols are dropped.
-func entrySymbols(ingresses []plugin.Ingress, roots []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(s string) {
-		if s == "" || seen[s] {
+func entrySymbols(ingresses []plugin.Ingress, roots []plugin.Symbol) []plugin.Symbol {
+	seen := map[plugin.Symbol]bool{}
+	var out []plugin.Symbol
+	add := func(s plugin.Symbol) {
+		if s == (plugin.Symbol{}) || seen[s] {
 			return
 		}
 		seen[s] = true
@@ -104,8 +105,8 @@ func entrySymbols(ingresses []plugin.Ingress, roots []string) []string {
 
 // graphNodes returns the set of symbols that appear as a caller or callee in the graph —
 // the symbols the lexical analysis actually resolved.
-func graphNodes(edges []plugin.CallEdge) map[string]bool {
-	nodes := make(map[string]bool, len(edges))
+func graphNodes(edges []plugin.CallEdge) map[plugin.Symbol]bool {
+	nodes := make(map[plugin.Symbol]bool, len(edges))
 	for _, e := range edges {
 		nodes[e.Caller] = true
 		nodes[e.Callee] = true

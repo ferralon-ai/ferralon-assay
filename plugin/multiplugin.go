@@ -132,6 +132,13 @@ func (m *multiPlugin) BuildManifest(ctx context.Context, req BuildManifestReques
 	return BuildManifestResult{Partiality: Partial(PartialReasonNoPlugin)}, nil
 }
 
+func (m *multiPlugin) ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error) {
+	if p, ok := m.forDir(req.BuildDir); ok {
+		return p.ResolveInventory(ctx, req)
+	}
+	return DependencyInventory{Partiality: Partial(PartialReasonNoPlugin)}, nil
+}
+
 // GenerateHarnessRequest carries no BuildDir to route on (it names a sink/ingress/kind), so
 // the multiplexer serves it from the primary plugin. This is a Phase-1 contract stub across
 // every language (Unsupported), so there is nothing per-language to route.

@@ -65,17 +65,17 @@ func (dotnetFirstPartyStub) CallGraph(_ context.Context, _ plugin.CallGraphReque
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: dotnetHandleSCIP, Callee: dotnetFetchSCIP},
-			{Caller: dotnetFetchSCIP, Callee: dotnetOpenConnSCIP},
+			{Caller: plugin.Symbol{SCIP: dotnetHandleSCIP}, Callee: plugin.Symbol{SCIP: dotnetFetchSCIP}},
+			{Caller: plugin.Symbol{SCIP: dotnetFetchSCIP}, Callee: plugin.Symbol{SCIP: dotnetOpenConnSCIP}},
 		},
-		Roots: []string{dotnetHandleSCIP},
+		Roots: []plugin.Symbol{{SCIP: dotnetHandleSCIP}},
 	}, nil
 }
 
 func (dotnetFirstPartyStub) FindIngresses(_ context.Context, _ plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	return plugin.IngressResult{
 		Partiality: plugin.Complete(),
-		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: dotnetHandleSCIP, Selector: "GET api/Fetch"}},
+		Ingresses:  []plugin.Ingress{{Kind: "http_route", Symbol: plugin.Symbol{SCIP: dotnetHandleSCIP}, Selector: "GET api/Fetch"}},
 	}, nil
 }
 
@@ -129,10 +129,10 @@ func (dotnetUnresolvedStub) CallGraph(_ context.Context, _ plugin.CallGraphReque
 		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
 		Algorithm:  "source-lexical",
 		Edges: []plugin.CallEdge{
-			{Caller: dotnetHandleSCIP, Callee: dotnetFetchSCIP},
+			{Caller: plugin.Symbol{SCIP: dotnetHandleSCIP}, Callee: plugin.Symbol{SCIP: dotnetFetchSCIP}},
 			// No Fetch -> OpenConn edge: the sink is unreachable (not fabricated).
 		},
-		Roots: []string{dotnetHandleSCIP},
+		Roots: []plugin.Symbol{{SCIP: dotnetHandleSCIP}},
 	}, nil
 }
 

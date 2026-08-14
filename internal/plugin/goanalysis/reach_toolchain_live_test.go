@@ -57,7 +57,7 @@ func TestReachability_SubjectToolchainExecutes(t *testing.T) {
 			liveVulnID, liveSubjectToolchain, res.Partiality)
 	}
 	for _, p := range res.Paths {
-		t.Logf("path sink=%s ingress=%s frames=%d", p.Sink, p.Ingress, len(p.Trace))
+		t.Logf("path sink=%s ingress=%s frames=%d", p.Sink.SCIP, p.Ingress.SCIP, len(p.Trace))
 	}
 }
 

@@ -61,6 +61,18 @@ func funcSCIP(module string, enclosing []string, name string, arity int) string 
 	return scipSymbol(module, enclosing, functionDescriptor(name, arity))
 }
 
+// sym mints a plugin.Symbol from a SCIP id — the single string→Symbol construction
+// point for the call graph / reachability / taint world. Every graph symbol (edge
+// endpoint, root, ingress, sink, trace frame) is minted here so two references to the
+// same SCIP id are byte-identical: that is the ==, map-key, and set identity the BFS
+// and adjacency maps rely on, and an inconsistently-built Symbol silently breaks those
+// lookups. DisplayName mirrors the SCIP id; the richer structured Symbol fields are
+// deliberately left zero here — display/matching identity is owned by the
+// index/resolver path (symbolsFromParse, jsSymbolForms), not the graph.
+func sym(scip string) plugin.Symbol {
+	return plugin.Symbol{SCIP: scip, DisplayName: scip}
+}
+
 // loadProgram parses every JS/TS file under buildDir into a whole-program view and
 // builds the resolution indexes. A missing/empty build dir is a hard error (inv.4),
 // matching IndexSymbols; read failures and skipped constructs degrade partiality.
@@ -151,11 +163,11 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 
 	for _, f := range prog.files {
 		for _, cs := range f.calls {
-			caller := funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity)
+			caller := sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity))
 			candidates := prog.funcsByKey[methodKey(cs.calleeName, cs.calleeArity)]
 			switch len(candidates) {
 			case 1:
-				e := plugin.CallEdge{Caller: caller, Callee: candidates[0]}
+				e := plugin.CallEdge{Caller: caller, Callee: sym(candidates[0])}
 				if !seen[e] {
 					seen[e] = true
 					edges = append(edges, e)
@@ -178,17 +190,23 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 	}
 
 	sort.Slice(edges, func(i, j int) bool {
-		if edges[i].Caller != edges[j].Caller {
-			return edges[i].Caller < edges[j].Caller
+		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
+			return edges[i].Caller.SCIP < edges[j].Caller.SCIP
 		}
-		return edges[i].Callee < edges[j].Callee
+		return edges[i].Callee.SCIP < edges[j].Callee.SCIP
 	})
 
-	roots := make([]string, 0, len(rootsSet))
+	// Roots dedupe on their SCIP id (the natural string key) and mint a Symbol per id,
+	// so a root and the same function appearing as an edge endpoint are byte-identical.
+	rootIDs := make([]string, 0, len(rootsSet))
 	for r := range rootsSet {
-		roots = append(roots, r)
+		rootIDs = append(rootIDs, r)
 	}
-	sort.Strings(roots)
+	sort.Strings(rootIDs)
+	roots := make([]plugin.Symbol, 0, len(rootIDs))
+	for _, r := range rootIDs {
+		roots = append(roots, sym(r))
+	}
 
 	return plugin.CallGraphResult{
 		Partiality: callGraphPartiality(prog, unresolved),

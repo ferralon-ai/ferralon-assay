@@ -164,42 +164,82 @@ func TestDispatch_ReachabilitySliceOps_Live(t *testing.T) {
 	}
 }
 
-// generate_harness and build_manifest stay CONTRACT-PRESENT Unsupported: the Python effect
-// rides the corpus repro-runtime sandbox, so the plugin never scaffolds a harness.
-func TestDispatch_HarnessOps_Unsupported(t *testing.T) {
-	dir := fixtureDir(t)
-	for _, c := range []struct {
-		name string
-		req  plugin.Request
-		ok   func(plugin.Response) []string
-	}{
-		{"generate_harness", plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}},
-			func(r plugin.Response) []string { return reasons(r.Harness) }},
-		{"build_manifest", plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}},
-			func(r plugin.Response) []string { return reasons(r.BuildManifest) }},
-	} {
-		resp := roundTrip(t, c.req)
-		if !hasReason(c.ok(resp), plugin.PartialReasonUnsupported) {
-			t.Errorf("%s must stay CONTRACT-PRESENT Unsupported; got reasons %v", c.name, c.ok(resp))
-		}
+// generate_harness stays CONTRACT-PRESENT Unsupported: the Python effect rides the corpus
+// repro-runtime sandbox, so the plugin never scaffolds a harness. It appears in no §5.4
+// deliverable, so it is out of PLAN-173's scope and unchanged.
+func TestDispatch_GenerateHarness_Unsupported(t *testing.T) {
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpGenerateHarness, GenerateHarness: &plugin.GenerateHarnessRequest{Sink: "x", Kind: "unit"}})
+	if !hasReason(reasons(resp.Harness), plugin.PartialReasonUnsupported) {
+		t.Errorf("generate_harness must stay CONTRACT-PRESENT Unsupported; got reasons %v", reasons(resp.Harness))
 	}
 }
 
-// resolve_inventory stays CONTRACT-PRESENT Unsupported: Python has no whole-graph
-// dependency resolver, so the op returns an honestly-partial inventory (Complete=false,
-// unsupported_phase1) — NEVER an empty-but-successful one, which would read downstream as
-// "this build has no dependencies".
-func TestDispatch_ResolveInventory_Unsupported(t *testing.T) {
+// build_manifest is LIVE (PLAN-173): over the subprocess protocol it derives the build
+// context from declared metadata. The fixture declares only requirements.txt (no
+// requires-python, no lockfile python constraint), so the interpreter version is
+// undeterminable — the op returns a PARTIAL manifest naming the missing input, never
+// Unsupported() and never a guessed version, with the pip resolver still detected.
+func TestDispatch_BuildManifest_LivePartial(t *testing.T) {
+	dir := fixtureDir(t)
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}})
+	if resp.BuildManifest == nil {
+		t.Fatal("missing build_manifest payload")
+	}
+	if hasReason(reasons(resp.BuildManifest), plugin.PartialReasonUnsupported) {
+		t.Fatalf("build_manifest must no longer be Unsupported (PLAN-173); got reasons %v", reasons(resp.BuildManifest))
+	}
+	if resp.BuildManifest.Partiality.Complete {
+		t.Errorf("build_manifest over a fixture with no requires-python must be partial; got %+v", resp.BuildManifest.Partiality)
+	}
+	if !hasReason(reasons(resp.BuildManifest), plugin.PartialReasonEnvConditionUnresolved+":requires_python") {
+		t.Errorf("partial reason must name the missing requires_python input; got %v", reasons(resp.BuildManifest))
+	}
+	if resp.BuildManifest.Runtime.Version != "" {
+		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", resp.BuildManifest.Runtime.Version)
+	}
+	if resp.BuildManifest.Resolver.Name != "pip" {
+		t.Errorf("Resolver.Name = %q, want pip (requirements.txt detected)", resp.BuildManifest.Resolver.Name)
+	}
+	if resp.BuildManifest.ProjectRoot != dir {
+		t.Errorf("ProjectRoot = %q, want %q", resp.BuildManifest.ProjectRoot, dir)
+	}
+}
+
+// resolve_inventory is LIVE (PLAN-170): it resolves the selected whole-graph inventory from the
+// build dir's declared manifests, over the one-shot subprocess protocol. The fixture requirements
+// file pins deepdiff (== -> resolved) and ranges flask (>= -> fail-open UNRESOLVED). Assert the
+// round-trip yields a populated, graph-level-Complete inventory with the pinned node carrying its
+// exact PURL@version and the ranged node present but unresolved (never fabricated to a version).
+func TestDispatch_ResolveInventory_Live(t *testing.T) {
 	dir := fixtureDir(t)
 	resp := roundTrip(t, plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}})
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Errorf("resolve_inventory must be honestly partial, never an empty-but-Complete inventory; got %+v", resp.Inventory.Partiality)
+	if !resp.Inventory.Partiality.Complete {
+		t.Errorf("resolve_inventory over a parseable manifest must be graph-level Complete; got %+v", resp.Inventory.Partiality)
 	}
-	if !hasReason(resp.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported) {
-		t.Errorf("resolve_inventory must carry unsupported_phase1; got %v", resp.Inventory.Partiality.Reasons)
+
+	byPURL := map[string]plugin.DependencyNode{}
+	byName := map[string]plugin.DependencyNode{}
+	for _, n := range resp.Inventory.Nodes {
+		byPURL[n.PURL] = n
+		byName[n.ID] = n
+	}
+	if _, ok := byPURL["pkg:pypi/deepdiff@8.0.1"]; !ok {
+		t.Errorf("pinned deepdiff missing its exact PURL@version; nodes=%+v", resp.Inventory.Nodes)
+	}
+	var flask *plugin.DependencyNode
+	for i := range resp.Inventory.Nodes {
+		if resp.Inventory.Nodes[i].PURL == "pkg:pypi/flask" {
+			flask = &resp.Inventory.Nodes[i]
+		}
+	}
+	if flask == nil {
+		t.Fatalf("ranged flask absent; a fail-open UNRESOLVED node must not be dropped; nodes=%+v", resp.Inventory.Nodes)
+	}
+	if flask.Version != "" {
+		t.Errorf("ranged flask fabricated a version %q; fail-open must leave it empty", flask.Version)
 	}
 }
 

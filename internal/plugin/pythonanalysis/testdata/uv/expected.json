@@ -1,0 +1,8 @@
+{
+  "provenance": "NATIVE-CAPTURED from the real uv resolver, out-of-band (not scan-time plugin execution). Captured 2026-08-10 in a pip3 venv: python3 -m venv; pip install pdm uv==0.12.3 pip-tools; project pyproject.toml [project] requires-python=\">=3.9\", dependencies=[\"jinja2==3.1.2\"], build-backend hatchling; command: uv lock. Tool versions: uv 0.12.3, Python 3.14.6. The project root package (source editable=\".\") declares jinja2 directly; jinja2's inline-table edge pulls MarkupSafe transitively (two-level chain). Wheel-only pure-Python deps; no PEP 517 build backend executes during resolve.",
+  "resolver": "uv.lock",
+  "packages": [
+    { "name": "jinja2", "version": "3.1.2", "relationship": "direct", "parents": [] },
+    { "name": "markupsafe", "version": "3.0.3", "relationship": "transitive", "parents": ["jinja2"] }
+  ]
+}

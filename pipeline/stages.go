@@ -229,6 +229,21 @@ type AdvisoryFacts struct {
 	PURL string
 	// Symbols are the advisory's vulnerable symbols the live symbol resolver consumes.
 	Symbols []string
+	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for Symbols — a single scalar
+	// per record naming how the whole set was obtained (open set: "osv-declared" | "curated" |
+	// "diff-lexed"; "reasoning" reserved). STORE-ONLY (A2): it is decoded and carried, but NO
+	// consumer reads it — it feeds no admission, reachability, or refute path this cycle. Absent →
+	// "" → UNKNOWN derivation, which is NOT low-confidence and NOT untrusted: a symbol with no
+	// provenance tag resolves and is walked exactly as one with it (honest-absent, inv.5). A future
+	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
+	//
+	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
+	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are Tegron's own
+	// curated entries and carry none, so "" is the permanent state for every floor entry, not a field
+	// the corpus fell behind on. Serializing it as ""/present on ~40 fixtures would be misrepresentative
+	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
+	// the floor never populates. When the published feed carries it, a non-empty value round-trips.
+	SymbolProvenance string `json:",omitempty"`
 	// GuardSymbols are advisory-declared mitigation functions (e.g. a path/symlink
 	// validator) whose PRESENCE on the resolved ingress→sink path is reported as
 	// candidate-tier evidence. Membership-based and explicit (mirrors the sanitizer

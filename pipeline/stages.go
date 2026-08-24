@@ -1336,6 +1336,8 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		VulnClass        string                    `json:"vuln_class,omitempty"` // "" ⇒ class not assessed (honest)
 		TrustTier        string                    `json:"trust_tier,omitempty"` // gates refute eligibility (inv.5); "" ⇒ untrusted
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`    // v3 per-CVE reach descriptor (row 1)
+		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
+		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages,omitempty"`
 		MaliciousPackage *advisoryMaliciousPackage `json:"malicious_package,omitempty"` // MAL presence-verdict marker
 	}{
@@ -1353,6 +1355,8 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		VulnClass:        string(vulnClass),
 		TrustTier:        string(facts.Provenance.TrustTier),
 		Trigger:          advTrigger,
+		TriggerCondition: facts.TriggerCondition,
+		Prerequisite:     facts.Prerequisite,
 		AffectedPackages: affectedPackages,
 		MaliciousPackage: advMalicious,
 	}

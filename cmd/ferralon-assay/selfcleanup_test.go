@@ -52,3 +52,32 @@ func TestStateRefOfReportsTheConfiguredRef(t *testing.T) {
 		}
 	})
 }
+
+// TestSelfCleanupActuationDisabled pins the operator opt-out semantics: self-cleanup-on-revoke
+// defaults ON, so only an explicit false spelling holds the removal ladder. Unset (the state a
+// release without this gate is always in) and any unrecognized value must leave it actuating.
+func TestSelfCleanupActuationDisabled(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"", false},
+		{"true", false},
+		{"TRUE", false},
+		{"1", false},
+		{"on", false},
+		{"yes", false},
+		{"false", true},
+		{"False", true},
+		{"0", true},
+		{" off ", true},
+		{"no", true},
+		{"f", true},
+		{"maybe", false},
+	}
+	for _, c := range cases {
+		if got := selfCleanupActuationDisabled(c.env); got != c.want {
+			t.Errorf("selfCleanupActuationDisabled(%q) = %t, want %t", c.env, got, c.want)
+		}
+	}
+}

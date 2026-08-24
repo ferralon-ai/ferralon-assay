@@ -67,6 +67,46 @@ func TestRunCheckNoActuationUntilThreshold(t *testing.T) {
 	}
 }
 
+func TestRunCheckSuppressActuationHoldsTheLadder(t *testing.T) {
+	pub, priv := testKeypair(t)
+	store := newTempStore(t)
+	beacon := BeaconRequest{Org: "acme", Repo: "acme/widget", Commit: "c0ffee"}
+
+	actuated := false
+	cfg := CheckConfig{
+		Store:             store,
+		Ingest:            revokeClient(t, pub, priv, "acme", "acme/widget"),
+		Beacon:            beacon,
+		NewActuator:       func() Actuator { actuated = true; return newMock() },
+		SuppressActuation: true,
+	}
+
+	// First signed revoke: counter → 1, no actuation (below threshold, as always).
+	if res, err := RunCheck(context.Background(), cfg); err != nil || res.Count != 1 || res.Actuated || res.Suppressed {
+		t.Fatalf("first revoke: want count 1 no actuation no suppression, got %+v err=%v", res, err)
+	}
+
+	// Second consecutive signed revoke: threshold reached, but the operator opted out — the
+	// revoke is still counted and reported, and the ladder never runs (the actuator is never
+	// even constructed).
+	res, err := RunCheck(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("check 2: %v", err)
+	}
+	if res.Count != 2 {
+		t.Fatalf("revoke must still be counted with actuation suppressed: %+v", res)
+	}
+	if res.Actuated || actuated {
+		t.Fatalf("SuppressActuation must block the ladder on an otherwise-valid revoke: %+v actuated=%v", res, actuated)
+	}
+	if !res.Suppressed {
+		t.Fatalf("a held threshold must report Suppressed for the run summary: %+v", res)
+	}
+	if res.Rung != RungNone {
+		t.Fatalf("no rung runs when suppressed, got %v", res.Rung)
+	}
+}
+
 func TestRunCheckActiveResetsCounter(t *testing.T) {
 	pub, priv := testKeypair(t)
 	store := newTempStore(t)

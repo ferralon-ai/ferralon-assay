@@ -20,19 +20,20 @@ import (
 // untouched). The two URL vars below are OVERRIDES for that link, not the switch itself — the
 // endpoint a linked run uses is baked into the release.
 const (
-	envIngestURL      = "FERRALON_INGEST_URL"     // ingest endpoint OVERRIDE (empty ⇒ the baked release default)
-	envRunsURL        = "FERRALON_RUNS_URL"       // run-snapshot endpoint OVERRIDE (empty ⇒ the baked release default)
-	envOIDCToken      = "FERRALON_OIDC_TOKEN"     // pre-minted OIDC token (else minted from the Actions env)
-	envDefaultBranch  = "FERRALON_DEFAULT_BRANCH" // github.event.repository.default_branch
-	envRefName        = "GITHUB_REF_NAME"         // github.ref_name — the branch/tag this run is on
-	envEventAction    = "FERRALON_EVENT_ACTION"   // github.event.action (for repository_dispatch)
-	envClientPayload  = "FERRALON_CLIENT_PAYLOAD" // github.event.client_payload JSON
-	envGitHubRepo     = "GITHUB_REPOSITORY"       // owner/repo
-	envGitHubToken    = "GITHUB_TOKEN"            // actuation token (git push / gh)
-	envGitHubWorkspce = "GITHUB_WORKSPACE"        // checkout root
-	envGitHubSHA      = "GITHUB_SHA"              // resolved commit
-	envActionsIDURL   = "ACTIONS_ID_TOKEN_REQUEST_URL"
-	envActionsIDTok   = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+	envIngestURL           = "FERRALON_INGEST_URL"             // ingest endpoint OVERRIDE (empty ⇒ the baked release default)
+	envRunsURL             = "FERRALON_RUNS_URL"               // run-snapshot endpoint OVERRIDE (empty ⇒ the baked release default)
+	envOIDCToken           = "FERRALON_OIDC_TOKEN"             // pre-minted OIDC token (else minted from the Actions env)
+	envDefaultBranch       = "FERRALON_DEFAULT_BRANCH"         // github.event.repository.default_branch
+	envRefName             = "GITHUB_REF_NAME"                 // github.ref_name — the branch/tag this run is on
+	envSelfCleanupOnRevoke = "FERRALON_SELF_CLEANUP_ON_REVOKE" // operator opt-out for the removal ladder (default on)
+	envEventAction         = "FERRALON_EVENT_ACTION"           // github.event.action (for repository_dispatch)
+	envClientPayload       = "FERRALON_CLIENT_PAYLOAD"         // github.event.client_payload JSON
+	envGitHubRepo          = "GITHUB_REPOSITORY"               // owner/repo
+	envGitHubToken         = "GITHUB_TOKEN"                    // actuation token (git push / gh)
+	envGitHubWorkspce      = "GITHUB_WORKSPACE"                // checkout root
+	envGitHubSHA           = "GITHUB_SHA"                      // resolved commit
+	envActionsIDURL        = "ACTIONS_ID_TOKEN_REQUEST_URL"
+	envActionsIDTok        = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
 	workflowFile = "ferralon-assay.yml"
 	workflowPath = ".github/workflows/" + workflowFile
@@ -133,6 +134,10 @@ func postScan(ctx context.Context, store statestore.StateStore, subject trigger.
 			KeyID:  keyID,
 		},
 		Beacon: beacon,
+		// Operator opt-out: with self-cleanup-on-revoke=false the removal ladder is held
+		// even on a verified revoke (the beacon and streak still run). Unset/true actuates
+		// exactly as before, so a release without this env behaves identically.
+		SuppressActuation: selfCleanupActuationDisabled(os.Getenv(envSelfCleanupOnRevoke)),
 		NewActuator: func() selfcleanup.Actuator {
 			return selfcleanup.NewGitActuator(selfcleanup.ActuatorConfig{
 				Repo:          full,
@@ -154,9 +159,23 @@ func postScan(ctx context.Context, store statestore.StateStore, subject trigger.
 	switch {
 	case res.Actuated:
 		fmt.Fprintf(os.Stdout, "  self-cleanup: install revoked — cleanup actuated (%s)\n", res.Rung)
+	case res.Suppressed:
+		fmt.Fprintf(os.Stdout, "  self-cleanup: install revoked — cleanup held (self-cleanup-on-revoke=false); no files removed\n")
 	case res.Outcome == selfcleanup.OutcomeRevoked:
 		fmt.Fprintf(os.Stdout, "  self-cleanup: signed revoke %d/%d (awaiting confirmation)\n", res.Count, selfcleanup.RevokeThreshold)
 	}
+}
+
+// selfCleanupActuationDisabled reports whether the operator explicitly turned the removal
+// ladder off via self-cleanup-on-revoke=false (forwarded as FERRALON_SELF_CLEANUP_ON_REVOKE).
+// The default is ON: only a recognized false spelling disables it, so unset, "true", or an
+// unparseable value all leave self-cleanup actuating exactly as a release without this gate does.
+func selfCleanupActuationDisabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no", "off", "f":
+		return true
+	}
+	return false
 }
 
 // resolveOIDCToken returns a bearer token for the ingest POST: an explicitly-provided

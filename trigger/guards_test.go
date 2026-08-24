@@ -98,3 +98,48 @@ func TestGuardsOnPath_NoneOnPath(t *testing.T) {
 		t.Fatalf("guardsOnPath = %v; want none (the guard's caller is not on the trace)", got)
 	}
 }
+
+// TestGuardsOnPath_EmptyDeclared_AssertsNothing is the A4 honest-absent pin (cycle 2026-08-24
+// corpus-scaffold): guard_symbols is data-empty across the corpus today, so an EMPTY declared-guard
+// set must surface NO guards — even against a fully populated call graph whose on-path frame really
+// does call a would-be guard. Emptiness is the absence of a mitigating-evidence claim, never a
+// verdict input: this must not collapse to "no guards ⇒ nothing mitigates ⇒ affected". Both the
+// absent (`advisory_guards` key omitted) and the explicit-empty (`[]`) shapes are covered, since the
+// omitempty projection can emit either. The mirror case — a FUTURE non-empty set IS handled — is
+// TestGuardsOnPath above; the same code path serves both, so no assume-absent shortcut exists to
+// regress into.
+func TestGuardsOnPath_EmptyDeclared_AssertsNothing(t *testing.T) {
+	const frameSym = "scip-go gomod m . pkg/serveHTTP()."
+	// A rich call graph whose on-path frame calls a function that WOULD be a guard if declared —
+	// so a nil result can only come from the empty declared set, not from a barren graph.
+	const reachability = `{"call_graph":{"edges":[` +
+		`{"caller":{"scip":"` + frameSym + `"},"callee":{"scip":"scip-go gomod m . pkg/isRepositoryGitPath()."}}` +
+		`]}}`
+
+	cases := []struct {
+		name    string
+		advJSON string // the S1 normalized_advisory payload
+	}{
+		{"guards key absent", `{"vuln_id":"CVE-X"}`},
+		{"guards explicitly empty", `{"advisory_guards":[]}`},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assessmentID := "01900000-0000-7000-8000-0000000000b" + string(rune('0'+i))
+			store := artifact.NewMemStore()
+			put := func(typ artifact.Type, payload string) {
+				t.Helper()
+				if _, err := store.Put(&artifact.Artifact{AssessmentID: assessmentID, Type: typ, Payload: []byte(payload)}); err != nil {
+					t.Fatalf("Put %s: %v", typ, err)
+				}
+			}
+			put(artifact.TypeNormalizedAdvisory, tc.advJSON)
+			put(artifact.TypeReachability, reachability)
+
+			got := guardsOnPath(store, assessmentID, []report.CallFrame{{Symbol: frameSym}})
+			if len(got) != 0 {
+				t.Fatalf("guardsOnPath = %v; want none — an empty declared-guard set must assert nothing, even against a matching call graph (honest-absent, inv.5)", got)
+			}
+		})
+	}
+}

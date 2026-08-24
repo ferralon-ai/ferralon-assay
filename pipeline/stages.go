@@ -1330,6 +1330,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion     string                    `json:"fixed_version,omitempty"`
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
+		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag, read as a candidate-only STRENGTH signal (never admission/refute)
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"` // "" ⇒ class not assessed (honest)
@@ -1346,6 +1347,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion:     facts.FixedVersion,
 		PURL:             facts.PURL,
 		AdvisorySymbols:  facts.Symbols,
+		SymbolProvenance: facts.SymbolProvenance,
 		AdvisoryGuards:   facts.GuardSymbols,
 		CWEs:             facts.CWEs,
 		VulnClass:        string(vulnClass),

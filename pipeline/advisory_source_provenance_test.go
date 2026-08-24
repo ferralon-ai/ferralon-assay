@@ -58,12 +58,15 @@ func TestToFacts_SymbolProvenance_Decodes(t *testing.T) {
 	}
 }
 
-// TestSymbolProvenance_StoreOnly_NotProjected is the inert guard: a source that supplies a provenance
-// tag must NOT see it reach the normalized_advisory artifact downstream stages read. The symbols
-// themselves still flow (advisory_symbols present); the derivation tag does not (no symbol_provenance
-// key). If a future change wires provenance into the projection, this test fails — deliberately — so
-// the store-only → consumed transition is an explicit, reviewed (B) step, never a silent leak.
-func TestSymbolProvenance_StoreOnly_NotProjected(t *testing.T) {
+// TestSymbolProvenance_ProjectedForCandidateStrength records the store-only → consumed transition.
+// A2 landed symbol_provenance store-only and a guard here asserted it did NOT reach the
+// normalized_advisory artifact — deliberately failing the moment a change projected it, to force
+// the transition to be an explicit, reviewed (B) step. That step is B1 (provenance-as-confidence),
+// reviewed and approved: the S1 projection now CARRIES symbol_provenance so the candidate-scoped
+// strength consumer (trigger.symbolConfidenceFor, read only after a candidate forms) can read it.
+// The tag remains structurally walled off from admission/disqualify/refute — that invariant is
+// enforced in the report and trigger packages, not here; this only pins that the projection exists.
+func TestSymbolProvenance_ProjectedForCandidateStrength(t *testing.T) {
 	src := selectionStubSource{facts: AdvisoryFacts{
 		Module:           "example.com/x",
 		VersionScheme:    "gomod",
@@ -84,16 +87,49 @@ func TestSymbolProvenance_StoreOnly_NotProjected(t *testing.T) {
 		t.Fatalf("no normalized_advisory artifact written (err=%v)", err)
 	}
 
+	var got struct {
+		SymbolProvenance string   `json:"symbol_provenance"`
+		AdvisorySymbols  []string `json:"advisory_symbols"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &got); err != nil {
+		t.Fatalf("decode normalized_advisory: %v", err)
+	}
+	if got.SymbolProvenance != "diff-lexed" {
+		t.Errorf("symbol_provenance = %q, want %q (B1 projects the tag for the candidate-strength consumer)", got.SymbolProvenance, "diff-lexed")
+	}
+	if len(got.AdvisorySymbols) != 1 || got.AdvisorySymbols[0] != "pkg.Vuln" {
+		t.Errorf("advisory_symbols = %v, want [pkg.Vuln] (the symbol axis still projects alongside its tag)", got.AdvisorySymbols)
+	}
+}
+
+// TestSymbolProvenance_AbsentOmittedFromProjection pins honest-absent at the projection: an advisory
+// with no provenance tag emits NO symbol_provenance key (omitempty), so absence stays absence on the
+// wire — never a serialized "" that a reader could mistake for a declared-empty derivation.
+func TestSymbolProvenance_AbsentOmittedFromProjection(t *testing.T) {
+	src := selectionStubSource{facts: AdvisoryFacts{
+		Module:        "example.com/x",
+		VersionScheme: "gomod",
+		Symbols:       []string{"pkg.Vuln"},
+		// SymbolProvenance intentionally unset.
+	}}
+
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "case-prov-absent", Request: assessment.Request{
+		Vulnerability: assessment.VulnRef{ID: "CVE-PROV", Source: "corpus"},
+	}}
+	stages := AssessStages(WithAdvisorySource(src))
+	if err := stages[0].Run(context.Background(), c, store); err != nil {
+		t.Fatalf("advisory_intake run: %v", err)
+	}
+	arts, _ := store.Query(c.ID, artifact.TypeNormalizedAdvisory)
+	if len(arts) == 0 {
+		t.Fatal("no normalized_advisory artifact written")
+	}
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(arts[0].Payload, &keys); err != nil {
 		t.Fatalf("decode normalized_advisory: %v", err)
 	}
-	if _, leaked := keys["symbol_provenance"]; leaked {
-		t.Errorf("normalized_advisory carries symbol_provenance — A2 must stay STORE-ONLY; nothing may project it until the (B) provenance-as-confidence change lands under review")
-	}
-	// Sanity: the symbols the tag annotates DO flow through, so the absence above is inertness of the
-	// tag, not a dropped symbol axis.
-	if _, ok := keys["advisory_symbols"]; !ok {
-		t.Errorf("normalized_advisory missing advisory_symbols — the symbol axis should still project; check the fixture, not the provenance guard")
+	if _, present := keys["symbol_provenance"]; present {
+		t.Errorf("symbol_provenance projected for an advisory with no tag — absent must stay absent (honest-absent, inv.5), never a serialized empty")
 	}
 }

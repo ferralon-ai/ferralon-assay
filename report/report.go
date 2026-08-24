@@ -270,6 +270,38 @@ func (c SymbolConfidence) Valid() bool {
 	}
 }
 
+// ExploitPreconditions carries the advisory-declared preconditions for the exploit
+// mechanism to fire — the corpus's record-scoped trigger_condition / prerequisite text
+// (RFC §4.2, the Proof-of-Exploitability qualifier axis). It DESCRIBES a
+// reachable_candidate; it never scores it. Populated only on a reachable_candidate, only
+// after the candidate has formed, so it is structurally incapable of reaching admission,
+// disqualification, or refute (inv.5).
+//
+// It is presence-only context, NEVER a met/unmet evaluation: the OSS Assess tier does not
+// and cannot decide whether a free-text precondition holds in the customer build — that is
+// a runtime question only the Prove tier settles, exactly as MitigatingGuards surfaces
+// guard PRESENCE without asserting sufficiency. Because unmet is never computed, a
+// present-but-unmet precondition can never refute or weaken a verdict; it only records that
+// exploitation is CONDITIONAL. Absent ⇒ nil ⇒ the candidate is reported exactly as today
+// (absent = unconditional, the conservative reading, never "not exploitable" — honest-absent).
+//
+// A non-nil value MUST carry at least one non-empty field: conditionality is never asserted
+// from emptiness (validate() rejects a non-nil-but-empty block).
+type ExploitPreconditions struct {
+	// TriggerCondition is the advisory-declared condition under which the trigger fires
+	// (e.g. "a malicious HTTP/2 client rapidly resets requests"). Empty when undeclared.
+	TriggerCondition string `json:"trigger_condition,omitempty"`
+	// Prerequisite is the advisory-declared mechanism precondition (e.g. a required
+	// configuration or attacker capability). Empty when undeclared.
+	Prerequisite string `json:"prerequisite,omitempty"`
+}
+
+// Empty reports whether p declares no precondition at all — the state that must resolve to
+// a nil *ExploitPreconditions (no annotation), never a non-nil-but-empty block.
+func (p ExploitPreconditions) Empty() bool {
+	return p.TriggerCondition == "" && p.Prerequisite == ""
+}
+
 // CallFrame is one node on a reachability path: a symbol with an optional source
 // location so a reader can jump straight to the code. Neutral evidence — it records
 // where a path runs, never that the path is exploitable.
@@ -343,6 +375,14 @@ type EvidenceSummary struct {
 	// provenance) ⇒ candidate reported exactly as today. Populated only on a
 	// reachable_candidate — validate() rejects it on any other verdict.
 	SymbolConfidence SymbolConfidence `json:"symbol_confidence,omitempty"`
+	// ExploitPreconditions surfaces the advisory-declared exploit preconditions
+	// (trigger_condition / prerequisite) as PoE qualifier context on a reachable_candidate
+	// (RFC §4.2). DESCRIPTIVE only — presence, never a met/unmet evaluation and never a
+	// strength score: it enriches the evidence, it does not select or weaken the verdict.
+	// Nil ⇒ no declared precondition (absent = unconditional, reported exactly as today —
+	// honest-absent). Populated only on a reachable_candidate, and only with at least one
+	// non-empty field — validate() rejects it on any other verdict and rejects an empty block.
+	ExploitPreconditions *ExploitPreconditions `json:"exploit_preconditions,omitempty"`
 }
 
 // Priority is the deterministic, offline prioritization signal attached to a
@@ -736,6 +776,20 @@ func (r Report) Validate() error {
 		if f.Evidence.SymbolConfidence != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
 				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.2): the exploit-precondition qualifier may
+		// describe ONLY a reachable_candidate. Forbidding it on every other verdict is what makes a
+		// declared precondition incapable of ever annotating — let alone refuting — a
+		// disqualification, a not_exploitable, or an undetermined finding.
+		if f.Evidence.ExploitPreconditions != nil && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries exploit preconditions but verdict is %q (a precondition qualifier describes only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Verdict)
+		}
+		// Conditionality is never asserted from emptiness: a non-nil block that declares no
+		// precondition would be a claim ("this candidate is conditional") resting on nothing.
+		if f.Evidence.ExploitPreconditions != nil && f.Evidence.ExploitPreconditions.Empty() {
+			return fmt.Errorf("report: advisory %q carries a non-nil but empty exploit-precondition block (absent must resolve to no annotation, never an empty conditionality claim)",
+				f.Advisory.ID)
 		}
 	}
 	// SBOM relationships are referential: every edge endpoint must name a package present

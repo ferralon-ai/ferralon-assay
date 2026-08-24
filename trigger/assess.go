@@ -102,6 +102,12 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				EntryPoint:       entry,
 				CallPath:         frames,
 				MitigatingGuards: guardsOnPath(store, assessmentID, frames),
+				// B1 provenance-as-confidence (RFC §4.1): qualify the candidate's strength by how
+				// its vulnerable symbols were DERIVED. Read HERE, inside the reachable_candidate
+				// arm and only after the candidate has formed, so it is structurally unreachable
+				// from admission / disqualify / refute. Absent or unrecognized provenance ⇒ "" ⇒
+				// no annotation (honest-absent, inv.5): the candidate is reported exactly as today.
+				SymbolConfidence: symbolConfidenceFor(advisorySymbolProvenance(store, assessmentID)),
 			},
 		}
 	default:
@@ -193,6 +199,48 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 		return nil
 	}
 	return adv.AdvisoryGuards
+}
+
+// advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
+// from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
+// the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
+// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return ""
+	}
+	var adv struct {
+		SymbolProvenance string `json:"symbol_provenance"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return ""
+	}
+	return adv.SymbolProvenance
+}
+
+// symbolConfidenceFor maps the corpus's record-scoped symbol_provenance derivation tag onto a
+// candidate STRENGTH label (RFC §4.1). It is deliberately total and fail-quiet: the emitted
+// vocabulary maps to a confidence, and EVERYTHING ELSE — absent, empty, or an unrecognized
+// open-set tier — maps to "" (no annotation). That is the honest-absent contract made structural:
+//
+//   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
+//   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
+//   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
+//
+// No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
+// flip a verdict: this function only ever ADDS a strength label to an already-formed candidate.
+func symbolConfidenceFor(provenance string) report.SymbolConfidence {
+	switch provenance {
+	case "osv-declared", "curated":
+		return report.SymbolConfidenceHigh
+	case "diff-lexed":
+		return report.SymbolConfidenceModerate
+	default:
+		return "" // absent / empty / unrecognized ⇒ no derivation signal (honest-absent)
+	}
 }
 
 // callGraphEdges reads the resolved call-graph edges from the reachability artifact

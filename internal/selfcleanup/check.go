@@ -23,14 +23,21 @@ type CheckConfig struct {
 	// a field (not a hardcoded NewGitActuator call) so tests inject a mock. When nil,
 	// the threshold path is a no-op that still reports it would have actuated.
 	NewActuator func() Actuator
+	// SuppressActuation, when true, holds the actuation ladder even after a verified
+	// revoke reaches the threshold: the beacon and the consecutive-revoke counter still
+	// run and report, but nothing is deleted. It is the operator's explicit opt-out
+	// (self-cleanup-on-revoke=false), set by the caller from FERRALON_SELF_CLEANUP_ON_REVOKE.
+	// The zero value is false, so an unset config actuates exactly as before.
+	SuppressActuation bool
 }
 
 // CheckResult reports what one revoke check did, for the run summary / logging.
 type CheckResult struct {
-	Outcome  Outcome
-	Count    int  // the counter value after applying Outcome
-	Actuated bool // the ladder fired this run
-	Rung     Rung // which rung succeeded (when Actuated)
+	Outcome    Outcome
+	Count      int  // the counter value after applying Outcome
+	Actuated   bool // the ladder fired this run
+	Rung       Rung // which rung succeeded (when Actuated)
+	Suppressed bool // the threshold was reached but SuppressActuation held the ladder
 }
 
 // RunCheck performs one post-scan revoke check: POST the beacon, classify the
@@ -65,6 +72,15 @@ func RunCheck(ctx context.Context, cfg CheckConfig) (CheckResult, error) {
 
 	res := CheckResult{Outcome: outcome, Count: next}
 	if !shouldActuate(next) {
+		return res, nil
+	}
+
+	// The threshold is reached. Honor an explicit operator opt-out before touching the
+	// repository: the revoke stays counted and reported (above), but no ladder runs. This
+	// is checked here, not on the beacon path, so disabling cleanup never suppresses the
+	// telemetry or the streak — only the destructive removal.
+	if cfg.SuppressActuation {
+		res.Suppressed = true
 		return res, nil
 	}
 

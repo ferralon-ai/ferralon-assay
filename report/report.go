@@ -234,6 +234,42 @@ func (g ReachabilityGrade) Valid() bool {
 	}
 }
 
+// SymbolConfidence qualifies a reachable_candidate by the CONFIDENCE in how the
+// vulnerable-symbol set that resolved was DERIVED — the corpus's record-scoped
+// symbol_provenance tag, read as a strength signal (RFC §4.1). It is orthogonal to
+// ReachabilityGrade: grade is how much attacker-controllable signal the path carries;
+// SymbolConfidence is how the symbol identity itself was obtained.
+//
+// It is a STRENGTH signal on an ALREADY-FORMED candidate, NEVER a verdict and NEVER an
+// admission/refute input (inv. 5): a lower confidence never gates a symbol out of
+// reachability, never disqualifies, and never flips a verdict — it only qualifies how the
+// candidate was reached. A stronger confidence never asserts exploitability. Empty ⇒ no
+// derivation signal (absent OR unrecognized provenance): the candidate is reported exactly
+// as it is today, at no confidence penalty — absent is unknown derivation, not low
+// confidence (honest-absent).
+type SymbolConfidence string
+
+const (
+	// SymbolConfidenceHigh — the resolved symbols were authoritatively declared
+	// (symbol_provenance "osv-declared" / "curated").
+	SymbolConfidenceHigh SymbolConfidence = "high"
+	// SymbolConfidenceModerate — the resolved symbols were heuristically extracted
+	// (symbol_provenance "diff-lexed"). A LOWER confidence label; still a full candidate,
+	// walked and graded identically, never gated out.
+	SymbolConfidenceModerate SymbolConfidence = "moderate"
+)
+
+// Valid reports whether c is a permitted confidence label. Empty is valid (a candidate need
+// not carry a derivation signal; non-candidates must leave it empty).
+func (c SymbolConfidence) Valid() bool {
+	switch c {
+	case "", SymbolConfidenceHigh, SymbolConfidenceModerate:
+		return true
+	default:
+		return false
+	}
+}
+
 // CallFrame is one node on a reachability path: a symbol with an optional source
 // location so a reader can jump straight to the code. Neutral evidence — it records
 // where a path runs, never that the path is exploitable.
@@ -300,6 +336,13 @@ type EvidenceSummary struct {
 	// guard actually closes the hole is a runtime question only the Prove tier settles.
 	// Empty when the advisory declares no guards or none were found on the path.
 	MitigatingGuards []string `json:"mitigating_guards,omitempty"`
+	// SymbolConfidence qualifies a reachable_candidate by the confidence in how the
+	// vulnerable-symbol set was DERIVED (corpus symbol_provenance). STRENGTH signal only,
+	// never a verdict (inv.5, RFC §4.1): it is read only AFTER a candidate forms, so it can
+	// neither gate admission nor refute. Empty ⇒ no derivation signal (absent or unrecognized
+	// provenance) ⇒ candidate reported exactly as today. Populated only on a
+	// reachable_candidate — validate() rejects it on any other verdict.
+	SymbolConfidence SymbolConfidence `json:"symbol_confidence,omitempty"`
 }
 
 // Priority is the deterministic, offline prioritization signal attached to a
@@ -682,6 +725,17 @@ func (r Report) Validate() error {
 		if f.Evidence.Grade != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries reachability grade %q but verdict is %q (a grade refines only a reachable_candidate, never asserts exploitability)",
 				f.Advisory.ID, f.Evidence.Grade, f.Verdict)
+		}
+		if !f.Evidence.SymbolConfidence.Valid() {
+			return fmt.Errorf("report: advisory %q has invalid symbol confidence %q", f.Advisory.ID, f.Evidence.SymbolConfidence)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.1): a derivation-confidence signal may
+		// qualify ONLY a reachable_candidate. Forbidding it on every other verdict is what makes
+		// provenance-as-confidence incapable of ever annotating — let alone driving — a
+		// disqualification, a not_exploitable, or an undetermined finding.
+		if f.Evidence.SymbolConfidence != "" && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
 		}
 	}
 	// SBOM relationships are referential: every edge endpoint must name a package present

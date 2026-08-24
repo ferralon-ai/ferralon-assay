@@ -341,6 +341,18 @@ type advisoryDoc struct {
 	// → nil. DECLARED-AWAITING-EMIT (anvil-q15): nil means "producer has not emitted typed symbols," NOT
 	// "no symbols" — the bare `symbols` axis carries the strings today. Carries no verdict.
 	SymbolsTyped []plugin.Symbol `json:"symbols_typed,omitempty"`
+
+	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for the `symbols` set — how those
+	// symbols were obtained. It is a SINGLE scalar per record (one value covers the whole `symbols`
+	// array, not one tag per symbol). OPEN SET, decoded verbatim: the emitted vocabulary is
+	// "osv-declared" | "curated" | "diff-lexed" (with "reasoning" reserved-not-emitted), but an
+	// unrecognized value passes through UNTOUCHED — never rejected, never coerced to zero — so a
+	// future producer tier needs no consumer change. STORE-ONLY (A2, cycle 2026-08-24 corpus-scaffold):
+	// decoded onto AdvisoryFacts and read by NOTHING — it must not enter any admission, reachability,
+	// or refute path. Absent → "" → UNKNOWN derivation, NOT low confidence and NOT "untrusted": a
+	// symbol with no provenance tag resolves and is walked exactly as today (honest-absent, inv.5).
+	// Carries no verdict.
+	SymbolProvenance string `json:"symbol_provenance,omitempty"`
 }
 
 // docAffectedPackage is one entry of the additive v3 affected_packages[] set. It mirrors the
@@ -728,14 +740,17 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		Coordinate:     d.Coordinate,
 		PURL:           d.PURL,
 		Symbols:        d.Symbols,
-		GuardSymbols:   d.GuardSymbols,
-		CWEs:           d.CWEs,
-		Summary:        summary,
-		SinkKind:       d.SinkKind,
-		PocSignal:      d.PocSignal != nil && d.PocSignal.Available,
-		AffectedRanges: ranges,
-		Provenance:     prov,
-		Lineage:        lineage,
+		// A2 store-only: the record-scoped derivation tag rides alongside Symbols verbatim (open set,
+		// no validation — an unrecognized tier passes through). Nothing downstream reads it.
+		SymbolProvenance: d.SymbolProvenance,
+		GuardSymbols:     d.GuardSymbols,
+		CWEs:             d.CWEs,
+		Summary:          summary,
+		SinkKind:         d.SinkKind,
+		PocSignal:        d.PocSignal != nil && d.PocSignal.Available,
+		AffectedRanges:   ranges,
+		Provenance:       prov,
+		Lineage:          lineage,
 		// v3 additive fields.
 		Withdrawn:        d.Withdrawn,
 		Trigger:          trigger,

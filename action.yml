@@ -103,11 +103,11 @@ inputs:
   scanner-version:
     description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
-    default: "v0.2.0"
+    default: "v0.3.0"
   scanner-sha256:
     description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
     required: false
-    default: "182e25293201f411da6ed99cf525738ac96f5e70c584cf756a74dfc42b4596b6"
+    default: "04cef0fc8ff69efc6cc949e91c4ce5b0d79cb5fccc6c8131063c30a0e4dd7022"
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -243,6 +243,19 @@ inputs:
       silently re-enables it.
     required: false
     default: "false"
+  self-cleanup-on-revoke:
+    description: >-
+      When a linked run (link-to-console: true) confirms a cryptographically-signed install-revoke on
+      N=2 consecutive runs, the scanner removes its own footprint (the workflow file and the default
+      state ref). Set this to 'false' to keep the console link on but HOLD that removal: the revoke is
+      still beaconed, counted and reported, but nothing is deleted. Default 'true' — installing the
+      Action and accepting its PR is the opt-in, and the operator turns the removal off here. VERSION
+      REQUIREMENT: honored only by a scanner release carrying the FERRALON_SELF_CLEANUP_ON_REVOKE gate.
+      This input lands together with the scanner-version pin bump to such a release; an older release
+      silently ignores it and self-cleanup stays on, which is why it is never pinned ahead of the
+      binary that reads it.
+    required: false
+    default: "true"
   ingest-url:
     description: >-
       OVERRIDE for the ingest endpoint a linked run beacons (GHE / substrate / dev). Empty (default)
@@ -525,6 +538,11 @@ runs:
         # URL overrides below say. The endpoint a linked run actually uses is baked into the pinned
         # release at build time, which is why the caller's workflow names no host.
         FERRALON_LINK_TO_CONSOLE: ${{ inputs.link-to-console }}
+        # Operator opt-out for the removal ladder ONLY — not the link. With link-to-console on, a
+        # confirmed signed revoke still beacons and is reported; self-cleanup-on-revoke=false only
+        # holds the deletion of the workflow file / state ref. Forwarded raw (true/false) so the
+        # binary sees the operator's explicit choice; honored by a release carrying the gate.
+        FERRALON_SELF_CLEANUP_ON_REVOKE: ${{ inputs.self-cleanup-on-revoke }}
         # The rest give the scanner the run context it needs to
         # (a) forward advisory-rescan correlation metadata on the beacon and surface it in the summary,
         # and (b) actuate the removal ladder (delete the workflow file / open the removal PR / disable

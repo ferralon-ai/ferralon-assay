@@ -1321,6 +1321,20 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 	if facts.MaliciousPackage.Declared {
 		advMalicious = &advisoryMaliciousPackage{AffectedVersions: facts.MaliciousPackage.AffectedVersions}
 	}
+	// B-guardsuff: project the advisory's DECLARED guard_sufficiency onto the artifact so the Assess
+	// tier can annotate an on-path guard with its declared sufficiency (candidate context only). This is
+	// the one Prove→Assess projection the consumer needs, and it crosses as DECLARED ADVISORY DATA — the
+	// same grade as advisory_guards above — never as a Prove sufficiency verdict. Absent ⇒ nil ⇒ omitted
+	// (honest-absent, inv.5): a candidate-scoped descriptive label, structurally incapable of a verdict.
+	var advGuardSuff []advisoryGuardVariant
+	for _, g := range facts.GuardSufficiency {
+		advGuardSuff = append(advGuardSuff, advisoryGuardVariant{
+			Symbol:     g.Symbol,
+			Version:    g.Version,
+			ForBypass:  g.ForBypass,
+			Sufficient: g.Sufficient,
+		})
+	}
 	advisory := struct {
 		VulnID           string                    `json:"vuln_id"`
 		Source           string                    `json:"source"`
@@ -1340,6 +1354,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages,omitempty"`
 		MaliciousPackage *advisoryMaliciousPackage `json:"malicious_package,omitempty"` // MAL presence-verdict marker
+		GuardSufficiency []advisoryGuardVariant    `json:"guard_sufficiency,omitempty"` // B-guardsuff: advisory-DECLARED guard sufficiency, read as a candidate-only descriptive annotation on on-path guards (never admission/refute)
 	}{
 		VulnID:           vulnID,
 		Source:           c.Request.Vulnerability.Source,
@@ -1359,6 +1374,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		Prerequisite:     facts.Prerequisite,
 		AffectedPackages: affectedPackages,
 		MaliciousPackage: advMalicious,
+		GuardSufficiency: advGuardSuff,
 	}
 	if _, err := PutArtifact(store, c, s.Name(), artifact.TypeNormalizedAdvisory, "normalized advisory", advisory); err != nil {
 		return err
@@ -1834,6 +1850,20 @@ type advisoryAffectedPackage struct {
 // on the artifact IFF the advisory declared the marker (facts.MaliciousPackage.Declared).
 type advisoryMaliciousPackage struct {
 	AffectedVersions []string `json:"affected_versions,omitempty"`
+}
+
+// advisoryGuardVariant is one element of the normalized-advisory artifact's guard_sufficiency[]
+// (B-guardsuff, cycle 2026-08-24-corpus-scaffold). It carries the advisory's DECLARED sufficiency
+// classification of a named guard variant against a specific bypass — projected onto the artifact so
+// the Assess tier can annotate an on-path guard with it as candidate context. It is DECLARED ADVISORY
+// DATA at the same grade as advisory_guards, NOT a Prove verdict: Assess never adjudicates sufficiency
+// (whether the guard actually closes the hole is a runtime question only the Prove tier settles). The
+// whole array is omitted when the advisory declares none (honest-absent, inv.5).
+type advisoryGuardVariant struct {
+	Symbol     string `json:"symbol,omitempty"`
+	Version    string `json:"version,omitempty"`
+	ForBypass  string `json:"for_bypass,omitempty"`
+	Sufficient bool   `json:"sufficient,omitempty"`
 }
 
 // buildAffectedRanges projects an advisory's OSV-shaped Range set (or the legacy single

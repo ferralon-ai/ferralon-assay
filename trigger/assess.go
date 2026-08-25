@@ -108,6 +108,14 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				// from admission / disqualify / refute. Absent or unrecognized provenance ⇒ "" ⇒
 				// no annotation (honest-absent, inv.5): the candidate is reported exactly as today.
 				SymbolConfidence: symbolConfidenceFor(advisorySymbolProvenance(store, assessmentID)),
+				// B3 exploit-precondition qualifier (RFC §4.2): describe the candidate with the
+				// advisory-declared exploit preconditions. Read HERE, in the same post-candidate
+				// arm, for the same structural reason — it cannot reach admission / disqualify /
+				// refute. Presence-only: it records that exploitation is CONDITIONAL, it never
+				// evaluates whether the precondition holds (a Prove-tier question) and never scores
+				// the candidate. Both absent ⇒ nil ⇒ no annotation (honest-absent, inv.5): the
+				// candidate is reported exactly as today, at no strength penalty.
+				ExploitPreconditions: exploitPreconditionsFor(advisoryPreconditions(store, assessmentID)),
 			},
 		}
 	default:
@@ -241,6 +249,44 @@ func symbolConfidenceFor(provenance string) report.SymbolConfidence {
 	default:
 		return "" // absent / empty / unrecognized ⇒ no derivation signal (honest-absent)
 	}
+}
+
+// advisoryPreconditions reads the advisory-declared exploit preconditions (trigger_condition /
+// prerequisite) from the normalized advisory artifact (S1). Both empty ("","") when the advisory
+// declares none, when the artifact is absent, or when the payload is unreadable — every miss is the
+// honest-absent path (inv.5): an absent precondition is UNCONDITIONAL exploitation (the conservative
+// reading), never "not exploitable." Consumed only as a candidate-scoped PoE qualifier
+// (exploitPreconditionsFor), never as an admission or refute input.
+func advisoryPreconditions(store artifact.Store, assessmentID string) (triggerCondition, prerequisite string) {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return "", ""
+	}
+	var adv struct {
+		TriggerCondition string `json:"trigger_condition"`
+		Prerequisite     string `json:"prerequisite"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return "", ""
+	}
+	return adv.TriggerCondition, adv.Prerequisite
+}
+
+// exploitPreconditionsFor builds the candidate-scoped PoE qualifier (RFC §4.2) from the advisory's
+// declared preconditions. It is deliberately total and fail-quiet: when BOTH fields are empty it
+// returns nil (no annotation) — that is the honest-absent contract made structural, absent =
+// unconditional, the candidate reported exactly as today. Any declared precondition yields a non-nil
+// block carrying the text verbatim.
+//
+// This is DESCRIPTIVE, presence-only context: it never evaluates whether a precondition holds (a
+// runtime question the Prove tier settles) and never scores the candidate, so it can only ADD context
+// to an already-formed candidate — never gate admission, never refute, never flip a verdict.
+func exploitPreconditionsFor(triggerCondition, prerequisite string) *report.ExploitPreconditions {
+	p := report.ExploitPreconditions{TriggerCondition: triggerCondition, Prerequisite: prerequisite}
+	if p.Empty() {
+		return nil // both absent ⇒ no annotation (honest-absent)
+	}
+	return &p
 }
 
 // callGraphEdges reads the resolved call-graph edges from the reachability artifact

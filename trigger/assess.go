@@ -92,6 +92,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 	case hasCandidate(store, assessmentID):
 		path, _ := candidatePath(store, assessmentID)
 		grade, entry, frames := reachabilityEvidence(store, assessmentID)
+		guards := guardsOnPath(store, assessmentID, frames)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
 			Package:  pkg,
@@ -101,7 +102,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				Grade:            grade,
 				EntryPoint:       entry,
 				CallPath:         frames,
-				MitigatingGuards: guardsOnPath(store, assessmentID, frames),
+				MitigatingGuards: guards,
 				// B1 provenance-as-confidence (RFC §4.1): qualify the candidate's strength by how
 				// its vulnerable symbols were DERIVED. Read HERE, inside the reachable_candidate
 				// arm and only after the candidate has formed, so it is structurally unreachable
@@ -116,6 +117,15 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				// the candidate. Both absent ⇒ nil ⇒ no annotation (honest-absent, inv.5): the
 				// candidate is reported exactly as today, at no strength penalty.
 				ExploitPreconditions: exploitPreconditionsFor(advisoryPreconditions(store, assessmentID)),
+				// B-guardsuff (RFC §4.2): annotate the on-path guards (above) with the advisory's
+				// DECLARED sufficiency against each guard's bypass. Read HERE, in the same
+				// post-candidate arm, for the same structural reason as B1/B3 — it cannot reach
+				// admission / disqualify / refute. It annotates ONLY guards guardsOnPath already
+				// surfaced, so it never widens the guard set; it is DESCRIPTIVE (surfaces a
+				// Prove-tier claim as context) and never adjudicates sufficiency or scores the
+				// candidate. No on-path guard carries a declared sufficiency ⇒ nil ⇒ no annotation
+				// (honest-absent, inv.5): the candidate is reported exactly as today.
+				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
 	default:
@@ -287,6 +297,67 @@ func exploitPreconditionsFor(triggerCondition, prerequisite string) *report.Expl
 		return nil // both absent ⇒ no annotation (honest-absent)
 	}
 	return &p
+}
+
+// guardSufficiencyVariant is the trigger-local decode shape of one normalized_advisory
+// guard_sufficiency element. It is DECLARED advisory data (Assess reads facts off the artifact as
+// JSON, into its own local structs — the same pattern as advisoryGuards); it is never a Prove verdict.
+type guardSufficiencyVariant struct {
+	Symbol     string `json:"symbol"`
+	Version    string `json:"version"`
+	ForBypass  string `json:"for_bypass"`
+	Sufficient bool   `json:"sufficient"`
+}
+
+// advisoryGuardSufficiency reads the advisory-declared guard_sufficiency variants from the normalized
+// advisory artifact (S1). Nil when the advisory declares none, when the artifact is absent, or when the
+// payload is unreadable — every miss is the honest-absent path (inv.5): an absent sufficiency claim is
+// "NOT ESTABLISHED," never "insufficient." Consumed only as a candidate-scoped descriptive annotation
+// (guardSufficiencyFor), never as an admission or refute input.
+func advisoryGuardSufficiency(store artifact.Store, assessmentID string) []guardSufficiencyVariant {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		GuardSufficiency []guardSufficiencyVariant `json:"guard_sufficiency"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	return adv.GuardSufficiency
+}
+
+// guardSufficiencyFor annotates each guard ALREADY on the candidate path (onPath, from guardsOnPath)
+// with the advisory's DECLARED sufficiency against its bypass (RFC §4.2). It is deliberately total and
+// fail-quiet: a guard with no declared variant, an empty on-path set, or an empty declared set all yield
+// no note (nil) — that is the honest-absent contract made structural, absent = not established, the
+// candidate reported exactly as today. It iterates onPath (preserving MitigatingGuards' declared order)
+// and emits a note only for a guard the advisory declares a variant for, so it NEVER widens the guard
+// set past what guardsOnPath already surfaced.
+//
+// This is DESCRIPTIVE, presence-only: it surfaces the advisory's declared sufficiency as candidate
+// context; it never evaluates whether the guard actually closes the hole (a runtime question the Prove
+// tier settles) and never scores the candidate — so it can only ADD context to an already-formed
+// candidate, never gate admission, never refute, never flip a verdict.
+func guardSufficiencyFor(onPath []string, declared []guardSufficiencyVariant) []report.GuardSufficiencyNote {
+	if len(onPath) == 0 || len(declared) == 0 {
+		return nil
+	}
+	var out []report.GuardSufficiencyNote
+	for _, g := range onPath {
+		for _, d := range declared {
+			if d.Symbol == "" || d.Symbol != g {
+				continue
+			}
+			out = append(out, report.GuardSufficiencyNote{
+				Symbol:      d.Symbol,
+				ForBypass:   d.ForBypass,
+				Sufficiency: report.SufficiencyLabel(d.Sufficient),
+			})
+		}
+	}
+	return out
 }
 
 // callGraphEdges reads the resolved call-graph edges from the reachability artifact

@@ -302,6 +302,60 @@ func (p ExploitPreconditions) Empty() bool {
 	return p.TriggerCondition == "" && p.Prerequisite == ""
 }
 
+// GuardSufficiencyLabel classifies one on-path guard by whether the advisory DECLARES it
+// sufficient to close its bypass (corpus guard_sufficiency). It is an advisory-DECLARED,
+// Prove-adjudicated claim surfaced as candidate context — the Assess tier NEVER verifies it
+// (whether the guard actually closes the hole is a runtime question only the Prove tier
+// settles, exactly as MitigatingGuards surfaces guard PRESENCE without asserting sufficiency).
+type GuardSufficiencyLabel string
+
+const (
+	// GuardSufficiencySufficient — the advisory declares this guard variant sufficient to
+	// close its bypass. Still only a DECLARED claim; Assess does not confirm it.
+	GuardSufficiencySufficient GuardSufficiencyLabel = "sufficient"
+	// GuardSufficiencyInsufficient — the advisory declares this guard variant insufficient
+	// (e.g. gogs IsSymlink@0.13.3, a leaf-only check the bypass still defeats). A LOWER
+	// descriptive label; it never weakens or flips the candidate verdict.
+	GuardSufficiencyInsufficient GuardSufficiencyLabel = "insufficient"
+)
+
+// Valid reports whether l is a recognized sufficiency label. Unlike SymbolConfidence, empty
+// is NOT valid: a GuardSufficiencyNote exists only to carry a declared label, so an empty one
+// is a malformed annotation (validate() rejects it), never a no-signal state — absence is
+// expressed by omitting the note entirely, not by an empty label.
+func (l GuardSufficiencyLabel) Valid() bool {
+	switch l {
+	case GuardSufficiencySufficient, GuardSufficiencyInsufficient:
+		return true
+	default:
+		return false
+	}
+}
+
+// SufficiencyLabel maps the advisory's declared sufficiency bool onto its descriptive label.
+func SufficiencyLabel(sufficient bool) GuardSufficiencyLabel {
+	if sufficient {
+		return GuardSufficiencySufficient
+	}
+	return GuardSufficiencyInsufficient
+}
+
+// GuardSufficiencyNote annotates ONE guard already surfaced on the candidate path
+// (EvidenceSummary.MitigatingGuards) with the advisory's DECLARED sufficiency against a named
+// bypass (RFC §4.2, B-guardsuff). It is DESCRIPTIVE, presence-only context: it records what the
+// advisory declares about an on-path guard, never a met/unmet evaluation and never a strength
+// score. It can only ADD context to an already-formed reachable_candidate — never gate
+// admission, never refute, never flip a verdict. A note is emitted only for a guard that
+// guardsOnPath already reported, so it never widens the guard set.
+type GuardSufficiencyNote struct {
+	// Symbol is the guard function/method (matches a MitigatingGuards entry).
+	Symbol string `json:"symbol"`
+	// ForBypass names the bypass the sufficiency claim is scoped to (advisory-declared).
+	ForBypass string `json:"for_bypass,omitempty"`
+	// Sufficiency is the advisory's declared classification for this guard against ForBypass.
+	Sufficiency GuardSufficiencyLabel `json:"sufficiency"`
+}
+
 // CallFrame is one node on a reachability path: a symbol with an optional source
 // location so a reader can jump straight to the code. Neutral evidence — it records
 // where a path runs, never that the path is exploitable.
@@ -383,6 +437,16 @@ type EvidenceSummary struct {
 	// honest-absent). Populated only on a reachable_candidate, and only with at least one
 	// non-empty field — validate() rejects it on any other verdict and rejects an empty block.
 	ExploitPreconditions *ExploitPreconditions `json:"exploit_preconditions,omitempty"`
+	// GuardSufficiency annotates the MitigatingGuards on a reachable_candidate with the
+	// advisory's DECLARED sufficiency (corpus guard_sufficiency) against each guard's bypass
+	// (RFC §4.2, B-guardsuff). DESCRIPTIVE, presence-only: it surfaces a Prove-tier claim as
+	// candidate context — it never evaluates whether a guard actually closes the hole (a runtime
+	// question only the Prove tier settles) and never scores the candidate. It enriches the
+	// evidence, it does not select or weaken the verdict. Each note annotates a guard already in
+	// MitigatingGuards, so it never widens the guard set. Empty ⇒ no declared sufficiency for any
+	// on-path guard ⇒ the candidate is reported exactly as today (honest-absent, inv.5).
+	// Populated only on a reachable_candidate — validate() rejects it on any other verdict.
+	GuardSufficiency []GuardSufficiencyNote `json:"guard_sufficiency,omitempty"`
 }
 
 // Priority is the deterministic, offline prioritization signal attached to a
@@ -790,6 +854,26 @@ func (r Report) Validate() error {
 		if f.Evidence.ExploitPreconditions != nil && f.Evidence.ExploitPreconditions.Empty() {
 			return fmt.Errorf("report: advisory %q carries a non-nil but empty exploit-precondition block (absent must resolve to no annotation, never an empty conditionality claim)",
 				f.Advisory.ID)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.2, B-guardsuff): a declared-sufficiency
+		// annotation may qualify ONLY a reachable_candidate — it annotates that candidate's on-path
+		// guards. Forbidding it on every other verdict is what makes guard_sufficiency incapable of
+		// ever annotating — let alone driving — a disqualification, a not_exploitable, or an
+		// undetermined finding. This is the structural wall against the presence→sufficiency
+		// laundering a guard-driven PoNE verdict would be.
+		if len(f.Evidence.GuardSufficiency) > 0 && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries guard-sufficiency annotations but verdict is %q (a declared-sufficiency label describes only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Verdict)
+		}
+		// Each note must carry a real guard and a recognized label: an empty symbol or an
+		// unrecognized/empty sufficiency label is a malformed annotation, never a no-signal state
+		// (absence is expressed by omitting the note). This mirrors the non-nil-but-empty rejection
+		// above — an annotation resting on nothing is a claim resting on nothing.
+		for _, n := range f.Evidence.GuardSufficiency {
+			if n.Symbol == "" || !n.Sufficiency.Valid() {
+				return fmt.Errorf("report: advisory %q carries a malformed guard-sufficiency note (symbol %q, sufficiency %q) — a note must name an on-path guard and a recognized label",
+					f.Advisory.ID, n.Symbol, n.Sufficiency)
+			}
 		}
 	}
 	// SBOM relationships are referential: every edge endpoint must name a package present

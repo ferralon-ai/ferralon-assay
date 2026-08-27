@@ -11,9 +11,24 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// jsExtensions are the source extensions the analyzer parses.
+// jsExtensions are the plain JS/TS source extensions the analyzer parses as ordinary
+// modules. `.vue` is NOT here: a Vue SFC is HTML-ish and must be parsed by parseVueSFC
+// (script-block extraction + template ingress), never fed whole to the JS lexer.
 var jsExtensions = map[string]bool{
 	".js": true, ".jsx": true, ".ts": true, ".tsx": true, ".mjs": true, ".cjs": true,
+}
+
+// vueExtension is the Vue single-file-component extension. It is a first-class source
+// file (walked, module-id'd, and specifier-resolved like a JS module) but parsed
+// specially — see vue.go.
+const vueExtension = ".vue"
+
+// isSourceExt reports whether ext is a source extension the analyzer ingests: a plain
+// JS/TS extension or a Vue SFC. It governs the source walk, module-id extension
+// stripping, and relative-specifier extension stripping so a `.vue` participates in the
+// module graph as its `.vue`-stripped path.
+func isSourceExt(ext string) bool {
+	return jsExtensions[ext] || ext == vueExtension
 }
 
 // IndexSymbols walks the JS/TS sources under req.BuildDir, parses each source file
@@ -125,7 +140,7 @@ func jsFiles(root string) ([]string, error) {
 		if strings.HasSuffix(name, ".d.ts") {
 			return nil
 		}
-		if jsExtensions[filepath.Ext(name)] {
+		if isSourceExt(filepath.Ext(name)) {
 			files = append(files, path)
 		}
 		return nil
@@ -156,7 +171,7 @@ func moduleOf(root, path string) string {
 		rel = path
 	}
 	rel = filepath.ToSlash(rel)
-	if ext := filepath.Ext(rel); jsExtensions[ext] {
+	if ext := filepath.Ext(rel); isSourceExt(ext) {
 		rel = strings.TrimSuffix(rel, ext)
 	}
 	return rel

@@ -363,6 +363,12 @@ func (rs *resolver) resolveRelative(fromModule, spec string) string {
 	}
 	cand := path.Join(dir, spec)
 	cand = strings.TrimPrefix(cand, "./")
+	// Vue SFC specifiers are, by tooling convention, always written with the extension
+	// ("./App.vue"); strip it so the candidate matches the `.vue`-stripped module id.
+	// Extensionless specifiers (the JS/TS norm) are unaffected.
+	if path.Ext(cand) == vueExtension {
+		cand = strings.TrimSuffix(cand, vueExtension)
+	}
 	return rs.matchModule(cand)
 }
 
@@ -415,7 +421,7 @@ func bareSubpath(spec string) string {
 }
 
 func stripJSExt(p string) string {
-	if ext := path.Ext(p); jsExtensions[ext] {
+	if ext := path.Ext(p); isSourceExt(ext) {
 		return strings.TrimSuffix(p, ext)
 	}
 	return p

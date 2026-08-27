@@ -105,6 +105,31 @@ public @interface MyAnno {
 	}
 }
 
+func TestParseFile_NamedArgAnnotationDoesNotDropDeclarations(t *testing.T) {
+	// Regression: a method annotation with an assignment-style argument
+	// (@Scheduled(fixedRate = 60000), @Config(timeout = 30)) must be stepped over
+	// as a unit. Before the member loop skipped the annotation group, its
+	// "name = value" arg parsed as a field whose skip-to-';' swallowed the real
+	// method declaration that followed — zeroing the file's method decls (and thus
+	// its call graph). Both methods must still be declared here.
+	src := `
+package p;
+class Jobs {
+    @Scheduled(fixedRate = 60000)
+    void reconcile() { sink(); }
+    @Config(timeout = 30, retries = 3)
+    void refresh() {}
+    void sink() {}
+}
+`
+	pr := parseFile(src)
+	for _, want := range []string{"reconcile", "refresh", "sink"} {
+		if !contains(declNames(pr, kindMethod), want) {
+			t.Errorf("named-arg annotation dropped method %q; got methods %v", want, declNames(pr, kindMethod))
+		}
+	}
+}
+
 func TestStripJava_PreservesNewlines(t *testing.T) {
 	src := "a\n// comment\nb\n/* multi\nline */\nc"
 	got := stripJava(src)

@@ -198,6 +198,25 @@ func parseFile(src string) parseResult {
 				typeStack = typeStack[:len(typeStack)-1]
 			}
 			i++
+		case c == '@':
+			// A member annotation (@Scheduled(fixedRate = 60000), @GetMapping("/x"),
+			// @Override). Skip the annotation name AND its argument group so the
+			// args are not misparsed as members: a named argument like
+			// "fixedRate = 60000" would otherwise read as a field ('=') and its
+			// skip-to-';' swallows the real method declaration that follows,
+			// zeroing the file's call graph. The separate call/ingress pass
+			// (parseCallsAndIngresses) recognizes the annotation on its own; here we
+			// only need to step over it. "@interface" is an annotation-TYPE
+			// declaration, not a member annotation — leave it to the identifier path
+			// below (precededByAt sees the '@'), which models it specially.
+			if j := skipSpace(r, i+1); j < n {
+				if w, _ := readWord(r, j); w == "interface" {
+					i++
+					continue
+				}
+			}
+			_, _, next := parseAnnotation(r, i)
+			i = next
 		case isIdentStart(c):
 			word, next := readWord(r, i)
 			// An annotation type "@interface" is not modeled: it uses a distinct

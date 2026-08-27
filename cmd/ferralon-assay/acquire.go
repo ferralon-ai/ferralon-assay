@@ -115,6 +115,11 @@ func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
 			return plugin.NewJavaPlugin(plugin.WithJavaBinaryPath(bin))
 		}
 		return plugin.NewJavaPlugin()
+	case checkout.LangKotlin:
+		if bin != "" {
+			return plugin.NewKotlinPlugin(plugin.WithKotlinBinaryPath(bin))
+		}
+		return plugin.NewKotlinPlugin()
 	case checkout.LangJS:
 		if bin != "" {
 			return plugin.NewJSPlugin(plugin.WithJSBinaryPath(bin))
@@ -201,6 +206,8 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		return goAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangJava:
 		return javaAdvisoryCorpus(includeHouseCanaries)
+	case checkout.LangKotlin:
+		return kotlinAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangJS:
 		return jsAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangPython:
@@ -285,6 +292,17 @@ func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 		)
 	}
 	return corpus
+}
+
+// kotlinAdvisoryCorpus is the default advisory floor for the Kotlin lane. It is honest-absent
+// today: no real Maven/Kotlin advisory has been vetted into pipeline.AdvisoryTable for this lane
+// yet (that population, and the fixture repros it needs, are a separate cycle deposit — see
+// convergence K6). Returning nil rather than fabricating entries keeps this function truthful;
+// checkout.LangKotlin is deliberately absent from supportedLanguages in language_support_test.go
+// until the floor is populated, so the empty-floor regression lock does not fire on this lane
+// before it is ready to carry one.
+func kotlinAdvisoryCorpus(bool) []assessment.VulnRef {
+	return nil
 }
 
 // jsAdvisoryCorpus is the set of JS/npm advisories the OSS tool evaluates a JS/TS source tree

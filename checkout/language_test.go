@@ -110,6 +110,44 @@ func TestDetectLanguageDominance(t *testing.T) {
 		},
 		{name: "no source -> unknown", files: []string{"README.md", "LICENSE"}, want: LangUnknown},
 		{name: "empty tree -> unknown", files: nil, want: LangUnknown},
+		// Kotlin+Java interop rule (K1): Kotlin wins when its .kt/.kts count is >= the
+		// .java count; Java wins only when strictly dominant.
+		{
+			name:  "pure-kotlin",
+			files: []string{"src/main/kotlin/App.kt", "src/main/kotlin/Util.kt", "build.gradle.kts"},
+			want:  LangKotlin,
+		},
+		{
+			// Equal counts: Kotlin+Java interop tie goes to Kotlin, not the historical
+			// java-first precedence used for the other language pairs.
+			name: "mixed kotlin+java equal counts -> kotlin",
+			files: []string{
+				"src/main/kotlin/App.kt", "src/main/kotlin/Util.kt",
+				"src/main/java/Legacy.java", "src/main/java/Bridge.java",
+			},
+			want: LangKotlin,
+		},
+		{
+			name: "kotlin-dominant with java -> kotlin",
+			files: []string{
+				"src/main/kotlin/App.kt", "src/main/kotlin/Util.kt", "src/main/kotlin/Model.kt",
+				"src/main/java/Legacy.java",
+			},
+			want: LangKotlin,
+		},
+		{
+			name: "java-dominant with kotlin -> java",
+			files: []string{
+				"src/main/java/App.java", "src/main/java/Util.java", "src/main/java/Model.java",
+				"src/main/kotlin/Extensions.kt",
+			},
+			want: LangJava,
+		},
+		{
+			name:  ".kts build script alone counts as kotlin",
+			files: []string{"settings.gradle.kts", "src/main/kotlin/App.kt"},
+			want:  LangKotlin,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +164,7 @@ func TestDetectLanguageDominance(t *testing.T) {
 func TestCountSourcesTally(t *testing.T) {
 	dir := writeTree(t,
 		"A.java", "B.java", "C.java",
+		"X.kt", "Y.kt", "Z.kts",
 		"a.js", "b.jsx", "c.ts", "d.tsx", "e.mjs", "f.cjs",
 		"decl.d.ts", // excluded from js
 		"x.py", "y.py",
@@ -136,6 +175,9 @@ func TestCountSourcesTally(t *testing.T) {
 	c := countSources(dir)
 	if c.java != 3 {
 		t.Errorf("java = %d, want 3", c.java)
+	}
+	if c.kotlin != 3 {
+		t.Errorf("kotlin = %d, want 3", c.kotlin)
 	}
 	if c.js != 6 {
 		t.Errorf("js = %d, want 6 (.d.ts excluded, node_modules pruned)", c.js)

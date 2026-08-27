@@ -15,6 +15,7 @@ import (
 const (
 	LangGo      = "go"     // a Go module root: contains go.mod
 	LangJava    = "java"   // a Java source tree: contains .java sources (optionally pom.xml/build.gradle)
+	LangKotlin  = "kotlin" // a Kotlin source tree: contains .kt/.kts sources (optionally build.gradle.kts)
 	LangJS      = "js"     // a JS/TS source tree: contains .js/.ts/.jsx/.tsx (optionally package.json)
 	LangPython  = "python" // a Python source tree: contains .py sources (optionally requirements.txt/pyproject.toml)
 	LangDotNet  = "dotnet" // a .NET source tree: contains .cs sources or a .csproj/.sln project marker
@@ -25,20 +26,32 @@ const (
 // Go unconditionally (the module-root marker the Go vendoring / govulncheck setup keys on,
 // and the reason checkout historically required go.mod) — Go is a module-root fact, not a
 // file count, so this short-circuit is preserved exactly. Otherwise, detection is
-// dominance-based: a single walk tallies source files per language across java / js /
-// python / dotnet (applying the same skipSourceDir prune and the same extension rules as
+// dominance-based: a single walk tallies source files per language across kotlin / java /
+// js / python / dotnet (applying the same skipSourceDir prune and the same extension rules as
 // the historical per-language probes, including the .d.ts exclusion for JS and the
 // .csproj/.sln/.fsproj/.vbproj markers for .NET), and the language with the MOST source
 // files wins. This classifies a polyglot tree by its dominant language: a repo that is
 // thousands of .py files plus a few hundred frontend .js files (e.g. Apache Airflow)
 // detects as Python, not JS.
 //
-// Ties (equal source-file counts, including the all-zero case) fall back to the historical
-// precedence order java > js > python > dotnet, so behavior stays deterministic and every
-// single-language tree — which has a nonzero count in exactly one bucket — detects exactly
-// as it did under the old first-match precedence. Zero source files in all four buckets
-// yields LangUnknown — the caller treats that as "not a recognizable source tree" and
-// errors (inv.5: never a silent half-checkout).
+// Kotlin+Java interop rule: a Kotlin project routinely carries .java sources too (both
+// compile to the same JVM bytecode the Kotlin lane's analyzer reads via javaanalysis), so
+// this is the one pairing that needs an explicit, not merely positional, tie policy: Kotlin
+// wins whenever its .kt/.kts count is >= the .java count, Java wins only when strictly
+// dominant. Placing LangKotlin immediately ahead of LangJava in the precedence list below
+// gives exactly that: on an equal count the earlier (Kotlin) entry keeps its
+// already-strict-greater win, and Java only overtakes on a strictly larger count. This
+// biases a mixed JVM tree toward the Kotlin lane rather than mis-routing a pure- or
+// Kotlin-dominant tree to Java — a mixed tree resolving to Java is still soundly analyzable
+// since both compile through the same substrate, so the cost of the bias is one-sided and
+// small.
+//
+// Ties among the remaining languages (equal source-file counts, including the all-zero
+// case) fall back to the historical precedence order java > js > python > dotnet, so
+// behavior stays deterministic and every pre-existing single-language tree — which has a
+// nonzero count in exactly one bucket — detects exactly as it did under the old first-match
+// precedence. Zero source files in every bucket yields LangUnknown — the caller treats that
+// as "not a recognizable source tree" and errors (inv.5: never a silent half-checkout).
 func DetectLanguage(dir string) string {
 	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 		return LangGo
@@ -46,12 +59,14 @@ func DetectLanguage(dir string) string {
 	counts := countSources(dir)
 	// Precedence order is also the tie-break order: iterate high→low precedence and keep a
 	// strict-greater comparison so the first (highest-precedence) language wins on a tie.
+	// Kotlin sits immediately ahead of Java to implement the Kotlin+Java interop rule above.
 	best := LangUnknown
 	bestN := 0
 	for _, c := range []struct {
 		lang string
 		n    int
 	}{
+		{LangKotlin, counts.kotlin},
 		{LangJava, counts.java},
 		{LangJS, counts.js},
 		{LangPython, counts.python},
@@ -67,18 +82,18 @@ func DetectLanguage(dir string) string {
 
 // sourceCounts tallies per-language source-file counts over a tree.
 type sourceCounts struct {
-	java, js, python, dotnet int
+	kotlin, java, js, python, dotnet int
 }
 
 // countSources walks dir once and counts source files per language, skipping common
 // build-output / VCS / virtualenv / dependency trees (skipSourceDir) so vendored or
 // generated files do not skew dominance. A single WalkDir switches on file extension and
-// increments the matching counter — one walk instead of five, which matters on large trees
+// increments the matching counter — one walk instead of six, which matters on large trees
 // (4600+ files). The extension rules mirror the analysis packages' source notions
 // (pythonanalysis.pythonFiles, javaanalysis.javaFiles, jsanalysis.jsFiles, dotnetanalysis)
 // without importing them (internal/checkout must stay analysis-library-free): the .d.ts
 // TypeScript-declaration exclusion for JS and the .csproj/.sln/.fsproj/.vbproj project
-// markers for .NET are preserved.
+// markers for .NET are preserved. .kt/.kts count toward Kotlin, not Java.
 func countSources(dir string) sourceCounts {
 	var c sourceCounts
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -95,6 +110,8 @@ func countSources(dir string) sourceCounts {
 		switch {
 		case strings.HasSuffix(name, ".java"):
 			c.java++
+		case strings.HasSuffix(name, ".kt"), strings.HasSuffix(name, ".kts"):
+			c.kotlin++
 		case strings.HasSuffix(name, ".py"):
 			c.python++
 		case strings.HasSuffix(name, ".d.ts"):

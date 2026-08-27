@@ -191,18 +191,20 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 		}
 	}
 
-	// Ingresses: @RestController/@GetMapping route methods. scip-java records the
-	// annotation as a reference occurrence to the annotation type within the
-	// method's definition range, so a method whose enclosing class carries
-	// @RestController and which itself carries a mapping annotation is an
-	// http_route ingress. We detect mapping-annotated methods directly.
+	// Ingresses: @RestController/@GetMapping route methods AND container-invoked
+	// entrypoints (@Scheduled/@EventListener/@PostConstruct/@KafkaListener and
+	// siblings). scip-java records the annotation as a reference occurrence to the
+	// annotation type within the method's definition range, so a method carrying
+	// such an annotation is an ingress. We detect annotated methods directly. The
+	// set is keyed by (method, kind) so a method that carries more than one ingress
+	// annotation keeps every Kind rather than collapsing to the last seen.
 	ingressSet := map[string]plugin.Ingress{}
 	for di, doc := range idx.documents {
 		for _, occ := range doc.occurrences {
 			if occ.definition || !occ.hasRange {
 				continue
 			}
-			sel, ok := mappingSelector(occ.symbol)
+			kind, sel, ok := ingressAnnotation(occ.symbol)
 			if !ok {
 				continue
 			}
@@ -211,7 +213,7 @@ func readSCIPIndex(data []byte) (scipGraph, error) {
 				continue
 			}
 			cid := canonical(method)
-			ingressSet[cid] = plugin.Ingress{Kind: "http_route", Symbol: sym(cid), Selector: sel}
+			ingressSet[cid+"\x00"+kind] = plugin.Ingress{Kind: kind, Symbol: sym(cid), Selector: sel}
 		}
 	}
 
@@ -313,6 +315,48 @@ func mappingSelector(sym string) (string, bool) {
 	} {
 		if strings.Contains(sym, a.needle) {
 			return a.selector, true
+		}
+	}
+	return "", false
+}
+
+// ingressAnnotation classifies a SCIP annotation-type symbol as an ingress: a
+// Spring HTTP-mapping annotation (Kind "http_route", with a coarse method
+// selector) or a container-invoked entrypoint annotation (Kind "scheduled" /
+// "event_listener" / "lifecycle" / "message_listener", no selector). It is the
+// SCIP-space twin of the lexical calls.go classification (routeAnnotations +
+// containerEntrypoints). ok is false for any other symbol.
+func ingressAnnotation(sym string) (kind, selector string, ok bool) {
+	if sel, ok := mappingSelector(sym); ok {
+		return "http_route", sel, true
+	}
+	if k, ok := containerEntrypointKind(sym); ok {
+		return k, "", true
+	}
+	return "", "", false
+}
+
+// containerEntrypointKind reports whether a SCIP symbol names a container-invoked
+// entrypoint annotation type (@Scheduled/@EventListener/@PostConstruct/@PreDestroy
+// and the message-listener annotations) and, if so, its ingress Kind. Like
+// mappingSelector it matches the annotation type by its scip-java descriptor
+// needle ("Scheduled#", …). It MUST stay in step with the lexical
+// containerEntrypoints map so the two id spaces recognize the same entrypoints.
+func containerEntrypointKind(sym string) (string, bool) {
+	for _, a := range []struct {
+		needle string
+		kind   string
+	}{
+		{"Scheduled#", "scheduled"},
+		{"EventListener#", "event_listener"},
+		{"PostConstruct#", "lifecycle"},
+		{"PreDestroy#", "lifecycle"},
+		{"KafkaListener#", "message_listener"},
+		{"JmsListener#", "message_listener"},
+		{"RabbitListener#", "message_listener"},
+	} {
+		if strings.Contains(sym, a.needle) {
+			return a.kind, true
 		}
 	}
 	return "", false

@@ -426,6 +426,8 @@ func ecosystemForLanguage(language string) string {
 		return ecosystemGo
 	case checkout.LangJava:
 		return ecosystemMaven
+	case checkout.LangKotlin:
+		return ecosystemMaven // Kotlin/JVM artifacts are Maven-keyed in OSV regardless of source language (A2).
 	case checkout.LangJS:
 		return ecosystemNPM
 	case checkout.LangPython:

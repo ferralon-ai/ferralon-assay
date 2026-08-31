@@ -32,6 +32,9 @@ var vulnclassJavaSpringEmbedded embed.FS
 //go:embed vulnclass_js/*.json
 var vulnclassJSEmbedded embed.FS
 
+//go:embed vulnclass_kotlin/*.json
+var vulnclassKotlinEmbedded embed.FS
+
 // VulnClassSchemaVersion is the only vuln-class fixture schema version this loader accepts.
 const VulnClassSchemaVersion = "tegron.corpus.vulnclass.v1"
 
@@ -117,6 +120,18 @@ func LoadJavaSpringVulnClass() ([]VulnClassFixture, error) {
 // and the Go/Java trials never pick up a JS one.
 func LoadJSVulnClass() ([]VulnClassFixture, error) {
 	return loadVulnClassFrom(vulnclassJSEmbedded, "vulnclass_js")
+}
+
+// LoadKotlinVulnClass reads and validates every Kotlin vuln-class fixture. Like
+// the Java lane, Kotlin is a JVM/bytecode lane: the repro Dockerfile compiles the
+// committed .kt source to classes in-container (kotlinc, the analogue of the Java
+// lane's in-container javac), so no compiled artifact is checked in. It is kept in
+// a SEPARATE embedded dir from the Go/Java/JS fixtures so each language's live
+// trial drives only its own plugin over repros it can build: TestLiveKotlinVulnClass
+// (tegron-plugin-kotlin) never picks up a Go/Java/JS repro, and those trials never
+// pick up a Kotlin one.
+func LoadKotlinVulnClass() ([]VulnClassFixture, error) {
+	return loadVulnClassFrom(vulnclassKotlinEmbedded, "vulnclass_kotlin")
 }
 
 // loadVulnClassFrom reads and validates every fixture under dir in fsys.

@@ -45,15 +45,26 @@ func be4(v uint32) []byte { return []byte{byte(v >> 24), byte(v >> 16), byte(v >
 // file. Only single-slot constants are used (no long/double), so every interned entry
 // occupies exactly one pool slot — matching classfile_test.go's builder.
 type kclassBuilder struct {
-	entries [][]byte
-	intern  map[string]uint16
-	methods []kbuiltMethod
+	entries    [][]byte
+	intern     map[string]uint16
+	methods    []kbuiltMethod
+	classAnnos []kannotation
 }
 
 type kbuiltMethod struct {
 	nameIdx, descIdx uint16
 	code             []byte
+	annos            []kannotation
 }
+
+// kannotation is a RuntimeVisibleAnnotations entry to emit: its type descriptor and any
+// string-valued element pairs (the only element kind the Spring-ingress layer reads).
+type kannotation struct {
+	descriptor string
+	elements   []kannoElem
+}
+
+type kannoElem struct{ name, value string }
 
 func newKClassBuilder() *kclassBuilder { return &kclassBuilder{intern: map[string]uint16{}} }
 
@@ -106,11 +117,64 @@ func (b *kclassBuilder) addMethod(name, desc string, code []byte) {
 	b.methods = append(b.methods, kbuiltMethod{nameIdx: b.utf8(name), descIdx: b.utf8(desc), code: code})
 }
 
+// anno interns the constants a RuntimeVisibleAnnotations entry needs (its type descriptor
+// and every element name/value) and returns the entry — all interning happens before
+// build writes the constant-pool count, so no index shifts later.
+func (b *kclassBuilder) anno(descriptor string, elems ...kannoElem) kannotation {
+	b.utf8(descriptor)
+	for _, e := range elems {
+		b.utf8(e.name)
+		b.utf8(e.value)
+	}
+	return kannotation{descriptor: descriptor, elements: elems}
+}
+
+// addClassAnnotation attaches a class-level annotation (e.g. @RestController).
+func (b *kclassBuilder) addClassAnnotation(a kannotation) {
+	b.classAnnos = append(b.classAnnos, a)
+}
+
+// addMethodAnnotated registers a method carrying one or more annotations (e.g.
+// @GetMapping("/x")) alongside its Code.
+func (b *kclassBuilder) addMethodAnnotated(name, desc string, code []byte, annos ...kannotation) {
+	b.methods = append(b.methods, kbuiltMethod{nameIdx: b.utf8(name), descIdx: b.utf8(desc), code: code, annos: annos})
+}
+
+// encodeAnnotations emits a RuntimeVisibleAnnotations attribute body (num_annotations
+// then each annotation) for the given entries. Every referenced utf8 was interned by
+// anno(), so the lookups here add no new constants.
+func (b *kclassBuilder) encodeAnnotations(annos []kannotation) []byte {
+	var body bytes.Buffer
+	body.Write(be2(uint16(len(annos))))
+	for _, a := range annos {
+		body.Write(be2(b.utf8(a.descriptor)))
+		body.Write(be2(uint16(len(a.elements))))
+		for _, e := range a.elements {
+			body.Write(be2(b.utf8(e.name)))
+			body.WriteByte('s') // string element_value tag
+			body.Write(be2(b.utf8(e.value)))
+		}
+	}
+	return body.Bytes()
+}
+
 // build emits the complete .class bytes for thisClass/superClass with every method
 // registered via addMethod. All builder interning must happen before build (methodref
 // indices referenced by earlier addMethod calls must already be assigned).
 func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 	codeAttr := b.utf8("Code")
+	// Intern the RuntimeVisibleAnnotations name only when some entry needs it, so a class
+	// with no annotations emits a byte-for-byte identical constant pool as before.
+	needRVA := len(b.classAnnos) > 0
+	for _, m := range b.methods {
+		if len(m.annos) > 0 {
+			needRVA = true
+		}
+	}
+	var rvaAttr uint16
+	if needRVA {
+		rvaAttr = b.utf8("RuntimeVisibleAnnotations")
+	}
 	thisIdx := b.class(thisClass)
 	superIdx := b.class(superClass)
 
@@ -140,12 +204,30 @@ func (b *kclassBuilder) build(thisClass, superClass string) []byte {
 		buf.Write(be2(accPublic))
 		buf.Write(be2(m.nameIdx))
 		buf.Write(be2(m.descIdx))
-		buf.Write(be2(1)) // method attributes_count
+		attrCount := 1
+		if len(m.annos) > 0 {
+			attrCount = 2
+		}
+		buf.Write(be2(uint16(attrCount))) // method attributes_count
 		buf.Write(be2(codeAttr))
 		buf.Write(be4(uint32(codeBody.Len())))
 		buf.Write(codeBody.Bytes())
+		if len(m.annos) > 0 {
+			body := b.encodeAnnotations(m.annos)
+			buf.Write(be2(rvaAttr))
+			buf.Write(be4(uint32(len(body))))
+			buf.Write(body)
+		}
 	}
-	buf.Write(be2(0)) // class attributes_count
+	if len(b.classAnnos) > 0 {
+		body := b.encodeAnnotations(b.classAnnos)
+		buf.Write(be2(1)) // class attributes_count
+		buf.Write(be2(rvaAttr))
+		buf.Write(be4(uint32(len(body))))
+		buf.Write(body)
+	} else {
+		buf.Write(be2(0)) // class attributes_count
+	}
 	return buf.Bytes()
 }
 

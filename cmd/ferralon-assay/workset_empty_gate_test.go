@@ -60,6 +60,8 @@ func languageFixture(t *testing.T, language string) (file, content string) {
 		return "go.mod", fixtureGoMod
 	case checkout.LangJava:
 		return "App.java", "class App {}\n"
+	case checkout.LangKotlin:
+		return "App.kt", "class App\n"
 	case checkout.LangJS:
 		return "app.js", "module.exports = {}\n"
 	case checkout.LangPython:

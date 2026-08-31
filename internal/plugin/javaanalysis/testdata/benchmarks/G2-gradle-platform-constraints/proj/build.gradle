@@ -10,6 +10,12 @@ plugins {
     id 'java-library'
 }
 
+// lock the constraint/platform-selected transitive versions so the capture's
+// gradle.lockfile records which-source-won for the resolver's oracle.
+dependencyLocking {
+    lockAllConfigurations()
+}
+
 dependencies {
     // platform version source — manages the junit.* coordinates.
     implementation platform('org.junit:junit-bom:5.10.3')

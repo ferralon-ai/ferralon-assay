@@ -1,0 +1,9 @@
+// G1 gradle-lockfile-catalog — version catalog (gradle/libs.versions.toml) is
+// auto-loaded as `libs`; central repo declared here so the build script carries
+// no literal versions (the resolved truth lives in the catalog + gradle.lockfile).
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+    }
+}
+rootProject.name = 'gradle-lockfile-catalog'

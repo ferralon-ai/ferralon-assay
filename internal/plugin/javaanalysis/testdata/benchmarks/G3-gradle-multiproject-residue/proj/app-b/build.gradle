@@ -1,0 +1,23 @@
+// G3 app-b — the RESIDUE subproject. Exercises:
+//   * NO lockfile (no dependencyLocking) -> only declared-direct is expressed on
+//     disk; transitive edges are residue (relationship_unexpressed:gradle_transitive).
+//   * a version RANGE (commons-lang3:3.+) -> deliberate range->partial: the
+//     selected literal is not expressed without a lockfile.
+//   * an identity SUBSTITUTION -> google-collections is substituted by guava
+//     33.0.0-jre (relationship_unexpressed:gradle_substitution), which also makes
+//     guava diverge across projects (app-a pins 32.1.3-jre).
+plugins {
+    id 'java-library'
+}
+
+configurations.all {
+    resolutionStrategy.dependencySubstitution {
+        substitute module('com.google.collections:google-collections') \
+            using module('com.google.guava:guava:33.0.0-jre')
+    }
+}
+
+dependencies {
+    implementation 'org.apache.commons:commons-lang3:3.+'
+    implementation 'com.google.collections:google-collections:1.0'
+}

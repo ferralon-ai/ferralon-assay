@@ -1,0 +1,9 @@
+// G3 gradle-multiproject-residue — multi-project build (two subprojects).
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+    }
+}
+rootProject.name = 'gradle-multiproject-residue'
+include 'app-a'
+include 'app-b'

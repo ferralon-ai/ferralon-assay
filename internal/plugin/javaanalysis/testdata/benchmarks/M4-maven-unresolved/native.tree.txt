@@ -1,0 +1,20 @@
+[INFO] Scanning for projects...
+[ERROR] [ERROR] Some problems were encountered while processing the POMs:
+[ERROR] Non-resolvable import POM: The following artifacts could not be resolved: com.ferralon.absent:ghost-bom:pom:9.9.9 (absent): com.ferralon.absent:ghost-bom:pom:9.9.9 was not found in https://repo.maven.apache.org/maven2 during a previous attempt. This failure was cached in the local repository and resolution is not reattempted until the update interval of central has elapsed or updates are forced @ line 37, column 19
+[ERROR] 'dependencies.dependency.version' for com.ferralon.absent:env-gated-lib:jar must be a valid version but is '${env.FERRALON_MISSING_VERSION}'. @ line 52, column 16
+[ERROR] 'dependencies.dependency.version' for com.ferralon.absent:ghost-managed-lib:jar is missing. @ line 56, column 17
+ @ 
+[ERROR] The build could not read 1 project -> [Help 1]
+[ERROR]   
+[ERROR]   The project com.ferralon.benchmark:maven-unresolved:1.0.0 (/work/M4-maven-unresolved/proj/pom.xml) has 3 errors
+[ERROR]     Non-resolvable import POM: The following artifacts could not be resolved: com.ferralon.absent:ghost-bom:pom:9.9.9 (absent): com.ferralon.absent:ghost-bom:pom:9.9.9 was not found in https://repo.maven.apache.org/maven2 during a previous attempt. This failure was cached in the local repository and resolution is not reattempted until the update interval of central has elapsed or updates are forced @ line 37, column 19 -> [Help 2]
+[ERROR]     'dependencies.dependency.version' for com.ferralon.absent:env-gated-lib:jar must be a valid version but is '${env.FERRALON_MISSING_VERSION}'. @ line 52, column 16
+[ERROR]     'dependencies.dependency.version' for com.ferralon.absent:ghost-managed-lib:jar is missing. @ line 56, column 17
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/ProjectBuildingException
+[ERROR] [Help 2] http://cwiki.apache.org/confluence/display/MAVEN/UnresolvableModelException
+[capture] mvn dependency:tree exited non-zero (see output above)

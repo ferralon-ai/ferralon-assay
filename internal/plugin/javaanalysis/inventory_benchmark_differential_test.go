@@ -10,15 +10,16 @@ package javaanalysis
 // differential FAIL (the resolver produces nodes the now-empty oracle does not, and vice versa).
 //
 // Grading scope by benchmark:
-//   - FULL set-parity (either-direction set-difference fails): M1, M2, M3 (per reactor module), G1.
-//     These are the fully-resolvable-on-disk benchmarks: every edge is soundly closable from the
-//     committed cache slice, so the resolver's (group, artifact, version[, scope]) set must equal
-//     the native tree's exactly.
-//   - HONEST-ABSENT (C3, not full-parity): M4 (unresolvable triad), G2 (no lockfile), G3 (mixed
-//     multiproject: one locked subproject fully resolves, one unlocked subproject is declared
-//     residue). Here the native tool either aborts (M4) or resolves versions the on-disk state does
-//     not express without a lockfile (G2/G3-app-b); the resolver's contract is to emit honest-absent
-//     residue (Partial, never Complete over the truncated graph), which these cases assert directly.
+//   - FULL set-parity (either-direction set-difference fails): M1, M2, M3 (per reactor module), G1,
+//     G2 (lockfile records the platform()/constraints{}-selected closure). These are the
+//     fully-resolvable-on-disk benchmarks: every edge is soundly closable from the committed cache
+//     slice, so the resolver's (group, artifact, version[, scope]) set must equal the native tree's
+//     exactly. G2 additionally carries the Gradle selected≠declared assertion (C4).
+//   - HONEST-ABSENT (C3, not full-parity): M4 (unresolvable triad), G3 (mixed multiproject: one
+//     locked subproject fully resolves, one unlocked subproject is declared residue). Here the native
+//     tool either aborts (M4) or resolves versions the on-disk state does not express without a
+//     lockfile (G3-app-b); the resolver's contract is to emit honest-absent residue (Partial, never
+//     Complete over the truncated graph), which these cases assert directly.
 
 import (
 	"encoding/json"
@@ -193,8 +194,14 @@ func parseGradleConfig(data, config string) map[coord]bool {
 			if strings.Count(right, ":") >= 2 {
 				body = right // identity substitution → selected coordinate.
 			} else {
-				g, a, _ := splitGradleCoord(left)
-				body = g + ":" + a + ":" + right
+				// The left side is the declared coordinate, which for a platform()/constraints{}
+				// -selected dependency is versionless (group:artifact only). Take group:artifact and
+				// graft on the selected (right) version.
+				lp := strings.Split(left, ":")
+				if len(lp) < 2 {
+					continue
+				}
+				body = lp[0] + ":" + lp[1] + ":" + right
 			}
 		}
 		g, a, v := splitGradleCoord(body)
@@ -277,15 +284,20 @@ func TestInventory_C1_MavenParity(t *testing.T) {
 }
 
 func TestInventory_C1_GradleParity(t *testing.T) {
-	// G1: fully locked → compileClasspath (the maximal config, equal to the lockfile union) is the
-	// oracle for the resolver's coordinate set.
-	name := "G1-gradle-lockfile-catalog"
-	oracle := parseGradleConfig(readCapture(t, name, "native.deps.txt"), "compileClasspath")
-	if len(oracle) == 0 {
-		t.Fatal("G1 compileClasspath oracle parsed empty")
+	// Fully-locked Gradle projects → compileClasspath (the maximal config, equal to the lockfile
+	// union) is the oracle for the resolver's coordinate set.
+	//   G1: lockfile + version catalog.
+	//   G2: lockfile records the platform()/constraints{}-selected transitive closure.
+	for _, name := range []string{"G1-gradle-lockfile-catalog", "G2-gradle-platform-constraints"} {
+		t.Run(name, func(t *testing.T) {
+			oracle := parseGradleConfig(readCapture(t, name, "native.deps.txt"), "compileClasspath")
+			if len(oracle) == 0 {
+				t.Fatalf("%s compileClasspath oracle parsed empty", name)
+			}
+			got := invGradleCoords(t, resolveBenchmark(name))
+			assertSetsEqual(t, name+" [compileClasspath]", oracle, got)
+		})
 	}
-	got := invGradleCoords(t, resolveBenchmark(name))
-	assertSetsEqual(t, name+" [compileClasspath]", oracle, got)
 }
 
 // --- C4: selected ≠ declared -------------------------------------------------
@@ -347,20 +359,27 @@ func TestInventory_C3_MavenUnresolvedTriad(t *testing.T) {
 	}
 }
 
-func TestInventory_C3_GradleNoLockfileResidue(t *testing.T) {
-	// G2: no lockfile committed → the resolver can only express declared-direct; every transitive
-	// edge is the irreducible gradle_transitive residue. It must be Partial and every node must
-	// carry that reason (never a Complete tree fabricated without a lockfile).
+func TestInventory_C4_GradleConstraintPlatformSelected(t *testing.T) {
+	// G2: two direct dependencies are declared WITHOUT a version — their versions come from the build,
+	// not the manifest: junit-jupiter-api via the junit-bom platform() and commons-lang3 via a
+	// constraints{} block. The resolver must emit the build-SELECTED versions (the ones that drive an
+	// advisory verdict), and — with a lockfile now present — the graph must be Complete with no
+	// gradle_transitive residue. This is the selected≠declared story for Gradle, the analogue of M1.
 	inv := resolveBenchmark("G2-gradle-platform-constraints")
-	if inv.Partiality.Complete {
-		t.Fatal("C3: G2 (no lockfile) must be Partial, never Complete")
+	if !inv.Partiality.Complete {
+		t.Errorf("C4: G2 is fully locked — inventory must be Complete; got reasons %v", inv.Partiality.Reasons)
 	}
-	if !hasReason(inv.Partiality, reasonGradleTransitive) {
-		t.Errorf("C3: G2 must declare gradle_transitive residue; got %v", inv.Partiality.Reasons)
+	if hasReason(inv.Partiality, reasonGradleTransitive) {
+		t.Errorf("C4: G2 has a lockfile — no gradle_transitive residue expected; got %v", inv.Partiality.Reasons)
 	}
-	for _, n := range inv.Nodes {
-		if !hasReason(n.Partiality, reasonGradleTransitive) {
-			t.Errorf("C3: G2 node %s must carry gradle_transitive; got %+v", n.PURL, n.Partiality)
+	// Each declared-versionless direct dep must resolve to exactly its build-selected version.
+	selected := []struct{ group, artifact, version, via string }{
+		{"org.junit.jupiter", "junit-jupiter-api", "5.10.3", "junit-bom platform()"},
+		{"org.apache.commons", "commons-lang3", "3.14.0", "constraints{}"},
+	}
+	for _, s := range selected {
+		if !hasNode(t, inv, s.group, s.artifact, s.version) {
+			t.Errorf("C4: %s:%s must resolve to the %s-selected %s", s.group, s.artifact, s.via, s.version)
 		}
 	}
 }

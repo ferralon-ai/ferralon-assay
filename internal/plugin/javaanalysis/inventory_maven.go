@@ -241,7 +241,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		return nil, false
 	}
 	var xp xmlPOM
-	if err := xml.Unmarshal(data, &xp); err != nil {
+	if err := unmarshalPOM(data, &xp); err != nil {
 		return nil, false
 	}
 	p := &mvnPOM{

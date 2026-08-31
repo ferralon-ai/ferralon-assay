@@ -174,7 +174,7 @@ func parsePOM(path string) ([]plugin.ResolvedDependency, bool) {
 		return nil, false
 	}
 	var proj pomProject
-	if err := xml.Unmarshal(data, &proj); err != nil {
+	if err := unmarshalPOM(data, &proj); err != nil {
 		return nil, false
 	}
 

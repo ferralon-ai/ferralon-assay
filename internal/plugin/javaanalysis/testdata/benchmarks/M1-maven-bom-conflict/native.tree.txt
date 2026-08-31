@@ -1,0 +1,21 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -------------< com.ferralon.benchmark:maven-bom-conflict >--------------
+[INFO] Building maven-bom-conflict 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- dependency:3.7.0:tree (default-cli) @ maven-bom-conflict ---
+[INFO] com.ferralon.benchmark:maven-bom-conflict:jar:1.0.0
+[INFO] +- com.fasterxml.jackson.core:jackson-databind:jar:2.17.2:compile
+[INFO] |  +- com.fasterxml.jackson.core:jackson-annotations:jar:2.17.2:compile (version managed from 2.17.2)
+[INFO] |  \- com.fasterxml.jackson.core:jackson-core:jar:2.17.2:compile (version managed from 2.17.2)
+[INFO] +- commons-codec:commons-codec:jar:1.17.1:compile
+[INFO] \- org.apache.httpcomponents:httpclient:jar:4.5.14:compile
+[INFO]    +- org.apache.httpcomponents:httpcore:jar:4.4.16:compile
+[INFO]    +- commons-logging:commons-logging:jar:1.2:compile
+[INFO]    \- (commons-codec:commons-codec:jar:1.11:compile - omitted for conflict with 1.17.1)
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------

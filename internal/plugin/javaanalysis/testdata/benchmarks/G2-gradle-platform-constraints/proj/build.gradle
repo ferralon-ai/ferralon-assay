@@ -1,0 +1,30 @@
+// G2 gradle-platform-constraints — exercises:
+//   * platform(...) as a VERSION SOURCE: junit-jupiter-api's version comes from
+//     the junit-bom platform, not a literal on the dependency.
+//   * a constraints{} entry: commons-lang3 is declared with no version and pinned
+//     by the constraint (which-source-won provenance).
+//   * a dep in TWO configurations: guava in implementation AND testImplementation
+//     (distinct config membership, same coordinate).
+// Backs C1 (platform, constraints, two-config) and C5 (config membership).
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    // platform version source — manages the junit.* coordinates.
+    implementation platform('org.junit:junit-bom:5.10.3')
+    // version supplied by the platform above (declared with no version).
+    implementation 'org.junit.jupiter:junit-jupiter-api'
+
+    // constraint pins the version; the dependency itself declares none.
+    constraints {
+        implementation('org.apache.commons:commons-lang3:3.14.0') {
+            because 'benchmark: version supplied by a constraint, not the dependency'
+        }
+    }
+    implementation 'org.apache.commons:commons-lang3'
+
+    // same coordinate in two configurations -> two distinguishable memberships.
+    implementation 'com.google.guava:guava:33.0.0-jre'
+    testImplementation 'com.google.guava:guava:33.0.0-jre'
+}

@@ -128,6 +128,7 @@ type pomProject struct {
 }
 
 type pomParent struct {
+	GroupID string `xml:"groupId"`
 	Version string `xml:"version"`
 }
 

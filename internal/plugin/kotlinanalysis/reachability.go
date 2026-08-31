@@ -36,7 +36,11 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest) (plugin.Rea
 	}
 
 	engine := depreach.NewEngine(prog.classes)
-	ingresses := mainMethodRefs(prog.classes)
+	// Roots are the program entries (`main`) plus any framework ingress (Spring handlers)
+	// detected from the parsed annotations — so a trace can originate at an HTTP handler,
+	// not only at `main`. Both lists are individually sorted; concatenating keeps the seed
+	// order deterministic.
+	ingresses := append(mainMethodRefs(prog.classes), springIngressRefs(prog.classes)...)
 
 	var paths []plugin.ReachPath
 	for _, s := range req.Symbols {

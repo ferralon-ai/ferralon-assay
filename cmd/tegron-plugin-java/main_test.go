@@ -54,29 +54,47 @@ func roundTrip(t *testing.T, req plugin.Request) plugin.Response {
 	return resp
 }
 
-// TestDispatch_ResolveInventoryIsContractPresentUnsupported asserts resolve_inventory
-// is a CONTRACT-PRESENT stub through the subprocess: it returns an Inventory payload
-// declaring Unsupported() — never a hard error, and never Complete() (which would
-// falsely assert an empty dependency graph).
-func TestDispatch_ResolveInventoryIsContractPresentUnsupported(t *testing.T) {
+// TestDispatch_ResolveInventoryIsLive asserts resolve_inventory is LIVE through the subprocess:
+// a reactor pom.xml with a literal-pinned dependency yields a real node (never Unsupported), and
+// a build dir with no manifest is honest-absent (Partial, never Complete over zero nodes).
+func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
+	dir := t.TempDir()
+	pom := `<project><modelVersion>4.0.0</modelVersion>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>com.google.code.gson</groupId>
+<artifactId>gson</artifactId><version>2.10.1</version></dependency></dependencies></project>`
+	if err := os.WriteFile(dir+"/pom.xml", []byte(pom), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	resp := roundTrip(t, plugin.Request{
 		Op:               plugin.OpResolveInventory,
-		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()},
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir},
 	})
 	if resp.Inventory == nil {
 		t.Fatal("missing inventory payload")
 	}
-	if resp.Inventory.Partiality.Complete {
-		t.Error("resolve_inventory must never be Complete (would assert an empty dependency graph)")
-	}
-	var sawUnsupported bool
 	for _, r := range resp.Inventory.Partiality.Reasons {
 		if r == plugin.PartialReasonUnsupported {
-			sawUnsupported = true
+			t.Errorf("resolve_inventory must be LIVE, not Unsupported; got %v", resp.Inventory.Partiality.Reasons)
 		}
 	}
-	if !sawUnsupported {
-		t.Errorf("resolve_inventory must declare Unsupported; got reasons %v", resp.Inventory.Partiality.Reasons)
+	found := false
+	for _, n := range resp.Inventory.Nodes {
+		if n.PURL == "pkg:maven/com.google.code.gson/gson@2.10.1" && n.Version == "2.10.1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a gson@2.10.1 node; got %+v", resp.Inventory.Nodes)
+	}
+
+	// Honest-absent floor: no manifest ⇒ Partial, never a Complete() over zero nodes.
+	empty := roundTrip(t, plugin.Request{
+		Op:               plugin.OpResolveInventory,
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()},
+	})
+	if empty.Inventory == nil || empty.Inventory.Partiality.Complete {
+		t.Error("resolve_inventory over an empty build dir must be Partial, never Complete")
 	}
 }
 

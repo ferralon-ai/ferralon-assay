@@ -34,11 +34,10 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	return javaanalysis.ResolveDependencyVersions(ctx, req)
 }
 
-// ComputeTaint is contract-present but unimplemented: variable-level dataflow is not
-// modeled at Assess tier. Honest absence.
-func ComputeTaint(_ context.Context, _ plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	return plugin.TaintResult{Partiality: plugin.Unsupported()}, nil
-}
+// ComputeTaint is LIVE at Assess tier — see taint.go. It reports call-graph PATH PRESENCE
+// (an ingress→sink path over the Kotlin/JVM bytecode call graph), the honest minimal-taint
+// baseline the plugin contract defines; NOT variable-level dataflow. It mirrors the Java
+// lane's path-presence semantics on the Kotlin lane's own CallGraph/FindIngresses infra.
 
 // GenerateHarness is contract-present but unimplemented: Kotlin's effect proof rides the
 // Prove-tier repro-runtime sandbox, not a plugin-generated harness.

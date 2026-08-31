@@ -105,6 +105,11 @@ type Method struct {
 	// caller building a call graph must add an edge into each triggered class's
 	// <clinit> or a sink reachable only through static initialization is invisible.
 	InitTriggers []string
+	// Annotations are the method's RuntimeVisibleAnnotations (JVMS §4.7.16), decoded
+	// to their type descriptors plus string-valued element pairs. Populated only when
+	// the attribute is present; framework-ingress detection (e.g. Spring @GetMapping)
+	// reads it. Never a source of edges — advisory metadata only.
+	Annotations []Annotation
 }
 
 // Class is one parsed .class: its own internal name, its superclass and directly
@@ -114,7 +119,34 @@ type Class struct {
 	Super      string
 	Interfaces []string
 	Methods    []Method
+	// Annotations are the class's RuntimeVisibleAnnotations (JVMS §4.7.16), decoded
+	// the same way as Method.Annotations. Populated only when present; the class-level
+	// stereotype markers a framework-ingress layer needs (e.g. Spring @RestController)
+	// live here.
+	Annotations []Annotation
 }
+
+// Annotation is one decoded RuntimeVisibleAnnotations entry: the annotation type as a
+// JVM field descriptor (e.g. "Lorg/springframework/web/bind/annotation/RestController;")
+// and any string-valued element pairs (e.g. a route path). Only string element values
+// are retained — the framework-ingress layer needs the type and an optional route path,
+// nothing more; non-string values are traversed only to keep the parser in sync.
+type Annotation struct {
+	Type     string
+	Elements []AnnotationElement // string-valued element pairs, in file order (deterministic)
+}
+
+// AnnotationElement is one decoded string-valued element pair of an annotation, e.g.
+// Name="value", Value="/users". The Elements slice preserves file order so encode paths
+// stay deterministic (no map iteration).
+type AnnotationElement struct {
+	Name  string
+	Value string
+}
+
+// attrRuntimeVisibleAnnotations is the JVMS §4.7.16 attribute name carrying the
+// class/method annotations the framework-ingress layer reads.
+const attrRuntimeVisibleAnnotations = "RuntimeVisibleAnnotations"
 
 // ErrBadMagic is returned when the input does not begin with the 0xCAFEBABE magic —
 // most commonly a non-class JAR entry the caller should skip, not fail on.
@@ -316,6 +348,13 @@ func ParseClass(data []byte) (Class, error) {
 				m.Edges = edges
 				m.InitTriggers = triggers
 			}
+			if attrName == attrRuntimeVisibleAnnotations {
+				annos, err := parseAnnotations(cp, body)
+				if err != nil {
+					return Class{}, fmt.Errorf("classfile: %s%s annotations: %w", name, desc, err)
+				}
+				m.Annotations = annos
+			}
 		}
 		methods = append(methods, m)
 		if r.err != nil {
@@ -329,7 +368,123 @@ func ParseClass(data []byte) (Class, error) {
 	if thisClass == "" {
 		return Class{}, errors.New("classfile: missing this_class name")
 	}
-	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Methods: methods}, nil
+
+	// Class-level attributes table. Previously unread (the edge graph needs nothing
+	// past the methods); it is now walked only to decode the class's
+	// RuntimeVisibleAnnotations — every other attribute is skipped by length exactly as
+	// before, so a class carrying no annotations parses identically.
+	classAnnos, err := parseClassAnnotations(r, cp)
+	if err != nil {
+		return Class{}, err
+	}
+
+	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Methods: methods, Annotations: classAnnos}, nil
+}
+
+// parseClassAnnotations walks the class-level attributes table (which begins at r's
+// current position) and returns any RuntimeVisibleAnnotations found. A truncated table
+// or a malformed annotation body is a completeness hazard, not a panic: it surfaces as
+// an error so the caller records the class as Failed (declared partiality), never a
+// silently-dropped annotation. Non-annotation attributes are skipped by length.
+func parseClassAnnotations(r *reader, cp constPool) ([]Annotation, error) {
+	n := int(r.u2())
+	var annos []Annotation
+	for i := 0; i < n; i++ {
+		attrName := cp.utf8(r.u2())
+		attrLen := int(r.u4())
+		body := r.bytes(attrLen)
+		if r.err != nil {
+			return nil, r.err
+		}
+		if attrName == attrRuntimeVisibleAnnotations {
+			a, err := parseAnnotations(cp, body)
+			if err != nil {
+				return nil, fmt.Errorf("classfile: class annotations: %w", err)
+			}
+			annos = append(annos, a...)
+		}
+	}
+	return annos, nil
+}
+
+// parseAnnotations decodes a RuntimeVisibleAnnotations attribute body (JVMS §4.7.16)
+// into annotation type descriptors and their string-valued element pairs. It runs over a
+// SUB-READER of just the attribute body, so a malformed table cannot desync the enclosing
+// class parse; a short read is reported as an error (the caller turns it into a declared
+// hazard). Non-string element values are traversed but not retained.
+func parseAnnotations(cp constPool, body []byte) ([]Annotation, error) {
+	br := &reader{b: body}
+	n := int(br.u2())
+	annos := make([]Annotation, 0, n)
+	for i := 0; i < n; i++ {
+		a := parseOneAnnotation(br, cp)
+		if br.err != nil {
+			return nil, br.err
+		}
+		annos = append(annos, a)
+	}
+	return annos, nil
+}
+
+// parseOneAnnotation decodes a single annotation structure: its type descriptor followed
+// by the element-value pairs. String-valued elements are captured; all other value kinds
+// are traversed only to advance the cursor. Errors surface via br.err.
+func parseOneAnnotation(br *reader, cp constPool) Annotation {
+	typeIdx := br.u2()
+	numPairs := int(br.u2())
+	a := Annotation{Type: cp.utf8(typeIdx)}
+	for p := 0; p < numPairs; p++ {
+		nameIdx := br.u2()
+		val, hasStr := parseElementValue(br, cp)
+		if br.err != nil {
+			return a
+		}
+		if hasStr {
+			a.Elements = append(a.Elements, AnnotationElement{Name: cp.utf8(nameIdx), Value: val})
+		}
+	}
+	return a
+}
+
+// parseElementValue traverses one element_value (JVMS §4.7.16.1). It returns a decoded
+// string when the value — or the first element of a string array — is a string constant;
+// every tag is handled so the cursor advances correctly, and an unknown tag fails the
+// sub-reader (a malformed table the caller declares).
+func parseElementValue(br *reader, cp constPool) (string, bool) {
+	switch tag := br.u1(); tag {
+	case 's': // String constant
+		return cp.utf8(br.u2()), true
+	case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z': // primitive constant
+		br.u2()
+		return "", false
+	case 'e': // enum: type_name_index, const_name_index
+		br.u2()
+		br.u2()
+		return "", false
+	case 'c': // class_info_index
+		br.u2()
+		return "", false
+	case '@': // nested annotation
+		parseOneAnnotation(br, cp)
+		return "", false
+	case '[': // array: capture the first string element, if any
+		num := int(br.u2())
+		var first string
+		var has bool
+		for i := 0; i < num; i++ {
+			s, ok := parseElementValue(br, cp)
+			if br.err != nil {
+				break
+			}
+			if ok && !has {
+				first, has = s, true
+			}
+		}
+		return first, has
+	default:
+		br.fail("classfile: unknown annotation element tag %d", tag)
+		return "", false
+	}
 }
 
 // parseConstPool decodes the 1-indexed constant pool. Long and Double each occupy

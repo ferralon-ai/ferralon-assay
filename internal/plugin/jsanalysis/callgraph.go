@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -100,7 +101,7 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("jsanalysis: scan %q: %w", buildDir, err)
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("jsanalysis: no .js/.ts/.jsx/.tsx sources under %q", buildDir)
+		return nil, fmt.Errorf("jsanalysis: no .js/.ts/.jsx/.tsx/.vue sources under %q", buildDir)
 	}
 
 	prog := &program{
@@ -115,7 +116,12 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, f)
-		pr := parseFile(module, string(data))
+		var pr parseResult
+		if filepath.Ext(f) == vueExtension {
+			pr = parseVueSFC(module, string(data))
+		} else {
+			pr = parseFile(module, string(data))
+		}
 		if pr.skipped {
 			prog.skipped = true
 		}

@@ -51,11 +51,13 @@ func BuildManifest(_ context.Context, _ plugin.BuildManifestRequest) (plugin.Bui
 	return plugin.BuildManifestResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// ResolveInventory is contract-present but unimplemented: no whole-graph dependency
-// inventory is resolved. It declares Unsupported() — never Complete() with zero nodes,
-// which would falsely assert an empty dependency graph.
-func ResolveInventory(_ context.Context, _ plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
-	return plugin.DependencyInventory{Partiality: plugin.Unsupported()}, nil
+// ResolveInventory DELEGATES to javaanalysis.ResolveInventory (C6): whole-graph dependency
+// inventory is read from the build's resolved on-disk state (reactor POMs + ~/.m2 cache, or the
+// Gradle lockfile + modules-2 cache), which is JVM-generic, not Java-source-specific — the same
+// delegation shape as ResolveDependencyVersions. No resolution logic is duplicated in the Kotlin
+// lane; honest-absent + determinism ride the shared resolver.
+func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	return javaanalysis.ResolveInventory(ctx, req)
 }
 
 // manifestContentVersion is the Kotlin capability manifest's content version; it bumps when

@@ -45,9 +45,14 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 	return plugin.HarnessResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// BuildManifest is contract-present but unimplemented at this tier. Honest absence.
-func BuildManifest(_ context.Context, _ plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
-	return plugin.BuildManifestResult{Partiality: plugin.Unsupported()}, nil
+// BuildManifest DELEGATES to javaanalysis.BuildManifest (lang "kotlin"): the build manifest is
+// derived from JVM-generic build files (Maven POM <properties>, Gradle version/toolchain
+// lines, .tool-versions/.sdkmanrc pins), not Java-source-specific state — the same delegation
+// shape as ResolveDependencyVersions / ResolveInventory. The "kotlin" lang keeps Runtime.Name
+// honest per lane; the honest-absent residue (Target/Configuration/exact-Toolchain/multi-module)
+// and determinism ride the shared impl.
+func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	return javaanalysis.BuildManifest(ctx, req, "kotlin")
 }
 
 // ResolveInventory DELEGATES to javaanalysis.ResolveInventory (C6): whole-graph dependency

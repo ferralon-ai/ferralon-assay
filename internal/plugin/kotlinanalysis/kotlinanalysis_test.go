@@ -130,8 +130,9 @@ func TestLocateDependencyJar_Gradle(t *testing.T) {
 }
 
 // TestCapabilityManifest_Honest asserts the manifest is honest (K5): Supported with a jvm
-// runtime and CHA semantics, no framework/resolver axis claimed (neither is implemented),
-// and the desugaring boundaries declared. A future axis addition updates this test in step.
+// runtime and CHA semantics, no framework axis claimed (not implemented), the build-file
+// Resolvers axis declared (P1: version resolution went live), and the desugaring boundaries
+// declared. A future axis addition updates this test in step.
 func TestCapabilityManifest_Honest(t *testing.T) {
 	m := CapabilityManifest()
 	if !m.Supported || m.Language != "kotlin" {
@@ -140,8 +141,12 @@ func TestCapabilityManifest_Honest(t *testing.T) {
 	if len(m.Frameworks) != 0 {
 		t.Errorf("manifest claims frameworks it does not detect: %v", m.Frameworks)
 	}
-	if len(m.Resolvers) != 0 {
-		t.Errorf("manifest claims resolvers it does not read: %v", m.Resolvers)
+	// Resolvers ARE now claimed (build-file version resolution is live) and must name the
+	// build-file formats the shared parser actually reads.
+	for _, want := range []string{"build.gradle.kts", "pom.xml"} {
+		if !contains(m.Resolvers, want) {
+			t.Errorf("manifest omits resolver %q it now reads: %v", want, m.Resolvers)
+		}
 	}
 	for _, want := range []string{"invokedynamic", "coroutine_dispatch", "inline_function", "reflection"} {
 		if !contains(m.DynamicBoundaries, want) {

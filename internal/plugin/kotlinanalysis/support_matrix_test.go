@@ -32,8 +32,9 @@ import (
 var codeEmittedReasons = map[string]string{
 	// program.go:21,50 — no compiled build-output root existed under the checkout.
 	partialReasonNoBuildOutput: "operational: build/tool availability, not a language capability boundary",
-	// program.go:53 — a per-class parse hazard (a hostile/truncated .class) was recorded.
-	plugin.PartialReasonToolFailure: "operational: a class failed to parse; not a capability boundary",
+	// program.go:53 — a per-class parse hazard (a hostile/truncated .class) was recorded;
+	// also resolve.go — a dependency JAR that was located but partly/wholly unparseable.
+	plugin.PartialReasonToolFailure: "operational: a class or dependency JAR failed to parse; not a capability boundary",
 	// reachability.go:48 — a sink string did not parse as a JVM MethodRef.
 	// (shares the same plugin.PartialReasonToolFailure constant as the line above; kept
 	// as one map entry since the wire reason code is identical.)
@@ -45,8 +46,19 @@ var codeEmittedReasons = map[string]string{
 	plugin.PartialReasonReachabilityUndetermined: "capability: folds every depreach hazard (invokedynamic, reflection, out-of-classpath re-entry) the Reachability op hits",
 	// callgraph.go:39 — an EdgeDynamic (invokedynamic) call-graph edge was dropped.
 	plugin.PartialReasonDynamicDispatch: "capability: CallGraph's direct invokedynamic signal",
-	// ops.go:29 — ResolveDependencyVersions declares Gradle version resolution deferred.
-	plugin.PartialReasonNoManifest: "capability: gradle_version_resolution's operational signal",
+	// ops.go — ResolveDependencyVersions (via the shared JVM parser) declares no_manifest
+	// when the checkout carries NO pom.xml/build.gradle(.kts) at all. This is a build-shape
+	// condition (there is no build file to read), NOT the gradle_version_resolution
+	// capability boundary — the boundary's own limit (non-literal version forms) fails open
+	// per-dependency as Resolved=false with NO partiality reason (see manifestBoundaryRationale).
+	plugin.PartialReasonNoManifest: "operational: no build file present to read versions from; not a language capability boundary",
+	// resolve.go — the advisory's dependency JAR could not be located in (or read from) the
+	// build's local caches: version UNRESOLVED, coordinate underivable, or absent from every
+	// cache. Artifact-availability, not a language capability boundary.
+	partialReasonNoDependencyArtifact: "operational: dependency artifact unavailable in local caches; not a language capability boundary",
+	// resolve.go — the dependency JAR was located and fully read, but none of the advisory's
+	// named symbols resolved to a symbol in it. Request/artifact-content, not a desugaring boundary.
+	partialReasonAdvisorySymbolUnresolved: "operational: advisory symbol absent from the resolved artifact; not a language capability boundary",
 }
 
 // manifestBoundaryRationale documents, for every DynamicBoundaries entry the manifest
@@ -92,10 +104,20 @@ var manifestBoundaryRationale = map[string]boundaryRationale{
 		reasons: []string{plugin.PartialReasonReachabilityUndetermined},
 		note:    "depreach's isReflection hazard rule fires but is folded into the generic reachability_undetermined bucket; CallGraph has no reflection-specific edge kind so it is invisible there",
 	},
-	// gradle_version_resolution: ResolveDependencyVersions (ops.go:22-30) is the sole op
-	// this boundary describes; it always declares no_manifest.
+	// gradle_version_resolution: ResolveDependencyVersions (ops.go, via the shared JVM
+	// build-file parser) now resolves LITERAL Maven/Gradle versions. The residual boundary is
+	// the NON-LITERAL Gradle version forms — a version catalog reference (`libs.foo`), the
+	// `kotlin("stdlib")` helper (no coordinate literal), an interpolated `"$version"` — which
+	// the parser cannot pin to a literal. Each such dependency is returned Resolved=false (an
+	// UNRESOLVED marker the disqualification predicate fails OPEN on), a PER-DEPENDENCY signal
+	// that emits NO whole-result Partiality.Reason. So, like inline_function, this boundary
+	// has no runtime reason code — its honest signal is the ResolvedDependency.Resolved=false
+	// field, not a partiality string. (no_manifest, which this op can also emit, is the
+	// distinct build-shape condition "no build file present at all" — operational, not this
+	// capability boundary; see codeEmittedReasons.)
 	"gradle_version_resolution": {
-		reasons: []string{plugin.PartialReasonNoManifest},
+		reasons: nil,
+		note:    "literal versions now resolve; the residual limit (version catalog / kotlin() helper / interpolated versions) fails open per-dependency as ResolvedDependency.Resolved=false, which carries no whole-result Partiality reason — a field signal, not a wire reason code",
 	},
 	// inline_function: a `inline fun` call site is bytecode-erased by kotlinc BEFORE
 	// class emission — the caller's Code attribute already contains the inlined body's
@@ -217,6 +239,8 @@ func TestSupportMatrix_CodeEmittedReasonsMatchSourceCitations(t *testing.T) {
 		plugin.PartialReasonReachabilityUndetermined,
 		plugin.PartialReasonDynamicDispatch,
 		plugin.PartialReasonNoManifest,
+		partialReasonNoDependencyArtifact,
+		partialReasonAdvisorySymbolUnresolved,
 	}
 	got := make([]string, 0, len(codeEmittedReasons))
 	for k := range codeEmittedReasons {

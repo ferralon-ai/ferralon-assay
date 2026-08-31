@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -12,21 +13,25 @@ import (
 // complete one. This mirrors the convention every language plugin uses for its non-live
 // ops (a zero-value Complete() result would falsely assert "nothing here"). It also holds
 // the lane's honest capability manifest (K5).
+//
+// ResolveDependencyVersions (P1) and ResolveDependencySymbols (P2, see resolve.go) are now
+// LIVE at Assess tier — the two ops that read the build's declared dependency versions and
+// resolve advisory symbols against the dependency artifact. The remaining ops below stay
+// honest-absent.
 
-// ResolveDependencySymbols is contract-present but unimplemented for Kotlin: advisory-symbol
-// resolution against the codebase is not performed at this tier. Honest absence, never an
-// empty match asserted complete.
-func ResolveDependencySymbols(_ context.Context, _ plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	return plugin.SymbolResolutionResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// ResolveDependencyVersions is contract-present but unimplemented for Kotlin: declared
-// dependency versions are NOT read from build.gradle.kts/pom.xml here — Gradle version
-// resolution is a declared partiality boundary (see CapabilityManifest). It returns
-// no_manifest partiality so the disqualification predicate fails OPEN (inv.5: an unknown
-// version is never "not affected").
-func ResolveDependencyVersions(_ context.Context, _ plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return plugin.DependencyVersionResult{Partiality: plugin.Partial(plugin.PartialReasonNoManifest)}, nil
+// ResolveDependencyVersions reads the codebase's declared dependency versions from its
+// build files (pom.xml, build.gradle, build.gradle.kts) and returns the declared version
+// for the advisory's coordinate. It DELEGATES to javaanalysis.ResolveDependencyVersions:
+// build-file parsing is JVM-generic (Maven POM + Gradle string/map notation), not
+// Java-source-specific, and firstQuoted already tolerates the Kotlin-DSL parenthesized,
+// double-quoted form `implementation("g:a:v")`. Soundness rides the shared parser (inv.5):
+// a version it cannot pin to a literal — a version-catalog reference (`libs.foo`), the
+// `kotlin("stdlib")` helper (no coordinate literal), or an interpolated `"$version"` — is
+// returned Resolved=false (UNRESOLVED), never a guessed version, so the disqualification
+// predicate fails OPEN. Non-literal Gradle version forms are the residual
+// gradle_version_resolution boundary the manifest still declares.
+func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	return javaanalysis.ResolveDependencyVersions(ctx, req)
 }
 
 // ComputeTaint is contract-present but unimplemented: variable-level dataflow is not
@@ -54,8 +59,9 @@ func ResolveInventory(_ context.Context, _ plugin.ResolveInventoryRequest) (plug
 }
 
 // manifestContentVersion is the Kotlin capability manifest's content version; it bumps when
-// a later increment adds a supported axis.
-const manifestContentVersion = "1.0.0"
+// a later increment adds a supported axis. 1.1.0 adds the Resolvers axis (build-file
+// version resolution went live, P1).
+const manifestContentVersion = "1.1.0"
 
 // CapabilityManifest returns the Kotlin lane's HONEST capability manifest (K5): every
 // Supported axis is one the analyzer genuinely does at Assess tier over bytecode, and every
@@ -64,21 +70,24 @@ const manifestContentVersion = "1.0.0"
 // path). It is a static fact, so it takes no build input.
 //
 // The axes, and why each is honest:
-//   - Resolvers: none. First-party code is read as compiled bytecode, not from a manifest
-//     file, and dependency-version resolution from build files is deferred (a boundary
-//     below) — so no resolver format is claimed.
+//   - Resolvers: pom.xml, build.gradle.kts — the build-file formats the lane now reads to
+//     resolve a dependency's declared version (P1, via the shared JVM build-file parser,
+//     which also reads Groovy build.gradle). Only LITERAL versions resolve; non-literal
+//     forms (version catalog, interpolation, the kotlin() helper) fail open UNRESOLVED —
+//     the residual gradle_version_resolution boundary below.
 //   - Runtimes: jvm — the only runtime the analyzer targets.
 //   - GraphSemantics: cha — depreach's class-hierarchy analysis, used unchanged.
 //   - Frameworks: none — framework ingress (Spring) is deliberately not detected here.
 //   - DynamicBoundaries: the frontiers where a sound static graph must fail open —
 //     coroutine builder dispatch, inline-function edge erasure, invokedynamic (SAM/lambda),
-//     reflection, and the deferred Gradle build-file version resolution.
+//     reflection, and the non-literal Gradle build-file version forms.
 //   - Analyzers: the shared classfile reader + depreach engine the lane rides.
 func CapabilityManifest() capability.Manifest {
 	return capability.Manifest{
 		Version:        manifestContentVersion,
 		Language:       "kotlin",
 		Supported:      true,
+		Resolvers:      []string{"build.gradle.kts", "pom.xml"},
 		Runtimes:       []string{"jvm"},
 		GraphSemantics: []string{"cha"},
 		DynamicBoundaries: []string{

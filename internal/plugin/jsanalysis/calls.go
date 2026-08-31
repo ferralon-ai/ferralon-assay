@@ -144,7 +144,7 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 				continue
 
 			case word == "import":
-				i = skipTo(r, next, ';')
+				i = skipImportStatement(r, next)
 				continue
 
 			default:
@@ -192,6 +192,27 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 		}
 	}
 	return calls, ingresses
+}
+
+// skipImportStatement advances past an `import` statement's remainder, starting just
+// after the `import` keyword. It skips a balanced `{...}` named-import group (which may
+// span lines) and terminates at the first `;` OR newline — ESM import statements are
+// newline-terminated under ASI, so a semicolon is optional. The former skip-to-`;`
+// consumed the whole file when an import had no trailing semicolon (the Prettier/Vue
+// `<script setup>` idiom), swallowing every call site after the imports.
+func skipImportStatement(r []rune, pos int) int {
+	n := len(r)
+	for pos < n {
+		switch r[pos] {
+		case '{':
+			pos = skipGroup(r, pos)
+		case ';', '\n':
+			return pos + 1
+		default:
+			pos++
+		}
+	}
+	return n
 }
 
 // isHandlerArity reports whether a function's arity matches a request-handler shape

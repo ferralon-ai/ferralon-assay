@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M4 maven-unresolved — one node of each UNRESOLVABLE shape so the resolver can
+  keep honest-absent distinguishable from genuinely-absent (RESOLVED vs
+  honest-absent is cross-fixture: M1/M3 resolve cleanly, M4 does not — Maven's
+  native tool aborts the whole model on these shapes, which is itself the oracle):
+    * ${env.*}-gated version: version comes from an env var that is NOT set at
+      capture time, so it never resolves to a literal coordinate+version.
+    * BOM-cache-miss subtree: an imported BOM that does not exist on any repo, so
+      the version it would manage is never supplied.
+  NEGATIVE CONTROL (genuinely-absent): a coordinate that is DECLARED NOWHERE —
+  see NOTES.md; the resolver must NOT invent it. Backs C3 (honest-absent).
+
+  NOTE: the ${env.*} version and missing BOM make `mvn dependency:tree` exit
+  non-zero; generate-captures.sh captures that combined output faithfully as the
+  oracle (the native tool's honest report of what it could not resolve).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ferralon.benchmark</groupId>
+  <artifactId>maven-unresolved</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- BOM-cache-miss: this BOM does not exist; the version it would manage
+           for ghost-managed-lib below is therefore never supplied. -->
+      <dependency>
+        <groupId>com.ferralon.absent</groupId>
+        <artifactId>ghost-bom</artifactId>
+        <version>9.9.9</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- ${env.*}-gated version: FERRALON_MISSING_VERSION is not set at capture. -->
+    <dependency>
+      <groupId>com.ferralon.absent</groupId>
+      <artifactId>env-gated-lib</artifactId>
+      <version>${env.FERRALON_MISSING_VERSION}</version>
+    </dependency>
+
+    <!-- version would come from the missing BOM above: never supplied. -->
+    <dependency>
+      <groupId>com.ferralon.absent</groupId>
+      <artifactId>ghost-managed-lib</artifactId>
+    </dependency>
+  </dependencies>
+</project>

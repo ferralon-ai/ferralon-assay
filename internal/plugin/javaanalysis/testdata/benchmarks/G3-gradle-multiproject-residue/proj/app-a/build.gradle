@@ -1,0 +1,13 @@
+// G3 app-a — LOCKED subproject, guava 32.1.3-jre (diverges from app-b's 33.0.0).
+// Locking makes selected versions fully expressed (gradle.lockfile committed).
+plugins {
+    id 'java-library'
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+dependencies {
+    implementation 'com.google.guava:guava:32.1.3-jre'
+}

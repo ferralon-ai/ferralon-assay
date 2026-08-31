@@ -1,0 +1,9 @@
+# Working caches generate-captures.sh warms inside the container (full repos with
+# JARs). They are cleaned up by the script; ignored here as belt-and-suspenders so
+# a partial run never commits them. Only the lean m2/ | modules2/ POM slices, the
+# native.* oracle, tool-version.txt, and gradle.lockfile are committed.
+*/.m2repo/
+*/.gradlehome/
+# Gradle's per-project build cache, written into proj/ when the capture runs
+# `gradle -p proj`. Transient; never part of the committed fixture.
+**/.gradle/

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M2 maven-parent-scope-exclusions — exercises:
+    * version supplied by a PARENT PROPERTY (${httpclient.version} inherited).
+    * a <scope>test</scope> dependency (junit) — must map to Membership.Target=scope
+      and NOT appear as a main-classpath edge.
+    * an <exclusions> that PRUNES a transitive edge (commons-logging under httpclient)
+      — the pruned coordinate must be ABSENT from the resolved tree.
+  Backs C1 (parent-property, scope, exclusion) and C2 field-map (Membership.Target).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.ferralon.benchmark</groupId>
+    <artifactId>maven-parent-scope-exclusions-parent</artifactId>
+    <version>1.0.0</version>
+    <relativePath>parent/pom.xml</relativePath>
+  </parent>
+
+  <artifactId>maven-parent-scope-exclusions</artifactId>
+  <packaging>jar</packaging>
+
+  <dependencies>
+    <!-- version comes from the inherited parent property, not a literal here. -->
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>${httpclient.version}</version>
+      <exclusions>
+        <!-- prune a transitive edge: commons-logging must not survive resolution. -->
+        <exclusion>
+          <groupId>commons-logging</groupId>
+          <artifactId>commons-logging</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+
+    <!-- test-scoped: distinct Membership.Target, off the main classpath. -->
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

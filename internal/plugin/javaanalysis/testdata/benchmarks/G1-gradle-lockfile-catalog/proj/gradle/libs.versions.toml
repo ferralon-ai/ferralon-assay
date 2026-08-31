@@ -1,0 +1,10 @@
+# G1 version catalog — the literal versions live HERE (and in gradle.lockfile),
+# never in build.gradle. The resolver must join the catalog alias -> module and
+# the lockfile-selected version to reconstruct the coordinate.
+[versions]
+guava = "33.0.0-jre"
+commons-lang3 = "3.14.0"
+
+[libraries]
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }

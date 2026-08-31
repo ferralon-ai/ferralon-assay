@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M2 parent POM — supplies the dependency version via a PROPERTY the child
+  inherits (${httpclient.version}) and manages it in dependencyManagement. Local
+  parent (relativePath), packaging=pom, no install needed.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ferralon.benchmark</groupId>
+  <artifactId>maven-parent-scope-exclusions-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- the version the child resolves through inheritance, not a literal. -->
+    <httpclient.version>4.5.14</httpclient.version>
+  </properties>
+</project>

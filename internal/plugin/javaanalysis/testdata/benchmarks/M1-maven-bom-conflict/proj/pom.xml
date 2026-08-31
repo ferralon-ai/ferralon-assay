@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M1 maven-bom-conflict — exercises:
+    * imported BOM (<scope>import</scope>) MANAGES a version: jackson-databind is
+      declared with NO version and resolves to the jackson-bom-managed version.
+    * nearest-wins CONFLICT: commons-codec is pulled transitively by httpclient at
+      one version AND declared DIRECTLY at another; nearest (direct, depth 0) wins,
+      so the SELECTED version differs from what the transitive path DECLARED.
+  Backs C1 (BOM import, nearest-wins) and C4 (selected != declared drives
+  disqualification). All coordinates pin to released versions; no SNAPSHOT/range.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ferralon.benchmark</groupId>
+  <artifactId>maven-bom-conflict</artifactId>
+  <version>1.0.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- imported BOM: manages the jackson.* coordinate versions transitively. -->
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>2.17.2</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- version supplied by the imported BOM (declared with no version). -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <!-- direct declaration at 1.17.1; httpclient (below) pulls commons-codec:1.11
+         transitively — nearest-wins selects the DIRECT 1.17.1 over the transitive. -->
+    <dependency>
+      <groupId>commons-codec</groupId>
+      <artifactId>commons-codec</artifactId>
+      <version>1.17.1</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>4.5.14</version>
+    </dependency>
+  </dependencies>
+</project>

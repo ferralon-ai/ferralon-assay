@@ -1,0 +1,20 @@
+// G1 gradle-lockfile-catalog — exercises:
+//   * libs.versions.toml CATALOG alias (libs.guava / libs.commonsLang3) as the
+//     declared coordinate source; build script carries no literal version.
+//   * dependency LOCKING: gradle.lockfile pins the selected versions the resolver
+//     joins with the modules-2 cached POMs to reconstruct transitive edges.
+//   * lockfile-vs-build-script: the selected version is legible only from the
+//     lockfile+catalog, not build.gradle (which-source-won provenance).
+// Backs C1 (lockfile, catalog, edges) and C4 (precedence / provenance).
+plugins {
+    id 'java-library'
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+dependencies {
+    implementation libs.guava
+    implementation libs.commons.lang3
+}

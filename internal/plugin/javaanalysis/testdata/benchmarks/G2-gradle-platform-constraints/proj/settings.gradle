@@ -1,0 +1,6 @@
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
+    }
+}
+rootProject.name = 'gradle-platform-constraints'

@@ -5,11 +5,12 @@
 // never into tegrond.
 //
 // This binary deliberately mirrors cmd/tegron-plugin-java / cmd/tegron-plugin-dotnet: same
-// one-shot protocol, same hard-error-vs-declared-partiality contract. Four ops are LIVE,
+// one-shot protocol, same hard-error-vs-declared-partiality contract. Several ops are LIVE,
 // backed by the shared JVM-bytecode substrate (index_symbols, call_graph, find_ingresses,
-// reachability); capability_manifest publishes the lane's honest capability manifest. The
-// remaining ops (resolve_symbols, resolve_versions, compute_taint, build_manifest,
-// resolve_inventory, generate_harness) are CONTRACT-PRESENT and return their result type
+// reachability, compute_taint); capability_manifest publishes the lane's honest capability
+// manifest. compute_taint reports call-graph path presence over the Kotlin call graph (see
+// kotlinanalysis/taint.go). The remaining ops (build_manifest, generate_harness) are
+// CONTRACT-PRESENT and return their result type
 // carrying declared partiality (honest absence), never an empty-but-complete result. Every
 // op keeps the nil-payload hard-error guard (inv.4).
 //

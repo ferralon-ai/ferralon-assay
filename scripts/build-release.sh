@@ -91,6 +91,7 @@ BAKED_TARGETS=(
   ferralon-assay-scan-plugin-js=./cmd/tegron-plugin-js
   ferralon-assay-scan-plugin-java=./cmd/tegron-plugin-java
   ferralon-assay-scan-plugin-dotnet=./cmd/tegron-plugin-dotnet
+  ferralon-assay-scan-plugin-kotlin=./cmd/tegron-plugin-kotlin
 )
 
 BAKED_BINARIES=()

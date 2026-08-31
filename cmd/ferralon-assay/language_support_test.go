@@ -64,6 +64,7 @@ import (
 var supportedLanguages = []string{
 	checkout.LangGo,
 	checkout.LangJava,
+	checkout.LangKotlin,
 	checkout.LangJS,
 	checkout.LangPython,
 	checkout.LangDotNet,

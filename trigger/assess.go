@@ -1029,6 +1029,8 @@ func ecosystemFor(language string) string {
 		return "Go"
 	case "java":
 		return "Maven"
+	case "kotlin":
+		return "Maven" // Kotlin/JVM artifacts are Maven-keyed in OSV regardless of source language (A2).
 	case "javascript", "js":
 		return "npm"
 	case "python", "py":

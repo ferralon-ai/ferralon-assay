@@ -373,6 +373,46 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		}
 	}
 
+	// Declared-direct coordinates absent from EVERY lockfile belong to an unlocked subproject of a
+	// mixed multiproject (one subproject locks, another does not). They are NOT part of the locked
+	// selection, so their transitive edges are unexpressed — the irreducible gradle_transitive
+	// residue. Emitting them (never dropping them) also forbids a falsely-Complete graph over the
+	// truncated subproject: without this, a single subproject's lockfile would make the whole build
+	// report Complete while silently omitting the unlocked subproject's dependencies.
+	var declaredKeys []string
+	for k := range declared {
+		if _, locked := nodeID[k]; !locked {
+			declaredKeys = append(declaredKeys, k)
+		}
+	}
+	sort.Strings(declaredKeys)
+	for _, k := range declaredKeys {
+		g, a := splitGA(k)
+		version := ""
+		resolver := "gradle-script"
+		if ce, ok := catalog[k]; ok && ce.version != "" {
+			version = ce.version
+			resolver = "gradle-catalog"
+		} else if rd := declared[k]; rd.Resolved && rd.Version != "" {
+			version = rd.Version
+		}
+		nodeReasons := []string{reasonGradleTransitive}
+		if version == "" {
+			nodeReasons = append(nodeReasons, plugin.PartialReasonSourceUnpinned)
+		}
+		purl := mavenPURL(g, a, version)
+		nodes = append(nodes, plugin.DependencyNode{
+			ID:         "||" + purl,
+			PURL:       purl,
+			Version:    version,
+			Direct:     true,
+			Artifact:   plugin.DependencyArtifact{Identity: a},
+			Provenance: plugin.DependencyProvenance{Resolver: resolver},
+			Partiality: plugin.Partial(nodeReasons...),
+		})
+		reasons = mergeReasons(reasons, reasonGradleTransitive)
+	}
+
 	return assembleInventory(nodes, edges, graphPartiality(reasons, len(nodes)))
 }
 

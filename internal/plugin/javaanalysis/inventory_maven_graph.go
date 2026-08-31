@@ -137,9 +137,11 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			edges = append(edges, plugin.DependencyEdge{Parent: it.parentID, Child: nodeID})
 		}
 
-		// Pass 5 expansion: only compile/runtime scopes propagate transitively (test/provided do
-		// not). An unresolved version can't be fetched → subtree undetermined.
-		if version != "" && (it.scope == "compile" || it.scope == "runtime") {
+		// Pass 5 expansion: compile/runtime scopes propagate transitively as themselves; a direct
+		// test/provided dep's own subtree is also on the module's (test/provided) classpath and is
+		// expanded, its transitives narrowed to test/provided (Maven scope table). An unresolved
+		// version can't be fetched → subtree undetermined.
+		if version != "" && scopePropagates(it.scope) {
 			child, ok := cache.get(it.dep.GroupID, it.dep.ArtifactID, version)
 			if !ok {
 				nodeReasons = append(nodeReasons, reasonMavenUncachedSubtree)
@@ -188,8 +190,25 @@ func defaultScope(s string) string {
 	return strings.ToLower(s)
 }
 
-// narrowScope applies Maven transitive-scope narrowing. ok is false when the child scope does not
-// propagate through the parent (test/provided, or provided/test children).
+// scopePropagates reports whether a node in the given (already-narrowed) scope has its own
+// transitive subtree expanded. compile/runtime propagate as the Maven main classpath; a direct
+// test/provided dependency's transitives are on the module's test/provided classpath and are
+// likewise expanded (narrowed to test/provided by narrowScope) — they are real, resolvable
+// dependencies of the build, not honest-absent residue.
+func scopePropagates(scope string) bool {
+	switch scope {
+	case "compile", "runtime", "test", "provided":
+		return true
+	default:
+		return false
+	}
+}
+
+// narrowScope applies the Maven transitive-scope table. ok is false when the child scope does not
+// propagate through the parent at all (system/import, or a test/provided CHILD — those are never
+// inherited transitively). A compile/runtime child inherits the parent's classpath: under a
+// test/provided parent it narrows to test/provided (the parent dep's own subtree stays on that
+// classpath), matching `dependency:tree`.
 func narrowScope(parent, child string) (string, bool) {
 	switch child {
 	case "test", "provided", "system", "import":
@@ -200,6 +219,10 @@ func narrowScope(parent, child string) (string, bool) {
 		return child, true // compile→compile, runtime→runtime
 	case "runtime":
 		return "runtime", true // compile and runtime both become runtime
+	case "test":
+		return "test", true // a test dep's compile/runtime transitives are test-scoped
+	case "provided":
+		return "provided", true // a provided dep's compile/runtime transitives are provided-scoped
 	default:
 		return "", false
 	}

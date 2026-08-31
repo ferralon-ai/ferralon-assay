@@ -369,7 +369,7 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	// wins per GA, Maven precedence). BOMs are fetched from the cache recursively.
 	for _, m := range mgmtSrc {
 		if strings.EqualFold(m.Scope, "import") && strings.EqualFold(defaultType(m.Type), "pom") {
-			importBOM(m, em, reactor, cache, targetEnv, depth)
+			importBOM(m, &em, reactor, cache, targetEnv, depth)
 			continue
 		}
 		key := m.ga()
@@ -437,8 +437,10 @@ func parentChain(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, dep
 }
 
 // importBOM folds an imported BOM's effective dependencyManagement into em.managed (existing keys
-// untouched — first-declared wins). A cache-miss is residue, never assumed empty.
-func importBOM(m mvnDep, em effectiveModel, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) {
+// untouched — first-declared wins). A cache-miss is residue, never assumed empty. em is a pointer
+// so the BOM-cache-miss and nested-BOM residue actually reach the caller's model (a value receiver
+// silently drops the residue slice reassignment — the managed map still merges either way).
+func importBOM(m mvnDep, em *effectiveModel, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) {
 	ver, ok := interp(m.Version, em.props)
 	if !ok {
 		em.residue = append(em.residue, reasonBOMUncached)

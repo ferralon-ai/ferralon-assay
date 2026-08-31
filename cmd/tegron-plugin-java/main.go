@@ -152,7 +152,11 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.BuildManifest == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
-		return plugin.Response{BuildManifest: &plugin.BuildManifestResult{Partiality: plugin.Unsupported()}}, nil
+		res, err := javaanalysis.BuildManifest(ctx, *req.BuildManifest, "java")
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{BuildManifest: &res}, nil
 
 	case plugin.OpResolveInventory:
 		if req.ResolveInventory == nil {

@@ -34,11 +34,10 @@ func ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRe
 	return javaanalysis.ResolveDependencyVersions(ctx, req)
 }
 
-// ComputeTaint is contract-present but unimplemented: variable-level dataflow is not
-// modeled at Assess tier. Honest absence.
-func ComputeTaint(_ context.Context, _ plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	return plugin.TaintResult{Partiality: plugin.Unsupported()}, nil
-}
+// ComputeTaint is LIVE at Assess tier — see taint.go. It reports call-graph PATH PRESENCE
+// (an ingress→sink path over the Kotlin/JVM bytecode call graph), the honest minimal-taint
+// baseline the plugin contract defines; NOT variable-level dataflow. It mirrors the Java
+// lane's path-presence semantics on the Kotlin lane's own CallGraph/FindIngresses infra.
 
 // GenerateHarness is contract-present but unimplemented: Kotlin's effect proof rides the
 // Prove-tier repro-runtime sandbox, not a plugin-generated harness.
@@ -46,9 +45,14 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 	return plugin.HarnessResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// BuildManifest is contract-present but unimplemented at this tier. Honest absence.
-func BuildManifest(_ context.Context, _ plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
-	return plugin.BuildManifestResult{Partiality: plugin.Unsupported()}, nil
+// BuildManifest DELEGATES to javaanalysis.BuildManifest (lang "kotlin"): the build manifest is
+// derived from JVM-generic build files (Maven POM <properties>, Gradle version/toolchain
+// lines, .tool-versions/.sdkmanrc pins), not Java-source-specific state — the same delegation
+// shape as ResolveDependencyVersions / ResolveInventory. The "kotlin" lang keeps Runtime.Name
+// honest per lane; the honest-absent residue (Target/Configuration/exact-Toolchain/multi-module)
+// and determinism ride the shared impl.
+func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	return javaanalysis.BuildManifest(ctx, req, "kotlin")
 }
 
 // ResolveInventory DELEGATES to javaanalysis.ResolveInventory (C6): whole-graph dependency

@@ -23,6 +23,27 @@ var routeAnnotations = map[string]bool{
 	"DELETE":         true,
 }
 
+// containerEntrypoints are annotations marking a method the Spring container (or
+// the JVM lifecycle it honors) invokes with NO syntactic caller: scheduled tasks,
+// application-event handlers, bean lifecycle callbacks, and message-listener
+// consumers. Such a method is a reachability ROOT — a sink reachable only through
+// it is genuinely reachable at runtime, so failing to seed it produces a false
+// "unreachable". Each annotation maps to the ingress Kind recorded for it. Like
+// routeAnnotations these are matched by NAME only (no type resolution): a
+// same-named annotation from an unrelated package is a rare false positive the
+// reachability layer tolerates — an entrypoint that reaches no sink yields no
+// candidate pair. Adding a root only ever ADDS reachable candidates (it modulates
+// strength, never admission — inv.5), so name-only over-recognition is sound.
+var containerEntrypoints = map[string]string{
+	"Scheduled":      "scheduled",
+	"EventListener":  "event_listener",
+	"PostConstruct":  "lifecycle",
+	"PreDestroy":     "lifecycle",
+	"KafkaListener":  "message_listener",
+	"JmsListener":    "message_listener",
+	"RabbitListener": "message_listener",
+}
+
 // servletEntryMethods are the HttpServlet override names that are servlet
 // ingresses when the enclosing class extends HttpServlet.
 var servletEntryMethods = map[string]bool{
@@ -46,11 +67,13 @@ type bodyFrame struct {
 	pendingAnnos []pendingAnno
 }
 
-// pendingAnno is a route annotation seen at type-body depth that has not yet been
-// bound to the method declaration it precedes.
+// pendingAnno is an ingress-marking annotation (route or container-entrypoint)
+// seen at type-body depth that has not yet been bound to the method declaration it
+// precedes. kind is the ingress Kind the bound method takes.
 type pendingAnno struct {
 	name     string
 	selector string
+	kind     string
 }
 
 // parseCallsAndIngresses scans cleaned Java source (already comment/string-
@@ -97,7 +120,9 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 			// method declaration at this type-body depth.
 			name, sel, next := parseAnnotation(r, i)
 			if routeAnnotations[name] {
-				pendingAnnos = append(pendingAnnos, pendingAnno{name: name, selector: sel})
+				pendingAnnos = append(pendingAnnos, pendingAnno{name: name, selector: sel, kind: "http_route"})
+			} else if k, ok := containerEntrypoints[name]; ok {
+				pendingAnnos = append(pendingAnnos, pendingAnno{name: name, kind: k})
 			}
 			i = next
 
@@ -175,15 +200,16 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 }
 
 // recordIngresses appends the ingress markers for a freshly-declared method: one
-// per bound route annotation, and a servlet marker when the owning type extends
-// HttpServlet and the method is a servlet entry point.
+// per bound annotation (route or container-entrypoint, each carrying its own
+// Kind), and a servlet marker when the owning type extends HttpServlet and the
+// method is a servlet entry point.
 func recordIngresses(out *[]ingressMarker, enc []string, mname string, marity int, owner *bodyFrame, annos []pendingAnno) {
 	for _, a := range annos {
 		*out = append(*out, ingressMarker{
 			enclosing: append([]string(nil), enc...),
 			name:      mname,
 			arity:     marity,
-			kind:      "http_route",
+			kind:      a.kind,
 			selector:  a.selector,
 		})
 	}

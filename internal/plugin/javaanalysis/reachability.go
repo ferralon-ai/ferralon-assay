@@ -47,6 +47,22 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}, nil
 }
 
+// sinkClassifiers is the H3 registry (edge-seam.md §5): each overlay (#3 repository
+// sinks, #4 SpEL, #5 filter/security guards) appends a classifier from its OWN file's
+// init() via registerSinkClassifier, rather than editing the firstPartyPaths BFS core
+// and colliding. firstPartyPaths invokes every registered classifier once per requested
+// sink and unions the extra partiality reasons they return. Empty by default, so the
+// default behavior is byte-identical to today. Shared by Reachability and ComputeTaint
+// (both derive their paths through firstPartyPaths).
+var sinkClassifiers []func(symbolID string) []string
+
+// registerSinkClassifier appends a sink classifier to the H3 registry. An overlay
+// calls it from init(); a classifier returns the extra partiality reasons a sink
+// warrants (nil for a sink it does not recognize), never fabricating reachability.
+func registerSinkClassifier(fn func(symbolID string) []string) {
+	sinkClassifiers = append(sinkClassifiers, fn)
+}
+
 // firstPartyPaths derives one representative ingress→sink ReachPath per requested
 // sink by walking the call graph backward, and returns the union of partiality
 // reasons the derivation must declare: the folded call-graph + ingress reasons,
@@ -81,6 +97,15 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 	for _, sink := range sinks {
 		if sink == "" {
 			continue
+		}
+		// H3 seam (edge-seam.md §5): let each registered sink classifier declare extra
+		// partiality on this sink (a repo synthesized sink, a SpEL-guarded sink, an
+		// unknown guard) independent of whether a path reaches it. Empty registry ⇒ no
+		// extra reasons ⇒ byte-identical to today.
+		for _, classify := range sinkClassifiers {
+			for _, r := range classify(sink) {
+				reasons[r] = true
+			}
 		}
 		p, ok := reachPathToSink(callers, ingressSyms, roots, sink)
 		if !ok {

@@ -339,7 +339,7 @@ func TestLoadZip_ParsesClassesSkipsNonClassAndRecordsHazards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loadZip(zr)
+	res, err := loadZip(zr, nil)
 	if err != nil {
 		t.Fatalf("loadZip: %v", err)
 	}

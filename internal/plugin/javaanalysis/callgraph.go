@@ -30,6 +30,11 @@ type program struct {
 	// that simple name and arity. A single entry resolves unambiguously; multiple
 	// (or zero) entries mean the lexical callee cannot be soundly resolved.
 	methodsByKey map[string][]string
+	// beanData is the Java first-party (source-lexical) bean input: registered beans,
+	// injection points by owner-class key, and first-party class locations. Populated
+	// alongside the declaration index; consumed by the bean resolver (H2) to retire
+	// dynamic_dispatch where an injection point resolves to a unique first-party impl.
+	beanData sourceBeanData
 }
 
 // fileParse pairs a parsed file with its package (needed to qualify call-site
@@ -75,13 +80,15 @@ func loadProgram(buildDir string) (*program, error) {
 	}
 
 	prog := &program{methodsByKey: map[string][]string{}}
+	var srcClasses []sourceClass
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			prog.readFailed = true
 			continue
 		}
-		pr := parseFile(string(data))
+		src := string(data)
+		pr := parseFile(src)
 		if pr.skipped {
 			prog.skipped = true
 		}
@@ -95,7 +102,12 @@ func loadProgram(buildDir string) (*program, error) {
 			key := methodKey(d.name, d.arity)
 			prog.methodsByKey[key] = append(prog.methodsByKey[key], scip)
 		}
+		// Bean scan over the same source (cleaned for structure, raw for annotation
+		// values). Additive: it reads the same files but produces only the bean input,
+		// never touching the declaration/call index above.
+		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
+	prog.beanData = buildSourceBeanData(srcClasses)
 	return prog, nil
 }
 

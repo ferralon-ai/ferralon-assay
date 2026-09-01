@@ -132,12 +132,3 @@ func TestRepositorySinkClassifierNoRepositories(t *testing.T) {
 		t.Errorf("nil program classifier returned %v, want nil", r)
 	}
 }
-
-func containsReason(reasons []string, want string) bool {
-	for _, r := range reasons {
-		if r == want {
-			return true
-		}
-	}
-	return false
-}

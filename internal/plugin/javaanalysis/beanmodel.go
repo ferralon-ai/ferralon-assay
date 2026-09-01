@@ -519,6 +519,29 @@ func ctorInjectionPointsSource(sc sourceClass, key string) []beangraph.Injection
 	return ips
 }
 
+// sourceRepositoryTypes returns the simple names of the first-party types that are
+// Spring Data repositories — a type transitively extending a *Repository base (edge-seam.md
+// §4). It is the SOURCE-lane half of the repository type-model the #3 overlay consumes
+// (the classfile half is beangraph.RepositoryTypesFromClasses); the base set is shared via
+// beangraph.IsRepositoryBaseName. A repository interface is rarely stereotype-annotated, so
+// this reads the raw scanned types, not just the beans.
+func sourceRepositoryTypes(all []sourceClass) map[string]bool {
+	supers := map[string][]string{}
+	for _, sc := range all {
+		supers[sc.name] = append(supers[sc.name], sc.supers...)
+	}
+	out := map[string]bool{}
+	for _, sc := range all {
+		for _, t := range supertypeClosureNames(sc.name, supers) {
+			if t != sc.name && beangraph.IsRepositoryBaseName(t) {
+				out[sc.name] = true
+				break
+			}
+		}
+	}
+	return out
+}
+
 // supertypeClosureNames returns name plus every transitive supertype reachable through
 // the first-party direct-supertype map, deduplicated and sorted. A supertype whose class
 // is not first-party is included as a leaf (its own ancestors are unknown but it is a

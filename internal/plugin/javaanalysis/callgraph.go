@@ -174,6 +174,14 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 		Roots:      roots,
 	}
 
+	// H2 seam (edge-seam.md §5): fold any bean-overlay-resolved interface→impl edges
+	// into the pure-Go lexical graph and retire dynamic_dispatch for exactly the call
+	// sites the overlay resolved. No overlay supplies bean edges yet, so this is a
+	// no-op that changes nothing (byte-identical to today) — the merge the bean-model
+	// engineer populates. It runs on the lexical result BEFORE the depgraph/SCIP passes
+	// so the Assess path (gate unset) benefits from bean resolution.
+	lexical = mergeBeanResolvedEdges(lexical, nil, unresolvedSet, nil)
+
 	// Dependency-inclusive augmentation: append the opened dependency closure's call
 	// edges so the persisted graph reflects that dependency bytecode was actually
 	// parsed and searched, not just the first-party sources. Their presence is what
@@ -380,6 +388,48 @@ func mergeResolvedCallGraph(lexical plugin.CallGraphResult, resolved scipGraph) 
 		Edges:      merged,
 		Roots:      roots,
 	}
+}
+
+// mergeBeanResolvedEdges folds a bean-overlay's resolved interface→impl edges into
+// the lexical graph and retires dynamic_dispatch for exactly the call sites the
+// overlay resolved (edge-seam.md §5, H2). It is modeled on mergeResolvedCallGraph but
+// runs on the PURE-GO lexical result (so the un-gated Assess path benefits), and it
+// retires per-key rather than wholesale: dynamic_dispatch is dropped only when the
+// residual unresolved-key set — the graph's unresolved calls minus the keys the
+// overlay resolved (resolvedKeys) — is empty. Any residual keeps dynamic_dispatch
+// honest. inv.5: it unions real resolved edges and never fabricates one; roots are
+// unchanged (bean edges add reachability, not entry points).
+//
+// With no overlay data (beanEdges and resolvedKeys both empty) it is a strict no-op:
+// the lexical result is returned unchanged, so today's behavior is byte-identical.
+func mergeBeanResolvedEdges(lexical plugin.CallGraphResult, beanEdges []plugin.CallEdge, unresolved, resolvedKeys map[unresolvedCall]bool) plugin.CallGraphResult {
+	if len(beanEdges) == 0 && len(resolvedKeys) == 0 {
+		return lexical
+	}
+
+	merged := appendCallEdges(lexical, beanEdges)
+
+	// Residual = unresolved call keys the overlay did NOT resolve. dynamic_dispatch is
+	// retired iff none remain; every other reason (read/skip failure) is preserved.
+	residual := 0
+	for k := range unresolved {
+		if !resolvedKeys[k] {
+			residual++
+		}
+	}
+	var reasons []string
+	for _, r := range lexical.Partiality.Reasons {
+		if r == plugin.PartialReasonDynamicDispatch && residual == 0 {
+			continue
+		}
+		reasons = append(reasons, r)
+	}
+	if len(reasons) == 0 {
+		merged.Partiality = plugin.Complete()
+	} else {
+		merged.Partiality = plugin.Partial(reasons...)
+	}
+	return merged
 }
 
 // withToolFailure marks a result Partial(tool_failure) (preserving any existing

@@ -11,15 +11,20 @@ import (
 // container (the gate is unset in these hermetic tests).
 const springReproSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-vulnerable/src/main/java"
 
-// TestSpringRepro_LexicalDynamicDispatch is the honesty CONTROL: with the Prove
-// gate UNSET, the pure-Go lexical call graph over the Spring repro declares
-// Partial(dynamic_dispatch) AND fails to connect the @RestController ingress to
-// the concrete UrlServiceImpl.fetch sink — because svc.fetch keys to fetch/1
-// matching BOTH UrlService.fetch and UrlServiceImpl.fetch, so no edge is
-// fabricated (inv.5). This is the verdict gap Increment 3's container resolves;
-// the lexical pass must NOT silently bridge it.
-func TestSpringRepro_LexicalDynamicDispatch(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "") // gate closed: pure-Go only.
+// TestSpringRepro_BeanGraphBridgesDispatch proves the DI bean model closes the exact
+// verdict gap this repro was built to demonstrate — on the Assess path, with the Prove
+// container gate UNSET. FetchController's @Autowired UrlService field resolves to the
+// unique concrete UrlServiceImpl (the sole first-party impl and the sole concrete
+// fetch/1), so the bean graph emits the resolved FetchController.fetch →
+// UrlServiceImpl.fetch edge and the @RestController ingress now reaches the SSRF sink
+// with no analyzer container. (This supersedes the former honesty control that asserted
+// the pure-Go pass could NOT bridge the hop — that limitation is what the cycle removed.)
+//
+// The retirement is PER-KEY and honest: the graph still declares Partial(dynamic_dispatch)
+// because other, genuinely-unresolvable library calls (java.net.* and the stub helpers)
+// remain unresolved. The bean hop is bridged; the residual is not silently retired.
+func TestSpringRepro_BeanGraphBridgesDispatch(t *testing.T) {
+	t.Setenv(scipAnalyzerImageEnv, "") // gate closed: pure-Go Assess path only.
 	ctx := t.Context()
 
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: springReproSrc})
@@ -30,7 +35,8 @@ func TestSpringRepro_LexicalDynamicDispatch(t *testing.T) {
 		t.Fatalf("gate unset: Algorithm=%q, want source-lexical", cg.Algorithm)
 	}
 
-	// The dispatch ambiguity must be declared, not bridged.
+	// dynamic_dispatch remains for the residual library calls the bean graph does not
+	// (and must not) resolve — per-key retirement keeps the graph honest.
 	hasDispatch := false
 	for _, r := range cg.Partiality.Reasons {
 		if r == plugin.PartialReasonDynamicDispatch {
@@ -38,11 +44,9 @@ func TestSpringRepro_LexicalDynamicDispatch(t *testing.T) {
 		}
 	}
 	if !hasDispatch {
-		t.Errorf("lexical Spring graph: reasons=%v, want dynamic_dispatch (the interface hop)", cg.Partiality.Reasons)
+		t.Errorf("Spring graph: reasons=%v, want dynamic_dispatch to survive for the residual library calls", cg.Partiality.Reasons)
 	}
 
-	// Resolve the sink and confirm it is NOT reachable from any ingress/root over
-	// the lexical graph — the broken interface hop means no candidate path.
 	res, err := ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
 		BuildDir:        springReproSrc,
 		AdvisorySymbols: []string{"UrlServiceImpl.fetch"},
@@ -67,7 +71,8 @@ func TestSpringRepro_LexicalDynamicDispatch(t *testing.T) {
 		entries[r.SCIP] = true
 	}
 
-	if reverseReachable(cg.Edges, entries, sink) {
-		t.Fatalf("lexical pass UNSOUNDLY connected ingress→%q across the interface dispatch; it must declare dynamic_dispatch and leave the hop unbridged.\nentries=%v\nedges=%+v", sink, entries, cg.Edges)
+	// The bean graph bridged the interface hop: the ingress now reaches the sink.
+	if !reverseReachable(cg.Edges, entries, sink) {
+		t.Fatalf("bean graph did NOT bridge the interface dispatch; ingress→%q must now be reachable on the Assess path.\nentries=%v\nedges=%+v", sink, entries, cg.Edges)
 	}
 }

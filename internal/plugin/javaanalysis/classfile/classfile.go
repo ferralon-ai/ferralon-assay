@@ -110,6 +110,23 @@ type Method struct {
 	// the attribute is present; framework-ingress detection (e.g. Spring @GetMapping)
 	// reads it. Never a source of edges — advisory metadata only.
 	Annotations []Annotation
+	// ParameterAnnotations are the method's RuntimeVisibleParameterAnnotations (JVMS
+	// §4.7.18): one annotation list per declared formal parameter, in parameter order,
+	// so slot i holds the annotations on parameter i. Populated only when the attribute
+	// is present; constructor/@Bean-method injection reads the per-parameter @Qualifier/
+	// @Value. Never a source of edges — advisory metadata only.
+	ParameterAnnotations [][]Annotation
+}
+
+// Field is a declared field with the annotation surface dependency-injection
+// recognition needs: its name, its JVM type descriptor (the declared injection-point
+// type T), and its RuntimeVisibleAnnotations (JVMS §4.7.16). Fields carry no call
+// edges — they are retained only so a bean-model layer can read @Autowired/@Value/
+// @Inject/@Qualifier field injection and the injected type.
+type Field struct {
+	Name        string
+	Descriptor  string
+	Annotations []Annotation
 }
 
 // Class is one parsed .class: its own internal name, its superclass and directly
@@ -119,6 +136,10 @@ type Class struct {
 	Super      string
 	Interfaces []string
 	Methods    []Method
+	// Fields are the class's declared fields, retained for their annotation + declared
+	// type only (a field is never a call-graph node). Populated for every class; a
+	// field with no annotations still appears so the injection-point type is available.
+	Fields []Field
 	// Annotations are the class's RuntimeVisibleAnnotations (JVMS §4.7.16), decoded
 	// the same way as Method.Annotations. Populated only when present; the class-level
 	// stereotype markers a framework-ingress layer needs (e.g. Spring @RestController)
@@ -134,6 +155,11 @@ type Class struct {
 type Annotation struct {
 	Type     string
 	Elements []AnnotationElement // string-valued element pairs, in file order (deterministic)
+	// ClassElements are the class-valued ('c' tag) element pairs, each Value the
+	// referenced type's internal name (e.g. Name="value", Value="com/example/Foo" for
+	// @Import(Foo.class)). Kept separate from Elements so a string consumer (route path)
+	// never sees a class descriptor. In file order (deterministic).
+	ClassElements []AnnotationElement
 }
 
 // AnnotationElement is one decoded string-valued element pair of an annotation, e.g.
@@ -145,8 +171,12 @@ type AnnotationElement struct {
 }
 
 // attrRuntimeVisibleAnnotations is the JVMS §4.7.16 attribute name carrying the
-// class/method annotations the framework-ingress layer reads.
+// class/method/field annotations the framework-ingress and bean-model layers read.
 const attrRuntimeVisibleAnnotations = "RuntimeVisibleAnnotations"
+
+// attrRuntimeVisibleParameterAnnotations is the JVMS §4.7.18 attribute name carrying
+// per-parameter method annotations (constructor/@Bean-method injection qualifiers).
+const attrRuntimeVisibleParameterAnnotations = "RuntimeVisibleParameterAnnotations"
 
 // ErrBadMagic is returned when the input does not begin with the 0xCAFEBABE magic —
 // most commonly a non-class JAR entry the caller should skip, not fail on.
@@ -309,13 +339,33 @@ func ParseClass(data []byte) (Class, error) {
 		}
 	}
 
-	// fields — skipped; a field carries no call edges.
+	// fields — a field carries no call edges, but its name, declared type, and
+	// annotations are the surface a bean-model layer reads for @Autowired/@Value field
+	// injection, so they are retained (the attribute walk mirrors the method loop's).
 	fieldCount := int(r.u2())
+	fields := make([]Field, 0, fieldCount)
 	for i := 0; i < fieldCount; i++ {
 		r.u2() // access_flags
-		r.u2() // name_index
-		r.u2() // descriptor_index
-		skipAttributes(r)
+		name := cp.utf8(r.u2())
+		desc := cp.utf8(r.u2())
+		f := Field{Name: name, Descriptor: desc}
+		attrCount := int(r.u2())
+		for a := 0; a < attrCount; a++ {
+			attrName := cp.utf8(r.u2())
+			attrLen := int(r.u4())
+			body := r.bytes(attrLen)
+			if r.err != nil {
+				return Class{}, r.err
+			}
+			if attrName == attrRuntimeVisibleAnnotations {
+				annos, err := parseAnnotations(cp, body)
+				if err != nil {
+					return Class{}, fmt.Errorf("classfile: field %s annotations: %w", name, err)
+				}
+				f.Annotations = annos
+			}
+		}
+		fields = append(fields, f)
 		if r.err != nil {
 			return Class{}, r.err
 		}
@@ -355,6 +405,13 @@ func ParseClass(data []byte) (Class, error) {
 				}
 				m.Annotations = annos
 			}
+			if attrName == attrRuntimeVisibleParameterAnnotations {
+				params, err := parseParameterAnnotations(cp, body)
+				if err != nil {
+					return Class{}, fmt.Errorf("classfile: %s%s parameter annotations: %w", name, desc, err)
+				}
+				m.ParameterAnnotations = params
+			}
 		}
 		methods = append(methods, m)
 		if r.err != nil {
@@ -378,7 +435,36 @@ func ParseClass(data []byte) (Class, error) {
 		return Class{}, err
 	}
 
-	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Methods: methods, Annotations: classAnnos}, nil
+	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Fields: fields, Methods: methods, Annotations: classAnnos}, nil
+}
+
+// parseParameterAnnotations decodes a RuntimeVisibleParameterAnnotations attribute
+// body (JVMS §4.7.18): a u1 parameter count followed by, per parameter, its own
+// RuntimeVisibleAnnotations-shaped list (u2 count + that many annotations). It runs
+// over a SUB-READER of just the attribute body so a malformed table cannot desync
+// the enclosing class parse; a short read surfaces as an error the caller turns into
+// a declared hazard. The result is one slice per parameter, in parameter order, so a
+// caller can key an annotation to the descriptor's parameter slot.
+func parseParameterAnnotations(cp constPool, body []byte) ([][]Annotation, error) {
+	br := &reader{b: body}
+	numParams := int(br.u1())
+	if br.err != nil {
+		return nil, br.err
+	}
+	params := make([][]Annotation, 0, numParams)
+	for i := 0; i < numParams; i++ {
+		n := int(br.u2())
+		annos := make([]Annotation, 0, n)
+		for j := 0; j < n; j++ {
+			a := parseOneAnnotation(br, cp)
+			if br.err != nil {
+				return nil, br.err
+			}
+			annos = append(annos, a)
+		}
+		params = append(params, annos)
+	}
+	return params, nil
 }
 
 // parseClassAnnotations walks the class-level attributes table (which begins at r's
@@ -427,64 +513,80 @@ func parseAnnotations(cp constPool, body []byte) ([]Annotation, error) {
 }
 
 // parseOneAnnotation decodes a single annotation structure: its type descriptor followed
-// by the element-value pairs. String-valued elements are captured; all other value kinds
-// are traversed only to advance the cursor. Errors surface via br.err.
+// by the element-value pairs. String-valued elements land in Elements and class-valued
+// ('c') elements in ClassElements; all other value kinds are traversed only to advance
+// the cursor. Errors surface via br.err.
 func parseOneAnnotation(br *reader, cp constPool) Annotation {
 	typeIdx := br.u2()
 	numPairs := int(br.u2())
 	a := Annotation{Type: cp.utf8(typeIdx)}
 	for p := 0; p < numPairs; p++ {
 		nameIdx := br.u2()
-		val, hasStr := parseElementValue(br, cp)
+		val, kind := parseElementValue(br, cp)
 		if br.err != nil {
 			return a
 		}
-		if hasStr {
+		switch kind {
+		case 's':
 			a.Elements = append(a.Elements, AnnotationElement{Name: cp.utf8(nameIdx), Value: val})
+		case 'c':
+			a.ClassElements = append(a.ClassElements, AnnotationElement{Name: cp.utf8(nameIdx), Value: val})
 		}
 	}
 	return a
 }
 
-// parseElementValue traverses one element_value (JVMS §4.7.16.1). It returns a decoded
-// string when the value — or the first element of a string array — is a string constant;
-// every tag is handled so the cursor advances correctly, and an unknown tag fails the
-// sub-reader (a malformed table the caller declares).
-func parseElementValue(br *reader, cp constPool) (string, bool) {
+// parseElementValue traverses one element_value (JVMS §4.7.16.1) and reports what it
+// decoded: kind 's' with the string for a string constant, kind 'c' with the referenced
+// type's internal name for a class constant (@Import(Foo.class)), or kind 0 for a value
+// kind not retained. For an array, the first 's'/'c' element is returned with its kind
+// (so a string array still yields a string, unchanged from before). Every tag is handled
+// so the cursor advances correctly; an unknown tag fails the sub-reader (a malformed
+// table the caller declares).
+func parseElementValue(br *reader, cp constPool) (string, byte) {
 	switch tag := br.u1(); tag {
 	case 's': // String constant
-		return cp.utf8(br.u2()), true
+		return cp.utf8(br.u2()), 's'
 	case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z': // primitive constant
 		br.u2()
-		return "", false
+		return "", 0
 	case 'e': // enum: type_name_index, const_name_index
 		br.u2()
 		br.u2()
-		return "", false
-	case 'c': // class_info_index
-		br.u2()
-		return "", false
+		return "", 0
+	case 'c': // class_info_index — a field descriptor ("Lcom/example/Foo;")
+		return classNameFromDescriptor(cp.utf8(br.u2())), 'c'
 	case '@': // nested annotation
 		parseOneAnnotation(br, cp)
-		return "", false
-	case '[': // array: capture the first string element, if any
+		return "", 0
+	case '[': // array: capture the first string/class element, if any
 		num := int(br.u2())
 		var first string
-		var has bool
+		var firstKind byte
 		for i := 0; i < num; i++ {
-			s, ok := parseElementValue(br, cp)
+			s, k := parseElementValue(br, cp)
 			if br.err != nil {
 				break
 			}
-			if ok && !has {
-				first, has = s, true
+			if k != 0 && firstKind == 0 {
+				first, firstKind = s, k
 			}
 		}
-		return first, has
+		return first, firstKind
 	default:
 		br.fail("classfile: unknown annotation element tag %d", tag)
-		return "", false
+		return "", 0
 	}
+}
+
+// classNameFromDescriptor reduces a JVM class field descriptor ("Lcom/example/Foo;")
+// to its internal name ("com/example/Foo"), matching Class.Name/Super/Interfaces form.
+// A non-object descriptor (a primitive or array, e.g. int.class → "I") is returned as-is.
+func classNameFromDescriptor(desc string) string {
+	if len(desc) >= 2 && desc[0] == 'L' && desc[len(desc)-1] == ';' {
+		return desc[1 : len(desc)-1]
+	}
+	return desc
 }
 
 // parseConstPool decodes the 1-indexed constant pool. Long and Double each occupy

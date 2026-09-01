@@ -82,7 +82,10 @@ type pendingAnno struct {
 // whether each type extends HttpServlet, and the method whose body is currently
 // open, so a call expression can be attributed to its caller and a servlet/route
 // method can be recorded as an ingress.
-func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
+// raw is the un-stripped source runes (same length as the cleaned r), passed
+// through to parseAnnotation so a route/@Qualifier string element value can be
+// recovered from annotation context; nil disables recovery.
+func parseCallsAndIngresses(r, raw []rune) ([]callSite, []ingressMarker) {
 	n := len(r)
 	var stack []bodyFrame
 	var calls []callSite
@@ -118,7 +121,7 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 			// Annotation. Read the annotation name and an optional ("...") or
 			// (path="...") selector. Record it as pending; it binds to the next
 			// method declaration at this type-body depth.
-			name, sel, next := parseAnnotation(r, i)
+			name, sel, next := parseAnnotation(r, raw, i)
 			if routeAnnotations[name] {
 				pendingAnnos = append(pendingAnnos, pendingAnno{name: name, selector: sel, kind: "http_route"})
 			} else if k, ok := containerEntrypoints[name]; ok {
@@ -243,17 +246,20 @@ func topType(stack []bodyFrame) *bodyFrame {
 	return nil
 }
 
-// parseAnnotation reads an annotation starting at the '@' at i. It returns the
-// annotation simple name (last dotted segment), the route selector if the
-// argument list carries a string literal (which stripJava has blanked, so the
-// selector is recovered as "" — we keep the field for forward-compat), and the
-// index just past the annotation (including any "(...)" argument group).
+// parseAnnotation reads an annotation starting at the '@' at i in the cleaned runes
+// r. It returns the annotation simple name (last dotted segment), the recovered
+// string element value (the route selector / @Qualifier value), and the index just
+// past the annotation (including any "(...)" argument group).
 //
-// Note: string literals are blanked by stripJava before this runs, so the
-// selector value is not recoverable here; the field stays "" and the ingress is
-// still detected by name. Selector recovery would require running this pass on
-// the raw source — deferred (the route path is not needed for reachability).
-func parseAnnotation(r []rune, i int) (name, selector string, next int) {
+// Selector recovery: stripJava blanks string literals in r before this runs, so the
+// value is not in r. When raw (the un-stripped source, same rune length as r) is
+// supplied, the value is read from raw at the SAME offsets — stripJava preserves rune
+// offsets exactly, so the group bounds computed on r index raw identically. Recovery
+// happens ONLY here, inside the annotation's own argument group; the general
+// string-blanking that protects the lexer everywhere else is untouched. raw==nil
+// (the declaration-scan caller, which only needs to step over the annotation) keeps
+// the old behavior: selector "".
+func parseAnnotation(r, raw []rune, i int) (name, selector string, next int) {
 	n := len(r)
 	j := skipSpace(r, i+1) // past '@'
 	if j >= n || !isIdentStart(r[j]) {
@@ -271,9 +277,95 @@ func parseAnnotation(r []rune, i int) (name, selector string, next int) {
 	}
 	j = skipSpace(r, j)
 	if j < n && r[j] == '(' {
+		open := j
 		j = skipGroup(r, j)
+		if raw != nil && len(raw) == len(r) {
+			selector = annotationStringValue(raw, open, j)
+		}
 	}
-	return name, "", j
+	return name, selector, j
+}
+
+// annotationStringValue recovers the FIRST string-literal element value inside the
+// annotation argument group whose '(' is at open and whose extent (index just past
+// ')') is end, reading from the raw (un-stripped) source. It skips char literals and
+// comments so a '"' inside one is never mistaken for a string, and decodes standard
+// escapes. Returns "" when the group holds no string literal. The first string wins,
+// which is the value in @Ann("x") and the value=/path= route selector in the common
+// mapping forms (@RequestMapping("/x"), @RequestMapping(value="/x", method=...)).
+func annotationStringValue(raw []rune, open, end int) string {
+	limit := end - 1 // index of ')'
+	if limit > len(raw) {
+		limit = len(raw)
+	}
+	for i := open + 1; i < limit; {
+		c := raw[i]
+		switch {
+		case c == '/' && i+1 < limit && raw[i+1] == '/':
+			for i < limit && raw[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < limit && raw[i+1] == '*':
+			i += 2
+			for i < limit && !(raw[i] == '*' && i+1 < limit && raw[i+1] == '/') {
+				i++
+			}
+			i += 2
+		case c == '\'':
+			i++
+			for i < limit && raw[i] != '\'' {
+				if raw[i] == '\\' {
+					i += 2
+				} else {
+					i++
+				}
+			}
+			i++
+		case c == '"' && i+2 < limit && raw[i+1] == '"' && raw[i+2] == '"':
+			return decodeAnnotationString(raw, i+3, limit, true)
+		case c == '"':
+			return decodeAnnotationString(raw, i+1, limit, false)
+		default:
+			i++
+		}
+	}
+	return ""
+}
+
+// decodeAnnotationString reads a string-literal body from raw starting at start, up
+// to its terminator ('"' for a normal literal, '"""' for a text block) or limit,
+// decoding the common escapes. Text-block incidental-whitespace normalization is not
+// applied (annotation values are effectively always single-line literals); the
+// content is captured verbatim.
+func decodeAnnotationString(raw []rune, start, limit int, textBlock bool) string {
+	var b strings.Builder
+	for i := start; i < limit; {
+		c := raw[i]
+		if textBlock {
+			if c == '"' && i+2 < limit && raw[i+1] == '"' && raw[i+2] == '"' {
+				break
+			}
+		} else if c == '"' {
+			break
+		}
+		if c == '\\' && i+1 < limit {
+			switch nx := raw[i+1]; nx {
+			case 'n':
+				b.WriteRune('\n')
+			case 't':
+				b.WriteRune('\t')
+			case 'r':
+				b.WriteRune('\r')
+			default:
+				b.WriteRune(nx)
+			}
+			i += 2
+			continue
+		}
+		b.WriteRune(c)
+		i++
+	}
+	return b.String()
 }
 
 // methodDeclAt reports whether the run starting at i is a method (or constructor)

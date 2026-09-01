@@ -44,6 +44,17 @@ var containerEntrypoints = map[string]string{
 	"RabbitListener": "message_listener",
 }
 
+// registerRouteAnnotation and registerContainerEntrypoint are the lexical half of the
+// H1 annotation-classifier registry (edge-seam.md §5): an overlay teaches a new route
+// or container-entrypoint annotation from its OWN file's init(), rather than editing
+// these maps in place (which would collide every overlay on calls.go). Membership is
+// name-only, so registration order is irrelevant. The SCIP-space twins are
+// registerMappingSelector / registerContainerEntrypointNeedle in scipindex.go — a new
+// annotation taught here must be taught there too (the C3 dual-track rule).
+func registerRouteAnnotation(name string) { routeAnnotations[name] = true }
+
+func registerContainerEntrypoint(name, kind string) { containerEntrypoints[name] = kind }
+
 // servletEntryMethods are the HttpServlet override names that are servlet
 // ingresses when the enclosing class extends HttpServlet.
 var servletEntryMethods = map[string]bool{

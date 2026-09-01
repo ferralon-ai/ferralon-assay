@@ -297,22 +297,34 @@ func isMethodSymbol(sym string) bool {
 	return strings.HasSuffix(sym, ").")
 }
 
+// mappingSelectorRegistry is the SCIP-space half of the H1 annotation-classifier
+// registry (edge-seam.md §5): a scip-java annotation-type descriptor needle → the
+// coarse HTTP selector recorded for it. It is an ordered slice (first-match by append
+// order, deterministic — no map iteration on output) that an overlay appends to from
+// its OWN file's init() via registerMappingSelector, so overlays never edit
+// scipindex.go's classifier in place. Seeded with the built-in Spring mappings.
+var mappingSelectorRegistry = []struct{ needle, selector string }{
+	{"GetMapping#", "GET"},
+	{"PostMapping#", "POST"},
+	{"PutMapping#", "PUT"},
+	{"DeleteMapping#", "DELETE"},
+	{"PatchMapping#", "PATCH"},
+	{"RequestMapping#", "ANY"},
+}
+
+// registerMappingSelector appends an HTTP-mapping annotation needle→selector to the
+// SCIP-space registry. It is the twin of calls.go's registerRouteAnnotation and MUST
+// stay in step with it (the C3 dual-track rule).
+func registerMappingSelector(needle, selector string) {
+	mappingSelectorRegistry = append(mappingSelectorRegistry, struct{ needle, selector string }{needle, selector})
+}
+
 // mappingSelector reports whether a SCIP symbol names a Spring HTTP-mapping
 // annotation type (@GetMapping/@PostMapping/@RequestMapping and siblings) and, if
 // so, returns a coarse selector string. The annotation is recorded as a reference
 // to its type symbol within the route method's range.
 func mappingSelector(sym string) (string, bool) {
-	for _, a := range []struct {
-		needle   string
-		selector string
-	}{
-		{"GetMapping#", "GET"},
-		{"PostMapping#", "POST"},
-		{"PutMapping#", "PUT"},
-		{"DeleteMapping#", "DELETE"},
-		{"PatchMapping#", "PATCH"},
-		{"RequestMapping#", "ANY"},
-	} {
+	for _, a := range mappingSelectorRegistry {
 		if strings.Contains(sym, a.needle) {
 			return a.selector, true
 		}
@@ -336,6 +348,28 @@ func ingressAnnotation(sym string) (kind, selector string, ok bool) {
 	return "", "", false
 }
 
+// containerEntrypointRegistry is the SCIP-space half of the H1 registry for
+// container-invoked entrypoint annotations: a scip-java descriptor needle → ingress
+// Kind. Ordered slice (deterministic first-match), appended to via
+// registerContainerEntrypointNeedle from an overlay's init(). Seeded with the
+// built-ins; MUST stay in step with the lexical containerEntrypoints map.
+var containerEntrypointRegistry = []struct{ needle, kind string }{
+	{"Scheduled#", "scheduled"},
+	{"EventListener#", "event_listener"},
+	{"PostConstruct#", "lifecycle"},
+	{"PreDestroy#", "lifecycle"},
+	{"KafkaListener#", "message_listener"},
+	{"JmsListener#", "message_listener"},
+	{"RabbitListener#", "message_listener"},
+}
+
+// registerContainerEntrypointNeedle appends a container-entrypoint annotation
+// needle→kind to the SCIP-space registry. Twin of calls.go's
+// registerContainerEntrypoint; keep the two in step (C3 dual-track).
+func registerContainerEntrypointNeedle(needle, kind string) {
+	containerEntrypointRegistry = append(containerEntrypointRegistry, struct{ needle, kind string }{needle, kind})
+}
+
 // containerEntrypointKind reports whether a SCIP symbol names a container-invoked
 // entrypoint annotation type (@Scheduled/@EventListener/@PostConstruct/@PreDestroy
 // and the message-listener annotations) and, if so, its ingress Kind. Like
@@ -343,18 +377,7 @@ func ingressAnnotation(sym string) (kind, selector string, ok bool) {
 // needle ("Scheduled#", …). It MUST stay in step with the lexical
 // containerEntrypoints map so the two id spaces recognize the same entrypoints.
 func containerEntrypointKind(sym string) (string, bool) {
-	for _, a := range []struct {
-		needle string
-		kind   string
-	}{
-		{"Scheduled#", "scheduled"},
-		{"EventListener#", "event_listener"},
-		{"PostConstruct#", "lifecycle"},
-		{"PreDestroy#", "lifecycle"},
-		{"KafkaListener#", "message_listener"},
-		{"JmsListener#", "message_listener"},
-		{"RabbitListener#", "message_listener"},
-	} {
+	for _, a := range containerEntrypointRegistry {
 		if strings.Contains(sym, a.needle) {
 			return a.kind, true
 		}

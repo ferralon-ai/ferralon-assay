@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/beangraph"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -30,6 +31,30 @@ type program struct {
 	// that simple name and arity. A single entry resolves unambiguously; multiple
 	// (or zero) entries mean the lexical callee cannot be soundly resolved.
 	methodsByKey map[string][]string
+	// concreteByKey maps "name/arity" → the SCIP ids of the CONCRETE (non-abstract)
+	// declared methods only. It is the soundness gate for bean-edge retirement: an
+	// interface method and its impl both land in methodsByKey (so the call is unresolved),
+	// but only the impl is concrete — dynamic_dispatch may be retired for a bean-resolved
+	// call only when the wired impl's method is the UNIQUE concrete target here (any second
+	// concrete method of that name/arity is a genuine competitor, so retiring would risk a
+	// false not_exploitable, inv.5).
+	concreteByKey map[string][]string
+	// repositoryTypes is the SOURCE-lane repository type-model (simple names of first-party
+	// types transitively extending a Spring Data *Repository base), the classifier input the
+	// #3 repo-sink overlay consumes — it unions this with beangraph.RepositoryTypesFromClasses
+	// over the dependency/Kotlin classfiles. Foundation exposes only the type set; the overlay
+	// owns the sink marking + repository_synthesized_sink (edge-seam.md §4).
+	repositoryTypes map[string]bool
+	// sourceClasses is the first-party source-lexical class model retained for the sink
+	// overlays (edge-seam.md §5): the #2 AOP and #4 SpEL classifiers read a symbol's
+	// declaring class here (its annotations, stereotypes, supers) — data not derivable
+	// from the sink id string. Populated in loadProgram alongside beanData/repositoryTypes.
+	sourceClasses []sourceClass
+	// beanData is the Java first-party (source-lexical) bean input: registered beans,
+	// injection points by owner-class key, and first-party class locations. Populated
+	// alongside the declaration index; consumed by the bean resolver (H2) to retire
+	// dynamic_dispatch where an injection point resolves to a unique first-party impl.
+	beanData sourceBeanData
 }
 
 // fileParse pairs a parsed file with its package (needed to qualify call-site
@@ -74,14 +99,16 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("javaanalysis: no .java sources under %q", buildDir)
 	}
 
-	prog := &program{methodsByKey: map[string][]string{}}
+	prog := &program{methodsByKey: map[string][]string{}, concreteByKey: map[string][]string{}}
+	var srcClasses []sourceClass
 	for _, f := range files {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			prog.readFailed = true
 			continue
 		}
-		pr := parseFile(string(data))
+		src := string(data)
+		pr := parseFile(src)
 		if pr.skipped {
 			prog.skipped = true
 		}
@@ -94,8 +121,28 @@ func loadProgram(buildDir string) (*program, error) {
 			scip := methodSCIP(pr.pkg, d.enclosing, d.name, d.arity)
 			key := methodKey(d.name, d.arity)
 			prog.methodsByKey[key] = append(prog.methodsByKey[key], scip)
+			if !d.abstract {
+				prog.concreteByKey[key] = append(prog.concreteByKey[key], scip)
+			}
 		}
+		// Bean scan over the same source (cleaned for structure, raw for annotation
+		// values). Additive: it reads the same files but produces only the bean input,
+		// never touching the declaration/call index above.
+		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
+	prog.beanData = buildSourceBeanData(srcClasses)
+	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
+	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so
+	// an XML bean resolves for the interfaces its class implements.
+	supers := map[string][]string{}
+	for _, sc := range srcClasses {
+		supers[sc.name] = append(supers[sc.name], sc.supers...)
+	}
+	prog.beanData.beans = append(prog.beanData.beans, xmlBeansFromDir(buildDir, supers)...)
+	// #3 classifier input: the first-party repository type-model (beanresolve.go / edge-seam.md §4).
+	prog.repositoryTypes = sourceRepositoryTypes(srcClasses)
+	// Retain the source class model for the sink overlays (#2 AOP, #4 SpEL).
+	prog.sourceClasses = srcClasses
 	return prog, nil
 }
 
@@ -117,11 +164,20 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	seen := map[plugin.CallEdge]bool{}
 	var edges []plugin.CallEdge
 	rootsSet := map[string]bool{}
-	unresolved := false
+	// unresolvedSet records WHICH call sites had no sound single edge, keyed by
+	// (caller SCIP, callee name, callee arity). It replaces a program-wide bool so a
+	// later overlay (the bean graph, H2) can retire dynamic_dispatch only for the keys
+	// it actually resolved and leave it honest for the rest. Behavior today is
+	// unchanged: dynamic_dispatch is raised iff this set is non-empty (⇔ old bool true).
+	unresolvedSet := map[unresolvedCall]bool{}
+	// callerOwner maps a caller SCIP id to its owning-class key so the bean resolver can
+	// tie an unresolved call to the injection points of the class it appears in.
+	callerOwner := map[string]string{}
 
 	for _, f := range prog.files {
 		for _, cs := range f.calls {
 			caller := methodSCIP(f.pkg, cs.callerEnclosing, cs.callerName, cs.callerArity)
+			callerOwner[caller] = ownerKey(f.pkg, cs.callerEnclosing)
 			candidates := prog.methodsByKey[methodKey(cs.calleeName, cs.calleeArity)]
 			switch len(candidates) {
 			case 1:
@@ -132,9 +188,9 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 				}
 			default:
 				// 0 candidates (library/interface/unknown) or >1 (unresolvable
-				// overload): no sound single edge. Declare partiality; never
-				// fabricate an edge (inv.5).
-				unresolved = true
+				// overload): no sound single edge. Record the unresolved call key;
+				// never fabricate an edge (inv.5).
+				unresolvedSet[unresolvedCall{caller: caller, calleeName: cs.calleeName, calleeArity: cs.calleeArity}] = true
 			}
 		}
 		// Servlet/route ingress methods are call-graph roots (program entry points
@@ -163,11 +219,37 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	}
 
 	lexical := plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, unresolved),
+		Partiality: callGraphPartiality(prog, unresolvedSet),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      roots,
 	}
+
+	// Open the dependency closure once, reused below for both the bean registry (its
+	// beans complete the type-satisfaction picture so a first-party injection a
+	// dependency also provides is honestly seen as ambiguous) and the dependency-edge
+	// augmentation. A resolution failure is swallowed here exactly as before — the
+	// depreach completeness account surfaces unopened dependencies through reachability
+	// partiality, never a fabricated edge (inv.5).
+	dg, _ := buildDependencyGraph(ctx, req.BuildDir)
+
+	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
+	// through the DI bean model and fold the resolved interface→impl edges into the
+	// pure-Go lexical graph, retiring dynamic_dispatch for exactly the sites resolved to
+	// a unique first-party impl that is the sole concrete target (beanresolve.go). It runs
+	// on the lexical result BEFORE the depgraph/SCIP passes so the Assess path (gate
+	// unset) benefits. With no beans found, resolveBeanEdges returns nothing and the merge
+	// is a strict no-op — byte-identical to pre-bean-model behavior.
+	beans := prog.beanData.beans
+	if dg != nil {
+		beans = append(beans, depBeansSimpleName(dg.Classes)...)
+	}
+	registry := beangraph.NewRegistry(beans)
+	beanEdges, resolvedKeys, beanReasons := resolveBeanEdges(prog, registry, unresolvedSet, callerOwner)
+	if len(beanReasons) > 0 {
+		lexical.Partiality = withReasons(lexical.Partiality, beanReasons)
+	}
+	lexical = mergeBeanResolvedEdges(lexical, beanEdges, unresolvedSet, resolvedKeys)
 
 	// Dependency-inclusive augmentation: append the opened dependency closure's call
 	// edges so the persisted graph reflects that dependency bytecode was actually
@@ -175,11 +257,8 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	// distinguishes a searched-negative (COMPLETE closure, sink unreached →
 	// not_exploitable) from an empty graph the refutation never ran on (→ undetermined,
 	// the analysisDidNotRun arm). This is best-effort and additive: a build with no
-	// resolvable/cached dependencies contributes nothing and the graph is unchanged,
-	// and a dependency-resolution failure is swallowed here — the depreach completeness
-	// account (surfaced through reachability partiality) is where an unopened
-	// dependency becomes a Gap/hazard, never a fabricated edge (inv.5).
-	if dg, derr := buildDependencyGraph(ctx, req.BuildDir); derr == nil {
+	// resolvable/cached dependencies contributes nothing and the graph is unchanged.
+	if dg != nil {
 		if depEdges := dg.callEdges(); len(depEdges) > 0 {
 			lexical = appendCallEdges(lexical, depEdges)
 		}
@@ -377,6 +456,73 @@ func mergeResolvedCallGraph(lexical plugin.CallGraphResult, resolved scipGraph) 
 	}
 }
 
+// mergeBeanResolvedEdges folds a bean-overlay's resolved interface→impl edges into
+// the lexical graph and retires dynamic_dispatch for exactly the call sites the
+// overlay resolved (edge-seam.md §5, H2). It is modeled on mergeResolvedCallGraph but
+// runs on the PURE-GO lexical result (so the un-gated Assess path benefits), and it
+// retires per-key rather than wholesale: dynamic_dispatch is dropped only when the
+// residual unresolved-key set — the graph's unresolved calls minus the keys the
+// overlay resolved (resolvedKeys) — is empty. Any residual keeps dynamic_dispatch
+// honest. inv.5: it unions real resolved edges and never fabricates one; roots are
+// unchanged (bean edges add reachability, not entry points).
+//
+// With no overlay data (beanEdges and resolvedKeys both empty) it is a strict no-op:
+// the lexical result is returned unchanged, so today's behavior is byte-identical.
+func mergeBeanResolvedEdges(lexical plugin.CallGraphResult, beanEdges []plugin.CallEdge, unresolved, resolvedKeys map[unresolvedCall]bool) plugin.CallGraphResult {
+	if len(beanEdges) == 0 && len(resolvedKeys) == 0 {
+		return lexical
+	}
+
+	merged := appendCallEdges(lexical, beanEdges)
+
+	// Residual = unresolved call keys the overlay did NOT resolve. dynamic_dispatch is
+	// retired iff none remain; every other reason (read/skip failure) is preserved.
+	residual := 0
+	for k := range unresolved {
+		if !resolvedKeys[k] {
+			residual++
+		}
+	}
+	var reasons []string
+	for _, r := range lexical.Partiality.Reasons {
+		if r == plugin.PartialReasonDynamicDispatch && residual == 0 {
+			continue
+		}
+		reasons = append(reasons, r)
+	}
+	if len(reasons) == 0 {
+		merged.Partiality = plugin.Complete()
+	} else {
+		merged.Partiality = plugin.Partial(reasons...)
+	}
+	return merged
+}
+
+// withReasons unions extra partiality reasons into p (deduplicated, order-stable),
+// returning a declared-partial result. It is how the bean resolver adds bean_ambiguous
+// — a dynamic_dispatch localizer that coexists with the base — without disturbing the
+// existing reasons.
+func withReasons(p plugin.Partiality, extra []string) plugin.Partiality {
+	seen := map[string]bool{}
+	var reasons []string
+	for _, r := range p.Reasons {
+		if !seen[r] {
+			seen[r] = true
+			reasons = append(reasons, r)
+		}
+	}
+	for _, r := range extra {
+		if !seen[r] {
+			seen[r] = true
+			reasons = append(reasons, r)
+		}
+	}
+	if len(reasons) == 0 {
+		return plugin.Complete()
+	}
+	return plugin.Partial(reasons...)
+}
+
 // withToolFailure marks a result Partial(tool_failure) (preserving any existing
 // reasons) when the gated analyzer container was attempted but failed. The
 // underlying lexical edges are retained — the graph degrades, it never breaks
@@ -396,13 +542,25 @@ func withToolFailure(r plugin.CallGraphResult) plugin.CallGraphResult {
 	return r
 }
 
+// unresolvedCall identifies one lexical call site the graph could not resolve to a
+// single declared method: the caller's SCIP id plus the callee's simple name and
+// arity. It is the key an overlay edge-source (the bean graph, H2) matches against to
+// retire dynamic_dispatch only for the sites it actually resolved.
+type unresolvedCall struct {
+	caller      string
+	calleeName  string
+	calleeArity int
+}
+
 // callGraphPartiality declares the call graph's completeness. ANY unresolved
 // callee, read failure, or skipped construct makes the graph declared-partial:
 // the source-lexical graph never type-resolves interface dispatch or library
-// calls, so partiality is the honest norm for non-trivial Java.
-func callGraphPartiality(prog *program, unresolved bool) plugin.Partiality {
+// calls, so partiality is the honest norm for non-trivial Java. dynamic_dispatch is
+// raised iff the unresolved-call-key set is non-empty (identical to the former
+// program-wide bool).
+func callGraphPartiality(prog *program, unresolved map[unresolvedCall]bool) plugin.Partiality {
 	var reasons []string
-	if unresolved {
+	if len(unresolved) > 0 {
 		reasons = append(reasons, plugin.PartialReasonDynamicDispatch)
 	}
 	if prog.readFailed {

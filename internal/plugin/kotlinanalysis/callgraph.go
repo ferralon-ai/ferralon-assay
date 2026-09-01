@@ -47,6 +47,15 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 		}
 	}
 
+	// Overlay #K: fold the Spring DI bean model's resolved interface→impl edges into the
+	// graph (beanwire.go). Purely additive — with no beans this is a no-op and the graph is
+	// byte-identical. Ambiguous injection declares bean_ambiguous; it never fabricates an edge.
+	beanEdges, beanReasons := wireBeanEdges(prog.classes)
+	edges = append(edges, beanEdges...)
+	for _, r := range beanReasons {
+		prog.reasons[r] = true
+	}
+
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
 			return edges[i].Caller.SCIP < edges[j].Caller.SCIP

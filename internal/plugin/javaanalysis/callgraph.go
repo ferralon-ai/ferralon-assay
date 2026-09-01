@@ -45,6 +45,11 @@ type program struct {
 	// over the dependency/Kotlin classfiles. Foundation exposes only the type set; the overlay
 	// owns the sink marking + repository_synthesized_sink (edge-seam.md §4).
 	repositoryTypes map[string]bool
+	// sourceClasses is the first-party source-lexical class model retained for the sink
+	// overlays (edge-seam.md §5): the #2 AOP and #4 SpEL classifiers read a symbol's
+	// declaring class here (its annotations, stereotypes, supers) — data not derivable
+	// from the sink id string. Populated in loadProgram alongside beanData/repositoryTypes.
+	sourceClasses []sourceClass
 	// beanData is the Java first-party (source-lexical) bean input: registered beans,
 	// injection points by owner-class key, and first-party class locations. Populated
 	// alongside the declaration index; consumed by the bean resolver (H2) to retire
@@ -136,6 +141,8 @@ func loadProgram(buildDir string) (*program, error) {
 	prog.beanData.beans = append(prog.beanData.beans, xmlBeansFromDir(buildDir, supers)...)
 	// #3 classifier input: the first-party repository type-model (beanresolve.go / edge-seam.md §4).
 	prog.repositoryTypes = sourceRepositoryTypes(srcClasses)
+	// Retain the source class model for the sink overlays (#2 AOP, #4 SpEL).
+	prog.sourceClasses = srcClasses
 	return prog, nil
 }
 

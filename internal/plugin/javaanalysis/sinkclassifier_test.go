@@ -16,28 +16,33 @@ func TestH3_SinkClassifierHook(t *testing.T) {
 	}
 	ing := plugin.IngressResult{Ingresses: []plugin.Ingress{{Kind: "http_route", Symbol: sym("ingress")}}}
 
+	// These sinks are classified purely by id, so a minimal empty program suffices.
+	prog := &program{}
+
 	// Default: empty registry → no extra reasons.
-	_, reasons := firstPartyPaths(cg, ing, []string{"sink"})
+	_, reasons := firstPartyPaths(prog, cg, ing, []string{"sink"})
 	if reasons[plugin.PartialReasonRepositorySynthesized] {
 		t.Fatal("empty classifier registry leaked a reason")
 	}
 
-	// Register a classifier that flags one specific sink id.
+	// Register a classifier FACTORY that flags one specific sink id.
 	orig := len(sinkClassifiers)
 	defer func() { sinkClassifiers = sinkClassifiers[:orig] }()
-	registerSinkClassifier(func(id string) []string {
-		if id == "sink" {
-			return []string{plugin.PartialReasonRepositorySynthesized}
+	registerSinkClassifier(func(_ *program) func(string) []string {
+		return func(id string) []string {
+			if id == "sink" {
+				return []string{plugin.PartialReasonRepositorySynthesized}
+			}
+			return nil
 		}
-		return nil
 	})
 
-	_, reasons = firstPartyPaths(cg, ing, []string{"sink"})
+	_, reasons = firstPartyPaths(prog, cg, ing, []string{"sink"})
 	if !reasons[plugin.PartialReasonRepositorySynthesized] {
 		t.Error("registered classifier reason did not surface")
 	}
 	// A sink the classifier does not recognize gets no extra reason.
-	_, reasons = firstPartyPaths(cg, ing, []string{"other"})
+	_, reasons = firstPartyPaths(prog, cg, ing, []string{"other"})
 	if reasons[plugin.PartialReasonRepositorySynthesized] {
 		t.Error("classifier reason surfaced for an unrecognized sink")
 	}

@@ -63,6 +63,20 @@ type srcBeanMethod struct {
 	profiles   []string
 }
 
+// sourceMethod is the retained annotation surface of one first-party method declaration:
+// its resolution key (name + arity) and the full list of annotations preceding it, each
+// as the scanner's parsedAnno (simple name + first recovered string element value). The
+// sink overlays (#2 AOP, #4 SpEL, #5 guard) map a sink symbolID to a method here via
+// methodSCIP(sc.pkg, sc.enclosing, name, arity), then read its annotations. Constructors
+// are included (name == enclosing class name); a ctor's SCIP simply never matches a
+// method sink id. Captured in source order (deterministic). Additive: bean-fact
+// derivation does not read this.
+type sourceMethod struct {
+	name  string
+	arity int
+	annos []parsedAnno
+}
+
 // sourceClass is one first-party type as the bean scanner sees it: its identity
 // (pkg + enclosing chain including self), its direct supertypes (extends/implements
 // simple names), and the bean-relevant declarations found in its body.
@@ -78,6 +92,15 @@ type sourceClass struct {
 	injections   []beangraph.InjectionPoint // field injections (Owner = ownerKey)
 	ctors        []ctorInfo
 	beanMethods  []srcBeanMethod
+	// classAnnos is the FULL class-level annotation list (name + first string element
+	// value), not just the bean-relevant ones applyClassAnnos folds into the fields
+	// above — retained verbatim so the sink overlays can read enclosing-class markers
+	// (@Async / @Transactional / @Aspect / @PreAuthorize / …). Additive; bean-fact
+	// derivation still reads only the annotations it recognizes.
+	classAnnos []parsedAnno
+	// methods is the per-method annotation surface (name + arity + full annotation list)
+	// the sink overlays classify against. Additive; nothing in the bean model reads it.
+	methods []sourceMethod
 }
 
 // classLoc locates a first-party class for building an impl method's SCIP id.
@@ -156,6 +179,7 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 				self := append(append([]string(nil), typeChain()...), nm)
 				sc := &sourceClass{pkg: pkg, name: nm, enclosing: self, supers: supers}
 				applyClassAnnos(sc, pending)
+				sc.classAnnos = append([]parsedAnno(nil), pending...) // full list retained for the sink overlays (additive)
 				pending = nil
 				stack = append(stack, frame{cls: sc})
 				i = openIdx + 1
@@ -256,6 +280,14 @@ func parseMemberBean(clean, raw []rune, start int, owner *sourceClass, pending [
 			if q >= n || (clean[q] != '{' && clean[q] != ';') {
 				return start, false
 			}
+			// Retain the method's annotation surface (name + arity + full anno list) for
+			// the sink overlays. Additive: it never influences the bean/ctor/field
+			// recording below. Arity is the parameter count.
+			owner.methods = append(owner.methods, sourceMethod{
+				name:  name,
+				arity: len(params),
+				annos: append([]parsedAnno(nil), pending...),
+			})
 			switch {
 			case name == owner.name:
 				owner.ctors = append(owner.ctors, ctorInfo{

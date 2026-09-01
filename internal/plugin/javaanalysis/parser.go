@@ -215,7 +215,7 @@ func parseFile(src string) parseResult {
 					continue
 				}
 			}
-			_, _, next := parseAnnotation(r, i)
+			_, _, next := parseAnnotation(r, nil, i)
 			i = next
 		case isIdentStart(c):
 			word, next := readWord(r, i)
@@ -285,7 +285,11 @@ func parseFile(src string) parseResult {
 	// Second pass (body-aware): collect call sites and annotation/servlet ingress
 	// markers from the same cleaned source. Declarations and call/ingress data are
 	// gathered separately so the working declaration scanner above is untouched.
-	res.calls, res.ingresses = parseCallsAndIngresses(r)
+	// The body-aware call/ingress pass gets both the cleaned runes (for structure) and
+	// the raw source runes (for annotation string-value recovery). stripJava preserves
+	// rune count, so the two index identically; the length guard in parseAnnotation is a
+	// belt-and-suspenders check.
+	res.calls, res.ingresses = parseCallsAndIngresses(r, []rune(src))
 	return res
 }
 

@@ -167,6 +167,39 @@ const (
 	PartialReasonUninspectablePackage     = PartialReasonRelationshipUnexpressed + ":uninspectable_package" // static bare specifier into a package whose source is not in-tree (node_modules excluded); declined-but-attributed, never an edge
 	PartialReasonDynamicImportSpecifier   = PartialReasonRelationshipUnexpressed + ":dynamic_import"        // runtime-computed ESM target (import(expr)); never evaluated, never guessed
 	PartialReasonComputedRequireSpecifier = PartialReasonRelationshipUnexpressed + ":computed_require"      // runtime-computed CJS target (require(var)); never evaluated, never guessed
+
+	// --- Spring semantic-decode partiality codes (edge-seam.md §3) ---
+	//
+	// The six honest-residue conditions the JVM Spring bean-model + AOP/repo/SpEL/guard
+	// overlays declare when a wiring fact is irreducible statically. Declared ONCE here
+	// (shared vocabulary; overlays import these, none invents its own). Never a fabricated
+	// edge or a flipped verdict — each is the tri-state UNKNOWN arm made legible (§3.1).
+	//
+	// PartialReasonBeanAmbiguous localises dynamic_dispatch (the PLAN-162 move — it does
+	// NOT retire the base): a @Autowired injection point satisfied by >1 candidate bean
+	// with no @Primary/@Qualifier winner, so the wired implementation is undetermined and
+	// the interface hop stays unresolved. Raised by the bean resolver.
+	PartialReasonBeanAmbiguous = PartialReasonDynamicDispatch + ":bean_ambiguous"
+	// PartialReasonProxyMediated (new base): an AOP proxy/advice sits between caller and
+	// target, so no clean value-flow claim can be made through the unread interceptor.
+	// Raised by the AOP overlay (#2).
+	PartialReasonProxyMediated = "proxy_mediated"
+	// PartialReasonAsyncBoundary (new base): @Async/@Scheduled severs the synchronous-call
+	// assumption — a control-flow discontinuity, distinct from advice mediation. Raised by
+	// the AOP overlay (#2).
+	PartialReasonAsyncBoundary = "async_boundary"
+	// PartialReasonSpELPresent (new base): a string-embedded SpEL expression at or guarding
+	// a sink the analyzer cannot evaluate (presence only; content is unrecoverable on the
+	// Java source path). Raised by the SpEL overlay (#4).
+	PartialReasonSpELPresent = "spel_present"
+	// PartialReasonRepositorySynthesized (new base): a Spring Data repository method modeled
+	// as a body-absent DB sink — the implementation bytecode is runtime-synthesized, its
+	// body not analyzed. Raised by the repository overlay (#3).
+	PartialReasonRepositorySynthesized = "repository_synthesized_sink"
+	// PartialReasonGuardUnknown (new base): a filter/interceptor/security annotation on the
+	// path whose effect (sanitize/authorize) is undeterminable — the tri-state UNKNOWN arm,
+	// NOT a positive "guarded" signal. Raised by the guard overlay (#5).
+	PartialReasonGuardUnknown = "guard_unknown"
 )
 
 // Complete is the constructor for a fully-resolved result.

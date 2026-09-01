@@ -117,7 +117,12 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	seen := map[plugin.CallEdge]bool{}
 	var edges []plugin.CallEdge
 	rootsSet := map[string]bool{}
-	unresolved := false
+	// unresolvedSet records WHICH call sites had no sound single edge, keyed by
+	// (caller SCIP, callee name, callee arity). It replaces a program-wide bool so a
+	// later overlay (the bean graph, H2) can retire dynamic_dispatch only for the keys
+	// it actually resolved and leave it honest for the rest. Behavior today is
+	// unchanged: dynamic_dispatch is raised iff this set is non-empty (⇔ old bool true).
+	unresolvedSet := map[unresolvedCall]bool{}
 
 	for _, f := range prog.files {
 		for _, cs := range f.calls {
@@ -132,9 +137,9 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 				}
 			default:
 				// 0 candidates (library/interface/unknown) or >1 (unresolvable
-				// overload): no sound single edge. Declare partiality; never
-				// fabricate an edge (inv.5).
-				unresolved = true
+				// overload): no sound single edge. Record the unresolved call key;
+				// never fabricate an edge (inv.5).
+				unresolvedSet[unresolvedCall{caller: caller, calleeName: cs.calleeName, calleeArity: cs.calleeArity}] = true
 			}
 		}
 		// Servlet/route ingress methods are call-graph roots (program entry points
@@ -163,7 +168,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	}
 
 	lexical := plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, unresolved),
+		Partiality: callGraphPartiality(prog, unresolvedSet),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      roots,
@@ -396,13 +401,25 @@ func withToolFailure(r plugin.CallGraphResult) plugin.CallGraphResult {
 	return r
 }
 
+// unresolvedCall identifies one lexical call site the graph could not resolve to a
+// single declared method: the caller's SCIP id plus the callee's simple name and
+// arity. It is the key an overlay edge-source (the bean graph, H2) matches against to
+// retire dynamic_dispatch only for the sites it actually resolved.
+type unresolvedCall struct {
+	caller      string
+	calleeName  string
+	calleeArity int
+}
+
 // callGraphPartiality declares the call graph's completeness. ANY unresolved
 // callee, read failure, or skipped construct makes the graph declared-partial:
 // the source-lexical graph never type-resolves interface dispatch or library
-// calls, so partiality is the honest norm for non-trivial Java.
-func callGraphPartiality(prog *program, unresolved bool) plugin.Partiality {
+// calls, so partiality is the honest norm for non-trivial Java. dynamic_dispatch is
+// raised iff the unresolved-call-key set is non-empty (identical to the former
+// program-wide bool).
+func callGraphPartiality(prog *program, unresolved map[unresolvedCall]bool) plugin.Partiality {
 	var reasons []string
-	if unresolved {
+	if len(unresolved) > 0 {
 		reasons = append(reasons, plugin.PartialReasonDynamicDispatch)
 	}
 	if prog.readFailed {

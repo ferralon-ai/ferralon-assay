@@ -21,6 +21,7 @@ type decl struct {
 	name      string
 	enclosing []string // outer→inner type names; empty for a top-level type
 	arity     int      // method parameter count (kindMethod only)
+	abstract  bool     // kindMethod with no body (interface/abstract, ';'-terminated)
 }
 
 // callSite is one method-call expression observed inside a method body: the
@@ -485,6 +486,7 @@ func parseMember(r []rune, start int, enclosing []string) (decl, int, bool) {
 				if r[q] == '{' {
 					return d, q, true // leave '{' so the body opens a non-type block
 				}
+				d.abstract = true // ';'-terminated: an interface/abstract method, no body
 				return d, q + 1, true
 			}
 			return decl{}, start, false

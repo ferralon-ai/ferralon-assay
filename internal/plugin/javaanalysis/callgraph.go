@@ -39,6 +39,12 @@ type program struct {
 	// concrete method of that name/arity is a genuine competitor, so retiring would risk a
 	// false not_exploitable, inv.5).
 	concreteByKey map[string][]string
+	// repositoryTypes is the SOURCE-lane repository type-model (simple names of first-party
+	// types transitively extending a Spring Data *Repository base), the classifier input the
+	// #3 repo-sink overlay consumes — it unions this with beangraph.RepositoryTypesFromClasses
+	// over the dependency/Kotlin classfiles. Foundation exposes only the type set; the overlay
+	// owns the sink marking + repository_synthesized_sink (edge-seam.md §4).
+	repositoryTypes map[string]bool
 	// beanData is the Java first-party (source-lexical) bean input: registered beans,
 	// injection points by owner-class key, and first-party class locations. Populated
 	// alongside the declaration index; consumed by the bean resolver (H2) to retire
@@ -128,6 +134,8 @@ func loadProgram(buildDir string) (*program, error) {
 		supers[sc.name] = append(supers[sc.name], sc.supers...)
 	}
 	prog.beanData.beans = append(prog.beanData.beans, xmlBeansFromDir(buildDir, supers)...)
+	// #3 classifier input: the first-party repository type-model (beanresolve.go / edge-seam.md §4).
+	prog.repositoryTypes = sourceRepositoryTypes(srcClasses)
 	return prog, nil
 }
 

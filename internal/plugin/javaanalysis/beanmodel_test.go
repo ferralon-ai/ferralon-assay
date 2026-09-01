@@ -129,3 +129,19 @@ func TestScanSourceClasses_NoBeansIsInert(t *testing.T) {
 		t.Errorf("plain class produced injections: %+v", data.injByOwner)
 	}
 }
+
+func TestSourceRepositoryTypes(t *testing.T) {
+	a := scanSrc("com.ex", `package com.ex; interface UserRepo extends JpaRepository<User,Long> { User findByName(String n); }`)
+	b := scanSrc("com.ex", `package com.ex; interface CustomBase extends CrudRepository<Object,Long> {}`)
+	c := scanSrc("com.ex", `package com.ex; interface OrderRepo extends CustomBase {}`)
+	d := scanSrc("com.ex", `package com.ex; interface UserService { String greet(); }`)
+	repos := sourceRepositoryTypes(append(append(append(a, b...), c...), d...))
+	for _, want := range []string{"UserRepo", "CustomBase", "OrderRepo"} {
+		if !repos[want] {
+			t.Errorf("%s not classified as a repository; got %v", want, repos)
+		}
+	}
+	if repos["UserService"] {
+		t.Errorf("UserService wrongly classified as a repository")
+	}
+}

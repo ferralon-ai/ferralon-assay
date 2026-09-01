@@ -104,12 +104,3 @@ public class RateService {
 		t.Errorf("spel_present did not surface through firstPartyPaths; got %v", reasons)
 	}
 }
-
-func containsReason(reasons []string, want string) bool {
-	for _, r := range reasons {
-		if r == want {
-			return true
-		}
-	}
-	return false
-}

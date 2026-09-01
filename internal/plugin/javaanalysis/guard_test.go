@@ -119,12 +119,3 @@ func TestGuard_NeverRemovesReachabilityReason(t *testing.T) {
 		t.Error("no_known_ingress was removed/absent — the guard must never suppress a reachability reason (inv.5)")
 	}
 }
-
-func containsReason(reasons []string, want string) bool {
-	for _, r := range reasons {
-		if r == want {
-			return true
-		}
-	}
-	return false
-}

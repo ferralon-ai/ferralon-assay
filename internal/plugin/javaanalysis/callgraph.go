@@ -120,6 +120,14 @@ func loadProgram(buildDir string) (*program, error) {
 		srcClasses = append(srcClasses, scanSourceClasses([]rune(stripJava(src)), []rune(src), pr.pkg)...)
 	}
 	prog.beanData = buildSourceBeanData(srcClasses)
+	// #6: legacy XML <bean> definitions under the build tree are an additive bean source
+	// (beanconfig.go). Their Satisfies is enriched with the first-party supertype map so
+	// an XML bean resolves for the interfaces its class implements.
+	supers := map[string][]string{}
+	for _, sc := range srcClasses {
+		supers[sc.name] = append(supers[sc.name], sc.supers...)
+	}
+	prog.beanData.beans = append(prog.beanData.beans, xmlBeansFromDir(buildDir, supers)...)
 	return prog, nil
 }
 

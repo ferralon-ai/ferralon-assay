@@ -66,7 +66,25 @@ func TestInheritBaseline_CarriesPartiality(t *testing.T) {
 		Subject: Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"},
 	}, &statestore.State{})
 
-	if len(got.Partiality) != 1 || got.Partiality[0].Reason != plugin.PartialReasonNoManifest {
-		t.Fatalf("inherited Report Partiality = %+v, want the baseline's no_manifest note", got.Partiality)
+	// The baseline's coverage limit must be carried (the property this test guards).
+	// PLAN-104 additionally attaches a standing build-context-not-compared note on the
+	// inherited path (§8 checkbox 12 second clause is unimplemented, C6); assert on the
+	// specific note rather than an exact count so the honest disclosure is not read as a
+	// regression.
+	if !hasNoteReason(got.Partiality, plugin.PartialReasonNoManifest) {
+		t.Fatalf("inherited Report dropped the baseline's no_manifest note: %+v", got.Partiality)
 	}
+	if !hasNoteReason(got.Partiality, report.ReasonBuildContextNotCompared) {
+		t.Fatalf("inherited Report must disclose build-context-not-compared (C6): %+v", got.Partiality)
+	}
+}
+
+// hasNoteReason reports whether any partiality note carries the given reason code.
+func hasNoteReason(notes []report.PartialityNote, reason string) bool {
+	for _, n := range notes {
+		if n.Reason == reason {
+			return true
+		}
+	}
+	return false
 }

@@ -1,0 +1,39 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JS-NEXTRCE-0001-fixed",
+  "category": "patched",
+  "advisory": {
+    "id": "TEGRON-JS-NEXTRCE-0001",
+    "source": "ghsa",
+    "summary": "module-resolution RCE: the catch-all page route reaches requireModule, which require()s an attacker-controlled path with no bundles-directory containment (Next.js < 5.1.0)",
+    "references": [
+      "https://github.com/advisories/GHSA-5vj8-3v2h-h38v"
+    ]
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JS-NEXTRCE-0001-fixed-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JS-NEXTRCE-0001-fixed/",
+      "notes": "Fixed variant at Next.js 5.1.0: the advisory-named sink requireModule is removed (PR #3776 replaced it with requirePage plus a getPagePath bundles-directory containment guard; PR #3787 deleted the unrestricted resolver). The render hop now calls requirePage and requireModule no longer resolves anywhere in the tree."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "not_exploitable",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "reasoned_not_exploitable",
+    "expected_flags": [
+      "static_taint_path_complete"
+    ],
+    "rationale": "The fix removes the requireModule sink from the tree (renamed to the guarded requirePage with a bundles-directory containment check), so ResolveDependencySymbols for requireModule resolves nothing and no ingress-to-sink path exists -- reachable_candidate flips to not_exploitable by symbol removal. Reasoned rather than proven because non-exploitability proof requires the two-trace. KnownGap: this row is surfaced in the corpus but not yet measured end-to-end -- until PLAN-020's per-language dispatch and this lane's populated symbol lists and ground truth land, the fixture Loads and Validates cleanly but the stub pipeline emits a uniform verdict, so direction/strength equality is not asserted (assertable_now=false), mirroring the symboltest harness's documented gap.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

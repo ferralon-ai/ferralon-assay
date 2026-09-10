@@ -1,0 +1,10 @@
+{
+  "name": "f2-npm-transitive",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F2: npm v3, multi-level transitive tree (real coordinates/digests: debug@2.6.9->ms@2.0.0, on-finished@2.4.1->ee-first@1.1.1). Exercises the nearest-node_modules edge walk, which the json5-only corpus npm fixtures never do.",
+  "dependencies": {
+    "debug": "2.6.9",
+    "on-finished": "2.4.1"
+  }
+}

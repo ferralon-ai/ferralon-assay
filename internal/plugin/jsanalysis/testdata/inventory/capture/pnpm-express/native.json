@@ -1,0 +1,862 @@
+[
+  {
+    "name": "cap-pnpm-express",
+    "version": "1.0.0",
+    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express",
+    "private": true,
+    "dependencies": {
+      "express": {
+        "from": "express",
+        "version": "4.18.2",
+        "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz",
+        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/express@4.18.2/node_modules/express",
+        "dependencies": {
+          "array-flatten": {
+            "from": "array-flatten",
+            "version": "1.1.1",
+            "resolved": "https://registry.npmjs.org/array-flatten/-/array-flatten-1.1.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/array-flatten@1.1.1/node_modules/array-flatten"
+          },
+          "content-type": {
+            "from": "content-type",
+            "version": "1.0.5",
+            "resolved": "https://registry.npmjs.org/content-type/-/content-type-1.0.5.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/content-type@1.0.5/node_modules/content-type"
+          },
+          "cookie": {
+            "from": "cookie",
+            "version": "0.5.0",
+            "resolved": "https://registry.npmjs.org/cookie/-/cookie-0.5.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/cookie@0.5.0/node_modules/cookie"
+          },
+          "cookie-signature": {
+            "from": "cookie-signature",
+            "version": "1.0.6",
+            "resolved": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.0.6.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/cookie-signature@1.0.6/node_modules/cookie-signature"
+          },
+          "debug": {
+            "from": "debug",
+            "version": "2.6.9",
+            "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/debug@2.6.9/node_modules/debug",
+            "deduped": true,
+            "dedupedDependenciesCount": 1
+          },
+          "depd": {
+            "from": "depd",
+            "version": "2.0.0",
+            "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/depd@2.0.0/node_modules/depd"
+          },
+          "encodeurl": {
+            "from": "encodeurl",
+            "version": "1.0.2",
+            "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-1.0.2.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/encodeurl@1.0.2/node_modules/encodeurl"
+          },
+          "escape-html": {
+            "from": "escape-html",
+            "version": "1.0.3",
+            "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/escape-html@1.0.3/node_modules/escape-html"
+          },
+          "etag": {
+            "from": "etag",
+            "version": "1.8.1",
+            "resolved": "https://registry.npmjs.org/etag/-/etag-1.8.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/etag@1.8.1/node_modules/etag"
+          },
+          "fresh": {
+            "from": "fresh",
+            "version": "0.5.2",
+            "resolved": "https://registry.npmjs.org/fresh/-/fresh-0.5.2.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/fresh@0.5.2/node_modules/fresh"
+          },
+          "http-errors": {
+            "from": "http-errors",
+            "version": "2.0.0",
+            "resolved": "https://registry.npmjs.org/http-errors/-/http-errors-2.0.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/http-errors@2.0.0/node_modules/http-errors",
+            "deduped": true,
+            "dedupedDependenciesCount": 5
+          },
+          "merge-descriptors": {
+            "from": "merge-descriptors",
+            "version": "1.0.1",
+            "resolved": "https://registry.npmjs.org/merge-descriptors/-/merge-descriptors-1.0.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/merge-descriptors@1.0.1/node_modules/merge-descriptors"
+          },
+          "methods": {
+            "from": "methods",
+            "version": "1.1.2",
+            "resolved": "https://registry.npmjs.org/methods/-/methods-1.1.2.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/methods@1.1.2/node_modules/methods"
+          },
+          "on-finished": {
+            "from": "on-finished",
+            "version": "2.4.1",
+            "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/on-finished@2.4.1/node_modules/on-finished",
+            "deduped": true,
+            "dedupedDependenciesCount": 1
+          },
+          "parseurl": {
+            "from": "parseurl",
+            "version": "1.3.3",
+            "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/parseurl@1.3.3/node_modules/parseurl"
+          },
+          "path-to-regexp": {
+            "from": "path-to-regexp",
+            "version": "0.1.7",
+            "resolved": "https://registry.npmjs.org/path-to-regexp/-/path-to-regexp-0.1.7.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/path-to-regexp@0.1.7/node_modules/path-to-regexp"
+          },
+          "qs": {
+            "from": "qs",
+            "version": "6.11.0",
+            "resolved": "https://registry.npmjs.org/qs/-/qs-6.11.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/qs@6.11.0/node_modules/qs",
+            "deduped": true,
+            "dedupedDependenciesCount": 38
+          },
+          "range-parser": {
+            "from": "range-parser",
+            "version": "1.2.1",
+            "resolved": "https://registry.npmjs.org/range-parser/-/range-parser-1.2.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/range-parser@1.2.1/node_modules/range-parser"
+          },
+          "safe-buffer": {
+            "from": "safe-buffer",
+            "version": "5.2.1",
+            "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer"
+          },
+          "setprototypeof": {
+            "from": "setprototypeof",
+            "version": "1.2.0",
+            "resolved": "https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/setprototypeof@1.2.0/node_modules/setprototypeof"
+          },
+          "statuses": {
+            "from": "statuses",
+            "version": "2.0.1",
+            "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/statuses@2.0.1/node_modules/statuses"
+          },
+          "type-is": {
+            "from": "type-is",
+            "version": "1.6.18",
+            "resolved": "https://registry.npmjs.org/type-is/-/type-is-1.6.18.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/type-is@1.6.18/node_modules/type-is",
+            "deduped": true,
+            "dedupedDependenciesCount": 2
+          },
+          "utils-merge": {
+            "from": "utils-merge",
+            "version": "1.0.1",
+            "resolved": "https://registry.npmjs.org/utils-merge/-/utils-merge-1.0.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/utils-merge@1.0.1/node_modules/utils-merge"
+          },
+          "vary": {
+            "from": "vary",
+            "version": "1.1.2",
+            "resolved": "https://registry.npmjs.org/vary/-/vary-1.1.2.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/vary@1.1.2/node_modules/vary"
+          },
+          "content-disposition": {
+            "from": "content-disposition",
+            "version": "0.5.4",
+            "resolved": "https://registry.npmjs.org/content-disposition/-/content-disposition-0.5.4.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/content-disposition@0.5.4/node_modules/content-disposition",
+            "dependencies": {
+              "safe-buffer": {
+                "from": "safe-buffer",
+                "version": "5.2.1",
+                "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/safe-buffer@5.2.1/node_modules/safe-buffer"
+              }
+            }
+          },
+          "finalhandler": {
+            "from": "finalhandler",
+            "version": "1.2.0",
+            "resolved": "https://registry.npmjs.org/finalhandler/-/finalhandler-1.2.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/finalhandler@1.2.0/node_modules/finalhandler",
+            "dependencies": {
+              "debug": {
+                "from": "debug",
+                "version": "2.6.9",
+                "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/debug@2.6.9/node_modules/debug",
+                "deduped": true,
+                "dedupedDependenciesCount": 1
+              },
+              "encodeurl": {
+                "from": "encodeurl",
+                "version": "1.0.2",
+                "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-1.0.2.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/encodeurl@1.0.2/node_modules/encodeurl"
+              },
+              "escape-html": {
+                "from": "escape-html",
+                "version": "1.0.3",
+                "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/escape-html@1.0.3/node_modules/escape-html"
+              },
+              "on-finished": {
+                "from": "on-finished",
+                "version": "2.4.1",
+                "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/on-finished@2.4.1/node_modules/on-finished",
+                "deduped": true,
+                "dedupedDependenciesCount": 1
+              },
+              "parseurl": {
+                "from": "parseurl",
+                "version": "1.3.3",
+                "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/parseurl@1.3.3/node_modules/parseurl"
+              },
+              "statuses": {
+                "from": "statuses",
+                "version": "2.0.1",
+                "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/statuses@2.0.1/node_modules/statuses"
+              },
+              "unpipe": {
+                "from": "unpipe",
+                "version": "1.0.0",
+                "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/unpipe@1.0.0/node_modules/unpipe"
+              }
+            }
+          },
+          "proxy-addr": {
+            "from": "proxy-addr",
+            "version": "2.0.7",
+            "resolved": "https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.7.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/proxy-addr@2.0.7/node_modules/proxy-addr",
+            "dependencies": {
+              "forwarded": {
+                "from": "forwarded",
+                "version": "0.2.0",
+                "resolved": "https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/forwarded@0.2.0/node_modules/forwarded"
+              },
+              "ipaddr.js": {
+                "from": "ipaddr.js",
+                "version": "1.9.1",
+                "resolved": "https://registry.npmjs.org/ipaddr.js/-/ipaddr.js-1.9.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/ipaddr.js@1.9.1/node_modules/ipaddr.js"
+              }
+            }
+          },
+          "send": {
+            "from": "send",
+            "version": "0.18.0",
+            "resolved": "https://registry.npmjs.org/send/-/send-0.18.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/send@0.18.0/node_modules/send",
+            "dependencies": {
+              "debug": {
+                "from": "debug",
+                "version": "2.6.9",
+                "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/debug@2.6.9/node_modules/debug",
+                "deduped": true,
+                "dedupedDependenciesCount": 1
+              },
+              "depd": {
+                "from": "depd",
+                "version": "2.0.0",
+                "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/depd@2.0.0/node_modules/depd"
+              },
+              "destroy": {
+                "from": "destroy",
+                "version": "1.2.0",
+                "resolved": "https://registry.npmjs.org/destroy/-/destroy-1.2.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/destroy@1.2.0/node_modules/destroy"
+              },
+              "encodeurl": {
+                "from": "encodeurl",
+                "version": "1.0.2",
+                "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-1.0.2.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/encodeurl@1.0.2/node_modules/encodeurl"
+              },
+              "escape-html": {
+                "from": "escape-html",
+                "version": "1.0.3",
+                "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/escape-html@1.0.3/node_modules/escape-html"
+              },
+              "etag": {
+                "from": "etag",
+                "version": "1.8.1",
+                "resolved": "https://registry.npmjs.org/etag/-/etag-1.8.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/etag@1.8.1/node_modules/etag"
+              },
+              "fresh": {
+                "from": "fresh",
+                "version": "0.5.2",
+                "resolved": "https://registry.npmjs.org/fresh/-/fresh-0.5.2.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/fresh@0.5.2/node_modules/fresh"
+              },
+              "http-errors": {
+                "from": "http-errors",
+                "version": "2.0.0",
+                "resolved": "https://registry.npmjs.org/http-errors/-/http-errors-2.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/http-errors@2.0.0/node_modules/http-errors",
+                "deduped": true,
+                "dedupedDependenciesCount": 5
+              },
+              "mime": {
+                "from": "mime",
+                "version": "1.6.0",
+                "resolved": "https://registry.npmjs.org/mime/-/mime-1.6.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/mime@1.6.0/node_modules/mime"
+              },
+              "ms": {
+                "from": "ms",
+                "version": "2.1.3",
+                "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/ms@2.1.3/node_modules/ms"
+              },
+              "on-finished": {
+                "from": "on-finished",
+                "version": "2.4.1",
+                "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/on-finished@2.4.1/node_modules/on-finished",
+                "deduped": true,
+                "dedupedDependenciesCount": 1
+              },
+              "range-parser": {
+                "from": "range-parser",
+                "version": "1.2.1",
+                "resolved": "https://registry.npmjs.org/range-parser/-/range-parser-1.2.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/range-parser@1.2.1/node_modules/range-parser"
+              },
+              "statuses": {
+                "from": "statuses",
+                "version": "2.0.1",
+                "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/statuses@2.0.1/node_modules/statuses"
+              }
+            }
+          },
+          "serve-static": {
+            "from": "serve-static",
+            "version": "1.15.0",
+            "resolved": "https://registry.npmjs.org/serve-static/-/serve-static-1.15.0.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/serve-static@1.15.0/node_modules/serve-static",
+            "dependencies": {
+              "encodeurl": {
+                "from": "encodeurl",
+                "version": "1.0.2",
+                "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-1.0.2.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/encodeurl@1.0.2/node_modules/encodeurl"
+              },
+              "escape-html": {
+                "from": "escape-html",
+                "version": "1.0.3",
+                "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/escape-html@1.0.3/node_modules/escape-html"
+              },
+              "parseurl": {
+                "from": "parseurl",
+                "version": "1.3.3",
+                "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/parseurl@1.3.3/node_modules/parseurl"
+              },
+              "send": {
+                "from": "send",
+                "version": "0.18.0",
+                "resolved": "https://registry.npmjs.org/send/-/send-0.18.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/send@0.18.0/node_modules/send",
+                "deduped": true,
+                "dedupedDependenciesCount": 13
+              }
+            }
+          },
+          "accepts": {
+            "from": "accepts",
+            "version": "1.3.8",
+            "resolved": "https://registry.npmjs.org/accepts/-/accepts-1.3.8.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/accepts@1.3.8/node_modules/accepts",
+            "dependencies": {
+              "negotiator": {
+                "from": "negotiator",
+                "version": "0.6.3",
+                "resolved": "https://registry.npmjs.org/negotiator/-/negotiator-0.6.3.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/negotiator@0.6.3/node_modules/negotiator"
+              },
+              "mime-types": {
+                "from": "mime-types",
+                "version": "2.1.35",
+                "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/mime-types@2.1.35/node_modules/mime-types",
+                "dependencies": {
+                  "mime-db": {
+                    "from": "mime-db",
+                    "version": "1.52.0",
+                    "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/mime-db@1.52.0/node_modules/mime-db"
+                  }
+                }
+              }
+            }
+          },
+          "body-parser": {
+            "from": "body-parser",
+            "version": "1.20.1",
+            "resolved": "https://registry.npmjs.org/body-parser/-/body-parser-1.20.1.tgz",
+            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/body-parser@1.20.1/node_modules/body-parser",
+            "dependencies": {
+              "bytes": {
+                "from": "bytes",
+                "version": "3.1.2",
+                "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/bytes@3.1.2/node_modules/bytes"
+              },
+              "content-type": {
+                "from": "content-type",
+                "version": "1.0.5",
+                "resolved": "https://registry.npmjs.org/content-type/-/content-type-1.0.5.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/content-type@1.0.5/node_modules/content-type"
+              },
+              "depd": {
+                "from": "depd",
+                "version": "2.0.0",
+                "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/depd@2.0.0/node_modules/depd"
+              },
+              "destroy": {
+                "from": "destroy",
+                "version": "1.2.0",
+                "resolved": "https://registry.npmjs.org/destroy/-/destroy-1.2.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/destroy@1.2.0/node_modules/destroy"
+              },
+              "unpipe": {
+                "from": "unpipe",
+                "version": "1.0.0",
+                "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/unpipe@1.0.0/node_modules/unpipe"
+              },
+              "debug": {
+                "from": "debug",
+                "version": "2.6.9",
+                "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/debug@2.6.9/node_modules/debug",
+                "dependencies": {
+                  "ms": {
+                    "from": "ms",
+                    "version": "2.0.0",
+                    "resolved": "https://registry.npmjs.org/ms/-/ms-2.0.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/ms@2.0.0/node_modules/ms"
+                  }
+                }
+              },
+              "http-errors": {
+                "from": "http-errors",
+                "version": "2.0.0",
+                "resolved": "https://registry.npmjs.org/http-errors/-/http-errors-2.0.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/http-errors@2.0.0/node_modules/http-errors",
+                "dependencies": {
+                  "depd": {
+                    "from": "depd",
+                    "version": "2.0.0",
+                    "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/depd@2.0.0/node_modules/depd"
+                  },
+                  "inherits": {
+                    "from": "inherits",
+                    "version": "2.0.4",
+                    "resolved": "https://registry.npmjs.org/inherits/-/inherits-2.0.4.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/inherits@2.0.4/node_modules/inherits"
+                  },
+                  "setprototypeof": {
+                    "from": "setprototypeof",
+                    "version": "1.2.0",
+                    "resolved": "https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/setprototypeof@1.2.0/node_modules/setprototypeof"
+                  },
+                  "statuses": {
+                    "from": "statuses",
+                    "version": "2.0.1",
+                    "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.1.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/statuses@2.0.1/node_modules/statuses"
+                  },
+                  "toidentifier": {
+                    "from": "toidentifier",
+                    "version": "1.0.1",
+                    "resolved": "https://registry.npmjs.org/toidentifier/-/toidentifier-1.0.1.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/toidentifier@1.0.1/node_modules/toidentifier"
+                  }
+                }
+              },
+              "iconv-lite": {
+                "from": "iconv-lite",
+                "version": "0.4.24",
+                "resolved": "https://registry.npmjs.org/iconv-lite/-/iconv-lite-0.4.24.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/iconv-lite@0.4.24/node_modules/iconv-lite",
+                "dependencies": {
+                  "safer-buffer": {
+                    "from": "safer-buffer",
+                    "version": "2.1.2",
+                    "resolved": "https://registry.npmjs.org/safer-buffer/-/safer-buffer-2.1.2.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/safer-buffer@2.1.2/node_modules/safer-buffer"
+                  }
+                }
+              },
+              "on-finished": {
+                "from": "on-finished",
+                "version": "2.4.1",
+                "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/on-finished@2.4.1/node_modules/on-finished",
+                "dependencies": {
+                  "ee-first": {
+                    "from": "ee-first",
+                    "version": "1.1.1",
+                    "resolved": "https://registry.npmjs.org/ee-first/-/ee-first-1.1.1.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/ee-first@1.1.1/node_modules/ee-first"
+                  }
+                }
+              },
+              "raw-body": {
+                "from": "raw-body",
+                "version": "2.5.1",
+                "resolved": "https://registry.npmjs.org/raw-body/-/raw-body-2.5.1.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/raw-body@2.5.1/node_modules/raw-body",
+                "dependencies": {
+                  "bytes": {
+                    "from": "bytes",
+                    "version": "3.1.2",
+                    "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/bytes@3.1.2/node_modules/bytes"
+                  },
+                  "http-errors": {
+                    "from": "http-errors",
+                    "version": "2.0.0",
+                    "resolved": "https://registry.npmjs.org/http-errors/-/http-errors-2.0.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/http-errors@2.0.0/node_modules/http-errors",
+                    "deduped": true,
+                    "dedupedDependenciesCount": 5
+                  },
+                  "iconv-lite": {
+                    "from": "iconv-lite",
+                    "version": "0.4.24",
+                    "resolved": "https://registry.npmjs.org/iconv-lite/-/iconv-lite-0.4.24.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/iconv-lite@0.4.24/node_modules/iconv-lite",
+                    "deduped": true,
+                    "dedupedDependenciesCount": 1
+                  },
+                  "unpipe": {
+                    "from": "unpipe",
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/unpipe@1.0.0/node_modules/unpipe"
+                  }
+                }
+              },
+              "type-is": {
+                "from": "type-is",
+                "version": "1.6.18",
+                "resolved": "https://registry.npmjs.org/type-is/-/type-is-1.6.18.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/type-is@1.6.18/node_modules/type-is",
+                "dependencies": {
+                  "media-typer": {
+                    "from": "media-typer",
+                    "version": "0.3.0",
+                    "resolved": "https://registry.npmjs.org/media-typer/-/media-typer-0.3.0.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/media-typer@0.3.0/node_modules/media-typer"
+                  },
+                  "mime-types": {
+                    "from": "mime-types",
+                    "version": "2.1.35",
+                    "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/mime-types@2.1.35/node_modules/mime-types",
+                    "deduped": true,
+                    "dedupedDependenciesCount": 1
+                  }
+                }
+              },
+              "qs": {
+                "from": "qs",
+                "version": "6.11.0",
+                "resolved": "https://registry.npmjs.org/qs/-/qs-6.11.0.tgz",
+                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/qs@6.11.0/node_modules/qs",
+                "dependencies": {
+                  "side-channel": {
+                    "from": "side-channel",
+                    "version": "1.1.1",
+                    "resolved": "https://registry.npmjs.org/side-channel/-/side-channel-1.1.1.tgz",
+                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/side-channel@1.1.1/node_modules/side-channel",
+                    "dependencies": {
+                      "es-errors": {
+                        "from": "es-errors",
+                        "version": "1.3.0",
+                        "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                      },
+                      "object-inspect": {
+                        "from": "object-inspect",
+                        "version": "1.13.4",
+                        "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
+                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/object-inspect@1.13.4/node_modules/object-inspect"
+                      },
+                      "side-channel-list": {
+                        "from": "side-channel-list",
+                        "version": "1.0.1",
+                        "resolved": "https://registry.npmjs.org/side-channel-list/-/side-channel-list-1.0.1.tgz",
+                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/side-channel-list@1.0.1/node_modules/side-channel-list",
+                        "dependencies": {
+                          "es-errors": {
+                            "from": "es-errors",
+                            "version": "1.3.0",
+                            "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                          },
+                          "object-inspect": {
+                            "from": "object-inspect",
+                            "version": "1.13.4",
+                            "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/object-inspect@1.13.4/node_modules/object-inspect"
+                          }
+                        }
+                      },
+                      "side-channel-weakmap": {
+                        "from": "side-channel-weakmap",
+                        "version": "1.0.2",
+                        "resolved": "https://registry.npmjs.org/side-channel-weakmap/-/side-channel-weakmap-1.0.2.tgz",
+                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/side-channel-weakmap@1.0.2/node_modules/side-channel-weakmap",
+                        "dependencies": {
+                          "call-bound": {
+                            "from": "call-bound",
+                            "version": "1.0.4",
+                            "resolved": "https://registry.npmjs.org/call-bound/-/call-bound-1.0.4.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound",
+                            "deduped": true,
+                            "dedupedDependenciesCount": 21
+                          },
+                          "es-errors": {
+                            "from": "es-errors",
+                            "version": "1.3.0",
+                            "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                          },
+                          "get-intrinsic": {
+                            "from": "get-intrinsic",
+                            "version": "1.3.0",
+                            "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic",
+                            "deduped": true,
+                            "dedupedDependenciesCount": 17
+                          },
+                          "object-inspect": {
+                            "from": "object-inspect",
+                            "version": "1.13.4",
+                            "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/object-inspect@1.13.4/node_modules/object-inspect"
+                          },
+                          "side-channel-map": {
+                            "from": "side-channel-map",
+                            "version": "1.0.1",
+                            "resolved": "https://registry.npmjs.org/side-channel-map/-/side-channel-map-1.0.1.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/side-channel-map@1.0.1/node_modules/side-channel-map",
+                            "deduped": true,
+                            "dedupedDependenciesCount": 25
+                          }
+                        }
+                      },
+                      "side-channel-map": {
+                        "from": "side-channel-map",
+                        "version": "1.0.1",
+                        "resolved": "https://registry.npmjs.org/side-channel-map/-/side-channel-map-1.0.1.tgz",
+                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/side-channel-map@1.0.1/node_modules/side-channel-map",
+                        "dependencies": {
+                          "es-errors": {
+                            "from": "es-errors",
+                            "version": "1.3.0",
+                            "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                          },
+                          "get-intrinsic": {
+                            "from": "get-intrinsic",
+                            "version": "1.3.0",
+                            "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic",
+                            "deduped": true,
+                            "dedupedDependenciesCount": 17
+                          },
+                          "object-inspect": {
+                            "from": "object-inspect",
+                            "version": "1.13.4",
+                            "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/object-inspect@1.13.4/node_modules/object-inspect"
+                          },
+                          "call-bound": {
+                            "from": "call-bound",
+                            "version": "1.0.4",
+                            "resolved": "https://registry.npmjs.org/call-bound/-/call-bound-1.0.4.tgz",
+                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/call-bound@1.0.4/node_modules/call-bound",
+                            "dependencies": {
+                              "call-bind-apply-helpers": {
+                                "from": "call-bind-apply-helpers",
+                                "version": "1.0.2",
+                                "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+                                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers",
+                                "dependencies": {
+                                  "es-errors": {
+                                    "from": "es-errors",
+                                    "version": "1.3.0",
+                                    "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                                  },
+                                  "function-bind": {
+                                    "from": "function-bind",
+                                    "version": "1.1.2",
+                                    "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind"
+                                  }
+                                }
+                              },
+                              "get-intrinsic": {
+                                "from": "get-intrinsic",
+                                "version": "1.3.0",
+                                "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+                                "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/get-intrinsic@1.3.0/node_modules/get-intrinsic",
+                                "dependencies": {
+                                  "call-bind-apply-helpers": {
+                                    "from": "call-bind-apply-helpers",
+                                    "version": "1.0.2",
+                                    "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers",
+                                    "deduped": true,
+                                    "dedupedDependenciesCount": 2
+                                  },
+                                  "es-define-property": {
+                                    "from": "es-define-property",
+                                    "version": "1.0.1",
+                                    "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-define-property@1.0.1/node_modules/es-define-property"
+                                  },
+                                  "es-errors": {
+                                    "from": "es-errors",
+                                    "version": "1.3.0",
+                                    "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                                  },
+                                  "function-bind": {
+                                    "from": "function-bind",
+                                    "version": "1.1.2",
+                                    "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind"
+                                  },
+                                  "gopd": {
+                                    "from": "gopd",
+                                    "version": "1.2.0",
+                                    "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd"
+                                  },
+                                  "has-symbols": {
+                                    "from": "has-symbols",
+                                    "version": "1.1.0",
+                                    "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/has-symbols@1.1.0/node_modules/has-symbols"
+                                  },
+                                  "math-intrinsics": {
+                                    "from": "math-intrinsics",
+                                    "version": "1.1.0",
+                                    "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/math-intrinsics@1.1.0/node_modules/math-intrinsics"
+                                  },
+                                  "es-object-atoms": {
+                                    "from": "es-object-atoms",
+                                    "version": "1.1.2",
+                                    "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-object-atoms@1.1.2/node_modules/es-object-atoms",
+                                    "dependencies": {
+                                      "es-errors": {
+                                        "from": "es-errors",
+                                        "version": "1.3.0",
+                                        "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                                      }
+                                    }
+                                  },
+                                  "hasown": {
+                                    "from": "hasown",
+                                    "version": "2.0.4",
+                                    "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/hasown@2.0.4/node_modules/hasown",
+                                    "dependencies": {
+                                      "function-bind": {
+                                        "from": "function-bind",
+                                        "version": "1.1.2",
+                                        "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+                                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/function-bind@1.1.2/node_modules/function-bind"
+                                      }
+                                    }
+                                  },
+                                  "get-proto": {
+                                    "from": "get-proto",
+                                    "version": "1.0.1",
+                                    "resolved": "https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz",
+                                    "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/get-proto@1.0.1/node_modules/get-proto",
+                                    "dependencies": {
+                                      "es-object-atoms": {
+                                        "from": "es-object-atoms",
+                                        "version": "1.1.2",
+                                        "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz",
+                                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-object-atoms@1.1.2/node_modules/es-object-atoms",
+                                        "deduped": true,
+                                        "dedupedDependenciesCount": 1
+                                      },
+                                      "dunder-proto": {
+                                        "from": "dunder-proto",
+                                        "version": "1.0.1",
+                                        "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+                                        "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/dunder-proto@1.0.1/node_modules/dunder-proto",
+                                        "dependencies": {
+                                          "call-bind-apply-helpers": {
+                                            "from": "call-bind-apply-helpers",
+                                            "version": "1.0.2",
+                                            "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+                                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/call-bind-apply-helpers@1.0.2/node_modules/call-bind-apply-helpers",
+                                            "deduped": true,
+                                            "dedupedDependenciesCount": 2
+                                          },
+                                          "es-errors": {
+                                            "from": "es-errors",
+                                            "version": "1.3.0",
+                                            "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+                                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/es-errors@1.3.0/node_modules/es-errors"
+                                          },
+                                          "gopd": {
+                                            "from": "gopd",
+                                            "version": "1.2.0",
+                                            "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+                                            "path": "/private/tmp/js-capture.gNXIdN/pnpm-express/node_modules/.pnpm/gopd@1.2.0/node_modules/gopd"
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  M3 maven-reactor-divergence — aggregator (packaging=pom) over two modules that
+  depend on the SAME coordinate (com.google.guava:guava) at DIFFERENT versions.
+  Exercises per-module membership: the inventory must carry two distinguishable
+  nodes (one per module), not collapse to a single mediated version. Backs C6
+  (per-module membership) and C1 (per-module resolution).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ferralon.benchmark</groupId>
+  <artifactId>maven-reactor-divergence</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <modules>
+    <module>module-a</module>
+    <module>module-b</module>
+  </modules>
+</project>

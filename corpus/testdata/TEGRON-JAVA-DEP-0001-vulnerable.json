@@ -1,0 +1,35 @@
+{
+  "schema_version": "tegron.corpus.v1",
+  "id": "TEGRON-JAVA-DEP-0001-vulnerable",
+  "category": "installed_undetermined",
+  "advisory": {
+    "id": "TEGRON-JAVA-DEP-0001",
+    "source": "osv",
+    "summary": "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
+    "references": []
+  },
+  "codebase": {
+    "repo": "github.com/ferralon-ai/tegron-corpus-repros",
+    "revision": "TEGRON-JAVA-DEP-0001-vulnerable-v1",
+    "acquisition": {
+      "mode": "vendored_repro",
+      "path": "testdata/repros/TEGRON-JAVA-DEP-0001-vulnerable/",
+      "notes": "Manifest-only Maven repro (pom.xml, no source) declaring com.example.lib:widget at 1.3.9 -- inside the advisory's affected range (< 1.4.0). Exercises the version-axis path: the declared version is affected, so the case proceeds rather than disqualify. No call graph or sink is modeled (the advisory carries no symbols), so reachability is not determined."
+    }
+  },
+  "execution": {
+    "kind": "compose"
+  },
+  "expected_verdict": {
+    "direction": "undetermined",
+    "strength": "reasoned",
+    "completion_status": "completed",
+    "label": "undetermined",
+    "expected_flags": [],
+    "rationale": "com.example.lib:widget is present at 1.3.9, inside the affected range (< 1.4.0), so the version axis does not disqualify and the case proceeds. This advisory is version-axis only (no symbols, manifest-only repro), so NO reachability/taint path is established -- the scan establishes that the advisory applies but nothing about whether the vulnerable code is reached. That is exactly report.VerdictUndetermined, the third Warrant value: neither exploitable (which would infer exploitability from mere version-presence -- the SCA false positive our thesis refutes) nor not_exploitable (which would infer safety from absent reachability evidence, a Section 3 violation). KnownGap: visible-but-unmeasured until PLAN-020's per-language dispatch and this lane's symbols/ground-truth land; assertable_now=false, since the stub pipeline emits a uniform verdict and direction/strength equality is not asserted this cycle.",
+    "assertable_now": false
+  },
+  "ownership_proof": {
+    "token": "corpus-fixture"
+  }
+}

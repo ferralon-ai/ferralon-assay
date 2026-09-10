@@ -111,7 +111,22 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	// discloses that even if it goes on to produce zero findings — the case the note exists for.
 	b.AddPartiality(req.WorkSetLimits...)
 
-	seenPkg := make(map[report.Package]struct{})
+	// Whole-graph SBOM (§4.1, PLAN-100): resolve the codebase's dependency inventory ONCE,
+	// independent of the advisory work set, and project it to the report SBOM. A dependency reaches
+	// the SBOM whether or not any admitted advisory names it — the property §4.1's closing sentence
+	// requires and the advisory-keyed producer denied. An inventory that could not be resolved is
+	// DECLARED as a scan-level partiality note (C3), never a silently short SBOM that would feed a
+	// later CVE-watch a shrunken query set. Coordinate-specific advisory resolution is RETAINED
+	// unchanged in the loop below (advisoryFromArtifacts still serves the finding path — §4.1 / C5).
+	inv, invLanguage, _, err := pipeline.ResolveCodebaseInventory(ctx, req.Codebase, "", req.AssessOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("trigger: resolve codebase inventory: %w", err)
+	}
+	sbom, invNotes := sbomFromInventory(inv, ecosystemFor(invLanguage))
+	b.AddPackages(sbom.Packages...)
+	b.SetRelationships(sbom.Relationships)
+	b.AddPartiality(invNotes...)
+
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
@@ -124,13 +139,10 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 			b.AddPartiality(assessFailureNote(adv, err))
 			continue
 		}
+		// Coordinate-specific advisory resolution, RETAINED unchanged (§4.1 / C5): advisoryFromArtifacts
+		// still resolves the advisory's own package for the finding, but it no longer DEFINES the SBOM —
+		// the whole-graph inventory above does.
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq)
-		if pkg != nil {
-			if _, ok := seenPkg[*pkg]; !ok {
-				seenPkg[*pkg] = struct{}{}
-				b.AddPackage(*pkg)
-			}
-		}
 		// A toolchain advisory the scan could not adjudicate is a first-class `undetermined`
 		// row in tegron.report.v2, plus the scan-level limit that explains it.
 		// v1 had to withhold the row entirely, having no cell for "the advisory applies and
@@ -177,6 +189,14 @@ type PRInheritRequest struct {
 	// Report about THIS run's work set, so a widening that failed on the PR run must be
 	// visible even when no re-analysis happened.
 	WorkSetLimits []report.PartialityNote
+	// DiffLimits is what the PR-head SBOM resolution could not resolve — the partiality
+	// the head inventory carried (a lane whose resolver was unavailable, an ecosystem
+	// left unresolved). It is what bounds the diff itself: an unresolved head inventory
+	// can make a changed dependency set look unchanged. Disclosed on BOTH paths (§4.1 /
+	// C3), and above all on the inherited fast path, so a run that inherited because it
+	// could not compare something is distinguishable in the Report from one that
+	// inherited because nothing changed. Populated by trigger.ResolveSBOM's partiality.
+	DiffLimits []report.PartialityNote
 	// AnalyzerVersion / Cursor mirror BaselineRequest.
 	AnalyzerVersion string
 	Cursor          string

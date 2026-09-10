@@ -1,0 +1,54 @@
+{
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "vuln_id": "FERRALON-COMPAT-V3-0001",
+  "module": "example.com/compat/neta",
+  "coordinate": "example.com/compat/neta",
+  "purl": "pkg:golang/example.com/compat/neta",
+  "version_scheme": "gomod",
+  "upper_exclusive": "1.4.0",
+  "fixed_version": "1.4.0",
+  "symbols": [
+    "example.com/compat/neta/http2.Server.Serve",
+    "example.com/compat/neta/http2.handler"
+  ],
+  "sink_kind": "ssrf",
+  "affected_ranges": [
+    {
+      "introduced": "0",
+      "fixed": "1.4.0"
+    }
+  ],
+  "affected_packages": [
+    {
+      "module": "example.com/compat/neta",
+      "coordinate": "example.com/compat/neta",
+      "purl": "pkg:golang/example.com/compat/neta",
+      "version_scheme": "gomod",
+      "upper_exclusive": "1.4.0",
+      "fixed_version": "1.4.0",
+      "affected_ranges": [
+        {
+          "introduced": "0",
+          "fixed": "1.4.0"
+        }
+      ],
+      "symbols": [
+        "example.com/compat/neta/http2.Server.Serve"
+      ]
+    },
+    {
+      "module": "example.com/compat/netb",
+      "coordinate": "example.com/compat/netb",
+      "purl": "pkg:golang/example.com/compat/netb",
+      "version_scheme": "gomod",
+      "upper_exclusive": "2.1.0",
+      "fixed_version": "2.1.0",
+      "affected_ranges": [
+        {
+          "introduced": "0",
+          "fixed": "2.1.0"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "f10-npm-alias",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture F10: npm: aliases. good-alias resolves to a present target (ms@2.0.0); ghost-alias names a target absent from the lockfile. Proves alias resolution when present and alias_target_absent when not. Synthetic alias keys; ms digest is real.",
+  "dependencies": {
+    "good-alias": "npm:ms@2.0.0",
+    "ghost-alias": "npm:absent-pkg@9.9.9"
+  }
+}

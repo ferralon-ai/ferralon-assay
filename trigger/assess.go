@@ -62,6 +62,22 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
 	var f report.AdvisoryFinding
 	switch {
+	case maliciousPresent(store, assessmentID):
+		// The one new signal: an AFFIRMATIVE, decisive OSS "affected". A known-malicious package
+		// resolved to a version the advisory enumerates as affected. Ordered FIRST so it wins over a
+		// co-present reachability candidate or disqualification — presence is deterministic proof the
+		// bad artifact is installed, not a reachability lean. Affirmatives are never trust-gated
+		// (inv.5), and the whole design keeps disqualify's trust gate untouched by never minting a
+		// not-affected here.
+		res, _ := maliciousPresenceResult(store, assessmentID)
+		f = report.AdvisoryFinding{
+			Advisory: adv,
+			Package:  pkg,
+			Verdict:  report.VerdictMaliciousPresent,
+			Evidence: report.EvidenceSummary{
+				Detail: maliciousPresentDetail(res.MatchedVersion),
+			},
+		}
 	case disqualified(store, assessmentID):
 		_, reason := disqualResult(store, assessmentID)
 		f = report.AdvisoryFinding{
@@ -76,6 +92,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 	case hasCandidate(store, assessmentID):
 		path, _ := candidatePath(store, assessmentID)
 		grade, entry, frames := reachabilityEvidence(store, assessmentID)
+		guards := guardsOnPath(store, assessmentID, frames)
 		f = report.AdvisoryFinding{
 			Advisory: adv,
 			Package:  pkg,
@@ -85,7 +102,30 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				Grade:            grade,
 				EntryPoint:       entry,
 				CallPath:         frames,
-				MitigatingGuards: guardsOnPath(store, assessmentID, frames),
+				MitigatingGuards: guards,
+				// B1 provenance-as-confidence (RFC §4.1): qualify the candidate's strength by how
+				// its vulnerable symbols were DERIVED. Read HERE, inside the reachable_candidate
+				// arm and only after the candidate has formed, so it is structurally unreachable
+				// from admission / disqualify / refute. Absent or unrecognized provenance ⇒ "" ⇒
+				// no annotation (honest-absent, inv.5): the candidate is reported exactly as today.
+				SymbolConfidence: symbolConfidenceFor(advisorySymbolProvenance(store, assessmentID)),
+				// B3 exploit-precondition qualifier (RFC §4.2): describe the candidate with the
+				// advisory-declared exploit preconditions. Read HERE, in the same post-candidate
+				// arm, for the same structural reason — it cannot reach admission / disqualify /
+				// refute. Presence-only: it records that exploitation is CONDITIONAL, it never
+				// evaluates whether the precondition holds (a Prove-tier question) and never scores
+				// the candidate. Both absent ⇒ nil ⇒ no annotation (honest-absent, inv.5): the
+				// candidate is reported exactly as today, at no strength penalty.
+				ExploitPreconditions: exploitPreconditionsFor(advisoryPreconditions(store, assessmentID)),
+				// B-guardsuff (RFC §4.2): annotate the on-path guards (above) with the advisory's
+				// DECLARED sufficiency against each guard's bypass. Read HERE, in the same
+				// post-candidate arm, for the same structural reason as B1/B3 — it cannot reach
+				// admission / disqualify / refute. It annotates ONLY guards guardsOnPath already
+				// surfaced, so it never widens the guard set; it is DESCRIPTIVE (surfaces a
+				// Prove-tier claim as context) and never adjudicates sufficiency or scores the
+				// candidate. No on-path guard carries a declared sufficiency ⇒ nil ⇒ no annotation
+				// (honest-absent, inv.5): the candidate is reported exactly as today.
+				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
 	default:
@@ -147,10 +187,10 @@ func guardsOnPath(store artifact.Store, assessmentID string, frames []report.Cal
 	}
 	found := make(map[string]bool, len(declared))
 	for _, e := range edges {
-		if !onPath[e.Caller] {
+		if !onPath[e.Caller.SCIP] {
 			continue
 		}
-		if name := symbolLeaf(e.Callee); declaredSet[name] {
+		if name := symbolLeaf(e.Callee.SCIP); declaredSet[name] {
 			found[name] = true
 		}
 	}
@@ -177,6 +217,147 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 		return nil
 	}
 	return adv.AdvisoryGuards
+}
+
+// advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
+// from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
+// the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
+// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return ""
+	}
+	var adv struct {
+		SymbolProvenance string `json:"symbol_provenance"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return ""
+	}
+	return adv.SymbolProvenance
+}
+
+// symbolConfidenceFor maps the corpus's record-scoped symbol_provenance derivation tag onto a
+// candidate STRENGTH label (RFC §4.1). It is deliberately total and fail-quiet: the emitted
+// vocabulary maps to a confidence, and EVERYTHING ELSE — absent, empty, or an unrecognized
+// open-set tier — maps to "" (no annotation). That is the honest-absent contract made structural:
+//
+//   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
+//   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
+//   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
+//
+// No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
+// flip a verdict: this function only ever ADDS a strength label to an already-formed candidate.
+func symbolConfidenceFor(provenance string) report.SymbolConfidence {
+	switch provenance {
+	case "osv-declared", "curated":
+		return report.SymbolConfidenceHigh
+	case "diff-lexed":
+		return report.SymbolConfidenceModerate
+	default:
+		return "" // absent / empty / unrecognized ⇒ no derivation signal (honest-absent)
+	}
+}
+
+// advisoryPreconditions reads the advisory-declared exploit preconditions (trigger_condition /
+// prerequisite) from the normalized advisory artifact (S1). Both empty ("","") when the advisory
+// declares none, when the artifact is absent, or when the payload is unreadable — every miss is the
+// honest-absent path (inv.5): an absent precondition is UNCONDITIONAL exploitation (the conservative
+// reading), never "not exploitable." Consumed only as a candidate-scoped PoE qualifier
+// (exploitPreconditionsFor), never as an admission or refute input.
+func advisoryPreconditions(store artifact.Store, assessmentID string) (triggerCondition, prerequisite string) {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return "", ""
+	}
+	var adv struct {
+		TriggerCondition string `json:"trigger_condition"`
+		Prerequisite     string `json:"prerequisite"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return "", ""
+	}
+	return adv.TriggerCondition, adv.Prerequisite
+}
+
+// exploitPreconditionsFor builds the candidate-scoped PoE qualifier (RFC §4.2) from the advisory's
+// declared preconditions. It is deliberately total and fail-quiet: when BOTH fields are empty it
+// returns nil (no annotation) — that is the honest-absent contract made structural, absent =
+// unconditional, the candidate reported exactly as today. Any declared precondition yields a non-nil
+// block carrying the text verbatim.
+//
+// This is DESCRIPTIVE, presence-only context: it never evaluates whether a precondition holds (a
+// runtime question the Prove tier settles) and never scores the candidate, so it can only ADD context
+// to an already-formed candidate — never gate admission, never refute, never flip a verdict.
+func exploitPreconditionsFor(triggerCondition, prerequisite string) *report.ExploitPreconditions {
+	p := report.ExploitPreconditions{TriggerCondition: triggerCondition, Prerequisite: prerequisite}
+	if p.Empty() {
+		return nil // both absent ⇒ no annotation (honest-absent)
+	}
+	return &p
+}
+
+// guardSufficiencyVariant is the trigger-local decode shape of one normalized_advisory
+// guard_sufficiency element. It is DECLARED advisory data (Assess reads facts off the artifact as
+// JSON, into its own local structs — the same pattern as advisoryGuards); it is never a Prove verdict.
+type guardSufficiencyVariant struct {
+	Symbol     string `json:"symbol"`
+	Version    string `json:"version"`
+	ForBypass  string `json:"for_bypass"`
+	Sufficient bool   `json:"sufficient"`
+}
+
+// advisoryGuardSufficiency reads the advisory-declared guard_sufficiency variants from the normalized
+// advisory artifact (S1). Nil when the advisory declares none, when the artifact is absent, or when the
+// payload is unreadable — every miss is the honest-absent path (inv.5): an absent sufficiency claim is
+// "NOT ESTABLISHED," never "insufficient." Consumed only as a candidate-scoped descriptive annotation
+// (guardSufficiencyFor), never as an admission or refute input.
+func advisoryGuardSufficiency(store artifact.Store, assessmentID string) []guardSufficiencyVariant {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		GuardSufficiency []guardSufficiencyVariant `json:"guard_sufficiency"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	return adv.GuardSufficiency
+}
+
+// guardSufficiencyFor annotates each guard ALREADY on the candidate path (onPath, from guardsOnPath)
+// with the advisory's DECLARED sufficiency against its bypass (RFC §4.2). It is deliberately total and
+// fail-quiet: a guard with no declared variant, an empty on-path set, or an empty declared set all yield
+// no note (nil) — that is the honest-absent contract made structural, absent = not established, the
+// candidate reported exactly as today. It iterates onPath (preserving MitigatingGuards' declared order)
+// and emits a note only for a guard the advisory declares a variant for, so it NEVER widens the guard
+// set past what guardsOnPath already surfaced.
+//
+// This is DESCRIPTIVE, presence-only: it surfaces the advisory's declared sufficiency as candidate
+// context; it never evaluates whether the guard actually closes the hole (a runtime question the Prove
+// tier settles) and never scores the candidate — so it can only ADD context to an already-formed
+// candidate, never gate admission, never refute, never flip a verdict.
+func guardSufficiencyFor(onPath []string, declared []guardSufficiencyVariant) []report.GuardSufficiencyNote {
+	if len(onPath) == 0 || len(declared) == 0 {
+		return nil
+	}
+	var out []report.GuardSufficiencyNote
+	for _, g := range onPath {
+		for _, d := range declared {
+			if d.Symbol == "" || d.Symbol != g {
+				continue
+			}
+			out = append(out, report.GuardSufficiencyNote{
+				Symbol:      d.Symbol,
+				ForBypass:   d.ForBypass,
+				Sufficiency: report.SufficiencyLabel(d.Sufficient),
+			})
+		}
+	}
+	return out
 }
 
 // callGraphEdges reads the resolved call-graph edges from the reachability artifact
@@ -239,6 +420,37 @@ func hasCandidate(store artifact.Store, assessmentID string) bool {
 	return ok
 }
 
+// maliciousPresenceResult reads the affirmative TypeMaliciousPresence artifact the maliciousPresence
+// Assess stage emits ONLY on a decisive match (a known-malicious package resolved to a listed
+// affected version). Absent artifact ⇒ (zero, false): the stage emits nothing for every non-match
+// (not malicious / unresolvable / version-not-listed), so absence is the fail-open path (inv.5).
+func maliciousPresenceResult(store artifact.Store, assessmentID string) (pipeline.MaliciousPresenceResult, bool) {
+	arts, err := store.Query(assessmentID, artifact.TypeMaliciousPresence)
+	if err != nil || len(arts) == 0 {
+		return pipeline.MaliciousPresenceResult{}, false
+	}
+	var res pipeline.MaliciousPresenceResult
+	if err := json.Unmarshal(arts[0].Payload, &res); err != nil || !res.Present {
+		return pipeline.MaliciousPresenceResult{}, false
+	}
+	return res, true
+}
+
+func maliciousPresent(store artifact.Store, assessmentID string) bool {
+	_, ok := maliciousPresenceResult(store, assessmentID)
+	return ok
+}
+
+// maliciousPresentDetail renders the customer-visible basis for a malicious-present finding: the
+// exact resolved version that matched the advisory's enumerated malicious set. The presence itself
+// is the grounds — no reachability/symbol comparison is run or claimed.
+func maliciousPresentDetail(matchedVersion string) string {
+	if matchedVersion != "" {
+		return fmt.Sprintf("the resolved dependency version %s is listed by the advisory as a known-malicious package release", matchedVersion)
+	}
+	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
+}
+
 // priorityFor looks the advisory up in the pinned EPSS/KEV snapshot by its id and
 // aliases (EPSS/KEV are CVE-keyed; a GO-/GHSA-keyed advisory matches via its CVE
 // alias). Returns nil when neither feed has a record — most synthetic corpus ids
@@ -296,8 +508,8 @@ func reachabilityEvidence(store artifact.Store, assessmentID string) (report.Rea
 func attackerIngressInTrace(frames []report.CallFrame, ingresses []plugin.Ingress) *report.EntryPoint {
 	bySym := make(map[string]plugin.Ingress, len(ingresses))
 	for _, in := range ingresses {
-		if in.Symbol != "" {
-			bySym[in.Symbol] = in
+		if in.Symbol.SCIP != "" {
+			bySym[in.Symbol.SCIP] = in
 		}
 	}
 	for _, fr := range frames {
@@ -311,7 +523,7 @@ func attackerIngressInTrace(frames []report.CallFrame, ingresses []plugin.Ingres
 // entryPointOf maps a plugin ingress onto the neutral report EntryPoint, preferring
 // the human-readable route selector over the raw SCIP symbol.
 func entryPointOf(in plugin.Ingress) *report.EntryPoint {
-	sym := in.Symbol
+	sym := in.Symbol.SCIP
 	if in.Selector != "" {
 		sym = in.Selector
 	}
@@ -354,21 +566,21 @@ func ingressMap(store artifact.Store, assessmentID string) []plugin.Ingress {
 // (populated for first-party taint flows), then the govulncheck reachability paths.
 func candidateTrace(store artifact.Store, assessmentID string) ([]report.CallFrame, string) {
 	if p, ok := firstTaintPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress
+		return framesOf(p.Trace), p.Ingress.SCIP
 	}
 	if p, ok := firstReachPath(store, assessmentID); ok {
-		return framesOf(p.Trace), p.Ingress
+		return framesOf(p.Trace), p.Ingress.SCIP
 	}
 	return nil, ""
 }
 
-func framesOf(trace []string) []report.CallFrame {
+func framesOf(trace []plugin.Symbol) []report.CallFrame {
 	if len(trace) == 0 {
 		return nil
 	}
 	frames := make([]report.CallFrame, 0, len(trace))
 	for _, sym := range trace {
-		frames = append(frames, report.CallFrame{Symbol: sym})
+		frames = append(frames, report.CallFrame{Symbol: sym.SCIP})
 	}
 	return frames
 }
@@ -386,7 +598,7 @@ func entryPointFor(ingressSym string, ingresses []plugin.Ingress) *report.EntryP
 	// 1. The advisory-specific reaching ingress (ReachPath.Ingress for the resolved sink).
 	if ingressSym != "" {
 		for _, in := range ingresses {
-			if in.Symbol == ingressSym {
+			if in.Symbol.SCIP == ingressSym {
 				return entryPointOf(in)
 			}
 		}
@@ -817,6 +1029,8 @@ func ecosystemFor(language string) string {
 		return "Go"
 	case "java":
 		return "Maven"
+	case "kotlin":
+		return "Maven" // Kotlin/JVM artifacts are Maven-keyed in OSV regardless of source language (A2).
 	case "javascript", "js":
 		return "npm"
 	case "python", "py":

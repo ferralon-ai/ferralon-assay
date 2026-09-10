@@ -55,23 +55,28 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	cleanup := func() {}
 
 	if isRemoteURL(target) {
-		dir, lang, err := checkout.NewGitCheckout().Fetch(ctx, target, revision)
+		plan, err := checkout.NewGitCheckout().Fetch(ctx, target, revision)
 		if err != nil {
 			return nil, fmt.Errorf("clone %q: %w", target, err)
 		}
-		buildDir, language = dir, lang
-		cleanup = func() { _ = os.RemoveAll(dir) }
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
+		// Remove the whole checkout tree, not the primary project root: once a plan can
+		// enumerate several projects, the primary may be a subdirectory and removing it
+		// would leak the rest of the temp checkout.
+		cleanup = func() { _ = os.RemoveAll(plan.Root) }
 		repo = repoIdentity(target)
 	} else {
 		absTarget, err := filepath.Abs(target)
 		if err != nil {
 			return nil, fmt.Errorf("resolve target: %w", err)
 		}
-		dir, lang, err := checkout.ResolveVendored(absTarget)
+		plan, err := checkout.ResolveVendored(absTarget)
 		if err != nil {
 			return nil, err
 		}
-		buildDir, language = dir, lang
+		prim := plan.Primary()
+		buildDir, language = prim.Root, prim.Language
 		repo = filepath.Base(absTarget)
 	}
 	if repoOverride != "" {
@@ -110,6 +115,11 @@ func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
 			return plugin.NewJavaPlugin(plugin.WithJavaBinaryPath(bin))
 		}
 		return plugin.NewJavaPlugin()
+	case checkout.LangKotlin:
+		if bin != "" {
+			return plugin.NewKotlinPlugin(plugin.WithKotlinBinaryPath(bin))
+		}
+		return plugin.NewKotlinPlugin()
 	case checkout.LangJS:
 		if bin != "" {
 			return plugin.NewJSPlugin(plugin.WithJSBinaryPath(bin))
@@ -196,6 +206,8 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		return goAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangJava:
 		return javaAdvisoryCorpus(includeHouseCanaries)
+	case checkout.LangKotlin:
+		return kotlinAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangJS:
 		return jsAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangPython:
@@ -252,31 +264,60 @@ func goAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	return corpus
 }
 
-// javaAdvisoryCorpus is the set of Java/Maven advisories the OSS tool evaluates a Java source tree
-// against (pipeline.AdvisoryTable, pkg:maven ecosystem).
+// mavenAdvisoryFloor is the DEFAULT floor for every JVM/Maven-ecosystem language — three real,
+// public Maven advisories, the same kind of membership the Go corpus has always had. Until
+// 2026-08-05 javaAdvisoryCorpus returned nil unless the canary flag was set, which made the default
+// floor empty and halted every default Java scan at the empty-work-set gate in run.go. The OSV
+// widening did not rescue it: admitByFacts admits only ids the fact source can resolve, and the
+// table held no Maven facts at all, so a live query that returned 55 real GHSA ids for a
+// jackson-databind tree admitted none of them. See the block of twelve in pipeline.AdvisoryTable for
+// where these came from and how their ranges were verified.
 //
-// The DEFAULT floor is three real, public Maven advisories — the same kind of membership the Go
-// corpus has always had. Until 2026-08-05 this function returned nil unless the canary flag was set,
-// which made the default floor empty and halted every default Java scan at the empty-work-set gate
-// in run.go. The OSV widening did not rescue it: admitByFacts admits only ids the fact source can
-// resolve, and the table held no Maven facts at all, so a live query that returned 55 real GHSA ids
-// for a jackson-databind tree admitted none of them. See the block of twelve in
-// pipeline.AdvisoryTable for where these came from and how their ranges were verified.
+// Kotlin shares this floor rather than carrying its own: a Kotlin build resolves its dependencies
+// through the same Maven coordinate system (Gradle/Maven repositories, group:artifact:version) as
+// Java, so a Maven-ecosystem advisory names a real package in a Kotlin tree exactly as it does in a
+// Java one — this is the correct ecosystem floor for Kotlin, not a borrowed placeholder.
+func mavenAdvisoryFloor() []assessment.VulnRef {
+	return []assessment.VulnRef{
+		{ID: "CVE-2019-14540", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — HikariConfig deserialization gadget
+		{ID: "CVE-2020-36518", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — nested-object StackOverflow DoS
+		{ID: "CVE-2024-22243", Source: "ghsa"}, // org.springframework:spring-web — UriComponentsBuilder open redirect / SSRF
+	}
+}
+
+// javaAdvisoryCorpus is the set of Java/Maven advisories the OSS tool evaluates a Java source tree
+// against (pipeline.AdvisoryTable, pkg:maven ecosystem). See mavenAdvisoryFloor for the DEFAULT
+// floor's provenance.
 //
 // includeHouseCanaries adds the synthetic first-party advisories on top: two SSRF sinks resolved by
 // call-graph reachability plus one version-resolvable dependency, all over com.example.* packages
 // and none carrying a CVE. They stay off the default surface.
 func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
-	corpus := []assessment.VulnRef{
-		{ID: "CVE-2019-14540", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — HikariConfig deserialization gadget
-		{ID: "CVE-2020-36518", Source: "ghsa"}, // com.fasterxml.jackson.core:jackson-databind — nested-object StackOverflow DoS
-		{ID: "CVE-2024-22243", Source: "ghsa"}, // org.springframework:spring-web — UriComponentsBuilder open redirect / SSRF
-	}
+	corpus := mavenAdvisoryFloor()
 	if includeHouseCanaries {
 		corpus = append(corpus,
 			assessment.VulnRef{ID: "TEGRON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
 			assessment.VulnRef{ID: "TEGRON-JAVA-SPRING-SSRF-0001", Source: "osv"}, // com.example.web/spring-ssrf — Spring SSRF taint reachability
 			assessment.VulnRef{ID: "TEGRON-JAVA-DEP-0001", Source: "osv"},         // com.example.lib:widget — version-resolvable Maven dependency
+		)
+	}
+	return corpus
+}
+
+// kotlinAdvisoryCorpus is the default advisory floor for the Kotlin lane (pkg:maven ecosystem):
+// the SAME real, public mavenAdvisoryFloor the Java lane ships, because a Kotlin build resolves its
+// dependencies through the same Maven coordinate system as Java (see mavenAdvisoryFloor). Sharing
+// it is the honest ecosystem floor for Kotlin — not a fabricated one, and not a .NET-style synthetic
+// stand-in.
+//
+// includeHouseCanaries adds one synthetic first-party advisory on top, honoring the same opt-in
+// contract every other ecosystem's canary honors (see javaAdvisoryCorpus): a version-resolvable
+// dependency over a com.example.* package, carrying no CVE, off the default surface.
+func kotlinAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
+	corpus := mavenAdvisoryFloor()
+	if includeHouseCanaries {
+		corpus = append(corpus,
+			assessment.VulnRef{ID: "TEGRON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
 		)
 	}
 	return corpus

@@ -42,6 +42,9 @@ var registry = map[Type]TypeMeta{
 	TypePoE: {Owner: "verdict_emission", SchemaVersion: "tegron.poe.v1"},
 	// Deterministic exposure report: aggregates already-computed signals, emits no verdict.
 	TypeExposureFootprint: {Owner: "exposure_footprint", SchemaVersion: ExposureFootprintSchemaVersion},
+	// Malicious-package presence: an affirmative decisive match emitted by the maliciousPresence
+	// Assess stage. Present-only; its absence is the fail-open path (no artifact).
+	TypeMaliciousPresence: {Owner: "malicious_presence", SchemaVersion: "tegron.malicious_presence.v1"},
 	// Standard projections — read-only views of a PoE. They are derived from the PoE at
 	// emission time (or on demand via the API), not produced by a separate pipeline stage.
 	TypeProjectionSARIF:       {Owner: "verdict_emission", SchemaVersion: "tegron.projection_sarif.v1"},

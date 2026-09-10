@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/goanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -154,6 +155,25 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 			return plugin.Response{}, err
 		}
 		return plugin.Response{BuildManifest: &res}, nil
+
+	case plugin.OpResolveInventory:
+		if req.ResolveInventory == nil {
+			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
+		}
+		// PLAN-102: Go resolves the SELECTED dependency graph (go mod graph + go.mod),
+		// not go.mod's require list. A declared-partial result (e.g. no manifest) is a
+		// success payload; only a hard resolution failure is an error (inv.4).
+		res, err := goanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		if err != nil {
+			return plugin.Response{}, err
+		}
+		return plugin.Response{Inventory: &res}, nil
+
+	case plugin.OpCapabilityManifest:
+		// Go's capability manifest CONTENT is Phase-4 (PLAN-4x0); this cycle lands the op
+		// wired to honest absence (Supported:false), never a Supported:true manifest with
+		// empty axes.
+		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "go"}}, nil
 
 	default:
 		return plugin.Response{}, fmt.Errorf("unknown op %q", req.Op)

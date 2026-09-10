@@ -72,13 +72,13 @@ func TestStacksToReachPaths_MapsSinkIngressTrace(t *testing.T) {
 		t.Fatalf("want 1 path, got %d: %+v", len(paths), paths)
 	}
 	p := paths[0]
-	if p.Sink != sink {
-		t.Errorf("Sink: want %q (bottom of stack), got %q", sink, p.Sink)
+	if p.Sink.SCIP != sink {
+		t.Errorf("Sink: want %q (bottom of stack), got %q", sink, p.Sink.SCIP)
 	}
-	if p.Ingress != main {
-		t.Errorf("Ingress: want %q (top entry frame), got %q", main, p.Ingress)
+	if p.Ingress.SCIP != main {
+		t.Errorf("Ingress: want %q (top entry frame), got %q", main, p.Ingress.SCIP)
 	}
-	wantTrace := []string{main, handle, sink}
+	wantTrace := []plugin.Symbol{sym(main), sym(handle), sym(sink)}
 	if !reflect.DeepEqual(p.Trace, wantTrace) {
 		t.Errorf("Trace: want %v, got %v", wantTrace, p.Trace)
 	}
@@ -102,11 +102,11 @@ func TestStacksToReachPaths_EmptyIngressWhenNoEntry(t *testing.T) {
 	if len(paths) != 1 {
 		t.Fatalf("want 1 path, got %d", len(paths))
 	}
-	if paths[0].Ingress != "" {
-		t.Errorf("Ingress: want empty (no known entry), got %q", paths[0].Ingress)
+	if paths[0].Ingress != (plugin.Symbol{}) {
+		t.Errorf("Ingress: want empty (no known entry), got %q", paths[0].Ingress.SCIP)
 	}
-	if paths[0].Sink != sink {
-		t.Errorf("Sink: want %q, got %q", sink, paths[0].Sink)
+	if paths[0].Sink.SCIP != sink {
+		t.Errorf("Sink: want %q, got %q", sink, paths[0].Sink.SCIP)
 	}
 }
 
@@ -128,15 +128,15 @@ func TestReconcile_TraceConsistentWithCallGraph(t *testing.T) {
 	sink := scipID("v", "Sink")
 
 	paths := []plugin.ReachPath{{
-		Sink:    sink,
-		Ingress: main,
-		Trace:   []string{main, handle, sink},
+		Sink:    sym(sink),
+		Ingress: sym(main),
+		Trace:   []plugin.Symbol{sym(main), sym(handle), sym(sink)},
 	}}
 	cg := plugin.CallGraphResult{
 		Partiality: plugin.Complete(),
 		Edges: []plugin.CallEdge{
-			{Caller: main, Callee: handle},
-			{Caller: handle, Callee: sink},
+			{Caller: sym(main), Callee: sym(handle)},
+			{Caller: sym(handle), Callee: sym(sink)},
 		},
 	}
 
@@ -183,13 +183,13 @@ func TestReconcile_InconsistentTraceDeclaresPartial(t *testing.T) {
 	sink := scipID("v", "Sink")
 
 	paths := []plugin.ReachPath{{
-		Sink:    sink,
-		Ingress: main,
-		Trace:   []string{main, sink}, // no edge main->sink in the graph
+		Sink:    sym(sink),
+		Ingress: sym(main),
+		Trace:   []plugin.Symbol{sym(main), sym(sink)}, // no edge main->sink in the graph
 	}}
 	cg := plugin.CallGraphResult{
 		Partiality: plugin.Complete(),
-		Edges:      []plugin.CallEdge{{Caller: main, Callee: scipID("m", "Other")}},
+		Edges:      []plugin.CallEdge{{Caller: sym(main), Callee: sym(scipID("m", "Other"))}},
 	}
 
 	part := reconcile(paths, cg, false)

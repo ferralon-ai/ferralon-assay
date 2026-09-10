@@ -1,0 +1,17 @@
+{
+  "manifest_version": "1.0.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "FERRALON-COMPAT-V2-0001",
+      "path": "FERRALON-COMPAT-V2-0001.json",
+      "output_digest": "sha256:bc8877d02d09f83556ea6e4a807d5741cc1768e649a3993c14b871a8e988ec48"
+    },
+    {
+      "identifier": "FERRALON-COMPAT-V3-0001",
+      "path": "FERRALON-COMPAT-V3-0001.json",
+      "output_digest": "sha256:7300b541d9f5a459a7570bb160a5ae98b6182096cf67e08c05d1868c51003960"
+    }
+  ]
+}

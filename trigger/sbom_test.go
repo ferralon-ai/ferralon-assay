@@ -7,14 +7,14 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
 
 // goFixtureModule writes a minimal Go module to a temp dir whose go.mod requires
-// golang.org/x/text at v0.3.6 (the affected version of GO-2021-0113). S2's offline
-// go.mod read resolves the version with no plugin, network, or git — the
-// vendored_repro path. It returns the dir as a vendored CodebaseRef.
+// golang.org/x/text at v0.3.6. ResolveVendored detects the "go" language from it (the
+// vendored_repro path — no network, no git). It returns the dir as a vendored CodebaseRef.
 func goFixtureModule(t *testing.T) assessment.CodebaseRef {
 	t.Helper()
 	dir := t.TempDir()
@@ -28,43 +28,37 @@ func goFixtureModule(t *testing.T) assessment.CodebaseRef {
 	}
 }
 
-// TestResolveSBOM_GoFixture proves ResolveSBOM resolves the advisory-keyed package
-// (golang.org/x/text at the go.mod version) from the cheap S1+S2 slice — no analysis
-// stages, no StateStore.
-func TestResolveSBOM_GoFixture(t *testing.T) {
-	codebase := goFixtureModule(t)
-
-	sbom, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
-		Codebase:   codebase,
-		Advisories: []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}},
+// TestResolveSBOM_UnsupportedInventoryIsEmpty proves the HONEST Phase-1 state (C3): with no language
+// plugin injected, the inventory is not established, so the SBOM is empty. This is the inventory-keyed
+// contract, not the old advisory-keyed one — the emptiness comes from an unresolved inventory, not
+// from a corpus that names no dependency. (The scan-level partiality note declaring the gap is
+// asserted by the baseline producer's tests; ResolveSBOM returns only the package set for the diff.)
+func TestResolveSBOM_UnsupportedInventoryIsEmpty(t *testing.T) {
+	sbom, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+		Codebase: goFixtureModule(t),
 	})
 	if err != nil {
 		t.Fatalf("ResolveSBOM: %v", err)
 	}
-	if len(sbom.Packages) != 1 {
-		t.Fatalf("want 1 package, got %+v", sbom.Packages)
-	}
-	pkg := sbom.Packages[0]
-	if pkg.Ecosystem != "Go" || pkg.Name != "golang.org/x/text" || pkg.Version != "v0.3.6" {
-		t.Fatalf("unexpected package %+v", pkg)
+	if len(sbom.Packages) != 0 {
+		t.Fatalf("no inventory resolver ⇒ empty SBOM, got %+v", sbom.Packages)
 	}
 }
 
-// TestResolveSBOM_BaselineParity proves the cheap S1+S2 resolver yields the SAME SBOM
-// packages as the full S1–S6 baseline over the same codebase + corpus. This is the
-// load-bearing parity: the PR-head SBOM is diffed against a baseline produced by
-// RunBaseline, so any divergence would make every PR read deps as changed.
+// TestResolveSBOM_BaselineParity proves the whole-graph resolver yields the SAME SBOM packages as
+// the full S1–S6 baseline over the same codebase + inventory. This is the load-bearing parity: the
+// PR-head SBOM is diffed against a baseline produced by RunBaseline, so any divergence would make
+// every PR read deps as changed. Both now key on the SAME inventory (via WithPlugin), so parity is a
+// property of the shared projection, not a coincidence of two advisory loops.
 func TestResolveSBOM_BaselineParity(t *testing.T) {
 	codebase := goFixtureModule(t)
-	corpus := []assessment.VulnRef{
-		{ID: "GO-2021-0113", Source: "osv"}, // golang.org/x/text — resolvable
-		{ID: "GO-2022-0322", Source: "osv"}, // prometheus/client_golang — absent dep
-		{ID: "GO-2021-0264", Source: "osv"}, // stdlib — no module package
-	}
+	inv := twoPackageInventory()
+	opts := []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go", inv: inv})}
+	corpus := []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}}
 
-	resolved, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
-		Codebase:   codebase,
-		Advisories: corpus,
+	resolved, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+		Codebase:      codebase,
+		AssessOptions: opts,
 	})
 	if err != nil {
 		t.Fatalf("ResolveSBOM: %v", err)
@@ -72,9 +66,10 @@ func TestResolveSBOM_BaselineParity(t *testing.T) {
 
 	store := &memStore{}
 	rep, err := RunBaseline(context.Background(), store, BaselineRequest{
-		Subject:    Subject{Repo: "example.com/app", ResolvedCommit: "sha"},
-		Codebase:   codebase,
-		Advisories: corpus,
+		Subject:       Subject{Repo: "example.com/app", ResolvedCommit: "sha"},
+		Codebase:      codebase,
+		Advisories:    corpus,
+		AssessOptions: opts,
 	})
 	if err != nil {
 		t.Fatalf("RunBaseline: %v", err)
@@ -83,20 +78,25 @@ func TestResolveSBOM_BaselineParity(t *testing.T) {
 	if !equalPackages(resolved.Packages, rep.SBOM.Packages) {
 		t.Fatalf("SBOM parity broken:\n  ResolveSBOM = %+v\n  RunBaseline = %+v", resolved.Packages, rep.SBOM.Packages)
 	}
+	if len(resolved.Packages) == 0 {
+		t.Fatal("parity over an empty SBOM proves nothing; the fixture inventory must be non-empty")
+	}
 }
 
-// TestResolveSBOM_EmptyCorpus proves the advisory-keyed contract: an empty corpus
-// resolves an empty SBOM (a dependency nobody has an advisory for is invisible).
-func TestResolveSBOM_EmptyCorpus(t *testing.T) {
-	sbom, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
-		Codebase:   goFixtureModule(t),
-		Advisories: nil,
+// TestResolveSBOM_InventoryKeyedNotCorpusKeyed proves the core §4.1 property: the SBOM is keyed on
+// the resolved inventory, NOT the advisory corpus. With a fixture inventory and ZERO advisories the
+// resolved packages are still present — a dependency reaches the SBOM whether or not any advisory
+// names it. (On main this SBOM would be empty: the old producer keyed on the corpus.)
+func TestResolveSBOM_InventoryKeyedNotCorpusKeyed(t *testing.T) {
+	sbom, _, err := ResolveSBOM(context.Background(), ResolveSBOMRequest{
+		Codebase:      goFixtureModule(t),
+		AssessOptions: []pipeline.AssessOption{pipeline.WithPlugin(fakeInventoryPlugin{lang: "go", inv: twoPackageInventory()})},
 	})
 	if err != nil {
 		t.Fatalf("ResolveSBOM: %v", err)
 	}
-	if len(sbom.Packages) != 0 {
-		t.Fatalf("empty corpus must yield empty SBOM, got %+v", sbom.Packages)
+	if len(sbom.Packages) != 2 {
+		t.Fatalf("inventory-keyed SBOM must carry the resolved deps regardless of corpus, got %+v", sbom.Packages)
 	}
 }
 

@@ -21,6 +21,7 @@ type decl struct {
 	name      string
 	enclosing []string // outer→inner type names; empty for a top-level type
 	arity     int      // method parameter count (kindMethod only)
+	abstract  bool     // kindMethod with no body (interface/abstract, ';'-terminated)
 }
 
 // callSite is one method-call expression observed inside a method body: the
@@ -198,6 +199,25 @@ func parseFile(src string) parseResult {
 				typeStack = typeStack[:len(typeStack)-1]
 			}
 			i++
+		case c == '@':
+			// A member annotation (@Scheduled(fixedRate = 60000), @GetMapping("/x"),
+			// @Override). Skip the annotation name AND its argument group so the
+			// args are not misparsed as members: a named argument like
+			// "fixedRate = 60000" would otherwise read as a field ('=') and its
+			// skip-to-';' swallows the real method declaration that follows,
+			// zeroing the file's call graph. The separate call/ingress pass
+			// (parseCallsAndIngresses) recognizes the annotation on its own; here we
+			// only need to step over it. "@interface" is an annotation-TYPE
+			// declaration, not a member annotation — leave it to the identifier path
+			// below (precededByAt sees the '@'), which models it specially.
+			if j := skipSpace(r, i+1); j < n {
+				if w, _ := readWord(r, j); w == "interface" {
+					i++
+					continue
+				}
+			}
+			_, _, next := parseAnnotation(r, nil, i)
+			i = next
 		case isIdentStart(c):
 			word, next := readWord(r, i)
 			// An annotation type "@interface" is not modeled: it uses a distinct
@@ -266,7 +286,11 @@ func parseFile(src string) parseResult {
 	// Second pass (body-aware): collect call sites and annotation/servlet ingress
 	// markers from the same cleaned source. Declarations and call/ingress data are
 	// gathered separately so the working declaration scanner above is untouched.
-	res.calls, res.ingresses = parseCallsAndIngresses(r)
+	// The body-aware call/ingress pass gets both the cleaned runes (for structure) and
+	// the raw source runes (for annotation string-value recovery). stripJava preserves
+	// rune count, so the two index identically; the length guard in parseAnnotation is a
+	// belt-and-suspenders check.
+	res.calls, res.ingresses = parseCallsAndIngresses(r, []rune(src))
 	return res
 }
 
@@ -462,6 +486,7 @@ func parseMember(r []rune, start int, enclosing []string) (decl, int, bool) {
 				if r[q] == '{' {
 					return d, q, true // leave '{' so the body opens a non-type block
 				}
+				d.abstract = true // ';'-terminated: an interface/abstract method, no body
 				return d, q + 1, true
 			}
 			return decl{}, start, false

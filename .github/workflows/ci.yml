@@ -1,0 +1,46 @@
+name: CI
+
+# Green-gates every pull request and every push to main: build, vet, gofmt, and the hermetic
+# test suite. Live/network tests are //go:build live gated and never run here — this workflow
+# runs with no corpus fixtures and no network access.
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: gofmt (first-party files only)
+        run: |
+          files=$(gofmt -l $(git ls-files '*.go' | grep -vE '(^|/)(testdata|vendor)/' || true))
+          if [[ -n "${files}" ]]; then
+            echo "::error::gofmt drift in:"
+            echo "${files}"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test ./...

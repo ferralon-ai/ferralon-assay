@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
 )
 
@@ -164,13 +165,22 @@ const normalizedAdvisorySchemaVersion = "ferralon.normalized_advisory.v2"
 // documents coexist during migration. Rides the ferralon. base (feed is a Ferralon platform feature).
 const normalizedAdvisorySchemaVersionV3 = "ferralon.normalized_advisory.v3"
 
+// normalizedAdvisorySchemaVersionV4 is the additive successor to v3. It adds the typed-symbol axis
+// (§4.4.2/.3): `symbols_typed []plugin.Symbol`, the canonical comparable PLAN-000 identity, coexisting
+// with the existing bare `symbols []string` (mirrors the affected_packages[] additive precedent). It is
+// omitempty + zero-safe, so v2/v3 documents decode unchanged with it nil. DECLARED-AWAITING-EMIT: the
+// cve-enrichment producer (a separate repo) does not emit typed symbols today, so the field is nil on
+// every current document — nil means "producer has not emitted typed symbols," NOT "the advisory has no
+// symbols" (the bare `symbols` axis is unaffected). Producer ownership is escalated to Eric (anvil-q15).
+const normalizedAdvisorySchemaVersionV4 = "ferralon.normalized_advisory.v4"
+
 // schemaVersionRecognized is the closed set of accepted wire tags. It replaces the exact-match gate
-// (d.SchemaVersion != normalizedAdvisorySchemaVersion) so v2 and v3 documents both validate. A tag
+// (d.SchemaVersion != normalizedAdvisorySchemaVersion) so v2, v3, and v4 documents all validate. A tag
 // outside the set fails shape-validation → fail open (never a laundered fact). New wire majors are
 // added here, never as a silent prefix match.
 func schemaVersionRecognized(v string) bool {
 	switch v {
-	case normalizedAdvisorySchemaVersion, normalizedAdvisorySchemaVersionV3:
+	case normalizedAdvisorySchemaVersion, normalizedAdvisorySchemaVersionV3, normalizedAdvisorySchemaVersionV4:
 		return true
 	default:
 		return false
@@ -305,6 +315,15 @@ type advisoryDoc struct {
 	GadgetClasses    []string          `json:"gadget_classes,omitempty"`    // java.gadget_on_classpath predicate operand
 	GuardSufficiency []docGuardVariant `json:"guard_sufficiency,omitempty"` // Prove-side evidence-label upgrade only
 
+	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the ENUMERATED
+	// affected version set. Object presence (non-nil) IS the marker: "this advisory is a malicious
+	// package; the presence-verdict model applies; there is no reachability/symbol/detonation."
+	// Absent (a v2 doc or any non-MAL advisory) ⇒ nil ⇒ the presence path never fires (inv.5
+	// fail-open). It carries NO bounds — a MAL record enumerates versions[], never a range — so it
+	// cannot feed the range/version axis; it is exact-string membership only (see toFacts / the
+	// maliciousPresence stage). Same additive omitempty posture as trigger/fix/config_key.
+	MaliciousPackage *docMaliciousPackage `json:"malicious_package,omitempty"`
+
 	// AffectedPackages is the additive v3 multi-package set. It lists EVERY package the advisory affects — each with its own identity/version/symbol
 	// axes — so the reader's stage-2 select-by-target can pick the package the assessed codebase
 	// actually depends on (a target on a SECONDARY package resolves instead of falling OPEN). The
@@ -314,6 +333,26 @@ type advisoryDoc struct {
 	// behavior (inv.5 fail-open). Advisory-level fields (aliases/cwes/sink_kind/trigger/…) are NOT
 	// repeated per element — they are shared across every package and stay top-level.
 	AffectedPackages []docAffectedPackage `json:"affected_packages,omitempty"`
+
+	// --- ferralon.normalized_advisory.v4 additive block -----------------------------------------
+	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol identity
+	// (Kind/Package/Enclosing/Name/Descriptor/SCIP), coexisting with the bare `symbols []string` above.
+	// omitempty + zero-safe: absent (every v2/v3 document, and every v4 document until the producer emits)
+	// → nil. DECLARED-AWAITING-EMIT (anvil-q15): nil means "producer has not emitted typed symbols," NOT
+	// "no symbols" — the bare `symbols` axis carries the strings today. Carries no verdict.
+	SymbolsTyped []plugin.Symbol `json:"symbols_typed,omitempty"`
+
+	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for the `symbols` set — how those
+	// symbols were obtained. It is a SINGLE scalar per record (one value covers the whole `symbols`
+	// array, not one tag per symbol). OPEN SET, decoded verbatim: the emitted vocabulary is
+	// "osv-declared" | "curated" | "diff-lexed" (with "reasoning" reserved-not-emitted), but an
+	// unrecognized value passes through UNTOUCHED — never rejected, never coerced to zero — so a
+	// future producer tier needs no consumer change. STORE-ONLY (A2, cycle 2026-08-24 corpus-scaffold):
+	// decoded onto AdvisoryFacts and read by NOTHING — it must not enter any admission, reachability,
+	// or refute path. Absent → "" → UNKNOWN derivation, NOT low confidence and NOT "untrusted": a
+	// symbol with no provenance tag resolves and is walked exactly as today (honest-absent, inv.5).
+	// Carries no verdict.
+	SymbolProvenance string `json:"symbol_provenance,omitempty"`
 }
 
 // docAffectedPackage is one entry of the additive v3 affected_packages[] set. It mirrors the
@@ -348,6 +387,14 @@ type docFix struct {
 	UpstreamCommit string `json:"upstream_commit,omitempty"`
 	GuardShape     string `json:"guard_shape,omitempty"`
 	FailedFixClass string `json:"failed_fix_class,omitempty"` // closed set (failedFixClassRecognized)
+}
+
+// docMaliciousPackage is the malicious-package marker's wire shape. AffectedVersions is the OSV
+// versions[] set copied verbatim, for exact-string membership (no comparator). An empty/absent set
+// inside a present object ⇒ un-decidable ⇒ OPEN both directions (mirror of the empty-set rule in
+// versionOutsideRanges). Maps onto AdvisoryFacts.MaliciousPackage (MaliciousPackageFacts).
+type docMaliciousPackage struct {
+	AffectedVersions []string `json:"affected_versions,omitempty"`
 }
 
 // docConfigKey is the core.config predicate operand: a config key plus the value that makes the
@@ -574,6 +621,10 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// v3 additive block. Each closed-set enum is validated fail-open: an unrecognized IngressKind /
 	// FailedFixClass drops to "" (the zero, constant-fallback) exactly the way schemeRecognized /
 	// trustTierRecognized gate — never rejecting the whole document, never a silent wrong operand.
+	// §4.4.6 absent-vs-none: the pointer nil/non-nil already carries the distinction on the wire;
+	// stamp it onto the projection so it is no longer collapsed. nil → PresenceAbsent (the zero, set
+	// by leaving the operand untouched); non-nil zero-valued → declared_empty; non-nil with values →
+	// declared_values. Representation-only — Zero() stays value-based, so no consumer branch flips.
 	var trigger TriggerRoute
 	if d.Trigger != nil {
 		ingress := d.Trigger.IngressKind
@@ -586,6 +637,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			Param:          d.Trigger.Param,
 			MalformedToken: d.Trigger.MalformedToken,
 		}
+		trigger.Declared = presenceFromZero(trigger.Zero())
 	}
 	var fix FixHint
 	if d.Fix != nil {
@@ -598,10 +650,12 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			GuardShape:     d.Fix.GuardShape,
 			FailedFixClass: ffc,
 		}
+		fix.Declared = presenceFromZero(fix.Zero())
 	}
 	var configKey ConfigOperand
 	if d.ConfigKey != nil {
 		configKey = ConfigOperand{Key: d.ConfigKey.Key, UnsafeValue: d.ConfigKey.UnsafeValue}
+		configKey.Declared = presenceFromZero(configKey.Zero())
 	}
 	var guardSuff []GuardVariant
 	for _, g := range d.GuardSufficiency {
@@ -653,6 +707,23 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		})
 	}
 
+	// Malicious-package marker. Non-nil object ⇒ Declared=true (the presence-verdict model applies);
+	// copy the enumerated versions verbatim, dropping empty strings. ADDITIVE + zero-safe: a nil
+	// marker ⇒ Declared=false ⇒ today's exact behavior; a malformed/empty marker only adds a presence
+	// path that itself fails open — it NEVER rejects the document and NEVER touches the scalar/version
+	// axes. The explicit Declared bool distinguishes "declared malicious, empty set → OPEN" from "not
+	// malicious at all".
+	var malicious MaliciousPackageFacts
+	if d.MaliciousPackage != nil {
+		malicious.Declared = true
+		for _, v := range d.MaliciousPackage.AffectedVersions {
+			if v == "" {
+				continue
+			}
+			malicious.AffectedVersions = append(malicious.AffectedVersions, v)
+		}
+	}
+
 	// Prefer the `root_cause` spelling; fall back to `summary` (see SummaryCompat). Both name the
 	// same free-text narrative, so this is a spelling reconciliation, not a merge across facts.
 	summary := d.Summary
@@ -669,14 +740,17 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		Coordinate:     d.Coordinate,
 		PURL:           d.PURL,
 		Symbols:        d.Symbols,
-		GuardSymbols:   d.GuardSymbols,
-		CWEs:           d.CWEs,
-		Summary:        summary,
-		SinkKind:       d.SinkKind,
-		PocSignal:      d.PocSignal != nil && d.PocSignal.Available,
-		AffectedRanges: ranges,
-		Provenance:     prov,
-		Lineage:        lineage,
+		// A2 store-only: the record-scoped derivation tag rides alongside Symbols verbatim (open set,
+		// no validation — an unrecognized tier passes through). Nothing downstream reads it.
+		SymbolProvenance: d.SymbolProvenance,
+		GuardSymbols:     d.GuardSymbols,
+		CWEs:             d.CWEs,
+		Summary:          summary,
+		SinkKind:         d.SinkKind,
+		PocSignal:        d.PocSignal != nil && d.PocSignal.Available,
+		AffectedRanges:   ranges,
+		Provenance:       prov,
+		Lineage:          lineage,
 		// v3 additive fields.
 		Withdrawn:        d.Withdrawn,
 		Trigger:          trigger,
@@ -689,6 +763,10 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		GadgetClasses:    d.GadgetClasses,
 		GuardSufficiency: guardSuff,
 		AffectedPackages: affectedPkgs,
+		// v4 additive field. Zero-safe passthrough: nil (producer has not emitted) stays nil —
+		// never conflated with an empty symbol set (anvil-q15 declared-awaiting-emit).
+		SymbolsTyped:     d.SymbolsTyped,
+		MaliciousPackage: malicious,
 	}, true
 }
 
@@ -752,6 +830,19 @@ func schemeRecognized(scheme string) bool {
 func trustTierRecognized(tier string) bool {
 	switch TrustTier(tier) {
 	case "", TrustByO, TrustThirdParty, TrustFirstParty:
+		return true
+	default:
+		return false
+	}
+}
+
+// attributionStatusRecognized allows the empty status (zero value, semantically unreviewed) plus the
+// closed AttributionStatus enum (§4.4.8). Any other value fails validation → fail open to unreviewed,
+// mirroring trustTierRecognized. Wired into per-symbol population by PLAN-220 (this cycle establishes
+// the type + validator + state model only); exercised now by TestAttributionStatusRecognized.
+func attributionStatusRecognized(status string) bool {
+	switch AttributionStatus(status) {
+	case "", AttributionUnreviewed, AttributionConfirmed, AttributionAmbiguous, AttributionDisputed:
 		return true
 	default:
 		return false

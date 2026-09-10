@@ -74,12 +74,12 @@ func TestSpringSSRF_AdvisoryToReachability_FullChain(t *testing.T) {
 	// same way FindIngresses does.
 	ingSet := map[string]bool{}
 	for _, in := range g.ingresses {
-		if in.Symbol != "" {
-			ingSet[in.Symbol] = true
+		if in.Symbol.SCIP != "" {
+			ingSet[in.Symbol.SCIP] = true
 		}
 	}
 	for _, r := range merged.Roots {
-		ingSet[r] = true
+		ingSet[r.SCIP] = true
 	}
 	if len(ingSet) == 0 {
 		t.Fatal("no ingress/root entries for the Spring repro")
@@ -89,7 +89,7 @@ func TestSpringSSRF_AdvisoryToReachability_FullChain(t *testing.T) {
 	// EQUALITY the bug violated: symbol_mapping's fetch(1). vs scip-java's fetch().).
 	sinkIsNode := false
 	for _, e := range merged.Edges {
-		if e.Caller == sink || e.Callee == sink {
+		if e.Caller.SCIP == sink || e.Callee.SCIP == sink {
 			sinkIsNode = true
 		}
 	}
@@ -113,7 +113,7 @@ func TestSpringSSRF_AdvisoryToReachability_FullChain(t *testing.T) {
 	}
 	hasEdge := false
 	for _, e := range merged.Edges {
-		if e.Caller == wantIfaceArity1 && e.Callee == wantImplArity1 {
+		if e.Caller.SCIP == wantIfaceArity1 && e.Callee.SCIP == wantImplArity1 {
 			hasEdge = true
 		}
 	}

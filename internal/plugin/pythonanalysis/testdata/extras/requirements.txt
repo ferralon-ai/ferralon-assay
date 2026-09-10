@@ -1,0 +1,3 @@
+# PLAN-170 C2 fixture. A requirement declaring two extras; the declared Selection selects
+# only one of them. Expected outcomes are authored from PEP 508 / pip extras semantics.
+pkg-extras[security,socks]==2.0.0

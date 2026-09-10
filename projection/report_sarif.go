@@ -12,9 +12,14 @@
 //	report.VerdictNotExploitable     → "note"    (grounded refutation; informational)
 //	report.VerdictDisqualified       → "none"    (provably out of scope)
 //	report.VerdictUndetermined       → "none" / kind "review" (requires human review)
+//	report.VerdictMaliciousPresent   → "error"   (decisive: known-malicious package present)
 //
-// "error" is reserved for a proven exploitable finding, which the OSS tool cannot
-// produce — so a Report-driven SARIF result never emits "error".
+// "error" was historically reserved for a proven exploitable finding the OSS tool
+// cannot produce — so a reachable candidate never projects as "error". The one
+// honest exception is VerdictMaliciousPresent: it is not a candidate/lean but a
+// DECISIVE determination that a known-malicious package is installed at a listed
+// affected version (deterministic presence, no execution claim, inv. 5), which is
+// exactly what SARIF "error" means.
 //
 // `kind: "review"` is SARIF's own "requires human review", and `level: "none"` keeps
 // an undetermined finding out of the alert count: it is visible, and it is never
@@ -393,6 +398,11 @@ func MarshalReportSARIF(r report.Report) ([]byte, error) {
 // reportSARIFLevelKind maps a deterministic verdict to a SARIF level + kind.
 func reportSARIFLevelKind(v report.Verdict) (level, kind string) {
 	switch v {
+	case report.VerdictMaliciousPresent:
+		// Decisive, not a candidate: a known-malicious package is present at a listed affected
+		// version. "error" + "open" is the honest SARIF cell for a determined finding that owes
+		// remediation — the one verdict for which "error" is truthful (see the level-mapping note).
+		return "error", "open"
 	case report.VerdictReachableCandidate:
 		// A candidate owes follow-up (Prove tier). "warning" + "open" signals an
 		// unresolved item — never "error" (which implies a proven finding).
@@ -414,6 +424,11 @@ func reportSARIFLevelKind(v report.Verdict) (level, kind string) {
 // reportSARIFMessage builds an honest, human-readable result message.
 func reportSARIFMessage(f report.AdvisoryFinding) string {
 	switch f.Verdict {
+	case report.VerdictMaliciousPresent:
+		if f.Evidence.Detail != "" {
+			return fmt.Sprintf("%s: known-malicious package present. %s. Remove or replace this dependency.", f.Advisory.ID, f.Evidence.Detail)
+		}
+		return fmt.Sprintf("%s: a known-malicious package is present at a version this advisory lists as affected. Remove or replace this dependency.", f.Advisory.ID)
 	case report.VerdictReachableCandidate:
 		if f.Evidence.ReachablePath != "" {
 			return fmt.Sprintf(

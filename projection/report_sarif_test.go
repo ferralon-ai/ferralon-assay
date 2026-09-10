@@ -28,16 +28,21 @@ func TestReportSARIF_ResultPerFinding(t *testing.T) {
 	}
 }
 
-// TestReportSARIF_Inv5_NoErrorLevel asserts the OSS Report never emits SARIF
-// level "error" (which implies a proven finding). A reachable_candidate is "warning".
+// TestReportSARIF_Inv5_NoErrorLevel asserts the OSS Report emits SARIF level
+// "error" ONLY for the decisive malicious_package_present verdict — never for a
+// candidate/refutation (which would imply a proven-exploitable finding, inv.5). A
+// reachable_candidate is "warning".
 func TestReportSARIF_Inv5_NoErrorLevel(t *testing.T) {
 	log, err := projection.ProjectReportSARIF(fixtureReport())
 	if err != nil {
 		t.Fatalf("ProjectReportSARIF: %v", err)
 	}
 	for _, r := range log.Runs[0].Results {
-		if r.Level == "error" {
-			t.Fatalf("inv.5 VIOLATION: %q got level=error — OSS Report may never be error", r.RuleID)
+		if r.Level != "error" {
+			continue
+		}
+		if v, _ := r.Properties.Tegron["verdict"].(string); v != string(report.VerdictMaliciousPresent) {
+			t.Fatalf("inv.5 VIOLATION: %q got level=error for verdict %q — only malicious_package_present may be error", r.RuleID, v)
 		}
 	}
 }

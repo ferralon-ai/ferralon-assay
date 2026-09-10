@@ -1,0 +1,4 @@
+# C4 negative control: a flat requirements.txt expresses NO dependency edges,
+# so every node's relationship must read as unexpressed, never "direct".
+jinja2==3.1.2
+markupsafe==3.0.3

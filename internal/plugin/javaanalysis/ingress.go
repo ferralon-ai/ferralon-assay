@@ -26,15 +26,15 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 	var ingresses []plugin.Ingress
 	for _, f := range prog.files {
 		for _, in := range f.ingresses {
-			sym := methodSCIP(f.pkg, in.enclosing, in.name, in.arity)
-			key := in.kind + "\x00" + sym + "\x00" + in.selector
+			scip := methodSCIP(f.pkg, in.enclosing, in.name, in.arity)
+			key := in.kind + "\x00" + scip + "\x00" + in.selector
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			ingresses = append(ingresses, plugin.Ingress{
 				Kind:     in.kind,
-				Symbol:   sym,
+				Symbol:   sym(scip),
 				Selector: in.selector,
 			})
 		}
@@ -59,8 +59,8 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 		if ingresses[i].Kind != ingresses[j].Kind {
 			return ingresses[i].Kind < ingresses[j].Kind
 		}
-		if ingresses[i].Symbol != ingresses[j].Symbol {
-			return ingresses[i].Symbol < ingresses[j].Symbol
+		if ingresses[i].Symbol.SCIP != ingresses[j].Symbol.SCIP {
+			return ingresses[i].Symbol.SCIP < ingresses[j].Symbol.SCIP
 		}
 		return ingresses[i].Selector < ingresses[j].Selector
 	})
@@ -76,7 +76,7 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 // deduplicating on (kind, symbol, selector).
 func mergeIngresses(lexical, resolved []plugin.Ingress) []plugin.Ingress {
 	seen := map[string]bool{}
-	key := func(in plugin.Ingress) string { return in.Kind + "\x00" + in.Symbol + "\x00" + in.Selector }
+	key := func(in plugin.Ingress) string { return in.Kind + "\x00" + in.Symbol.SCIP + "\x00" + in.Selector }
 	out := make([]plugin.Ingress, 0, len(lexical)+len(resolved))
 	for _, in := range append(append([]plugin.Ingress{}, lexical...), resolved...) {
 		k := key(in)

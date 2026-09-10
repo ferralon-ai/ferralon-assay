@@ -62,4 +62,15 @@
 // SUFFICIENT is the Prove tier's two-trace job. Precision is measured against a curated,
 // upstream-verified expected-sink annotation, never against the symbol list under test
 // (which would be circular).
+//
+// # Phase-0 metric surface (PLAN-020)
+//
+// The Report rollups computable now are the analysis-completion rate (CompletionRate,
+// §4.7.12), the symbol-resolution rate (SymbolResolutionRate, §4.7.11), path recall
+// (Recall, §4.7.9 — n/a until expected_sinks is populated), and per-case runtime
+// (RuntimeMS, §4.7.13; environment-variant, so it is EXCLUDED from the golden diff/gate).
+// Precision (§4.7.8) is schema-only — no curated annotations, no threshold yet. Memory
+// (§4.7.14) and cache-hit rate (§4.7.15) are deliberately NOT stubbed here: their CI-budget
+// and semantics do not exist yet, and an empty stub would misrepresent coverage — they land
+// with their insertion plans (PLAN-490 and PLAN-421 respectively).
 package reachcandidate

@@ -1,0 +1,8 @@
+{
+  "provenance": "NATIVE-CAPTURED from the real PDM resolver, out-of-band (not scan-time plugin execution). Captured 2026-08-10 in a pip3 venv: python3 -m venv; pip install pdm==2.28.0 uv pip-tools; project pyproject.toml [project] requires-python=\">=3.9\", dependencies=[\"jinja2==3.1.2\"], build-backend hatchling; command: pdm lock --no-cross-platform. Tool versions: PDM 2.28.0, Python 3.14.6. jinja2 is a wheel-only pure-Python dep whose one transitive edge (MarkupSafe) makes this a two-level chain; no PEP 517 build backend executes during resolve.",
+  "resolver": "pdm.lock",
+  "packages": [
+    { "name": "jinja2", "version": "3.1.2", "relationship": "direct", "parents": [] },
+    { "name": "markupsafe", "version": "3.0.3", "relationship": "transitive", "parents": ["jinja2"] }
+  ]
+}

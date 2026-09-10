@@ -1,0 +1,7 @@
+{
+  "targets": { "node": "current" },
+  "plugins": [
+    ["module-resolver", { "alias": { "@root": "./src", "@test": "./test" } }],
+    ["transform-define", { "__ENV__": "production", "__DEBUG__": false }]
+  ]
+}

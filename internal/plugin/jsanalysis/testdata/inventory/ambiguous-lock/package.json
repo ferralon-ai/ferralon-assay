@@ -1,0 +1,9 @@
+{
+  "name": "f-ambiguous-lock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PLAN-160 fixture: two authoritative lockfiles (package-lock.json AND yarn.lock) at one root with NO packageManager signal. selectLockfile must decline (lockfile_ambiguous) and emit NO nodes for the root rather than guess a PM. Removing either lockfile makes the root resolvable.",
+  "dependencies": {
+    "ms": "2.0.0"
+  }
+}

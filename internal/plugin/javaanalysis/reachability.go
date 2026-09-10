@@ -30,6 +30,13 @@ import (
 // recognized attacker-facing ingress) also declares no_known_ingress. A load
 // failure in CallGraph/FindIngresses is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	// TODO(perf): this reparses the tree independently of CallGraph's internal
+	// loadProgram — acceptable for pass 1 (zero-egress, deterministic); CallGraph
+	// could instead return its program to avoid the second parse.
+	prog, err := loadProgram(req.BuildDir)
+	if err != nil {
+		return plugin.ReachabilityResult{}, err
+	}
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -39,12 +46,35 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 
-	paths, reasons := firstPartyPaths(cg, ing, req.Symbols)
+	paths, reasons := firstPartyPaths(prog, cg, ing, req.Symbols)
 
 	return plugin.ReachabilityResult{
 		Partiality: reachabilityPartiality(reasons),
 		Paths:      paths,
 	}, nil
+}
+
+// sinkClassifiers is the H3 registry (edge-seam.md §5): each overlay (#3 repository
+// sinks, #4 SpEL, #5 filter/security guards) appends a classifier from its OWN file's
+// init() via registerSinkClassifier, rather than editing the firstPartyPaths BFS core
+// and colliding. firstPartyPaths invokes every registered classifier once per requested
+// sink and unions the extra partiality reasons they return. Empty by default, so the
+// default behavior is byte-identical to today. Shared by Reachability and ComputeTaint
+// (both derive their paths through firstPartyPaths).
+//
+// Each entry is a FACTORY: given the active analysis *program it returns the concrete
+// per-sink classifier. This is the seam the four sink overlays (#2 AOP, #3 repos, #4
+// SpEL, #5 guard) bind against — the id string alone cannot tell whether a symbol is a
+// repository method, is @Transactional/@Async, or carries SpEL; that lives in program.
+var sinkClassifiers []func(prog *program) func(symbolID string) []string
+
+// registerSinkClassifier appends a sink-classifier FACTORY to the H3 registry. An
+// overlay calls it from init(); firstPartyPaths materializes the factory against the
+// active program once per analysis, then invokes the returned classifier per sink. A
+// classifier returns the extra partiality reasons a sink warrants (nil for a sink it
+// does not recognize), never fabricating reachability.
+func registerSinkClassifier(factory func(prog *program) func(symbolID string) []string) {
+	sinkClassifiers = append(sinkClassifiers, factory)
 }
 
 // firstPartyPaths derives one representative ingress→sink ReachPath per requested
@@ -53,7 +83,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // plus no_known_ingress for every requested sink with no reaching ingress (an
 // unknown, never a "safe"). Shared by Reachability and ComputeTaint — the two ops
 // differ only in their precision note and which request field names the sinks.
-func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks []string) ([]plugin.ReachPath, map[string]bool) {
+func firstPartyPaths(prog *program, cg plugin.CallGraphResult, ing plugin.IngressResult, sinks []string) ([]plugin.ReachPath, map[string]bool) {
 	reasons := map[string]bool{}
 	for _, r := range cg.Partiality.Reasons {
 		reasons[r] = true
@@ -62,25 +92,42 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 		reasons[r] = true
 	}
 
+	// Materialize the registered classifier factories against this analysis's program
+	// once (not per sink): each overlay binds its per-sink classifier to the program
+	// data it needs. Empty registry ⇒ no classifiers ⇒ byte-identical to today.
+	active := make([]func(string) []string, len(sinkClassifiers))
+	for i, factory := range sinkClassifiers {
+		active[i] = factory(prog)
+	}
+
 	callers := make(map[string][]string, len(cg.Edges))
 	for _, e := range cg.Edges {
-		callers[e.Callee] = append(callers[e.Callee], e.Caller)
+		callers[e.Callee.SCIP] = append(callers[e.Callee.SCIP], e.Caller.SCIP)
 	}
 	ingressSyms := make(map[string]bool, len(ing.Ingresses))
 	for _, in := range ing.Ingresses {
-		if in.Symbol != "" {
-			ingressSyms[in.Symbol] = true
+		if in.Symbol.SCIP != "" {
+			ingressSyms[in.Symbol.SCIP] = true
 		}
 	}
 	roots := make(map[string]bool, len(cg.Roots))
 	for _, r := range cg.Roots {
-		roots[r] = true
+		roots[r.SCIP] = true
 	}
 
 	var paths []plugin.ReachPath
 	for _, sink := range sinks {
 		if sink == "" {
 			continue
+		}
+		// H3 seam (edge-seam.md §5): let each registered sink classifier declare extra
+		// partiality on this sink (a repo synthesized sink, a SpEL-guarded sink, an
+		// unknown guard) independent of whether a path reaches it. Empty registry ⇒ no
+		// extra reasons ⇒ byte-identical to today.
+		for _, classify := range active {
+			for _, r := range classify(sink) {
+				reasons[r] = true
+			}
 		}
 		p, ok := reachPathToSink(callers, ingressSyms, roots, sink)
 		if !ok {
@@ -89,7 +136,7 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 			reasons[plugin.PartialReasonNoIngress] = true
 			continue
 		}
-		if p.Ingress == "" {
+		if p.Ingress.SCIP == "" {
 			// Reached a program root but no attacker-facing ingress on the path.
 			reasons[plugin.PartialReasonNoIngress] = true
 		}
@@ -128,7 +175,14 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 			if isIngress {
 				ingress = cur.sym
 			}
-			return plugin.ReachPath{Sink: sink, Ingress: ingress, Trace: trace}, true
+			// Sink/Ingress/Trace are now Symbol/[]Symbol; the BFS carries id strings,
+			// so wrap each via sym at the mint. A root-only path leaves ingress "",
+			// so sym("") is the zero Symbol the contract's "unknown ingress" case.
+			traceSyms := make([]plugin.Symbol, len(trace))
+			for i := range trace {
+				traceSyms[i] = sym(trace[i])
+			}
+			return plugin.ReachPath{Sink: sym(sink), Ingress: sym(ingress), Trace: traceSyms}, true
 		}
 
 		for _, caller := range callers[cur.sym] {

@@ -16,11 +16,14 @@
 //     does not make.
 //   - VerdictUndetermined     — the advisory applies and the scan established NOTHING
 //     about it. The absence of a verdict, stated explicitly.
+//   - VerdictMaliciousPresent — a known-malicious package (OSV MAL advisory) resolved
+//     to a listed affected version. The one decisive OSS "affected": deterministic
+//     presence proof, not a reachability lean, so it does not cross inv. 5.
 //
 // The Report MUST NOT carry `exploitable` or `reasoned_*` verdicts — those are
 // Service-tier concepts. There is no model in the runner that could produce them,
 // so the boundary is structural. AdvisoryFinding.Verdict is constrained to the
-// four values above by construction; see Verdict.Valid.
+// values above by construction; see Verdict.Valid.
 //
 // # Role
 //
@@ -94,14 +97,24 @@ const (
 	// carries the machine-readable reason; Evidence.Basis MUST be empty (there are no
 	// refutation grounds to state — Validate enforces it).
 	VerdictUndetermined Verdict = "undetermined"
+
+	// VerdictMaliciousPresent — the codebase resolved a KNOWN-MALICIOUS package (an OSV MAL
+	// advisory) to a version the advisory enumerates as affected. It is the ONE decisive OSS
+	// "affected": unlike reachable_candidate (a lean) it rests on deterministic proof that the
+	// bad artifact is installed — exact-version membership, no reachability inference — so its
+	// OpenVEX projection is honestly "affected" without crossing inv. 5 (no execution claim is
+	// laundered; this is the deterministic-no-execution mirror of VerdictDisqualified, pointed
+	// the other way). It is affirmative-only: the presence stage emits it or nothing, and it
+	// never mints a not-affected, so disqualify's first_party trust gate stays untouched.
+	VerdictMaliciousPresent Verdict = "malicious_package_present"
 )
 
-// Valid reports whether v is one of the four permitted deterministic verdicts.
+// Valid reports whether v is one of the five permitted deterministic verdicts.
 // It is the structural guard for inv. 5: any value outside this set (notably the
 // Service-tier `exploitable` / `reasoned_*`) is rejected.
 func (v Verdict) Valid() bool {
 	switch v {
-	case VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined:
+	case VerdictDisqualified, VerdictNotExploitable, VerdictReachableCandidate, VerdictUndetermined, VerdictMaliciousPresent:
 		return true
 	default:
 		return false
@@ -127,6 +140,38 @@ type Package struct {
 	// analyzer resolved one. Used as the OpenVEX/SARIF product identifier; omitted
 	// when unavailable.
 	PURL string `json:"purl,omitempty"`
+	// Direct distinguishes a direct dependency — one the scanned module itself declares —
+	// from a transitive one pulled in through the graph (§4.1.2 "direct/transitive
+	// relationship"). It mirrors plugin.DependencyNode.Direct and, like it, is NOT
+	// omitempty: false (transitive) is load-bearing and must serialize, or a transitive
+	// package would be byte-indistinguishable from a direct one. A stored v2 document
+	// written before this field decodes to false and is regenerated as direct/transitive
+	// on its next baseline run.
+	Direct bool `json:"direct"`
+	// PartialReason discloses a limit on THIS package's own resolution using the open
+	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
+	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
+	// the §4.1 "declared partiality for unresolved conditions" at package scope: a field
+	// that could not be established is declared here rather than emitted as an empty value
+	// masquerading as "nothing to resolve". Empty means the package resolved cleanly. It
+	// is DISCLOSURE, never a verdict (inv. 5) — no finding depends on it. When several
+	// limits apply to one package the primary code rides here and the full set stays in
+	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
+	// scan-level PartialityNote, not this field.
+	PartialReason string `json:"partial_reason,omitempty"`
+}
+
+// Key is this package's stable identity for Relationship endpoints: its PURL when the
+// analyzer resolved one, else the ecosystem-scoped coordinate triple. The report SBOM is
+// package-granularity — distinct plugin.DependencyNode instances of one PURL collapse to
+// one report package — so relationships are expressed over these keys, not over the
+// inventory's per-instance node IDs (which do not ride the report). Deterministic: two
+// packages with equal identity produce equal keys.
+func (p Package) Key() string {
+	if p.PURL != "" {
+		return p.PURL
+	}
+	return p.Ecosystem + ":" + p.Name + "@" + p.Version
 }
 
 // SBOM is the resolved dependency set of the scanned codebase. It is the input to
@@ -137,6 +182,26 @@ type SBOM struct {
 	// Packages is the resolved dependency set. Order is stable (callers sort before
 	// constructing) so the serialized form is deterministic for content addressing.
 	Packages []Package `json:"packages"`
+	// Relationships is the parent→child dependency-edge set over Packages (§4.1.2
+	// "parent edges"; §8 DoD checkbox 2 "and dependency relationships"). Each endpoint is
+	// a Package.Key(); a whole-graph SBOM keyed off plugin.DependencyInventory carries the
+	// edges the inventory resolved. Explicitly ordered (sorted by (Parent, Child)) and
+	// de-duplicated by the builder, never map-ordered, so an unchanged SBOM serializes
+	// byte-identically and the StateStore writes zero new git objects. omitempty: a lane
+	// whose resolver expresses no edges (or none yet) omits the field rather than emitting
+	// an empty array — absent edges are declared by a scan-level PartialityNote, not by [].
+	Relationships []Relationship `json:"relationships,omitempty"`
+}
+
+// Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are
+// Package.Key() values, not inventory node IDs: the report SBOM is package-granularity, so
+// an edge relates two package identities. It carries no analysis state — a relationship is
+// structural, never a verdict (inv. 5).
+type Relationship struct {
+	// Parent is the Package.Key() of the depending package (the one that pulls the child in).
+	Parent string `json:"parent"`
+	// Child is the Package.Key() of the depended-on package.
+	Child string `json:"child"`
 }
 
 // ReachabilityGrade refines a reachable_candidate by the STRENGTH of the
@@ -167,6 +232,128 @@ func (g ReachabilityGrade) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// SymbolConfidence qualifies a reachable_candidate by the CONFIDENCE in how the
+// vulnerable-symbol set that resolved was DERIVED — the corpus's record-scoped
+// symbol_provenance tag, read as a strength signal (RFC §4.1). It is orthogonal to
+// ReachabilityGrade: grade is how much attacker-controllable signal the path carries;
+// SymbolConfidence is how the symbol identity itself was obtained.
+//
+// It is a STRENGTH signal on an ALREADY-FORMED candidate, NEVER a verdict and NEVER an
+// admission/refute input (inv. 5): a lower confidence never gates a symbol out of
+// reachability, never disqualifies, and never flips a verdict — it only qualifies how the
+// candidate was reached. A stronger confidence never asserts exploitability. Empty ⇒ no
+// derivation signal (absent OR unrecognized provenance): the candidate is reported exactly
+// as it is today, at no confidence penalty — absent is unknown derivation, not low
+// confidence (honest-absent).
+type SymbolConfidence string
+
+const (
+	// SymbolConfidenceHigh — the resolved symbols were authoritatively declared
+	// (symbol_provenance "osv-declared" / "curated").
+	SymbolConfidenceHigh SymbolConfidence = "high"
+	// SymbolConfidenceModerate — the resolved symbols were heuristically extracted
+	// (symbol_provenance "diff-lexed"). A LOWER confidence label; still a full candidate,
+	// walked and graded identically, never gated out.
+	SymbolConfidenceModerate SymbolConfidence = "moderate"
+)
+
+// Valid reports whether c is a permitted confidence label. Empty is valid (a candidate need
+// not carry a derivation signal; non-candidates must leave it empty).
+func (c SymbolConfidence) Valid() bool {
+	switch c {
+	case "", SymbolConfidenceHigh, SymbolConfidenceModerate:
+		return true
+	default:
+		return false
+	}
+}
+
+// ExploitPreconditions carries the advisory-declared preconditions for the exploit
+// mechanism to fire — the corpus's record-scoped trigger_condition / prerequisite text
+// (RFC §4.2, the Proof-of-Exploitability qualifier axis). It DESCRIBES a
+// reachable_candidate; it never scores it. Populated only on a reachable_candidate, only
+// after the candidate has formed, so it is structurally incapable of reaching admission,
+// disqualification, or refute (inv.5).
+//
+// It is presence-only context, NEVER a met/unmet evaluation: the OSS Assess tier does not
+// and cannot decide whether a free-text precondition holds in the customer build — that is
+// a runtime question only the Prove tier settles, exactly as MitigatingGuards surfaces
+// guard PRESENCE without asserting sufficiency. Because unmet is never computed, a
+// present-but-unmet precondition can never refute or weaken a verdict; it only records that
+// exploitation is CONDITIONAL. Absent ⇒ nil ⇒ the candidate is reported exactly as today
+// (absent = unconditional, the conservative reading, never "not exploitable" — honest-absent).
+//
+// A non-nil value MUST carry at least one non-empty field: conditionality is never asserted
+// from emptiness (validate() rejects a non-nil-but-empty block).
+type ExploitPreconditions struct {
+	// TriggerCondition is the advisory-declared condition under which the trigger fires
+	// (e.g. "a malicious HTTP/2 client rapidly resets requests"). Empty when undeclared.
+	TriggerCondition string `json:"trigger_condition,omitempty"`
+	// Prerequisite is the advisory-declared mechanism precondition (e.g. a required
+	// configuration or attacker capability). Empty when undeclared.
+	Prerequisite string `json:"prerequisite,omitempty"`
+}
+
+// Empty reports whether p declares no precondition at all — the state that must resolve to
+// a nil *ExploitPreconditions (no annotation), never a non-nil-but-empty block.
+func (p ExploitPreconditions) Empty() bool {
+	return p.TriggerCondition == "" && p.Prerequisite == ""
+}
+
+// GuardSufficiencyLabel classifies one on-path guard by whether the advisory DECLARES it
+// sufficient to close its bypass (corpus guard_sufficiency). It is an advisory-DECLARED,
+// Prove-adjudicated claim surfaced as candidate context — the Assess tier NEVER verifies it
+// (whether the guard actually closes the hole is a runtime question only the Prove tier
+// settles, exactly as MitigatingGuards surfaces guard PRESENCE without asserting sufficiency).
+type GuardSufficiencyLabel string
+
+const (
+	// GuardSufficiencySufficient — the advisory declares this guard variant sufficient to
+	// close its bypass. Still only a DECLARED claim; Assess does not confirm it.
+	GuardSufficiencySufficient GuardSufficiencyLabel = "sufficient"
+	// GuardSufficiencyInsufficient — the advisory declares this guard variant insufficient
+	// (e.g. gogs IsSymlink@0.13.3, a leaf-only check the bypass still defeats). A LOWER
+	// descriptive label; it never weakens or flips the candidate verdict.
+	GuardSufficiencyInsufficient GuardSufficiencyLabel = "insufficient"
+)
+
+// Valid reports whether l is a recognized sufficiency label. Unlike SymbolConfidence, empty
+// is NOT valid: a GuardSufficiencyNote exists only to carry a declared label, so an empty one
+// is a malformed annotation (validate() rejects it), never a no-signal state — absence is
+// expressed by omitting the note entirely, not by an empty label.
+func (l GuardSufficiencyLabel) Valid() bool {
+	switch l {
+	case GuardSufficiencySufficient, GuardSufficiencyInsufficient:
+		return true
+	default:
+		return false
+	}
+}
+
+// SufficiencyLabel maps the advisory's declared sufficiency bool onto its descriptive label.
+func SufficiencyLabel(sufficient bool) GuardSufficiencyLabel {
+	if sufficient {
+		return GuardSufficiencySufficient
+	}
+	return GuardSufficiencyInsufficient
+}
+
+// GuardSufficiencyNote annotates ONE guard already surfaced on the candidate path
+// (EvidenceSummary.MitigatingGuards) with the advisory's DECLARED sufficiency against a named
+// bypass (RFC §4.2, B-guardsuff). It is DESCRIPTIVE, presence-only context: it records what the
+// advisory declares about an on-path guard, never a met/unmet evaluation and never a strength
+// score. It can only ADD context to an already-formed reachable_candidate — never gate
+// admission, never refute, never flip a verdict. A note is emitted only for a guard that
+// guardsOnPath already reported, so it never widens the guard set.
+type GuardSufficiencyNote struct {
+	// Symbol is the guard function/method (matches a MitigatingGuards entry).
+	Symbol string `json:"symbol"`
+	// ForBypass names the bypass the sufficiency claim is scoped to (advisory-declared).
+	ForBypass string `json:"for_bypass,omitempty"`
+	// Sufficiency is the advisory's declared classification for this guard against ForBypass.
+	Sufficiency GuardSufficiencyLabel `json:"sufficiency"`
 }
 
 // CallFrame is one node on a reachability path: a symbol with an optional source
@@ -235,6 +422,31 @@ type EvidenceSummary struct {
 	// guard actually closes the hole is a runtime question only the Prove tier settles.
 	// Empty when the advisory declares no guards or none were found on the path.
 	MitigatingGuards []string `json:"mitigating_guards,omitempty"`
+	// SymbolConfidence qualifies a reachable_candidate by the confidence in how the
+	// vulnerable-symbol set was DERIVED (corpus symbol_provenance). STRENGTH signal only,
+	// never a verdict (inv.5, RFC §4.1): it is read only AFTER a candidate forms, so it can
+	// neither gate admission nor refute. Empty ⇒ no derivation signal (absent or unrecognized
+	// provenance) ⇒ candidate reported exactly as today. Populated only on a
+	// reachable_candidate — validate() rejects it on any other verdict.
+	SymbolConfidence SymbolConfidence `json:"symbol_confidence,omitempty"`
+	// ExploitPreconditions surfaces the advisory-declared exploit preconditions
+	// (trigger_condition / prerequisite) as PoE qualifier context on a reachable_candidate
+	// (RFC §4.2). DESCRIPTIVE only — presence, never a met/unmet evaluation and never a
+	// strength score: it enriches the evidence, it does not select or weaken the verdict.
+	// Nil ⇒ no declared precondition (absent = unconditional, reported exactly as today —
+	// honest-absent). Populated only on a reachable_candidate, and only with at least one
+	// non-empty field — validate() rejects it on any other verdict and rejects an empty block.
+	ExploitPreconditions *ExploitPreconditions `json:"exploit_preconditions,omitempty"`
+	// GuardSufficiency annotates the MitigatingGuards on a reachable_candidate with the
+	// advisory's DECLARED sufficiency (corpus guard_sufficiency) against each guard's bypass
+	// (RFC §4.2, B-guardsuff). DESCRIPTIVE, presence-only: it surfaces a Prove-tier claim as
+	// candidate context — it never evaluates whether a guard actually closes the hole (a runtime
+	// question only the Prove tier settles) and never scores the candidate. It enriches the
+	// evidence, it does not select or weaken the verdict. Each note annotates a guard already in
+	// MitigatingGuards, so it never widens the guard set. Empty ⇒ no declared sufficiency for any
+	// on-path guard ⇒ the candidate is reported exactly as today (honest-absent, inv.5).
+	// Populated only on a reachable_candidate — validate() rejects it on any other verdict.
+	GuardSufficiency []GuardSufficiencyNote `json:"guard_sufficiency,omitempty"`
 }
 
 // Priority is the deterministic, offline prioritization signal attached to a
@@ -312,6 +524,11 @@ type Provenance struct {
 	// AnalyzerVersion is the ferralon-assay tool version that produced the Report. Lets
 	// future readers reason about analyzer-driven verdict changes.
 	AnalyzerVersion string `json:"analyzer_version"`
+	// CapabilityManifestVersion cites the capability.Manifest CONTENT version this scan's
+	// evidence was produced under (which analyzer support surface was in force). Additive and
+	// omitempty; population is Phase-4 (each lane stamps a real version in its PLAN-4x0), so this
+	// cycle it stays empty. Kept a plain string so report needs no capability import.
+	CapabilityManifestVersion string `json:"capability_manifest_version,omitempty"`
 	// AdvisoryCursor is the advisory-corpus position this scan evaluated against. It
 	// is the CVE-watch cursor: a later run compares OSV.dev querybatch results to the
 	// stored cursor to decide heartbeat vs earnest run.
@@ -494,6 +711,15 @@ const (
 	// they say which fact was missing, and a reader can act on them. This one says only that a
 	// step did not run, and the scan-level PartialityNote list names which step.
 	ReasonAnalysisDidNotRun = "analysis_did_not_run"
+	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
+	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
+	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but
+	// is not persisted into report.SBOM, the object the diff compares, so a change confined to the
+	// build context is not detected and could inherit a stale Report silently. Carried as an
+	// inherent_limit (quiet methodology arm) on the inherited fast path so the gap is disclosed
+	// without asserting anything about this run's verdicts. A follow-on that persists build context
+	// into the compared state closes it.
+	ReasonBuildContextNotCompared = "build_context_not_compared"
 )
 
 // BaselineRef points at a prior baseline Report this Report inherits from or is
@@ -603,6 +829,70 @@ func (r Report) Validate() error {
 		if f.Evidence.Grade != "" && f.Verdict != VerdictReachableCandidate {
 			return fmt.Errorf("report: advisory %q carries reachability grade %q but verdict is %q (a grade refines only a reachable_candidate, never asserts exploitability)",
 				f.Advisory.ID, f.Evidence.Grade, f.Verdict)
+		}
+		if !f.Evidence.SymbolConfidence.Valid() {
+			return fmt.Errorf("report: advisory %q has invalid symbol confidence %q", f.Advisory.ID, f.Evidence.SymbolConfidence)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.1): a derivation-confidence signal may
+		// qualify ONLY a reachable_candidate. Forbidding it on every other verdict is what makes
+		// provenance-as-confidence incapable of ever annotating — let alone driving — a
+		// disqualification, a not_exploitable, or an undetermined finding.
+		if f.Evidence.SymbolConfidence != "" && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries symbol confidence %q but verdict is %q (a derivation-confidence signal qualifies only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Evidence.SymbolConfidence, f.Verdict)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.2): the exploit-precondition qualifier may
+		// describe ONLY a reachable_candidate. Forbidding it on every other verdict is what makes a
+		// declared precondition incapable of ever annotating — let alone refuting — a
+		// disqualification, a not_exploitable, or an undetermined finding.
+		if f.Evidence.ExploitPreconditions != nil && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries exploit preconditions but verdict is %q (a precondition qualifier describes only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Verdict)
+		}
+		// Conditionality is never asserted from emptiness: a non-nil block that declares no
+		// precondition would be a claim ("this candidate is conditional") resting on nothing.
+		if f.Evidence.ExploitPreconditions != nil && f.Evidence.ExploitPreconditions.Empty() {
+			return fmt.Errorf("report: advisory %q carries a non-nil but empty exploit-precondition block (absent must resolve to no annotation, never an empty conditionality claim)",
+				f.Advisory.ID)
+		}
+		// Structural honest-absent gate (inv.5, RFC §4.2, B-guardsuff): a declared-sufficiency
+		// annotation may qualify ONLY a reachable_candidate — it annotates that candidate's on-path
+		// guards. Forbidding it on every other verdict is what makes guard_sufficiency incapable of
+		// ever annotating — let alone driving — a disqualification, a not_exploitable, or an
+		// undetermined finding. This is the structural wall against the presence→sufficiency
+		// laundering a guard-driven PoNE verdict would be.
+		if len(f.Evidence.GuardSufficiency) > 0 && f.Verdict != VerdictReachableCandidate {
+			return fmt.Errorf("report: advisory %q carries guard-sufficiency annotations but verdict is %q (a declared-sufficiency label describes only a reachable_candidate, never an admission or refutation)",
+				f.Advisory.ID, f.Verdict)
+		}
+		// Each note must carry a real guard and a recognized label: an empty symbol or an
+		// unrecognized/empty sufficiency label is a malformed annotation, never a no-signal state
+		// (absence is expressed by omitting the note). This mirrors the non-nil-but-empty rejection
+		// above — an annotation resting on nothing is a claim resting on nothing.
+		for _, n := range f.Evidence.GuardSufficiency {
+			if n.Symbol == "" || !n.Sufficiency.Valid() {
+				return fmt.Errorf("report: advisory %q carries a malformed guard-sufficiency note (symbol %q, sufficiency %q) — a note must name an on-path guard and a recognized label",
+					f.Advisory.ID, n.Symbol, n.Sufficiency)
+			}
+		}
+	}
+	// SBOM relationships are referential: every edge endpoint must name a package present
+	// in this SBOM. A dangling edge is a resolver defect — it would let a PR-diff or a
+	// projection dereference a parent/child that is not in the package set — so it is a
+	// structural violation, not a tolerated partial. (An SBOM with zero relationships is
+	// valid: a lane may express no edges yet.)
+	if len(r.SBOM.Relationships) > 0 {
+		present := make(map[string]struct{}, len(r.SBOM.Packages))
+		for i := range r.SBOM.Packages {
+			present[r.SBOM.Packages[i].Key()] = struct{}{}
+		}
+		for _, rel := range r.SBOM.Relationships {
+			if _, ok := present[rel.Parent]; !ok {
+				return fmt.Errorf("report: SBOM relationship parent %q references no package in the SBOM (dangling edge)", rel.Parent)
+			}
+			if _, ok := present[rel.Child]; !ok {
+				return fmt.Errorf("report: SBOM relationship child %q references no package in the SBOM (dangling edge)", rel.Child)
+			}
 		}
 	}
 	return nil

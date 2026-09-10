@@ -1,0 +1,14 @@
+<!--
+  Offline reference fixture for plugin/symboltest.DotNetReferenceProfile. It is READ
+  LEXICALLY by dotnetanalysis.IndexSymbols only — never restored, built, or run (there
+  are no PackageReferences to restore). The explicit PackageId is the first-party
+  NuGet coordinate the profile's Package field rebases onto (SYMBOLS.md Decision A:
+  Package = "pkg:nuget/<PackageId>").
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <PackageId>Symboltest.DotNetRef</PackageId>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>

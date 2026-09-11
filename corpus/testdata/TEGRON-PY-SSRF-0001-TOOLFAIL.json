@@ -14,7 +14,7 @@
     "acquisition": {
       "mode": "vendored_repro",
       "path": "testdata/repros/TEGRON-PY-SSRF-0001-TOOLFAIL/",
-      "notes": "First-party Python repro. src/app.py is a real, readable module (open_conn present and reachable). src/vendored_shim.py is a COMMITTED DANGLING SYMLINK (git mode 120000, target does_not_exist_sidecar.py) whose *.py name is listed by the scanner's directory walk but whose os.ReadFile follows the link and fails -> readFailed -> Partial(tool_failure) (index.go:62-64,80-82; callgraph.go:100-104,198-200). Empirically verified portable: git stores the symlink as mode 120000 and a fresh checkout re-creates it dangling (core.symlinks default true). This is NOT the missing/empty-build-dir case (that is a hard error, index.go:47-59). No target code is executed."
+      "notes": "First-party Python repro. src/app.py is a real, readable module (open_conn present and reachable). The tool-failure arm is exercised by a DANGLING *.py SYMLINK (vendored_shim.py -> does_not_exist_sidecar.py) whose name is listed by the scanner's directory walk but whose os.ReadFile follows the link and fails -> readFailed -> Partial(tool_failure) (index.go:62-64,80-82; callgraph.go:100-104,198-200). The symlink is NOT committed to the repo tree: a committed dangling symlink broke GitHub Actions' action-repo staging checkout for every consumer at v0.3.0 (F8), so the test synthesizes it in a temp dir at setup (parity_shapes_test.go: toolfailBuildDir). This is NOT the missing/empty-build-dir case (that is a hard error, index.go:47-59). No target code is executed."
     }
   },
   "execution": {

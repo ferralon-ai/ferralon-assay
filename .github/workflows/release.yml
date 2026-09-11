@@ -138,7 +138,7 @@ jobs:
           } > "${BODY}"
 
           gh release create "${VERSION}" \
-            --title "Ferralon Assay scanner ${VERSION}" \
+            --title "Ferralon Assay ${VERSION}" \
             --notes-file "${BODY}" \
             "${RUNNER_TEMP}/release/${TARBALL}" \
             "${RUNNER_TEMP}/release/${TARBALL}.sha256"

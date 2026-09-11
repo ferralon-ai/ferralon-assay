@@ -22,4 +22,4 @@ First public release: the module source and a pinned composite GitHub Action.
   [Quickstart — GitHub Action](README.md#quickstart--github-action) and
   [docs/threat-model.md](docs/threat-model.md).
 
-[v0.2.0]: https://github.com/ferralon-ai/ferralon-assay/commit/dc1b84a896aa0bdcefe6c98dd8bb7ab125152c0d
+[v0.2.0]: https://github.com/ferralon-ai/ferralon-assay/commit/163061bb0fb4b0f1cea8bb4991032d680b9d300c

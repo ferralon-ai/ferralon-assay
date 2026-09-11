@@ -46,7 +46,7 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@dc1b84a896aa0bdcefe6c98dd8bb7ab125152c0d # v0.2.0
+        uses: ferralon-ai/ferralon-assay@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0
         with:
           mode: baseline
           target: .
@@ -75,7 +75,7 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
-**Pinning by commit SHA** (`@dc1b84a896aa0bdcefe6c98dd8bb7ab125152c0d # v0.2.0`) is the
+**Pinning by commit SHA** (`@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0`) is the
 strict-supply-chain choice: the SHA transitively pins the exact scanner bytes the Action fetches —
 `scanner-version` and `scanner-sha256` are baked into the Action itself — so nothing runs that you did
 not pin, and no binary is ever committed into your repository. Tracking a moving ref instead (a branch,

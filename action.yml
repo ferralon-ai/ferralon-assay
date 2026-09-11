@@ -34,16 +34,19 @@
 # findings-free Report a reader cannot tell apart from an assessed all-clear (see `scanWorkSet` in
 # cmd/ferralon-assay/run.go). That is a deliberate refusal to imply coverage that was not performed.
 #
-# NO COMMITTED BINARY. This action fetches a pinned, checksummed scanner release at run time and
-# builds nothing. Nothing is committed into your repository; the footprint is a few lines of
-# reviewable, SHA-pinned YAML.
+# NO COMMITTED BINARY. This action fetches a versioned scanner release at run time and builds
+# nothing. Nothing is committed into your repository; the footprint is a few lines of reviewable
+# YAML pinned to a scanner release by version tag.
 #
-# DRIFT GUARD (fail loud, never silently under-report): the fetched tarball's sha256 is verified
-# against the pinned `scanner-sha256` BEFORE the scanner is unpacked or run. A stale, tampered, or
-# mismatched artifact aborts the run — it never falls through to a partial/silent scan. The pin is
-# transitive: pinning this action by commit SHA (`@<sha>`) pins the scanner version + checksum
-# below along with it. Moving to a newer scanner is a bump of the two `default:` values below plus
-# a new action release; consumers bump their `@<sha>`.
+# OPTIONAL CHECKSUM PIN (off by default). The run is selected by version tag alone: `scanner-version`
+# names the release, and that release's linux/amd64 tarball is fetched and run. A consumer who wants
+# to freeze the exact bytes can set `scanner-sha256` themselves — when it is non-empty the fetched
+# tarball's sha256 is verified against it BEFORE the scanner is unpacked, and a mismatch aborts the
+# run. Empty (the default) skips that check. This is a customer-configured supply-chain control, not
+# a Ferralon-shipped one: a checksum THIS repository pinned against its OWN release asset would be
+# verifying our bytes against our own claim about them — it defends against nothing the version tag
+# does not — so we do not ship a default. Every release publishes its tarball sha256 as a `.sha256`
+# companion asset, for anyone who chooses to pin.
 #
 # ADVISORY CORPUS (optional, OFF by default). With `advisory-corpus-repo` set, the run fetches a
 # PUBLIC advisory corpus — unauthenticated, shallow, sparse — before the scan and points the scanner
@@ -75,7 +78,7 @@ name: Ferralon Assay
 # QUOTED, and it must stay quoted: the value contains ": ", which a plain YAML scalar may not carry.
 # GitHub's parser accepts it unquoted; a spec-conforming one rejects the whole file, so a consumer
 # running any ordinary YAML tooling over their workflow dependencies would choke on this Action.
-description: 'Free, deterministic reachability scan — fetches a pinned, checksummed scanner release at run time (no committed binary). Three-valued verdicts: an advisory the analysis could not resolve is reported undetermined, never as a clean bill.'
+description: 'Free, deterministic reachability scan — fetches a versioned scanner release at run time (no committed binary). Three-valued verdicts: an advisory the analysis could not resolve is reported undetermined, never as a clean bill.'
 author: ferralon-ai
 
 # Marketplace listing metadata. GitHub accepts exactly two keys here, `icon` and `color`, and
@@ -89,25 +92,28 @@ branding:
   color: blue
 
 inputs:
-  # --- the pin (the two load-bearing lines a corpus re-point bumps) ----------------------------
-  # The two `default:` values below are the authoritative release-cut pin. Before relying on them,
-  # independently re-verify the pinned scanner-version's release against its linux/amd64 tarball:
+  # --- the version selector (the load-bearing default a release bumps) -------------------------
+  # `scanner-version` below names the release this action fetches. Before relying on the default,
+  # independently confirm that release exists and carries what you need:
   #   gh release view <the scanner-version default below> --repo ferralon-ai/ferralon-assay
-  # No version is named in this prose on purpose. The auto-pin rewrites ONLY the two `default:` lines,
-  # so any version literal elsewhere in this file would silently drift out of date on the next cut —
-  # the `default:` lines ARE the pin; re-verify against them, not against a version copied into prose.
-  # The same rule covers CAPABILITY claims: nothing in this file may state what the pinned release
-  # does or does not carry. The auto-pin reaches those two `default:` lines and nothing else, so such
-  # a claim goes false at the first cut that changes the answer, with nothing to correct it. State a
-  # version requirement as a REQUIREMENT the reader checks against the pin, never as a fact about it.
+  # No version is named in this prose on purpose — the `default:` line IS the selector; re-verify
+  # against it, not against a version copied into prose that would silently drift on the next cut.
+  # The same rule covers CAPABILITY claims: nothing in this file may state what the selected release
+  # does or does not carry, or the claim goes false at the first cut that changes the answer, with
+  # nothing to correct it. State a version requirement as a REQUIREMENT the reader checks against the
+  # release, never as a fact about it.
   scanner-version:
-    description: "Release tag of the pinned scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
+    description: "Release tag of the scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
     required: false
     default: "v0.3.0"
   scanner-sha256:
-    description: "Pinned sha256 of the linux/amd64 scanner tarball. The drift guard fails loud on mismatch."
+    description: >-
+      OPTIONAL opt-in integrity pin. Empty (default) = fetch by version tag only, no checksum check.
+      Set it to the sha256 of ferralon-assay-scanner_<scanner-version>_linux_amd64.tar.gz (published
+      as the release's `.sha256` asset) to freeze the exact bytes: the run then verifies the fetched
+      tarball against it and fails loud on any mismatch.
     required: false
-    default: "04cef0fc8ff69efc6cc949e91c4ce5b0d79cb5fccc6c8131063c30a0e4dd7022"
+    default: ""
   scanner-repo:
     description: "owner/repo hosting the pinned scanner release assets."
     required: false
@@ -178,7 +184,7 @@ inputs:
       depend on. VERSION REQUIREMENT: a scanner release carrying the -include-house-canaries flag. A
       release that lacks it fails the scan loudly ("flag provided but not defined:
       -include-house-canaries") rather than ignoring the input; if that is what you get, raise
-      scanner-version + scanner-sha256 to a release that carries it.
+      scanner-version to a release that carries it.
     required: false
     default: "false"
   issue:
@@ -218,7 +224,7 @@ inputs:
       scanner release carrying the -advisory-corpus flag — confirm the release named by the
       scanner-version default carries it before you opt in. A release that lacks it fails the scan
       loudly ("flag provided but not defined: -advisory-corpus") rather than ignoring either corpus
-      input; if that is what you get, raise scanner-version + scanner-sha256 to a release that
+      input; if that is what you get, raise scanner-version to a release that
       carries it.
     required: false
     default: ""
@@ -291,7 +297,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Fetch + verify the pinned, checksummed scanner release (drift guard)
+    - name: Fetch the versioned scanner release (optional checksum pin)
       id: fetch
       shell: bash
       env:
@@ -303,17 +309,11 @@ runs:
       run: |
         set -euo pipefail
 
-        # Refuse an unpinned run. An empty or still-placeholder version/checksum means the release
-        # was never cut (or the pin was never filled in). Fail LOUD here rather than fetch-and-run
-        # something unverifiable — a missing pin is exactly the drift this guard exists to catch.
+        # A version is required — it selects the release to fetch. Fail LOUD on an empty or
+        # still-placeholder version rather than fetch nothing. The checksum is optional (see below).
         if [ -z "$SCANNER_VERSION" ] || [ "$SCANNER_VERSION" = "REPLACE_WITH_RELEASE_TAG" ]; then
-          echo "::error::ferralon-assay: scanner-version is unpinned (still '$SCANNER_VERSION')." >&2
-          echo "  Set scanner-version to a published release tag of $SCANNER_REPO, and scanner-sha256 to that release's linux/amd64 tarball checksum." >&2
-          exit 1
-        fi
-        if [ -z "$SCANNER_SHA256" ] || [ "$SCANNER_SHA256" = "REPLACE_WITH_RELEASE_SHA256" ]; then
-          echo "::error::ferralon-assay: scanner-sha256 is unpinned (still '$SCANNER_SHA256')." >&2
-          echo "  Set scanner-sha256 to the sha256 of ferralon-assay-scanner_<version>_linux_amd64.tar.gz on that release." >&2
+          echo "::error::ferralon-assay: scanner-version is unset (still '$SCANNER_VERSION')." >&2
+          echo "  Set scanner-version to a published release tag of $SCANNER_REPO." >&2
           exit 1
         fi
 
@@ -335,19 +335,26 @@ runs:
           curl -fSL --retry 3 "${auth[@]}" -o "$DEST" "$url"
         fi
 
-        # --- the pin check: computed sha256 MUST equal the pinned scanner-sha256 -----------------
+        # --- optional checksum pin: enforced ONLY when the consumer set scanner-sha256 -----------
+        # Default (empty) selects the scanner by version tag alone. A consumer who set scanner-sha256
+        # is freezing exact bytes: verify and fail loud on any mismatch. We compute the digest either
+        # way so the log records what ran, then gate on it only when a pin is configured.
         if command -v sha256sum >/dev/null 2>&1; then
           actual="$(sha256sum "$DEST" | awk '{print $1}')"
         else
           actual="$(shasum -a 256 "$DEST" | awk '{print $1}')"
         fi
-        if [ "$actual" != "$SCANNER_SHA256" ]; then
-          echo "::error::ferralon-assay: scanner checksum MISMATCH — refusing to run a stale/tampered scanner." >&2
-          echo "  expected (pinned): $SCANNER_SHA256" >&2
-          echo "  actual   (fetched): $actual" >&2
-          exit 1
+        if [ -n "$SCANNER_SHA256" ] && [ "$SCANNER_SHA256" != "REPLACE_WITH_RELEASE_SHA256" ]; then
+          if [ "$actual" != "$SCANNER_SHA256" ]; then
+            echo "::error::ferralon-assay: scanner checksum MISMATCH — refusing to run bytes that do not match your pinned scanner-sha256." >&2
+            echo "  expected (your pin): $SCANNER_SHA256" >&2
+            echo "  actual   (fetched):  $actual" >&2
+            exit 1
+          fi
+          echo "==> Checksum verified against your pinned scanner-sha256 — $actual"
+        else
+          echo "==> Fetched $TARBALL @ $SCANNER_VERSION (sha256 $actual); no scanner-sha256 pin set — pass one to enforce exact bytes."
         fi
-        echo "==> Checksum verified — $actual"
 
         tar -xzf "$DEST" -C "$WORK"
 

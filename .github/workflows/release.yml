@@ -13,8 +13,8 @@ name: release
 # with a real Change Date; the branch it was cut from stays TBD. A bugfix for an old release is a
 # branch forked from that release's tagged base (`<tag>^`, which is TBD), fixed, and re-minted.
 #
-# action.yml does not build anything at run time: it downloads a release asset at a pinned version
-# and refuses to proceed unless its sha256 matches the pinned scanner-sha256. This workflow is what
+# action.yml does not build anything at run time: it downloads a release asset selected by version
+# tag (and, if the consumer opts in by setting scanner-sha256, verifies its sha256). This workflow is what
 # produces that asset, and it is deliberately readable — a consumer who wants to know what is inside
 # the binary they are about to run can read scripts/build-release.sh, re-run it, and get the same
 # bytes. That is the whole value of a reproducible build, and it is worth nothing if the recipe is
@@ -192,7 +192,7 @@ jobs:
           {
             cat "docs/releases/${VERSION}.md"
             printf '\n\n---\n\n'
-            printf 'Pinned, checksummed Ferralon Assay scanner (linux/amd64), built by this repository'\''s release workflow from `scripts/build-release.sh`. Reproducible: sha256 `%s`, also carried in the `.sha256` asset and pinned as `scanner-sha256` in `action.yml`.\n' "${SHA256}"
+            printf 'Versioned Ferralon Assay scanner (linux/amd64), built by this repository'\''s release workflow from `scripts/build-release.sh`. Reproducible: sha256 `%s`, also carried in the `.sha256` asset — set it as `scanner-sha256` in `action.yml` if you want to pin exact bytes.\n' "${SHA256}"
             printf '\n> This release'\''s BUSL Change Date is stamped %s 00:00:00Z.\n' "${CHANGE_DATE}"
           } > "${BODY}"
 

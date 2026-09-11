@@ -75,13 +75,14 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
-**Pinning by commit SHA** (`@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0`) is the
-strict-supply-chain choice: the SHA transitively pins the exact scanner bytes the Action fetches —
-`scanner-version` and `scanner-sha256` are baked into the Action itself — so nothing runs that you did
-not pin, and no binary is ever committed into your repository. Tracking a moving ref instead (a branch,
-or a release tag you let float) is a legitimate trade for auto-updates: the built-in **drift guard**
-verifies the fetched scanner tarball's checksum on every run **regardless of which ref you use**, and
-fails the run loudly on any mismatch.
+**Pinning by commit SHA** (`@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0`) pins the Action
+source, and through its `scanner-version` default the exact scanner release the Action fetches — so
+nothing runs that you did not choose, and no binary is ever committed into your repository. By default
+the scanner is selected by that version tag alone. If you want to freeze the exact bytes as well, set
+**`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
+verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
+entirely your call: a checksum *we* pinned against *our own* release asset would only verify our bytes
+against our own claim about them, so we leave that control in your hands rather than imply it adds trust.
 
 ### Self-cleanup / console-link disclosure
 
@@ -243,13 +244,14 @@ coordinates — never source, never analysis results. The full picture, includin
 This project does not open pull requests against your repository, and no automation here rewrites the
 `uses: ferralon-ai/ferralon-assay@…` ref on your workflow line. That ref is yours to move — or to let
 float. Open [`action.yml`](action.yml): the composite action has exactly three steps — fetch the
-scanner and verify its checksum, fetch the advisory corpus, and run the scan. None of them write to a
-workflow file or open anything against your repository.
+scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, and run the scan.
+None of them write to a workflow file or open anything against your repository.
 
-Whether you pin the ref or track a moving one, the check that matters is already running: the drift
-guard described in [Quickstart — GitHub Action](#quickstart--github-action) verifies the fetched
-scanner tarball's checksum against the `scanner-sha256` baked into the Action revision you resolve,
-before anything unpacks or runs — regardless of which ref you use or who changed it.
+Whether you pin the ref or track a moving one, the scanner is fetched from the release named by
+`scanner-version` and nothing is committed to your repository. If you want byte-exact integrity on top
+of the version tag, set `scanner-sha256` (see [Quickstart — GitHub Action](#quickstart--github-action)):
+the run then verifies the fetched tarball against your pin before anything unpacks, and fails loudly on
+any mismatch. It is opt-in and off by default.
 
 ## Using Assay as a Go library
 

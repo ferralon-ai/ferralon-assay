@@ -1,0 +1,48 @@
+name: license-guard
+
+# The BUSL Change Date is minted by the release workflow onto a release-only leaf commit and lives
+# NOWHERE else. Every development ref — main and every bugfix branch — must carry `Change Date: TBD`.
+# This guard fails any push or pull request whose LICENSE names a concrete Change Date, so a date
+# can never reach a branch by hand or by merge. It is deliberately not main-only: a supported-release
+# bugfix is done on a branch forked from that release's tagged base, and that branch must stay TBD
+# too until the release workflow mints its own leaf.
+#
+# The single exception is a release-mint commit itself (github-actions[bot], message
+# "release vX.Y.Z: mint BUSL Change Date ..."). Those leaves hang off a branch and are reachable
+# only through tags, so they should never appear on a guarded ref — the exception is defense in
+# depth, not an expected path.
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request: {}
+
+concurrency:
+  group: license-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  change-date-is-tbd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LICENSE Change Date is TBD (never committed to a branch)
+        run: |
+          CD="$(sed -nE 's/^Change Date:[[:space:]]*(.+)$/\1/p' LICENSE | head -n1 | sed 's/[[:space:]]*$//')"
+          if [[ "${CD}" == "TBD" ]]; then
+            echo "LICENSE Change Date is TBD — clean."
+            exit 0
+          fi
+          # The only legitimate carrier of a real Change Date is a release-mint leaf commit.
+          MSG="$(git log -1 --format=%s)"
+          if [[ "${MSG}" =~ ^release\ v[0-9]+\.[0-9]+\.[0-9]+:\ mint\ BUSL\ Change\ Date ]]; then
+            echo "release-mint commit (${MSG}) — a Change Date is expected here."
+            exit 0
+          fi
+          echo "::error::LICENSE Change Date is '${CD}', but every branch must keep it TBD. The Change Date is minted by .github/workflows/release.yml onto a release-only leaf commit — it must never be committed to a branch (see docs/releases/README.md)."
+          exit 1

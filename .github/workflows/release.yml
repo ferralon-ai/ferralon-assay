@@ -1,6 +1,17 @@
 name: release
 
-# Cut the pinned, checksum-verified scanner asset that action.yml fetches.
+# Cut the pinned, checksum-verified scanner asset that action.yml fetches — and mint this
+# release's BUSL Change Date onto a release-only leaf commit as part of doing so.
+#
+# THE CHANGE DATE IS MINTED HERE, NEVER COMMITTED TO A BRANCH. Every development ref (main and
+# every bugfix branch) carries `Change Date: TBD` in LICENSE. A concrete date on a branch would
+# mean someone hand-stamped it, so this workflow refuses to build from such a commit. Instead, at
+# release time it computes the Change Date (the BUSL "fourth anniversary" — today + 4 years),
+# writes it onto a single leaf commit that is a child of the tagged commit, and re-points the tag
+# at that leaf. The leaf changes exactly one line of LICENSE, is reachable only through the tag,
+# and never merges back. That leaf IS the released source: consumers who pin the tag get a LICENSE
+# with a real Change Date; the branch it was cut from stays TBD. A bugfix for an old release is a
+# branch forked from that release's tagged base (`<tag>^`, which is TBD), fixed, and re-minted.
 #
 # action.yml does not build anything at run time: it downloads a release asset at a pinned version
 # and refuses to proceed unless its sha256 matches the pinned scanner-sha256. This workflow is what
@@ -17,7 +28,9 @@ name: release
 # REPRODUCIBILITY IS A GATE, NOT A CLAIM. The payload is built twice into two directories and the
 # two sha256 digests must agree. A nondeterministic build would make the pin in action.yml
 # meaningless — it would name a checksum only the machine that happened to cut it can produce — so
-# a divergence aborts with nothing published.
+# a divergence aborts with nothing published. LICENSE is not compiled into or packaged with the
+# binary (scripts/build-release.sh stages NOTICE, not LICENSE), so minting the Change Date onto the
+# leaf does not move the asset's sha256.
 #
 # THE GO TOOLCHAIN IS PART OF THE RECIPE. Two toolchain versions produce two different binaries,
 # correctly. The pin below is therefore load-bearing for byte-identity with any other build of the
@@ -35,7 +48,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      # Creating the release and uploading its assets.
+      # Creating the release and uploading its assets, and pushing the minted leaf commit + the
+      # re-pointed tag. The tag is moved with GITHUB_TOKEN, whose pushes do not start a new workflow
+      # run, so re-pointing the tag cannot re-trigger this workflow.
       contents: write
     env:
       # The tag IS the version. It is stamped into the binaries as brand.Version, which is what the
@@ -68,12 +83,27 @@ jobs:
             exit 1
           fi
 
+      # Releases are immutable once consumers pin them. A re-run against a version that already has
+      # a release is a no-op — never a re-mint, never a mutation. This gate is first so a re-run
+      # cannot mint a second leaf or move the tag.
+      - name: The release does not already exist
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "release ${VERSION} already exists — nothing to do (immutable)."
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       # Release notes are authored, not generated. The file is the single source for both the
-      # annotated tag message (set when the tag is cut — see docs/releases/README.md) and the
-      # GitHub Release body assembled below, so the two cannot drift. Fail closed and early: a
-      # release with no notes is a documentation gap the moment it ships, and the cheapest place
-      # to catch it is before a byte is built.
+      # annotated tag message (set on the minted leaf below) and the GitHub Release body, so the two
+      # cannot drift. Fail closed and early: a release with no notes is a documentation gap the
+      # moment it ships, and the cheapest place to catch it is before a byte is built.
       - name: The release is documented
+        if: steps.exists.outputs.skip != 'true'
         run: |
           NOTES="docs/releases/${VERSION}.md"
           if [[ ! -s "${NOTES}" ]]; then
@@ -81,8 +111,51 @@ jobs:
             exit 1
           fi
 
+      # The tag must name a clean, unstamped commit. A concrete Change Date here means the date was
+      # committed to a branch by hand — exactly what must never happen — so refuse rather than build
+      # on top of it. The date is this workflow's to mint, in the next step, and nowhere else.
+      - name: The tagged commit is unstamped (Change Date is TBD)
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          CD="$(sed -nE 's/^Change Date:[[:space:]]*(.+)$/\1/p' LICENSE | head -n1 | sed 's/[[:space:]]*$//')"
+          if [[ "${CD}" != "TBD" ]]; then
+            echo "::error::LICENSE Change Date is '${CD}' at ${VERSION}, expected TBD. The Change Date is minted by this workflow onto a release-only leaf commit and must never be committed to a branch. Cut the tag from a clean (TBD) commit."
+            exit 1
+          fi
+
+      # Mint the Change Date onto a leaf. Compute today + 4 years (the BUSL "fourth anniversary of
+      # the first publicly available distribution"), write it onto a single commit that changes only
+      # LICENSE, and re-point the tag at that leaf. From here on the checked-out tree — and the tag —
+      # are the minted leaf: the build, the reproducibility check and the release all run against it.
+      - name: Mint the BUSL Change Date onto a release-only leaf commit
+        id: mint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        if: steps.exists.outputs.skip != 'true'
+        run: |
+          CHANGE_DATE="$(date -u -d '+4 years' +%Y-%m-%d)"
+          perl -0pi -e 's/^(Change Date:\s+)TBD$/${1}'"${CHANGE_DATE}"'/m' LICENSE
+          perl -0pi -e 's/^(Change License:\s+)TBD$/${1}MIT/m'            LICENSE
+          grep -qE "^Change Date:[[:space:]]+${CHANGE_DATE}\$" LICENSE || { echo "::error::Change Date stamp failed"; exit 1; }
+          grep -qE "^Change License:[[:space:]]+MIT\$"         LICENSE || { echo "::error::Change License stamp failed"; exit 1; }
+          # The leaf must change LICENSE and nothing else.
+          if [[ "$(git diff --name-only)" != "LICENSE" ]]; then
+            echo "::error::mint touched more than LICENSE:"; git diff --name-only; exit 1
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add LICENSE
+          git commit -q -m "release ${VERSION}: mint BUSL Change Date ${CHANGE_DATE}, Change License MIT"
+          # Re-point the tag at the leaf, carrying the authored notes as its annotation. Pushing the
+          # tag with GITHUB_TOKEN does not start a new workflow run, so this does not re-trigger.
+          git tag -f -a "${VERSION}" -F "docs/releases/${VERSION}.md" HEAD
+          git push --force origin "refs/tags/${VERSION}"
+          echo "change_date=${CHANGE_DATE}" >> "${GITHUB_OUTPUT}"
+          echo "minted ${VERSION} Change Date ${CHANGE_DATE} onto leaf $(git rev-parse HEAD) (parent $(git rev-parse HEAD^))"
+
       - name: Build the release payload
         id: build
+        if: steps.exists.outputs.skip != 'true'
         run: |
           {
             echo "sha256=$(./scripts/build-release.sh release "${VERSION}" "${RUNNER_TEMP}/release")"
@@ -90,6 +163,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: The build is reproducible (build twice -> identical sha256)
+        if: steps.exists.outputs.skip != 'true'
         env:
           FIRST: ${{ steps.build.outputs.sha256 }}
         run: |
@@ -102,33 +176,18 @@ jobs:
           fi
           echo "reproducible — both builds produced sha256 ${FIRST}"
 
-      # No --target: the tag already exists, because a tag is what triggered this run. The release
-      # therefore lands on the commit the tag names by construction.
-      #
-      # Idempotent: a re-run against an existing release does not attempt to re-create it. Releases
-      # are immutable once consumers pin them, and a second run of the same tag must be a no-op
-      # rather than an error or a mutation.
+      # The tag now names the minted leaf, so the release lands on it by construction (no --target).
       - name: Create the release
+        if: steps.exists.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA256: ${{ steps.build.outputs.sha256 }}
           TARBALL: ${{ steps.build.outputs.tarball }}
+          CHANGE_DATE: ${{ steps.mint.outputs.change_date }}
         run: |
-          if gh release view "${VERSION}" >/dev/null 2>&1; then
-            echo "release ${VERSION} already exists — not re-creating (immutable)."
-            exit 0
-          fi
-
           # The authored notes lead; the machine appends only what it can attest. The provenance
           # line carries the reproducible sha256 (the one pin a consumer can re-derive), and the
-          # footnote records the BUSL Change Date this tag is stamped with — read from the LICENSE
-          # at this commit, which the release stamp has filled in. A tag cut from an unstamped
-          # commit (Change Date still TBD) is refused rather than published with a wrong date.
-          CHANGE_DATE="$(sed -nE 's/^Change Date:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2})[[:space:]]*$/\1/p' LICENSE | head -n1)"
-          if [[ -z "${CHANGE_DATE}" ]]; then
-            echo "::error::LICENSE Change Date is not stamped to a YYYY-MM-DD at ${VERSION} — cut the release from a stamped commit."
-            exit 1
-          fi
+          # footnote records the Change Date this workflow just minted onto the leaf the tag names.
           BODY="${RUNNER_TEMP}/release-body.md"
           {
             cat "docs/releases/${VERSION}.md"

@@ -1,7 +1,7 @@
 name: release
 
-# Cut the pinned, checksum-verified scanner asset that action.yml fetches — and mint this
-# release's BUSL Change Date onto a release-only leaf commit as part of doing so.
+# Cut the versioned scanner asset that action.yml fetches — and mint this release's BUSL
+# Change Date onto a release-only leaf commit as part of doing so.
 #
 # THE CHANGE DATE IS MINTED HERE, NEVER COMMITTED TO A BRANCH. Every development ref (main and
 # every bugfix branch) carries `Change Date: TBD` in LICENSE. A concrete date on a branch would
@@ -26,15 +26,17 @@ name: release
 # places with nothing reconciling them.
 #
 # REPRODUCIBILITY IS A GATE, NOT A CLAIM. The payload is built twice into two directories and the
-# two sha256 digests must agree. A nondeterministic build would make the pin in action.yml
-# meaningless — it would name a checksum only the machine that happened to cut it can produce — so
-# a divergence aborts with nothing published. LICENSE is not compiled into or packaged with the
-# binary (scripts/build-release.sh stages NOTICE, not LICENSE), so minting the Change Date onto the
-# leaf does not move the asset's sha256.
+# two sha256 digests must agree. A nondeterministic build would name a checksum only the machine
+# that happened to cut it could produce — worthless both to a consumer who wants to re-derive the
+# bytes and to one who opts in to pinning scanner-sha256 in action.yml — so a divergence aborts with
+# nothing published. LICENSE is not compiled into or packaged with the binary
+# (scripts/build-release.sh stages NOTICE, not LICENSE), so minting the Change Date onto the leaf
+# does not move the asset's sha256.
 #
 # THE GO TOOLCHAIN IS PART OF THE RECIPE. Two toolchain versions produce two different binaries,
-# correctly. The pin below is therefore load-bearing for byte-identity with any other build of the
-# same tag, including the operator's.
+# correctly. The toolchain pin below is therefore load-bearing for byte-identity with any other
+# build of the same tag — the repository's own repro check, a consumer re-deriving the bytes, or one
+# who opts in to a scanner-sha256 pin.
 
 on:
   push:

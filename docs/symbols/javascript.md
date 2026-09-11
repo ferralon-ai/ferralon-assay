@@ -18,7 +18,7 @@ This document has two layers, and a reader must always know which is which:
 
 - **Layer 1 — Current state.** What the engine actually emits **today**: the `scipSymbol` grammar,
   four literal example strings, and the honest limitations. The producer code (`scip.go`, `index.go`)
-  is unchanged from `parity/js @ dc1b84a`; it still populates only `SCIP`, `DisplayName`, and
+  is unchanged from `parity/js @ v0.2.0`; it still populates only `SCIP`, `DisplayName`, and
   `Package` on every `Symbol` (`index.go:74-84`).
 - **Layer 2 — Canonical target.** How the eight §4.3 categories map onto the **frozen** canonical
   `plugin.Symbol` (the fleet's comparable 8-field struct), in JS/TS spellings, with the
@@ -32,7 +32,7 @@ This document has two layers, and a reader must always know which is which:
 
 ---
 
-# Layer 1 — Current state (producer unchanged since `parity/js @ dc1b84a`)
+# Layer 1 — Current state (producer unchanged since `parity/js @ v0.2.0`)
 
 ## The symbol string
 

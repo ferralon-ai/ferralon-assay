@@ -68,6 +68,19 @@ jobs:
             exit 1
           fi
 
+      # Release notes are authored, not generated. The file is the single source for both the
+      # annotated tag message (set when the tag is cut — see docs/releases/README.md) and the
+      # GitHub Release body assembled below, so the two cannot drift. Fail closed and early: a
+      # release with no notes is a documentation gap the moment it ships, and the cheapest place
+      # to catch it is before a byte is built.
+      - name: The release is documented
+        run: |
+          NOTES="docs/releases/${VERSION}.md"
+          if [[ ! -s "${NOTES}" ]]; then
+            echo "::error::${NOTES} is missing or empty — author the release notes before tagging ${VERSION} (see docs/releases/README.md)."
+            exit 1
+          fi
+
       - name: Build the release payload
         id: build
         run: |
@@ -105,8 +118,27 @@ jobs:
             echo "release ${VERSION} already exists — not re-creating (immutable)."
             exit 0
           fi
+
+          # The authored notes lead; the machine appends only what it can attest. The provenance
+          # line carries the reproducible sha256 (the one pin a consumer can re-derive), and the
+          # footnote records the BUSL Change Date this tag is stamped with — read from the LICENSE
+          # at this commit, which the release stamp has filled in. A tag cut from an unstamped
+          # commit (Change Date still TBD) is refused rather than published with a wrong date.
+          CHANGE_DATE="$(sed -nE 's/^Change Date:[[:space:]]*([0-9]{4}-[0-9]{2}-[0-9]{2})[[:space:]]*$/\1/p' LICENSE | head -n1)"
+          if [[ -z "${CHANGE_DATE}" ]]; then
+            echo "::error::LICENSE Change Date is not stamped to a YYYY-MM-DD at ${VERSION} — cut the release from a stamped commit."
+            exit 1
+          fi
+          BODY="${RUNNER_TEMP}/release-body.md"
+          {
+            cat "docs/releases/${VERSION}.md"
+            printf '\n\n---\n\n'
+            printf 'Pinned, checksummed Ferralon Assay scanner (linux/amd64), built by this repository'\''s release workflow from `scripts/build-release.sh`. Reproducible: sha256 `%s`, also carried in the `.sha256` asset and pinned as `scanner-sha256` in `action.yml`.\n' "${SHA256}"
+            printf '\n> This release'\''s BUSL Change Date is stamped %s 00:00:00Z.\n' "${CHANGE_DATE}"
+          } > "${BODY}"
+
           gh release create "${VERSION}" \
             --title "Ferralon Assay scanner ${VERSION}" \
-            --notes "Pinned, checksummed Ferralon Assay scanner (linux/amd64), built by this repository's release workflow from scripts/build-release.sh. Reproducible: sha256 ${SHA256}, also carried in the .sha256 asset and pinned as scanner-sha256 in action.yml." \
+            --notes-file "${BODY}" \
             "${RUNNER_TEMP}/release/${TARBALL}" \
             "${RUNNER_TEMP}/release/${TARBALL}.sha256"

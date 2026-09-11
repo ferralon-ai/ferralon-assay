@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -17,6 +19,38 @@ const (
 	unreachableReproSrc = "../../../corpus/testdata/repros/TEGRON-PY-SSRF-0001-UNREACHABLE/src"
 	toolfailReproSrc    = "../../../corpus/testdata/repros/TEGRON-PY-SSRF-0001-TOOLFAIL/src"
 )
+
+// toolfailBuildDir materializes the tool-failure repro in a fresh temp dir: it copies the
+// readable first-party sources from the committed repro tree and creates the dangling *.py
+// symlink at test time. The dangling link (vendored_shim.py -> a non-existent sidecar) is
+// what the directory walk lists but os.ReadFile cannot follow -> readFailed ->
+// Partial(tool_failure). The link is synthesized here rather than committed because a
+// committed dangling symlink broke GitHub Actions' action-repo staging checkout for every
+// consumer at v0.3.0 (F8); the tool_failure coverage is identical either way.
+func toolfailBuildDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	entries, err := os.ReadDir(toolfailReproSrc)
+	if err != nil {
+		t.Fatalf("read repro src %s: %v", toolfailReproSrc, err)
+	}
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(toolfailReproSrc, e.Name()))
+		if err != nil {
+			t.Fatalf("copy %s: %v", e.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", e.Name(), err)
+		}
+	}
+	if err := os.Symlink("does_not_exist_sidecar.py", filepath.Join(dir, "vendored_shim.py")); err != nil {
+		t.Fatalf("create dangling symlink: %v", err)
+	}
+	return dir
+}
 
 // resolveSingleSink resolves an advisory symbol name against a repro tree and requires it
 // to resolve to exactly one first-party symbol (the sink is PRESENT), returning its SCIP.
@@ -109,13 +143,13 @@ func TestParityShape_InstalledButUnreachable(t *testing.T) {
 }
 
 // TestParityShape_ArtifactUnavailable asserts the tool-failure arm: one source file the
-// directory walk lists (a committed dangling *.py symlink) fails os.ReadFile, so the index
-// degrades to Partial(tool_failure) (index.go:62-64,80-82) rather than a hard error or a
-// silently-complete index. The readable file's symbols are still emitted, proving this is a
-// declared-partial result, not an empty success. F-B3 resolved: the dangling-symlink route
-// is portable (git mode 120000, survives fresh checkout).
+// directory walk lists (a dangling *.py symlink, synthesized in a temp dir at setup) fails
+// os.ReadFile, so the index degrades to Partial(tool_failure) (index.go:62-64,80-82) rather
+// than a hard error or a silently-complete index. The readable file's symbols are still
+// emitted, proving this is a declared-partial result, not an empty success.
 func TestParityShape_ArtifactUnavailable(t *testing.T) {
-	res, err := IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: toolfailReproSrc})
+	buildDir := toolfailBuildDir(t)
+	res, err := IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: buildDir})
 	if err != nil {
 		t.Fatalf("IndexSymbols must NOT hard-error on a read failure (declared partiality, inv.4/5); got %v", err)
 	}
@@ -133,7 +167,7 @@ func TestParityShape_ArtifactUnavailable(t *testing.T) {
 	}
 
 	// The same read failure propagates through the call graph (callgraph.go:198-200).
-	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: toolfailReproSrc})
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: buildDir})
 	if err != nil {
 		t.Fatalf("CallGraph must not hard-error on a read failure; got %v", err)
 	}

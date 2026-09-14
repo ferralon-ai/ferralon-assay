@@ -39,7 +39,11 @@ name: release
 on:
   push:
     tags:
-      - "v*"
+      # Release cuts only: vMAJOR.MINOR.PATCH (three dot-separated fields). The moving minor alias
+      # (vMAJOR.MINOR — two fields) is re-pointed by the final step below with GITHUB_TOKEN, whose
+      # pushes never start a workflow run; narrowing this glob is a second guard so a hand-pushed
+      # `v0.3` cannot even enter this workflow (it would only fail the release-version gate anyway).
+      - "v*.*.*"
 
 permissions:
   contents: read
@@ -201,3 +205,35 @@ jobs:
             --notes-file "${BODY}" \
             "${RUNNER_TEMP}/release/${TARBALL}" \
             "${RUNNER_TEMP}/release/${TARBALL}.sha256"
+
+      # Float the moving minor alias (vMAJOR.MINOR) onto the leaf this release just minted, so a
+      # consumer who writes `uses: ferralon-ai/ferralon-assay@v0.3` always checks out the newest
+      # 0.3.x — the actions/checkout@v4 model. The ref floats; the scanner bytes do not: the leaf's
+      # action.yml still names an exact `scanner-version`, so each run fetches that immutable release
+      # asset and records the exact patch in provenance. The alias is a lightweight TAG, never a
+      # Release, so it does not touch the immutability gate above (that guards Release objects, not
+      # refs). Pushing it with GITHUB_TOKEN does not start a new run, so this cannot re-trigger.
+      # MONOTONIC: advance the alias only when THIS version is the highest patch on its minor line —
+      # a hotfix cut from an older base (a lower patch than one already released on the same minor)
+      # must never drag the alias backward. The highest patch is read from the remote, because the
+      # release checkout does not carry every tag locally.
+      - name: Float the minor alias (vMAJOR.MINOR) to this leaf
+        if: steps.exists.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          MINOR="${VERSION%.*}"                          # v0.3.27 -> v0.3
+          esc="${MINOR//./\\.}"                          # v0\.3  (exact 3-field match below)
+          HIGHEST="$(git ls-remote --tags --refs origin "refs/tags/${MINOR}.*" \
+            | awk -F/ '{print $NF}' \
+            | grep -E "^${esc}\.[0-9]+$" \
+            | sort -V | tail -n1)"
+          if [[ "${HIGHEST}" != "${VERSION}" ]]; then
+            echo "::notice::${VERSION} is not the highest patch on ${MINOR} (highest released is ${HIGHEST}); leaving ${MINOR} unmoved."
+            exit 0
+          fi
+          LEAF="$(git rev-parse "${VERSION}^{commit}")"  # the minted leaf ${VERSION} now names
+          git tag -f "${MINOR}" "${LEAF}"
+          git push --force origin "refs/tags/${MINOR}"
+          echo "floated ${MINOR} -> ${LEAF} (== ${VERSION})"

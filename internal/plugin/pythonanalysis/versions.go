@@ -201,7 +201,17 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 		}
 	}
 	name = strings.TrimSpace(spec[:end])
-	if name == "" {
+	// A Jinja2-templated line is not a requirement (finding F9). airflow (and
+	// others) ship requirements files rendered through Jinja at build time; read
+	// literally, a "{% if … %}" control statement tokenizes to a package named
+	// "{%" and a "pkg=={{ ver }}" line to a version of "{{" — junk nodes that
+	// pollute the SBOM. A templated NAME carries no recoverable identity, so the
+	// line is dropped (empty name → caller skips); a templated VERSION is handled
+	// below, leaving the real name pinned to an UNRESOLVED version rather than a
+	// garbage literal. A pinned requirement that merely SITS inside a template
+	// block (e.g. "funcsigs==1.0.2" between "{% if %}"/"{% endif %}") carries no
+	// delimiters of its own and still parses normally.
+	if name == "" || containsJinja(name) {
 		return "", "", false, nil
 	}
 	rest := strings.TrimSpace(spec[end:])
@@ -220,10 +230,18 @@ func parseRequirementSpec(spec string) (name, version string, resolved bool, ext
 	if i := strings.IndexAny(ver, ", \t"); i >= 0 {
 		ver = ver[:i]
 	}
-	if ver == "" || strings.Contains(ver, "*") {
-		return name, "", false, extras
+	if ver == "" || strings.Contains(ver, "*") || containsJinja(ver) {
+		return name, "", false, extras // "*" prefix or a Jinja-templated version → UNRESOLVED
 	}
 	return name, ver, true, extras
+}
+
+// containsJinja reports whether s carries a Jinja2 template delimiter, including a
+// bare "{", "}", or "%" left after tokenizing a "{% … %}" / "{{ … }}" construct.
+// PyPI project names and PEP 440 versions never contain these characters, so their
+// presence marks a token as template syntax rather than a real coordinate.
+func containsJinja(s string) bool {
+	return strings.ContainsAny(s, "{}%")
 }
 
 // parseExtrasGroup splits the body of an extras group "a, b" into normalized extra names in

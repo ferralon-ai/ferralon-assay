@@ -538,6 +538,7 @@ func entryPointOf(in plugin.Ingress) *report.EntryPoint {
 // supplied input. Internal/dev-only entries (main, cli, test) are not attacker-reachable.
 var attackerControllableKinds = map[string]bool{
 	"http_route": true, "handler": true, "rpc": true, "grpc": true, "http": true,
+	"ssh": true,
 }
 
 // ingressMap reads the resolved IngressMap artifact (plugin.IngressResult). It falls

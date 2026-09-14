@@ -58,6 +58,9 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 			if isHTTPHandlerSig(sig) {
 				add(plugin.Ingress{Kind: "handler", Symbol: sym(scipFromPackage(p, fn))})
 			}
+			if isSSHServerHandlerSig(sig) {
+				add(plugin.Ingress{Kind: "ssh", Symbol: sym(scipFromPackage(p, fn))})
+			}
 		}
 	}
 
@@ -90,6 +93,64 @@ func isHTTPHandlerSig(sig *types.Signature) bool {
 	}
 	return isNamed(params.At(0).Type(), "net/http", "ResponseWriter") &&
 		isPointerToNamed(params.At(1).Type(), "net/http", "Request")
+}
+
+// sshAttackerTypes are the golang.org/x/crypto/ssh types that carry untrusted,
+// attacker-supplied server-side connection data post-handshake: the live
+// connection (ServerConn / ConnMetadata), an offered channel (NewChannel /
+// Channel), and out-of-band requests (Request). A function that takes any of
+// these as a parameter sits on the SSH attacker-input boundary — the analogue of
+// a net/http handler's *http.Request. Deliberately excluded: ssh.PublicKey and
+// ssh.ServerConfig, which also appear in trusted contexts (authorized-keys
+// parsing, server setup), so matching them would over-flag non-ingress helpers.
+var sshAttackerTypes = map[string]bool{
+	"ServerConn": true, "ConnMetadata": true,
+	"NewChannel": true, "Channel": true, "Request": true,
+}
+
+// isSSHServerHandlerSig reports whether sig takes at least one attacker-controlled
+// golang.org/x/crypto/ssh value as a parameter. Unlike net/http there is no single
+// registered handler signature — an SSH server threads the accepted connection,
+// channels, and requests as arguments into ordinary funcs (e.g.
+// handleSSHConn(sconn *ssh.ServerConn, chans <-chan ssh.NewChannel, reqs <-chan *ssh.Request)),
+// so the boundary is recognized by the presence of an attacker-controlled ssh param.
+// Method receivers are not seeded (consistent with the handler/main detectors, which
+// only classify package-scope funcs).
+func isSSHServerHandlerSig(sig *types.Signature) bool {
+	if sig.Recv() != nil {
+		return false
+	}
+	params := sig.Params()
+	for i := 0; i < params.Len(); i++ {
+		if isSSHAttackerType(params.At(i).Type()) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSSHAttackerType matches an sshAttackerTypes named type, unwrapping the pointer,
+// channel, and pointer-in-channel shapes these values are threaded through
+// (*ssh.ServerConn, <-chan ssh.NewChannel, <-chan *ssh.Request).
+func isSSHAttackerType(t types.Type) bool {
+	switch u := t.(type) {
+	case *types.Chan:
+		return isSSHAttackerType(u.Elem())
+	case *types.Pointer:
+		return isSSHNamedAttacker(u.Elem())
+	default:
+		return isSSHNamedAttacker(t)
+	}
+}
+
+func isSSHNamedAttacker(t types.Type) bool {
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj != nil && obj.Pkg() != nil &&
+		obj.Pkg().Path() == "golang.org/x/crypto/ssh" && sshAttackerTypes[obj.Name()]
 }
 
 func isNamed(t types.Type, pkgPath, name string) bool {

@@ -1,0 +1,116 @@
+# Ferralon Assay
+#
+# This file is the entire Ferralon footprint in this repository: one GitHub Actions
+# workflow that runs a free, deterministic dependency-advisory scan in this repository's
+# own runner, on this workflow's own token. The analysis never runs on Ferralon's
+# infrastructure. No other file is added; the scan's own baseline is stored on a
+# separate state ref, named in the assay step's `with:` block below.
+#
+# INBOUND — what the run downloads. The ferralon-ai/ferralon-assay Action fetches one
+# pinned scanner release and verifies its SHA-256 before unpacking or running it; a
+# mismatch aborts the run. Every action used below is pinned to a full commit SHA.
+# Past that, the scan drives your language's ordinary build and advisory toolchain and
+# reaches the same public services that toolchain always does — for Go, the module proxy
+# (proxy.golang.org) whenever the runner's module cache is cold, and the Go vulnerability
+# database (vuln.go.dev). Those requests name the modules being resolved or checked; they
+# carry no source code, and they go to the same services a plain `go build` and
+# `govulncheck` in this workflow would already contact.
+#
+# OUTBOUND — what leaves this repository to Ferralon. Gated entirely on the single
+# `link-to-console` input in the assay step's `with:` block below. While it is
+# true, the scan posts to two endpoints on api.ferralon.com and nothing else. Neither
+# carries your source code:
+#   * on DEFAULT-BRANCH runs only, the scan posts its assessment so it can be read in the
+#     Ferralon console. That assessment lists this repository's dependencies, which
+#     advisories matched them, and, for a reachable finding, the function names and
+#     file:line where this code reaches the affected dependency. It carries no source
+#     file contents.
+#   * on every run, the scan posts this repository's owner and name, the commit SHA, and
+#     the advisory id when a re-scan was advisory-triggered. This is also the channel that
+#     tells the scan the Ferralon App was uninstalled, which is what lets it remove itself.
+# Both are best-effort: an unreachable or refusing endpoint is logged and the run still
+# succeeds. Set `link-to-console` to false — or delete the line, which does the same
+# thing — and both stop; the scan, the code-scanning upload, the PR comment, the Issue and
+# the report artifact all keep working. Turning it off also switches off self-removal,
+# because the uninstall signal arrives on that channel.
+# The endpoints themselves live in the pinned assay release, not in this file, so nothing
+# here names a Ferralon host or can drift into pointing at the wrong one.
+#
+# Removing Ferralon: this file removes itself when the Ferralon App is uninstalled;
+# deleting it manually is also safe — the state ref cleans itself up either way. If you
+# would rather remove it yourself right now: delete this file (a direct commit or a PR
+# both work) and, optionally, delete the state ref named in state-ref below —
+# `git push origin --delete refs/tegron/state`.
+
+name: Ferralon Assay
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: "17 3 * * *" # daily, off-peak (03:17 UTC)
+  workflow_dispatch: # the "Run workflow" button — run the assay on demand
+  repository_dispatch:
+    types: [ferralon-advisory-rescan]
+
+# Serialize assay runs per repository. Concurrent runs on different refs (e.g. a branch
+# push and that branch's pull_request event) otherwise race the scanner's pinned-Issue
+# find-or-create and file duplicate dashboards. The group is repo-scoped, NOT ref-scoped:
+# the racing runs are on different refs but the Issue is one per repository, so a ref-keyed
+# group would not serialize them. cancel-in-progress: false lets a queued run finish rather
+# than be killed mid-scan.
+concurrency:
+  group: ferralon-assay-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  security-events: write
+
+jobs:
+  assess:
+    name: Ferralon Assay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: assay
+        uses: ferralon-ai/ferralon-assay@1f1394ed46c7663e62c2c67e09be46f54289bfe9
+        with:
+          # Links this repository's scans to your Ferralon console. This is the ONLY
+          # switch that decides whether the scan talks to Ferralon at all. Set it to
+          # false — or delete this line, which is the same thing — and the scan runs
+          # fully standalone: nothing leaves this runner, and the code scanning alerts,
+          # the PR comment, the Issue and the report artifact all keep working.
+          #
+          # While it is true, the scan posts to two endpoints on api.ferralon.com and
+          # nothing else. Neither carries your source code:
+          #   * on DEFAULT-BRANCH runs only, its assessment, so the console can show
+          #     this repository alongside the rest of your fleet;
+          #   * on every run, this repository's owner and name, the commit, and the
+          #     assay's own version — which is also how the scan learns the Ferralon
+          #     App was uninstalled and removes itself.
+          # The endpoints live in the pinned assay release above, not in this file, so
+          # this workflow names no Ferralon host and cannot drift into pointing at the
+          # wrong one.
+          link-to-console: true
+          state-repo: ${{ github.repository }}
+          state-ref: refs/tegron/state
+      # Surface the scanner's SARIF in GitHub code scanning. Skipped on forked-PR runs,
+      # where GITHUB_TOKEN has no security-events write and the upload would hard-fail.
+      - name: Upload SARIF to code scanning
+        if: ${{ !github.event.pull_request.head.repo.fork }}
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          sarif_file: ${{ steps.assay.outputs.sarif-file }}
+      # Keep the full Report bundle (report.json / openvex.json / report.sarif.json) as a
+      # downloadable run artifact.
+      - name: Upload Ferralon Assay report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ferralon-assay-report
+          path: ${{ steps.assay.outputs.out-dir }}
+          if-no-files-found: warn

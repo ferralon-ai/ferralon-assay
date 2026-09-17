@@ -213,6 +213,46 @@ package_into() {
   sha256_of "${out}"
 }
 
+# guard_local_publication — refuse to hand a distributable payload to an operator on a workstation.
+#
+# This script BUILDS bytes; it never publishes. A release is cut only by pushing a vX.Y.Z tag, which
+# runs .github/workflows/release.yml — the one caller that builds the asset reproducibly (twice, and
+# fails on divergence) and can attest its sha256 and BUSL Change Date, from the reviewed ref rather
+# than a local working tree. Producing the tarball on a workstation and handing it off as "the
+# release" bypasses every one of those gates; that is the accident this guard exists to stop.
+#
+# The one legitimate local reason to run `release`/`package` is to REPRODUCE a published asset and
+# check its sha256 for yourself. That stays possible, but behind an explicit acknowledgement so it
+# cannot happen by reflex: set ASSAY_LOCAL_BUILD=1. In CI the release workflow is the caller
+# (GITHUB_ACTIONS / CI is set), so the guard is inert there.
+guard_local_publication() {
+  if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ]]; then
+    return 0
+  fi
+  if [[ "${ASSAY_LOCAL_BUILD:-}" == "1" ]]; then
+    return 0
+  fi
+  cat >&2 <<'EOF'
+build-release.sh: refusing to build a release payload on a local checkout.
+
+  This script produces bytes; it does NOT publish a release, and a release built
+  on a workstation is not a release — it skips every gate that makes the asset
+  trustworthy. A release is cut ONLY by pushing a version tag:
+
+      git tag vX.Y.Z <clean-main-commit>
+      git push origin vX.Y.Z
+
+  That triggers .github/workflows/release.yml, which builds the asset twice
+  (reproducibility is a gate), mints the BUSL Change Date onto a release-only
+  leaf, and publishes — from the reviewed ref, not your working tree.
+  See docs/releases/README.md.
+
+  If you are only REPRODUCING a published release to verify its sha256, set
+  ASSAY_LOCAL_BUILD=1 and re-run. That acknowledgement never publishes anything.
+EOF
+  exit 3
+}
+
 usage() {
   sed -n '/^# USAGE/,/^#$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
@@ -243,10 +283,12 @@ case "${1:-}" in
     ;;
   package)
     [[ $# -eq 3 ]] || usage
+    guard_local_publication
     package_into "$2" "$3"
     ;;
   release)
     [[ $# -eq 3 ]] || usage
+    guard_local_publication
     VERSION="$2"
     DEST="$(absdir "$3")"
     TARBALL="$(tarball_name "${VERSION}")"

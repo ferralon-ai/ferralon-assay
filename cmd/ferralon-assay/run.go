@@ -608,13 +608,14 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		}
 	}
 
+	revision, commit := acq.provenance(*f.revision, *f.commit)
 	return &runConfig{
 		workSet: ws,
 		store:   store,
-		subject: trigger.Subject{Repo: acq.repo, Revision: *f.revision, ResolvedCommit: *f.commit},
+		subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
 		codebase: assessment.CodebaseRef{
 			Repo:        acq.repo,
-			Revision:    *f.revision,
+			Revision:    revision,
 			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
 		},
 		advisories:    ws.advisories,

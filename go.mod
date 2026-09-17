@@ -15,6 +15,7 @@ require (
 	golang.org/x/net v0.56.0
 	golang.org/x/tools v0.45.0
 	golang.org/x/vuln v1.3.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

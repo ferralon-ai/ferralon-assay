@@ -45,6 +45,10 @@ linters:
             # the deny below (no proprietary service module), which these public deps do not
             # cross.
             - go.opentelemetry.io/otel
+            # Safe YAML parse of the repository-owned .github/ferralon.yml (internal/repoconfig).
+            # Already in the module graph (via testify / otel tests) before it was required
+            # directly; decoded into yaml.Node only, never into arbitrary types.
+            - gopkg.in/yaml.v3
           deny:
             - pkg: github.com/ferralon-ai/tegron
               desc: >-

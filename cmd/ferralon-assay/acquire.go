@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/repoconfig"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -24,6 +25,24 @@ type acquired struct {
 	repo       string
 	advisories []assessment.VulnRef
 	cleanup    func()
+
+	// analyzeRef / analyzedCommit are set only when the repository config file selected a ref
+	// (analyze.ref) and the scan analyzed THAT ref instead of the checked-out tree. Both empty is
+	// the default path. See provenance.
+	analyzeRef     string
+	analyzedCommit string
+}
+
+// provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default
+// they are the -revision / -commit labels, passed through unchanged. When analyze.ref redirected
+// the scan, the labels describe the tree CI checked out — which is NOT what was analyzed — so they
+// are replaced by the requested ref and the commit the analyzed worktree actually has checked out.
+// A report must never claim the default branch when it scanned an override.
+func (a *acquired) provenance(revision, commit string) (string, string) {
+	if a.analyzedCommit == "" {
+		return revision, commit
+	}
+	return a.analyzeRef, a.analyzedCommit
 }
 
 // acquireTarget materializes the scan target into a local BuildDir and selects the
@@ -35,7 +54,13 @@ type acquired struct {
 //     the requested revision; the returned cleanup removes it after the run. This is the
 //     path that lets the CLI scan a repo it does not already have on disk.
 //   - An existing local directory is inventoried in place via checkout.ResolveVendored — no
-//     clone, no network — preserving the historical hermetic vendored_repro behavior.
+//     clone, no network — preserving the historical hermetic vendored_repro behavior. The one
+//     exception is opt-in and repository-owned: when <target>/.github/ferralon.yml sets
+//     analyze.ref, that file (read from the checked-out tree, BEFORE any redirect) selects another
+//     ref, which is fetched into a detached worktree (checkout.WorktreeAtRef) and resolved into
+//     the WorkspacePlan instead; the returned cleanup removes the worktree, and provenance reports
+//     the ref and the commit the plan's tree actually has checked out. No file, or no
+//     analyze.ref, is exactly the in-place behavior.
 //
 // The source language is detected from the materialized tree (checkout.DetectLanguage) and
 // drives BOTH the plugin (NewGoPlugin / NewJavaPlugin / NewJSPlugin / NewPythonPlugin /
@@ -51,7 +76,7 @@ type acquired struct {
 // goAdvisoryCorpus); the demo scan sets it via -include-house-canaries so the DOS canary
 // surfaces as a reachable_candidate the pipeline can enumerate and fire.
 func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool) (*acquired, error) {
-	var buildDir, language, repo string
+	var buildDir, language, repo, analyzeRef, analyzedCommit string
 	cleanup := func() {}
 
 	if isRemoteURL(target) {
@@ -71,9 +96,46 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		if err != nil {
 			return nil, fmt.Errorf("resolve target: %w", err)
 		}
-		plan, err := checkout.ResolveVendored(absTarget)
+		scanDir := absTarget
+		// The config is read from the checked-out tree, before any redirect: it is the tree CI
+		// checked out (the default branch) that decides what is analyzed, never the override.
+		cfg, warnings, err := repoconfig.Load(absTarget)
 		if err != nil {
 			return nil, err
+		}
+		for _, w := range warnings {
+			fmt.Fprintf(os.Stderr, "warning: %s: %s\n", repoconfig.DefaultPath, w)
+		}
+		if cfg.Analyze.Ref != "" {
+			dir, commit, done, err := checkout.NewGitCheckout().WorktreeAtRef(ctx, absTarget, cfg.Analyze.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("%s: analyze.ref %q could not be checked out: %w", repoconfig.DefaultPath, cfg.Analyze.Ref, err)
+			}
+			scanDir, cleanup = dir, done
+			analyzeRef, analyzedCommit = cfg.Analyze.Ref, commit
+		}
+		plan, err := checkout.ResolveVendored(scanDir)
+		if err != nil {
+			cleanup()
+			if analyzeRef != "" {
+				return nil, fmt.Errorf("%s: analyze.ref %q: %w", repoconfig.DefaultPath, analyzeRef, err)
+			}
+			return nil, err
+		}
+		if analyzeRef != "" {
+			// Provenance is taken from the tree the plan will actually be analyzed from, not
+			// from what the fetch said it put there: re-resolve HEAD at the plan root and
+			// refuse to label the Report with a commit the analyzed tree does not have.
+			head, err := checkout.ResolveHead(ctx, plan.Root)
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("%s: analyze.ref %q: %w", repoconfig.DefaultPath, analyzeRef, err)
+			}
+			if head != analyzedCommit {
+				cleanup()
+				return nil, fmt.Errorf("%s: analyze.ref %q: analyzed tree %q is at %q, expected %s", repoconfig.DefaultPath, analyzeRef, plan.Root, head, analyzedCommit)
+			}
+			fmt.Fprintf(os.Stdout, "%s: analyze.ref %q — analyzing commit %s, not the checked-out tree\n", repoconfig.DefaultPath, analyzeRef, analyzedCommit)
 		}
 		prim := plan.Primary()
 		buildDir, language = prim.Root, prim.Language
@@ -96,6 +158,9 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		repo:       repo,
 		advisories: advisoryCorpus(language, includeHouseCanaries),
 		cleanup:    cleanup,
+
+		analyzeRef:     analyzeRef,
+		analyzedCommit: analyzedCommit,
 	}, nil
 }
 

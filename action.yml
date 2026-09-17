@@ -148,11 +148,11 @@ inputs:
     required: false
     default: ${{ github.repository }}
   revision:
-    description: "Revision recorded on the Report (e.g. a branch or PR head)."
+    description: "Revision recorded on the Report (e.g. a branch or PR head). When .github/ferralon.yml sets analyze.ref, the Report records that ref instead, because that is what was analyzed."
     required: false
     default: ${{ github.ref_name }}
   commit:
-    description: "Resolved commit SHA recorded on the Report."
+    description: "Resolved commit SHA recorded on the Report. When .github/ferralon.yml sets analyze.ref, the Report records the analyzed commit instead."
     required: false
     default: ${{ github.sha }}
   state-repo:

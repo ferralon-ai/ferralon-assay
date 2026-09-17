@@ -168,11 +168,12 @@ func runBaseline(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "%s baseline — work set: %s\n", brand.Name, ws.describe())
 
+	revision, commit := acq.provenance(*f.revision, *f.commit)
 	req := trigger.BaselineRequest{
-		Subject: trigger.Subject{Repo: acq.repo, Revision: *f.revision, ResolvedCommit: *f.commit},
+		Subject: trigger.Subject{Repo: acq.repo, Revision: revision, ResolvedCommit: commit},
 		Codebase: assessment.CodebaseRef{
 			Repo:        acq.repo,
-			Revision:    *f.revision,
+			Revision:    revision,
 			Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
 		},
 		Advisories:    ws.advisories,

@@ -33,7 +33,7 @@ var _ Checkout = FakeCheckout{}
 
 // Fetch resolves the fixture subdir for repo@revision and returns its absolute path and the
 // detected source language. The fixture must present a recognized source tree (a Go module,
-// or Java/JS-TS/Python/.NET sources); an unrecognized tree is an error, never an empty dir (inv.5).
+// or Java/Kotlin/JS-TS/Python/.NET sources); an unrecognized tree is an error, never an empty dir (inv.5).
 func (f FakeCheckout) Fetch(_ context.Context, repo, revision string) (WorkspacePlan, error) {
 	key := repo + "@" + revision
 	sub, ok := f.Map[key]
@@ -47,7 +47,7 @@ func (f FakeCheckout) Fetch(_ context.Context, repo, revision string) (Workspace
 	}
 	lang := DetectLanguage(abs)
 	if lang == LangUnknown {
-		return WorkspacePlan{}, fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod, no .java, no .js/.ts, no .py, and no .cs/.csproj sources)", abs)
+		return WorkspacePlan{}, fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod, no .java, no .kt/.kts, no .js/.ts, no .py, and no .cs/.csproj sources)", abs)
 	}
 	return singleProjectPlan(abs, lang), nil
 }

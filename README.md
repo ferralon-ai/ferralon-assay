@@ -129,6 +129,33 @@ Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-
 against a filesystem corpus instead of the built-in table, and `-subject-go-version` to state the
 target's Go toolchain explicitly.
 
+## Scanning another branch — `.github/ferralon.yml`
+
+By default the scan analyzes the tree that is checked out: in the Action, the ref
+`actions/checkout` put in the workspace. A repository whose source is not on that ref (for example
+a default branch that holds only docs) can commit an optional config file to its **default branch**:
+
+```yaml
+# .github/ferralon.yml
+version: 1
+analyze:
+  ref: baseline   # a branch, tag or commit SHA
+```
+
+The file is read from the checked-out tree, relative to `target`. When `analyze.ref` is set, the
+scan fetches that ref from the `origin` remote, checks it out into a separate temporary worktree,
+and analyzes that tree; your checked-out workspace is not modified. The report's
+`subject.revision` and `subject.resolved_commit` then name the ref you configured and the commit
+that was actually analyzed, not the `revision`/`commit` labels of the ref CI checked out. The same
+applies to every run mode that scans a local target, including `pr-inherit`.
+
+With no file, or no `analyze.ref`, nothing changes. The file is treated as untrusted data: a
+malformed file, an unsupported `version`, or a ref that is not a plain branch/tag/SHA name fails the
+run instead of being skipped, and a ref that cannot be fetched fails naming the ref. Keys this
+scanner does not know produce a warning and are ignored, so newer settings do not break older
+scanners. The fetch uses the credentials `actions/checkout` left in the repository's git config;
+it contacts only your repository's own remote.
+
 ## What it reports
 
 The output is a neutral scan `Report`: one finding per advisory, each backed by the evidence the

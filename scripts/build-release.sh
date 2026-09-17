@@ -213,44 +213,39 @@ package_into() {
   sha256_of "${out}"
 }
 
-# guard_local_publication — refuse to hand a distributable payload to an operator on a workstation.
+# warn_not_a_release — building locally is fine; publishing what you built is not.
 #
-# This script BUILDS bytes; it never publishes. A release is cut only by pushing a vX.Y.Z tag, which
-# runs .github/workflows/release.yml — the one caller that builds the asset reproducibly (twice, and
-# fails on divergence) and can attest its sha256 and BUSL Change Date, from the reviewed ref rather
-# than a local working tree. Producing the tarball on a workstation and handing it off as "the
-# release" bypasses every one of those gates; that is the accident this guard exists to stop.
+# A local build is legitimate: testing a change, or reproducing a published release's sha256 to
+# verify it for yourself. So this NEVER blocks the build. What it guards against is the next step —
+# treating the resulting tarball as a release. This script has no publish path by design: it writes
+# a tarball and a .sha256 to a directory and stops. The only thing that turns bytes into a release
+# is CI, reached by pushing a vX.Y.Z tag — .github/workflows/release.yml builds the asset twice
+# (fails on divergence), mints the BUSL Change Date, and publishes from the reviewed ref, not a
+# local working tree. So build freely, but do not `gh release create` the asset, push a hand-minted
+# leaf/tag, or otherwise hand it off as "the release."
 #
-# The one legitimate local reason to run `release`/`package` is to REPRODUCE a published asset and
-# check its sha256 for yourself. That stays possible, but behind an explicit acknowledgement so it
-# cannot happen by reflex: set ASSAY_LOCAL_BUILD=1. In CI the release workflow is the caller
-# (GITHUB_ACTIONS / CI is set), so the guard is inert there.
-guard_local_publication() {
-  if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" ]]; then
-    return 0
-  fi
-  if [[ "${ASSAY_LOCAL_BUILD:-}" == "1" ]]; then
+# Printed to stderr on a local `release`/`package` run; inert in CI (GITHUB_ACTIONS / CI set). Set
+# ASSAY_LOCAL_BUILD=1 to silence it in a scripted local build/repro loop. Always returns success.
+warn_not_a_release() {
+  if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" || "${ASSAY_LOCAL_BUILD:-}" == "1" ]]; then
     return 0
   fi
   cat >&2 <<'EOF'
-build-release.sh: refusing to build a release payload on a local checkout.
+build-release.sh: building locally — this is NOT a published release.
 
-  This script produces bytes; it does NOT publish a release, and a release built
-  on a workstation is not a release — it skips every gate that makes the asset
-  trustworthy. A release is cut ONLY by pushing a version tag:
+  Fine for testing, or for reproducing a published release's sha256 to verify
+  it. But do not publish what this produces: do not `gh release create` it, do
+  not push a hand-minted tag or leaf, do not hand the tarball off as the release.
+
+  A release is cut only by pushing a version tag, which CI builds and publishes
+  from the reviewed ref — never from a local working tree:
 
       git tag vX.Y.Z <clean-main-commit>
       git push origin vX.Y.Z
 
-  That triggers .github/workflows/release.yml, which builds the asset twice
-  (reproducibility is a gate), mints the BUSL Change Date onto a release-only
-  leaf, and publishes — from the reviewed ref, not your working tree.
-  See docs/releases/README.md.
-
-  If you are only REPRODUCING a published release to verify its sha256, set
-  ASSAY_LOCAL_BUILD=1 and re-run. That acknowledgement never publishes anything.
+  See docs/releases/README.md.  (Set ASSAY_LOCAL_BUILD=1 to silence this.)
 EOF
-  exit 3
+  return 0
 }
 
 usage() {
@@ -283,12 +278,12 @@ case "${1:-}" in
     ;;
   package)
     [[ $# -eq 3 ]] || usage
-    guard_local_publication
+    warn_not_a_release
     package_into "$2" "$3"
     ;;
   release)
     [[ $# -eq 3 ]] || usage
-    guard_local_publication
+    warn_not_a_release
     VERSION="$2"
     DEST="$(absdir "$3")"
     TARBALL="$(tarball_name "${VERSION}")"

@@ -213,6 +213,41 @@ package_into() {
   sha256_of "${out}"
 }
 
+# warn_not_a_release — building locally is fine; publishing what you built is not.
+#
+# A local build is legitimate: testing a change, or reproducing a published release's sha256 to
+# verify it for yourself. So this NEVER blocks the build. What it guards against is the next step —
+# treating the resulting tarball as a release. This script has no publish path by design: it writes
+# a tarball and a .sha256 to a directory and stops. The only thing that turns bytes into a release
+# is CI, reached by pushing a vX.Y.Z tag — .github/workflows/release.yml builds the asset twice
+# (fails on divergence), mints the BUSL Change Date, and publishes from the reviewed ref, not a
+# local working tree. So build freely, but do not `gh release create` the asset, push a hand-minted
+# leaf/tag, or otherwise hand it off as "the release."
+#
+# Printed to stderr on a local `release`/`package` run; inert in CI (GITHUB_ACTIONS / CI set). Set
+# ASSAY_LOCAL_BUILD=1 to silence it in a scripted local build/repro loop. Always returns success.
+warn_not_a_release() {
+  if [[ -n "${GITHUB_ACTIONS:-}" || -n "${CI:-}" || "${ASSAY_LOCAL_BUILD:-}" == "1" ]]; then
+    return 0
+  fi
+  cat >&2 <<'EOF'
+build-release.sh: building locally — this is NOT a published release.
+
+  Fine for testing, or for reproducing a published release's sha256 to verify
+  it. But do not publish what this produces: do not `gh release create` it, do
+  not push a hand-minted tag or leaf, do not hand the tarball off as the release.
+
+  A release is cut only by pushing a version tag, which CI builds and publishes
+  from the reviewed ref — never from a local working tree:
+
+      git tag vX.Y.Z <clean-main-commit>
+      git push origin vX.Y.Z
+
+  See docs/releases/README.md.  (Set ASSAY_LOCAL_BUILD=1 to silence this.)
+EOF
+  return 0
+}
+
 usage() {
   sed -n '/^# USAGE/,/^#$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
@@ -243,10 +278,12 @@ case "${1:-}" in
     ;;
   package)
     [[ $# -eq 3 ]] || usage
+    warn_not_a_release
     package_into "$2" "$3"
     ;;
   release)
     [[ $# -eq 3 ]] || usage
+    warn_not_a_release
     VERSION="$2"
     DEST="$(absdir "$3")"
     TARBALL="$(tarball_name "${VERSION}")"

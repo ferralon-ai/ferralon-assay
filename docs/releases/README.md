@@ -5,6 +5,16 @@ human description of the release — what it is and what changed — and nothing
 mechanics (the reproducible sha256 and the BUSL Change Date footnote are appended by the
 release workflow, which is the only thing that can attest them).
 
+> **Releases are cut only by pushing a `vX.Y.Z` tag.** Building the asset locally is fine
+> — to test a change, or to reproduce a published release's sha256 and verify it — but
+> never *publish* one from a local checkout: no `gh release create`, no hand-minted
+> `LICENSE` Change Date, no hand-moved tag, no uploading a locally-built asset. Only the
+> release workflow builds the asset reproducibly and can attest its sha256 and Change Date,
+> and it builds from the reviewed ref rather than whatever is in your working copy. A
+> locally-built tarball bypasses every gate below (the reproducibility check, the
+> TBD-`LICENSE` check, the notes check) and is not a release until CI builds it from a
+> pushed tag.
+
 ## The Change Date is minted, never committed
 
 `LICENSE` carries `Change Date: TBD` on every branch — `main` and every bugfix branch — and

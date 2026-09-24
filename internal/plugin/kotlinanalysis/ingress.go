@@ -6,20 +6,24 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // FindIngresses reports the discoverable program entry points of the compiled build
-// output. At Assess tier over bytecode, two ingress families are soundly discoverable:
-// the program entry `main` (kind "main"), and Spring web handlers detected from the
-// class/method RuntimeVisibleAnnotations the shared classfile parser now decodes
-// (kind "http_route").
+// output. At Assess tier over bytecode the Kotlin lane discovers two classes of root:
+// the program entry `main` (kind "main"), a Kotlin-only family recognized outside the
+// shared registry; and the framework ingresses declared by the shared JVM ingress
+// registry (internal/plugin/jvmingress) — Spring/JAX-RS HTTP routes ("http_route"),
+// container-invoked entrypoints (@Scheduled, @EventListener, @PostConstruct/@PreDestroy,
+// Kafka/JMS/Rabbit listeners), and servlets ("servlet"). Every family's vocabulary comes
+// from Families(), so this lane and GRANITE's Java lanes cannot diverge on what an ingress
+// is; each only keeps its own bytecode match form.
 //
-// Spring detection reads the SAME annotation names GRANITE's source-lexical Java lane
-// (calls.go) recognizes, so the bytecode and source lanes agree on what a Spring ingress
-// is. Honest-absent: a class with no recognized Spring stereotype yields no ingress, and a
-// malformed annotation table fails the class parse upstream (declared partiality via
-// loadProgram), never a silently fabricated or dropped root.
+// Honest-absent (inv.5): a class/method with no recognized annotation and no servlet
+// supertype yields no ingress, and a malformed annotation table fails the class parse
+// upstream (declared partiality via loadProgram) — never a silently fabricated or dropped
+// root.
 func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
@@ -41,103 +45,126 @@ func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.I
 	}, nil
 }
 
-// registerFrameworkIngresses detects Spring web handlers from the parsed annotations and
-// emits them as http_route ingresses. It mirrors GRANITE's Java lane: a method carrying a
-// Spring mapping annotation, on a class carrying a Spring controller stereotype, is a
-// framework ingress. The emitted list is sorted by canonical symbol for determinism.
+// registerFrameworkIngresses detects every registry-declared framework ingress from the
+// parsed bytecode and emits them, each carrying the Kind the registry assigns its family.
+// It mirrors GRANITE's Java lanes over the same shared vocabulary: a method carrying a
+// recognized annotation is an ingress, and a servlet method on an HttpServlet subclass is
+// an ingress — matching Java, no class-level stereotype is required. The emitted list is
+// sorted by canonical symbol (then Kind) for determinism.
 func registerFrameworkIngresses(prog *program) []plugin.Ingress {
 	var ingresses []plugin.Ingress
-	for _, si := range springIngresses(prog.classes) {
+	for _, fi := range frameworkIngresses(prog.classes) {
 		ingresses = append(ingresses, plugin.Ingress{
-			Kind:     "http_route",
-			Symbol:   SymbolFromMethodRef(si.ref),
-			Selector: si.selector,
+			Kind:     fi.kind,
+			Symbol:   SymbolFromMethodRef(fi.ref),
+			Selector: fi.selector,
 		})
 	}
 	return ingresses
 }
 
-// springControllerAnnotations are the class-level stereotypes that mark a type as a
-// Spring web controller. A mapping annotation only produces an HTTP handler when its
-// enclosing class carries one of these — matching Spring's own component model and
-// suppressing false positives from an unrelated @GetMapping.
-var springControllerAnnotations = map[string]bool{
-	"RestController": true,
-	"Controller":     true,
+// routeVerb, entrypointKind, servletSuperSuffix and servletMethods are the Kotlin bytecode
+// adapter's derived views of the shared JVM ingress registry. The registry declares each
+// family's vocabulary once; the init below projects it into the simple-name lookup forms
+// the bytecode pass needs. There is NO hand-maintained annotation list in this file — the
+// vocabulary is read from jvmingress.Families() alone, so this lane cannot drift from the
+// Java lanes.
+var (
+	// routeVerb maps an http_route annotation's simple name to its HTTP verb ("" for
+	// @RequestMapping / all-verbs). Membership (comma-ok) is the is-a-route test — an
+	// entry may legitimately hold "".
+	routeVerb = map[string]string{}
+	// entrypointKind maps a non-route annotation's simple name to its ingress Kind
+	// (scheduled, event_listener, lifecycle, message_listener).
+	entrypointKind = map[string]string{}
+	// servletSuperSuffix is the servlet family's direct-superclass name suffix.
+	servletSuperSuffix string
+	// servletMethods is the servlet family's entry-method-name set.
+	servletMethods = map[string]bool{}
+)
+
+func init() {
+	for _, f := range jvmingress.Families() {
+		switch {
+		case f.Match.Annotation != "" && f.Kind == jvmingress.KindHTTPRoute:
+			routeVerb[f.Match.Annotation] = f.Verb
+		case f.Match.Annotation != "":
+			entrypointKind[f.Match.Annotation] = f.Kind
+		case f.Match.SuperSuffix != "":
+			servletSuperSuffix = f.Match.SuperSuffix
+			for _, m := range f.Match.Methods {
+				servletMethods[m] = true
+			}
+		}
+	}
 }
 
-// springMappingAnnotations are the method-level route annotations GRANITE's calls.go
-// recognizes (the Spring MVC subset). A method carrying one, inside a controller, is an
-// ingress root. Recognized by simple NAME, exactly as the source-lexical lane does, so the
-// two lanes cannot diverge on the annotation vocabulary.
-var springMappingAnnotations = map[string]bool{
-	"RequestMapping": true,
-	"GetMapping":     true,
-	"PostMapping":    true,
-	"PutMapping":     true,
-	"DeleteMapping":  true,
-	"PatchMapping":   true,
-}
-
-// springMappingVerb maps a mapping annotation to its HTTP verb. @RequestMapping carries no
-// single verb (it maps all methods), so it is absent — the selector then omits the verb.
-var springMappingVerb = map[string]string{
-	"GetMapping":    "GET",
-	"PostMapping":   "POST",
-	"PutMapping":    "PUT",
-	"DeleteMapping": "DELETE",
-	"PatchMapping":  "PATCH",
-}
-
-// springIngress is one detected Spring handler: the method to seed reachability from, and
-// a best-effort "VERB /path" selector for the emitted Ingress.
-type springIngress struct {
+// frameworkIngress is one detected framework handler: the method to seed reachability
+// from, the ingress Kind, and a best-effort "VERB /path" selector (empty for non-route
+// kinds).
+type frameworkIngress struct {
 	ref      classfile.MethodRef
+	kind     string
 	selector string
 }
 
-// springIngresses returns every Spring HTTP handler across the loaded classes, sorted by
-// canonical method reference for deterministic emission. A class with no controller
-// stereotype contributes nothing (honest-absent).
-func springIngresses(classes []classfile.Class) []springIngress {
-	var out []springIngress
+// frameworkIngresses returns every registry-declared framework ingress across the loaded
+// classes, sorted by canonical method reference then Kind for deterministic emission.
+// Recognition matches GRANITE's Java lanes: a mapping/entrypoint annotation on a method is
+// sufficient on its own — no class-level stereotype gate — and a servlet method on a class
+// whose direct superclass name ends in the servlet suffix is an ingress. Over-approximating
+// roots this way can only raise reachability, never false-safe (inv.5).
+func frameworkIngresses(classes []classfile.Class) []frameworkIngress {
+	var out []frameworkIngress
 	for _, c := range classes {
-		if !hasSpringAnnotation(c.Annotations, springControllerAnnotations) {
-			continue
-		}
 		base := classRequestMappingPath(c.Annotations)
+		isServlet := servletSuperSuffix != "" && superClassMatchesSuffix(c.Super, servletSuperSuffix)
 		for _, m := range c.Methods {
-			verb, path, ok := methodMapping(m.Annotations)
-			if !ok {
+			if verb, path, ok := methodMapping(m.Annotations); ok {
+				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindHTTPRoute, selector: springSelector(verb, base, path)})
 				continue
 			}
-			out = append(out, springIngress{ref: m.Ref, selector: springSelector(verb, base, path)})
+			if kind, ok := methodEntrypointKind(m.Annotations); ok {
+				out = append(out, frameworkIngress{ref: m.Ref, kind: kind})
+				continue
+			}
+			if isServlet && servletMethods[m.Ref.Name] {
+				out = append(out, frameworkIngress{ref: m.Ref, kind: jvmingress.KindServlet})
+			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ref.String() < out[j].ref.String() })
+	sort.Slice(out, func(i, j int) bool {
+		if a, b := out[i].ref.String(), out[j].ref.String(); a != b {
+			return a < b
+		}
+		return out[i].kind < out[j].kind
+	})
 	return out
 }
 
-// springIngressRefs is the reachability seam: the method references of every Spring
-// handler, so Reachability can root a search at a framework ingress just as it does at
-// `main`. Order matches springIngresses (sorted) for determinism.
-func springIngressRefs(classes []classfile.Class) []classfile.MethodRef {
-	sis := springIngresses(classes)
-	refs := make([]classfile.MethodRef, len(sis))
-	for i, si := range sis {
-		refs[i] = si.ref
+// frameworkIngressRefs is the reachability seam: the method references of every framework
+// ingress (routes, container entrypoints, and servlets), so Reachability can root a search
+// at any framework ingress just as it does at `main`. Order matches frameworkIngresses
+// (sorted) for determinism.
+func frameworkIngressRefs(classes []classfile.Class) []classfile.MethodRef {
+	fis := frameworkIngresses(classes)
+	refs := make([]classfile.MethodRef, len(fis))
+	for i, fi := range fis {
+		refs[i] = fi.ref
 	}
 	return refs
 }
 
-// hasSpringAnnotation reports whether any annotation's simple name is in set.
-func hasSpringAnnotation(annos []classfile.Annotation, set map[string]bool) bool {
-	for _, a := range annos {
-		if set[annotationSimpleName(a.Type)] {
-			return true
-		}
+// superClassMatchesSuffix reports whether a class's direct superclass internal name matches
+// the servlet family's suffix, name-only. It mirrors Java's isServletBase: reduce the
+// internal name to its last segment, then accept an exact match or any name ending in the
+// suffix (a conservative *HttpServlet catch). Direct superclass only — no transitive
+// supertype resolution.
+func superClassMatchesSuffix(super, suffix string) bool {
+	if i := strings.LastIndexByte(super, '/'); i >= 0 {
+		super = super[i+1:]
 	}
-	return false
+	return super == suffix || strings.HasSuffix(super, suffix)
 }
 
 // classRequestMappingPath returns the base route path a class-level @RequestMapping
@@ -151,17 +178,29 @@ func classRequestMappingPath(annos []classfile.Annotation) string {
 	return ""
 }
 
-// methodMapping reports whether a method carries a Spring mapping annotation, returning
-// the HTTP verb ("" for @RequestMapping, which maps all verbs) and its route path.
+// methodMapping reports whether a method carries an http_route mapping annotation,
+// returning the HTTP verb ("" for @RequestMapping, which maps all verbs) and its route
+// path. The route vocabulary is the registry's http_route families (routeVerb).
 func methodMapping(annos []classfile.Annotation) (verb, path string, ok bool) {
 	for _, a := range annos {
 		name := annotationSimpleName(a.Type)
-		if !springMappingAnnotations[name] {
-			continue
+		if v, isRoute := routeVerb[name]; isRoute {
+			return v, annotationPath(a), true
 		}
-		return springMappingVerb[name], annotationPath(a), true
 	}
 	return "", "", false
+}
+
+// methodEntrypointKind reports the ingress Kind of the first container-invoked entrypoint
+// annotation (@Scheduled, @EventListener, @PostConstruct/@PreDestroy, Kafka/JMS/Rabbit) a
+// method carries, from the registry's non-route annotation families (entrypointKind).
+func methodEntrypointKind(annos []classfile.Annotation) (string, bool) {
+	for _, a := range annos {
+		if kind, ok := entrypointKind[annotationSimpleName(a.Type)]; ok {
+			return kind, true
+		}
+	}
+	return "", false
 }
 
 // annotationPath extracts the route path ("value" or "path" element) from a mapping

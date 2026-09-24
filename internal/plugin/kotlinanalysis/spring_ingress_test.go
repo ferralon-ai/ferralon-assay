@@ -102,11 +102,12 @@ func TestReachability_SpringIngressReachesDependency(t *testing.T) {
 	}
 }
 
-// TestFindIngresses_NoSpringAnnotationNoFabricatedIngress is the honest-absent control: a
-// class with the SAME shape but no Spring stereotype yields no framework ingress. A bare
-// @GetMapping method on a non-controller class is not a bean endpoint, so it must not
-// invent a root.
-func TestFindIngresses_NoSpringAnnotationNoFabricatedIngress(t *testing.T) {
+// TestFindIngresses_MappingWithoutStereotypeIsIngress pins the deliberate C3 parity change:
+// a @GetMapping method on a class with NO @RestController/@Controller stereotype now IS an
+// http_route ingress, matching GRANITE's Java lane (a mapping annotation alone suffices; the
+// class stereotype is no longer a precondition). This over-approximation is inv.5-sound —
+// more roots can only raise reachability, never false-safe.
+func TestFindIngresses_MappingWithoutStereotypeIsIngress(t *testing.T) {
 	dir := t.TempDir()
 
 	// A class with a @GetMapping method but NO @RestController/@Controller stereotype.
@@ -122,8 +123,18 @@ func TestFindIngresses_NoSpringAnnotationNoFabricatedIngress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindIngresses: %v", err)
 	}
-	if len(res.Ingresses) != 0 {
-		t.Fatalf("non-controller class must yield no framework ingress, got %+v", res.Ingresses)
+	if len(res.Ingresses) != 1 {
+		t.Fatalf("want exactly 1 ingress (the mapping method), got %d: %+v", len(res.Ingresses), res.Ingresses)
+	}
+	ing := res.Ingresses[0]
+	if ing.Kind != "http_route" {
+		t.Errorf("ingress kind = %q, want http_route", ing.Kind)
+	}
+	if ing.Symbol.Name != "handle" {
+		t.Errorf("ingress symbol name = %q, want handle", ing.Symbol.Name)
+	}
+	if ing.Selector != "GET /fetch" {
+		t.Errorf("ingress selector = %q, want %q", ing.Selector, "GET /fetch")
 	}
 }
 

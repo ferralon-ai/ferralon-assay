@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -302,14 +303,37 @@ func isMethodSymbol(sym string) bool {
 // coarse HTTP selector recorded for it. It is an ordered slice (first-match by append
 // order, deterministic — no map iteration on output) that an overlay appends to from
 // its OWN file's init() via registerMappingSelector, so overlays never edit
-// scipindex.go's classifier in place. Seeded with the built-in Spring mappings.
-var mappingSelectorRegistry = []struct{ needle, selector string }{
-	{"GetMapping#", "GET"},
-	{"PostMapping#", "POST"},
-	{"PutMapping#", "PUT"},
-	{"DeleteMapping#", "DELETE"},
-	{"PatchMapping#", "PATCH"},
-	{"RequestMapping#", "ANY"},
+// scipindex.go's classifier in place. Seeded from the shared registry
+// (internal/plugin/jvmingress): each http_route family with a non-empty SCIPNeedle
+// contributes needle→selector, where selector is the family Verb ("GET".."PATCH") or
+// "ANY" for the all-verbs RequestMapping. Families with an empty needle (JAX-RS,
+// servlet) are absent here, preserving today's SCIP coverage exactly.
+var mappingSelectorRegistry []struct{ needle, selector string }
+
+// containerEntrypointRegistry is the SCIP-space half of the H1 registry for
+// container-invoked entrypoint annotations: a scip-java descriptor needle → ingress
+// Kind. Ordered slice (deterministic first-match), appended to via
+// registerContainerEntrypointNeedle from an overlay's init(). Seeded from the shared
+// registry: each non-http_route family with a non-empty SCIPNeedle contributes
+// needle→Kind. MUST stay in step with the lexical containerEntrypoints map (both are
+// now registry-fed).
+var containerEntrypointRegistry []struct{ needle, kind string }
+
+func init() {
+	for _, f := range jvmingress.Families() {
+		if f.SCIPNeedle == "" {
+			continue
+		}
+		if f.Kind == jvmingress.KindHTTPRoute {
+			selector := f.Verb
+			if selector == "" {
+				selector = "ANY"
+			}
+			mappingSelectorRegistry = append(mappingSelectorRegistry, struct{ needle, selector string }{f.SCIPNeedle, selector})
+			continue
+		}
+		containerEntrypointRegistry = append(containerEntrypointRegistry, struct{ needle, kind string }{f.SCIPNeedle, f.Kind})
+	}
 }
 
 // registerMappingSelector appends an HTTP-mapping annotation needle→selector to the
@@ -346,21 +370,6 @@ func ingressAnnotation(sym string) (kind, selector string, ok bool) {
 		return k, "", true
 	}
 	return "", "", false
-}
-
-// containerEntrypointRegistry is the SCIP-space half of the H1 registry for
-// container-invoked entrypoint annotations: a scip-java descriptor needle → ingress
-// Kind. Ordered slice (deterministic first-match), appended to via
-// registerContainerEntrypointNeedle from an overlay's init(). Seeded with the
-// built-ins; MUST stay in step with the lexical containerEntrypoints map.
-var containerEntrypointRegistry = []struct{ needle, kind string }{
-	{"Scheduled#", "scheduled"},
-	{"EventListener#", "event_listener"},
-	{"PostConstruct#", "lifecycle"},
-	{"PreDestroy#", "lifecycle"},
-	{"KafkaListener#", "message_listener"},
-	{"JmsListener#", "message_listener"},
-	{"RabbitListener#", "message_listener"},
 }
 
 // registerContainerEntrypointNeedle appends a container-entrypoint annotation

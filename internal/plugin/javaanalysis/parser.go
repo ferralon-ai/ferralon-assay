@@ -437,12 +437,13 @@ func parseTypeHeaderServlet(r []rune, pos int) (name string, isServlet bool, ope
 // isServletBase reports whether a base-type token in an extends clause names the
 // servlet base class. It accepts the bare "HttpServlet", the dotted
 // "javax.servlet.http.HttpServlet" / "jakarta.servlet.http.HttpServlet" leaf, and
-// (conservatively) any identifier ending in "HttpServlet".
+// (conservatively) any identifier ending in "HttpServlet". The suffix comes from
+// the shared registry's servlet family (servletSuperSuffix).
 func isServletBase(tok string) bool {
 	if dot := strings.LastIndexByte(tok, '.'); dot >= 0 {
 		tok = tok[dot+1:]
 	}
-	return tok == "HttpServlet" || strings.HasSuffix(tok, "HttpServlet")
+	return tok == servletSuperSuffix || strings.HasSuffix(tok, servletSuperSuffix)
 }
 
 // parseMember tries to parse a method or field declaration starting at the first

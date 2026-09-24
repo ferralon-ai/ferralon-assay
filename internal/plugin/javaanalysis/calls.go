@@ -1,6 +1,18 @@
 package javaanalysis
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jvmingress"
+)
+
+// routeAnnotations, containerEntrypoints, servletEntryMethods and
+// servletSuperSuffix are the lexical adapter's derived views of the shared JVM
+// ingress registry (internal/plugin/jvmingress). The registry declares each
+// family's vocabulary once; the init below projects it into the name-only lookup
+// forms this lexical pass needs. The register* seams still mutate these views
+// in place so an overlay can teach a new annotation from its own init() without
+// editing this file.
 
 // routeAnnotations are the lexically-detectable HTTP route annotations that mark
 // a method as a framework ingress. The set covers Spring MVC
@@ -9,19 +21,7 @@ import "strings"
 // from an unrelated package is a (rare, declared-partial-free) false positive the
 // reachability layer tolerates: an ingress that resolves to no reachable sink
 // simply yields no candidate pair.
-var routeAnnotations = map[string]bool{
-	"RequestMapping": true,
-	"GetMapping":     true,
-	"PostMapping":    true,
-	"PutMapping":     true,
-	"DeleteMapping":  true,
-	"PatchMapping":   true,
-	"Path":           true,
-	"GET":            true,
-	"POST":           true,
-	"PUT":            true,
-	"DELETE":         true,
-}
+var routeAnnotations = map[string]bool{}
 
 // containerEntrypoints are annotations marking a method the Spring container (or
 // the JVM lifecycle it honors) invokes with NO syntactic caller: scheduled tasks,
@@ -34,14 +34,30 @@ var routeAnnotations = map[string]bool{
 // reachability layer tolerates — an entrypoint that reaches no sink yields no
 // candidate pair. Adding a root only ever ADDS reachable candidates (it modulates
 // strength, never admission — inv.5), so name-only over-recognition is sound.
-var containerEntrypoints = map[string]string{
-	"Scheduled":      "scheduled",
-	"EventListener":  "event_listener",
-	"PostConstruct":  "lifecycle",
-	"PreDestroy":     "lifecycle",
-	"KafkaListener":  "message_listener",
-	"JmsListener":    "message_listener",
-	"RabbitListener": "message_listener",
+var containerEntrypoints = map[string]string{}
+
+// servletEntryMethods are the HttpServlet override names that are servlet
+// ingresses when the enclosing class extends HttpServlet.
+var servletEntryMethods = map[string]bool{}
+
+// servletSuperSuffix is the servlet family's direct-superclass name suffix
+// (registry-fed), consumed by isServletBase in parser.go.
+var servletSuperSuffix string
+
+func init() {
+	for _, f := range jvmingress.Families() {
+		switch f.Kind {
+		case jvmingress.KindHTTPRoute:
+			routeAnnotations[f.Match.Annotation] = true
+		case jvmingress.KindServlet:
+			servletSuperSuffix = f.Match.SuperSuffix
+			for _, m := range f.Match.Methods {
+				servletEntryMethods[m] = true
+			}
+		default:
+			containerEntrypoints[f.Match.Annotation] = f.Kind
+		}
+	}
 }
 
 // registerRouteAnnotation and registerContainerEntrypoint are the lexical half of the
@@ -54,16 +70,6 @@ var containerEntrypoints = map[string]string{
 func registerRouteAnnotation(name string) { routeAnnotations[name] = true }
 
 func registerContainerEntrypoint(name, kind string) { containerEntrypoints[name] = kind }
-
-// servletEntryMethods are the HttpServlet override names that are servlet
-// ingresses when the enclosing class extends HttpServlet.
-var servletEntryMethods = map[string]bool{
-	"doGet":    true,
-	"doPost":   true,
-	"doPut":    true,
-	"doDelete": true,
-	"service":  true,
-}
 
 // bodyFrame is one entry on the body-aware block stack used by the call/ingress
 // scanner. A named type frame records whether the type extends HttpServlet; a

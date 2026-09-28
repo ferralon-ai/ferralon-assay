@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -22,10 +23,12 @@ const (
 	LangUnknown = ""       // no recognized source markers under the dir
 )
 
-// DetectLanguage classifies the checked-out tree at dir. A go.mod at the root makes it
-// Go unconditionally (the module-root marker the Go vendoring / govulncheck setup keys on,
-// and the reason checkout historically required go.mod) — Go is a module-root fact, not a
-// file count, so this short-circuit is preserved exactly. Otherwise, detection is
+// DetectLanguage classifies the checked-out tree at dir. A go.mod anywhere within
+// FindGoModuleRoot's bounded search below dir (at the root, or in a monorepo-shaped
+// subdirectory such as target/ or src/) makes it Go unconditionally (the module-root marker
+// the Go vendoring / govulncheck setup keys on, and the reason checkout historically required
+// go.mod) — Go is a module-root fact, not a file count, so this short-circuit is preserved
+// exactly; only WHERE it looks for the root has widened. Otherwise, detection is
 // dominance-based: a single walk tallies source files per language across kotlin / java /
 // js / python / dotnet (applying the same skipSourceDir prune and the same extension rules as
 // the historical per-language probes, including the .d.ts exclusion for JS and the
@@ -53,7 +56,7 @@ const (
 // precedence. Zero source files in every bucket yields LangUnknown — the caller treats that
 // as "not a recognizable source tree" and errors (inv.5: never a silent half-checkout).
 func DetectLanguage(dir string) string {
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+	if _, ok := FindGoModuleRoot(dir); ok {
 		return LangGo
 	}
 	counts := countSources(dir)
@@ -78,6 +81,54 @@ func DetectLanguage(dir string) string {
 		}
 	}
 	return best
+}
+
+// goModuleSearchMaxDepth bounds how far below dir FindGoModuleRoot descends looking for a go.mod
+// not at the root. depth 0 is dir itself (the historical root-only check); depth 1 covers the
+// single-level monorepo shapes this mission exists for (target/go.mod, src/go.mod, cmd/x/go.mod);
+// depth 4 leaves headroom for a deeper monorepo (e.g. apps/backend/services/x/go.mod) without
+// turning the walk unbounded — language.go already reasons about trees of 4600+ files, so an
+// unbounded descent is not acceptable here either.
+const goModuleSearchMaxDepth = 4
+
+// FindGoModuleRoot searches dir, then its subdirectories breadth-first up to
+// goModuleSearchMaxDepth levels deep, for a go.mod file. It returns the directory containing the
+// go.mod found at the SHALLOWEST depth; ties at that depth (more than one go.mod at the same
+// depth — a genuine multi-module tree) break lexicographically by path, so selection is always
+// deterministic. It returns ("", false) when no go.mod exists within the bound.
+//
+// This is a DIFFERENT question from countSources' source-dominance walk and deliberately does not
+// share its skipSourceDir prune list: a module can legitimately live under a directory dominance
+// excludes (e.g. a module under target/go.mod), and widening skipSourceDir itself would defeat the
+// vendored-dominance reasoning that prune list exists for. The only directory this search skips is
+// ".git" — never a module location, and potentially large.
+func FindGoModuleRoot(dir string) (string, bool) {
+	frontier := []string{dir}
+	for depth := 0; depth <= goModuleSearchMaxDepth; depth++ {
+		var matches []string
+		var next []string
+		for _, d := range frontier {
+			if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+				matches = append(matches, d)
+			}
+			entries, err := os.ReadDir(d)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if !e.IsDir() || e.Name() == ".git" {
+					continue
+				}
+				next = append(next, filepath.Join(d, e.Name()))
+			}
+		}
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			return matches[0], true
+		}
+		frontier = next
+	}
+	return "", false
 }
 
 // sourceCounts tallies per-language source-file counts over a tree.

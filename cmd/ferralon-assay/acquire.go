@@ -206,6 +206,11 @@ func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
 			return plugin.NewDotNetPlugin(plugin.WithDotNetBinaryPath(bin))
 		}
 		return plugin.NewDotNetPlugin()
+	case checkout.LangCFamily:
+		if bin != "" {
+			return plugin.NewCFamilyPlugin(plugin.WithCFamilyBinaryPath(bin))
+		}
+		return plugin.NewCFamilyPlugin()
 	default:
 		return nil, fmt.Errorf("no analyzer plugin for detected source language %q", language)
 	}
@@ -285,6 +290,16 @@ func advisoryCorpus(language string, includeHouseCanaries bool) []assessment.Vul
 		return pythonAdvisoryCorpus(includeHouseCanaries)
 	case checkout.LangDotNet:
 		return dotnetAdvisoryCorpus(includeHouseCanaries)
+	case checkout.LangCFamily:
+		// Row zero (Phase 0): the C-family lane is a detection+routing skeleton with no analysis
+		// and no advisory floor yet. C/C++ advisories are version-range-only (no vulnerable-symbol
+		// identifier) and there is no C/C++ ecosystem wired, so there is nothing honest to seed here.
+		// A floor is NOT a coverage claim; fabricating one to force a completing scan is exactly the
+		// dishonesty this codebase forbids. cfamily is therefore deliberately NOT in the release
+		// supportedLanguages set (language_support_test.go) — it routes and fails open (a scan of a
+		// C/C++ tree halts at the empty-work-set gate, never a false clean verdict), and a real floor
+		// lands with the Phase-1 engine.
+		return nil
 	default:
 		return nil
 	}

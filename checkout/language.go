@@ -20,7 +20,8 @@ const (
 	LangJS      = "js"     // a JS/TS source tree: contains .js/.ts/.jsx/.tsx (optionally package.json)
 	LangPython  = "python" // a Python source tree: contains .py sources (optionally requirements.txt/pyproject.toml)
 	LangDotNet  = "dotnet" // a .NET source tree: contains .cs sources or a .csproj/.sln project marker
-	LangUnknown = ""       // no recognized source markers under the dir
+	LangCFamily = "cfamily" // a C/C++ source tree: contains .c/.cc/.cpp/.cxx/.c++ sources or .h/.hpp/.hh/.hxx headers
+	LangUnknown = ""        // no recognized source markers under the dir
 )
 
 // DetectLanguage classifies the checked-out tree at dir. A go.mod anywhere within
@@ -30,7 +31,7 @@ const (
 // go.mod) — Go is a module-root fact, not a file count, so this short-circuit is preserved
 // exactly; only WHERE it looks for the root has widened. Otherwise, detection is
 // dominance-based: a single walk tallies source files per language across kotlin / java /
-// js / python / dotnet (applying the same skipSourceDir prune and the same extension rules as
+// js / python / dotnet / cfamily (applying the same skipSourceDir prune and the same extension rules as
 // the historical per-language probes, including the .d.ts exclusion for JS and the
 // .csproj/.sln/.fsproj/.vbproj markers for .NET), and the language with the MOST source
 // files wins. This classifies a polyglot tree by its dominant language: a repo that is
@@ -74,6 +75,7 @@ func DetectLanguage(dir string) string {
 		{LangJS, counts.js},
 		{LangPython, counts.python},
 		{LangDotNet, counts.dotnet},
+		{LangCFamily, counts.cfamily},
 	} {
 		if c.n > bestN {
 			best = c.lang
@@ -133,7 +135,7 @@ func FindGoModuleRoot(dir string) (string, bool) {
 
 // sourceCounts tallies per-language source-file counts over a tree.
 type sourceCounts struct {
-	kotlin, java, js, python, dotnet int
+	kotlin, java, js, python, dotnet, cfamily int
 }
 
 // countSources walks dir once and counts source files per language, skipping common
@@ -144,7 +146,9 @@ type sourceCounts struct {
 // (pythonanalysis.pythonFiles, javaanalysis.javaFiles, jsanalysis.jsFiles, dotnetanalysis)
 // without importing them (internal/checkout must stay analysis-library-free): the .d.ts
 // TypeScript-declaration exclusion for JS and the .csproj/.sln/.fsproj/.vbproj project
-// markers for .NET are preserved. .kt/.kts count toward Kotlin, not Java.
+// markers for .NET are preserved. .kt/.kts count toward Kotlin, not Java. The C-family
+// bucket (.c/.cc/.cpp/.cxx/.c++ sources and .h/.hpp/.hh/.hxx headers) has no analysis
+// package to mirror yet — the lane is a Phase-0 skeleton.
 func countSources(dir string) sourceCounts {
 	var c sourceCounts
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -173,6 +177,13 @@ func countSources(dir string) sourceCounts {
 				c.js++
 			case ".cs", ".csproj", ".sln", ".fsproj", ".vbproj":
 				c.dotnet++
+			case ".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx":
+				// C and C++ share ONE detection bucket (LangCFamily): real repos mix C and C++
+				// translation units under one build system, so a whole-tree C-vs-C++ split here
+				// would force a classification the build reality does not respect. A .h header is
+				// counted toward the family without deciding C vs C++ — that per-TU decision is the
+				// compiler mode in compile_commands.json (ground truth), deferred to Phase 1.
+				c.cfamily++
 			}
 		}
 		return nil

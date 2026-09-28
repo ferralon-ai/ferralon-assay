@@ -263,29 +263,34 @@ func TestSelectSinks(t *testing.T) {
 	}
 }
 
-// TestSelectRunSnapshotSink covers the default-branch + URL gate: the run-snapshot push
-// fires ONLY when a URL is set AND the run is on the default branch; every other
-// combination (no URL, PR ref, feature branch, missing default) stays nil so the run
-// never files a report_run.
+// TestSelectRunSnapshotSink covers the canonical-ref + URL gate: the run-snapshot push
+// fires ONLY when a URL is set AND this run analyzed the repository's canonical ref; every
+// other combination (no URL, a ref that is not the canonical one, either side unknown) stays
+// nil so the run never files a report_run. The refs reaching this gate are the pair
+// canonicalDeliveryRefs derives — see TestCanonicalDeliveryRefs for that half, and
+// TestPlainRepoDeliveryEquivalence for the two composed.
 func TestSelectRunSnapshotSink(t *testing.T) {
 	tok := ferralon.TokenSource(func(context.Context) string { return "tok" })
 	tests := []struct {
 		name       string
 		url        string
-		refName    string
-		defBranch  string
+		analyzed   string
+		canonical  string
 		wantActive bool
 	}{
-		{"url set + on default branch → active", "https://api.example.com/runs", "main", "main", true},
-		{"url set but on a PR merge ref → nil", "https://api.example.com/runs", "42/merge", "main", false},
-		{"url set but on a feature branch → nil", "https://api.example.com/runs", "feature-x", "main", false},
-		{"on default branch but no url → nil", "", "main", "main", false},
-		{"url set but default branch unknown → nil", "https://api.example.com/runs", "main", "", false},
-		{"url set but ref unknown → nil", "https://api.example.com/runs", "", "main", false},
+		{"url set + analyzed the canonical ref → active", "https://api.example.com/runs", "main", "main", true},
+		{"url set but analyzed a PR merge ref → nil", "https://api.example.com/runs", "42/merge", "main", false},
+		{"url set but analyzed a feature branch → nil", "https://api.example.com/runs", "feature-x", "main", false},
+		{"analyzed the canonical ref but no url → nil", "", "main", "main", false},
+		{"url set but canonical ref unknown → nil", "https://api.example.com/runs", "main", "", false},
+		{"url set but analyzed ref unknown → nil", "https://api.example.com/runs", "", "main", false},
+		// The analyze.ref half: the canonical ref is the designated one, not the default branch.
+		{"url set + analyzed the designated ref → active", "https://api.example.com/runs", "release", "release", true},
+		{"url set but analyzed some other ref than the designated one → nil", "https://api.example.com/runs", "main", "release", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := selectRunSnapshotSink(tc.url, tc.refName, tc.defBranch, tok)
+			got := selectRunSnapshotSink(tc.url, tc.analyzed, tc.canonical, tok)
 			if tc.wantActive && got == nil {
 				t.Fatalf("expected an active run-snapshot sink, got nil")
 			}

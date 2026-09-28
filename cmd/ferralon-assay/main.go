@@ -187,7 +187,7 @@ func runBaseline(args []string) error {
 	}
 
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws)); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef); err != nil {
 		return err
 	}
 

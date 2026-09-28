@@ -86,12 +86,13 @@ const (
 //     but no PR comment.
 //   - Tier 2 (NewTier2Pages) is added only when caps.CanPages (TEGRON_PAGES opt-in
 //     AND a write token).
-//   - The Ferralon run-snapshot sink (runSnapshot, resolved by the caller from the
-//     FERRALON_RUNS_URL + default-branch env) is appended when non-nil. It is the
+//   - The Ferralon run-snapshot sink (runSnapshot, resolved by the caller from
+//     FERRALON_RUNS_URL plus the canonical-ref pair) is appended when non-nil. It is the
 //     only sink in the set that contacts Ferralon: it pushes the run's report to the backend
 //     /runs endpoint so the console can render a live assessment. It is gated OUTSIDE
-//     the selector (default-branch + URL) and only reached inside the InActions block,
-//     so a local / forked-PR / non-default-branch run never files a run.
+//     the selector (canonical ref + URL — selectRunSnapshotSink) and only reached inside the
+//     InActions block, so a local / forked-PR run, and any run that assessed a ref other than
+//     the repository's canonical one, never files a run.
 //
 // The selector reads no live environment: every decision flows from the passed Env,
 // so it is pure and unit-testable (construct an Env literal, assert the composition).
@@ -125,20 +126,62 @@ func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSin
 	return sinks
 }
 
+// canonicalDeliveryRefs derives the two refs the delivery gate compares: the ref this run
+// actually ANALYZED, and the CANONICAL ref of this repository — the one whose assessment the
+// repository asked Ferralon Assay to carry.
+//
+// analyzeRef is the repository-owned .github/ferralon.yml `analyze.ref` AS ACTUALLY RESOLVED by
+// acquireTarget. It is empty on every path where no redirect happened: no config file, a config
+// naming no ref, or a remote-URL target (the config is read only from a local checked-out tree).
+// refName is the TRIGGERING ref (GITHUB_REF_NAME) and defaultBranch the repository default
+// (FERRALON_DEFAULT_BRANCH).
+//
+//   - No analyze.ref — the scan inventories the tree CI checked out, so the analyzed ref IS the
+//     triggering ref, and the canonical ref is the repository's default branch. The comparison
+//     the gate then makes is refName == defaultBranch: the pre-TEG-060 gate, unchanged, on
+//     every input.
+//   - analyze.ref resolved — the scan analyzed THAT ref (acquire.provenance records the same
+//     pair on the Report's subject, so the delivered assessment and this decision agree by
+//     construction), and that ref is by definition the canonical one, because the repository
+//     itself designated it in a file it owns.
+//
+// Worth stating plainly, because it follows from that second case: the config is read from the
+// tree CI checked out, so the canonical ref is whatever THIS run's checked-out ferralon.yml
+// names. A branch carrying a modified ferralon.yml therefore designates — and delivers — its own
+// choice of ref. That is the same trust boundary the analyze.ref redirect itself already sits on
+// (a writer who can change that file can already change what is scanned), and narrowing it would
+// mean reading the default branch's copy of the config, which is a change to what is READ, not to
+// delivery selection. Out of scope here; recorded so it is a decision and not an oversight.
+func canonicalDeliveryRefs(analyzeRef, refName, defaultBranch string) (analyzed, canonical string) {
+	if analyzeRef != "" {
+		return analyzeRef, analyzeRef
+	}
+	return refName, defaultBranch
+}
+
 // selectRunSnapshotSink decides whether this run pushes a run snapshot to the backend
 // /runs endpoint, returning the sink or nil. It is the load-bearing gate:
 // the push fires ONLY when (a) a run-snapshot URL resolved non-empty (resolveEndpoint in
 // link.go — the caller opted in via link-to-console AND the release carries or overrides a
-// runs endpoint; empty on the OSS/dogfood path and on an explicit opt-out) AND (b) the run is
-// on the repository's DEFAULT branch (refName == defaultBranch, both non-empty). A PR /
-// non-default-branch run returns nil and stays stateless — it never files a report_run,
-// mirroring how the StateStore -repo persistence is default-branch-gated by the caller.
+// runs endpoint; empty on the OSS/dogfood path and on an explicit opt-out) AND (b) THIS RUN
+// ANALYZED THE REPOSITORY'S CANONICAL REF (analyzedRef == canonicalRef, both non-empty), the
+// pair canonicalDeliveryRefs derives from the run's environment.
+//
+// The question is "did this run assess the ref the repository asked to see", NOT "was this run
+// TRIGGERED on the default branch". For a repository with no analyze.ref the two questions have
+// the same answer on every run — analyzed ref is the triggering ref, canonical ref is the
+// default branch — so this is a STRICT SUPERSET of the pre-TEG-060 gate: identical delivery for
+// a plain repository (TestPlainRepoDeliveryEquivalence pins that against a verbatim transcript
+// of the old condition), and it only ever ADDS delivery, for an analyze.ref repository whose
+// designated ref was assessed by a run triggered somewhere else. A run that assessed some other
+// ref returns nil and stays stateless — it never files a report_run, mirroring how the
+// StateStore -repo persistence is default-branch-gated by the caller.
 // It is pure (env is read by the caller) so the gate is unit-testable.
-func selectRunSnapshotSink(url, refName, defaultBranch string, token ferralon.TokenSource) resultsink.ResultSink {
+func selectRunSnapshotSink(url, analyzedRef, canonicalRef string, token ferralon.TokenSource) resultsink.ResultSink {
 	if url == "" {
 		return nil
 	}
-	if refName == "" || defaultBranch == "" || refName != defaultBranch {
+	if analyzedRef == "" || canonicalRef == "" || analyzedRef != canonicalRef {
 		return nil
 	}
 	return ferralon.NewRunSnapshot(url, token)
@@ -151,14 +194,21 @@ func selectRunSnapshotSink(url, refName, defaultBranch string, token ferralon.To
 // disclosure of which work set and which advisory facts this pass actually used. It is stamped HERE
 // rather than inside the trigger because the trigger knows nothing about how the entrypoint resolved
 // its sources — this is the only place both facts are in hand.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance) error {
+//
+// analyzeRef is the resolved .github/ferralon.yml analyze.ref (acquired.analyzeRef; empty on the
+// default path). It reaches the delivery gate IN PROCESS — the redirect is decided by acquireTarget
+// in this same binary, so nothing about the analyzed ref needs to travel through the environment.
+// It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
+// what was analyzed nor what is published on any other sink.
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string) error {
 	rep.Provenance.Intel = &intel
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
 	}
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
-	runSnapshot := selectRunSnapshotSink(runsURL, os.Getenv(envRefName), os.Getenv(envDefaultBranch), resolveOIDCToken)
+	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
+	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
 	return publishAll(ctx, selectSinks(github.DetectEnv(), outDir, runSnapshot), res)
 }
 
@@ -209,6 +259,10 @@ type runConfig struct {
 	assessOptions []pipeline.AssessOption
 	outDir        string
 	cleanup       func()
+
+	// analyzeRef is the resolved .github/ferralon.yml analyze.ref (empty on the default path),
+	// carried from acquireTarget so publishResult can gate delivery on the canonical ref.
+	analyzeRef string
 }
 
 // runFlags registers the flags common to the pr-inherit / cve-watch modes. It reuses
@@ -622,6 +676,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		assessOptions: assessOptions,
 		outDir:        *f.outDir,
 		cleanup:       acq.cleanup,
+		analyzeRef:    acq.analyzeRef,
 	}, nil
 }
 
@@ -695,7 +750,7 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet)); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report)
@@ -764,7 +819,7 @@ func runCVEWatch(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
 	fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 	fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet)); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report)

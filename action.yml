@@ -278,11 +278,14 @@ inputs:
     description: >-
       OVERRIDE for the run-snapshot endpoint a linked run pushes to (GHE / substrate / dev). Empty
       (default) = use the endpoint baked into the pinned scanner release; like ingest-url it enables
-      nothing on its own. On a DEFAULT-BRANCH run a linked scan pushes its own tegron.report.v2
-      verdict layer there at run time, under the workflow's GitHub-Actions OIDC token (audience
-      ferralon-ingest, id-token: write) — the push the console fleet view renders a live assessment
-      from. A PR / non-default-branch run stays stateless and NEVER files a run. The push is
-      FAIL-OPEN: a rejected or unreachable endpoint only warns, it never fails the scan job.
+      nothing on its own. When a linked scan has assessed this repository's CANONICAL REF it pushes
+      its own tegron.report.v2 verdict layer there at run time, under the workflow's GitHub-Actions
+      OIDC token (audience ferralon-ingest, id-token: write) — the push the console fleet view
+      renders a live assessment from. The canonical ref is the one .github/ferralon.yml `analyze.ref`
+      designates, and, absent that file, your repository's default branch — so a repository that sets
+      no analyze.ref pushes on exactly the default-branch runs it always did. Any run that assessed
+      some OTHER ref — a PR, a feature branch, a tag — stays stateless and NEVER files a run. The push
+      is FAIL-OPEN: a rejected or unreachable endpoint only warns, it never fails the scan job.
     required: false
     default: ""
 
@@ -557,8 +560,14 @@ runs:
         # ACTIONS_ID_TOKEN_REQUEST_* pair (present when the caller grants id-token: write) are default
         # Actions env vars already visible to this step, so they are not re-mapped here.
         FERRALON_INGEST_URL: ${{ inputs.ingest-url }}
-        # A linked run's report push is ALSO default-branch-gated (GITHUB_REF_NAME == the default
-        # branch below). GITHUB_REF_NAME and the ACTIONS_ID_TOKEN_REQUEST_* OIDC pair are default
+        # A linked run's report push is ALSO canonical-ref-gated: it fires when the run ASSESSED the
+        # repository's canonical ref, not merely when it was TRIGGERED on the default branch. The
+        # canonical ref is .github/ferralon.yml `analyze.ref` when the repository sets one, else the
+        # default branch below — so with no analyze.ref the gate reduces to GITHUB_REF_NAME == that
+        # default branch, exactly as before. FERRALON_DEFAULT_BRANCH therefore stays wired as the
+        # no-analyze.ref fallback. Nothing more is mapped here for the analyzed ref: the analyze.ref
+        # redirect is resolved by the scanner itself, in this same process, so the gate already has
+        # it in hand. GITHUB_REF_NAME and the ACTIONS_ID_TOKEN_REQUEST_* OIDC pair are default
         # Actions env vars already visible to this step (the caller must grant id-token: write), so
         # only the endpoint override is mapped here.
         FERRALON_RUNS_URL: ${{ inputs.runs-url }}

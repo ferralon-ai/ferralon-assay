@@ -1539,6 +1539,13 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		buildDir, language = prim.Root, prim.Language
 	}
 
+	// checkoutRoot is the directory the codebase was actually checked out into. It is captured here,
+	// before any later module-root reassignment could move buildDir off the checkout root (a nested
+	// Go module, TEG-062, absent on this module today), so a downstream reader that needs the real
+	// checked-out tree — e.g. the Prove sandbox_observability stage's Dockerfile lookup, F39/TEG-064 —
+	// can still reach it. Equal to buildDir for every non-nested tree, which is every tree here.
+	checkoutRoot := buildDir
+
 	// Pin the concrete commit SHA the assessment was checked out at (T1 reproducibility anchor):
 	// the requested Revision is a branch/tag/ref; rev-parse resolves it to the exact commit so a
 	// third party knows precisely which source was assessed. The orchestrator persists this Subject
@@ -1633,7 +1640,11 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Repo     string `json:"repo"`
 		Revision string `json:"revision"`
 		BuildDir string `json:"build_dir"`
-		Language string `json:"language,omitempty"`
+		// CheckoutRoot is the directory the codebase was actually checked out into, captured BEFORE
+		// a nested Go module (TEG-062) reassigns BuildDir to the module root. Equal to BuildDir for
+		// every non-Go and non-nested-Go tree. Read back by InventoryCheckoutRoot (F39, TEG-064).
+		CheckoutRoot string `json:"checkout_root,omitempty"`
+		Language     string `json:"language,omitempty"`
 		// WorkspacePlan is the full enumeration of detected projects (one today; PLAN-400 makes it
 		// hold true monorepos). It is PERSISTED but not yet read by any downstream stage — the scalar
 		// build_dir/language above remain the primary-project projection S3–S6 consume. Landing the
@@ -1661,6 +1672,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Repo:               c.Request.Codebase.Repo,
 		Revision:           c.Request.Codebase.Revision,
 		BuildDir:           buildDir,
+		CheckoutRoot:       checkoutRoot,
 		Language:           language,
 		WorkspacePlan:      plan,
 		ResolvedVersion:    resolvedVersion,
@@ -1718,6 +1730,28 @@ func InventoryBuildDir(store artifact.Store, caseID string) (string, error) {
 		return "", err
 	}
 	return inv.BuildDir, nil
+}
+
+// InventoryCheckoutRoot returns the checkout root recorded by codebase_inventory — the directory
+// the codebase was actually checked out into, which for a nested Go module (TEG-062) differs from
+// InventoryBuildDir (the discovered module root). "" if none was recorded: a record written before
+// this field existed, or a case where BuildDir was never set either — an honest absence, not an
+// error (read-time only, no migration; F39, TEG-064).
+func InventoryCheckoutRoot(store artifact.Store, caseID string) (string, error) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil {
+		return "", err
+	}
+	if len(arts) == 0 {
+		return "", nil
+	}
+	var inv struct {
+		CheckoutRoot string `json:"checkout_root"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return "", err
+	}
+	return inv.CheckoutRoot, nil
 }
 
 // --- Stage 2b: malicious_presence ---------------------------------------------

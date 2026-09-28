@@ -77,8 +77,10 @@ type NonExploitableBasis string
 
 const (
 	// BasisNone is the default: a bare reasoned not-exploitable lean with no grounded
-	// refutation behind it (the stub/no-attributed-signal path). A model asserting
-	// "not exploitable" with no disqualification or refutation evidence lands here.
+	// refutation behind it (the skeleton / no-verifier / no-attributed-signal paths). A
+	// model asserting "not exploitable" with no disqualification or refutation evidence
+	// lands here, and so does a case where analysis never ran at all. Downstream
+	// projections MUST treat BasisNone as "nothing was established" — see poeprojection.
 	BasisNone NonExploitableBasis = ""
 	// BasisVersionNotAffected: the resolved dependency version is provably outside the
 	// advisory's affected range (disqualification_discovery, RFC 0006).
@@ -86,6 +88,13 @@ const (
 	// BasisSymbolAbsent: the vulnerable symbol is provably absent from the built artifact
 	// (disqualification_discovery / absence-elision, RFC 0006).
 	BasisSymbolAbsent NonExploitableBasis = "vulnerable_symbol_absent"
+	// BasisStaticRefutation: a HELD static PoNE refutation (absence_elision /
+	// reachability_refutation / constructive_containment) over a declared-COMPLETE
+	// analysis (RFC 0010) — the report fired but the static hold refuted exploitability.
+	// Distinct from BasisVersionNotAffected/BasisSymbolAbsent (RFC 0006 disqualification,
+	// which never runs a proof engine at all); grouped under the same field because both
+	// are grounded refutations, never proofs.
+	BasisStaticRefutation NonExploitableBasis = "static_refutation"
 )
 
 // CompletionStatus records why analysis ended, orthogonal to the verdict (RFC 0003).
@@ -169,10 +178,12 @@ type PoE struct {
 	// (with both trace refs) when Strength==proven && Direction==not_exploitable.
 	PatchValidation *PatchValidationRef `json:"patch_validation,omitempty"`
 	// NonExploitableBasis records the grounded refutation behind a `reasoned not_exploitable`
-	// verdict (a disqualification: version-not-affected or symbol-absent), distinguishing it
-	// from a bare skeleton lean. Empty for every other verdict class — including a `proven`
-	// PoNE (which is backed by PatchValidation) and a bare reasoned lean (BasisNone). This is
-	// a grounded REASONED claim, never a proof: it cannot and must not raise Strength.
+	// verdict (a disqualification: version-not-affected or symbol-absent; or a held static
+	// refutation: BasisStaticRefutation), distinguishing it from a bare skeleton/no-signal
+	// lean (BasisNone). Empty for every other verdict class — including a `proven` PoNE
+	// (which is backed by PatchValidation) and a bare reasoned lean. This is a grounded
+	// REASONED claim, never a proof: it cannot and must not raise Strength. BasisNone here
+	// is the load-bearing "nothing was established" signal downstream projections key on.
 	NonExploitableBasis NonExploitableBasis `json:"non_exploitable_basis,omitempty"`
 }
 

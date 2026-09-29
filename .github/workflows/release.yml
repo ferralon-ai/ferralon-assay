@@ -8,9 +8,16 @@ name: release
 # mean someone hand-stamped it, so this workflow refuses to build from such a commit. Instead, at
 # release time it computes the Change Date (the BUSL "fourth anniversary" — today + 4 years),
 # writes it onto a single leaf commit that is a child of the tagged commit, and re-points the tag
-# at that leaf. The leaf changes exactly one line of LICENSE, is reachable only through the tag,
-# and never merges back. That leaf IS the released source: consumers who pin the tag get a LICENSE
-# with a real Change Date; the branch it was cut from stays TBD. A bugfix for an old release is a
+# at that leaf. The leaf changes the Change Date (and Change License) lines of LICENSE plus the one
+# `scanner-version` default line of action.yml, is reachable only through the tag, and never merges
+# back. That leaf IS the released source: consumers who pin the tag get a LICENSE with a real Change
+# Date; the branch it was cut from stays TBD.
+#
+# THE SCANNER VERSION IS STAMPED ON THE SAME LEAF. Every branch's action.yml defaults
+# `scanner-version` to a minor alias (vX.Y), which the Action resolves at run time to that minor's
+# current patch. The leaf rewrites that default to the exact vX.Y.Z being cut, so every tag of the
+# Action names one scanner release and only a branch ref floats. The cut refuses a tagged commit
+# whose default is not a vX.Y alias. A bugfix for an old release is a
 # branch forked from that release's tagged base (`<tag>^`, which is TBD), fixed, and re-minted.
 #
 # action.yml does not build anything at run time: it downloads a release asset selected by version
@@ -29,9 +36,9 @@ name: release
 # two sha256 digests must agree. A nondeterministic build would name a checksum only the machine
 # that happened to cut it could produce — worthless both to a consumer who wants to re-derive the
 # bytes and to one who opts in to pinning scanner-sha256 in action.yml — so a divergence aborts with
-# nothing published. LICENSE is not compiled into or packaged with the binary
-# (scripts/build-release.sh stages NOTICE, not LICENSE), so minting the Change Date onto the leaf
-# does not move the asset's sha256.
+# nothing published. Neither LICENSE nor action.yml is compiled into or packaged with the binary
+# (scripts/build-release.sh packages the binaries and NOTICE, built with -buildvcs=false), so
+# minting the Change Date and the scanner version onto the leaf does not move the asset's sha256.
 #
 # THE GO TOOLCHAIN IS PART OF THE RECIPE. Two toolchain versions produce two different binaries,
 # correctly. The toolchain pin below is therefore load-bearing for byte-identity with any other
@@ -129,11 +136,19 @@ jobs:
             exit 1
           fi
 
+      # The tagged commit must carry the minor alias. An exact vX.Y.Z on a branch means someone
+      # hand-stamped it, and the stamp below would then have nothing to replace. The alias need not
+      # match this tag's minor: a branch moves it only when a change needs a newer minor's scanner.
+      - name: The tagged commit carries the minor alias (scanner-version is vX.Y)
+        if: steps.exists.outputs.skip != 'true'
+        run: ./scripts/stamp-scanner-version.sh check
+
       # Mint the Change Date onto a leaf. Compute today + 4 years (the BUSL "fourth anniversary of
-      # the first publicly available distribution"), write it onto a single commit that changes only
-      # LICENSE, and re-point the tag at that leaf. From here on the checked-out tree — and the tag —
-      # are the minted leaf: the build, the reproducibility check and the release all run against it.
-      - name: Mint the BUSL Change Date onto a release-only leaf commit
+      # the first publicly available distribution"), write it and this release's exact
+      # scanner-version onto a single commit that changes only those lines of LICENSE and action.yml,
+      # and re-point the tag at that leaf. From here on the checked-out tree — and the tag — are the
+      # minted leaf: the build, the reproducibility check and the release all run against it.
+      - name: Mint the BUSL Change Date and scanner version onto a release-only leaf commit
         id: mint
         env:
           GH_TOKEN: ${{ github.token }}
@@ -144,14 +159,18 @@ jobs:
           perl -0pi -e 's/^(Change License:\s+)TBD$/${1}MIT/m'            LICENSE
           grep -qE "^Change Date:[[:space:]]+${CHANGE_DATE}\$" LICENSE || { echo "::error::Change Date stamp failed"; exit 1; }
           grep -qE "^Change License:[[:space:]]+MIT\$"         LICENSE || { echo "::error::Change License stamp failed"; exit 1; }
-          # The leaf must change LICENSE and nothing else.
-          if [[ "$(git diff --name-only)" != "LICENSE" ]]; then
-            echo "::error::mint touched more than LICENSE:"; git diff --name-only; exit 1
+          ./scripts/stamp-scanner-version.sh stamp "${VERSION}"
+          # The leaf must change LICENSE and one line of action.yml, and nothing else.
+          if [[ "$(git diff --name-only)" != $'LICENSE\naction.yml' ]]; then
+            echo "::error::mint touched other than LICENSE and action.yml:"; git diff --name-only; exit 1
+          fi
+          if [[ "$(git diff --numstat -- action.yml | cut -f1,2)" != $'1\t1' ]]; then
+            echo "::error::mint changed more than one line of action.yml:"; git diff -- action.yml; exit 1
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add LICENSE
-          git commit -q -m "release ${VERSION}: mint BUSL Change Date ${CHANGE_DATE}, Change License MIT"
+          git add LICENSE action.yml
+          git commit -q -m "release ${VERSION}: mint BUSL Change Date ${CHANGE_DATE}, Change License MIT, scanner-version ${VERSION}"
           # Re-point the tag at the leaf, carrying the authored notes as its annotation. Pushing the
           # tag with GITHUB_TOKEN does not start a new workflow run, so this does not re-trigger.
           git tag -f -a "${VERSION}" -F "docs/releases/${VERSION}.md" HEAD
@@ -211,8 +230,8 @@ jobs:
       # Float the moving minor alias (vMAJOR.MINOR) onto the leaf this release just minted, so a
       # consumer who writes `uses: ferralon-ai/ferralon-assay@v0.3` always checks out the newest
       # 0.3.x — the actions/checkout@v4 model. The ref floats; the scanner bytes do not: the leaf's
-      # action.yml still names an exact `scanner-version`, so each run fetches that immutable release
-      # asset and records the exact patch in provenance. The alias is a lightweight TAG, never a
+      # action.yml names the exact `scanner-version` stamped above, so each run fetches that immutable
+      # release asset and records the exact patch in provenance. The alias is a lightweight TAG, never a
       # Release, so it does not touch the immutability gate above (that guards Release objects, not
       # refs). Pushing it with GITHUB_TOKEN does not start a new run, so this cannot re-trigger.
       # MONOTONIC: advance the alias only when THIS version is the highest patch on its minor line —

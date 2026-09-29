@@ -430,6 +430,7 @@ full list.
   boundaries.
 - [SUPPORT.md](.github/SUPPORT.md) — where to ask a question, and what response time to expect.
 - [SECURITY.md](.github/SECURITY.md) — how to report a vulnerability in Assay itself.
+- [docs/releases/README.md](docs/releases/README.md) — how a release is cut, and how the BUSL Change Date is minted onto a release-only leaf rather than committed to a branch.
 
 Upgrade pull requests are opened by the Ferralon Team bot; you can reply on any of them with
 questions.

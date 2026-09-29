@@ -63,6 +63,21 @@ If you cannot say both of those, open an issue describing the situation instead
 of sending the pull request. We would far rather work it out with you up front
 than unpick it later.
 
+## Releasing
+
+Releases are cut through a dedicated pull request titled `Release: vA.B.C` that
+carries that version's authored notes (`docs/releases/vA.B.C.md`). Merge the PR,
+then push a lightweight `vA.B.C` tag at the merge commit — the release workflow
+mints the BUSL Change Date onto a release-only leaf, re-points the tag at it,
+builds the pinned scanner asset reproducibly, publishes the release, and floats
+the `vMAJOR.MINOR` alias.
+
+[docs/releases/README.md](../docs/releases/README.md) is the source of truth for
+the details: one authored notes file per tag, and a Change Date minted at release
+time, never committed to a branch. The workflow fails closed without the notes
+file, and refuses any commit that already carries a concrete Change Date — so the
+notes must land on the branch, through the release PR, before the tag is pushed.
+
 ## Behaviour
 
 Be decent to each other. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

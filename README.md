@@ -171,7 +171,10 @@ is how a scanner quietly loses your trust.
 
 See [docs/sample-report.md](docs/sample-report.md) for an illustrative, shape-only excerpt of the
 `Report` JSON — no golden fixture ships in this repository yet, so the excerpt is hand-written from
-the `report` package's Go types rather than a captured scan.
+the `report` package's Go types rather than a captured scan. The
+[operator guide](docs/operator-guide.md#reading-the-report) explains the evidence next to each
+verdict — reachability grade, entry point and call path, EPSS/KEV context — and how findings are
+ordered.
 
 ### Expected scan duration
 
@@ -268,6 +271,9 @@ that stored state.
 Run inside GitHub Actions, the CLI also publishes to the standard GitHub surfaces it has permission
 for: a job summary (always), and — with a write token — SARIF code scanning, a sticky PR comment, and
 a pinned dashboard Issue.
+
+The [operator guide](docs/operator-guide.md#state-and-run-modes) covers the StateStore, each run
+mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under which permissions.
 
 ## Network egress
 

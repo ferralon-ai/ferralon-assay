@@ -1560,6 +1560,21 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		}
 	}
 
+	// A Go module need not live at the checkout root: a monorepo may nest it under
+	// target/, src/, or a cmd/service subdirectory. checkout.FindGoModuleRoot re-runs the same
+	// bounded search DetectLanguage used to accept this tree, and everything from here on
+	// (BuildManifest, the toolchain fact, dependency-version resolution, and the persisted
+	// inv.BuildDir every later stage reads back) must operate on the MODULE root, not the
+	// checkout root — go.mod-relative reads and Go tooling invocations only work from there.
+	// This intentionally runs AFTER ResolveHead above: ResolveHead needs the actual git checkout
+	// root (where .git lives) to pin ResolvedCommit, and reassigning buildDir first would silently
+	// lose that anchor for a nested module.
+	if language == checkout.LangGo {
+		if root, ok := checkout.FindGoModuleRoot(buildDir); ok {
+			buildDir = root
+		}
+	}
+
 	module, goVersion, buildCommand, toolchainDirective := "", "", "", ""
 	if s.plugin != nil && buildDir != "" && s.plugin.Language() == language {
 		mani, err := s.plugin.BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: buildDir})

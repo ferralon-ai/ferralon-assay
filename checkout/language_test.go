@@ -2,6 +2,7 @@
 package checkout
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,6 +157,89 @@ func TestDetectLanguageDominance(t *testing.T) {
 				t.Fatalf("DetectLanguage = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDetectLanguageNestedGoModule is the regression test for a Go module whose go.mod is not at
+// the repository root must still detect as LangGo. Before FindGoModuleRoot, DetectLanguage checked
+// only dir/go.mod and every one of these shapes fell through to dominance counting (or LangUnknown)
+// instead.
+func TestDetectLanguageNestedGoModule(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{
+			// A common monorepo shape: the vendored golang.org/x/text files sit alongside
+			// go.mod under target/, and "target" IS a skipSourceDir prune entry for dominance —
+			// proving detection does not depend on countSources' prune list.
+			name: "go.mod under target/ (vendored files included)",
+			files: []string{
+				".github/workflows/ferralon-assay.yml",
+				"README.md",
+				"target/go.mod",
+				"target/go.sum",
+				"target/main.go",
+				"target/vendor/golang.org/x/text/encoding/encoding.go",
+				"target/vendor/golang.org/x/text/encoding/htmlindex/htmlindex.go",
+				"target/vendor/modules.txt",
+			},
+			want: "target",
+		},
+		{
+			// "src" is NOT in skipSourceDir — this proves the fix is module-root discovery, not
+			// an accidental side effect of un-pruning "target".
+			name:  "go.mod under src/ (an unpruned parent)",
+			files: []string{"src/go.mod", "src/main.go"},
+			want:  "src",
+		},
+		{
+			// Multi-module tree: no go.mod at the root; two candidates at the same depth break
+			// lexicographically, and a shallower candidate beats a deeper one.
+			name: "multi-module tree: shallowest then lexicographic",
+			files: []string{
+				"apps/go.mod", "apps/main.go",
+				"apps/deep/nested/go.mod",
+				"cmd/b/go.mod", "cmd/a/go.mod",
+			},
+			want: "apps",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, tc.files...)
+			if got := DetectLanguage(dir); got != LangGo {
+				t.Fatalf("DetectLanguage = %q, want %q", got, LangGo)
+			}
+			root, ok := FindGoModuleRoot(dir)
+			if !ok {
+				t.Fatal("FindGoModuleRoot: not found")
+			}
+			want := filepath.Join(dir, tc.want)
+			if root != want {
+				t.Fatalf("FindGoModuleRoot root = %q, want %q", root, want)
+			}
+		})
+	}
+}
+
+// TestFindGoModuleRootBeyondDepthBound proves the search is genuinely bounded: a go.mod deeper
+// than goModuleSearchMaxDepth is NOT found, and the tree falls through to dominance/LangUnknown
+// exactly as a tree with no go.mod at all would.
+func TestFindGoModuleRootBeyondDepthBound(t *testing.T) {
+	// One directory per depth level puts go.mod at goModuleSearchMaxDepth+1 — one level past the
+	// bound.
+	rel := ""
+	for i := 0; i <= goModuleSearchMaxDepth; i++ {
+		rel = filepath.Join(rel, fmt.Sprintf("d%d", i))
+	}
+	dir := writeTree(t, filepath.Join(rel, "go.mod"))
+	if _, ok := FindGoModuleRoot(dir); ok {
+		t.Fatal("FindGoModuleRoot found a go.mod past the documented depth bound")
+	}
+	if got := DetectLanguage(dir); got != LangUnknown {
+		t.Fatalf("DetectLanguage = %q, want %q (no source within reach, no go.mod within bound)", got, LangUnknown)
 	}
 }
 

@@ -66,6 +66,15 @@
 # instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
 # the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below.
 #
+# With `advisory-corpus-policy` also set, the repo fetch downloads that policy's prebuilt bundle
+# (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
+# verifies it before the scan: the bundle's sha256 against the release's bundles.json, and its
+# member set against the policy manifest read from the git commit the release tag points at.
+# TRUST LIMIT: the release assets, the tag and the git tree all come from the same unsigned
+# repository, so the pin detects corruption and mismatch, not a malicious release. See
+# scripts/fetch-corpus-bundle.sh for the full chain. Reading a bundle needs a scanner release whose
+# -advisory-corpus accepts a bundle file.
+#
 # SURFACE TOGGLES. The `issue` / `pr-comment` / `code-scanning` inputs are mapped onto the
 # scanner's own ASSAY_* env vars inside this action, so a caller's workflow never writes them.
 # Any env name spelled literally here must track brand.EnvPrefix (internal/brand) — see the note
@@ -251,9 +260,25 @@ inputs:
       Branch, tag, or commit SHA of advisory-corpus-repo to fetch (all three resolve the same way).
       A commit SHA is the reproducible choice. Independently of this ref, the scanner records the
       corpus's own corpus_digest on the Report, which is what identifies the exact corpus state a
-      run read.
+      run read. With advisory-corpus-policy set, a corpus release tag (corpus-<12 hex>) is the
+      reproducible choice, and the default main (or latest) resolves to the most recent corpus
+      release rather than the branch head; a branch or commit SHA names no release, so it takes the
+      git fetch.
     required: false
     default: main
+  advisory-corpus-policy:
+    description: >-
+      Policy of advisory-corpus-repo to scan against (e.g. published-7d, full), in place of the
+      whole corpus. When the corpus release named by advisory-corpus-ref publishes a bundle for the
+      policy, the run downloads that one file instead of git-fetching the record tree, and verifies
+      it first (sha256 against the release's bundles.json; members against the policy manifest at
+      the release's git tag). A bundle that fails any check FAILS the run. A policy the release
+      publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
+      (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
+      advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a
+      bundle file.
+    required: false
+    default: ""
   link-to-console:
     description: >-
       Link this run to your Ferralon console. The ONLY switch that decides whether the scan talks
@@ -446,14 +471,37 @@ runs:
     # "the corpus was requested" indistinguishable from "the fetch worked" — and a failed fetch would
     # then present as an unconfigured run and silently downgrade to built-in intel. The duplication
     # is the point; keep the two literals in sync.
-    - name: Fetch the advisory corpus (unauthenticated, shallow + sparse)
-      # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
-      # never whether anything succeeded.
-      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != ''
+    #
+    # The bundle route writes to a second fixed path, $RUNNER_TEMP/ferralon-assay-corpus-bundle/
+    # <policy>.jsonl.gz, and the run step picks it by the file's existence rather than by this
+    # step's outputs. The script only moves the bundle there after every check passed and wipes the
+    # directory first, so the file exists iff a verified bundle does; a failed pin fails this step
+    # and the job. The step's route/git-ref outputs only steer the git fetch below, which runs when
+    # the bundle route did not apply.
+    - name: Fetch the advisory corpus bundle (release asset, digest-pinned)
+      id: corpus-bundle
+      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-policy != ''
       shell: bash
       env:
         CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
         CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
+        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+      run: |
+        set -euo pipefail
+        DEST="$RUNNER_TEMP/ferralon-assay-corpus-bundle" bash "$GITHUB_ACTION_PATH/scripts/fetch-corpus-bundle.sh"
+
+    - name: Fetch the advisory corpus (unauthenticated, shallow + sparse)
+      # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
+      # never whether anything succeeded. The one exception is the bundle route above having
+      # delivered a verified bundle, which makes this fetch redundant.
+      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && steps.corpus-bundle.outputs.route != 'bundle'
+      shell: bash
+      env:
+        CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        # The bundle step's resolved release tag when it ran (so a manifest-only policy reads the
+        # same corpus state the release names), else the input ref unchanged.
+        CORPUS_REF: ${{ steps.corpus-bundle.outputs.git-ref || inputs.advisory-corpus-ref }}
+        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
       run: |
         set -euo pipefail
         DEST="$RUNNER_TEMP/ferralon-assay-corpus"
@@ -475,12 +523,21 @@ runs:
         # (gitignore-style) patterns: records are filed as <YYYY>/<MM>/<ID>.json plus
         # unknown/<ID>.json and are resolved through the root manifest. LICENSE and NOTICE carry the
         # corpus's CC-BY attribution terms and travel with the data they cover.
-        git -C "$DEST" sparse-checkout set --no-cone \
-          '/manifest.json' \
-          '/LICENSE' \
-          '/NOTICE' \
-          '/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.json' \
+        sparse=(
+          '/manifest.json'
+          '/LICENSE'
+          '/NOTICE'
+          '/[0-9][0-9][0-9][0-9]/[0-9][0-9]/*.json'
           '/unknown/*.json'
+        )
+        if [ -n "$CORPUS_POLICY" ]; then
+          if ! [[ "$CORPUS_POLICY" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::ferralon-assay: advisory-corpus-policy '$CORPUS_POLICY' is not a policy id (lowercase letters, digits, '-')." >&2
+            exit 1
+          fi
+          sparse+=("/policies/$CORPUS_POLICY/manifest.json")
+        fi
+        git -C "$DEST" sparse-checkout set --no-cone "${sparse[@]}"
 
         # --depth 1 bounds history (the corpus is small today but its history only grows);
         # --filter=blob:none makes the sparse selection bound the BYTES fetched rather than merely
@@ -498,6 +555,16 @@ runs:
           echo "::error::ferralon-assay: advisory corpus fetched from $CORPUS_REPO@$CORPUS_REF has no manifest.json." >&2
           echo "  Check that advisory-corpus-repo is PUBLIC and that advisory-corpus-ref exists." >&2
           exit 1
+        fi
+        # A policy scans the policy's member set: its manifest indexes the same record files by the
+        # same repository-root-relative paths, so it replaces the root manifest in place.
+        if [ -n "$CORPUS_POLICY" ]; then
+          if [ ! -f "$DEST/policies/$CORPUS_POLICY/manifest.json" ]; then
+            echo "::error::ferralon-assay: advisory corpus $CORPUS_REPO@$CORPUS_REF has no policy '$CORPUS_POLICY' (policies/$CORPUS_POLICY/manifest.json)." >&2
+            exit 1
+          fi
+          cp "$DEST/policies/$CORPUS_POLICY/manifest.json" "$DEST/manifest.json"
+          echo "==> Using policy '$CORPUS_POLICY'"
         fi
         echo "==> Advisory corpus checked out at $DEST ($CORPUS_REPO@$CORPUS_REF)"
 
@@ -546,6 +613,7 @@ runs:
         IN_INCLUDE_HOUSE_CANARIES: ${{ inputs.include-house-canaries }}
         IN_ADVISORY_CORPUS: ${{ inputs.advisory-corpus }}
         IN_ADVISORY_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
+        IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
         # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE — it names no step,
         # reads no step output, and consults no step status, so it says "this workflow was
         # configured to scan against a corpus", never "a fetch worked". That distinction is the
@@ -634,10 +702,17 @@ runs:
         # rather than read back from the fetch step, so a fetch that failed or was skipped still
         # produces the flag and the scanner hits its own missing-corpus error under the requirement
         # declared above — instead of the flag quietly disappearing and the run downgrading.
+        # A verified policy bundle, when the bundle step produced one, takes the tree's place; it
+        # exists only if every pin check passed (see the bundle step).
         if [ -n "$IN_ADVISORY_CORPUS" ]; then
           args+=(-advisory-corpus "$IN_ADVISORY_CORPUS")
         elif [ -n "$IN_ADVISORY_CORPUS_REPO" ]; then
-          args+=(-advisory-corpus "$RUNNER_TEMP/ferralon-assay-corpus")
+          CORPUS_BUNDLE="$RUNNER_TEMP/ferralon-assay-corpus-bundle/$IN_ADVISORY_CORPUS_POLICY.jsonl.gz"
+          if [ -n "$IN_ADVISORY_CORPUS_POLICY" ] && [ -f "$CORPUS_BUNDLE" ]; then
+            args+=(-advisory-corpus "$CORPUS_BUNDLE")
+          else
+            args+=(-advisory-corpus "$RUNNER_TEMP/ferralon-assay-corpus")
+          fi
         fi
 
         "$BIN" "${args[@]}"

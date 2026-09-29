@@ -77,7 +77,9 @@ job summary still lands.
 
 **Pinning by commit SHA** (`@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0`) pins the Action
 source, and through its `scanner-version` default the exact scanner release the Action fetches — so
-nothing runs that you did not choose, and no binary is ever committed into your repository. By default
+nothing runs that you did not choose, and no binary is ever committed into your repository. Every
+release tag's `action.yml` names the exact `vX.Y.Z` scanner it was cut with; only `@main` carries a
+minor alias (`vX.Y`), which resolves at run time to that minor's current patch release. By default
 the scanner is selected by that version tag alone. If you want to freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
@@ -278,7 +280,8 @@ Whether you pin the ref or track a moving one, the scanner is fetched from the r
 `scanner-version` and nothing is committed to your repository. If you want byte-exact integrity on top
 of the version tag, set `scanner-sha256` (see [Quickstart — GitHub Action](#quickstart--github-action)):
 the run then verifies the fetched tarball against your pin before anything unpacks, and fails loudly on
-any mismatch. It is opt-in and off by default.
+any mismatch. It is opt-in and off by default, and it needs an exact `vX.Y.Z` `scanner-version`: a
+checksum paired with a `vX.Y` alias fails the run.
 
 ## Using Assay as a Go library
 

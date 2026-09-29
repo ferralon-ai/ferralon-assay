@@ -38,12 +38,21 @@
 # nothing. Nothing is committed into your repository; the footprint is a few lines of reviewable
 # YAML pinned to a scanner release by version tag.
 #
+# WHICH SCANNER RUNS. On `main` the `scanner-version` default is a minor alias (vX.Y), which the
+# fetch step resolves at run time to that minor's current patch release
+# (scripts/resolve-scanner-version.sh).
+# Every release tag of this Action is a minted leaf whose default names the exact vX.Y.Z it was cut
+# as, so `uses: ferralon-ai/ferralon-assay@vX.Y.Z` (or that tag's commit SHA) always fetches the same
+# scanner release, and `@vX.Y` fetches the patch that alias's leaf was cut as. Only `@main` floats.
+#
 # OPTIONAL CHECKSUM PIN (off by default). The run is selected by version tag alone: `scanner-version`
 # names the release, and that release's linux/amd64 tarball is fetched and run. A consumer who wants
 # to freeze the exact bytes can set `scanner-sha256` themselves — when it is non-empty the fetched
 # tarball's sha256 is verified against it BEFORE the scanner is unpacked, and a mismatch aborts the
-# run. Empty (the default) skips that check. This is a customer-configured supply-chain control, not
-# a Ferralon-shipped one: a checksum THIS repository pinned against its OWN release asset would be
+# run. A checksum names one exact release, so it requires an exact vX.Y.Z `scanner-version`; paired
+# with a vX.Y alias the run fails before fetching anything. Empty (the default) skips that check.
+# This is a customer-configured supply-chain control, not a Ferralon-shipped one: a checksum THIS
+# repository pinned against its OWN release asset would be
 # verifying our bytes against our own claim about them — it defends against nothing the version tag
 # does not — so we do not ship a default. Every release publishes its tarball sha256 as a `.sha256`
 # companion asset, for anyone who chooses to pin.
@@ -92,26 +101,35 @@ branding:
   color: blue
 
 inputs:
-  # --- the version selector (the load-bearing default a release bumps) -------------------------
-  # `scanner-version` below names the release this action fetches. Before relying on the default,
-  # independently confirm that release exists and carries what you need:
+  # --- the version selector ----------------------------------------------------------------------
+  # `scanner-version` below names the release this action fetches. On main the default is a minor
+  # alias (vX.Y); release.yml stamps it to the exact vX.Y.Z on each release's minted leaf and
+  # refuses to cut from a commit whose default is not a vX.Y alias. Before relying on the default,
+  # independently confirm the release it selects exists and carries what you need:
   #   gh release view <the scanner-version default below> --repo ferralon-ai/ferralon-assay
-  # No version is named in this prose on purpose — the `default:` line IS the selector; re-verify
-  # against it, not against a version copied into prose that would silently drift on the next cut.
+  # (for an alias, the run log's "resolved to vX.Y.Z" line names the release). No version is named
+  # in this prose on purpose — the `default:` line IS the selector; re-verify against it, not against
+  # a version copied into prose that would silently drift.
   # The same rule covers CAPABILITY claims: nothing in this file may state what the selected release
   # does or does not carry, or the claim goes false at the first cut that changes the answer, with
   # nothing to correct it. State a version requirement as a REQUIREMENT the reader checks against the
   # release, never as a fact about it.
   scanner-version:
-    description: "Release tag of the scanner artifact to fetch from scanner-repo (e.g. vX.Y.Z)."
+    description: >-
+      Scanner release to fetch from scanner-repo: an exact release tag (vX.Y.Z), or a minor alias
+      (vX.Y) that resolves at run time to the release the repository's vX.Y tag points at, which is
+      that minor's newest patch. Alias resolution is an anonymous `git ls-remote`, so an alias needs
+      a publicly readable scanner-repo; for a private one, set an exact vX.Y.Z. The run log names the
+      release an alias resolved to.
     required: false
-    default: "v0.3.0"
+    default: "v0.3"
   scanner-sha256:
     description: >-
       OPTIONAL opt-in integrity pin. Empty (default) = fetch by version tag only, no checksum check.
       Set it to the sha256 of ferralon-assay-scanner_<scanner-version>_linux_amd64.tar.gz (published
       as the release's `.sha256` asset) to freeze the exact bytes: the run then verifies the fetched
-      tarball against it and fails loud on any mismatch.
+      tarball against it and fails loud on any mismatch. Requires an exact vX.Y.Z scanner-version; a
+      checksum paired with a vX.Y alias fails the run.
     required: false
     default: ""
   scanner-repo:
@@ -312,13 +330,10 @@ runs:
       run: |
         set -euo pipefail
 
-        # A version is required — it selects the release to fetch. Fail LOUD on an empty or
-        # still-placeholder version rather than fetch nothing. The checksum is optional (see below).
-        if [ -z "$SCANNER_VERSION" ] || [ "$SCANNER_VERSION" = "REPLACE_WITH_RELEASE_TAG" ]; then
-          echo "::error::ferralon-assay: scanner-version is unset (still '$SCANNER_VERSION')." >&2
-          echo "  Set scanner-version to a published release tag of $SCANNER_REPO." >&2
-          exit 1
-        fi
+        # Resolve the input to the exact vX.Y.Z to download. The script fails loud on an empty,
+        # placeholder or malformed version, on an alias that names no single release, and on a
+        # scanner-sha256 paired with an alias. An exact vX.Y.Z passes through untouched.
+        SCANNER_VERSION="$(bash "$GITHUB_ACTION_PATH/scripts/resolve-scanner-version.sh")"
 
         WORK="$RUNNER_TEMP/ferralon-assay"
         mkdir -p "$WORK"
@@ -499,8 +514,9 @@ runs:
         # cmd/ferralon-assay/run.go, which resolve through an EnvOrLegacy chain, detect.go reads
         # these with a plain os.Getenv (resultsink/github/detect.go:177-179) and has no fallback --
         # so a stale prefix here is not a warning, it is a silently ignored opt-out. That is safe
-        # only because action.yml and the scanner-version it pins are cut together and pinned by
-        # one commit SHA, so a consumer always gets a matched pair.
+        # only because every release tag of action.yml names the exact scanner-version it was cut
+        # with, so a consumer on a tag always gets a matched pair; main's vX.Y alias floats only
+        # across patch releases, which keep these names.
         ASSAY_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
         ASSAY_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
         ASSAY_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}

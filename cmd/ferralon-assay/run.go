@@ -508,9 +508,9 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 //     records) → pipeline.NewBundleSource.
 //
 // A path that does not exist is routed by name: a ".gz" suffix is plainly a bundle, and anything
-// else stays on the directory reader, whose Validate error for a missing tree is what every caller
-// saw before bundles existed. Either way the caller's preflight Validate hard-fails it — routing
-// never decides whether a broken corpus is loud, only which reader explains why.
+// else stays on the directory reader, whose Validate error explains a missing tree. Either way
+// the caller's preflight Validate hard-fails it — routing never decides whether a broken corpus is
+// loud, only which reader explains why.
 //
 // Anything else that exists (a socket, a device) also goes to the directory reader, which rejects
 // it. Nothing here opens or reads the corpus; both constructors are free, and the one-time load

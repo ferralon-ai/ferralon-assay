@@ -232,6 +232,17 @@ type CorpusDescriber interface {
 	Describe() (CorpusInfo, bool)
 }
 
+// AdvisoryEnumerator is implemented by an AdvisorySource that can enumerate the full identifier set
+// it carries. It is OPTIONAL and deliberately NOT part of the one-method AdvisorySource seam:
+// tableSource/chainSource do not implement it, and Lookup's fail-open contract is unaffected. An
+// entrypoint type-asserts to it (the same pattern as CorpusValidator/CorpusDescriber) to derive the
+// scan work set from the corpus itself — the tracker-#32 "manifest = work set" prerequisite (#301).
+// KnownIDs returns the identifiers sorted ascending; an unusable corpus yields an empty slice, never
+// an error (enumeration is provenance/work-set metadata, never a Lookup path).
+type AdvisoryEnumerator interface {
+	KnownIDs() []string
+}
+
 func (s artifactSource) Describe() (CorpusInfo, bool) {
 	man, ok := s.loadManifest()
 	if !ok {

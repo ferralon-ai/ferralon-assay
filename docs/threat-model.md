@@ -19,6 +19,10 @@ A run configured with `advisory-corpus-repo` (recommended — see the README's
 [Scope](../README.md#scope--what-this-does-not-do)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
 and sparse (the manifest and record partitions only). It sends the repository coordinates and nothing
+about your code. With `advisory-corpus-policy` set and a bundle published for that policy, it instead
+downloads the release's `bundles.json` and `<policy>.jsonl.gz` as **`github.com`** release assets
+(which redirect to **`release-assets.githubusercontent.com`**) and the policy manifest from
+**`raw.githubusercontent.com`**, likewise unauthenticated and carrying nothing
 about your code.
 
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched

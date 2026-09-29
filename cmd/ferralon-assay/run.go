@@ -28,6 +28,8 @@ import (
 // brand.EnvOrLegacy for anything already set by hand — the shipped build was -tags stealth, so an
 // operator's workflow YAML may carry either name.
 const (
+	// envAdvisoryCorpusDir keeps its _DIR name for compatibility; like -advisory-corpus it accepts a
+	// corpus directory or a corpus bundle file (corpusSourceFor).
 	envAdvisoryCorpusDir        = brand.EnvPrefix + "_ADVISORY_CORPUS_DIR"
 	nucleonEnvAdvisoryCorpusDir = "NUCLEON_ADVISORY_CORPUS_DIR"
 	legacyEnvAdvisoryCorpusDir  = "TEGRON_ADVISORY_CORPUS_DIR"
@@ -324,7 +326,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		revision:       fs.String("revision", "", "revision recorded on the Report (e.g. a PR head branch)"),
 		commit:         fs.String("commit", "", "resolved commit SHA recorded on the Report"),
 		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (tegron-plugin-<lang>; default: PATH lookup)"),
-		advisoryCorpus: fs.String("advisory-corpus", "", "path to a filesystem advisory corpus (manifest.json + digest-pinned per-advisory JSON) consulted BEFORE the built-in advisory table; overrides "+envAdvisoryCorpusDir),
+		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz); overrides "+envAdvisoryCorpusDir),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
 		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),
@@ -428,7 +430,7 @@ func errEmptyWorkSet(language string) error {
 	return fmt.Errorf("work set is empty: 0 advisories resolved for the detected %s ecosystem — the scan would emit a findings-free Report without having assessed anything, which reads as an all-clear it did not establish; a work set is populated by the built-in advisory table, -advisory-corpus, -include-house-canaries and -osv-work-set", language)
 }
 
-// advisoryCorpusOption resolves the optional filesystem-corpus AssessOption for a run, realizing the
+// advisoryCorpusOption resolves the optional corpus AssessOption for a run, realizing the
 // flag > env precedence (decisions.md #3): the -advisory-corpus flag wins; absent it, the
 // envAdvisoryCorpusDir env var (the orchestrator's channel; brand-derived, legacy TEGRON_
 // literal honored — see brand.EnvOrLegacy) is consulted; absent both it returns
@@ -440,6 +442,9 @@ func errEmptyWorkSet(language string) error {
 // Measured against the 2026-07-23 published corpus, that emptied the ENTIRE 16-id scan work set. The
 // source is now a chain — corpus first, built-in table behind it — so a corpus can only ever add
 // facts (pipeline.NewChainSource; first hit wins, no merging across sources).
+//
+// The resolved path is either a corpus directory or a corpus bundle file (corpusSourceFor); both
+// readers carry the same Validate/Describe contract, so everything below is shape-agnostic.
 //
 // A resolved path is preflight-Validated and a wholly-unusable corpus HARD-FAILS the run
 // (decisions.md #1) with a descriptive error, so a broken corpus is loud, never silently degraded
@@ -472,7 +477,7 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 		return nil, nil
 	}
 
-	src := pipeline.NewArtifactSource(dir)
+	src := corpusSourceFor(dir)
 	if v, ok := src.(pipeline.CorpusValidator); ok {
 		if err := v.Validate(); err != nil {
 			return nil, fmt.Errorf("advisory corpus %q is unusable: %w", dir, err)
@@ -492,6 +497,34 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	chain := pipeline.NewChainSource(src, pipeline.NewTableSource())
 	f.resolvedSource = chain
 	return pipeline.WithAdvisorySource(chain), nil
+}
+
+// corpusSourceFor picks the reader for a resolved -advisory-corpus path. The path names one of two
+// on-disk corpus shapes, and the shape is told apart by what is on disk rather than by a second flag:
+//
+//   - a DIRECTORY is a corpus tree (manifest.json + digest-pinned per-advisory JSON) →
+//     pipeline.NewArtifactSource;
+//   - a REGULAR FILE is a compressed corpus bundle (<policy>.jsonl.gz, one gzip stream of JSONL
+//     records) → pipeline.NewBundleSource.
+//
+// A path that does not exist is routed by name: a ".gz" suffix is plainly a bundle, and anything
+// else stays on the directory reader, whose Validate error explains a missing tree. Either way
+// the caller's preflight Validate hard-fails it — routing never decides whether a broken corpus is
+// loud, only which reader explains why.
+//
+// Anything else that exists (a socket, a device) also goes to the directory reader, which rejects
+// it. Nothing here opens or reads the corpus; both constructors are free, and the one-time load
+// happens in Validate.
+func corpusSourceFor(path string) pipeline.AdvisorySource {
+	fi, err := os.Stat(path)
+	switch {
+	case err == nil && fi.Mode().IsRegular():
+		return pipeline.NewBundleSource(path)
+	case err != nil && strings.HasSuffix(path, ".gz"):
+		return pipeline.NewBundleSource(path)
+	default:
+		return pipeline.NewArtifactSource(path)
+	}
 }
 
 // advisoryCorpusRequired reports whether this run declares that it EXPECTS an advisory corpus.

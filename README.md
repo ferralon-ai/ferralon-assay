@@ -201,6 +201,18 @@ published after the pin — you want the latest intel on every run. Reproducibil
 a given run saw comes from the `corpus_digest` the `Report` records, not from pinning the input. (How
 you pin the Action itself is a separate, supply-chain question — see the Quickstart.)
 
+To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
+example `published-7d` or `full`). For a policy the corpus release publishes a bundle for, the Action
+downloads that single `<policy>.jsonl.gz` from the `corpus-*` release named by `advisory-corpus-ref`
+(the default `main` resolves to the most recent release) instead of git-fetching the record tree, and
+verifies it before the scan: its sha256 against the release's `bundles.json`, and its member set
+against the policy manifest at the release's git tag. Any mismatch fails the run. Those checks detect
+a corrupt or mismatched bundle; they do not make an unsigned release trustworthy, because every input
+to them comes from the same repository. A policy with no bundle is read through the git fetch using
+that policy's manifest. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
+file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`
+publishes for it.
+
 ## Scope
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories

@@ -1,8 +1,13 @@
 name: CI
 
 # Green-gates every pull request and every push to main: build, vet, gofmt, and the hermetic
-# test suite. Live/network tests are //go:build live gated and never run here — this workflow
+# test suite. Live/network tests are //go:build live gated and never run in the test job, which
 # runs with no corpus fixtures and no network access.
+#
+# The self-scan job runs this checkout's own action.yml (`uses: ./`) against this repository with
+# the default scanner-version, so every change exercises the Action end to end: the minor alias
+# resolving to its current patch release, the download, the plugin wiring and a real scan. That
+# release may lag main; the job tests the Action, not main's unreleased scanner.
 
 on:
   pull_request: {}
@@ -44,3 +49,27 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  self-scan:
+    runs-on: ubuntu-latest
+    # Read-only: the surfaces that need write scopes are switched off below, and no secret is used,
+    # so the job behaves the same on a fork's pull request.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Findings do not fail this job; only a failed Action or scan does. The scanner exits non-zero
+      # on an error, never on a verdict, and the job keeps that contract. It checks that the Action
+      # runs, not what advisories say about this repository's dependencies: gating on findings would
+      # turn a newly published advisory into a red check on every unrelated pull request. The
+      # verdicts land in the job summary and in the ferralon-assay-out directory.
+      - name: Run the Ferralon Assay against this repository
+        uses: ./
+        with:
+          mode: baseline
+          target: .
+          link-to-console: "false"
+          issue: "false"
+          pr-comment: "false"
+          code-scanning: "false"

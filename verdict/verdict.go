@@ -50,6 +50,15 @@ const (
 	// DirectionNotExploitable means the evidence points to the codebase not being
 	// vulnerable to the advisory under assessment.
 	DirectionNotExploitable Direction = "not_exploitable"
+	// DirectionIndeterminate means analysis established NOTHING — neither exploitability nor
+	// its refutation. It is the honest default for a run that reached no verdict: a skeleton
+	// stub, a no-verifier capability gap, a proof run with no attributed signal, or a run with
+	// no execution substrate. It asserts nothing, and downstream projections MUST render it as
+	// negative space (OpenVEX `under_investigation`), never as a positive status. A
+	// `not_exploitable` verdict is reachable ONLY when analysis grounded it (a disqualification,
+	// a held static refutation, or a two-trace PoNE); an ungrounded run lands here instead. See
+	// Validate and ADR 0016.
+	DirectionIndeterminate Direction = "indeterminate"
 )
 
 // Strength is how the verdict is known. The proven/reasoned wall is the product's
@@ -65,6 +74,13 @@ const (
 	// StrengthReasoned means the verdict is a defended lean rather than a ground-truth
 	// observation; ReasonedGrounds must state why (see Validate).
 	StrengthReasoned Strength = "reasoned"
+	// StrengthIndeterminate is the canonical strength of an indeterminate verdict: "not known
+	// at all." It is neither proven nor reasoned — a third disjoint stratum that sits beside the
+	// proven/reasoned wall, not on it. It exists ONLY paired with DirectionIndeterminate;
+	// Validate enforces the biconditional Direction==indeterminate ⇔ Strength==indeterminate.
+	// Modelled as an explicit value rather than an empty string so that every switch on Strength
+	// must confront the third state instead of silently misreading a zero value as reasoned.
+	StrengthIndeterminate Strength = "indeterminate"
 )
 
 // NonExploitableBasis records WHAT grounds a `reasoned not_exploitable` verdict — the
@@ -197,11 +213,18 @@ type PatchValidationRef struct {
 
 // Label returns the four-name convenience label from the (direction, strength) grid.
 //
-//	proven   + exploitable     -> "exploitable"
-//	proven   + not_exploitable -> "not_exploitable"
-//	reasoned + exploitable     -> "reasoned_exploitable"
-//	reasoned + not_exploitable -> "reasoned_not_exploitable"
+//	proven        + exploitable     -> "exploitable"
+//	proven        + not_exploitable -> "not_exploitable"
+//	reasoned      + exploitable     -> "reasoned_exploitable"
+//	reasoned      + not_exploitable -> "reasoned_not_exploitable"
+//	indeterminate + indeterminate   -> "indeterminate"
+//
+// Indeterminate is the one cell that carries no strength prefix: it asserts nothing, so
+// "reasoned_" / bare-direction grid does not apply.
 func (p PoE) Label() string {
+	if p.Direction == DirectionIndeterminate {
+		return string(DirectionIndeterminate)
+	}
 	if p.Strength == StrengthReasoned {
 		return "reasoned_" + string(p.Direction)
 	}
@@ -239,11 +262,62 @@ func hasProofFlag(flags []EvidenceFlag) bool {
 //   - Direction==not_exploitable && Strength==proven requires a PatchValidation with both
 //     trace refs — a proven not-exploitable claim must carry its two-trace negative control
 //     (RFC 0010). This tightens, never loosens: it adds a structural obligation.
+//   - Direction==indeterminate requires Strength==indeterminate and makes no assertion: no proof
+//     flag, no PatchValidation, no NonExploitableBasis, no Reproducer, no ReasonedGrounds. It
+//     asserts nothing, so it may assert nothing (ADR 0016). Non-proof evidence flags, reachability
+//     refs, and an Objection (downgrade-audit metadata, not an assertion) are permitted — a run
+//     can gather partial reachability, and a verdict can collapse here by downgrade, without
+//     asserting a direction.
+//   - Direction==not_exploitable && Strength==reasoned requires a grounded NonExploitableBasis
+//     (!= BasisNone): an ungrounded "nothing established" lean is DirectionIndeterminate now, not
+//     a reasoned not_exploitable. This is what makes an ungrounded not_exploitable structurally
+//     unrepresentable (ADR 0016). Proven not_exploitable is grounded by its two-trace
+//     PatchValidation instead and keeps BasisNone — unchanged.
 func (p PoE) Validate() error {
+	// Indeterminate is a third disjoint stratum: it asserts nothing, so Direction and Strength
+	// must both be indeterminate and every evidentiary field that would constitute an assertion
+	// must be empty. Handled before the strength switch because indeterminate is neither proven
+	// nor reasoned.
+	if p.Direction == DirectionIndeterminate || p.Strength == StrengthIndeterminate {
+		if p.Direction != DirectionIndeterminate || p.Strength != StrengthIndeterminate {
+			return fmt.Errorf("verdict: indeterminate is a paired state — direction and strength must both be %q (got direction=%q strength=%q)",
+				DirectionIndeterminate, p.Direction, p.Strength)
+		}
+		if hasProofFlag(p.Confidence.EvidenceFlags) {
+			return errors.New("verdict: indeterminate verdict must carry no proof flag (it asserts nothing)")
+		}
+		if p.PatchValidation != nil {
+			return errors.New("verdict: indeterminate verdict must carry no PatchValidation (it asserts nothing)")
+		}
+		if p.NonExploitableBasis != BasisNone {
+			return errors.New("verdict: indeterminate verdict must carry no NonExploitableBasis (it asserts nothing)")
+		}
+		if p.Reproducer != nil {
+			return errors.New("verdict: indeterminate verdict must carry no Reproducer (it asserts nothing)")
+		}
+		if p.ReasonedGrounds != "" {
+			return errors.New("verdict: indeterminate verdict must carry no ReasonedGrounds (it asserts nothing)")
+		}
+		// Objection is PERMITTED: an indeterminate verdict reached by a critic downgrade (e.g. a
+		// proven not_exploitable whose two-trace was incomplete collapses here) records that
+		// downgrade in Objection. An Objection is history/audit metadata — FromLabel/ToLabel/
+		// AttackClass/rationale — not an assertion of a direction, so it is compatible with
+		// "asserts nothing" (ADR 0016 §2.2). A fresh indeterminate (skeleton stub) simply leaves
+		// it nil.
+		return nil
+	}
 	switch p.Strength {
 	case StrengthReasoned:
 		if p.ReasonedGrounds == "" {
 			return errors.New("verdict: reasoned strength requires non-empty ReasonedGrounds")
+		}
+		// A reasoned not_exploitable must be GROUNDED: it needs a NonExploitableBasis naming
+		// what refuted exploitability (a disqualification or a held static refutation). A bare
+		// "nothing established" lean (BasisNone) is no longer a reasoned not_exploitable — it is
+		// DirectionIndeterminate. This is the invariant that makes an ungrounded not_exploitable
+		// structurally impossible to emit (ADR 0016).
+		if p.Direction == DirectionNotExploitable && p.NonExploitableBasis == BasisNone {
+			return errors.New("verdict: reasoned not_exploitable requires a grounded NonExploitableBasis (an ungrounded lean is DirectionIndeterminate)")
 		}
 	case StrengthProven:
 		if len(p.Confidence.EvidenceFlags) == 0 {

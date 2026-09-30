@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
@@ -193,14 +194,30 @@ func schemaVersionRecognized(v string) bool {
 // "sha256:<hex>" digest. On Lookup it finds the advisory, reads its bytes, VERIFIES the digest,
 // decodes, and SHAPE-VALIDATES; it returns (facts, true) only if every step passes. Any failure
 // returns (zero, false) — fail open, never refute, never a laundered fact.
+//
+// The manifest is read, validated, and indexed by identifier ONCE, on the first
+// Lookup/Validate/Describe, under a sync.Once; the outcome (index or load error) is then read-only, so
+// concurrent reads take no lock. This is the same set-before-spawn contract as bundleSource. The corpus
+// root is treated as immutable for the source's lifetime: a manifest rewritten after the first load is
+// not re-read. Per-advisory documents are still read and digest-verified on every Lookup.
 type artifactSource struct {
 	root string
+
+	// readFile reads the manifest; nil means os.ReadFile. Tests set it to count manifest reads.
+	readFile func(string) ([]byte, error)
+
+	once    sync.Once
+	man     advisoryManifest
+	index   map[string]advisoryManifestEntry
+	loadErr error
 }
 
-// NewArtifactSource constructs a digest-pinned filesystem AdvisorySource rooted at root. An entrypoint
-// hands it to SetDefaultAdvisorySource (process-wide) and/or WithAdvisorySource (per-run). The returned
-// value also satisfies CorpusValidator, so the entrypoint can preflight the corpus at boot.
-func NewArtifactSource(root string) AdvisorySource { return artifactSource{root: root} }
+// NewArtifactSource constructs a digest-pinned filesystem AdvisorySource rooted at root. It is cheap
+// and does no I/O; the first Lookup/Validate/Describe loads the manifest once. An entrypoint hands it
+// to SetDefaultAdvisorySource (process-wide) and/or WithAdvisorySource (per-run). The returned value
+// also satisfies CorpusValidator and CorpusDescriber, so the entrypoint can preflight the corpus at
+// boot and record its identity.
+func NewArtifactSource(root string) AdvisorySource { return &artifactSource{root: root} }
 
 // CorpusValidator is implemented by an AdvisorySource that supports a STARTUP-ONLY preflight of its
 // backing corpus. An entrypoint type-asserts the source it built to this interface and calls Validate()
@@ -245,7 +262,7 @@ type AdvisoryEnumerator interface {
 	KnownIDs() []string
 }
 
-func (s artifactSource) Describe() (CorpusInfo, bool) {
+func (s *artifactSource) Describe() (CorpusInfo, bool) {
 	man, ok := s.loadManifest()
 	if !ok {
 		return CorpusInfo{}, false
@@ -490,12 +507,12 @@ type docLineage struct {
 	RefixedBy       string `json:"refixed_by,omitempty"`
 }
 
-func (s artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
-	man, ok := s.loadManifest()
-	if !ok {
+func (s *artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
+	s.load()
+	if s.loadErr != nil {
 		return AdvisoryFacts{}, false
 	}
-	entry, ok := findRecord(man.Records, vulnID)
+	entry, ok := s.index[vulnID]
 	if !ok {
 		return AdvisoryFacts{}, false
 	}
@@ -505,7 +522,7 @@ func (s artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 // resolveEntry reads, digest-verifies, decodes, and shape-validates the one document a manifest
 // entry pins. It is Lookup's per-document half, shared with lookupEach so the single-id and bulk
 // paths apply the identical checks.
-func (s artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string) (AdvisoryFacts, bool) {
+func (s *artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string) (AdvisoryFacts, bool) {
 	if entry.Path == "" || entry.OutputDigest == "" || !safeRelPath(entry.Path) {
 		return AdvisoryFacts{}, false
 	}
@@ -529,7 +546,7 @@ func (s artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string)
 // An unusable manifest yields an empty slice, never an error — the same fail-open shape as Lookup.
 // The manifest's records are already producer-sorted, but the order is re-established here rather
 // than trusted, since the enumerator contract promises it.
-func (s artifactSource) KnownIDs() []string {
+func (s *artifactSource) KnownIDs() []string {
 	man, ok := s.loadManifest()
 	if !ok {
 		return nil
@@ -542,24 +559,13 @@ func (s artifactSource) KnownIDs() []string {
 	return ids
 }
 
-// lookupEach resolves every id against ONE read of the manifest. Lookup re-reads and re-parses the
-// manifest per call, which is right for a handful of S1 reads and quadratic for a whole-corpus
-// work-set admission (the `full` policy manifest names ~110k records).
-func (s artifactSource) lookupEach(ids []string, fn func(id string, facts AdvisoryFacts, ok bool)) {
-	man, ok := s.loadManifest()
-	if !ok {
-		for _, id := range ids {
-			fn(id, AdvisoryFacts{}, false)
-		}
-		return
-	}
-	byID := make(map[string]advisoryManifestEntry, len(man.Records))
-	for _, r := range man.Records {
-		byID[r.Identifier] = r
-	}
+// lookupEach resolves every id against the loaded manifest index, calling fn with exactly what
+// Lookup(id) would return.
+func (s *artifactSource) lookupEach(ids []string, fn func(id string, facts AdvisoryFacts, ok bool)) {
+	s.load()
 	for _, id := range ids {
-		entry, found := byID[id]
-		if !found {
+		entry, found := s.index[id]
+		if s.loadErr != nil || !found {
 			fn(id, AdvisoryFacts{}, false)
 			continue
 		}
@@ -590,56 +596,66 @@ func LookupEach(src AdvisorySource, ids []string, fn func(id string, facts Advis
 	}
 }
 
-// findRecord linear-scans the manifest's records for vulnID. The corpus is small (dozens to low
-// hundreds of advisories) and a manifest is re-read on every Lookup (no caching), so a scan needs no
-// index; records are sorted by identifier only for byte-determinism of the manifest file itself.
-func findRecord(records []advisoryManifestEntry, vulnID string) (advisoryManifestEntry, bool) {
-	for _, r := range records {
-		if r.Identifier == vulnID {
-			return r, true
-		}
-	}
-	return advisoryManifestEntry{}, false
+// interface assertions: artifactSource satisfies the core seam plus the optional interfaces.
+var (
+	_ AdvisorySource     = (*artifactSource)(nil)
+	_ CorpusValidator    = (*artifactSource)(nil)
+	_ CorpusDescriber    = (*artifactSource)(nil)
+	_ AdvisoryEnumerator = (*artifactSource)(nil)
+	_ bulkLookup         = (*artifactSource)(nil)
+)
+
+// load performs the one-time manifest read + validate + index build, guarded by s.once. On failure it
+// records the descriptive error in s.loadErr and leaves s.index nil; Lookup/Describe collapse that to
+// the fail-open shape, Validate surfaces it verbatim.
+func (s *artifactSource) load() {
+	s.once.Do(func() {
+		s.man, s.index, s.loadErr = s.readManifest()
+	})
 }
 
-// loadManifest reads and validates the manifest. record_count must equal
-// len(records) and every identifier must be unique; either violation marks the whole manifest
+// loadManifest returns the loaded manifest, or ok=false when it could not be loaded. record_count must
+// equal len(records) and every identifier must be unique; either violation marks the whole manifest
 // invalid (every Lookup against it then fails open), since a manifest that cannot account for its
 // own record set cannot be trusted to name the right file for any single id.
-func (s artifactSource) loadManifest() (advisoryManifest, bool) {
-	man, err := s.loadManifestErr()
-	if err != nil {
+func (s *artifactSource) loadManifest() (advisoryManifest, bool) {
+	s.load()
+	if s.loadErr != nil {
 		return advisoryManifest{}, false
 	}
-	return man, true
+	return s.man, true
 }
 
-// loadManifestErr is loadManifest's error-returning core: it reads and validates the manifest,
-// returning a DESCRIPTIVE error (naming the manifest path and the specific violation) on any failure.
-// loadManifest wraps it to the fail-open (man, false) shape Lookup needs (inv.5 — a per-advisory read
-// never surfaces an error); Validate surfaces the error verbatim for the startup preflight. The checks
-// are identical, so the fail-open Lookup path and the loud Validate path can never diverge.
-func (s artifactSource) loadManifestErr() (advisoryManifest, error) {
+// readManifest reads and validates the manifest and indexes its records by identifier, returning a
+// DESCRIPTIVE error (naming the manifest path and the specific violation) on any failure. It runs once
+// per source via load. Lookup collapses the error to (zero, false) (inv.5 — a per-advisory read never
+// surfaces an error); Validate surfaces it verbatim for the startup preflight. Both read the same load
+// outcome, so the fail-open Lookup path and the loud Validate path can never diverge.
+func (s *artifactSource) readManifest() (advisoryManifest, map[string]advisoryManifestEntry, error) {
 	path := filepath.Join(s.root, "manifest.json")
-	data, err := os.ReadFile(path)
+	readFile := s.readFile
+	if readFile == nil {
+		readFile = os.ReadFile
+	}
+	data, err := readFile(path)
 	if err != nil {
-		return advisoryManifest{}, fmt.Errorf("read advisory manifest %s: %w", path, err)
+		return advisoryManifest{}, nil, fmt.Errorf("read advisory manifest %s: %w", path, err)
 	}
 	var man advisoryManifest
 	if err := json.Unmarshal(data, &man); err != nil {
-		return advisoryManifest{}, fmt.Errorf("parse advisory manifest %s: %w", path, err)
+		return advisoryManifest{}, nil, fmt.Errorf("parse advisory manifest %s: %w", path, err)
 	}
 	if man.RecordCount != len(man.Records) {
-		return advisoryManifest{}, fmt.Errorf("advisory manifest %s: record_count %d != len(records) %d", path, man.RecordCount, len(man.Records))
+		return advisoryManifest{}, nil, fmt.Errorf("advisory manifest %s: record_count %d != len(records) %d", path, man.RecordCount, len(man.Records))
 	}
-	seen := make(map[string]bool, len(man.Records))
+	index := make(map[string]advisoryManifestEntry, len(man.Records))
 	for _, r := range man.Records {
-		if seen[r.Identifier] {
-			return advisoryManifest{}, fmt.Errorf("advisory manifest %s: duplicate identifier %q", path, r.Identifier)
+		if _, dup := index[r.Identifier]; dup {
+			return advisoryManifest{}, nil, fmt.Errorf("advisory manifest %s: duplicate identifier %q", path, r.Identifier)
 		}
-		seen[r.Identifier] = true
+		index[r.Identifier] = r
 	}
-	return man, nil
+	return man, index, nil
 }
 
 // Validate is the STARTUP-ONLY corpus preflight (decisions.md #1): it returns a descriptive error when
@@ -648,15 +664,15 @@ func (s artifactSource) loadManifestErr() (advisoryManifest, error) {
 // process on error, so a broken orchestrator-materialized corpus is loud, never silently degraded to
 // stale built-in intel.
 //
-// It reuses loadManifestErr's checks, so it can never accept a manifest Lookup would choke on, nor
+// It reads the same one-time load outcome as Lookup, so it can never accept a manifest Lookup would choke on, nor
 // reject one Lookup would accept. It does NOT read or validate individual advisory documents: a single
 // malformed / digest-mismatched advisory is a per-advisory fail-open concern (inv.5), NOT a
 // corpus-unusable one — Validate gates the manifest, Lookup gates each document.
 //
 // inv.5 SPLIT: Validate never runs inside Lookup and never changes Lookup's per-advisory (zero, false).
-func (s artifactSource) Validate() error {
-	_, err := s.loadManifestErr()
-	return err
+func (s *artifactSource) Validate() error {
+	s.load()
+	return s.loadErr
 }
 
 // toFacts shape-validates the decoded document and maps it to AdvisoryFacts. It returns

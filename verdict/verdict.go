@@ -38,7 +38,7 @@ import (
 )
 
 // SchemaVersion is the versioned PoE schema identifier (RFC 0003).
-const SchemaVersion = "tegron.poe.v1"
+const SchemaVersion = "tegron.poe.v2"
 
 // Direction is which way the evidence points (RFC 0003).
 type Direction string

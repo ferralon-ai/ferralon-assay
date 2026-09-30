@@ -51,7 +51,7 @@ import (
 )
 
 // RedactedPoESchemaVersion is the schema version of RedactedPoE payloads.
-const RedactedPoESchemaVersion = "tegron.projection_redacted_poe.v1"
+const RedactedPoESchemaVersion = "tegron.projection_redacted_poe.v2"
 
 // RedactedPoE is a safe-to-share outside-org view of a Tegron PoE.
 //

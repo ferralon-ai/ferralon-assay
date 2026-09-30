@@ -1,7 +1,7 @@
 package artifact
 
 // SchemaVersion strings follow the verdict precedent (verdict.SchemaVersion =
-// "tegron.poe.v1"): "tegron.<type>.v<N>". Each payload-owning package SHOULD also
+// "tegron.poe.v2"): "tegron.<type>.v<N>". Each payload-owning package SHOULD also
 // export its own const; the Registry is the single source of truth the completeness
 // test checks against.
 
@@ -39,7 +39,7 @@ var registry = map[Type]TypeMeta{
 	// TypePoE carries the verdict package's literal version. A test in the verdict package
 	// asserts verdict.SchemaVersion == this value, catching drift without an artifact->verdict
 	// import cycle (the dependency points inward).
-	TypePoE: {Owner: "verdict_emission", SchemaVersion: "tegron.poe.v1"},
+	TypePoE: {Owner: "verdict_emission", SchemaVersion: "tegron.poe.v2"},
 	// Deterministic exposure report: aggregates already-computed signals, emits no verdict.
 	TypeExposureFootprint: {Owner: "exposure_footprint", SchemaVersion: ExposureFootprintSchemaVersion},
 	// Malicious-package presence: an affirmative decisive match emitted by the maliciousPresence
@@ -50,7 +50,7 @@ var registry = map[Type]TypeMeta{
 	TypeProjectionSARIF:       {Owner: "verdict_emission", SchemaVersion: "tegron.projection_sarif.v1"},
 	TypeProjectionVEX:         {Owner: "verdict_emission", SchemaVersion: "tegron.projection_vex.v1"},
 	TypeProjectionSSVC:        {Owner: "verdict_emission", SchemaVersion: "tegron.projection_ssvc.v1"},
-	TypeProjectionRedactedPoE: {Owner: "verdict_emission", SchemaVersion: "tegron.projection_redacted_poe.v1"},
+	TypeProjectionRedactedPoE: {Owner: "verdict_emission", SchemaVersion: "tegron.projection_redacted_poe.v2"},
 }
 
 // Lookup returns the governance record for an artifact type. ok is false if the

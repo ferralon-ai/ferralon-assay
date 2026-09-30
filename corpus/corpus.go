@@ -110,8 +110,9 @@ var validDirections = map[string]bool{
 
 // validStrengths is the closed set of allowed verdict strengths.
 var validStrengths = map[string]bool{
-	"proven":   true,
-	"reasoned": true,
+	"proven":        true,
+	"reasoned":      true,
+	"indeterminate": true,
 }
 
 // validAcquisitionModes is the closed set of allowed acquisition modes.
@@ -210,6 +211,10 @@ func (f Fixture) Validate() error {
 	}
 	if !validStrengths[f.ExpectedVerdict.Strength] {
 		return fmt.Errorf("corpus: fixture %q has unknown expected_verdict.strength %q", f.ID, f.ExpectedVerdict.Strength)
+	}
+	if (f.ExpectedVerdict.Direction == "indeterminate") != (f.ExpectedVerdict.Strength == "indeterminate") {
+		return fmt.Errorf("corpus: fixture %q pairs expected_verdict.direction %q with strength %q; indeterminate direction and strength come only together",
+			f.ID, f.ExpectedVerdict.Direction, f.ExpectedVerdict.Strength)
 	}
 	if !validCompletionStatuses[f.ExpectedVerdict.CompletionStatus] {
 		return fmt.Errorf("corpus: fixture %q has unknown expected_verdict.completion_status %q", f.ID, f.ExpectedVerdict.CompletionStatus)

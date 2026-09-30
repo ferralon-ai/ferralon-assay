@@ -69,7 +69,8 @@ type RedactedPoE struct {
 	// (nothing established — ADR 0016).
 	Direction verdict.Direction `json:"direction"`
 
-	// Strength is how the verdict is known: "proven" or "reasoned".
+	// Strength is how the verdict is known: "proven", "reasoned", or "indeterminate"
+	// (paired with the indeterminate direction: not known either way).
 	// A reasoned verdict is a defended hypothesis; proven requires ground-truth
 	// execution evidence. This field is preserved verbatim (inv.5 honesty).
 	Strength verdict.Strength `json:"strength"`

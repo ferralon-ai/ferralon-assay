@@ -37,7 +37,7 @@ func TestArtifactSource_KnownIDs(t *testing.T) {
 // returns — including every fail-open case in the fixture corpus and an id the corpus lacks — for
 // the tree reader (which batches) and for a source that does not (the plain-Lookup fallback).
 func TestLookupEach_MatchesLookup(t *testing.T) {
-	ids := append(NewArtifactSource(advisoryFixtureRoot).(AdvisoryEnumerator).KnownIDs(), "TEGRON-TEST-ABSENT", "GO-2021-0113")
+	ids := append(NewArtifactSource(advisoryFixtureRoot).(AdvisoryEnumerator).KnownIDs(), "FERRALON-TEST-ABSENT", "GO-2021-0113")
 
 	for _, tc := range []struct {
 		name string

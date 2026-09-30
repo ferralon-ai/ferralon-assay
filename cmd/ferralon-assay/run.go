@@ -42,9 +42,7 @@ const (
 	legacyEnvAdvisoryCorpusRequired  = "TEGRON_ADVISORY_CORPUS_REQUIRED"
 	// envAdvisoryCorpusPolicy declares the advisory policy the corpus was selected by — see
 	// advisoryCorpusPolicy. Declaring one is what makes the corpus define the work set.
-	envAdvisoryCorpusPolicy        = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
-	nucleonEnvAdvisoryCorpusPolicy = "NUCLEON_ADVISORY_CORPUS_POLICY"
-	legacyEnvAdvisoryCorpusPolicy  = "TEGRON_ADVISORY_CORPUS_POLICY"
+	envAdvisoryCorpusPolicy = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
@@ -556,7 +554,7 @@ var corpusPolicyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // advisoryCorpusPolicy returns the advisory policy this run declares its corpus was selected by, or
 // "" when none is declared. The -advisory-corpus-policy flag wins; absent it, envAdvisoryCorpusPolicy
-// (brand-derived, retired literals honored) is consulted.
+// is consulted.
 //
 // The declaration is what makes the corpus define the work set. A corpus with no declared policy —
 // a whole-corpus fetch, or a bundle handed over with no policy named — stays a fact source only, so
@@ -567,7 +565,7 @@ var corpusPolicyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 func (f *runFlags) advisoryCorpusPolicy() (string, error) {
 	policy := *f.corpusPolicy
 	if policy == "" {
-		policy = brand.EnvOrLegacy(envAdvisoryCorpusPolicy, nucleonEnvAdvisoryCorpusPolicy, legacyEnvAdvisoryCorpusPolicy)
+		policy = os.Getenv(envAdvisoryCorpusPolicy)
 	}
 	if policy == "" {
 		return "", nil

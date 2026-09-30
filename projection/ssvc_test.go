@@ -68,6 +68,31 @@ func TestSSVC_NotExploitable_TrackDecision(t *testing.T) {
 	}
 }
 
+// TestSSVC_Indeterminate_NoActiveExploitation is the containment guarantee for SSVC (ADR 0016): a
+// verdict that established nothing must NEVER signal active/poc exploitation or automatability — it
+// takes the conservative floor on every decision point.
+func TestSSVC_Indeterminate_NoActiveExploitation(t *testing.T) {
+	d, err := projection.ProjectSSVC(fixtureIndeterminate())
+	if err != nil {
+		t.Fatalf("ProjectSSVC: %v", err)
+	}
+	if d.DecisionPoints.Exploitation != projection.SSVCExploitationNone {
+		t.Fatalf("indeterminate exploitation = %q, want none (never active/poc for an unknown verdict)", d.DecisionPoints.Exploitation)
+	}
+	if d.DecisionPoints.Automatable != projection.SSVCAutomatableNo {
+		t.Fatalf("indeterminate automatable = %q, want no", d.DecisionPoints.Automatable)
+	}
+	// DOCUMENTED LIMITATION (ADR 0016): SSVC has no "unknown" impact tier, so on the impact axes
+	// an indeterminate verdict shares the conservative floor with a grounded not_exploitable and
+	// yields the same Track decision. The containment that matters (never active/automatable) is
+	// asserted above; this pins the floor so any future change to make it distinct is conscious.
+	if d.DecisionPoints.TechnicalImpact != projection.SSVCTechnicalImpactPartial ||
+		d.DecisionPoints.MissionImpact != projection.SSVCMissionImpactLow {
+		t.Fatalf("indeterminate impact axes must take the floor (partial/low), got %q/%q",
+			d.DecisionPoints.TechnicalImpact, d.DecisionPoints.MissionImpact)
+	}
+}
+
 func TestSSVC_Automatable_NoConditions_Yes(t *testing.T) {
 	p := fixtureProvenExploitable()
 	p.Conditions = nil

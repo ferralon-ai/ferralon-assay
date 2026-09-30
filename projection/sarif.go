@@ -39,6 +39,10 @@ func sarifLevel(p verdict.PoE) string {
 		return "warning"
 	case p.Direction == verdict.DirectionNotExploitable && p.Strength == verdict.StrengthProven:
 		return "note"
+	case p.Direction == verdict.DirectionIndeterminate:
+		// Nothing established (ADR 0016): not an error/warning finding, but kind="open" (sarifKind)
+		// marks it for follow-up. Never narrated as a safe result — see sarifMessage.
+		return "none"
 	default: // reasoned_not_exploitable
 		return "none"
 	}
@@ -247,6 +251,12 @@ func sarifMessage(p verdict.PoE) string {
 			"%s has proven this vulnerability not exploitable (two-trace patch validation; "+
 				"confidence %.2f, assessment %s).",
 			brand.Name, p.Confidence.Score, p.AssessmentID)
+	case "indeterminate":
+		return fmt.Sprintf(
+			"%s established no verdict for this vulnerability (assessment %s): analysis reached "+
+				"neither a proof of exploitability nor of non-exploitability. This is NOT a clean "+
+				"result — it requires follow-up.",
+			brand.Name, p.AssessmentID)
 	default: // reasoned_not_exploitable
 		return fmt.Sprintf(
 			"%s leans toward not exploitable (reasoned, unproven; confidence %.2f). "+

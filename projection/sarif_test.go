@@ -26,6 +26,20 @@ func fixtureReasonedNotExploitable() verdict.PoE {
 	}
 }
 
+// fixtureIndeterminate returns a well-formed indeterminate PoE (ADR 0016 — nothing established).
+func fixtureIndeterminate() verdict.PoE {
+	return verdict.PoE{
+		SchemaVersion:    verdict.SchemaVersion,
+		ArtifactID:       "01890000-0000-7000-8000-0000000000c1",
+		AssessmentID:     "01890000-0000-7000-8000-0000000000aa",
+		CaseID:           "01890000-0000-7000-8000-0000000000a0",
+		Direction:        verdict.DirectionIndeterminate,
+		Strength:         verdict.StrengthIndeterminate,
+		CompletionStatus: verdict.CompletionStoppedCapability,
+		Episodes:         []string{"01890000-0000-7000-8000-0000000000bb"},
+	}
+}
+
 // fixtureReasonedExploitable returns a well-formed reasoned_exploitable PoE.
 func fixtureReasonedExploitable() verdict.PoE {
 	return verdict.PoE{
@@ -134,6 +148,25 @@ func TestSARIF_ReasonedNotExploitable_IsNone(t *testing.T) {
 	result := log.Runs[0].Results[0]
 	if result.Level != "none" {
 		t.Fatalf("reasoned not_exploitable: want level=none, got %q", result.Level)
+	}
+}
+
+func TestSARIF_Indeterminate_IsNone_NeverSafeNarrative(t *testing.T) {
+	log, err := projection.ProjectSARIF(fixtureIndeterminate())
+	if err != nil {
+		t.Fatalf("ProjectSARIF: %v", err)
+	}
+	result := log.Runs[0].Results[0]
+	if result.Level == "error" || result.Level == "warning" {
+		t.Fatalf("indeterminate must not be an error/warning finding, got level=%q", result.Level)
+	}
+	if result.Kind != "open" {
+		t.Fatalf("indeterminate must be kind=open (needs follow-up), got %q", result.Kind)
+	}
+	// The message must not narrate a safe result.
+	msg := result.Message.Text
+	if strings.Contains(msg, "not exploitable") && !strings.Contains(msg, "neither") {
+		t.Fatalf("indeterminate message must not narrate a not-exploitable lean, got %q", msg)
 	}
 }
 

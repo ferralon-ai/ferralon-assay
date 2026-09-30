@@ -105,6 +105,7 @@ var validDirections = map[string]bool{
 	"exploitable":     true,
 	"not_exploitable": true,
 	"undetermined":    true,
+	"indeterminate":   true, // ADR 0016: a Prove-tier run that established nothing (distinct from Assess-tier "undetermined")
 }
 
 // validStrengths is the closed set of allowed verdict strengths.
@@ -231,12 +232,15 @@ func (f Fixture) Validate() error {
 }
 
 // expectedLabel derives the convenience label from direction and strength, matching the
-// verdict.PoE.Label() logic. "undetermined" is the absence of a determination, not a graded
-// refutation or exploit claim, so it is never strength-prefixed — it labels as itself regardless of
-// strength (anvil-q12).
+// verdict.PoE.Label() logic. Two directions are never strength-prefixed because neither is a graded
+// finding: "undetermined" is the Assess-tier absence of a determination (anvil-q12), and
+// "indeterminate" is the Prove-tier run that established nothing (ADR 0016). Each labels as itself.
 func expectedLabel(direction, strength string) string {
 	if direction == "undetermined" {
 		return "undetermined"
+	}
+	if direction == "indeterminate" {
+		return "indeterminate"
 	}
 	if strength == "reasoned" {
 		return "reasoned_" + direction

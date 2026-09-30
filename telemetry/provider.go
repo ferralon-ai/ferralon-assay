@@ -13,8 +13,8 @@
 // compatibility.
 //
 // New builds a MeterProvider + TracerProvider over an OTLP/gRPC exporter with a delta
-// temporality selector, reading TEGRON_OTEL_LEVEL once to install one of three View sets
-// (essential | standard | full). It no-ops cleanly when no OTLP endpoint is configured, so
+// temporality selector, installing one of three View sets (essential | standard | full) from
+// Config.Level. It no-ops cleanly when no OTLP endpoint is configured, so
 // boot never blocks or fails on a missing collector. No business instrument emits here — the
 // only live signal is the tegron.telemetry.up health counter, which proves the pipe.
 package telemetry
@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel"
@@ -39,18 +38,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Environment variables read by New. The OTLP endpoint variables are the standard OTEL
-// exporter knobs (a full URL, e.g. https://collector.run.app:4317 for Cloud Run); the
-// exporter itself reads the endpoint from the environment.
+// Environment variables read by New. They are the standard OTEL exporter knobs (a full URL, e.g.
+// https://collector.run.app:4317 for Cloud Run); the exporter itself reads the endpoint from the
+// environment. Everything else New needs comes from Config.
 const (
-	// EnvEnvironment sets the deployment.environment.name resource attribute. Internal-only
-	// (F-6 review, same reasoning as telemetry.EnvLevel): never printed, no flag surface, not
-	// part of the OSS operator-facing docs. Left literal.
-	EnvEnvironment = "TEGRON_ENV"
-	// EnvSampleRatio tunes the standard-tier trace sampling ratio (0.0–1.0, default 1.0).
-	// Internal-only, same reasoning as EnvEnvironment above. Left literal.
-	EnvSampleRatio = "TEGRON_OTEL_SAMPLE_RATIO"
-
 	envOTLPEndpoint        = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	envOTLPMetricsEndpoint = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 	envOTLPTracesEndpoint  = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
@@ -65,9 +56,9 @@ const (
 	defaultEnvironment = "development"
 )
 
-// Config carries the process identity stamped onto the OTEL Resource. The env-driven knobs
-// (level, endpoint, sample ratio, environment) are read by New; a caller supplies only the
-// stable identity of the binary.
+// Config carries the process identity stamped onto the OTEL Resource and the coverage settings.
+// The zero value of every coverage field is the default, so a caller sets only what it overrides.
+// New reads no environment variable on the caller's behalf except the standard OTLP endpoint knobs.
 type Config struct {
 	// ServiceName is the reused service.name resource attribute — one of
 	// tegron-cli | tegron-service | tegron-sandbox-runner.
@@ -77,9 +68,18 @@ type Config struct {
 	// Component is the minted tegron.component resource attribute distinguishing the
 	// subsystem — assess | prove | sandbox-runner | callgraph | assay | model-client.
 	Component string
-	// Environment optionally overrides the deployment.environment.name resource attribute;
-	// when empty, New reads TEGRON_ENV (default "development").
+	// Environment is the deployment.environment.name resource attribute; empty (or blank)
+	// means "development".
 	Environment string
+	// Level is the coverage tier. The zero value is LevelEssential. A host that takes the
+	// tier as a string converts it with ParseLevel, which maps an unrecognized name to
+	// LevelEssential.
+	Level Level
+	// SampleRatio is the standard-tier trace sampling ratio. nil means 1.0, and so does a
+	// value below 0 or above 1. It is a pointer because 0 is a meaningful ratio (sample
+	// nothing) and must stay distinguishable from "not set". essential is always AlwaysOff and
+	// full is always AlwaysSample, whatever this holds.
+	SampleRatio *float64
 }
 
 // Provider owns the constructed MeterProvider and TracerProvider and flushes them on
@@ -92,17 +92,17 @@ type Provider struct {
 	tp      *sdktrace.TracerProvider
 }
 
-// New constructs the telemetry provider. It reads TEGRON_OTEL_LEVEL once (default essential)
-// and installs the matching View set + trace sampler. When no OTLP endpoint is configured it
+// New constructs the telemetry provider at cfg.Level and installs the matching View set + trace
+// sampler. When no OTLP endpoint is configured it
 // returns a disabled provider without touching the network, so boot never blocks on a
 // collector. A construction failure is returned to the caller, which should treat telemetry
 // as best-effort (warn and continue) — telemetry must never break the boot.
 func New(ctx context.Context, cfg Config) (*Provider, error) {
-	level := levelFromEnv()
+	level := cfg.Level
 	p := &Provider{level: level}
 
 	if strings.TrimSpace(cfg.Environment) == "" {
-		cfg.Environment = envOr(EnvEnvironment, defaultEnvironment)
+		cfg.Environment = defaultEnvironment
 	}
 
 	if !otlpEndpointConfigured() {
@@ -138,7 +138,7 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	p.tp = sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(traceExp),
-		sdktrace.WithSampler(samplerForLevel(level, sampleRatioFromEnv())),
+		sdktrace.WithSampler(samplerForLevel(level, sampleRatio(cfg.SampleRatio))),
 	)
 
 	otel.SetMeterProvider(p.mp)
@@ -224,26 +224,11 @@ func otlpEndpointConfigured() bool {
 	return false
 }
 
-func envOr(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
-	}
-	return def
-}
-
-// sampleRatioFromEnv reads TEGRON_OTEL_SAMPLE_RATIO, clamped to [0,1], default 1.0. It only
+// sampleRatio resolves Config.SampleRatio: nil, negative, or above 1 all yield 1.0. It only
 // affects the standard-tier sampler; essential is AlwaysOff and full is AlwaysSample.
-func sampleRatioFromEnv() float64 {
-	v := strings.TrimSpace(os.Getenv(EnvSampleRatio))
-	if v == "" {
+func sampleRatio(r *float64) float64 {
+	if r == nil || *r < 0 || *r > 1 {
 		return 1.0
 	}
-	r, err := strconv.ParseFloat(v, 64)
-	if err != nil || r < 0 {
-		return 1.0
-	}
-	if r > 1 {
-		return 1.0
-	}
-	return r
+	return *r
 }

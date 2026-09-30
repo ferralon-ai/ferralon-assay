@@ -37,13 +37,6 @@ var allowedInternalEnvIdents = map[string]string{
 		"(Java packaging is a known separate blocker, task 01 inventory).",
 	"scipDockerBinEnv": "internal/plugin/javaanalysis/scipjava.go — docker binary override for the same " +
 		"internal container gate as scipAnalyzerImageEnv above.",
-	"EnvEnvironment": "telemetry/provider.go — OTEL deployment.environment.name override. " +
-		"Internal-only per its own F-6 review doc comment: never printed, no flag surface, not part " +
-		"of any OSS operator-facing doc.",
-	"EnvSampleRatio": "telemetry/provider.go — OTEL trace sample-ratio override. Internal-only, " +
-		"same F-6 review basis as EnvEnvironment above.",
-	"EnvLevel": "telemetry/level.go — OTEL coverage-tier selector. Internal-only per its own doc " +
-		"comment (F-6 review), same basis as the other telemetry/ entries.",
 	"credEnvVar": "checkout/git.go — names the env key used to hand a GitHub installation token " +
 		"to a child git process for one clone/fetch. The token lives in that child process's " +
 		"environment only (never at rest, never in argv); ferralon-assay never reads this var itself, " +

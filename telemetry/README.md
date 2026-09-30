@@ -3,7 +3,7 @@
 The OpenTelemetry SDK foundation both engine binaries construct at startup. It
 builds a
 `MeterProvider` + `TracerProvider` over an **OTLP/gRPC** exporter with **delta**
-temporality, reads `TEGRON_OTEL_LEVEL` once to install one of three View sets,
+temporality, installs one of three View sets from `Config.Level`,
 and **no-ops cleanly when no OTLP endpoint is configured** so boot never blocks
 on a collector.
 
@@ -26,10 +26,12 @@ Construct once at startup, defer `Shutdown` so the final metric batch flushes on
 exit:
 
 ```go
+level, _ := telemetry.ParseLevel(levelName) // unrecognized → essential
 tel, err := telemetry.New(ctx, telemetry.Config{
     ServiceName:    "tegron-cli",   // tegron-cli | tegron-service | tegron-sandbox-runner
     ServiceVersion: version,        // build version
     Component:      "assess",       // assess | prove | sandbox-runner | callgraph | assay | model-client
+    Level:          level,          // zero value: essential
 })
 if err != nil {
     // Non-fatal: telemetry must NEVER break the boot. Warn and continue.
@@ -51,19 +53,30 @@ For a short-lived CLI, split `main` so the deferred `Shutdown` actually runs —
 downstream `otel.Meter(...)` / `otel.Tracer(...)` calls just work (and are safe
 no-ops when telemetry is disabled).
 
-## Configuration (environment)
+## Configuration
+
+The package reads no environment variable of its own. Coverage settings arrive
+on `Config`, and every zero value is the default, so a caller sets only what it
+overrides. How a host sources them is the host's business: `ferralon-assay`
+reads `ASSAY_OTEL_LEVEL`, `ASSAY_OTEL_SAMPLE_RATIO`, and `ASSAY_ENV` in
+`cmd/ferralon-assay/main.go` and passes the values in.
+
+| `Config` field | Zero value | Effect |
+|---|---|---|
+| `Level` | `LevelEssential` | Coverage tier: essential \| standard \| full. Fixed **once** at construction; selects the installed View set + trace sampler. `ParseLevel` maps a tier name to a `Level`, and an unrecognized name to `LevelEssential`. |
+| `Environment` | `"development"` | The `deployment.environment.name` resource attribute. A blank value also means `development`. |
+| `SampleRatio` | `nil` → `1.0` | Trace sampling ratio for **standard** only. A value below 0 or above 1 also means `1.0`; `0` is honored. `essential` is `AlwaysOff`; `full` is `AlwaysSample`. |
+
+The one environment input is the standard OTEL exporter configuration:
 
 | Env var | Default | Effect |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `_METRICS` / `_TRACES` variants) | *(unset)* | The collector target. **Unset → the whole provider is a graceful no-op** (no exporters built, no network dialed). |
-| `TEGRON_OTEL_LEVEL` | `essential` | Coverage tier: `essential` \| `standard` \| `full`. Read **once** at construction; selects the installed View set + trace sampler. An unrecognized value falls back to `essential`. |
-| `TEGRON_ENV` | `development` | The `deployment.environment.name` resource attribute (overridable via `Config.Environment`). |
-| `TEGRON_OTEL_SAMPLE_RATIO` | `1.0` | Trace sampling ratio for **standard** only (clamped to `[0,1]`). `essential` is `AlwaysOff`; `full` is `AlwaysSample`. |
 
 The exporter reads the endpoint, TLS, and headers from the standard `OTEL_*`
 environment; the gRPC client dials lazily, so `New` never blocks on the collector.
 
-## The coverage-tier knob (`TEGRON_OTEL_LEVEL`)
+## The coverage-tier knob (`Config.Level`)
 
 One knob, three **View sets** — not three code paths. Every instrument is
 registered unconditionally by its emit site (registering is cheap); SDK Views

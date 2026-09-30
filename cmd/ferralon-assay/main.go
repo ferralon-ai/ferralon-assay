@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -52,11 +54,7 @@ func run() int {
 	// Telemetry foundation. No-ops cleanly when OTEL_EXPORTER_OTLP_ENDPOINT
 	// is unset — the common local-scan case — so a CLI run never blocks on a collector. Init
 	// failure is non-fatal: telemetry must never break a scan.
-	tel, err := telemetry.New(context.Background(), telemetry.Config{
-		ServiceName:    brand.Name + "-cli",
-		ServiceVersion: version,
-		Component:      "assess",
-	})
+	tel, err := telemetry.New(context.Background(), telemetryConfig())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, brand.Name+" telemetry init (continuing without telemetry):", err)
 	} else {
@@ -102,6 +100,34 @@ func run() int {
 		return 2
 	}
 	return 0
+}
+
+// Env var names for the telemetry settings. Brand-derived like the run inputs in run.go; the
+// telemetry package reads none of them itself.
+const (
+	envOTelLevel       = brand.EnvPrefix + "_OTEL_LEVEL"
+	envOTelSampleRatio = brand.EnvPrefix + "_OTEL_SAMPLE_RATIO"
+	envEnvironment     = brand.EnvPrefix + "_ENV"
+)
+
+// telemetryConfig builds the CLI's telemetry.Config from its identity and the telemetry env vars.
+// Every unset or unusable value is left at the field's zero value, which telemetry.New reads as
+// its default: an unrecognized level is essential, an unparseable ratio is 1.0.
+func telemetryConfig() telemetry.Config {
+	level, _ := telemetry.ParseLevel(os.Getenv(envOTelLevel))
+	cfg := telemetry.Config{
+		ServiceName:    brand.Name + "-cli",
+		ServiceVersion: version,
+		Component:      "assess",
+		Environment:    strings.TrimSpace(os.Getenv(envEnvironment)),
+		Level:          level,
+	}
+	if v := strings.TrimSpace(os.Getenv(envOTelSampleRatio)); v != "" {
+		if r, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.SampleRatio = &r
+		}
+	}
+	return cfg
 }
 
 func usage() {

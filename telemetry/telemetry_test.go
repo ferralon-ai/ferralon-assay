@@ -160,7 +160,6 @@ func TestNew_NoopWhenEndpointUnset(t *testing.T) {
 	t.Setenv(envOTLPEndpoint, "")
 	t.Setenv(envOTLPMetricsEndpoint, "")
 	t.Setenv(envOTLPTracesEndpoint, "")
-	t.Setenv(EnvLevel, "essential")
 
 	p, err := New(context.Background(), Config{
 		ServiceName:    "tegron-cli",
@@ -229,22 +228,57 @@ func TestTierCatalogCardinality(t *testing.T) {
 	}
 }
 
-// TestEnvLevelFlipsInstalledViewSet is the end-to-end form of acceptance (a): it ties the
-// TEGRON_OTEL_LEVEL *environment variable* to the installed View set. The SAME standard-tier
-// stream is dropped when the env selects essential and kept when it selects standard, proving
-// the env var (read once via levelFromEnv at provider construction) is the single gating lever
-// — not just the Level enum the sibling test exercises directly.
-func TestEnvLevelFlipsInstalledViewSet(t *testing.T) {
+// TestConfigLevelFlipsInstalledViewSet is the end-to-end form of acceptance (a): it ties
+// Config.Level to the installed View set. The SAME standard-tier stream is dropped when the Config
+// selects essential (including the zero value) and kept when it selects standard, proving the field
+// New fixes at construction is the single gating lever — not just the Level enum the sibling test
+// exercises directly.
+func TestConfigLevelFlipsInstalledViewSet(t *testing.T) {
 	const stdInstrument = "tegron.stage.duration"
+	t.Setenv(envOTLPEndpoint, "")
+	t.Setenv(envOTLPMetricsEndpoint, "")
+	t.Setenv(envOTLPTracesEndpoint, "")
 
-	t.Setenv(EnvLevel, "essential")
-	if present := collectHistogramPresent(t, levelFromEnv(), stdInstrument); present {
-		t.Errorf("TEGRON_OTEL_LEVEL=essential: %s exported, want DROPPED by the essential View set", stdInstrument)
+	cases := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"zero value", Config{}, false},
+		{"essential", Config{Level: LevelEssential}, false},
+		{"standard", Config{Level: LevelStandard}, true},
 	}
+	for _, c := range cases {
+		p, err := New(context.Background(), c.cfg)
+		if err != nil {
+			t.Fatalf("%s: New: %v", c.name, err)
+		}
+		if present := collectHistogramPresent(t, p.Level(), stdInstrument); present != c.want {
+			t.Errorf("%s: %s exported = %v, want %v", c.name, stdInstrument, present, c.want)
+		}
+	}
+}
 
-	t.Setenv(EnvLevel, "standard")
-	if present := collectHistogramPresent(t, levelFromEnv(), stdInstrument); !present {
-		t.Errorf("TEGRON_OTEL_LEVEL=standard: %s dropped, want KEPT by the standard View set", stdInstrument)
+// TestSampleRatio pins the Config.SampleRatio contract: unset and out-of-range values select 1.0,
+// and 0 is honored as "sample nothing" rather than read as unset.
+func TestSampleRatio(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name string
+		in   *float64
+		want float64
+	}{
+		{"nil", nil, 1.0},
+		{"zero", f(0), 0},
+		{"mid", f(0.25), 0.25},
+		{"one", f(1), 1.0},
+		{"negative", f(-0.5), 1.0},
+		{"above one", f(1.5), 1.0},
+	}
+	for _, c := range cases {
+		if got := sampleRatio(c.in); got != c.want {
+			t.Errorf("%s: sampleRatio = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

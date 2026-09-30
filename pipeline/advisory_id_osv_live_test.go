@@ -61,7 +61,7 @@ const osvPoliteDelay = 120 * time.Millisecond
 // issuing authority and by construction resolve nowhere, so querying OSV for them would assert
 // nothing. Their well-formedness is checked hermetically in advisory_id_format_test.go; this is a
 // scope statement, not an exemption from checking.
-var firstPartyNamespaces = map[string]bool{"TEGRON": true, "FERRALON": true}
+var firstPartyNamespaces = map[string]bool{"FERRALON": true}
 
 func requireOSVGate(t *testing.T) {
 	t.Helper()

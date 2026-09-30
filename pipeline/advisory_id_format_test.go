@@ -94,11 +94,6 @@ var advisoryIDGrammars = []advisoryIDGrammar{
 		//
 		// Form: <ORG>-<CLASSIFIER>(-<CLASSIFIER>)*-<4-digit ordinal>, uppercase.
 		// e.g. FERRALON-JS-SSRF-0001, FERRALON-GO-GRAFANA-DUCKDB-0001, FERRALON-APP-DOS-0001.
-		namespace: "TEGRON",
-		pattern:   regexp.MustCompile(`^TEGRON(-[A-Z][A-Z0-9]*)+-[0-9]{4}$`),
-		authority: "first-party synthetic advisory id (this project) — ORG-CLASSIFIER…-NNNN",
-	},
-	{
 		namespace: "FERRALON",
 		pattern:   regexp.MustCompile(`^FERRALON(-[A-Z][A-Z0-9]*)+-[0-9]{4}$`),
 		authority: "first-party synthetic advisory id (this project) — ORG-CLASSIFIER…-NNNN",

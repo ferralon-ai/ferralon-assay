@@ -175,8 +175,8 @@ func TestSCIPResolveGate_Unset(t *testing.T) {
 // Partial(tool_failure), never a fabricated edge.
 func TestSCIPResolveGate_SetNoDocker(t *testing.T) {
 	an := resolveOptions([]Option{
-		WithAnalyzerImage("tegron-java-analyzer@sha256:deadbeef"),
-		WithAnalyzerDocker("tegron-no-such-docker-binary-xyz"),
+		WithAnalyzerImage("assay-java-analyzer@sha256:deadbeef"),
+		WithAnalyzerDocker("assay-no-such-docker-binary-xyz"),
 	})
 	_, gated, ok := scipJavaResolve(t.Context(), reproSrc, an)
 	if !gated {
@@ -205,8 +205,8 @@ func TestCallGraph_GateUnset_ByteIdentical(t *testing.T) {
 // honest degradation, never a fabricated edge.
 func TestCallGraph_GateSetNoDocker_ToolFailure(t *testing.T) {
 	cg, err := CallGraph(t.Context(), plugin.CallGraphRequest{BuildDir: reproSrc},
-		WithAnalyzerImage("tegron-java-analyzer@sha256:deadbeef"),
-		WithAnalyzerDocker("tegron-no-such-docker-binary-xyz"))
+		WithAnalyzerImage("assay-java-analyzer@sha256:deadbeef"),
+		WithAnalyzerDocker("assay-no-such-docker-binary-xyz"))
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
 	}

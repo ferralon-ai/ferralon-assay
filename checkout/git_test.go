@@ -71,7 +71,7 @@ func TestNormalizeCloneURL(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"bare go module path gets https", "github.com/ferralon-ai/tegron-corpus-repros", "https://github.com/ferralon-ai/tegron-corpus-repros"},
+		{"bare go module path gets https", "github.com/acme/corpus-repros", "https://github.com/acme/corpus-repros"},
 		{"https left untouched", "https://github.com/golang/example", "https://github.com/golang/example"},
 		{"http left untouched", "http://example.com/x/y", "http://example.com/x/y"},
 		{"ssh scheme left untouched", "ssh://git@github.com/golang/example", "ssh://git@github.com/golang/example"},
@@ -116,8 +116,8 @@ func TestGitCheckoutNonDefaultRef(t *testing.T) {
 
 	origin := t.TempDir()
 	gitT(t, origin, "init", "-q")
-	gitT(t, origin, "config", "user.email", "test@tegron.test")
-	gitT(t, origin, "config", "user.name", "tegron test")
+	gitT(t, origin, "config", "user.email", "test@example.test")
+	gitT(t, origin, "config", "user.name", "assay test")
 	// "vulnerable" is the default branch (first branch with a commit, HEAD points here).
 	gitT(t, origin, "checkout", "-q", "-b", "vulnerable")
 	if err := writeFile(filepath.Join(origin, "go.mod"), "module example.com/svc\n\ngo 1.22\n"); err != nil {

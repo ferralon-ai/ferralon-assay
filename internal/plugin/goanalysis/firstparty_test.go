@@ -55,12 +55,12 @@ func TestFirstParty_IndexesUnexportedMainHandler(t *testing.T) {
 
 // TestFirstParty_ResolvesPackageQualifiedSymbol proves the advisory form "main.fetchHandler"
 // resolves to the unexported sink even though the synthetic first-party PURL
-// (pkg:golang/tegron/corpus/app) names no loaded package — the package filter is dropped when it
+// (pkg:golang/example.com/corpus/app) names no loaded package — the package filter is dropped when it
 // matches nothing, then the symbol resolves by name.
 func TestFirstParty_ResolvesPackageQualifiedSymbol(t *testing.T) {
 	res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 		BuildDir:        firstPartyFixtureDir,
-		PURL:            "pkg:golang/tegron/corpus/app", // synthetic; not a loaded package path
+		PURL:            "pkg:golang/example.com/corpus/app", // synthetic; not a loaded package path
 		AdvisorySymbols: []string{"main.fetchHandler"},
 		VulnID:          "FERRALON-APP-SSRF-0001",
 	})
@@ -87,7 +87,7 @@ func TestFirstParty_ResolvedSinkIsIngressForCallGraphFallback(t *testing.T) {
 	ctx := context.Background()
 	resolved, err := ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
 		BuildDir:        firstPartyFixtureDir,
-		PURL:            "pkg:golang/tegron/corpus/app",
+		PURL:            "pkg:golang/example.com/corpus/app",
 		AdvisorySymbols: []string{"main.fetchHandler"},
 	})
 	if err != nil || len(resolved.Resolved) != 1 {

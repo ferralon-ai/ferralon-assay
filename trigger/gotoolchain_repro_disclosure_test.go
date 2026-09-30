@@ -47,8 +47,8 @@ func runGoBaselineIn(t *testing.T, buildDir string, advisories []assessment.Vuln
 		pipeline.WithPlugin(goManifestPlugin{}),
 	}, opts...)
 	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
-		Subject:       Subject{Repo: "github.com/ferralon-ai/tegron-corpus-repros", Revision: "main", ResolvedCommit: "deadbeef"},
-		Codebase:      assessment.CodebaseRef{Repo: "github.com/ferralon-ai/tegron-corpus-repros", Revision: "main"},
+		Subject:       Subject{Repo: "github.com/acme/corpus-repros", Revision: "main", ResolvedCommit: "deadbeef"},
+		Codebase:      assessment.CodebaseRef{Repo: "github.com/acme/corpus-repros", Revision: "main"},
 		Advisories:    advisories,
 		AssessOptions: opts,
 	})
@@ -64,7 +64,7 @@ func assessRepro(t *testing.T, buildDir string) (artifact.Store, string, error) 
 	t.Helper()
 	return assess(context.Background(), assessment.Request{
 		Vulnerability: assessment.VulnRef{ID: "GO-2021-0264", Source: "corpus"},
-		Codebase:      assessment.CodebaseRef{Repo: "github.com/ferralon-ai/tegron-corpus-repros", Revision: "main"},
+		Codebase:      assessment.CodebaseRef{Repo: "github.com/acme/corpus-repros", Revision: "main"},
 	},
 		pipeline.WithCheckout(fixedCheckout{dir: buildDir, lang: "go"}),
 		pipeline.WithPlugin(goManifestPlugin{}),

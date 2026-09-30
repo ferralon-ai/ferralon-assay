@@ -60,7 +60,7 @@ func runJSDisqual(t *testing.T, version string, resolved bool) DisqualResult {
 	c := &assessment.Assessment{ID: "case-js-dep", Request: assessment.Request{
 		Vulnerability: assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
-			Repo:     "tegron/js-dep-repro",
+			Repo:     "acme/js-dep-repro",
 			Revision: "v1",
 			Acquisition: assessment.Acquisition{
 				Mode: "vendored_repro",

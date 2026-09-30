@@ -60,7 +60,7 @@ func fullReport() Report {
 		},
 		Baseline: &BaselineRef{
 			CommitSHA: "def456",
-			StateRef:  "refs/tegron/state",
+			StateRef:  "refs/assay/env-staging/state",
 			BlobSHA:   "deadbeef",
 		},
 	}

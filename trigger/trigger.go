@@ -172,7 +172,8 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 // PRInheritRequest configures a PR-adjacent run. It diffs the PR's resolved SBOM
 // against the stored baseline; if the dependency set is unchanged it inherits the
 // baseline Report (the fast path — no re-analysis), otherwise it re-analyzes the
-// affected slice (the advisories touching changed packages) and writes the result.
+// affected slice (the advisories touching changed packages). Either way the result
+// is returned to the caller and the stored baseline is left untouched.
 type PRInheritRequest struct {
 	// Subject is the PR head's neutral identity.
 	Subject Subject
@@ -217,13 +218,17 @@ type PRInheritResult struct {
 	ChangedPackages []string
 }
 
-// RunPRInherit decides between the fast path and re-analysis and stores the result.
+// RunPRInherit decides between the fast path and re-analysis and returns the PR's Report.
 //
 // Fast path (Inherited): the PR SBOM equals the baseline SBOM → emit a Report that
 // inherits the baseline's findings, carrying a Baseline pointer, with no S1–S6 run.
 // Slow path: at least one package changed → re-run S1–S6 for the advisories whose
-// package changed, merge those findings over the inherited baseline findings, and
-// write.
+// package changed and merge those findings over the inherited baseline findings.
+//
+// RunPRInherit only reads the store. The state ref holds the default branch's
+// baseline, which later PR runs inherit from and cve-watch diffs against; a Report of
+// unmerged code never belongs there. Reading only also means a run whose token cannot
+// write the ref — a pull request from a fork — takes both paths.
 //
 // A baseline must already exist; absent one, RunPRInherit returns ErrNoBaseline (a PR
 // run has nothing to inherit from until the default branch has been scanned once).
@@ -251,17 +256,8 @@ func RunPRInherit(ctx context.Context, store statestore.StateStore, req PRInheri
 	if err != nil {
 		return nil, err
 	}
-	state.Report = rep
-	state.SBOM = rep.SBOM
-	if req.Cursor != "" {
-		state.Cursor = req.Cursor
-	}
-	committed, err := store.Write(ctx, state)
-	if err != nil {
-		return nil, fmt.Errorf("trigger: pr-inherit write: %w", err)
-	}
 	return &PRInheritResult{
-		Report:          committed.Report,
+		Report:          rep,
 		Inherited:       false,
 		ChangedPackages: changed,
 	}, nil

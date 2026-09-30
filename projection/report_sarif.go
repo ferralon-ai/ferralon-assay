@@ -116,7 +116,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			Message:    SARIFMessage{Text: reportSARIFMessage(f)},
 			Locations:  reportSARIFLocations(f),
 			Rank:       rank,
-			Properties: &SARIFProperties{Tegron: props},
+			Properties: &SARIFProperties{Scanner: props},
 		})
 	}
 
@@ -229,7 +229,7 @@ func reportSARIFNotAssessed(notes []report.PartialityNote, rowIDs map[string]str
 						"This is not a statement that the codebase is unaffected.",
 					id, brand.Name, n.Reason)},
 				Locations:  []SARIFLocation{{PhysicalLocation: &SARIFPhysicalLocation{ArtifactLocation: SARIFArtifactLocation{URI: sarifFallbackURI}, Region: &SARIFRegion{StartLine: 1}}}},
-				Properties: &SARIFProperties{Tegron: props},
+				Properties: &SARIFProperties{Scanner: props},
 			})
 		}
 	}
@@ -319,7 +319,7 @@ func reportSARIFPartialityResults(r report.Report) []SARIFResult {
 					Region:           &SARIFRegion{StartLine: 1},
 				},
 			}},
-			Properties: &SARIFProperties{Tegron: props},
+			Properties: &SARIFProperties{Scanner: props},
 		})
 	}
 	return out

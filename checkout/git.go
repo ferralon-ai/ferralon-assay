@@ -58,7 +58,7 @@ func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (Workspa
 	// Checkout seam signature, never on this struct, never on disk. An empty credential (public
 	// repo / hermetic fake / local ambient-cred dev) takes the bare-clone path unchanged.
 	cred := CredentialFrom(ctx)
-	dir, err := os.MkdirTemp("", "tegron-checkout-")
+	dir, err := os.MkdirTemp("", brand.Name+"-checkout-")
 	if err != nil {
 		return WorkspacePlan{}, fmt.Errorf("checkout: mkdtemp: %w", err)
 	}

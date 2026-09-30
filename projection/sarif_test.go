@@ -216,18 +216,18 @@ func TestSARIF_RoundTrip_ValidJSON(t *testing.T) {
 	}
 }
 
-func TestSARIF_TegronProperties_IncludeLabel(t *testing.T) {
+func TestSARIF_ScannerProperties_IncludeLabel(t *testing.T) {
 	log, err := projection.ProjectSARIF(fixtureReasonedExploitable())
 	if err != nil {
 		t.Fatalf("ProjectSARIF: %v", err)
 	}
 	result := log.Runs[0].Results[0]
-	if result.Properties == nil || result.Properties.Tegron == nil {
-		t.Fatal("SARIF result missing tegron properties")
+	if result.Properties == nil || result.Properties.Scanner == nil {
+		t.Fatal("SARIF result missing scanner properties")
 	}
-	label, ok := result.Properties.Tegron["verdict_label"]
+	label, ok := result.Properties.Scanner["verdict_label"]
 	if !ok {
-		t.Fatal("tegron properties missing verdict_label")
+		t.Fatal("scanner properties missing verdict_label")
 	}
 	if label != "reasoned_exploitable" {
 		t.Fatalf("verdict_label = %v, want %q", label, "reasoned_exploitable")

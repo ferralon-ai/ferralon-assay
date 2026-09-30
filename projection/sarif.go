@@ -157,7 +157,7 @@ type SARIFRegion struct {
 
 // SARIFProperties carries scanner-specific extension fields under the "scanner" key.
 type SARIFProperties struct {
-	Tegron map[string]any `json:"scanner,omitempty"`
+	Scanner map[string]any `json:"scanner,omitempty"`
 }
 
 // ProjectSARIF converts a PoE into a SARIF 2.1.0 log.
@@ -206,7 +206,7 @@ func ProjectSARIF(p verdict.PoE) (*SARIFLog, error) {
 		Message: SARIFMessage{
 			Text: msg,
 		},
-		Properties: &SARIFProperties{Tegron: props},
+		Properties: &SARIFProperties{Scanner: props},
 	}
 
 	log := &SARIFLog{

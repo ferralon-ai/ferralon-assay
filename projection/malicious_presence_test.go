@@ -60,7 +60,7 @@ func TestReportSARIF_MaliciousPresent_MapsToError(t *testing.T) {
 	if results[0].Level != "error" {
 		t.Fatalf("level = %q, want error", results[0].Level)
 	}
-	if v, _ := results[0].Properties.Tegron["verdict"].(string); v != string(report.VerdictMaliciousPresent) {
+	if v, _ := results[0].Properties.Scanner["verdict"].(string); v != string(report.VerdictMaliciousPresent) {
 		t.Errorf("verdict property = %q, want %q", v, report.VerdictMaliciousPresent)
 	}
 }

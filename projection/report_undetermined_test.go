@@ -119,7 +119,7 @@ func TestReportSARIF_UndeterminedIsReviewNeverAnAlert(t *testing.T) {
 			if !strings.Contains(res.Message.Text, "not a statement that the codebase is unaffected") {
 				t.Errorf("%s message omits the closing disclaimer, which is the load-bearing sentence: %q", id, res.Message.Text)
 			}
-			props := res.Properties.Tegron
+			props := res.Properties.Scanner
 			if props["verdict"] != "undetermined" {
 				t.Errorf("%s properties.verdict = %v, want undetermined", id, props["verdict"])
 			}

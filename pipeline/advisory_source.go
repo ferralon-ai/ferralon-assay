@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -236,7 +237,8 @@ type CorpusDescriber interface {
 // it carries. It is OPTIONAL and deliberately NOT part of the one-method AdvisorySource seam:
 // tableSource/chainSource do not implement it, and Lookup's fail-open contract is unaffected. An
 // entrypoint type-asserts to it (the same pattern as CorpusValidator/CorpusDescriber) to derive the
-// scan work set from the corpus itself — the tracker-#32 "manifest = work set" prerequisite (#301).
+// scan work set from the corpus itself: both corpus readers (artifactSource, bundleSource) implement
+// it, so the policy a corpus was built from defines what a scan evaluates.
 // KnownIDs returns the identifiers sorted ascending; an unusable corpus yields an empty slice, never
 // an error (enumeration is provenance/work-set metadata, never a Lookup path).
 type AdvisoryEnumerator interface {
@@ -494,7 +496,17 @@ func (s artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 		return AdvisoryFacts{}, false
 	}
 	entry, ok := findRecord(man.Records, vulnID)
-	if !ok || entry.Path == "" || entry.OutputDigest == "" || !safeRelPath(entry.Path) {
+	if !ok {
+		return AdvisoryFacts{}, false
+	}
+	return s.resolveEntry(entry, vulnID)
+}
+
+// resolveEntry reads, digest-verifies, decodes, and shape-validates the one document a manifest
+// entry pins. It is Lookup's per-document half, shared with lookupEach so the single-id and bulk
+// paths apply the identical checks.
+func (s artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string) (AdvisoryFacts, bool) {
+	if entry.Path == "" || entry.OutputDigest == "" || !safeRelPath(entry.Path) {
 		return AdvisoryFacts{}, false
 	}
 	data, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(entry.Path)))
@@ -511,6 +523,71 @@ func (s artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 		return AdvisoryFacts{}, false
 	}
 	return doc.toFacts(vulnID)
+}
+
+// KnownIDs returns the manifest's identifier set, sorted ascending (implements AdvisoryEnumerator).
+// An unusable manifest yields an empty slice, never an error — the same fail-open shape as Lookup.
+// The manifest's records are already producer-sorted, but the order is re-established here rather
+// than trusted, since the enumerator contract promises it.
+func (s artifactSource) KnownIDs() []string {
+	man, ok := s.loadManifest()
+	if !ok {
+		return nil
+	}
+	ids := make([]string, 0, len(man.Records))
+	for _, r := range man.Records {
+		ids = append(ids, r.Identifier)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// lookupEach resolves every id against ONE read of the manifest. Lookup re-reads and re-parses the
+// manifest per call, which is right for a handful of S1 reads and quadratic for a whole-corpus
+// work-set admission (the `full` policy manifest names ~110k records).
+func (s artifactSource) lookupEach(ids []string, fn func(id string, facts AdvisoryFacts, ok bool)) {
+	man, ok := s.loadManifest()
+	if !ok {
+		for _, id := range ids {
+			fn(id, AdvisoryFacts{}, false)
+		}
+		return
+	}
+	byID := make(map[string]advisoryManifestEntry, len(man.Records))
+	for _, r := range man.Records {
+		byID[r.Identifier] = r
+	}
+	for _, id := range ids {
+		entry, found := byID[id]
+		if !found {
+			fn(id, AdvisoryFacts{}, false)
+			continue
+		}
+		facts, ok := s.resolveEntry(entry, id)
+		fn(id, facts, ok)
+	}
+}
+
+// bulkLookup is implemented by a source whose per-id Lookup carries a fixed cost that a batch can
+// pay once. It is unexported: LookupEach is the only caller, and every other source is served by
+// plain Lookup.
+type bulkLookup interface {
+	lookupEach(ids []string, fn func(id string, facts AdvisoryFacts, ok bool))
+}
+
+// LookupEach resolves every id in ids through src and calls fn once per id, in order, with exactly
+// what src.Lookup(id) would return. It exists for work-set admission, which asks a corpus about
+// every id it carries: a source that can amortize its index load across the batch does so, and the
+// result is the same as calling Lookup in a loop.
+func LookupEach(src AdvisorySource, ids []string, fn func(id string, facts AdvisoryFacts, ok bool)) {
+	if b, ok := src.(bulkLookup); ok {
+		b.lookupEach(ids, fn)
+		return
+	}
+	for _, id := range ids {
+		facts, ok := src.Lookup(id)
+		fn(id, facts, ok)
+	}
 }
 
 // findRecord linear-scans the manifest's records for vulnID. The corpus is small (dozens to low

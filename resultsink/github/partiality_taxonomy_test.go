@@ -75,6 +75,32 @@ func TestBothSurfaces_InherentLimitsOnly_HeadlineCleanFooterPresent(t *testing.T
 	}
 }
 
+// A policy run whose only partiality is advisories naming no affected package keeps the
+// unqualified headline: the gap is in the corpus data, the count and detail stay in the footer.
+func TestBothSurfaces_PolicyNoCoordinatesOnly_HeadlineCleanDetailPresent(t *testing.T) {
+	const detail = "20 advisory id(s) in the selected policy name no affected package"
+	r := report.NewBuilder(report.Subject{Repo: "github.com/example/widget", ResolvedCommit: "abc123"}).
+		NotExploitable(report.Advisory{ID: "GO-2021-0113", Source: "osv"}, &report.Package{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.7"}, verdict.BasisSymbolAbsent, "no reachable path to the advisory symbol").
+		AddPartiality(report.PartialityNote{Reason: "policy_advisory_no_coordinates", Ecosystem: "Go", Detail: detail}).
+		WithProvenance(report.Provenance{CommitSHA: "abc123", AnalyzerVersion: "v0.2.0", Timestamp: time.Unix(0, 0).UTC()}).
+		Build()
+	for name, s := range bothSurfaces(t, r) {
+		if !strings.Contains(s, goCleanHeadline) {
+			t.Errorf("%s: a run whose only partiality is policy no-coordinates must keep the unqualified headline\n---\n%s", name, s)
+		}
+		for _, unwanted := range []string{"Partial coverage", wantHeadlineTail, disclosureHeading} {
+			if strings.Contains(s, unwanted) {
+				t.Errorf("%s: no-coordinates must not fire the loud qualifier, found %q\n---\n%s", name, unwanted, s)
+			}
+		}
+		for _, want := range []string{limitsFooterLabel, detail} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s: footer missing %q — quiet is not suppression\n---\n%s", name, want, s)
+			}
+		}
+	}
+}
+
 // AC — the loud arm is untouched. A missing analyzer, a failed tool and an
 // unreadable manifest still qualify the headline exactly as task 02 made them.
 // "reachability_undetermined" (B-1) belongs in this list, not the inherent-limit

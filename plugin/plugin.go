@@ -95,6 +95,12 @@ const (
 	PartialReasonNoIngress       = "no_known_ingress"   // reachable sink, no entry point found
 	PartialReasonNoManifest      = "no_manifest"        // no lockfile/manifest to read installed versions from
 
+	// PartialReasonPolicyAdvisoryNoCoordinates: advisories in the selected corpus policy name no
+	// affected package, so there is nothing to match against the repository's dependencies. The
+	// gap is in the corpus data, the same on every scan of that policy, so it is an inherent limit
+	// (report.ClassifyPartialityReason); its count and ids are still disclosed in the Report.
+	PartialReasonPolicyAdvisoryNoCoordinates = "policy_advisory_no_coordinates"
+
 	// PartialReasonReachabilityUndetermined is declared when a reachability pass could
 	// not reach a determination — the advisory applies to this module and the analysis
 	// neither found a path to the vulnerable code nor established that none exists.

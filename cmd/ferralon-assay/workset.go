@@ -21,41 +21,50 @@ import (
 // --- The work set -------------------------------------------------------------------------
 //
 // THE WORK SET IS THE SET OF ADVISORY IDS A SCAN PASS EVALUATES. It is a different thing from the
-// advisory FACT source, and conflating the two is the mistake this file exists to correct.
+// advisory FACT source: a fact source answers "what do you know about this id" (AdvisorySource.Lookup),
+// a work set decides which ids get asked about at all.
 //
-// Historically the scan path's work set was a compiled-in, language-scoped slice of 16 ids
-// (advisoryCorpus in acquire.go). That set is the same for every repository on earth: pointing
-// -advisory-corpus at a 72-record corpus does NOT cause 72 advisories to be evaluated, because a
-// corpus is a fact LOOKUP (AdvisorySource.Lookup(id)), not a work LIST. Nothing walked it.
+// A scan pass's work set is always the compiled-in, language-scoped FLOOR (advisoryCorpus in
+// acquire.go) plus, optionally, additions chosen against the repository's REAL dependencies. There
+// are two ways to choose the additions, and which one runs is decided by whether the run DECLARES
+// an advisory policy (-advisory-corpus-policy):
 //
-// The widening here is the mechanism cve-watch has always used, brought to the scan path: ask
-// OSV.dev which advisories affect the repository's REAL dependencies, and evaluate those.
+//   - POLICY (a policy is declared and the corpus reader can enumerate its ids). The corpus was
+//     selected by that policy, and the policy is the statement of what to scan. Every id it carries whose
+//     affected package matches a dependency this repository declares is admitted; nothing else is
+//     asked, and OSV.dev is never queried. Matching is by package identity, on the same keys
+//     codebase_inventory resolves a dependency version by (pipeline.AffectedPackageKeys); whether
+//     the resolved version falls in the affected range is decided per advisory by the
+//     disqualification stage, exactly as for every other id in the set.
 //
-//	OSV supplies the QUESTIONS.  The advisory source supplies the ANSWERS.
+//   - OSV (no policy declared, and the OSV widening explicitly switched on). A corpus configured
+//     without a declared policy is a fact source only and does not change the work set. OSV.dev is asked
+//     which advisories affect the repository's dependencies, and the answer is intersected with the
+//     ids the fact source can resolve. OSV supplies the QUESTIONS; the advisory source supplies the
+//     ANSWERS.
 //
-// Three properties are load-bearing, in descending order of how badly their loss would hurt:
+// Three properties are load-bearing in both modes, in descending order of how badly their loss would
+// hurt:
 //
 //  1. THE COMPILED-IN SET IS A FLOOR, NEVER A CEILING. The widened work set is a UNION with it, so
-//     no id that was evaluated before can stop being evaluated — whatever OSV says, whatever the
-//     network does. Java/JS/Python carry first-party TEGRON-* fixtures OSV has never heard of;
-//     replace-by instead of union-with would silently delete them.
+//     no id in the floor can stop being evaluated — whatever the policy carries, whatever OSV says,
+//     whatever the network does. Java/JS/Python carry first-party TEGRON-* fixtures no public feed
+//     has heard of; replace-by instead of union-with would silently delete them.
 //
-//  2. A WORK SET THAT COULD NOT BE DETERMINED IS ANALYSIS THAT DID NOT HAPPEN. When OSV is
-//     unreachable the pass still runs the floor, but it emits a PartialityNote saying the widening
-//     did not happen. A narrower-than-intended scan must never render as a clean one. This is the
-//     same doctrine as the corpus require-gate in run.go, applied at the other end of the pipe.
+//  2. A WORK SET THAT COULD NOT BE DETERMINED IS ANALYSIS THAT DID NOT HAPPEN. When the repository's
+//     dependencies cannot be read, OSV is unreachable, or a declared policy's corpus cannot enumerate, the
+//     pass still runs, but it emits a PartialityNote saying the work set is narrower than the
+//     configuration asked for. A narrower-than-intended scan must never render as a clean one. This
+//     is the same doctrine as the corpus require-gate in run.go, applied at the other end of the pipe.
 //
-//  3. ONLY IDS WE HAVE FACTS FOR ARE ADMITTED. OSV answers a package query with every advisory it
-//     has ever recorded against that package — 68 for the Go 1.21 standard library alone. An id
-//     with no facts in the advisory source resolves nothing and analyzes nothing; admitting it
-//     would spend a full S1–S6 pass (a whole call graph, per advisory) to produce an empty finding.
-//     So the OSV answer is intersected with what the source can actually resolve, and the ids that
-//     fall out are DISCLOSED as a PartialityNote rather than dropped silently — OSV said they apply
-//     to this repository and we could not assess them, which is exactly a limit on coverage.
+//  3. AN ID THE PASS CANNOT ASSESS IS DISCLOSED, NEVER DROPPED. An id with no facts resolves nothing
+//     and analyzes nothing, so admitting it would spend a full S1–S6 pass (a whole call graph, per
+//     advisory) to produce an empty finding. It is left out of the set and named in a PartialityNote
+//     instead: an OSV-reported id the fact source cannot resolve, a policy id whose record fails to
+//     resolve, and a policy id that names no affected package to match against.
 //
-// The intersection is also what makes coverage grow the RIGHT way: it is bounded by the fact
-// source, so publishing more advisory facts (a richer corpus) widens the scan, while an OSV outage
-// or a noisy OSV answer cannot.
+// Admission is cheap by construction: one fact lookup per candidate id, never a pipeline stage. A
+// `full` policy carries ~110k ids and a scan evaluates only the handful this repository depends on.
 
 // Partiality reason codes this file declares. The PartialityNote.Reason vocabulary is explicitly
 // OPEN (see report.PartialityNote), so these extend it without touching the report schema.
@@ -69,6 +78,20 @@ const (
 	// reasonAdvisoryFactsUnavailable: OSV reported advisories affecting this repository that the
 	// advisory source has no facts for. They were NOT evaluated.
 	reasonAdvisoryFactsUnavailable = "advisory_facts_unavailable"
+	// reasonWorkSetPolicyNotEnumerable: a policy is declared, but the corpus reader cannot list the
+	// ids it carries, so the policy could not define the work set. The pass
+	// fell back to the floor (widened by OSV only if that was switched on) and used the corpus for
+	// facts alone.
+	reasonWorkSetPolicyNotEnumerable = "work_set_policy_not_enumerable"
+	// reasonPolicyAdvisoryNoCoordinates: advisories in the selected policy name no affected package,
+	// so there is nothing to match against this repository's dependencies. They were NOT evaluated.
+	// A limit of the corpus data, so the report classes it inherent: disclosed in full, never
+	// qualifying the headline.
+	reasonPolicyAdvisoryNoCoordinates = plugin.PartialReasonPolicyAdvisoryNoCoordinates
+	// reasonPolicyAdvisoryUnresolvable: advisories in the selected policy whose corpus record could
+	// not be resolved to facts (digest mismatch, malformed or unrecognized record). They were NOT
+	// evaluated.
+	reasonPolicyAdvisoryUnresolvable = "policy_advisory_unresolvable"
 )
 
 // workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
@@ -77,6 +100,11 @@ const (
 // report.WorkSetOSVQuery is reserved for a pass driven by OSV ALONE, which this is deliberately not
 // (see property 1 above).
 const workSetSourceBuiltinUnionOSV = "builtin_language_set_union_osv_query"
+
+// workSetSourceBuiltinUnionPolicy names a work set that is the compiled-in language floor UNIONED
+// with the ids of the configured advisory policy whose affected package matches one of the
+// repository's own dependencies.
+const workSetSourceBuiltinUnionPolicy = "builtin_language_set_union_policy"
 
 // workSet is the resolved set of advisory ids one scan pass will evaluate, together with the
 // disclosure of how it was chosen and what it could not cover.
@@ -99,8 +127,158 @@ type workSet struct {
 	// and from there to every sink — by the Detail slot of the reasonAdvisoryFactsUnavailable entry
 	// in partiality.
 	unresolved []string
+	// noCoordinates is every policy id that names no affected package, sorted. Not evaluated;
+	// disclosed through the reasonPolicyAdvisoryNoCoordinates note and describe().
+	noCoordinates []string
+	// policyUnresolvable is every policy id whose corpus record did not resolve to facts, sorted.
+	// Not evaluated; disclosed through the reasonPolicyAdvisoryUnresolvable note and describe().
+	policyUnresolvable []string
 	// ecosystem is the dependency ecosystem the widening queried, for the CLI summary line.
 	ecosystem string
+}
+
+// selectWorkSet resolves the work set for a scan-path run from what the run configured.
+//
+// corpus is the configured advisory corpus's own reader (nil when none is configured) — NOT the
+// chain the pass resolves facts through, which puts the built-in table behind the corpus and does
+// not enumerate. facts is that chain, which the OSV mode admits against. policy is the declared
+// advisory policy id, "" when none: only a declared policy lets the corpus define the work set, so a
+// corpus configured without one leaves the work set exactly as it is with no corpus. osvEnabled is
+// whether the OSV widening was switched on; it is consulted only when the policy does not define
+// the work set.
+//
+// Like resolveWorkSet it never fails: every degraded path returns a work set carrying a note.
+func selectWorkSet(ctx context.Context, acq *acquired, corpus, facts pipeline.AdvisorySource, policy string, osvEnabled bool, osv trigger.OSVClient) workSet {
+	declared := policy != "" && corpus != nil
+	if declared {
+		if en, ok := corpus.(pipeline.AdvisoryEnumerator); ok {
+			return resolvePolicyWorkSet(ctx, acq, corpus, en)
+		}
+	}
+	ws := floorWorkSet(acq.advisories)
+	if osvEnabled {
+		ws = resolveWorkSet(ctx, acq, osv, facts)
+	}
+	if declared {
+		ws.partiality = append(ws.partiality, report.PartialityNote{
+			Reason:    reasonWorkSetPolicyNotEnumerable,
+			Ecosystem: ecosystemForLanguage(acq.language),
+		})
+	}
+	return ws
+}
+
+// resolvePolicyWorkSet widens the compiled-in floor with every id the declared policy carries
+// whose affected package this repository depends on. It makes no network call.
+//
+// corpus resolves each candidate's facts; en lists the candidates. They are the same reader.
+func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.AdvisorySource, en pipeline.AdvisoryEnumerator) workSet {
+	ws := floorWorkSet(acq.advisories)
+	ws.ecosystem = ecosystemForLanguage(acq.language)
+
+	pkgs, notes := dependencyInventory(ctx, acq)
+	ws.partiality = append(ws.partiality, notes...)
+	if len(pkgs) == 0 {
+		return ws
+	}
+
+	admitted, noCoords, unresolvable := admitByInventory(en.KnownIDs(), acq.advisories, corpus, ws.ecosystem, pkgs)
+	ws.noCoordinates, ws.policyUnresolvable = noCoords, unresolvable
+	if len(noCoords) > 0 {
+		ws.partiality = append(ws.partiality, report.PartialityNote{
+			Reason:    reasonPolicyAdvisoryNoCoordinates,
+			Ecosystem: ws.ecosystem,
+			Detail:    noCoordinatesDetail(noCoords),
+		})
+	}
+	if len(unresolvable) > 0 {
+		ws.partiality = append(ws.partiality, report.PartialityNote{
+			Reason:    reasonPolicyAdvisoryUnresolvable,
+			Ecosystem: ws.ecosystem,
+			Detail:    policyUnresolvableDetail(unresolvable),
+		})
+	}
+
+	ws.source = workSetSourceBuiltinUnionPolicy
+	if len(admitted) > 0 {
+		ws.advisories = append(append([]assessment.VulnRef{}, acq.advisories...), admitted...)
+		ws.widened = len(admitted)
+	}
+	return ws
+}
+
+// admitByInventory returns the policy ids whose affected package is one of the repository's
+// dependencies (sorted, floor-deduplicated), plus the ids that could not be judged either way: those
+// naming no affected package, and those whose record did not resolve. Both are sorted.
+//
+// A package matches when its name is a dependency name in pkgs and its ecosystem is the
+// repository's, or is unknown (no parseable PURL) — the same fail-open direction the intake
+// ecosystem guard takes. A package in another ecosystem, or one the repository does not declare, is
+// a real answer ("does not apply here") and is neither admitted nor disclosed.
+func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pipeline.AdvisorySource, ecosystem string, pkgs []report.Package) (additions []assessment.VulnRef, noCoordinates, unresolvable []string) {
+	inFloor := make(map[string]struct{}, len(floor))
+	for _, a := range floor {
+		inFloor[a.ID] = struct{}{}
+	}
+	deps := make(map[string]struct{}, len(pkgs))
+	for _, p := range pkgs {
+		deps[p.Name] = struct{}{}
+	}
+	purlType := purlTypeForEcosystem(ecosystem)
+
+	// A floor id is evaluated whatever the policy says about it, so it is neither looked up nor
+	// disclosed here.
+	candidates := make([]string, 0, len(policyIDs))
+	for _, id := range policyIDs {
+		if _, dup := inFloor[id]; !dup {
+			candidates = append(candidates, id)
+		}
+	}
+
+	pipeline.LookupEach(corpus, candidates, func(id string, facts pipeline.AdvisoryFacts, ok bool) {
+		if !ok {
+			unresolvable = append(unresolvable, id)
+			return
+		}
+		keys := pipeline.AffectedPackageKeys(facts)
+		if len(keys) == 0 {
+			noCoordinates = append(noCoordinates, id)
+			return
+		}
+		for _, k := range keys {
+			if k.Ecosystem != "" && k.Ecosystem != purlType {
+				continue
+			}
+			if _, hit := deps[k.Name]; hit {
+				additions = append(additions, assessment.VulnRef{ID: id, Source: "osv"})
+				return
+			}
+		}
+	})
+
+	sort.Slice(additions, func(i, j int) bool { return additions[i].ID < additions[j].ID })
+	sort.Strings(noCoordinates)
+	sort.Strings(unresolvable)
+	return additions, noCoordinates, unresolvable
+}
+
+// purlTypeForEcosystem maps an OSV ecosystem name (the inventory's vocabulary) onto the PURL type an
+// advisory's packages carry (pipeline.PackageKey's vocabulary).
+func purlTypeForEcosystem(ecosystem string) string {
+	switch ecosystem {
+	case ecosystemGo:
+		return "golang"
+	case ecosystemMaven:
+		return "maven"
+	case ecosystemNPM:
+		return "npm"
+	case ecosystemPyPI:
+		return "pypi"
+	case ecosystemNuGet:
+		return "nuget"
+	default:
+		return ""
+	}
 }
 
 // floorWorkSet returns the compiled-in language-scoped work set with no widening attempted. It is
@@ -467,10 +645,17 @@ func (w workSet) describe() string {
 // be true at once: describeSet says how wide the pass was, this says what the pass was told about
 // and skipped anyway. Folding it into the switch would let one suppress the other.
 func (w workSet) describeUnassessed() string {
-	if len(w.unresolved) == 0 {
-		return ""
+	var out string
+	if len(w.unresolved) > 0 {
+		out += "\n  " + unresolvedDetail(w.unresolved)
 	}
-	return "\n  " + unresolvedDetail(w.unresolved)
+	if len(w.noCoordinates) > 0 {
+		out += "\n  " + noCoordinatesDetail(w.noCoordinates)
+	}
+	if len(w.policyUnresolvable) > 0 {
+		out += "\n  " + policyUnresolvableDetail(w.policyUnresolvable)
+	}
+	return out
 }
 
 func (w workSet) describeSet() string {
@@ -479,8 +664,15 @@ func (w workSet) describeSet() string {
 		return fmt.Sprintf("%d advisories (built-in language set only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetNoInventory), hasNote(w.partiality, plugin.PartialReasonNoManifest):
 		return fmt.Sprintf("%d advisories (built-in language set only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
+	case hasNote(w.partiality, reasonWorkSetPolicyNotEnumerable):
+		return fmt.Sprintf("%d advisories (the advisory corpus cannot list its advisories, so the declared policy did NOT define the work set; this scan is narrower than configured)", len(w.advisories))
 	case w.source == report.WorkSetBuiltinLanguageSet:
 		return fmt.Sprintf("%d advisories (built-in language set)", len(w.advisories))
+	case w.source == workSetSourceBuiltinUnionPolicy && w.widened == 0:
+		return fmt.Sprintf("%d advisories (built-in language set; the advisory policy matched nothing further in this repository's %s dependencies)", len(w.advisories), w.ecosystem)
+	case w.source == workSetSourceBuiltinUnionPolicy:
+		return fmt.Sprintf("%d advisories (%d built-in + %d from the advisory policy matched against %s dependencies)",
+			len(w.advisories), len(w.advisories)-w.widened, w.widened, w.ecosystem)
 	case w.widened == 0:
 		return fmt.Sprintf("%d advisories (built-in language set; OSV reported nothing further we hold facts for)", len(w.advisories))
 	default:
@@ -501,17 +693,34 @@ const unresolvedDetailCap = 12
 // "102 not assessed" knows to ask for the rest even when the note names only twelve of them. It
 // returns "" for an empty input so a caller can assign it unconditionally.
 func unresolvedDetail(unresolved []string) string {
-	if len(unresolved) == 0 {
+	return boundedIDDetail("advisory id(s) reported against this repository's dependencies had no facts available and were NOT assessed", unresolved)
+}
+
+// noCoordinatesDetail renders the disclosure for policy ids that name no affected package: the exact
+// count, plus as many identities as unresolvedDetailCap allows.
+func noCoordinatesDetail(ids []string) string {
+	return boundedIDDetail("advisory id(s) in the selected policy name no affected package, so they could not be matched against this repository's dependencies and were NOT assessed", ids)
+}
+
+// policyUnresolvableDetail renders the disclosure for policy ids whose corpus record did not resolve
+// to facts.
+func policyUnresolvableDetail(ids []string) string {
+	return boundedIDDetail("advisory id(s) in the selected policy have a corpus record that failed validation, so they were NOT assessed", ids)
+}
+
+// boundedIDDetail renders "<count> <what>: <ids>[, and N more]", naming at most unresolvedDetailCap
+// ids. The count is never elided. It returns "" for an empty input.
+func boundedIDDetail(what string, ids []string) string {
+	if len(ids) == 0 {
 		return ""
 	}
-	shown := unresolved
+	shown := ids
 	suffix := ""
 	if len(shown) > unresolvedDetailCap {
 		shown = shown[:unresolvedDetailCap]
-		suffix = fmt.Sprintf(", and %d more", len(unresolved)-unresolvedDetailCap)
+		suffix = fmt.Sprintf(", and %d more", len(ids)-unresolvedDetailCap)
 	}
-	return fmt.Sprintf("%d advisory id(s) reported against this repository's dependencies had no facts available and were NOT assessed: %s%s",
-		len(unresolved), strings.Join(shown, ", "), suffix)
+	return fmt.Sprintf("%d %s: %s%s", len(ids), what, strings.Join(shown, ", "), suffix)
 }
 
 // hasNote reports whether the given partiality reason was declared.

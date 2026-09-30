@@ -64,9 +64,12 @@
 # Setting either DECLARES the run requires a corpus, and that declaration is computed from these
 # inputs alone rather than from whether the fetch step succeeded — so a broken fetch fails the run
 # instead of silently degrading to built-in intel. Both inputs require a scanner release carrying
-# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below.
+# the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus
+# supplies advisory FACTS; it does not change which advisories the scan evaluates.
 #
-# With `advisory-corpus-policy` also set, the repo fetch downloads that policy's prebuilt bundle
+# With `advisory-corpus-policy` also set, the policy defines the scan's work set: the built-in floor
+# plus every advisory in the policy whose affected package is one of the repository's own
+# dependencies. The repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
 # verifies it before the scan: the bundle's sha256 against the release's bundles.json, and its
 # member set against the policy manifest read from the git commit the release tag points at.
@@ -235,7 +238,8 @@ inputs:
       Path to an ALREADY-checked-out advisory corpus (a directory holding manifest.json plus the
       digest-pinned per-advisory JSON records it indexes), forwarded to the scanner as
       -advisory-corpus. Use this when the workflow materializes the corpus itself; it takes
-      precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. Empty
+      precedence over advisory-corpus-repo, whose fetch step is then skipped entirely. The corpus
+      supplies advisory facts; it does not change which advisories the scan evaluates. Empty
       (default) = no corpus, and the scan resolves advisory facts from the built-in table.
     required: false
     default: ""
@@ -268,8 +272,11 @@ inputs:
     default: main
   advisory-corpus-policy:
     description: >-
-      Policy of advisory-corpus-repo to scan against (e.g. published-7d, full), in place of the
-      whole corpus. When the corpus release named by advisory-corpus-ref publishes a bundle for the
+      Policy of advisory-corpus-repo that defines what the scan evaluates (e.g. published-7d,
+      full), in place of the whole corpus. Every advisory in the policy whose affected package is
+      one of this repository's own dependencies joins the scan's work set, alongside the scanner's
+      built-in floor; an advisory that names no affected package cannot be matched; it is disclosed
+      as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
       policy, the run downloads that one file instead of git-fetching the record tree, and verifies
       it first (sha256 against the release's bundles.json; members against the policy manifest at
       the release's git tag). A bundle that fails any check FAILS the run. A policy the release
@@ -626,6 +633,12 @@ runs:
         # string. '0' is exactly equivalent to leaving it unset, which keeps the built-in-intel path
         # — a supported, unchanged configuration — working for every consumer who sets no corpus.
         ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
+        # THE POLICY DECLARATION. Declaring the policy is what makes the scanner build its work set
+        # from the corpus; without it the corpus is a fact source only. It is set only for the
+        # repo-fetch route, because advisory-corpus-policy is ignored when advisory-corpus is set.
+        # Passed as an env var rather than a flag on purpose: a scanner release that predates it
+        # ignores an unknown env var, whereas an unknown flag fails the run.
+        ASSAY_ADVISORY_CORPUS_POLICY: ${{ (inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '') && inputs.advisory-corpus-policy || '' }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
         # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
         # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two

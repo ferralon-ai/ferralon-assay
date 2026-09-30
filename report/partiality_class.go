@@ -35,8 +35,10 @@ const (
 
 // ClassifyPartialityReason sorts a canonical reason code into its arm.
 //
-// Only codes that name a limit of the METHOD are inherent — a limit that would be
-// declared just as truthfully on a codebase where nothing at all went wrong.
+// Only codes that name a limit of the METHOD or of the corpus data it reads are
+// inherent — a limit that would be declared just as truthfully on a codebase where
+// nothing at all went wrong. A policy advisory that names no affected package is the
+// data case: the record cannot be matched to any dependency on any scan of that policy.
 // Everything else is did-not-run, including every code this build does not know:
 // see EffectiveClass for why the unknown case leans that way.
 //
@@ -48,7 +50,7 @@ const (
 // tells a reader something specific about THIS codebase's coverage.
 func ClassifyPartialityReason(reason string) PartialityClass {
 	switch reason {
-	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch:
+	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch, plugin.PartialReasonPolicyAdvisoryNoCoordinates:
 		return PartialityInherentLimit
 	default:
 		return PartialityDidNotRun

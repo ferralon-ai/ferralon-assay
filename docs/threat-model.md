@@ -26,7 +26,8 @@ downloads the release's `bundles.json` and `<policy>.jsonl.gz` as **`github.com`
 about your code.
 
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
-on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default); that query sends package
+on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default) and no advisory policy is
+declared — a declared policy chooses the work set itself; that query sends package
 coordinates — ecosystem, name, version — and nothing else. Enabling subject-toolchain reachability
 (`ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY`, also off by default) additionally downloads a Go toolchain
 from the module proxy.

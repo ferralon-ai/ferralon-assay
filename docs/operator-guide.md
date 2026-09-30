@@ -142,7 +142,9 @@ Writing through the Refs API needs `contents: write`.
 
 ### `baseline`
 
-A full scan of every advisory in the work set. With a store selected, the result is persisted so later
+A full scan of every advisory in the work set: the built-in floor, plus — when an advisory policy is
+declared (`advisory-corpus-policy`) — every advisory in that policy whose affected package is one of
+the repository's own dependencies. With a store selected, the result is persisted so later
 runs can read it. With **no** store selected, `baseline` uses a throwaway store in a temporary
 directory: the scan runs and the output directory is written, but nothing persists. That is the
 zero-config path the README Quickstart uses.

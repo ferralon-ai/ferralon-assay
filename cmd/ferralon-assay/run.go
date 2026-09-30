@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,9 @@ const (
 	envAdvisoryCorpusRequired        = brand.EnvPrefix + "_ADVISORY_CORPUS_REQUIRED"
 	nucleonEnvAdvisoryCorpusRequired = "NUCLEON_ADVISORY_CORPUS_REQUIRED"
 	legacyEnvAdvisoryCorpusRequired  = "TEGRON_ADVISORY_CORPUS_REQUIRED"
+	// envAdvisoryCorpusPolicy declares the advisory policy the corpus was selected by — see
+	// advisoryCorpusPolicy. Declaring one is what makes the corpus define the work set.
+	envAdvisoryCorpusPolicy = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
@@ -280,6 +284,7 @@ type runFlags struct {
 	commit           *string
 	plugin           *string
 	advisoryCorpus   *string
+	corpusPolicy     *string
 	requireCorpus    *bool
 	houseCanaries    *bool
 	osvWorkSet       *bool
@@ -288,6 +293,8 @@ type runFlags struct {
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
 	resolvedSource   pipeline.AdvisorySource // the chain the pass resolves facts through
+	corpusReader     pipeline.AdvisorySource // the configured corpus's own reader; nil when none
+	resolvedPolicy   string                  // the declared advisory policy id; "" when none
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
@@ -326,7 +333,10 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		revision:       fs.String("revision", "", "revision recorded on the Report (e.g. a PR head branch)"),
 		commit:         fs.String("commit", "", "resolved commit SHA recorded on the Report"),
 		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (tegron-plugin-<lang>; default: PATH lookup)"),
-		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz); overrides "+envAdvisoryCorpusDir),
+		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). Without -advisory-corpus-policy it supplies facts only and does not change what is scanned; overrides "+envAdvisoryCorpusDir),
+		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
+		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.
+		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is the built-in floor plus every advisory in the corpus whose affected package is one of the repository's dependencies, and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
 		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),
@@ -338,7 +348,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// osvWorkSet widens the scan's work set with the advisories OSV.dev reports against the
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
-		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
+		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
 	}
 }
@@ -381,9 +391,11 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 }
 
 // scanWorkSet resolves the work set for a SCAN-path run (baseline / pr-inherit): the compiled-in
-// language floor, OPTIONALLY widened with the advisories OSV.dev reports against the repository's
-// real dependencies. The widening is off unless it is explicitly switched on (osvWorkSetDefault),
-// so by default this resolves to the floor and makes no network call.
+// language floor, widened with the ids of the declared advisory policy that match the repository's
+// own dependencies when a policy is declared, or otherwise OPTIONALLY with the advisories OSV.dev
+// reports against those dependencies (selectWorkSet). The OSV widening is off unless it is
+// explicitly switched on (osvWorkSetDefault) and never runs when the policy defines the work set, so
+// by default this makes no network call.
 //
 // cve-watch deliberately does NOT call this. That mode already drives its analysis from an OSV query
 // (against the stored SBOM, diffed against a cursor) and its behaviour is unchanged here.
@@ -409,10 +421,7 @@ func (f *runFlags) scanWorkSet(ctx context.Context, acq *acquired) (workSet, err
 	if err != nil {
 		return workSet{}, err
 	}
-	ws := floorWorkSet(acq.advisories)
-	if enabled {
-		ws = resolveWorkSet(ctx, acq, &trigger.HTTPOSVClient{}, f.resolvedSource)
-	}
+	ws := selectWorkSet(ctx, acq, f.corpusReader, f.resolvedSource, f.resolvedPolicy, enabled, &trigger.HTTPOSVClient{})
 	if len(ws.advisories) == 0 {
 		return workSet{}, errEmptyWorkSet(acq.language)
 	}
@@ -457,8 +466,14 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	// The built-in table is the source until a corpus resolves in front of it. Recorded so the
 	// work-set widener can ask the REAL fact source what it can answer for.
 	f.resolvedSource = pipeline.NewTableSource()
+	f.corpusReader = nil
+	f.resolvedPolicy = ""
 
 	required, err := f.advisoryCorpusRequired()
+	if err != nil {
+		return nil, err
+	}
+	policy, err := f.advisoryCorpusPolicy()
 	if err != nil {
 		return nil, err
 	}
@@ -466,6 +481,10 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	dir := *f.advisoryCorpus
 	if dir == "" {
 		dir = brand.EnvOrLegacy(envAdvisoryCorpusDir, nucleonEnvAdvisoryCorpusDir, legacyEnvAdvisoryCorpusDir)
+	}
+	if dir == "" && policy != "" {
+		return nil, fmt.Errorf("advisory corpus policy %q is declared (-advisory-corpus-policy / %s) but no corpus path resolved: a policy names the advisories of a corpus, so it needs -advisory-corpus or %s",
+			policy, envAdvisoryCorpusPolicy, envAdvisoryCorpusDir)
 	}
 	if dir == "" {
 		if required {
@@ -496,6 +515,8 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 
 	chain := pipeline.NewChainSource(src, pipeline.NewTableSource())
 	f.resolvedSource = chain
+	f.corpusReader = src
+	f.resolvedPolicy = policy
 	return pipeline.WithAdvisorySource(chain), nil
 }
 
@@ -525,6 +546,34 @@ func corpusSourceFor(path string) pipeline.AdvisorySource {
 	default:
 		return pipeline.NewArtifactSource(path)
 	}
+}
+
+// corpusPolicyPattern is the shape of an advisory policy id — the same check action.yml and
+// scripts/fetch-corpus-bundle.sh apply to the advisory-corpus-policy input.
+var corpusPolicyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// advisoryCorpusPolicy returns the advisory policy this run declares its corpus was selected by, or
+// "" when none is declared. The -advisory-corpus-policy flag wins; absent it, envAdvisoryCorpusPolicy
+// is consulted.
+//
+// The declaration is what makes the corpus define the work set. A corpus with no declared policy —
+// a whole-corpus fetch, or a bundle handed over with no policy named — stays a fact source only, so
+// a run's work set never changes because of what shape of corpus happened to be on disk.
+//
+// A malformed id is an ERROR, never ignored: silently dropping it would quietly turn a policy run
+// back into a fact-scope run.
+func (f *runFlags) advisoryCorpusPolicy() (string, error) {
+	policy := *f.corpusPolicy
+	if policy == "" {
+		policy = os.Getenv(envAdvisoryCorpusPolicy)
+	}
+	if policy == "" {
+		return "", nil
+	}
+	if !corpusPolicyPattern.MatchString(policy) {
+		return "", fmt.Errorf("advisory corpus policy %q is not a policy id (lowercase letters, digits, '-')", policy)
+	}
+	return policy, nil
 }
 
 // advisoryCorpusRequired reports whether this run declares that it EXPECTS an advisory corpus.
@@ -560,8 +609,9 @@ func (f *runFlags) advisoryCorpusRequired() (bool, error) {
 
 // intelProvenance renders what this run resolved into the Report's disclosure block: which set of
 // advisory ids the pass evaluated and how that set was chosen (ws), and which fact sources it
-// resolved them through (f). The two are deliberately separate — a corpus is a fact lookup, not a
-// work list, and conflating them is what let "72 records" read as "72 advisories evaluated".
+// resolved them through (f). The two are deliberately separate — even when a declared policy makes
+// the corpus choose the work set, the set is the corpus advisories that match the repository, not
+// the corpus, and conflating them is what let "72 records" read as "72 advisories evaluated".
 func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 	p := report.IntelProvenance{
 		WorkSetSource: ws.source,
@@ -572,6 +622,7 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		p.CorpusDigest = f.resolvedCorpus.Digest
 		p.CorpusRecords = f.resolvedCorpus.Records
 	}
+	p.CorpusPolicy = f.resolvedPolicy
 	return p
 }
 

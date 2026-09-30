@@ -1507,6 +1507,55 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 	}
 	return "", nil, nil
 }
+
+// PackageKey is one dependency identity an advisory's facts name: the key codebase_inventory
+// resolves a version by. Ecosystem is the PURL type ("golang", "maven", "npm", "pypi", "nuget"), or
+// "" when the package carries no parseable PURL.
+type PackageKey struct {
+	Ecosystem string
+	Name      string
+}
+
+// AffectedPackageKeys returns every dependency identity the advisory could apply to a codebase
+// through, deduplicated, in declaration order: each affected_packages[] element, then the scalar
+// primary. The name is exactly what resolveDependencyVersion looks the package up by — the Go module
+// path (go.mod require), "stdlib" for a go-toolchain package (the subject's toolchain), else the
+// ecosystem coordinate (the plugin's dependency coordinate). A package with none of the three names
+// no dependency, and an advisory that yields no keys at all carries no coordinates to match.
+//
+// It decides applicability by IDENTITY only. The version axis is evaluated per advisory by the
+// disqualification stage once the advisory is in the work set.
+func AffectedPackageKeys(f AdvisoryFacts) []PackageKey {
+	var keys []PackageKey
+	seen := make(map[PackageKey]struct{})
+	add := func(module, coordinate, purl, scheme string) {
+		if scheme == "" {
+			scheme = schemeFromPURL(purl)
+		}
+		var k PackageKey
+		switch {
+		case scheme == "go-toolchain" || isGoStdlibPURL(purl):
+			k = PackageKey{Ecosystem: "golang", Name: goStdlibPURLName}
+		case module != "":
+			k = PackageKey{Ecosystem: "golang", Name: module}
+		case coordinate != "":
+			k = PackageKey{Ecosystem: purlEcosystem(purl), Name: coordinate}
+		default:
+			return
+		}
+		if _, dup := seen[k]; dup {
+			return
+		}
+		seen[k] = struct{}{}
+		keys = append(keys, k)
+	}
+	for _, p := range f.AffectedPackages {
+		add(p.Module, p.Coordinate, p.PURL, p.VersionScheme)
+	}
+	add(f.Module, f.Coordinate, f.PURL, f.VersionScheme)
+	return keys
+}
+
 func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
 	buildDir, language := "", ""
 	var plan checkout.WorkspacePlan

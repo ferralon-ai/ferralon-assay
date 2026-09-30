@@ -571,10 +571,15 @@ type IntelProvenance struct {
 	// to an intel change rather than a code change. Empty when no corpus was used.
 	CorpusDigest string `json:"corpus_digest,omitempty"`
 	// CorpusRecords is how many records that corpus accounted for. Empty when no corpus
-	// was used. It is deliberately NOT the number of ids evaluated: a corpus is a fact
-	// lookup, not a work list, and conflating the two is what made "72 records" read as
-	// "72 CVEs evaluated".
+	// was used. It is deliberately NOT the number of ids evaluated: without a declared
+	// policy a corpus is a fact lookup, and with one the work set holds only the corpus
+	// advisories that match the repository's dependencies — reading "72 records" as "72
+	// CVEs evaluated" overstates the scan either way.
 	CorpusRecords int `json:"corpus_records,omitempty"`
+	// CorpusPolicy is the advisory policy the run declared its corpus was selected by (e.g.
+	// "published-7d"). Empty when no policy was declared. WorkSetSource says whether the
+	// policy actually defined the work set.
+	CorpusPolicy string `json:"corpus_policy,omitempty"`
 }
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.

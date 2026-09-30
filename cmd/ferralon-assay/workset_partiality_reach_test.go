@@ -7,10 +7,11 @@
 //
 // What it pins:
 //
-//   - Every reason code this command mints classifies into the LOUD arm. The taxonomy defaults that
-//     way for unknown codes, so this is a regression test against someone later declaring one of
-//     them inherent — which would file a work set the pass never covered under "this is how static
-//     analysis works" and render it as a clean scan.
+//   - Every reason code this command mints classifies into the LOUD arm, except the one that names
+//     a limit of the corpus data (a policy advisory with no affected package). The taxonomy defaults
+//     to loud for unknown codes, so this is a regression test against someone later declaring one
+//     of the others inherent — which would file a work set the pass never covered under "this is
+//     how static analysis works" and render it as a clean scan.
 //   - The identities of the unassessed advisories travel resolveWorkSet → BaselineRequest.WorkSetLimits
 //     → Report.Partiality → SARIF, on a pass with ZERO findings. Zero findings is the case the
 //     disclosure exists for: it is the only thing separating "we found nothing" from "we did not look".
@@ -30,7 +31,9 @@ import (
 
 // TestWorkSetReasons_ClassifyLoud pins the arm every work-set reason code lands in.
 //
-// The inherent-limit rows are controls, not subjects: without them a test that only ever asserts
+// The policy no-coordinates row is the one inherent code this command mints: no record of that kind
+// can ever be matched to a dependency, on any repository, so it does not qualify the headline.
+// The other inherent rows are controls, not subjects: without them a test that only ever asserts
 // "did_not_run" would pass just as well against a ClassifyPartialityReason that returned the loud arm
 // unconditionally, and would therefore prove nothing about these three codes in particular.
 func TestWorkSetReasons_ClassifyLoud(t *testing.T) {
@@ -42,6 +45,9 @@ func TestWorkSetReasons_ClassifyLoud(t *testing.T) {
 		{"osv query failed", reasonWorkSetNotWidened, report.PartialityDidNotRun},
 		{"no dependency inventory", reasonWorkSetNoInventory, report.PartialityDidNotRun},
 		{"advisories with no facts", reasonAdvisoryFactsUnavailable, report.PartialityDidNotRun},
+		{"policy advisories unresolvable", reasonPolicyAdvisoryUnresolvable, report.PartialityDidNotRun},
+		{"policy not enumerable", reasonWorkSetPolicyNotEnumerable, report.PartialityDidNotRun},
+		{"policy advisories name no package (corpus data limit)", reasonPolicyAdvisoryNoCoordinates, report.PartialityInherentLimit},
 		{"no manifest (borrowed from plugin)", plugin.PartialReasonNoManifest, report.PartialityDidNotRun},
 		{"control: reflection is methodology", plugin.PartialReasonReflection, report.PartialityInherentLimit},
 		{"control: dynamic dispatch is methodology", plugin.PartialReasonDynamicDispatch, report.PartialityInherentLimit},

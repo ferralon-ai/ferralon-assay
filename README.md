@@ -109,7 +109,7 @@ Requires Go (see `go.mod` for the minimum version):
 
 ```sh
 go build -o ferralon-assay ./cmd/ferralon-assay
-go build -o tegron-plugin-go ./cmd/tegron-plugin-go
+go build -o "$(go env GOPATH)/bin/assay-plugin-go" ./cmd/tegron-plugin-go
 ./ferralon-assay baseline -target /path/to/repo -out ./scan-out
 ```
 
@@ -120,12 +120,13 @@ plus its projections — `report.html`, `report.sarif.json` (SARIF 2.1.0), and `
 A language analyzer is a separate subprocess binary spoken to over a small stdin/stdout JSON
 protocol; the scanner never links analysis libraries such as `golang.org/x/tools` into its own
 binary. The CLI resolves the analyzer for the detected language on `PATH` under the name
-`tegron-plugin-<lang>`, or takes an explicit path from the run mode's `-plugin-go`-style flag. The
-other analyzers build the same way (`./cmd/tegron-plugin-java`, `-js`, `-python`, `-dotnet`); build one
-and a default scan of that ecosystem completes against the same populated advisory floor the shipped
-Action uses. What halts a run is a *resolved* work set of zero advisories — for example pointing
-`-advisory-corpus` at a table that has nothing for your detected language. See
-[Scope](#scope).
+`assay-plugin-<lang>`, or takes an explicit path from the run mode's `-plugin-go`-style flag,
+so the quickstart above installs it into `$(go env GOPATH)/bin` (have that directory on `PATH`). The
+other analyzers build the same way, from `./cmd/tegron-plugin-<lang>` to `assay-plugin-<lang>`
+for `java`, `kotlin`, `js`, `python` and `dotnet`; build one and a default scan of that ecosystem
+completes against the same populated advisory floor the shipped Action uses. What halts a run is a
+*resolved* work set of zero advisories — for example pointing `-advisory-corpus` at a table that has
+nothing for your detected language. See [Scope](#scope).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
 against a filesystem corpus instead of the built-in table, and `-subject-go-version` to state the

@@ -199,7 +199,26 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
 	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
 	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
-	return publishAll(ctx, selectSinks(github.DetectEnv(), outDir, runSnapshot), res)
+	return publishAll(ctx, selectSinks(github.DetectEnv(surfaceToggles()), outDir, runSnapshot), res)
+}
+
+// Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
+// action.yml. Pages is an opt-IN; the other three are opt-OUT (on unless explicitly "false"/"0").
+const (
+	envPages        = brand.EnvPrefix + "_PAGES"
+	envCodeScanning = brand.EnvPrefix + "_CODE_SCANNING"
+	envPRComment    = brand.EnvPrefix + "_PR_COMMENT"
+	envIssue        = brand.EnvPrefix + "_ISSUE"
+)
+
+// surfaceToggles reads the output-surface toggles for github.DetectEnv.
+func surfaceToggles() github.Toggles {
+	return github.Toggles{
+		Pages:               github.OptIn(os.Getenv(envPages)),
+		DisableCodeScanning: github.OptedOut(os.Getenv(envCodeScanning)),
+		DisablePRComment:    github.OptedOut(os.Getenv(envPRComment)),
+		DisableIssue:        github.OptedOut(os.Getenv(envIssue)),
+	}
 }
 
 // buildResult renders the three projections from rep into a resultsink.Result.

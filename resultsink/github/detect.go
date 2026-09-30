@@ -32,8 +32,6 @@ package github
 import (
 	"encoding/json"
 	"os"
-
-	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // Tier is the permission level a GitHub ResultSink surface requires. Tiers are
@@ -88,27 +86,32 @@ const (
 	// EnvWorkspace is the checkout root. Tier 0 makes annotation file paths
 	// repo-relative to it so the GitHub UI can anchor them to the right file.
 	EnvWorkspace = "GITHUB_WORKSPACE"
-
-	// EnvPagesOptIn is the opt-in switch for Tier 2 (GitHub Pages). Off by default
-	// (empty/"false"); Item 4 reads it. Declared here so the env contract is in one
-	// place. Not a standard Actions variable — an ferralon-assay input.
-	EnvPagesOptIn = brand.EnvPrefix + "_PAGES"
-
-	// EnvCodeScanning is the per-surface opt-OUT switch for the Tier 1 SARIF →
-	// code-scanning upload. ENABLED by default; a run disables it only with an
-	// explicit "false"/"0" (absent/empty → enabled, preserving auto-on for
-	// direct-CLI and non-action runs). Not a standard Actions variable — an
-	// ferralon-assay input.
-	EnvCodeScanning = brand.EnvPrefix + "_CODE_SCANNING"
-	// EnvPRComment is the per-surface opt-OUT switch for the Tier 1 sticky PR
-	// comment. ENABLED by default; disabled only with an explicit "false"/"0"
-	// (absent/empty → enabled). Not a standard Actions variable — an ferralon-assay input.
-	EnvPRComment = brand.EnvPrefix + "_PR_COMMENT"
-	// EnvIssue is the per-surface opt-OUT switch for the Tier 1 pinned-Issue
-	// dashboard. ENABLED by default; disabled only with an explicit "false"/"0"
-	// (absent/empty → enabled). Not a standard Actions variable — an ferralon-assay input.
-	EnvIssue = brand.EnvPrefix + "_ISSUE"
 )
+
+// Toggles is the caller's per-surface output configuration. It is not read from the environment:
+// a host sources it however it likes (the ferralon-assay CLI reads its own env vars) and passes it
+// to DetectEnv. The zero value is the default — Pages off, every Tier 1 surface on — so a caller
+// sets only what it changes. Each toggle can only narrow what Detect allows; none can override
+// forked-PR safety.
+type Toggles struct {
+	// Pages opts in to the Tier 2 GitHub Pages surface. Off by default.
+	Pages bool
+	// DisableCodeScanning turns off the Tier 1 SARIF → code-scanning upload.
+	DisableCodeScanning bool
+	// DisablePRComment turns off the Tier 1 sticky PR comment.
+	DisablePRComment bool
+	// DisableIssue turns off the Tier 1 pinned-Issue dashboard.
+	DisableIssue bool
+}
+
+// OptIn interprets an opt-IN switch value: only "true" or "1" enables it, so absent or empty
+// means OFF. It is the parse the Pages toggle uses.
+func OptIn(v string) bool { return truthy(v) }
+
+// OptedOut interprets a per-surface opt-OUT switch value: only an explicit "false" or "0"
+// disables the surface; absent, empty, or anything else leaves it enabled, preserving auto-on
+// for the SARIF/PR-comment/Issue surfaces on direct-CLI and non-action runs.
+func OptedOut(v string) bool { return v == "false" || v == "0" }
 
 // Env is an immutable snapshot of the GitHub Actions environment relevant to sink
 // selection. Snapshotting once (via DetectEnv) keeps detection deterministic and
@@ -133,18 +136,18 @@ type Env struct {
 	ServerURL string
 	// Workspace is GITHUB_WORKSPACE (checkout root for repo-relative annotation paths).
 	Workspace string
-	// PagesOptIn is true when the Tier 2 opt-in (EnvPagesOptIn) is enabled.
+	// PagesOptIn is true when the Tier 2 opt-in (Toggles.Pages) is enabled.
 	PagesOptIn bool
 	// CodeScanningEnabled is true when the SARIF → code-scanning surface is enabled
-	// (the opt-OUT default: EnvCodeScanning absent or anything but "false"/"0").
+	// (the opt-OUT default: on unless Toggles.DisableCodeScanning).
 	// AND-ed with CanWrite in Detect, so a toggle never overrides forked-PR safety.
 	CodeScanningEnabled bool
 	// PRCommentEnabled is true when the sticky PR-comment surface is enabled (the
-	// opt-OUT default: EnvPRComment absent or anything but "false"/"0").
+	// opt-OUT default: on unless Toggles.DisablePRComment).
 	// AND-ed with CanWrite (and PR context) in Detect.
 	PRCommentEnabled bool
 	// IssueEnabled is true when the pinned-Issue dashboard surface is enabled (the
-	// opt-OUT default: EnvIssue absent or anything but "false"/"0").
+	// opt-OUT default: on unless Toggles.DisableIssue).
 	// AND-ed with CanWrite in Detect.
 	IssueEnabled bool
 	// HeadRepoFork is true when this run is a pull_request whose head repository
@@ -160,10 +163,11 @@ type Env struct {
 	PRNumber int
 }
 
-// DetectEnv snapshots the GitHub-relevant environment from the process. It is the
-// single point that touches os.Getenv; everything downstream consumes the returned
-// Env, so detection is pure and testable.
-func DetectEnv() Env {
+// DetectEnv snapshots the GitHub Actions platform environment from the process and
+// combines it with the caller's output toggles. It is the single point that touches
+// os.Getenv; everything downstream consumes the returned Env, so detection is pure and
+// testable.
+func DetectEnv(t Toggles) Env {
 	env := Env{
 		InActions:       truthy(os.Getenv(EnvActions)),
 		StepSummaryPath: os.Getenv(EnvStepSummary),
@@ -172,11 +176,11 @@ func DetectEnv() Env {
 		EventName:       os.Getenv(EnvEventName),
 		ServerURL:       os.Getenv(EnvServerURL),
 		Workspace:       os.Getenv(EnvWorkspace),
-		PagesOptIn:      truthy(os.Getenv(EnvPagesOptIn)),
+		PagesOptIn:      t.Pages,
 
-		CodeScanningEnabled: enabledUnlessDisabled(os.Getenv(EnvCodeScanning)),
-		PRCommentEnabled:    enabledUnlessDisabled(os.Getenv(EnvPRComment)),
-		IssueEnabled:        enabledUnlessDisabled(os.Getenv(EnvIssue)),
+		CodeScanningEnabled: !t.DisableCodeScanning,
+		PRCommentEnabled:    !t.DisablePRComment,
+		IssueEnabled:        !t.DisableIssue,
 	}
 	env.HeadRepoFork, env.PRNumber = parseEvent(env.EventName, os.Getenv(EnvEventPath))
 	return env
@@ -254,22 +258,22 @@ type Capabilities struct {
 	// detection (e.g. comparing head/base repos) without changing this field's meaning.
 	CanWrite bool
 	// CanSARIF is true when this run may upload SARIF to code scanning — it requires
-	// the code-scanning surface to be enabled (the opt-OUT toggle EnvCodeScanning,
-	// default on) AND write capability. The toggle is AND-ed with CanWrite, so turning
+	// the code-scanning surface to be enabled (the opt-OUT toggle
+	// Toggles.DisableCodeScanning, default on) AND write capability. The toggle is AND-ed with CanWrite, so turning
 	// it on never overrides forked-PR safety: a forked PR (CanWrite=false) stays
 	// SARIF-incapable regardless of the toggle. The SARIF sink gates on it.
 	CanSARIF bool
 	// CanComment is true when this run may create/update a pull-request comment — it
-	// requires the PR-comment surface to be enabled (the opt-OUT toggle EnvPRComment,
-	// default on), write capability, AND a PR context (an event that addresses a PR).
+	// requires the PR-comment surface to be enabled (the opt-OUT toggle
+	// Toggles.DisablePRComment, default on), write capability, AND a PR context (an event that addresses a PR).
 	// The toggle is AND-ed with CanWrite, so it never overrides forked-PR safety. The
 	// sticky-comment sink gates on it so a push build (no PR to comment on) skips
 	// cleanly rather than erroring. Computed in Detect; sinks ask the capability
 	// rather than re-deriving the event shape.
 	CanComment bool
 	// CanIssue is true when this run may create/overwrite the pinned-issue dashboard —
-	// it requires the Issue surface to be enabled (the opt-OUT toggle EnvIssue,
-	// default on) AND write capability (issues are repo-scoped, not PR-scoped, so any
+	// it requires the Issue surface to be enabled (the opt-OUT toggle
+	// Toggles.DisableIssue, default on) AND write capability (issues are repo-scoped, not PR-scoped, so any
 	// write-capable event qualifies). The toggle is AND-ed with CanWrite, so it never
 	// overrides forked-PR safety. The pinned-issue sink gates on it.
 	CanIssue bool
@@ -343,11 +347,6 @@ func isPullRequestEvent(env Env) bool {
 	return isPRevent(env.EventName) && env.PRNumber > 0
 }
 
-// truthy interprets a GitHub-style boolean env var ("true"/"1" → true). Used for
-// the opt-IN Pages switch, where absent/empty means OFF.
+// truthy interprets a GitHub-style boolean value ("true"/"1" → true); absent/empty
+// means false.
 func truthy(v string) bool { return v == "true" || v == "1" }
-
-// enabledUnlessDisabled interprets a per-surface opt-OUT toggle: ENABLED unless the
-// value is an explicit "false"/"0". Absent/empty → enabled, preserving auto-on for
-// the SARIF/PR-comment/Issue surfaces on direct-CLI and non-action runs.
-func enabledUnlessDisabled(v string) bool { return v != "false" && v != "0" }

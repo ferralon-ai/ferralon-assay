@@ -584,8 +584,8 @@ runs:
         # '0' = off, '1' = on; keep the non-empty value on the truthy branch (the GitHub ternary
         # footgun).
         #
-        # These three names MUST track brand.EnvPrefix. detect.go reads them with a plain os.Getenv
-        # (resultsink/github/detect.go:177-179) and has no fallback -- so a stale prefix here is not
+        # These three names MUST track brand.EnvPrefix. cmd/ferralon-assay/run.go (surfaceToggles)
+        # reads them with a plain os.Getenv and has no fallback -- so a stale prefix here is not
         # a warning, it is a silently ignored opt-out. That is safe only because every release tag of
         # action.yml names the exact scanner-version it was cut with, so a consumer on a tag always
         # gets a matched pair; main's vX.Y alias floats only across patch releases, which keep these

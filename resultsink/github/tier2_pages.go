@@ -21,7 +21,8 @@
 // # Off by default
 //
 // Tier 2 is an opt-in surface. It is disabled unless the operator explicitly sets
-// ASSAY_PAGES=true in the workflow. The capability check in detect.go:
+// the Pages toggle (Toggles.Pages; ASSAY_PAGES=true for the CLI). The capability
+// check in detect.go:
 //   - caps.CanPages = env.PagesOptIn && caps.CanWrite
 //
 // When CanPages is false (the default), Publish is a clean no-op: no files are
@@ -67,7 +68,7 @@ type Tier2Pages struct {
 var _ resultsink.ResultSink = (*Tier2Pages)(nil)
 
 // NewTier2Pages builds a Tier2Pages from a detected Env snapshot. The sink is
-// enabled only when the Tier 2 opt-in flag (ASSAY_PAGES) is set and a write token
+// enabled only when the Tier 2 opt-in toggle (Toggles.Pages) is set and a write token
 // is present — checked indirectly via Detect(env).CanPages rather than re-deriving
 // the policy here.
 //

@@ -31,18 +31,16 @@ func newHTMLResult(t *testing.T) resultsink.Result {
 // TestTier2Pages_DisabledByDefault asserts that when the opt-in env is unset,
 // Publish is a clean no-op: no files staged, nil returned.
 func TestTier2Pages_DisabledByDefault(t *testing.T) {
-	// Ensure opt-in is not set.
-	t.Setenv(ghsink.EnvPagesOptIn, "")
 	// Token set to confirm CanWrite alone is not enough.
 	t.Setenv(ghsink.EnvToken, "ghp_fake")
 	t.Setenv(ghsink.EnvActions, "true")
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{})
 	sink := ghsink.NewTier2Pages(env)
 
 	// Verify the sink reports itself disabled.
 	if sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be false when ASSAY_PAGES is unset")
+		t.Fatal("NewTier2Pages: Enabled should be false when the Pages toggle is off")
 	}
 
 	// Point StagingDir at a temp dir so we can assert nothing is written.
@@ -67,18 +65,17 @@ func TestTier2Pages_DisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestTier2Pages_OptInWithToken asserts that when ASSAY_PAGES=true and a token is
+// TestTier2Pages_OptInWithToken asserts that when the Pages toggle is on and a token is
 // present, Publish stages report.html and index.html into StagingDir.
 func TestTier2Pages_OptInWithToken(t *testing.T) {
-	t.Setenv(ghsink.EnvPagesOptIn, "true")
 	t.Setenv(ghsink.EnvToken, "ghp_fake")
 	t.Setenv(ghsink.EnvActions, "true")
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{Pages: true})
 	sink := ghsink.NewTier2Pages(env)
 
 	if !sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be true when ASSAY_PAGES=true and token present")
+		t.Fatal("NewTier2Pages: Enabled should be true when the Pages toggle is on and token present")
 	}
 
 	dir := t.TempDir()
@@ -120,15 +117,14 @@ func TestTier2Pages_OptInWithToken(t *testing.T) {
 // TestTier2Pages_OptInWithoutToken asserts that opt-in env alone is not enough —
 // without a write token, the sink stays disabled (CanPages requires both).
 func TestTier2Pages_OptInWithoutToken(t *testing.T) {
-	t.Setenv(ghsink.EnvPagesOptIn, "true")
 	t.Setenv(ghsink.EnvToken, "") // no token
 	t.Setenv(ghsink.EnvActions, "true")
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{Pages: true})
 	sink := ghsink.NewTier2Pages(env)
 
 	if sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be false when token is absent, even with ASSAY_PAGES=true")
+		t.Fatal("NewTier2Pages: Enabled should be false when token is absent, even with the Pages toggle on")
 	}
 }
 
@@ -136,11 +132,10 @@ func TestTier2Pages_OptInWithoutToken(t *testing.T) {
 // deterministic verdict framing (inv. 5): no "affected", no "Case", no "Assessment",
 // no "living-verdict".
 func TestTier2Pages_Inv5_NoPayService(t *testing.T) {
-	t.Setenv(ghsink.EnvPagesOptIn, "true")
 	t.Setenv(ghsink.EnvToken, "ghp_fake")
 	t.Setenv(ghsink.EnvActions, "true")
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{Pages: true})
 	sink := ghsink.NewTier2Pages(env)
 	dir := t.TempDir()
 	sink.StagingDir = dir

@@ -7,7 +7,7 @@
 //
 //   - the `live` build tag, like the tree's other network/toolchain tests; AND
 //   - ASSAY_OSV_EXISTENCE_CHECK=1, a dedicated env var (the same belt-and-braces idiom as
-//     advisory_source_overlap_live_test.go's OPEN_TEGRON_OVERLAP_CORPUS).
+//     advisory_source_overlap_live_test.go's ASSAY_OVERLAP_CORPUS).
 //
 // # Why two gates and not one
 //
@@ -61,7 +61,7 @@ const osvPoliteDelay = 120 * time.Millisecond
 // issuing authority and by construction resolve nowhere, so querying OSV for them would assert
 // nothing. Their well-formedness is checked hermetically in advisory_id_format_test.go; this is a
 // scope statement, not an exemption from checking.
-var firstPartyNamespaces = map[string]bool{"TEGRON": true, "FERRALON": true}
+var firstPartyNamespaces = map[string]bool{"FERRALON": true}
 
 func requireOSVGate(t *testing.T) {
 	t.Helper()

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/hostmatch"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // githubForge is the presentation allowlist for the GitHub App installation token. GitHub App
@@ -32,8 +33,8 @@ func mustForge(patterns ...string) *hostmatch.Matcher {
 }
 
 // GitCheckout is the real Checkout: it shells out to `git` (no SDK, mirroring sandbox.DockerRunner)
-// to clone repo@revision into a fresh temp dir. It is wired only when explicitly enabled
-// (TEGRON_REAL_CHECKOUT=1 in tegrond), so the default pipeline stays hermetic.
+// to clone repo@revision into a fresh temp dir. It is wired only by a host that explicitly opts
+// into real clones, so the default pipeline stays hermetic.
 type GitCheckout struct {
 	Bin string // git binary; "" means "git"
 }
@@ -57,7 +58,7 @@ func (g *GitCheckout) Fetch(ctx context.Context, repo, revision string) (Workspa
 	// Checkout seam signature, never on this struct, never on disk. An empty credential (public
 	// repo / hermetic fake / local ambient-cred dev) takes the bare-clone path unchanged.
 	cred := CredentialFrom(ctx)
-	dir, err := os.MkdirTemp("", "tegron-checkout-")
+	dir, err := os.MkdirTemp("", brand.Name+"-checkout-")
 	if err != nil {
 		return WorkspacePlan{}, fmt.Errorf("checkout: mkdtemp: %w", err)
 	}
@@ -156,12 +157,13 @@ func (g *GitCheckout) run(ctx context.Context, workdir string, cred Credential, 
 
 // credEnvVar is the environment variable the inline credential helper reads the token from. The
 // token lives in the child git process's environment for the duration of one clone/fetch and
-// nowhere else — never in argv, never on disk, never in the parent process env.
-const credEnvVar = "TEGRON_CHECKOUT_CRED"
+// nowhere else — never in argv, never on disk, never in the parent process env. This package only
+// sets it on the child; nothing here reads it.
+const credEnvVar = brand.EnvPrefix + "_CHECKOUT_CRED"
 
 // credHelperArg returns the value for `-c credential.helper=…`: an inline shell helper that, on a
 // git `get`, emits the fixed GitHub installation-token username (`x-access-token`) and the token
-// read from $TEGRON_CHECKOUT_CRED. The token VALUE never appears in this string — only the name of
+// read from $credEnvVar. The token VALUE never appears in this string — only the name of
 // the env var git's child shell dereferences — so this flag is safe to appear in argv / ps.
 func credHelperArg() string {
 	return `!f(){ test "$1" = get && printf 'username=x-access-token\npassword=%s\n' "$` + credEnvVar + `"; }; f`

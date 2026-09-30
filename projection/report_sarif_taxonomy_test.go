@@ -88,7 +88,7 @@ func TestReportSARIF_InherentLimit_VisibleAsNoteResult(t *testing.T) {
 		if len(res.Locations) == 0 {
 			t.Error("a result with no location is rejected by code-scanning ingestion")
 		}
-		if class, _ := res.Properties.Tegron["partiality_class"].(string); class != string(report.PartialityInherentLimit) {
+		if class, _ := res.Properties.Scanner["partiality_class"].(string); class != string(report.PartialityInherentLimit) {
 			t.Errorf("result partiality_class = %q, want %q", class, report.PartialityInherentLimit)
 		}
 		if !strings.Contains(res.Message.Text, "inherent limit of static analysis") {
@@ -154,7 +154,7 @@ func TestReportSARIF_MixedArms_SeparateRules(t *testing.T) {
 	if !strings.Contains(res[0].Message.Text, "no_language_plugin") {
 		t.Errorf("the surfaced did-not-run result is %q, want the no_language_plugin limit", res[0].Message.Text)
 	}
-	if class, _ := res[0].Properties.Tegron["partiality_class"].(string); class != string(report.PartialityDidNotRun) {
+	if class, _ := res[0].Properties.Scanner["partiality_class"].(string); class != string(report.PartialityDidNotRun) {
 		t.Errorf("result partiality_class = %q, want %q", class, report.PartialityDidNotRun)
 	}
 

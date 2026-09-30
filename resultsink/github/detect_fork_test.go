@@ -41,7 +41,7 @@ func TestDetectEnv_ForkedPR(t *testing.T) {
 	t.Setenv(ghsink.EnvEventName, "pull_request")
 	t.Setenv(ghsink.EnvEventPath, eventPath)
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{})
 	if !env.HeadRepoFork {
 		t.Fatalf("expected HeadRepoFork=true for a forked PR")
 	}
@@ -75,7 +75,7 @@ func TestDetectEnv_SameRepoPR(t *testing.T) {
 	t.Setenv(ghsink.EnvEventName, "pull_request")
 	t.Setenv(ghsink.EnvEventPath, eventPath)
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{})
 	if env.HeadRepoFork {
 		t.Fatalf("same-repo PR must not be a fork")
 	}

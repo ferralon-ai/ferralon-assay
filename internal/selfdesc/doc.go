@@ -34,8 +34,7 @@
 //   - envprefix_literal_test.go — same shape, for brand.EnvPrefix: fails any
 //     bare "<PREFIX>_..." string literal spelling the CURRENT prefix, deriving
 //     its own matcher from brand.EnvPrefix at test-run time rather than a
-//     hardcoded prefix. Legacy TEGRON_/NUCLEON_ literals are untouched — they
-//     are deliberate EnvOrLegacy fallbacks, not this defect.
+//     hardcoded prefix.
 //   - selfdesc_live_test.go — opt-in behind the `live` build tag, matching the
 //     tree's other opt-in tests (checkout/git_live_test.go,
 //     internal/plugin/goanalysis/reach_toolchain_live_test.go). It builds the CLI

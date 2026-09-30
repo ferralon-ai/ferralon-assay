@@ -2,12 +2,12 @@
 
 // The live full-corpus runner for the reachable-candidate eval. It is OPT-IN twice over so
 // it never joins the hermetic suite: the `//go:build eval_live` tag keeps it out of
-// `go test ./...`, and the TEGRON_EVAL=1 env gate keeps it out of `-tags eval_live` by
-// accident. It needs the real Go toolchain + tegron-plugin-go on PATH — do NOT run it inline
+// `go test ./...`, and the ASSAY_EVAL=1 env gate keeps it out of `-tags eval_live` by
+// accident. It needs the real Go toolchain + assay-plugin-go on PATH — do NOT run it inline
 // from a /team agent (it stalls the watchdog); hand it to the orchestrator's background bash:
 //
-//	make install   # put tegron-plugin-go on GOBIN/$PATH first
-//	PATH="$(go env GOPATH)/bin:$PATH" TEGRON_EVAL=1 \
+//	go install ./cmd/assay-plugin-go
+//	PATH="$(go env GOPATH)/bin:$PATH" ASSAY_EVAL=1 \
 //	  go test -tags eval_live ./eval/reachcandidate/ -run TestLiveReachCandidateEval -v
 //
 // It measures each corpus fixture's reachable-candidate signal against the CURRENT corpus
@@ -35,11 +35,11 @@ import (
 )
 
 func TestLiveReachCandidateEval(t *testing.T) {
-	if os.Getenv("TEGRON_EVAL") != "1" {
-		t.Skip("set TEGRON_EVAL=1 to run the live reachable-candidate eval (opt-in)")
+	if os.Getenv("ASSAY_EVAL") != "1" {
+		t.Skip("set ASSAY_EVAL=1 to run the live reachable-candidate eval (opt-in)")
 	}
-	if _, err := exec.LookPath("tegron-plugin-go"); err != nil {
-		t.Skip("tegron-plugin-go not on PATH (run `make install` first)")
+	if _, err := exec.LookPath(plugin.BinaryName("go")); err != nil {
+		t.Skipf("%s not on PATH (go install ./cmd/assay-plugin-go first)", plugin.BinaryName("go"))
 	}
 	// Go is the floor: its LookPath skip above guarantees the constructor succeeds.
 	goPlugin, err := plugin.NewGoPlugin()
@@ -47,7 +47,7 @@ func TestLiveReachCandidateEval(t *testing.T) {
 		t.Fatalf("go plugin: %v", err)
 	}
 	// Build a MultiPlugin from Go plus every non-Go plugin whose toolchain binary is present.
-	// Each non-Go constructor returns an error when its tegron-plugin-<lang> binary is absent
+	// Each non-Go constructor returns an error when its assay-plugin-<lang> binary is absent
 	// from PATH — log-and-omit that language (unmeasured) exactly as the Go path t.Skips. A
 	// fixture whose language plugin was omitted then self-routes (by DetectLanguage(BuildDir))
 	// to the NoPlugin partiality path — recorded Complete:false, never an error and never a
@@ -96,9 +96,9 @@ func TestLiveReachCandidateEval(t *testing.T) {
 	rep := Run(context.Background(), multi, "current corpus (baseline)", cases)
 	t.Logf("\n%s", rep.Table())
 
-	// TEGRON_EVAL_UPDATE=1 regenerates the committed golden from this fresh run (the
+	// ASSAY_EVAL_UPDATE=1 regenerates the committed golden from this fresh run (the
 	// golden-update idiom). anvil runs this once to fill the empty seed with real numbers.
-	if os.Getenv("TEGRON_EVAL_UPDATE") == "1" {
+	if os.Getenv("ASSAY_EVAL_UPDATE") == "1" {
 		if err := writeBaselineReport(baselinePath, rep); err != nil {
 			t.Fatalf("update baseline %s: %v", baselinePath, err)
 		}

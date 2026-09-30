@@ -28,7 +28,7 @@
 //   - Non-test files only. A _test.go file may legitimately use a foreign ref as INPUT DATA — a
 //     fixture asserting that an operator-supplied ref overrides the default, say — and flagging
 //     that would be a false positive on a correct test.
-//   - String literals only. `// DeleteStateRef removes refs/tegron/state.` in a doc comment is
+//   - String literals only. `// DeleteStateRef removes refs/assay/state.` in a doc comment is
 //     stale prose, worth fixing, but it is not a value the tool emits.
 //   - Whole module, including statestore itself. statestore builds its ref from brand.RefNamespace
 //     and so has no literal to find; if one ever appears there it is exactly as wrong.

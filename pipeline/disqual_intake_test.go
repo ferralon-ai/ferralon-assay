@@ -2,7 +2,7 @@
 //
 // Hermetic proof of the M0 intake disqualification guards folded into
 // disqualification_discovery (S3): the two language-agnostic short-circuits that fire BEFORE
-// symbol mapping / call-graph for advisories Tegron can never adjudicate against the resolved
+// symbol mapping / call-graph for advisories the pipeline can never adjudicate against the resolved
 // codebase.
 //
 //   - Guard 1 (advisory_ecosystem_mismatch): the advisory's ecosystem matches no package
@@ -123,7 +123,7 @@ func TestIntakeRun_NpmAdvisoryUnderJava_Mismatch(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-npm-under-java"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id": "TEGRON-JS-DEP-0001",
+		"vuln_id": "FERRALON-JS-DEP-0001",
 		"purl":    "pkg:npm/left-pad",
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
@@ -171,7 +171,7 @@ func TestIntakeRun_UnknownCodebaseLanguage_FailsOpen(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-unknown-lang"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id": "TEGRON-JS-DEP-0001", "purl": "pkg:npm/left-pad",
+		"vuln_id": "FERRALON-JS-DEP-0001", "purl": "pkg:npm/left-pad",
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"build_dir": ""})
 	res := runDisqual(t, store, caseID)

@@ -64,7 +64,7 @@ func TestInventoryFoldsBuildManifestViaPlugin(t *testing.T) {
 func TestInventoryJavaRepro_NoGoModRoutesToJavaPlugin(t *testing.T) {
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-java", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-JAVA-SSRF-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-JAVA-SSRF-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
 			Repo:     "com.example.web/ssrf",
 			Revision: "v1",

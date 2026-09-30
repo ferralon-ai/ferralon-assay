@@ -93,12 +93,7 @@ var advisoryIDGrammars = []advisoryIDGrammar{
 		// same as "it may be shaped however".
 		//
 		// Form: <ORG>-<CLASSIFIER>(-<CLASSIFIER>)*-<4-digit ordinal>, uppercase.
-		// e.g. TEGRON-JS-SSRF-0001, TEGRON-GO-GRAFANA-DUCKDB-0001, FERRALON-APP-DOS-0001.
-		namespace: "TEGRON",
-		pattern:   regexp.MustCompile(`^TEGRON(-[A-Z][A-Z0-9]*)+-[0-9]{4}$`),
-		authority: "first-party synthetic advisory id (this project) — ORG-CLASSIFIER…-NNNN",
-	},
-	{
+		// e.g. FERRALON-JS-SSRF-0001, FERRALON-GO-GRAFANA-DUCKDB-0001, FERRALON-APP-DOS-0001.
 		namespace: "FERRALON",
 		pattern:   regexp.MustCompile(`^FERRALON(-[A-Z][A-Z0-9]*)+-[0-9]{4}$`),
 		authority: "first-party synthetic advisory id (this project) — ORG-CLASSIFIER…-NNNN",
@@ -288,11 +283,11 @@ func TestAdvisoryIDs_GrammarsRejectAndAccept(t *testing.T) {
 		{"GHSA-ppp9-7jff-5vj2-5vj2", false, "four groups"},
 		{"GO-2021-0113", true, "real Go entry"},
 		{"GO-2021-113", false, "three-digit entry id"},
-		{"TEGRON-JS-SSRF-0001", true, "first-party synthetic"},
-		{"TEGRON-GO-GRAFANA-DUCKDB-0001", true, "first-party synthetic, multi-classifier"},
+		{"FERRALON-JS-SSRF-0001", true, "first-party synthetic"},
+		{"FERRALON-GO-GRAFANA-DUCKDB-0001", true, "first-party synthetic, multi-classifier"},
 		{"FERRALON-APP-DOS-0001", true, "first-party synthetic"},
-		{"TEGRON-0001", false, "no classifier segment"},
-		{"TEGRON-js-ssrf-0001", false, "lowercase classifier"},
+		{"FERRALON-0001", false, "no classifier segment"},
+		{"FERRALON-js-ssrf-0001", false, "lowercase classifier"},
 		{"OSV-2020-111", false, "namespace we do not ship — must fail, not skip"},
 		{"", false, "empty"},
 		{"nonsense", false, "no namespace structure"},

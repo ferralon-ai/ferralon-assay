@@ -85,16 +85,16 @@ func TestChain_CorpusMissFallsBackToTable(t *testing.T) {
 		"FERRALON-APP-DOS-0001",
 		// Java / Maven
 		"CVE-2019-14540", "CVE-2020-36518", "CVE-2024-22243",
-		"TEGRON-JAVA-SSRF-0001", "TEGRON-JAVA-SPRING-SSRF-0001", "TEGRON-JAVA-DEP-0001",
+		"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001",
 		// JS / npm
 		"CVE-2022-46175", "CVE-2023-26136", "CVE-2024-29041",
-		"TEGRON-JS-SSRF-0001", "TEGRON-JS-DEP-0001",
+		"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001",
 		// Python / PyPI
 		"CVE-2024-22195", "CVE-2024-23334", "CVE-2024-3772",
-		"TEGRON-PY-AIRFLOW-EXPAPI-0001", "TEGRON-PY-DEP-0001",
+		"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001",
 		// .NET / NuGet
 		"CVE-2019-0820", "CVE-2020-5234", "CVE-2024-21907",
-		"TEGRON-NET-DEP-0001",
+		"FERRALON-NET-DEP-0001",
 	}
 	corpusOnly := NewArtifactSource(root)
 	for _, id := range workSet {
@@ -191,7 +191,7 @@ func TestChain_NeverMergesAcrossSources(t *testing.T) {
 func TestChain_RejectedCorpusRecordFallsThroughWhole(t *testing.T) {
 	fixtures := filepath.Join("testdata", "advisory_source")
 	corpus := NewArtifactSource(fixtures)
-	for _, id := range []string{"TEGRON-TEST-BADDIGEST", "TEGRON-TEST-MALFORMED"} {
+	for _, id := range []string{"FERRALON-TEST-BADDIGEST", "FERRALON-TEST-MALFORMED"} {
 		if _, ok := corpus.Lookup(id); ok {
 			t.Fatalf("fixture drift: %s must be REJECTED by the reader", id)
 		}

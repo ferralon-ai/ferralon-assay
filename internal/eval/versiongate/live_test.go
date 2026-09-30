@@ -2,14 +2,14 @@
 
 // The live Phase-1 exit gate (PLAN-190) for the {go} reference lane. OPT-IN twice over so it
 // never joins the hermetic suite: the `//go:build eval_live` tag keeps it out of `go test
-// ./...`, and the TEGRON_EVAL=1 env gate keeps it out of `-tags eval_live` by accident. It
+// ./...`, and the ASSAY_EVAL=1 env gate keeps it out of `-tags eval_live` by accident. It
 // calls goanalysis.ResolveInventory IN-PROCESS (no plugin subprocess) but still RESOLVES the
 // module graph via `go mod graph` — it needs the real Go toolchain and a warm module cache. Do
 // NOT run it inline from a /team agent (the go subprocess stalls the watchdog); hand it to the
 // orchestrator's background bash:
 //
-//	TEGRON_EVAL=1 go test -tags eval_live ./internal/eval/versiongate/ -run TestLiveVersionGate -v
-//	TEGRON_EVAL=1 TEGRON_EVAL_UPDATE=1 go test -tags eval_live ./internal/eval/versiongate/ -run TestLiveVersionGate  # regenerate golden
+//	ASSAY_EVAL=1 go test -tags eval_live ./internal/eval/versiongate/ -run TestLiveVersionGate -v
+//	ASSAY_EVAL=1 ASSAY_EVAL_UPDATE=1 go test -tags eval_live ./internal/eval/versiongate/ -run TestLiveVersionGate  # regenerate golden
 //
 // It compares each Go vendored_repro fixture's resolved inventory against the committed native
 // oracle (corpus/testdata/oracles/) and diffs the whole per-fixture GateReport against a
@@ -77,8 +77,8 @@ func goRootFixtures(t *testing.T) []corpus.Fixture {
 }
 
 func TestLiveVersionGate(t *testing.T) {
-	if os.Getenv("TEGRON_EVAL") != "1" {
-		t.Skip("set TEGRON_EVAL=1 to run the live Phase-1 version gate (opt-in)")
+	if os.Getenv("ASSAY_EVAL") != "1" {
+		t.Skip("set ASSAY_EVAL=1 to run the live Phase-1 version gate (opt-in)")
 	}
 	fixtures := goRootFixtures(t)
 	if len(fixtures) == 0 {
@@ -108,7 +108,7 @@ func TestLiveVersionGate(t *testing.T) {
 
 	// --- golden round-trip (BuildDir zeroed: absolute paths are environment-variant) ---
 	got := zeroBuildDir(rep)
-	if os.Getenv("TEGRON_EVAL_UPDATE") == "1" {
+	if os.Getenv("ASSAY_EVAL_UPDATE") == "1" {
 		if err := writeGolden(goldenPath, got); err != nil {
 			t.Fatalf("write golden: %v", err)
 		}
@@ -117,7 +117,7 @@ func TestLiveVersionGate(t *testing.T) {
 	}
 	want, err := loadGolden(goldenPath)
 	if err != nil {
-		t.Fatalf("load golden (regenerate with TEGRON_EVAL_UPDATE=1): %v", err)
+		t.Fatalf("load golden (regenerate with ASSAY_EVAL_UPDATE=1): %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
 		gj, _ := json.MarshalIndent(got, "", "  ")

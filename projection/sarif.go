@@ -1,6 +1,6 @@
 // internal/projection/sarif.go
 //
-// SARIF 2.1.0 projection of a Tegron PoE verdict.
+// SARIF 2.1.0 projection of a PoE verdict.
 //
 // Mapping rationale (inv.5 honesty rule):
 //   - proven   exploitable       → level "error"   (confirmed exploit fire)
@@ -40,7 +40,7 @@ func sarifLevel(p verdict.PoE) string {
 	case p.Direction == verdict.DirectionNotExploitable && p.Strength == verdict.StrengthProven:
 		return "note"
 	case p.Direction == verdict.DirectionIndeterminate:
-		// Nothing established (ADR 0016): not an error/warning finding, but kind="review" (sarifKind)
+		// Nothing established: not an error/warning finding, but kind="review" (sarifKind)
 		// marks it for a human to look at. Never narrated as a safe result — see sarifMessage.
 		return "none"
 	default: // reasoned_not_exploitable
@@ -157,7 +157,7 @@ type SARIFRegion struct {
 
 // SARIFProperties carries scanner-specific extension fields under the "scanner" key.
 type SARIFProperties struct {
-	Tegron map[string]any `json:"scanner,omitempty"`
+	Scanner map[string]any `json:"scanner,omitempty"`
 }
 
 // ProjectSARIF converts a PoE into a SARIF 2.1.0 log.
@@ -206,7 +206,7 @@ func ProjectSARIF(p verdict.PoE) (*SARIFLog, error) {
 		Message: SARIFMessage{
 			Text: msg,
 		},
-		Properties: &SARIFProperties{Tegron: props},
+		Properties: &SARIFProperties{Scanner: props},
 	}
 
 	log := &SARIFLog{

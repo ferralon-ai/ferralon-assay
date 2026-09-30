@@ -94,9 +94,9 @@ func LoadVulnClass() ([]VulnClassFixture, error) {
 
 // LoadJavaVulnClass reads and validates every Java vuln-class fixture (the
 // Increment-1 corpus). It is kept in a SEPARATE embedded dir from the Go fixtures
-// so the Go live trial (TestLiveVulnClass, which drives tegron-plugin-go) never
+// so the Go live trial (TestLiveVulnClass, which drives assay-plugin-go) never
 // picks up a Java repro it cannot build, and the Java live trial
-// (TestLiveJavaVulnClass, which drives tegron-plugin-java) never picks up a Go one.
+// (TestLiveJavaVulnClass, which drives assay-plugin-java) never picks up a Go one.
 func LoadJavaVulnClass() ([]VulnClassFixture, error) {
 	return loadVulnClassFrom(vulnclassJavaEmbedded, "vulnclass_java")
 }
@@ -116,7 +116,7 @@ func LoadJavaSpringVulnClass() ([]VulnClassFixture, error) {
 // LoadJSVulnClass reads and validates every JS/TS vuln-class fixture (the JS
 // Increment-1 corpus). It is kept in a SEPARATE embedded dir from the Go/Java
 // fixtures so each language's live trial drives only its own plugin over repros it
-// can build: TestLiveJSVulnClass (tegron-plugin-js) never picks up a Go/Java repro,
+// can build: TestLiveJSVulnClass (assay-plugin-js) never picks up a Go/Java repro,
 // and the Go/Java trials never pick up a JS one.
 func LoadJSVulnClass() ([]VulnClassFixture, error) {
 	return loadVulnClassFrom(vulnclassJSEmbedded, "vulnclass_js")
@@ -128,7 +128,7 @@ func LoadJSVulnClass() ([]VulnClassFixture, error) {
 // lane's in-container javac), so no compiled artifact is checked in. It is kept in
 // a SEPARATE embedded dir from the Go/Java/JS fixtures so each language's live
 // trial drives only its own plugin over repros it can build: TestLiveKotlinVulnClass
-// (tegron-plugin-kotlin) never picks up a Go/Java/JS repro, and those trials never
+// (assay-plugin-kotlin) never picks up a Go/Java/JS repro, and those trials never
 // pick up a Kotlin one.
 func LoadKotlinVulnClass() ([]VulnClassFixture, error) {
 	return loadVulnClassFrom(vulnclassKotlinEmbedded, "vulnclass_kotlin")

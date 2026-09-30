@@ -100,7 +100,7 @@ func TestTier0_ForkedPR_NoToken(t *testing.T) {
 	t.Setenv(ghsink.EnvStepSummary, summaryPath)
 	// GITHUB_TOKEN deliberately left empty (forked-PR read-only / absent).
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{})
 	if env.Token != "" {
 		t.Fatalf("expected empty token in forked-PR fixture, got %q", env.Token)
 	}

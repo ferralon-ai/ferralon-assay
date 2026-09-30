@@ -7,16 +7,18 @@ import (
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // javaPlugin is the out-of-process client for the Java language plugin. It is the
 // exact analog of goPlugin: it implements LanguagePlugin by execing the
-// tegron-plugin-java subprocess once per operation and exchanging a single
+// assay-plugin-java subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout. Like
 // goPlugin it imports neither internal/plugin/javaanalysis nor any heavy parsing
 // code — the Java analysis links only into the subprocess binary (inv.8).
 type javaPlugin struct {
-	bin string // resolved path to the tegron-plugin-java binary
+	bin string   // resolved path to the assay-plugin-java binary
+	env []string // KEY=VALUE pairs added to the subprocess environment
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,24 +29,55 @@ var _ LanguagePlugin = (*javaPlugin)(nil)
 // JavaOption configures a javaPlugin during construction.
 type JavaOption func(*javaPlugin)
 
-// WithJavaBinaryPath sets an explicit path to the tegron-plugin-java binary,
+// WithJavaBinaryPath sets an explicit path to the assay-plugin-java binary,
 // taking precedence over PATH lookup.
 func WithJavaBinaryPath(path string) JavaOption {
 	return func(p *javaPlugin) { p.bin = path }
 }
 
+// WithJavaAnalyzerImage opens the subprocess's Prove-path analyzer gate: the
+// call_graph, find_ingresses, reachability and compute_taint ops run the given
+// digest-pinned scip-java image over the build dir. Without it the subprocess
+// inherits the gate setting from this process's environment. An empty image
+// adds nothing.
+func WithJavaAnalyzerImage(image string) JavaOption {
+	return withJavaEnv(javaAnalyzerImageEnv, image)
+}
+
+// WithJavaAnalyzerDocker sets the docker binary the subprocess runs the analyzer
+// image with (default "docker"). An empty bin adds nothing.
+func WithJavaAnalyzerDocker(bin string) JavaOption {
+	return withJavaEnv(javaAnalyzerDockerEnv, bin)
+}
+
+// The subprocess reads the analyzer settings from these env vars (see
+// cmd/assay-plugin-java), so the options travel on the child's environment
+// rather than on the plugin protocol.
+const (
+	javaAnalyzerImageEnv  = brand.EnvPrefix + "_JAVA_ANALYZER_IMAGE"
+	javaAnalyzerDockerEnv = brand.EnvPrefix + "_JAVA_ANALYZER_DOCKER"
+)
+
+func withJavaEnv(key, value string) JavaOption {
+	return func(p *javaPlugin) {
+		if value != "" {
+			p.env = append(p.env, key+"="+value)
+		}
+	}
+}
+
 // NewJavaPlugin constructs the subprocess-backed Java plugin client. Binary
 // discovery mirrors NewGoPlugin: an explicit path via WithJavaBinaryPath takes
-// precedence; otherwise exec.LookPath resolves "tegron-plugin-java" on PATH.
+// precedence; otherwise exec.LookPath resolves BinaryName("java") on PATH.
 func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
 	p := &javaPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-java")
+		bin, err := exec.LookPath(BinaryName("java"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-java: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("java"), err)
 		}
 		p.bin = bin
 	}
@@ -59,7 +92,7 @@ func (*javaPlugin) Language() string { return "java" }
 // identical in shape to goPlugin.run/jsPlugin.run/pythonPlugin.run/dotnetPlugin.run.
 func (p *javaPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

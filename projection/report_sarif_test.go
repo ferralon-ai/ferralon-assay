@@ -41,7 +41,7 @@ func TestReportSARIF_Inv5_NoErrorLevel(t *testing.T) {
 		if r.Level != "error" {
 			continue
 		}
-		if v, _ := r.Properties.Tegron["verdict"].(string); v != string(report.VerdictMaliciousPresent) {
+		if v, _ := r.Properties.Scanner["verdict"].(string); v != string(report.VerdictMaliciousPresent) {
 			t.Fatalf("inv.5 VIOLATION: %q got level=error for verdict %q — only malicious_package_present may be error", r.RuleID, v)
 		}
 	}
@@ -75,7 +75,7 @@ func TestReportSARIF_CandidateCarriesPathProperty(t *testing.T) {
 	}
 	for _, r := range log.Runs[0].Results {
 		if r.RuleID == "CVE-2023-39325" {
-			if r.Properties == nil || r.Properties.Tegron["reachable_path"] == nil {
+			if r.Properties == nil || r.Properties.Scanner["reachable_path"] == nil {
 				t.Fatalf("candidate result missing reachable_path property")
 			}
 			return
@@ -188,7 +188,7 @@ func TestReportSARIF_Priority_SetsRankAndProperties(t *testing.T) {
 	if priorityResult.Properties == nil {
 		t.Fatal("properties is nil")
 	}
-	props := priorityResult.Properties.Tegron
+	props := priorityResult.Properties.Scanner
 
 	if v, ok := props["epss_score"]; !ok || v != 0.940 {
 		t.Errorf("epss_score: got %v (ok=%v), want 0.940", v, ok)
@@ -251,7 +251,7 @@ func TestReportSARIF_NilPriority_NoRankNoIntelProps(t *testing.T) {
 		t.Errorf("nil-Priority finding has rank set; want nil, got %v", *noPriResult.Rank)
 	}
 	if noPriResult.Properties != nil {
-		props := noPriResult.Properties.Tegron
+		props := noPriResult.Properties.Scanner
 		if _, ok := props["epss_score"]; ok {
 			t.Error("nil-Priority finding unexpectedly has epss_score property")
 		}

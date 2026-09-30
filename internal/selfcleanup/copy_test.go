@@ -47,9 +47,6 @@ func TestCleanupCopyNamesTheRealStateRef(t *testing.T) {
 				if tc.ref != statestore.DefaultRef && strings.Contains(body, statestore.DefaultRef) {
 					t.Errorf("%s names statestore.DefaultRef (%q) even though this run's configured ref is %q — an operator with a custom state-ref would be told the wrong ref was removed", name, statestore.DefaultRef, tc.ref)
 				}
-				if strings.Contains(body, "refs/tegron/state") && tc.ref != "refs/tegron/state" {
-					t.Errorf("%s still contains the stale literal \"refs/tegron/state\"", name)
-				}
 			}
 		})
 	}

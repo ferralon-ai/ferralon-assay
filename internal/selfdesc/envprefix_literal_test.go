@@ -10,26 +10,11 @@
 // downstream rebrand silently misses, exactly the failure stateref_literal_test.go guards
 // against for the state ref.
 //
-// internal/brand already carries a wider gate for this shape
-// (brand_envliteral_gate_test.go, TestNoHardcodedBrandEnvLiteral), with an allowlist for
-// genuinely internal knobs and an EnvOrLegacy call-site exemption for the retired
-// NUCLEON_/TEGRON_ names. This test does not attempt to replace that: it is deliberately
-// narrower (it flags ONLY the current prefix, so it needs no legacy-fallback exemption — a
-// legacy literal never matches this pattern by construction) and deliberately more paranoid
-// about one specific thing — it derives its own matcher from brand.EnvPrefix at test-RUN time,
-// never a hardcoded prefix string in its own source, so it keeps working unattended across a
-// future rebrand. Verified this session that the OTHER gate's tree-scan root
-// (filepath.Dir(filepath.Dir(thisFile)) in brand_envliteral_gate_test.go) is stale since the
-// internal/ move: it now resolves to ferralon-assay/internal, not the module root, so it
-// currently misses cmd/, telemetry/, projection/, statestore/, and everything else outside
-// internal/. Filed as a defect for whoever owns internal/brand/ (see this dispatch's deposit) —
-// not fixed here, out of this dispatch's file ownership. This test uses moduleRoot, the same
-// correctly-anchored constant stateref_literal_test.go already relies on, so it is not subject
-// to that bug.
-//
-// Legacy TEGRON_/NUCLEON_ literals are NOT flagged here — they are deliberate EnvOrLegacy
-// fallbacks (see run.go), and this test only ever matches whatever brand.EnvPrefix holds right
-// now.
+// internal/brand carries the wider gates (brand_envliteral_gate_test.go): the same literal check
+// plus TestEnvReadsStayAtEntryPoints, which decides which packages may read which variables. This
+// test does not attempt to replace them. It stays deliberately narrow and self-contained: it flags
+// ONLY the current prefix, has no allowlist, and derives its matcher from brand.EnvPrefix at
+// test-RUN time, so it keeps working unattended across a future rebrand.
 package selfdesc
 
 import (

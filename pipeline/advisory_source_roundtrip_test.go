@@ -192,7 +192,7 @@ var (
 		"prioritization_signal": true,
 		"band":                  true,
 		// v3 verdict-key bright line (B1 §4.1): the corpus must be structurally incapable of
-		// originating a Tegron verdict. None of these can land on advisoryDoc — same enforcement as
+		// originating an Assay verdict. None of these can land on advisoryDoc — same enforcement as
 		// CVSS exclusion (there is no field it could land in) — and the wire bytes must never carry
 		// them either. Extends the roundtrip invariant to the v3 additive block.
 		"exploitability_verdict":  true,

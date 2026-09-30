@@ -9,7 +9,7 @@ import (
 // springReproSrc is the source root of the vendored Spring SSRF repro (Maven
 // layout). The pure-Go lexical analyzer runs over it WITHOUT the analyzer
 // container (the gate is unset in these hermetic tests).
-const springReproSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-vulnerable/src/main/java"
+const springReproSrc = "../../../corpus/testdata/repros/FERRALON-JAVA-SPRING-SSRF-0001-vulnerable/src/main/java"
 
 // TestSpringRepro_BeanGraphBridgesDispatch proves the DI bean model closes the exact
 // verdict gap this repro was built to demonstrate — on the Assess path, with the Prove
@@ -24,7 +24,6 @@ const springReproSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SPRING-SSRF-
 // because other, genuinely-unresolvable library calls (java.net.* and the stub helpers)
 // remain unresolved. The bean hop is bridged; the residual is not silently retired.
 func TestSpringRepro_BeanGraphBridgesDispatch(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "") // gate closed: pure-Go Assess path only.
 	ctx := t.Context()
 
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: springReproSrc})

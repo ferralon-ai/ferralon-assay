@@ -32,7 +32,7 @@ Two cases are worth calling out because they look like they should leak and do n
 - **`telemetry`** hands the host an OpenTelemetry setup without ever naming an otel type in its
   signatures. `Provider` holds its `MeterProvider` and `TracerProvider` in unexported fields, and
   its whole exported surface is `New`, `Enabled`, `Level`, `Shutdown`, `Config`, `Level`,
-  `ParseLevel`, and some string constants. It installs providers through the otel globals, so you
+  `ParseLevel`, and the `Level` tier constants. It installs providers through the otel globals, so you
   reach instrumentation via `otel.Meter(...)` in your own code rather than through a value we hand
   back. That is deliberate and worth preserving — returning the concrete `*sdkmetric.MeterProvider`
   for caller convenience would create the exception this design avoids.

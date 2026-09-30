@@ -124,7 +124,7 @@ func TestReportSARIF_WithheldAdvisoriesNamedInPartialityResult(t *testing.T) {
 	for i := range run.Results {
 		if run.Results[i].RuleID == projection.PartialCoverageRuleID &&
 			run.Results[i].Properties != nil &&
-			run.Results[i].Properties.Tegron["partiality_reason"] == report.ReasonGoToolchainNotScanned {
+			run.Results[i].Properties.Scanner["partiality_reason"] == report.ReasonGoToolchainNotScanned {
 			toolchainResult = &run.Results[i]
 		}
 	}
@@ -134,12 +134,12 @@ func TestReportSARIF_WithheldAdvisoriesNamedInPartialityResult(t *testing.T) {
 	if toolchainResult.Level != "warning" || toolchainResult.Kind != "review" {
 		t.Errorf("go-toolchain limit = level %q / kind %q, want warning/review (loud arm)", toolchainResult.Level, toolchainResult.Kind)
 	}
-	if _, hasVerdict := toolchainResult.Properties.Tegron["verdict"]; hasVerdict {
+	if _, hasVerdict := toolchainResult.Properties.Scanner["verdict"]; hasVerdict {
 		t.Error("the coverage-limit result carries a verdict property; it asserts none")
 	}
-	ids, ok := toolchainResult.Properties.Tegron["withheld_advisories"].([]string)
+	ids, ok := toolchainResult.Properties.Scanner["withheld_advisories"].([]string)
 	if !ok {
-		t.Fatalf("withheld_advisories = %v (%T), want []string", toolchainResult.Properties.Tegron["withheld_advisories"], toolchainResult.Properties.Tegron["withheld_advisories"])
+		t.Fatalf("withheld_advisories = %v (%T), want []string", toolchainResult.Properties.Scanner["withheld_advisories"], toolchainResult.Properties.Scanner["withheld_advisories"])
 	}
 	wantIDs := []string{"CVE-2023-39325", "CVE-2023-45283", "GO-2021-0264"}
 	if len(ids) != len(wantIDs) {
@@ -161,7 +161,7 @@ func TestReportSARIF_WithheldAdvisoriesNamedInPartialityResult(t *testing.T) {
 	if disqualifiedResult == nil {
 		t.Fatal("no SARIF result for the disqualified advisory")
 	}
-	if got := disqualifiedResult.Properties.Tegron["verdict"]; got != string(report.VerdictDisqualified) {
+	if got := disqualifiedResult.Properties.Scanner["verdict"]; got != string(report.VerdictDisqualified) {
 		t.Errorf("the disqualified finding's verdict = %v, want %q", got, report.VerdictDisqualified)
 	}
 

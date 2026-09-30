@@ -11,12 +11,12 @@ import (
 
 // dotnetPlugin is the out-of-process client for the .NET/C# language plugin. It is the
 // exact analog of goPlugin/javaPlugin/jsPlugin/pythonPlugin: it implements LanguagePlugin
-// by execing the tegron-plugin-dotnet subprocess once per operation and exchanging a single
+// by execing the assay-plugin-dotnet subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout. Like the others it
 // imports neither internal/plugin/dotnetanalysis nor any parsing code — the .NET analysis
 // links only into the subprocess binary (inv.8).
 type dotnetPlugin struct {
-	bin string // resolved path to the tegron-plugin-dotnet binary
+	bin string // resolved path to the assay-plugin-dotnet binary
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,7 +27,7 @@ var _ LanguagePlugin = (*dotnetPlugin)(nil)
 // DotNetOption configures a dotnetPlugin during construction.
 type DotNetOption func(*dotnetPlugin)
 
-// WithDotNetBinaryPath sets an explicit path to the tegron-plugin-dotnet binary, taking
+// WithDotNetBinaryPath sets an explicit path to the assay-plugin-dotnet binary, taking
 // precedence over PATH lookup.
 func WithDotNetBinaryPath(path string) DotNetOption {
 	return func(p *dotnetPlugin) { p.bin = path }
@@ -35,16 +35,16 @@ func WithDotNetBinaryPath(path string) DotNetOption {
 
 // NewDotNetPlugin constructs the subprocess-backed .NET plugin client. Binary discovery
 // mirrors NewGoPlugin/NewJSPlugin/NewPythonPlugin: an explicit path via WithDotNetBinaryPath
-// takes precedence; otherwise exec.LookPath resolves "tegron-plugin-dotnet" on PATH.
+// takes precedence; otherwise exec.LookPath resolves BinaryName("dotnet") on PATH.
 func NewDotNetPlugin(opts ...DotNetOption) (LanguagePlugin, error) {
 	p := &dotnetPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-dotnet")
+		bin, err := exec.LookPath(BinaryName("dotnet"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-dotnet: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("dotnet"), err)
 		}
 		p.bin = bin
 	}

@@ -14,9 +14,8 @@ func TestDetectEnv_ReadsEnvironment(t *testing.T) {
 	t.Setenv(ghsink.EnvRepository, "owner/repo")
 	t.Setenv(ghsink.EnvEventName, "push")
 	t.Setenv(ghsink.EnvWorkspace, "/work")
-	t.Setenv(ghsink.EnvPagesOptIn, "")
 
-	env := ghsink.DetectEnv()
+	env := ghsink.DetectEnv(ghsink.Toggles{})
 	if !env.InActions {
 		t.Error("InActions should be true")
 	}
@@ -29,51 +28,53 @@ func TestDetectEnv_ReadsEnvironment(t *testing.T) {
 	if env.PagesOptIn {
 		t.Error("PagesOptIn should default off")
 	}
-	// The three opt-OUT surfaces default ON when their env vars are absent.
+	// The three opt-OUT surfaces default ON under the zero-value Toggles.
 	if !env.CodeScanningEnabled {
-		t.Error("CodeScanningEnabled should default on (absent env)")
+		t.Error("CodeScanningEnabled should default on (zero Toggles)")
 	}
 	if !env.PRCommentEnabled {
-		t.Error("PRCommentEnabled should default on (absent env)")
+		t.Error("PRCommentEnabled should default on (zero Toggles)")
 	}
 	if !env.IssueEnabled {
-		t.Error("IssueEnabled should default on (absent env)")
+		t.Error("IssueEnabled should default on (zero Toggles)")
 	}
 }
 
-// TestDetectEnv_OptOutToggles asserts the per-surface opt-OUT env vars are ENABLED
-// unless set to an explicit "false"/"0", and that any other value (incl. absent)
-// reads as enabled — the auto-on, opt-out contract.
-func TestDetectEnv_OptOutToggles(t *testing.T) {
+// TestToggleParsers pins the value semantics hosts use to build Toggles: the opt-IN Pages switch
+// is on only for "true"/"1", and a per-surface opt-OUT switch disables only on an explicit
+// "false"/"0" — absent or any other value leaves the surface enabled (the auto-on contract).
+func TestToggleParsers(t *testing.T) {
 	cases := []struct {
-		name        string
-		value       string
-		wantEnabled bool
+		value        string
+		wantOptIn    bool
+		wantOptedOut bool
 	}{
-		{"absent → enabled", "", true},
-		{"true → enabled", "true", true},
-		{"1 → enabled", "1", true},
-		{`"false" → disabled`, "false", false},
-		{`"0" → disabled`, "0", false},
-		{"any other value → enabled", "yes", true},
+		{"", false, false},
+		{"true", true, false},
+		{"1", true, false},
+		{"false", false, true},
+		{"0", false, true},
+		{"yes", false, false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(ghsink.EnvCodeScanning, tc.value)
-			t.Setenv(ghsink.EnvPRComment, tc.value)
-			t.Setenv(ghsink.EnvIssue, tc.value)
+		if got := ghsink.OptIn(tc.value); got != tc.wantOptIn {
+			t.Errorf("OptIn(%q) = %v, want %v", tc.value, got, tc.wantOptIn)
+		}
+		if got := ghsink.OptedOut(tc.value); got != tc.wantOptedOut {
+			t.Errorf("OptedOut(%q) = %v, want %v", tc.value, got, tc.wantOptedOut)
+		}
+	}
+}
 
-			env := ghsink.DetectEnv()
-			if env.CodeScanningEnabled != tc.wantEnabled {
-				t.Errorf("CodeScanningEnabled(%q) = %v, want %v", tc.value, env.CodeScanningEnabled, tc.wantEnabled)
-			}
-			if env.PRCommentEnabled != tc.wantEnabled {
-				t.Errorf("PRCommentEnabled(%q) = %v, want %v", tc.value, env.PRCommentEnabled, tc.wantEnabled)
-			}
-			if env.IssueEnabled != tc.wantEnabled {
-				t.Errorf("IssueEnabled(%q) = %v, want %v", tc.value, env.IssueEnabled, tc.wantEnabled)
-			}
-		})
+// TestDetectEnv_Toggles asserts DetectEnv maps each toggle onto its Env field, independently.
+func TestDetectEnv_Toggles(t *testing.T) {
+	env := ghsink.DetectEnv(ghsink.Toggles{Pages: true, DisableCodeScanning: true})
+	if !env.PagesOptIn || env.CodeScanningEnabled || !env.PRCommentEnabled || !env.IssueEnabled {
+		t.Errorf("Pages+DisableCodeScanning: got %+v", env)
+	}
+	env = ghsink.DetectEnv(ghsink.Toggles{DisablePRComment: true, DisableIssue: true})
+	if env.PagesOptIn || !env.CodeScanningEnabled || env.PRCommentEnabled || env.IssueEnabled {
+		t.Errorf("DisablePRComment+DisableIssue: got %+v", env)
 	}
 }
 

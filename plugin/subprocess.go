@@ -6,12 +6,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
+
+// BinaryName returns the executable name of the analyzer subprocess for language (e.g. "go",
+// "java"): the name each New*Plugin constructor resolves on PATH when no explicit binary path is
+// given. Callers that stage or probe for an analyzer binary use it rather than spelling the name.
+func BinaryName(language string) string {
+	return brand.PluginPrefix + language
+}
 
 // runSubprocessCall is the ONE shared choke point every language plugin's run funnels through,
 // and so the one place analyzer compute is metered.
@@ -26,9 +36,9 @@ import (
 // It emits tegron.plugin.call.count + .duration exactly once per call, carrying cost_class=cogs,
 // the REAL per-plugin language (the caller's own Language(), never a hard-coded constant),
 // plugin.op, and — on failure — error.type.
-func runSubprocessCall(ctx context.Context, bin, language string, metrics *pluginMetrics, req Request) (*Response, error) {
+func runSubprocessCall(ctx context.Context, bin, language string, metrics *pluginMetrics, req Request, env ...string) (*Response, error) {
 	start := time.Now()
-	resp, err := execSubprocess(ctx, bin, req)
+	resp, err := execSubprocess(ctx, bin, req, env...)
 
 	attrs := []attribute.KeyValue{
 		attribute.String(attrCostClass, costClassCOGS),
@@ -47,10 +57,11 @@ func runSubprocessCall(ctx context.Context, bin, language string, metrics *plugi
 // execSubprocess performs one bounded subprocess exchange, shared by every language plugin's run:
 // marshal req to a single newline-JSON line, exec.CommandContext the binary, write the line to
 // stdin and close it, read one newline-delimited JSON line from stdout, Wait, unmarshal the
-// Response, and verify the protocol version. Any non-empty Response.Error, non-zero exit, or
+// Response, and verify the protocol version. env, when given, is appended to the inherited
+// environment of the child (KEY=VALUE pairs; a later entry wins over an inherited one). Any non-empty Response.Error, non-zero exit, or
 // transport failure is mapped to a wrapped Go error with ZERO retries (inv.4). On success it
 // returns the decoded Response; declared partiality lives in the payload, not here (§4.3).
-func execSubprocess(ctx context.Context, bin string, req Request) (*Response, error) {
+func execSubprocess(ctx context.Context, bin string, req Request, env ...string) (*Response, error) {
 	req.Protocol = ProtocolVersion
 
 	reqLine, err := json.Marshal(req)
@@ -60,6 +71,9 @@ func execSubprocess(ctx context.Context, bin string, req Request) (*Response, er
 	reqLine = append(reqLine, '\n')
 
 	cmd := exec.CommandContext(ctx, bin)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.Stdin = bytes.NewReader(reqLine)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

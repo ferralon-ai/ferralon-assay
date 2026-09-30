@@ -21,7 +21,7 @@ func runNPMRangeDisqual(t *testing.T, bound, resolvedVersion string) DisqualResu
 	store := artifact.NewMemStore()
 	caseID := "case-npm-range"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id":         "TEGRON-JS-RANGE-0001",
+		"vuln_id":         "FERRALON-JS-RANGE-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": bound, "scheme": "npm"}},
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})

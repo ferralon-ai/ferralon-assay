@@ -4,7 +4,7 @@
 // `live` build tag. Run it with `go test -tags live ./internal/plugin/...`.
 //
 // Unlike the hermetic java_client_test.go (which re-execs the test binary with a
-// canned helper), this test builds the REAL cmd/tegron-plugin-java binary to a
+// canned helper), this test builds the REAL cmd/assay-plugin-java binary to a
 // temp dir, points a javaPlugin at it, and drives IndexSymbols end-to-end over
 // exec + JSON/stdio against the offline javaanalysis/testdata/fixturejar source
 // tree. It proves the full transport + subprocess dispatch + real Java parser
@@ -24,10 +24,10 @@ import (
 
 func buildJavaPluginBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "tegron-plugin-java")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/tegron-plugin-java")
+	bin := filepath.Join(t.TempDir(), "assay-plugin-java")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/assay-plugin-java")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build tegron-plugin-java: %v\n%s", err, out)
+		t.Fatalf("go build assay-plugin-java: %v\n%s", err, out)
 	}
 	return bin
 }
@@ -88,7 +88,7 @@ func TestLiveJava_IndexSymbols(t *testing.T) {
 func TestLiveJava_ResolveDependencyVersions(t *testing.T) {
 	p := newLiveJavaPlugin(t)
 	_, thisFile, _, _ := runtime.Caller(0)
-	repro := filepath.Join(filepath.Dir(thisFile), "..", "corpus", "testdata", "repros", "TEGRON-JAVA-DEP-0001-patched")
+	repro := filepath.Join(filepath.Dir(thisFile), "..", "corpus", "testdata", "repros", "FERRALON-JAVA-DEP-0001-patched")
 	res, err := p.ResolveDependencyVersions(context.Background(), ResolveVersionsRequest{
 		BuildDir:   repro,
 		Coordinate: "com.example.lib:widget",

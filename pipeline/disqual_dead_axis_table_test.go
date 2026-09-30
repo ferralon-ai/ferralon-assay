@@ -207,7 +207,7 @@ func deadAxisCases() []deadAxisCase {
 		},
 		{
 			scheme: "maven",
-			vulnID: "TEGRON-JAVA-DEP-0001", // com.example.lib:widget, fixed 1.4.0
+			vulnID: "FERRALON-JAVA-DEP-0001", // com.example.lib:widget, fixed 1.4.0
 			lang:   "java",
 			files: map[string]string{
 				"pom.xml": `<project>
@@ -220,7 +220,7 @@ func deadAxisCases() []deadAxisCase {
 		},
 		{
 			scheme: "npm",
-			vulnID: "TEGRON-JS-DEP-0001", // left-pad, fixed 1.4.0
+			vulnID: "FERRALON-JS-DEP-0001", // left-pad, fixed 1.4.0
 			lang:   "js",
 			files: map[string]string{
 				"package-lock.json": `{
@@ -235,7 +235,7 @@ func deadAxisCases() []deadAxisCase {
 		},
 		{
 			scheme: "pypi",
-			vulnID: "TEGRON-PY-DEP-0001", // flask, fixed 2.3.2
+			vulnID: "FERRALON-PY-DEP-0001", // flask, fixed 2.3.2
 			lang:   "python",
 			files: map[string]string{
 				"requirements.txt": "flask==2.3.1\n",
@@ -243,7 +243,7 @@ func deadAxisCases() []deadAxisCase {
 		},
 		{
 			scheme: "nuget",
-			vulnID: "TEGRON-NET-DEP-0001", // Newtonsoft.Json, fixed 13.0.1
+			vulnID: "FERRALON-NET-DEP-0001", // Newtonsoft.Json, fixed 13.0.1
 			lang:   "dotnet",
 			files: map[string]string{
 				"App.csproj": `<Project Sdk="Microsoft.NET.Sdk">

@@ -42,12 +42,12 @@ func TestArtifactSource_ManifestReadOnceAcrossLookups(t *testing.T) {
 		wantOK    bool
 		wantValid bool
 	}{
-		{"hit", advisoryFixtureRoot, "TEGRON-TEST-0001", true, true},
-		{"missing id", advisoryFixtureRoot, "TEGRON-TEST-NOPE", false, true},
-		{"digest mismatch", advisoryFixtureRoot, "TEGRON-TEST-BADDIGEST", false, true},
-		{"manifest read error", "testdata/advisory_source/does-not-exist", "TEGRON-TEST-0001", false, false},
-		{"record_count mismatch", "testdata/advisory_source/badcount", "TEGRON-TEST-BADCOUNT", false, false},
-		{"duplicate identifier", "testdata/advisory_source/dupid", "TEGRON-TEST-DUP", false, false},
+		{"hit", advisoryFixtureRoot, "FERRALON-TEST-0001", true, true},
+		{"missing id", advisoryFixtureRoot, "FERRALON-TEST-NOPE", false, true},
+		{"digest mismatch", advisoryFixtureRoot, "FERRALON-TEST-BADDIGEST", false, true},
+		{"manifest read error", "testdata/advisory_source/does-not-exist", "FERRALON-TEST-0001", false, false},
+		{"record_count mismatch", "testdata/advisory_source/badcount", "FERRALON-TEST-BADCOUNT", false, false},
+		{"duplicate identifier", "testdata/advisory_source/dupid", "FERRALON-TEST-DUP", false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,9 +81,9 @@ func TestArtifactSource_ManifestReadOnceAcrossLookups(t *testing.T) {
 // identical to a fresh source's first Lookup.
 func TestArtifactSource_IndexedLookupMatchesFreshSource(t *testing.T) {
 	cached := NewArtifactSource(advisoryFixtureRoot)
-	cached.Lookup("TEGRON-TEST-NOPE") // force the load through a miss first
-	got, ok := cached.Lookup("TEGRON-TEST-0001")
-	want, wantOK := NewArtifactSource(advisoryFixtureRoot).Lookup("TEGRON-TEST-0001")
+	cached.Lookup("FERRALON-TEST-NOPE") // force the load through a miss first
+	got, ok := cached.Lookup("FERRALON-TEST-0001")
+	want, wantOK := NewArtifactSource(advisoryFixtureRoot).Lookup("FERRALON-TEST-0001")
 	if ok != wantOK || !ok {
 		t.Fatalf("ok=%v, fresh ok=%v, want both true", ok, wantOK)
 	}
@@ -104,8 +104,8 @@ func TestArtifactSource_ConcurrentLookupLoadsOnce(t *testing.T) {
 			defer wg.Done()
 			switch i % 3 {
 			case 0:
-				if _, ok := src.Lookup("TEGRON-TEST-0001"); !ok {
-					t.Error("concurrent Lookup(TEGRON-TEST-0001) ok=false, want true")
+				if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
+					t.Error("concurrent Lookup(FERRALON-TEST-0001) ok=false, want true")
 				}
 			case 1:
 				if err := src.Validate(); err != nil {
@@ -124,21 +124,21 @@ func TestArtifactSource_ConcurrentLookupLoadsOnce(t *testing.T) {
 	}
 }
 
-// Two manifests over the same fixture documents: v1 names only TEGRON-TEST-0001, v2 adds
-// TEGRON-TEST-DATED. Lookup(TEGRON-TEST-DATED) therefore tells which manifest is being served.
+// Two manifests over the same fixture documents: v1 names only FERRALON-TEST-0001, v2 adds
+// FERRALON-TEST-DATED. Lookup(FERRALON-TEST-DATED) therefore tells which manifest is being served.
 const (
 	manifestV1 = `{"manifest_version":"1.0.0","schema_version":"ferralon.normalized_advisory.v2","record_count":1,"records":[
-{"identifier":"TEGRON-TEST-0001","path":"TEGRON-TEST-0001.json","output_digest":"sha256:7cc7b9eb242f9fb4ca238cea660520d01c204a3018b64c4bbc44d22a92497cd6"}]}`
+{"identifier":"FERRALON-TEST-0001","path":"FERRALON-TEST-0001.json","output_digest":"sha256:05b1935b9969a04c01692e9242601c91888ff0b88ab7660ecad362f2c8242644"}]}`
 	manifestV2 = `{"manifest_version":"1.0.0","schema_version":"ferralon.normalized_advisory.v2","record_count":2,"records":[
-{"identifier":"TEGRON-TEST-0001","path":"TEGRON-TEST-0001.json","output_digest":"sha256:7cc7b9eb242f9fb4ca238cea660520d01c204a3018b64c4bbc44d22a92497cd6"},
-{"identifier":"TEGRON-TEST-DATED","path":"2021/12/TEGRON-TEST-DATED.json","output_digest":"sha256:1095e15f7a1c807d14b2bb382ede9de219de9cb84c58a080b3f5d1b4a7a79a7c"}]}`
+{"identifier":"FERRALON-TEST-0001","path":"FERRALON-TEST-0001.json","output_digest":"sha256:05b1935b9969a04c01692e9242601c91888ff0b88ab7660ecad362f2c8242644"},
+{"identifier":"FERRALON-TEST-DATED","path":"2021/12/FERRALON-TEST-DATED.json","output_digest":"sha256:4c15d33aefa531d113fe4b1e441d5e09ea3bbfa9bedfc5550d3b67801992b5ea"}]}`
 )
 
 // mutableCorpus copies the two fixture documents into a temp root and writes manifest v1.
 func mutableCorpus(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, rel := range []string{"TEGRON-TEST-0001.json", "2021/12/TEGRON-TEST-DATED.json"} {
+	for _, rel := range []string{"FERRALON-TEST-0001.json", "2021/12/FERRALON-TEST-DATED.json"} {
 		data, err := os.ReadFile(filepath.Join(advisoryFixtureRoot, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -190,19 +190,19 @@ func TestArtifactSource_RefreshPicksUpRewrite(t *testing.T) {
 			if err := src.Validate(); err != nil {
 				t.Fatalf("Validate() = %v", err)
 			}
-			if _, ok := src.Lookup("TEGRON-TEST-DATED"); ok {
-				t.Fatal("v1 served TEGRON-TEST-DATED, want miss")
+			if _, ok := src.Lookup("FERRALON-TEST-DATED"); ok {
+				t.Fatal("v1 served FERRALON-TEST-DATED, want miss")
 			}
 
 			writeManifest(t, root, manifestV2, tc.rename)
-			if _, ok := src.Lookup("TEGRON-TEST-DATED"); ok {
+			if _, ok := src.Lookup("FERRALON-TEST-DATED"); ok {
 				t.Fatal("rewrite visible before Refresh: Lookup must not re-check the manifest")
 			}
 			if err := src.Refresh(); err != nil {
 				t.Fatalf("Refresh() after a valid rewrite = %v, want nil", err)
 			}
-			if _, ok := src.Lookup("TEGRON-TEST-DATED"); !ok {
-				t.Fatal("after Refresh, v2's TEGRON-TEST-DATED missed")
+			if _, ok := src.Lookup("FERRALON-TEST-DATED"); !ok {
+				t.Fatal("after Refresh, v2's FERRALON-TEST-DATED missed")
 			}
 			if info, ok := src.Describe(); !ok || info.Records != 2 {
 				t.Errorf("Describe() = %+v, %v; want 2 records", info, ok)
@@ -234,7 +234,7 @@ func TestArtifactSource_CorruptRewriteKeepsLastGoodIndex(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "serving the last good manifest") {
 				t.Fatalf("Refresh() after a corrupt rewrite = %v, want a reload error", err)
 			}
-			if _, ok := src.Lookup("TEGRON-TEST-DATED"); !ok {
+			if _, ok := src.Lookup("FERRALON-TEST-DATED"); !ok {
 				t.Error("corrupt rewrite dropped the last good index")
 			}
 			if err := src.Validate(); err != nil {
@@ -253,7 +253,7 @@ func TestArtifactSource_CorruptRewriteKeepsLastGoodIndex(t *testing.T) {
 	if err := src.Refresh(); err != nil {
 		t.Fatalf("Refresh() after repairing the manifest = %v, want nil", err)
 	}
-	if _, ok := src.Lookup("TEGRON-TEST-DATED"); ok {
+	if _, ok := src.Lookup("FERRALON-TEST-DATED"); ok {
 		t.Error("repaired v1 manifest not picked up")
 	}
 }
@@ -277,8 +277,8 @@ func TestArtifactSource_RefreshRecoversFromFailedInitialLoad(t *testing.T) {
 	if err := src.Validate(); err != nil {
 		t.Errorf("Validate() after recovery = %v, want nil", err)
 	}
-	if _, ok := src.Lookup("TEGRON-TEST-0001"); !ok {
-		t.Error("recovered source missed TEGRON-TEST-0001")
+	if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
+		t.Error("recovered source missed FERRALON-TEST-0001")
 	}
 }
 
@@ -292,7 +292,7 @@ func TestAdvisoryIntake_RefreshesCorpusAtAssessmentStart(t *testing.T) {
 	run := func() {
 		t.Helper()
 		c := &assessment.Assessment{ID: "a1", Request: assessment.Request{
-			Vulnerability: assessment.VulnRef{ID: "TEGRON-TEST-DATED", Source: "test"},
+			Vulnerability: assessment.VulnRef{ID: "FERRALON-TEST-DATED", Source: "test"},
 		}}
 		if err := (advisoryIntake{src: chain}).Run(context.Background(), c, artifact.NewMemStore()); err != nil {
 			t.Fatalf("advisory_intake: %v", err)
@@ -306,7 +306,7 @@ func TestAdvisoryIntake_RefreshesCorpusAtAssessmentStart(t *testing.T) {
 	}
 	writeManifest(t, root, manifestV2, true)
 	run()
-	if _, ok := corpus.Lookup("TEGRON-TEST-DATED"); !ok {
+	if _, ok := corpus.Lookup("FERRALON-TEST-DATED"); !ok {
 		t.Fatal("assessment start did not pick up the rewritten manifest")
 	}
 	if got := reads.Load(); got != 2 {
@@ -319,7 +319,7 @@ func TestAdvisoryIntake_RefreshesCorpusAtAssessmentStart(t *testing.T) {
 func TestArtifactSource_KnownIDsAndLookupEachFollowRefresh(t *testing.T) {
 	root := mutableCorpus(t)
 	src := NewArtifactSource(root).(*artifactSource)
-	ids := []string{"TEGRON-TEST-0001", "TEGRON-TEST-DATED", "TEGRON-TEST-ABSENT"}
+	ids := []string{"FERRALON-TEST-0001", "FERRALON-TEST-DATED", "FERRALON-TEST-ABSENT"}
 	check := func(wantIDs []string) {
 		t.Helper()
 		if got := src.KnownIDs(); !reflect.DeepEqual(got, wantIDs) {
@@ -333,14 +333,14 @@ func TestArtifactSource_KnownIDsAndLookupEachFollowRefresh(t *testing.T) {
 		})
 	}
 
-	check([]string{"TEGRON-TEST-0001"})
+	check([]string{"FERRALON-TEST-0001"})
 	writeManifest(t, root, manifestV2, true)
 	if err := src.Refresh(); err != nil {
 		t.Fatalf("Refresh() = %v", err)
 	}
-	check([]string{"TEGRON-TEST-0001", "TEGRON-TEST-DATED"})
-	if _, ok := src.Lookup("TEGRON-TEST-DATED"); !ok {
-		t.Error("after Refresh, v2's TEGRON-TEST-DATED missed")
+	check([]string{"FERRALON-TEST-0001", "FERRALON-TEST-DATED"})
+	if _, ok := src.Lookup("FERRALON-TEST-DATED"); !ok {
+		t.Error("after Refresh, v2's FERRALON-TEST-DATED missed")
 	}
 }
 
@@ -364,18 +364,18 @@ func TestArtifactSource_ConcurrentLookupDuringRefresh(t *testing.T) {
 					return
 				default:
 				}
-				if _, ok := src.Lookup("TEGRON-TEST-0001"); !ok {
-					t.Error("TEGRON-TEST-0001 missed during refresh; it is in every manifest")
+				if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
+					t.Error("FERRALON-TEST-0001 missed during refresh; it is in every manifest")
 					return
 				}
 				src.Describe()
-				if ids := src.KnownIDs(); len(ids) < 1 || len(ids) > 2 || ids[0] != "TEGRON-TEST-0001" {
+				if ids := src.KnownIDs(); len(ids) < 1 || len(ids) > 2 || ids[0] != "FERRALON-TEST-0001" {
 					t.Errorf("KnownIDs() during refresh = %v, want v1's or v2's id set", ids)
 					return
 				}
-				LookupEach(src, []string{"TEGRON-TEST-0001", "TEGRON-TEST-DATED"}, func(id string, _ AdvisoryFacts, ok bool) {
-					if id == "TEGRON-TEST-0001" && !ok {
-						t.Error("LookupEach missed TEGRON-TEST-0001 during refresh; it is in every manifest")
+				LookupEach(src, []string{"FERRALON-TEST-0001", "FERRALON-TEST-DATED"}, func(id string, _ AdvisoryFacts, ok bool) {
+					if id == "FERRALON-TEST-0001" && !ok {
+						t.Error("LookupEach missed FERRALON-TEST-0001 during refresh; it is in every manifest")
 					}
 				})
 			}

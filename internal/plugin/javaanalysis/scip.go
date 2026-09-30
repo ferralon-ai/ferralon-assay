@@ -1,5 +1,5 @@
 // Package javaanalysis is the in-process Java analysis engine that backs the
-// tegron-plugin-java subprocess. It parses Java source from a checked-out build
+// assay-plugin-java subprocess. It parses Java source from a checked-out build
 // directory with a focused, dependency-free declaration parser, emits stable
 // SCIP symbol identities for the declared types/methods/fields, and answers the
 // IndexSymbols operation of the LanguagePlugin contract in the plugin package.
@@ -16,7 +16,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the
 // shared value types. The FORBIDDEN edge is the reverse one — internal/plugin
 // MUST NOT import javaanalysis — so the parser links only into the subprocess
-// binary, never into tegrond.
+// binary, never into the host binary.
 package javaanalysis
 
 import (

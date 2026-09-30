@@ -10,7 +10,7 @@ import (
 // reproSrc is the source root of the vendored JS SSRF repro, relative to this
 // package. The hermetic first-party-reachability proof runs the REAL JS analysis
 // over it.
-const reproSrc = "../../../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable/src"
+const reproSrc = "../../../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable/src"
 
 // reverseReachable reports whether sink is reachable from any of entries over the
 // directed call-graph edges. This mirrors the pipeline's firstPartyReachPaths BFS
@@ -119,7 +119,7 @@ func TestFirstParty_ReproSinkReachableFromRouteIngress(t *testing.T) {
 // runtime allowlist forecloses the beacon, which is the live gate's call.
 func TestFirstParty_PatchedReproStillResolvesSinkAndIngress(t *testing.T) {
 	ctx := context.Background()
-	const patchedSrc = "../../../corpus/testdata/repros/TEGRON-JS-SSRF-0001-patched/src"
+	const patchedSrc = "../../../corpus/testdata/repros/FERRALON-JS-SSRF-0001-patched/src"
 
 	res, err := ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
 		BuildDir:        patchedSrc,
@@ -147,14 +147,14 @@ func TestFirstParty_PatchedReproStillResolvesSinkAndIngress(t *testing.T) {
 }
 
 // nextRCEVulnSrc / nextRCEFixedSrc are the source roots of the Next.js < 5.1.0
-// module-resolution RCE repro pair (TEGRON-JS-NEXTRCE-0001, GHSA-5vj8-3v2h-h38v).
+// module-resolution RCE repro pair (FERRALON-JS-NEXTRCE-0001, GHSA-5vj8-3v2h-h38v).
 // Unlike the SSRF repro (a runtime-guard patch that keeps the sink resolvable), this
 // pair proves the Assess-tier SYMBOL-REMOVAL flip: the advisory-named sink
 // requireModule resolves + is reachable at X (5.0.0) and no longer resolves at Y
 // (5.1.0), because 5.1.0 deleted requireModule (renamed to the guarded requirePage).
 const (
-	nextRCEVulnSrc  = "../../../corpus/testdata/repros/TEGRON-JS-NEXTRCE-0001-vulnerable/src"
-	nextRCEFixedSrc = "../../../corpus/testdata/repros/TEGRON-JS-NEXTRCE-0001-fixed/src"
+	nextRCEVulnSrc  = "../../../corpus/testdata/repros/FERRALON-JS-NEXTRCE-0001-vulnerable/src"
+	nextRCEFixedSrc = "../../../corpus/testdata/repros/FERRALON-JS-NEXTRCE-0001-fixed/src"
 )
 
 // TestFirstParty_NextRCE_VulnerableResolvesAndReachable is the reachable_candidate

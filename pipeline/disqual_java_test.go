@@ -21,7 +21,7 @@ import (
 )
 
 // javaVersionStub mimics the live Java plugin's ResolveDependencyVersions for the
-// TEGRON-JAVA-DEP-0001 repro: it returns the declared widget version the real pom resolver
+// FERRALON-JAVA-DEP-0001 repro: it returns the declared widget version the real pom resolver
 // produces. Resolved=false models the UNRESOLVED (BOM-managed) repro.
 type javaVersionStub struct {
 	plugin.StubPlugin
@@ -55,7 +55,7 @@ func runJavaDisqual(t *testing.T, repro string, stub plugin.LanguagePlugin) Disq
 	t.Helper()
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-" + repro, Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-JAVA-DEP-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-JAVA-DEP-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
 			Repo:     "com.example/dep-repro",
 			Revision: "v1",
@@ -76,7 +76,7 @@ func runJavaDisqual(t *testing.T, repro string, stub plugin.LanguagePlugin) Disq
 
 // PATCHED: widget declared at 1.4.0 == fixed (affects < 1.4.0) → provably outside → DISQUALIFIED.
 func TestJavaDisqual_PatchedVersion_Disqualifies(t *testing.T) {
-	res := runJavaDisqual(t, "TEGRON-JAVA-DEP-0001-patched", javaVersionStub{version: "1.4.0", resolved: true})
+	res := runJavaDisqual(t, "FERRALON-JAVA-DEP-0001-patched", javaVersionStub{version: "1.4.0", resolved: true})
 	if !res.Disqualified {
 		t.Fatalf("patched (widget 1.4.0 >= fixed 1.4.0) must DISQUALIFY, got %+v", res)
 	}
@@ -87,7 +87,7 @@ func TestJavaDisqual_PatchedVersion_Disqualifies(t *testing.T) {
 
 // VULNERABLE: widget declared at 1.3.9 < fixed 1.4.0 → inside affected range → PROCEEDS.
 func TestJavaDisqual_VulnerableVersion_Proceeds(t *testing.T) {
-	res := runJavaDisqual(t, "TEGRON-JAVA-DEP-0001-vulnerable", javaVersionStub{version: "1.3.9", resolved: true})
+	res := runJavaDisqual(t, "FERRALON-JAVA-DEP-0001-vulnerable", javaVersionStub{version: "1.3.9", resolved: true})
 	if res.Disqualified {
 		t.Fatalf("vulnerable (widget 1.3.9 < fixed 1.4.0) must PROCEED, got %+v", res)
 	}
@@ -99,7 +99,7 @@ func TestJavaDisqual_VulnerableVersion_Proceeds(t *testing.T) {
 // UNRESOLVED: the resolver could not determine the declared version (BOM-managed). The version
 // axis must FAIL OPEN — PROCEED, never a false not-affected (inv.5). This is the honesty guard.
 func TestJavaDisqual_UnresolvedVersion_FailsOpen(t *testing.T) {
-	res := runJavaDisqual(t, "TEGRON-JAVA-DEP-0001-unresolved", javaVersionStub{version: "", resolved: false})
+	res := runJavaDisqual(t, "FERRALON-JAVA-DEP-0001-unresolved", javaVersionStub{version: "", resolved: false})
 	if res.Disqualified {
 		t.Fatalf("UNRESOLVED version must FAIL OPEN (proceed), got disqualified %+v", res)
 	}
@@ -116,7 +116,7 @@ func TestJavaDisqual_NumericOrdering_NotLexical(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-numeric"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id":         "TEGRON-JAVA-DEP-0001",
+		"vuln_id":         "FERRALON-JAVA-DEP-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "1.4.9", "scheme": "maven"}},
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})

@@ -24,51 +24,35 @@ import (
 
 // Env var names for the flag/env-dual-channel run inputs (advisory corpus dir and requirement,
 // OSV work-set widening, declared and observed subject Go toolchain). Brand-derived so a
-// rebranded fork's --help output and action.yml env mapping carry no prior codename (see
-// brand.EnvPrefix); the retired NUCLEON_ and TEGRON_ literals are still honored via
-// brand.EnvOrLegacy for anything already set by hand — the shipped build was -tags stealth, so an
-// operator's workflow YAML may carry either name.
+// rebranded fork's --help output and action.yml env mapping carry its own prefix (see
+// brand.EnvPrefix). This command is the only place they are read; the library packages take the
+// resolved values as explicit options.
 const (
 	// envAdvisoryCorpusDir keeps its _DIR name for compatibility; like -advisory-corpus it accepts a
 	// corpus directory or a corpus bundle file (corpusSourceFor).
-	envAdvisoryCorpusDir        = brand.EnvPrefix + "_ADVISORY_CORPUS_DIR"
-	nucleonEnvAdvisoryCorpusDir = "NUCLEON_ADVISORY_CORPUS_DIR"
-	legacyEnvAdvisoryCorpusDir  = "TEGRON_ADVISORY_CORPUS_DIR"
+	envAdvisoryCorpusDir = brand.EnvPrefix + "_ADVISORY_CORPUS_DIR"
 	// envAdvisoryCorpusRequired declares that this run EXPECTS a corpus — see
 	// advisoryCorpusRequired for why the declaration has to come from somewhere OTHER than the
 	// corpus path itself.
-	envAdvisoryCorpusRequired        = brand.EnvPrefix + "_ADVISORY_CORPUS_REQUIRED"
-	nucleonEnvAdvisoryCorpusRequired = "NUCLEON_ADVISORY_CORPUS_REQUIRED"
-	legacyEnvAdvisoryCorpusRequired  = "TEGRON_ADVISORY_CORPUS_REQUIRED"
+	envAdvisoryCorpusRequired = brand.EnvPrefix + "_ADVISORY_CORPUS_REQUIRED"
 	// envAdvisoryCorpusPolicy declares the advisory policy the corpus was selected by — see
 	// advisoryCorpusPolicy. Declaring one is what makes the corpus define the work set.
 	envAdvisoryCorpusPolicy = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
-	envOSVWorkSet              = brand.EnvPrefix + "_OSV_WORK_SET"
-	nucleonEnvOSVWorkSet       = "NUCLEON_OSV_WORK_SET"
-	legacyEnvOSVWorkSet        = "TEGRON_OSV_WORK_SET"
-	envSubjectGoVersion        = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
-	nucleonEnvSubjectGoVersion = "NUCLEON_SUBJECT_GO_VERSION"
-	legacyEnvSubjectGoVersion  = "TEGRON_SUBJECT_GO_VERSION"
-	envCIGoVersion             = brand.EnvPrefix + "_CI_GO_VERSION"
-	nucleonEnvCIGoVersion      = "NUCLEON_CI_GO_VERSION"
-	legacyEnvCIGoVersion       = "TEGRON_CI_GO_VERSION"
+	envOSVWorkSet       = brand.EnvPrefix + "_OSV_WORK_SET"
+	envSubjectGoVersion = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
+	envCIGoVersion      = brand.EnvPrefix + "_CI_GO_VERSION"
 )
 
 // envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
 // Go installed when the Action started is the toolchain the SCANNED repository builds with. True in a
 // same-job setup that ran actions/setup-go (or otherwise provisioned its build toolchain) ahead of
 // the scan; false in a dedicated scan workflow, where the observed Go is the hosted runner image's
-// and says nothing about the subject. Brand-derived with the retired NUCLEON_ and TEGRON_ literals
-// honored — see brand.EnvOrLegacy — for the same reason as
+// and says nothing about the subject. Brand-derived for the same reason as
 // envAdvisoryCorpusDir/envSubjectGoVersion/envCIGoVersion.
-const (
-	envTrustObservedGo        = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
-	nucleonEnvTrustObservedGo = "NUCLEON_TRUST_OBSERVED_GO"
-	legacyEnvTrustObservedGo  = "TEGRON_TRUST_OBSERVED_GO"
-)
+const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 
 // selectSinks composes the ACTIVE set of ResultSinks for a run, deterministically,
 // from the detected GitHub Actions Env snapshot and the local output directory.
@@ -84,13 +68,13 @@ const (
 //   - Tier 1 is gated per-surface on the detected capabilities: SARIF when
 //     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue.
 //     Each of these three surfaces is now individually toggle-gated (default-on,
-//     opt-out via TEGRON_CODE_SCANNING / TEGRON_PR_COMMENT / TEGRON_ISSUE), while
+//     opt-out via ASSAY_CODE_SCANNING / ASSAY_PR_COMMENT / ASSAY_ISSUE), while
 //     Pages stays opt-in. Every toggle is AND-ed with write capability inside Detect,
 //     so on a forked PR (read-only token) all three are absent regardless of the
 //     toggles — a forked PR composes only Tier 0 + Local, the forked-PR safety
 //     guarantee. A push build has CanComment=false (no PR), so it gets SARIF + Issue
 //     but no PR comment.
-//   - Tier 2 (NewTier2Pages) is added only when caps.CanPages (TEGRON_PAGES opt-in
+//   - Tier 2 (NewTier2Pages) is added only when caps.CanPages (ASSAY_PAGES opt-in
 //     AND a write token).
 //   - The Ferralon run-snapshot sink (runSnapshot, resolved by the caller from
 //     FERRALON_RUNS_URL plus the canonical-ref pair) is appended when non-nil. It is the
@@ -215,7 +199,26 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
 	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
 	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
-	return publishAll(ctx, selectSinks(github.DetectEnv(), outDir, runSnapshot), res)
+	return publishAll(ctx, selectSinks(github.DetectEnv(surfaceToggles()), outDir, runSnapshot), res)
+}
+
+// Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
+// action.yml. Pages is an opt-IN; the other three are opt-OUT (on unless explicitly "false"/"0").
+const (
+	envPages        = brand.EnvPrefix + "_PAGES"
+	envCodeScanning = brand.EnvPrefix + "_CODE_SCANNING"
+	envPRComment    = brand.EnvPrefix + "_PR_COMMENT"
+	envIssue        = brand.EnvPrefix + "_ISSUE"
+)
+
+// surfaceToggles reads the output-surface toggles for github.DetectEnv.
+func surfaceToggles() github.Toggles {
+	return github.Toggles{
+		Pages:               github.OptIn(os.Getenv(envPages)),
+		DisableCodeScanning: github.OptedOut(os.Getenv(envCodeScanning)),
+		DisablePRComment:    github.OptedOut(os.Getenv(envPRComment)),
+		DisableIssue:        github.OptedOut(os.Getenv(envIssue)),
+	}
 }
 
 // buildResult renders the three projections from rep into a resultsink.Result.
@@ -298,7 +301,7 @@ type runFlags struct {
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
-// querying OSV.dev, when neither -osv-work-set nor TEGRON_OSV_WORK_SET says otherwise.
+// querying OSV.dev, when neither -osv-work-set nor ASSAY_OSV_WORK_SET says otherwise.
 //
 // THIS IS THE SINGLE LINE THAT DECIDES WHETHER A SCAN-PATH RUN CONTACTS api.osv.dev. Flip it to
 // true and every baseline and pr-inherit run POSTs the repository's dependency coordinates there;
@@ -332,7 +335,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		repo:           fs.String("subject-repo", "", "neutral repository identity recorded on the Report (default: target basename)"),
 		revision:       fs.String("revision", "", "revision recorded on the Report (e.g. a PR head branch)"),
 		commit:         fs.String("commit", "", "resolved commit SHA recorded on the Report"),
-		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (tegron-plugin-<lang>; default: PATH lookup)"),
+		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (assay-plugin-<lang>; default: PATH lookup)"),
 		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). Without -advisory-corpus-policy it supplies facts only and does not change what is scanned; overrides "+envAdvisoryCorpusDir),
 		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
 		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.
@@ -358,7 +361,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 //
 // PRECEDENCE. The flag wins over the env var, and the Visit is what makes that true in BOTH
 // directions: without it an unset flag is indistinguishable from one explicitly set to the default,
-// so -osv-work-set=false could not override TEGRON_OSV_WORK_SET=1. Asking the FlagSet which flags
+// so -osv-work-set=false could not override ASSAY_OSV_WORK_SET=1. Asking the FlagSet which flags
 // were actually named keeps the flag authoritative whichever way it points.
 //
 // An unparseable env value is an ERROR, never a default, on the same reasoning as
@@ -379,7 +382,7 @@ func (f *runFlags) osvWorkSetEnabled() (bool, error) {
 	if explicit {
 		return *f.osvWorkSet, nil
 	}
-	raw := brand.EnvOrLegacy(envOSVWorkSet, nucleonEnvOSVWorkSet, legacyEnvOSVWorkSet)
+	raw := os.Getenv(envOSVWorkSet)
 	if raw == "" {
 		return *f.osvWorkSet, nil
 	}
@@ -441,10 +444,9 @@ func errEmptyWorkSet(language string) error {
 
 // advisoryCorpusOption resolves the optional corpus AssessOption for a run, realizing the
 // flag > env precedence (decisions.md #3): the -advisory-corpus flag wins; absent it, the
-// envAdvisoryCorpusDir env var (the orchestrator's channel; brand-derived, legacy TEGRON_
-// literal honored — see brand.EnvOrLegacy) is consulted; absent both it returns
+// envAdvisoryCorpusDir env var (the orchestrator's channel) is consulted; absent both it returns
 // (nil, nil) — the built-in AdvisoryTable default, unchanged. This is the CLI half of the
-// system-wide "both flag + env, flag wins" surface (tegrond is env-only by its own idiom).
+// system-wide "both flag + env, flag wins" surface.
 //
 // THE CORPUS SUPPLEMENTS THE TABLE, IT DOES NOT REPLACE IT. This used to install the corpus as THE
 // source, which meant every id the corpus did not carry resolved to zero facts and failed open.
@@ -480,7 +482,7 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 
 	dir := *f.advisoryCorpus
 	if dir == "" {
-		dir = brand.EnvOrLegacy(envAdvisoryCorpusDir, nucleonEnvAdvisoryCorpusDir, legacyEnvAdvisoryCorpusDir)
+		dir = os.Getenv(envAdvisoryCorpusDir)
 	}
 	if dir == "" && policy != "" {
 		return nil, fmt.Errorf("advisory corpus policy %q is declared (-advisory-corpus-policy / %s) but no corpus path resolved: a policy names the advisories of a corpus, so it needs -advisory-corpus or %s",
@@ -596,7 +598,7 @@ func (f *runFlags) advisoryCorpusRequired() (bool, error) {
 	if *f.requireCorpus {
 		return true, nil
 	}
-	raw := brand.EnvOrLegacy(envAdvisoryCorpusRequired, nucleonEnvAdvisoryCorpusRequired, legacyEnvAdvisoryCorpusRequired)
+	raw := os.Getenv(envAdvisoryCorpusRequired)
 	if raw == "" {
 		return false, nil
 	}
@@ -635,21 +637,19 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 // is a measurement of the CI runner taken by the Action's pre-setup-go step, not a knob a human
 // sets, and giving it a flag would invite passing the scanner's own toolchain as if it were the
 // subject's. Neither value is validated here — an unorderable version resolves nothing in the
-// pipeline rather than failing the scan. Both env names are brand-derived with the legacy
-// TEGRON_ literal honored as a fallback — see brand.EnvOrLegacy.
+// pipeline rather than failing the scan.
 //
 // The observation's TRUST is env-only for the same reason and read from the same channel as the
-// measurement it qualifies (envTrustObservedGo, the Action's trust-observed-go input — likewise
-// brand-derived with the legacy TEGRON_TRUST_OBSERVED_GO literal honored). It fails closed exactly
+// measurement it qualifies (envTrustObservedGo, the Action's trust-observed-go input). It fails closed exactly
 // like FERRALON_LINK_TO_CONSOLE: anything but an explicit true leaves the observation out of
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.
 func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	declared := *f.subjectGo
 	if declared == "" {
-		declared = brand.EnvOrLegacy(envSubjectGoVersion, nucleonEnvSubjectGoVersion, legacyEnvSubjectGoVersion)
+		declared = os.Getenv(envSubjectGoVersion)
 	}
-	observed := brand.EnvOrLegacy(envCIGoVersion, nucleonEnvCIGoVersion, legacyEnvCIGoVersion)
+	observed := os.Getenv(envCIGoVersion)
 	if declared == "" && observed == "" {
 		return nil
 	}
@@ -659,20 +659,15 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 // trustObservedGo reports whether the observed runner toolchain may be treated as a statement about
 // the subject. Fails closed: any value that is not an explicit true reads as untrusted.
 func trustObservedGo() bool {
-	trusted, err := strconv.ParseBool(strings.TrimSpace(brand.EnvOrLegacy(envTrustObservedGo, nucleonEnvTrustObservedGo, legacyEnvTrustObservedGo)))
+	trusted, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(envTrustObservedGo)))
 	return err == nil && trusted
 }
 
-// envSubjectToolchainReach / legacyEnvSubjectToolchainReach is the release gate on running the Go
-// reachability analysis under the SUBJECT's toolchain rather than the scanner's. It follows the env-gate idiom of TEGRON_JAVA_ANALYZER_IMAGE (env-only, no flag)
-// because it is an operator's rollout switch for one release, not a per-scan knob, and the Action
-// input is its real surface — action.yml exports the legacy name (see subject-toolchain-
-// reachability), honored here via brand.EnvOrLegacy alongside the brand-derived name.
-const (
-	envSubjectToolchainReach        = brand.EnvPrefix + "_SUBJECT_TOOLCHAIN_REACHABILITY"
-	nucleonEnvSubjectToolchainReach = "NUCLEON_SUBJECT_TOOLCHAIN_REACHABILITY"
-	legacyEnvSubjectToolchainReach  = "TEGRON_SUBJECT_TOOLCHAIN_REACHABILITY"
-)
+// envSubjectToolchainReach is the release gate on running the Go reachability analysis under the
+// SUBJECT's toolchain rather than the scanner's. It is env-only, no flag, because it is an operator's
+// rollout switch for one release, not a per-scan knob, and the Action input is its real surface —
+// action.yml exports it (see subject-toolchain-reachability).
+const envSubjectToolchainReach = brand.EnvPrefix + "_SUBJECT_TOOLCHAIN_REACHABILITY"
 
 // subjectToolchainReachOption resolves the M4 gate into an AssessOption, or nil when it is off —
 // which is the default, and leaves every scan byte-identical to the pre-M4 behavior.
@@ -683,7 +678,7 @@ const (
 // The cost of turning it on is that findings appear on scans that are green today — which is the
 // point, and why it is a deliberate opt-in for one release.
 func subjectToolchainReachOption() pipeline.AssessOption {
-	if !envEnabled(brand.EnvOrLegacy(envSubjectToolchainReach, nucleonEnvSubjectToolchainReach, legacyEnvSubjectToolchainReach)) {
+	if !envEnabled(os.Getenv(envSubjectToolchainReach)) {
 		return nil
 	}
 	return pipeline.WithSubjectToolchainReachability(true)

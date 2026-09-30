@@ -111,10 +111,10 @@ func advisoryRangeScheme(t *testing.T, store *artifact.MemStore, caseID string) 
 // PyPI: the PURL (pkg:pypi/flask) alone selects the PEP 440 comparator. flask 2.3.2 >= fixed
 // 2.3.2 is provably outside → DISQUALIFIED; 2.3.1 < 2.3.2 stays inside → PROCEEDS.
 func TestPyPIDisqual_PURLSelectsComparator(t *testing.T) {
-	if res, scheme := runIntakeDisqual(t, "TEGRON-PY-DEP-0001", "2.3.2"); scheme != "pypi" || !res.Disqualified || res.Reason != ReasonVersionNotInRange {
+	if res, scheme := runIntakeDisqual(t, "FERRALON-PY-DEP-0001", "2.3.2"); scheme != "pypi" || !res.Disqualified || res.Reason != ReasonVersionNotInRange {
 		t.Fatalf("patched flask 2.3.2: scheme=%q res=%+v; want scheme pypi, disqualified version_not_in_affected_range", scheme, res)
 	}
-	if res, scheme := runIntakeDisqual(t, "TEGRON-PY-DEP-0001", "2.3.1"); scheme != "pypi" || res.Disqualified || res.Reason != ReasonInsufficient {
+	if res, scheme := runIntakeDisqual(t, "FERRALON-PY-DEP-0001", "2.3.1"); scheme != "pypi" || res.Disqualified || res.Reason != ReasonInsufficient {
 		t.Fatalf("vulnerable flask 2.3.1: scheme=%q res=%+v; want scheme pypi, proceed insufficient", scheme, res)
 	}
 }
@@ -122,10 +122,10 @@ func TestPyPIDisqual_PURLSelectsComparator(t *testing.T) {
 // NuGet: the PURL (pkg:nuget/Newtonsoft.Json) alone selects the NuGet comparator.
 // 13.0.2 >= fixed 13.0.1 is provably outside → DISQUALIFIED; 13.0.0 < 13.0.1 → PROCEEDS.
 func TestNuGetDisqual_PURLSelectsComparator(t *testing.T) {
-	if res, scheme := runIntakeDisqual(t, "TEGRON-NET-DEP-0001", "13.0.2"); scheme != "nuget" || !res.Disqualified || res.Reason != ReasonVersionNotInRange {
+	if res, scheme := runIntakeDisqual(t, "FERRALON-NET-DEP-0001", "13.0.2"); scheme != "nuget" || !res.Disqualified || res.Reason != ReasonVersionNotInRange {
 		t.Fatalf("patched Newtonsoft 13.0.2: scheme=%q res=%+v; want scheme nuget, disqualified version_not_in_affected_range", scheme, res)
 	}
-	if res, scheme := runIntakeDisqual(t, "TEGRON-NET-DEP-0001", "13.0.0"); scheme != "nuget" || res.Disqualified || res.Reason != ReasonInsufficient {
+	if res, scheme := runIntakeDisqual(t, "FERRALON-NET-DEP-0001", "13.0.0"); scheme != "nuget" || res.Disqualified || res.Reason != ReasonInsufficient {
 		t.Fatalf("vulnerable Newtonsoft 13.0.0: scheme=%q res=%+v; want scheme nuget, proceed insufficient", scheme, res)
 	}
 }
@@ -152,7 +152,7 @@ func TestKnownSchemeOpenRange_StaysOpen(t *testing.T) {
 		t.Fatalf("precondition: schemeFromPURL = %q, want pypi", got)
 	}
 	// (a) ...but with no version-range fix, intake emits no range and the axis fails OPEN.
-	res, _ := runIntakeDisqual(t, "TEGRON-PY-FIRSTPARTY-0001", "1.2.3")
+	res, _ := runIntakeDisqual(t, "FERRALON-PY-FIRSTPARTY-0001", "1.2.3")
 	if res.Disqualified {
 		t.Fatalf("known-scheme advisory with no bound must FAIL OPEN, got disqualified %+v", res)
 	}
@@ -165,7 +165,7 @@ func TestKnownSchemeOpenRange_StaysOpen(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-open-range"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id":         "TEGRON-PY-FIRSTPARTY-0001",
+		"vuln_id":         "FERRALON-PY-FIRSTPARTY-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "", "scheme": "pypi"}},
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]string{"resolved_version": "1.2.3"})
@@ -182,7 +182,7 @@ func TestUnknownScheme_NeverFabricatesNotAffected(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-unknown-scheme"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id":         "TEGRON-UNKNOWN-DEP-0001",
+		"vuln_id":         "FERRALON-UNKNOWN-DEP-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "2.3.2", "scheme": ""}},
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]string{"resolved_version": "2.4.0"})

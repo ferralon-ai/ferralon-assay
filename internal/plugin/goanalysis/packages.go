@@ -1,5 +1,5 @@
 // Package goanalysis is the in-process Go analysis engine that backs the
-// tegron-plugin-go subprocess. It loads the target program with go/packages +
+// assay-plugin-go subprocess. It loads the target program with go/packages +
 // go/types, emits stable SCIP symbol identities from the loaded program (no
 // scip-go dependency), and answers the IndexSymbols / ResolveDependencySymbols
 // operations of the LanguagePlugin contract in the plugin package.
@@ -7,7 +7,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the
 // shared value types and MAY link golang.org/x/tools. The FORBIDDEN edge is the
 // reverse one — internal/plugin MUST NOT import goanalysis — so the heavy
-// analysis libraries link only into the subprocess binary, never into tegrond.
+// analysis libraries link only into the subprocess binary, never into the host binary.
 package goanalysis
 
 import (
@@ -67,8 +67,8 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 		Dir:     buildDir,
 		Tests:   false,
 		// The analyzed target is the buildDir's own module — NEVER a member of any
-		// workspace the analyzer process itself happens to run inside (e.g. Tegron's
-		// own go.work during development). Force GOWORK=off so the load resolves the
+		// workspace the analyzer process itself happens to run inside (e.g. an
+		// enclosing repository's go.work during development). Force GOWORK=off so the load resolves the
 		// target module standalone; an ambient go.work would otherwise make
 		// packages.Load try to resolve the target against the wrong module graph and
 		// return an empty/garbled program.

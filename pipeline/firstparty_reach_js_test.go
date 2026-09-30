@@ -3,7 +3,7 @@
 // Hermetic proof that the JS Increment-1 analysis outputs flow through the SAME
 // language-agnostic first-party reachability fallback the Go and Java plugins use. The
 // SCIP ids below are the EXACT strings the real jsanalysis emitter produces for the
-// TEGRON-JS-SSRF-0001 repro (Express route handler handleFetch → handle utility →
+// FERRALON-JS-SSRF-0001 repro (Express route handler handleFetch → handle utility →
 // fetchUrl sink); the jsanalysis-layer test TestFirstParty_ReproSinkReachableFromRouteIngress
 // proves the real analyzer emits them, and this test proves reachability_ingress turns
 // them into a CandidatePair via firstPartyReachPaths — with NO live model, NO Docker, NO
@@ -142,7 +142,7 @@ func (jsUnresolvedStub) CallGraph(_ context.Context, _ plugin.CallGraphRequest) 
 func TestInventoryJSRepro_NoGoModRoutesToJSPlugin(t *testing.T) {
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-js", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-JS-SSRF-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-JS-SSRF-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
 			Repo:     "tegron.corpus/ssrf-js",
 			Revision: "v1",

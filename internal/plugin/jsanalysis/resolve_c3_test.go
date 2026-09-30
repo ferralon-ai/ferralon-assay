@@ -80,7 +80,7 @@ var c3Baseline = []c3Case{
 		},
 	},
 	{
-		fixture: "TEGRON-JS-NEXTRCE-0001-fixed",
+		fixture: "FERRALON-JS-NEXTRCE-0001-fixed",
 		edges: []edgeSpec{
 			{"server", nil, "handleRender", 2, "server", nil, "render", 1},
 			{"server", nil, "render", 1, "require", nil, "requirePage", 2},
@@ -88,7 +88,7 @@ var c3Baseline = []c3Case{
 		roots: []string{funcSCIP("server", nil, "handleRender", 2)},
 	},
 	{
-		fixture: "TEGRON-JS-NEXTRCE-0001-vulnerable",
+		fixture: "FERRALON-JS-NEXTRCE-0001-vulnerable",
 		edges: []edgeSpec{
 			{"require", nil, "requireModule", 1, "require", nil, "resolvePath", 1},
 			{"server", nil, "handleRender", 2, "server", nil, "render", 1},
@@ -97,7 +97,7 @@ var c3Baseline = []c3Case{
 		roots: []string{funcSCIP("server", nil, "handleRender", 2)},
 	},
 	{
-		fixture: "TEGRON-JS-SSRF-0001-patched",
+		fixture: "FERRALON-JS-SSRF-0001-patched",
 		edges: []edgeSpec{
 			{"app", nil, "handle", 1, "fetcher", nil, "fetchUrl", 1},
 			{"app", nil, "handleFetch", 2, "app", nil, "handle", 1},
@@ -105,7 +105,7 @@ var c3Baseline = []c3Case{
 		roots: []string{funcSCIP("app", nil, "handleFetch", 2)},
 	},
 	{
-		fixture: "TEGRON-JS-SSRF-0001-vulnerable",
+		fixture: "FERRALON-JS-SSRF-0001-vulnerable",
 		edges: []edgeSpec{
 			{"app", nil, "handle", 1, "fetcher", nil, "fetchUrl", 1},
 			{"app", nil, "handleFetch", 2, "app", nil, "handle", 1},

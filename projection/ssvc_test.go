@@ -68,7 +68,7 @@ func TestSSVC_NotExploitable_TrackDecision(t *testing.T) {
 	}
 }
 
-// TestSSVC_Indeterminate_NoActiveExploitation is the containment guarantee for SSVC (ADR 0016): a
+// TestSSVC_Indeterminate_NoActiveExploitation is the containment guarantee for SSVC: a
 // verdict that established nothing must NEVER signal active/poc exploitation or automatability — it
 // takes the conservative floor on every decision point.
 func TestSSVC_Indeterminate_NoActiveExploitation(t *testing.T) {
@@ -82,7 +82,7 @@ func TestSSVC_Indeterminate_NoActiveExploitation(t *testing.T) {
 	if d.DecisionPoints.Automatable != projection.SSVCAutomatableNo {
 		t.Fatalf("indeterminate automatable = %q, want no", d.DecisionPoints.Automatable)
 	}
-	// DOCUMENTED LIMITATION (ADR 0016): SSVC has no "unknown" impact tier, so on the impact axes
+	// DOCUMENTED LIMITATION: SSVC has no "unknown" impact tier, so on the impact axes
 	// an indeterminate verdict shares the conservative floor with a grounded not_exploitable and
 	// yields the same Track decision. The containment that matters (never active/automatable) is
 	// asserted above; this pins the floor so any future change to make it distinct is conscious.

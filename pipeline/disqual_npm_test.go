@@ -22,7 +22,7 @@ import (
 )
 
 // jsVersionStub mimics the live JS plugin's ResolveDependencyVersions for the
-// TEGRON-JS-DEP-0001 repro: it returns the installed left-pad version the real lockfile
+// FERRALON-JS-DEP-0001 repro: it returns the installed left-pad version the real lockfile
 // resolver produces. Resolved=false models an UNRESOLVED (unparseable lockfile) repro.
 type jsVersionStub struct {
 	plugin.StubPlugin
@@ -58,13 +58,13 @@ func runJSDisqual(t *testing.T, version string, resolved bool) DisqualResult {
 	t.Helper()
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-js-dep", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-JS-DEP-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
-			Repo:     "tegron/js-dep-repro",
+			Repo:     "acme/js-dep-repro",
 			Revision: "v1",
 			Acquisition: assessment.Acquisition{
 				Mode: "vendored_repro",
-				Path: "../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable",
+				Path: "../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable",
 			},
 		},
 	}}
@@ -119,7 +119,7 @@ func TestJSDisqual_NumericOrdering_NotLexical(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-js-numeric"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id":         "TEGRON-JS-DEP-0001",
+		"vuln_id":         "FERRALON-JS-DEP-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "1.9.0", "scheme": "npm"}},
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})

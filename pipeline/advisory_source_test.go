@@ -50,9 +50,9 @@ func TestNormalizedAdvisorySchemaVersion_Literal(t *testing.T) {
 // A valid, digest-matching, shape-valid artifact loads with facts fully populated.
 func TestArtifactSource_ValidLoads(t *testing.T) {
 	src := artifactSource{root: advisoryFixtureRoot}
-	facts, ok := src.Lookup("TEGRON-TEST-0001")
+	facts, ok := src.Lookup("FERRALON-TEST-0001")
 	if !ok {
-		t.Fatal("Lookup(TEGRON-TEST-0001) ok=false, want true")
+		t.Fatal("Lookup(FERRALON-TEST-0001) ok=false, want true")
 	}
 	if facts.Coordinate != "com.example.lib:widget" {
 		t.Errorf("Coordinate = %q, want com.example.lib:widget", facts.Coordinate)
@@ -73,9 +73,9 @@ func TestArtifactSource_ValidLoads(t *testing.T) {
 // the behavior safeRelPath extends beyond the old flat-basename-only safeRelName.
 func TestArtifactSource_DatePartitionedPathLoads(t *testing.T) {
 	src := artifactSource{root: advisoryFixtureRoot}
-	facts, ok := src.Lookup("TEGRON-TEST-DATED")
+	facts, ok := src.Lookup("FERRALON-TEST-DATED")
 	if !ok {
-		t.Fatal("Lookup(TEGRON-TEST-DATED) ok=false, want true (date-partitioned subpath must resolve)")
+		t.Fatal("Lookup(FERRALON-TEST-DATED) ok=false, want true (date-partitioned subpath must resolve)")
 	}
 	if facts.Coordinate != "com.example.lib:dated" {
 		t.Errorf("Coordinate = %q, want com.example.lib:dated", facts.Coordinate)
@@ -89,9 +89,9 @@ func TestArtifactSource_DatePartitionedPathLoads(t *testing.T) {
 // stale-regen artifact can never poison S1.
 func TestArtifactSource_DigestMismatchFailsOpen(t *testing.T) {
 	src := artifactSource{root: advisoryFixtureRoot}
-	facts, ok := src.Lookup("TEGRON-TEST-BADDIGEST")
+	facts, ok := src.Lookup("FERRALON-TEST-BADDIGEST")
 	if ok {
-		t.Fatal("Lookup(TEGRON-TEST-BADDIGEST) ok=true, want false (digest mismatch must fail open)")
+		t.Fatal("Lookup(FERRALON-TEST-BADDIGEST) ok=true, want false (digest mismatch must fail open)")
 	}
 	if !reflect.DeepEqual(facts, AdvisoryFacts{}) {
 		t.Errorf("digest mismatch returned non-zero facts %+v, want zero (never laundered)", facts)
@@ -104,9 +104,9 @@ func TestArtifactSource_DigestMismatchFailsOpen(t *testing.T) {
 // quiet fail-open, never a partial or laundered fact.
 func TestArtifactSource_OldSchemaTagFailsOpen(t *testing.T) {
 	src := artifactSource{root: advisoryFixtureRoot}
-	facts, ok := src.Lookup("TEGRON-TEST-MALFORMED")
+	facts, ok := src.Lookup("FERRALON-TEST-MALFORMED")
 	if ok {
-		t.Fatal("Lookup(TEGRON-TEST-MALFORMED) ok=true, want false (old tegron.* schema tag must fail open)")
+		t.Fatal("Lookup(FERRALON-TEST-MALFORMED) ok=true, want false (old tegron.* schema tag must fail open)")
 	}
 	if !reflect.DeepEqual(facts, AdvisoryFacts{}) {
 		t.Errorf("old-tag document returned non-zero facts %+v, want zero", facts)
@@ -116,7 +116,7 @@ func TestArtifactSource_OldSchemaTagFailsOpen(t *testing.T) {
 // An id absent from the manifest returns false with zero facts (byte-identical to a map miss).
 func TestArtifactSource_UnknownIDFailsOpen(t *testing.T) {
 	src := artifactSource{root: advisoryFixtureRoot}
-	facts, ok := src.Lookup("TEGRON-TEST-NOPE")
+	facts, ok := src.Lookup("FERRALON-TEST-NOPE")
 	if ok {
 		t.Fatal("Lookup(unknown) ok=true, want false")
 	}
@@ -128,7 +128,7 @@ func TestArtifactSource_UnknownIDFailsOpen(t *testing.T) {
 // A root with no manifest at all fails open on every lookup (unreadable-source path).
 func TestArtifactSource_MissingManifestFailsOpen(t *testing.T) {
 	src := artifactSource{root: "testdata/advisory_source/does-not-exist"}
-	if _, ok := src.Lookup("TEGRON-TEST-0001"); ok {
+	if _, ok := src.Lookup("FERRALON-TEST-0001"); ok {
 		t.Error("Lookup against missing manifest ok=true, want false")
 	}
 }
@@ -142,9 +142,9 @@ func TestArtifactSource_BadPathVariantsFailOpen(t *testing.T) {
 		name   string
 		vulnID string
 	}{
-		{"absolute path", "TEGRON-TEST-ABSPATH"},
-		{"parent traversal", "TEGRON-TEST-DOTDOT"},
-		{"backslash separator", "TEGRON-TEST-BACKSLASH"},
+		{"absolute path", "FERRALON-TEST-ABSPATH"},
+		{"parent traversal", "FERRALON-TEST-DOTDOT"},
+		{"backslash separator", "FERRALON-TEST-BACKSLASH"},
 	}
 	src := artifactSource{root: advisoryFixtureRoot}
 	for _, tt := range tests {
@@ -192,7 +192,7 @@ func TestSafeRelPath(t *testing.T) {
 // — record_count != len(records) means the manifest cannot account for its own record set.
 func TestArtifactSource_RecordCountMismatchFailsOpen(t *testing.T) {
 	src := artifactSource{root: "testdata/advisory_source/badcount"}
-	facts, ok := src.Lookup("TEGRON-TEST-BADCOUNT")
+	facts, ok := src.Lookup("FERRALON-TEST-BADCOUNT")
 	if ok {
 		t.Fatal("Lookup against a record_count-mismatched manifest ok=true, want false")
 	}
@@ -206,7 +206,7 @@ func TestArtifactSource_RecordCountMismatchFailsOpen(t *testing.T) {
 // fails open rather than silently picking one of the two records.
 func TestArtifactSource_DuplicateIdentifierFailsOpen(t *testing.T) {
 	src := artifactSource{root: "testdata/advisory_source/dupid"}
-	facts, ok := src.Lookup("TEGRON-TEST-DUP")
+	facts, ok := src.Lookup("FERRALON-TEST-DUP")
 	if ok {
 		t.Fatal("Lookup against a manifest with a duplicate identifier ok=true, want false")
 	}

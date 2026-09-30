@@ -32,7 +32,7 @@ func resolveSink(t *testing.T, src, symbol string) string {
 // SCIP identity space the call graph uses.
 func TestReachability_IngressToSinkPath(t *testing.T) {
 	ctx := context.Background()
-	src := "../../../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable/src"
+	src := "../../../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable/src"
 	sink := resolveSink(t, src, "fetchUrl")
 
 	res, err := Reachability(ctx, plugin.ReachabilityRequest{BuildDir: src, Symbols: []string{sink}})

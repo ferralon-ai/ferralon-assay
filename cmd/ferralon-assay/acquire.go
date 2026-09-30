@@ -165,7 +165,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 }
 
 // selectPlugin constructs the subprocess-backed analyzer client for the detected language.
-// A non-empty bin is an explicit path to that language's tegron-plugin-<lang> binary
+// A non-empty bin is an explicit path to that language's assay-plugin-<lang> binary
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
 // plugin runs per scan (the tree is a single language), so a single override suffices.
 func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
@@ -361,9 +361,9 @@ func javaAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	corpus := mavenAdvisoryFloor()
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "TEGRON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
-			assessment.VulnRef{ID: "TEGRON-JAVA-SPRING-SSRF-0001", Source: "osv"}, // com.example.web/spring-ssrf — Spring SSRF taint reachability
-			assessment.VulnRef{ID: "TEGRON-JAVA-DEP-0001", Source: "osv"},         // com.example.lib:widget — version-resolvable Maven dependency
+			assessment.VulnRef{ID: "FERRALON-JAVA-SSRF-0001", Source: "osv"},        // com.example.web/ssrf — UrlFetcher.fetch taint reachability
+			assessment.VulnRef{ID: "FERRALON-JAVA-SPRING-SSRF-0001", Source: "osv"}, // com.example.web/spring-ssrf — Spring SSRF taint reachability
+			assessment.VulnRef{ID: "FERRALON-JAVA-DEP-0001", Source: "osv"},         // com.example.lib:widget — version-resolvable Maven dependency
 		)
 	}
 	return corpus
@@ -382,7 +382,7 @@ func kotlinAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	corpus := mavenAdvisoryFloor()
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "TEGRON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
+			assessment.VulnRef{ID: "FERRALON-KOTLIN-DEP-0001", Source: "osv"}, // com.example.lib:widget — version-resolvable Maven dependency
 		)
 	}
 	return corpus
@@ -400,8 +400,8 @@ func jsAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	}
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "TEGRON-JS-SSRF-0001", Source: "osv"}, // tegron-corpus-ssrf — SSRF taint reachability
-			assessment.VulnRef{ID: "TEGRON-JS-DEP-0001", Source: "osv"},  // left-pad — version-resolvable npm dependency
+			assessment.VulnRef{ID: "FERRALON-JS-SSRF-0001", Source: "osv"}, // tegron-corpus-ssrf — SSRF taint reachability
+			assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "osv"},  // left-pad — version-resolvable npm dependency
 		)
 	}
 	return corpus
@@ -420,8 +420,8 @@ func pythonAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	}
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "TEGRON-PY-AIRFLOW-EXPAPI-0001", Source: "ghsa"}, // apache-airflow — experimental-API get_code sink (unauth DAG source read), first-party reachability
-			assessment.VulnRef{ID: "TEGRON-PY-DEP-0001", Source: "osv"},             // flask — version-resolvable PyPI dependency
+			assessment.VulnRef{ID: "FERRALON-PY-AIRFLOW-EXPAPI-0001", Source: "ghsa"}, // apache-airflow — experimental-API get_code sink (unauth DAG source read), first-party reachability
+			assessment.VulnRef{ID: "FERRALON-PY-DEP-0001", Source: "osv"},             // flask — version-resolvable PyPI dependency
 		)
 	}
 	return corpus
@@ -439,7 +439,7 @@ func dotnetAdvisoryCorpus(includeHouseCanaries bool) []assessment.VulnRef {
 	}
 	if includeHouseCanaries {
 		corpus = append(corpus,
-			assessment.VulnRef{ID: "TEGRON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — synthetic stand-in for the real CVE-2024-21907 in the default floor above
+			assessment.VulnRef{ID: "FERRALON-NET-DEP-0001", Source: "osv"}, // Newtonsoft.Json — synthetic stand-in for the real CVE-2024-21907 in the default floor above
 		)
 	}
 	return corpus

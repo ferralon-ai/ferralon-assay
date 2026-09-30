@@ -7,7 +7,7 @@ import (
 )
 
 // TestGovulnMatchID_GONativePassesThrough is the no-regression case: an advisory whose
-// PRIMARY id is already a GO-YYYY-NNNN id (the nucleon / x/text GO-2021-0113 shape that
+// PRIMARY id is already a GO-YYYY-NNNN id (the x/text GO-2021-0113 shape that
 // govulncheck emits verbatim) is returned unchanged, without ever consulting the store.
 func TestGovulnMatchID_GONativePassesThrough(t *testing.T) {
 	store := artifact.NewMemStore()

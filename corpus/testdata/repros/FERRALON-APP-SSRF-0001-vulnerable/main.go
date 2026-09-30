@@ -5,7 +5,7 @@
 //
 // SOUNDNESS: the canary beacon is intrinsic to the SSRF sink's own execution. The handler
 // resolves the special target name "internal" to a server-side URL and fetches it. In the
-// VULNERABLE build there is no allowlist, so the resolver builds the Tegron-controlled OOB
+// VULNERABLE build there is no allowlist, so the resolver builds the harness-controlled OOB
 // URL ($TEGRON_OOB_URL) WITH the planted seed (/tmp/tegron_canary) appended, and the
 // unguarded http.Get actually issues that outbound request — that outbound request IS the
 // SSRF, and it is the only thing that carries the seed off-host. A target the resolver does
@@ -27,7 +27,7 @@ const canarySeedPath = "/tmp/tegron_canary"
 
 // resolveTarget maps a request's target name to the URL the server will fetch. The
 // VULNERABLE build has no allowlist: the special name "internal" resolves to the
-// Tegron-controlled OOB endpoint with the planted seed appended, modeling an SSRF that
+// harness-controlled OOB endpoint with the planted seed appended, modeling an SSRF that
 // reaches an unintended internal host and exfiltrates data only that path can read. This is
 // the SSRF sink: it is reached unconditionally for an "internal" target because the build
 // enforces no allowlist.

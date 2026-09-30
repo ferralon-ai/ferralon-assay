@@ -128,8 +128,8 @@
       "runtime_ms": 2711
     },
     {
-      "case_id": "TEGRON-GO-GRAFANA-DUCKDB-0001-fixed",
-      "vuln_id": "TEGRON-GO-GRAFANA-DUCKDB-0001",
+      "case_id": "FERRALON-GO-GRAFANA-DUCKDB-0001-fixed",
+      "vuln_id": "FERRALON-GO-GRAFANA-DUCKDB-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -142,8 +142,8 @@
       "runtime_ms": 0
     },
     {
-      "case_id": "TEGRON-GO-GRAFANA-DUCKDB-0001-vulnerable",
-      "vuln_id": "TEGRON-GO-GRAFANA-DUCKDB-0001",
+      "case_id": "FERRALON-GO-GRAFANA-DUCKDB-0001-vulnerable",
+      "vuln_id": "FERRALON-GO-GRAFANA-DUCKDB-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -156,8 +156,8 @@
       "runtime_ms": 0
     },
     {
-      "case_id": "TEGRON-JAVA-DEP-0001-patched",
-      "vuln_id": "TEGRON-JAVA-DEP-0001",
+      "case_id": "FERRALON-JAVA-DEP-0001-patched",
+      "vuln_id": "FERRALON-JAVA-DEP-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -170,8 +170,8 @@
       "runtime_ms": 33
     },
     {
-      "case_id": "TEGRON-JAVA-DEP-0001-unresolved",
-      "vuln_id": "TEGRON-JAVA-DEP-0001",
+      "case_id": "FERRALON-JAVA-DEP-0001-unresolved",
+      "vuln_id": "FERRALON-JAVA-DEP-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -184,8 +184,8 @@
       "runtime_ms": 14
     },
     {
-      "case_id": "TEGRON-JAVA-DEP-0001-vulnerable",
-      "vuln_id": "TEGRON-JAVA-DEP-0001",
+      "case_id": "FERRALON-JAVA-DEP-0001-vulnerable",
+      "vuln_id": "FERRALON-JAVA-DEP-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -198,8 +198,8 @@
       "runtime_ms": 13
     },
     {
-      "case_id": "TEGRON-JAVA-SPRING-SSRF-0001-patched",
-      "vuln_id": "TEGRON-JAVA-SPRING-SSRF-0001",
+      "case_id": "FERRALON-JAVA-SPRING-SSRF-0001-patched",
+      "vuln_id": "FERRALON-JAVA-SPRING-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -211,8 +211,8 @@
       "runtime_ms": 7
     },
     {
-      "case_id": "TEGRON-JAVA-SPRING-SSRF-0001-vulnerable",
-      "vuln_id": "TEGRON-JAVA-SPRING-SSRF-0001",
+      "case_id": "FERRALON-JAVA-SPRING-SSRF-0001-vulnerable",
+      "vuln_id": "FERRALON-JAVA-SPRING-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -224,8 +224,8 @@
       "runtime_ms": 7
     },
     {
-      "case_id": "TEGRON-JAVA-SSRF-0001-patched",
-      "vuln_id": "TEGRON-JAVA-SSRF-0001",
+      "case_id": "FERRALON-JAVA-SSRF-0001-patched",
+      "vuln_id": "FERRALON-JAVA-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -237,8 +237,8 @@
       "runtime_ms": 7
     },
     {
-      "case_id": "TEGRON-JAVA-SSRF-0001-vulnerable",
-      "vuln_id": "TEGRON-JAVA-SSRF-0001",
+      "case_id": "FERRALON-JAVA-SSRF-0001-vulnerable",
+      "vuln_id": "FERRALON-JAVA-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -250,8 +250,8 @@
       "runtime_ms": 7
     },
     {
-      "case_id": "TEGRON-JS-NEXTRCE-0001-fixed",
-      "vuln_id": "TEGRON-JS-NEXTRCE-0001",
+      "case_id": "FERRALON-JS-NEXTRCE-0001-fixed",
+      "vuln_id": "FERRALON-JS-NEXTRCE-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -263,8 +263,8 @@
       "runtime_ms": 20
     },
     {
-      "case_id": "TEGRON-JS-NEXTRCE-0001-vulnerable",
-      "vuln_id": "TEGRON-JS-NEXTRCE-0001",
+      "case_id": "FERRALON-JS-NEXTRCE-0001-vulnerable",
+      "vuln_id": "FERRALON-JS-NEXTRCE-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -276,8 +276,8 @@
       "runtime_ms": 6
     },
     {
-      "case_id": "TEGRON-JS-SSRF-0001-patched",
-      "vuln_id": "TEGRON-JS-SSRF-0001",
+      "case_id": "FERRALON-JS-SSRF-0001-patched",
+      "vuln_id": "FERRALON-JS-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -289,8 +289,8 @@
       "runtime_ms": 6
     },
     {
-      "case_id": "TEGRON-JS-SSRF-0001-vulnerable",
-      "vuln_id": "TEGRON-JS-SSRF-0001",
+      "case_id": "FERRALON-JS-SSRF-0001-vulnerable",
+      "vuln_id": "FERRALON-JS-SSRF-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -302,8 +302,8 @@
       "runtime_ms": 6
     },
     {
-      "case_id": "TEGRON-PY-AIRFLOW-EXPAPI-0001-fixed",
-      "vuln_id": "TEGRON-PY-AIRFLOW-EXPAPI-0001",
+      "case_id": "FERRALON-PY-AIRFLOW-EXPAPI-0001-fixed",
+      "vuln_id": "FERRALON-PY-AIRFLOW-EXPAPI-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",
@@ -316,8 +316,8 @@
       "runtime_ms": 25
     },
     {
-      "case_id": "TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable",
-      "vuln_id": "TEGRON-PY-AIRFLOW-EXPAPI-0001",
+      "case_id": "FERRALON-PY-AIRFLOW-EXPAPI-0001-vulnerable",
+      "vuln_id": "FERRALON-PY-AIRFLOW-EXPAPI-0001",
       "candidate_pair_formed": false,
       "resolved_sink_scip": "",
       "resolved_sink_display": "",

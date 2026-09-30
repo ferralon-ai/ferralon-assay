@@ -1,6 +1,6 @@
 // internal/projection/redacted_poe.go
 //
-// RedactedPoE projection — a safe-to-share outside-org view of a Tegron PoE.
+// RedactedPoE projection — a safe-to-share outside-org view of a PoE.
 //
 // # Security posture: default-deny allowlist
 //
@@ -53,7 +53,7 @@ import (
 // RedactedPoESchemaVersion is the schema version of RedactedPoE payloads.
 const RedactedPoESchemaVersion = "tegron.projection_redacted_poe.v2"
 
-// RedactedPoE is a safe-to-share outside-org view of a Tegron PoE.
+// RedactedPoE is a safe-to-share outside-org view of a PoE.
 //
 // Only allowlisted fields are present; all source-identifying details are
 // stripped. The allowlist is the security boundary — default-deny.
@@ -66,7 +66,7 @@ type RedactedPoE struct {
 	VulnID string `json:"vuln_id,omitempty"`
 
 	// Direction is the verdict direction: "exploitable", "not_exploitable", or "indeterminate"
-	// (nothing established — ADR 0016).
+	// (nothing established).
 	Direction verdict.Direction `json:"direction"`
 
 	// Strength is how the verdict is known: "proven", "reasoned", or "indeterminate"

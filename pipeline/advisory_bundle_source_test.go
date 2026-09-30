@@ -3,7 +3,7 @@
 // Hermetic tests for bundleSource: the compressed corpus-bundle AdvisorySource. Synthetic bundles are
 // built IN-CODE (no committed binary fixture) so each failure mode — digest mismatch, malformed
 // record, corrupt gzip, duplicate identifier — can be constructed precisely. Valid records reuse a
-// real committed fixture (testdata/advisory_source/TEGRON-TEST-0001.json) so toFacts is guaranteed to
+// real committed fixture (testdata/advisory_source/FERRALON-TEST-0001.json) so toFacts is guaranteed to
 // accept them rather than a hand-guessed envelope.
 //
 // Every bundleSource failure path must fail OPEN — (zero AdvisoryFacts, false) — never a partial or
@@ -22,13 +22,13 @@ import (
 	"testing"
 )
 
-// validRecordBytes reads the committed TEGRON-TEST-0001 fixture and rewrites its vuln_id to id,
+// validRecordBytes reads the committed FERRALON-TEST-0001 fixture and rewrites its vuln_id to id,
 // returning the record file bytes. Reusing a real fixture guarantees the document is toFacts-valid;
 // rewriting vuln_id lets a single fixture seed many distinct, valid records. Re-marshaling produces
 // compact bytes; the caller computes output_digest over exactly these bytes.
 func validRecordBytes(t *testing.T, id string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(advisoryFixtureRoot, "TEGRON-TEST-0001.json"))
+	raw, err := os.ReadFile(filepath.Join(advisoryFixtureRoot, "FERRALON-TEST-0001.json"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -97,11 +97,11 @@ func writeGzipBundle(t *testing.T, raw []byte) string {
 // TestBundleSource_LookupCases covers the in-bundle content paths that share shape: a valid record
 // resolves; every corruption of a single record fails OPEN to the zero fact.
 func TestBundleSource_LookupCases(t *testing.T) {
-	valid := validRecordBytes(t, "TEGRON-TEST-0001")
+	valid := validRecordBytes(t, "FERRALON-TEST-0001")
 
 	// A record carrying the RETIRED `tegron.` schema tag (vs the shipped `ferralon.` base): decodes
 	// as JSON but toFacts rejects the unrecognized schema_version → fail open.
-	oldTag := validRecordBytes(t, "TEGRON-TEST-OLDTAG")
+	oldTag := validRecordBytes(t, "FERRALON-TEST-OLDTAG")
 	oldTag = bytes.Replace(oldTag,
 		[]byte(`"ferralon.normalized_advisory.v2"`),
 		[]byte(`"tegron.normalized_advisory.v2"`), 1)
@@ -114,37 +114,37 @@ func TestBundleSource_LookupCases(t *testing.T) {
 	}{
 		{
 			name:   "valid record resolves",
-			entry:  entryFor("TEGRON-TEST-0001", valid),
-			lookup: "TEGRON-TEST-0001",
+			entry:  entryFor("FERRALON-TEST-0001", valid),
+			lookup: "FERRALON-TEST-0001",
 			wantOK: true,
 		},
 		{
 			name: "digest mismatch fails open",
 			entry: bundleEntry{
-				Identifier:   "TEGRON-TEST-0001",
+				Identifier:   "FERRALON-TEST-0001",
 				Path:         "2099/01/x.json",
 				OutputDigest: "sha256:" + hex.EncodeToString(make([]byte, 32)), // wrong digest
 				Bytes:        string(valid),
 			},
-			lookup: "TEGRON-TEST-0001",
+			lookup: "FERRALON-TEST-0001",
 			wantOK: false,
 		},
 		{
 			name:   "malformed record bytes fail open",
-			entry:  entryFor("TEGRON-TEST-BAD", []byte(`{not valid json`)),
-			lookup: "TEGRON-TEST-BAD",
+			entry:  entryFor("FERRALON-TEST-BAD", []byte(`{not valid json`)),
+			lookup: "FERRALON-TEST-BAD",
 			wantOK: false,
 		},
 		{
 			name:   "retired schema tag fails open",
-			entry:  entryFor("TEGRON-TEST-OLDTAG", oldTag),
-			lookup: "TEGRON-TEST-OLDTAG",
+			entry:  entryFor("FERRALON-TEST-OLDTAG", oldTag),
+			lookup: "FERRALON-TEST-OLDTAG",
 			wantOK: false,
 		},
 		{
 			name:   "unknown id fails open",
-			entry:  entryFor("TEGRON-TEST-0001", valid),
-			lookup: "TEGRON-TEST-NOPE",
+			entry:  entryFor("FERRALON-TEST-0001", valid),
+			lookup: "FERRALON-TEST-NOPE",
 			wantOK: false,
 		},
 	}
@@ -172,7 +172,7 @@ func TestBundleSource_LookupCases(t *testing.T) {
 // TestBundleSource_MissingFile: an absent bundle fails OPEN on Lookup and LOUD on Validate.
 func TestBundleSource_MissingFile(t *testing.T) {
 	src := NewBundleSource(filepath.Join(t.TempDir(), "does-not-exist.jsonl.gz"))
-	if facts, ok := src.Lookup("TEGRON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
+	if facts, ok := src.Lookup("FERRALON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
 		t.Errorf("Lookup on missing bundle = (%+v, %v), want (zero, false)", facts, ok)
 	}
 	if err := src.(CorpusValidator).Validate(); err == nil {
@@ -188,7 +188,7 @@ func TestBundleSource_CorruptGzip(t *testing.T) {
 		t.Fatalf("write corrupt file: %v", err)
 	}
 	src := NewBundleSource(path)
-	if facts, ok := src.Lookup("TEGRON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
+	if facts, ok := src.Lookup("FERRALON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
 		t.Errorf("Lookup on corrupt gzip = (%+v, %v), want (zero, false)", facts, ok)
 	}
 	if err := src.(CorpusValidator).Validate(); err == nil {
@@ -199,16 +199,16 @@ func TestBundleSource_CorruptGzip(t *testing.T) {
 // TestBundleSource_DuplicateIdentifier: two JSONL lines with the same identifier make the bundle
 // unusable — Validate errors, Lookup fails open.
 func TestBundleSource_DuplicateIdentifier(t *testing.T) {
-	rec := validRecordBytes(t, "TEGRON-TEST-0001")
+	rec := validRecordBytes(t, "FERRALON-TEST-0001")
 	path := writeBundle(t, []bundleEntry{
-		entryFor("TEGRON-TEST-0001", rec),
-		entryFor("TEGRON-TEST-0001", rec),
+		entryFor("FERRALON-TEST-0001", rec),
+		entryFor("FERRALON-TEST-0001", rec),
 	})
 	src := NewBundleSource(path)
 	if err := src.(CorpusValidator).Validate(); err == nil {
 		t.Error("Validate on duplicate-id bundle returned nil, want error")
 	}
-	if facts, ok := src.Lookup("TEGRON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
+	if facts, ok := src.Lookup("FERRALON-TEST-0001"); ok || !reflect.DeepEqual(facts, AdvisoryFacts{}) {
 		t.Errorf("Lookup on duplicate-id bundle = (%+v, %v), want (zero, false)", facts, ok)
 	}
 }
@@ -216,7 +216,7 @@ func TestBundleSource_DuplicateIdentifier(t *testing.T) {
 // TestBundleSource_EnumerateAndDescribe: KnownIDs returns the sorted identifier set and Describe
 // reports Records == len with a sha256 file-digest handle.
 func TestBundleSource_EnumerateAndDescribe(t *testing.T) {
-	ids := []string{"TEGRON-TEST-0003", "TEGRON-TEST-0001", "TEGRON-TEST-0002"}
+	ids := []string{"FERRALON-TEST-0003", "FERRALON-TEST-0001", "FERRALON-TEST-0002"}
 	var entries []bundleEntry
 	for _, id := range ids {
 		entries = append(entries, entryFor(id, validRecordBytes(t, id)))
@@ -229,7 +229,7 @@ func TestBundleSource_EnumerateAndDescribe(t *testing.T) {
 		t.Fatal("bundleSource does not satisfy AdvisoryEnumerator")
 	}
 	got := enum.KnownIDs()
-	want := []string{"TEGRON-TEST-0001", "TEGRON-TEST-0002", "TEGRON-TEST-0003"}
+	want := []string{"FERRALON-TEST-0001", "FERRALON-TEST-0002", "FERRALON-TEST-0003"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("KnownIDs() = %v, want %v (sorted)", got, want)
 	}
@@ -259,7 +259,7 @@ func TestBundleSource_EnumerateAndDescribe(t *testing.T) {
 // TestBundleSource_ConcurrentLookup fires many parallel reads (Lookup + KnownIDs + Describe) at one
 // source; the sync.Once load followed by a read-only index must be race-clean under -race.
 func TestBundleSource_ConcurrentLookup(t *testing.T) {
-	ids := []string{"TEGRON-TEST-0001", "TEGRON-TEST-0002", "TEGRON-TEST-0003", "TEGRON-TEST-0004"}
+	ids := []string{"FERRALON-TEST-0001", "FERRALON-TEST-0002", "FERRALON-TEST-0003", "FERRALON-TEST-0004"}
 	var entries []bundleEntry
 	for _, id := range ids {
 		entries = append(entries, entryFor(id, validRecordBytes(t, id)))

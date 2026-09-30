@@ -8,12 +8,12 @@
 // chained (what a run does now). The invariant it enforces is the acceptance criterion: THE CHAIN
 // LOSES NO ID. Whatever resolved before a corpus was installed still resolves after.
 //
-// Opt-in — set OPEN_TEGRON_OVERLAP_CORPUS to a corpus root (a directory with manifest.json). It is
+// Opt-in — set ASSAY_OVERLAP_CORPUS to a corpus root (a directory with manifest.json). It is
 // skipped otherwise, so it never gates CI on an artifact the public module does not carry. Deliberately
-// a separate env var from TEGRON_ADVISORY_CORPUS_DIR: pointing the CLI at a corpus must not silently
+// a separate env var from ASSAY_ADVISORY_CORPUS_DIR: pointing the CLI at a corpus must not silently
 // turn a measurement on.
 //
-//	OPEN_TEGRON_OVERLAP_CORPUS=/path/to/vulnerability-corpus go test ./pipeline -run Overlap -v
+//	ASSAY_OVERLAP_CORPUS=/path/to/vulnerability-corpus go test ./pipeline -run Overlap -v
 package pipeline
 
 import (
@@ -28,9 +28,9 @@ import (
 var scanWorkSet = []string{
 	"GO-2021-0113", "GO-2022-0322", "GO-2021-0264", "CVE-2024-55947", "CVE-2025-8110",
 	"CVE-2024-45337", "CVE-2026-46595", "CVE-2026-39831", "CVE-2026-39821", "CVE-2020-36569",
-	"TEGRON-JAVA-SSRF-0001", "TEGRON-JAVA-SPRING-SSRF-0001", "TEGRON-JAVA-DEP-0001",
-	"TEGRON-JS-SSRF-0001", "TEGRON-JS-DEP-0001",
-	"TEGRON-PY-AIRFLOW-EXPAPI-0001", "TEGRON-PY-DEP-0001",
+	"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001",
+	"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001",
+	"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001",
 }
 
 // TestOverlap_WorkSetIsFullyTableBacked is the hermetic half: every id the scan path evaluates
@@ -48,9 +48,9 @@ func TestOverlap_WorkSetIsFullyTableBacked(t *testing.T) {
 // TestOverlap_ChainLosesNoWorkSetID is the live acceptance measurement. It prints the per-id
 // before/after table and fails if installing the corpus costs a single id its facts.
 func TestOverlap_ChainLosesNoWorkSetID(t *testing.T) {
-	root := os.Getenv("OPEN_TEGRON_OVERLAP_CORPUS")
+	root := os.Getenv("ASSAY_OVERLAP_CORPUS")
 	if root == "" {
-		t.Skip("set OPEN_TEGRON_OVERLAP_CORPUS to a corpus root to run the live overlap measurement")
+		t.Skip("set ASSAY_OVERLAP_CORPUS to a corpus root to run the live overlap measurement")
 	}
 
 	corpus := NewArtifactSource(root)

@@ -1,6 +1,6 @@
 // internal/projection/ssvc.go
 //
-// SSVC (Stakeholder-Specific Vulnerability Categorization) projection of a Tegron PoE.
+// SSVC (Stakeholder-Specific Vulnerability Categorization) projection of a PoE.
 //
 // SSVC v2.0 decision tree reference: https://certcc.github.io/SSVC/
 //
@@ -14,7 +14,7 @@
 //
 //	Exploitation:
 //	  proven exploitable + FlagPublicPoCReplayed → "active"  (public PoC was used)
-//	  proven exploitable                         → "poc"     (Tegron reproducer = PoC-equivalent)
+//	  proven exploitable                         → "poc"     (Assay reproducer = PoC-equivalent)
 //	  reasoned exploitable                       → "poc"     (substantiated lean)
 //	  not_exploitable (proven or reasoned)       → "none"
 //
@@ -23,10 +23,10 @@
 //	  Conditions non-empty || not_exploitable    → "no"
 //
 //	TechnicalImpact:
-//	  exploitable (any strength)                 → "total"   (conservative; Tegron cannot narrow)
+//	  exploitable (any strength)                 → "total"   (conservative; Assay cannot narrow)
 //	  not_exploitable (any strength)             → "partial" (minimum meaningful impact)
 //	  Note: "total" is the conservative default for exploitable verdicts because
-//	  Tegron does not yet classify impact scope — choosing "partial" would be under-reporting.
+//	  Assay does not yet classify impact scope — choosing "partial" would be under-reporting.
 //
 //	MissionWellbeingImpact:
 //	  always "high" for exploitable, "low" for not_exploitable
@@ -163,7 +163,7 @@ func ssvcDecisionPoints(p verdict.PoE) SSVCDecisionPts {
 
 func ssvcExploitation(p verdict.PoE) string {
 	// Only a genuinely exploitable direction gets a poc/active signal. not_exploitable AND
-	// indeterminate (nothing established — ADR 0016) both yield `none`: an unknown verdict must
+	// indeterminate (nothing established) both yield `none`: an unknown verdict must
 	// never read as active exploitation.
 	if p.Direction != verdict.DirectionExploitable {
 		return SSVCExploitationNone
@@ -179,7 +179,7 @@ func ssvcExploitation(p verdict.PoE) string {
 }
 
 func ssvcAutomatable(p verdict.PoE) string {
-	// not_exploitable AND indeterminate (ADR 0016) → not automatable: no evidence of an automatable
+	// not_exploitable AND indeterminate → not automatable: no evidence of an automatable
 	// attack for a verdict that established nothing.
 	if p.Direction != verdict.DirectionExploitable {
 		return SSVCAutomatableNo
@@ -194,12 +194,12 @@ func ssvcAutomatable(p verdict.PoE) string {
 
 func ssvcTechnicalImpact(p verdict.PoE) string {
 	if p.Direction == verdict.DirectionExploitable {
-		// Conservative: Tegron does not classify impact scope; "total" avoids under-reporting.
+		// Conservative: Assay does not classify impact scope; "total" avoids under-reporting.
 		return SSVCTechnicalImpactTotal
 	}
 	// not_exploitable AND indeterminate → the floor. SSVC has no "unknown" impact tier, and
 	// mapping an indeterminate verdict to `total` would OVERSTATE impact for a run that established
-	// nothing (ADR 0016). An indeterminate verdict is therefore SSVC-indistinguishable from a
+	// nothing. An indeterminate verdict is therefore SSVC-indistinguishable from a
 	// grounded not_exploitable on the impact axes — a known limitation; the distinguishing
 	// containment lives on the exploitation/automatable axes (both `none`/`no` for indeterminate)
 	// and in the verdict itself (direction=indeterminate), not in the SSVC vector.
@@ -216,7 +216,7 @@ func ssvcMissionImpact(p verdict.PoE) string {
 }
 
 // ssvcOutcome derives the SSVC operator/deployer outcome from the decision points.
-// Follows the SSVC v2 deployer tree logic (simplified for Tegron's current decision-point set):
+// Follows the SSVC v2 deployer tree logic (simplified for the current decision-point set):
 //
 //	Exploitation=active                    → Act
 //	Exploitation=poc && TechImpact=total   → Attend

@@ -48,7 +48,7 @@ import (
 //
 //  1. THE COMPILED-IN SET IS A FLOOR, NEVER A CEILING. The widened work set is a UNION with it, so
 //     no id in the floor can stop being evaluated — whatever the policy carries, whatever OSV says,
-//     whatever the network does. Java/JS/Python carry first-party TEGRON-* fixtures no public feed
+//     whatever the network does. Java/JS/Python carry first-party FERRALON-* fixtures no public feed
 //     has heard of; replace-by instead of union-with would silently delete them.
 //
 //  2. A WORK SET THAT COULD NOT BE DETERMINED IS ANALYSIS THAT DID NOT HAPPEN. When the repository's

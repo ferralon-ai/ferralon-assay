@@ -112,7 +112,7 @@ func TestOSVWorkSet_OptInStillReachesOSV(t *testing.T) {
 }
 
 // TestOSVWorkSet_EnvOptInReachesOSV proves the env channel is a real second switch after the
-// default flip. Before it, TEGRON_OSV_WORK_SET could only ever turn the widening OFF, so nothing
+// default flip. Before it, ASSAY_OSV_WORK_SET could only ever turn the widening OFF, so nothing
 // covered it as a way to turn it on — which is now its primary use.
 func TestOSVWorkSet_EnvOptInReachesOSV(t *testing.T) {
 	t.Setenv(envOSVWorkSet, "1")

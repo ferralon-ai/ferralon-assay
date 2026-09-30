@@ -4,8 +4,8 @@
   "record_count": 2,
   "records": [
     {
-      "identifier": "TEGRON-TEST-BADCOUNT",
-      "path": "TEGRON-TEST-BADCOUNT.json",
+      "identifier": "FERRALON-TEST-BADCOUNT",
+      "path": "FERRALON-TEST-BADCOUNT.json",
       "output_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     }
   ],

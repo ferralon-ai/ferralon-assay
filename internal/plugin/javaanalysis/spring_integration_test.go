@@ -12,10 +12,10 @@ import (
 // the REAL pure-Go emitter (symbol_mapping, FindIngresses, lexical CallGraph) runs
 // over. The committed real-scip-java index was emitted by scip-java over THIS tree,
 // so the two id sources describe the same physical methods.
-const reproSpringSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SPRING-SSRF-0001-vulnerable/src"
+const reproSpringSrc = "../../../corpus/testdata/repros/FERRALON-JAVA-SPRING-SSRF-0001-vulnerable/src"
 
 // TestSpringSSRF_AdvisoryToReachability_FullChain is the missing INTEGRATION test
-// for TEGRON-JAVA-SPRING-SSRF-0001. It exercises the real advisory →
+// for FERRALON-JAVA-SPRING-SSRF-0001. It exercises the real advisory →
 // symbol_mapping → reachability chain hermetically (no container): the sink id is
 // the one ResolveDependencySymbols (symbol_mapping) actually produces from the
 // advisory-named symbol, the resolved interface→impl graph is derived from the

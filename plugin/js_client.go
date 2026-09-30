@@ -11,12 +11,12 @@ import (
 
 // jsPlugin is the out-of-process client for the JavaScript/TypeScript language
 // plugin. It is the exact analog of goPlugin and javaPlugin: it implements
-// LanguagePlugin by execing the tegron-plugin-js subprocess once per operation and
+// LanguagePlugin by execing the assay-plugin-js subprocess once per operation and
 // exchanging a single newline-delimited JSON Request/Response over the child's
 // stdin/stdout. Like the others it imports neither internal/plugin/jsanalysis nor any
 // heavy parsing code — the JS analysis links only into the subprocess binary (inv.8).
 type jsPlugin struct {
-	bin string // resolved path to the tegron-plugin-js binary
+	bin string // resolved path to the assay-plugin-js binary
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,7 +27,7 @@ var _ LanguagePlugin = (*jsPlugin)(nil)
 // JSOption configures a jsPlugin during construction.
 type JSOption func(*jsPlugin)
 
-// WithJSBinaryPath sets an explicit path to the tegron-plugin-js binary, taking
+// WithJSBinaryPath sets an explicit path to the assay-plugin-js binary, taking
 // precedence over PATH lookup.
 func WithJSBinaryPath(path string) JSOption {
 	return func(p *jsPlugin) { p.bin = path }
@@ -35,16 +35,16 @@ func WithJSBinaryPath(path string) JSOption {
 
 // NewJSPlugin constructs the subprocess-backed JS plugin client. Binary discovery
 // mirrors NewGoPlugin/NewJavaPlugin: an explicit path via WithJSBinaryPath takes
-// precedence; otherwise exec.LookPath resolves "tegron-plugin-js" on PATH.
+// precedence; otherwise exec.LookPath resolves BinaryName("js") on PATH.
 func NewJSPlugin(opts ...JSOption) (LanguagePlugin, error) {
 	p := &jsPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-js")
+		bin, err := exec.LookPath(BinaryName("js"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-js: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("js"), err)
 		}
 		p.bin = bin
 	}

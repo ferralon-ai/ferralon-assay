@@ -11,7 +11,7 @@ import (
 )
 
 // baselinePath is the committed Go recall golden the eval_live gate diffs against. It holds the
-// per-case candidate-formation state of a real live Go run (regenerated with TEGRON_EVAL_UPDATE=1);
+// per-case candidate-formation state of a real live Go run (regenerated with ASSAY_EVAL_UPDATE=1);
 // the eval_live gate fails on any case that formed a candidate here but stops forming one (a recall
 // regression). The aggregate Recall()/Precision() rates stay n/a until expected_sinks.json is
 // populated, but the per-case floor gates regardless.
@@ -50,7 +50,7 @@ func loadBaselineReport(path string) (Report, error) {
 }
 
 // writeBaselineReport marshals a report (results sorted by CaseID) to the golden path. This is
-// the TEGRON_EVAL_UPDATE=1 regenerate idiom the live runner calls once anvil has real numbers.
+// the ASSAY_EVAL_UPDATE=1 regenerate idiom the live runner calls once anvil has real numbers.
 func writeBaselineReport(path string, rep Report) error {
 	data, err := json.MarshalIndent(sortResultsByCaseID(rep), "", "  ")
 	if err != nil {

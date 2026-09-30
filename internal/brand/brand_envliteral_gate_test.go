@@ -16,109 +16,156 @@ import (
 	"testing"
 )
 
-// brandEnvLiteralRe matches a fully-formed environment-variable literal under any prefix the
-// tool has shipped under — the current ASSAY_ and the retired NUCLEON_ / TEGRON_ — e.g.
-// "TEGRON_ADVISORY_CORPUS_DIR". It deliberately does NOT match a bare prefix ("ASSAY", the
-// value of EnvPrefix in brand_identity.go) or a suffix fragment like "_ADVISORY_CORPUS_DIR"
-// (the string-literal half of brand.EnvPrefix+"_ADVISORY_CORPUS_DIR") — only a complete,
-// self-contained "<PREFIX>_..." string is the leak this gate exists to catch.
-var brandEnvLiteralRe = regexp.MustCompile(`^(?:ASSAY|NUCLEON|TEGRON)_[A-Z0-9]+(?:_[A-Z0-9]+)*$`)
-
-// allowedInternalEnvIdents is the explicit, commented allowlist of const/var identifiers that
-// are permitted to hold a bare brand-prefixed literal WITHOUT routing through brand.EnvOrLegacy.
-// Every entry here is a deliberate, reviewed exception — a genuinely internal knob (build/CI
-// gate, process-scoped credential handoff, or telemetry-internal setting) that is never
-// surfaced on a customer-facing surface (action.yml env mapping, --help, a CLI flag, or any
-// operator-facing doc). Adding an entry must be a deliberate act: name the identifier, name the
-// file, and state WHY it never reaches a customer. Do not add an entry to silence this gate for
-// a var that might reach a customer — route it through brand.EnvOrLegacy instead (see run.go /
-// storage.go for the pattern: brand.EnvPrefix+"_X" as the derived name, with the retired
-// "NUCLEON_X" and "TEGRON_X" names passed as EnvOrLegacy's trailing legacy arguments).
-var allowedInternalEnvIdents = map[string]string{
-	"scipAnalyzerImageEnv": "internal/plugin/javaanalysis/scipjava.go — gates the Prove-only Java/SCIP " +
-		"container image. Build/CI knob only: not wired into action.yml, --help, or any operator doc " +
-		"(Java packaging is a known separate blocker, task 01 inventory).",
-	"scipDockerBinEnv": "internal/plugin/javaanalysis/scipjava.go — docker binary override for the same " +
-		"internal container gate as scipAnalyzerImageEnv above.",
-	"EnvEnvironment": "telemetry/provider.go — OTEL deployment.environment.name override. " +
-		"Internal-only per its own F-6 review doc comment: never printed, no flag surface, not part " +
-		"of any OSS operator-facing doc.",
-	"EnvSampleRatio": "telemetry/provider.go — OTEL trace sample-ratio override. Internal-only, " +
-		"same F-6 review basis as EnvEnvironment above.",
-	"EnvLevel": "telemetry/level.go — OTEL coverage-tier selector. Internal-only per its own doc " +
-		"comment (F-6 review), same basis as the other telemetry/ entries.",
-	"credEnvVar": "checkout/git.go — names the env key used to hand a GitHub installation token " +
-		"to a child git process for one clone/fetch. The token lives in that child process's " +
-		"environment only (never at rest, never in argv); ferralon-assay never reads this var itself, " +
-		"and no customer ever sets it.",
+// platformEnv is every environment variable this module reads that is not its own
+// configuration: names a runtime platform or a standard tool defines. A key ending in "_" is a
+// prefix. Each entry lists the package directories allowed to read it; "cmd" covers every
+// entry point under cmd/. Adding an entry is a deliberate act: name the platform that defines
+// the variable and why the package cannot take the value from its caller.
+var platformEnv = map[string]struct {
+	dirs []string
+	why  string
+}{
+	"GITHUB_": {
+		dirs: []string{"cmd", "resultsink/github"},
+		why:  "GitHub Actions runtime context; the GitHub result sink detects the Actions run it is writing to",
+	},
+	"ACTIONS_ID_TOKEN_REQUEST_": {
+		dirs: []string{"cmd"},
+		why:  "GitHub Actions OIDC token endpoint",
+	},
+	"FERRALON_": {
+		dirs: []string{"cmd"},
+		why:  "the Action's console-link and self-cleanup wiring, read only by the CLI",
+	},
+	"OTEL_EXPORTER_OTLP_": {
+		dirs: []string{"telemetry"},
+		why:  "standard OpenTelemetry exporter endpoints, which the OTLP exporters also read themselves",
+	},
+	"NUGET_PACKAGES": {
+		dirs: []string{"internal/plugin/dotnetanalysis/assembly"},
+		why:  "the .NET SDK's global-packages folder override, which the restored assemblies live under",
+	},
+	"PATH": {
+		dirs: []string{"artifactcache/artifactcachetest"},
+		why:  "the conformance kit swaps PATH for a spawn-detecting shim and restores it",
+	},
 }
 
-// TestNoHardcodedBrandEnvLiteral is the tree-wide regression gate for the incident this gate
-// was written for: a customer-facing environment-variable name hardcoded as a bare
-// "<PREFIX>_..." string literal, bypassing brand.EnvOrLegacy. Two failures follow from that
-// shape. A hardcoded CURRENT name (ASSAY_X) is a site a downstream rebrand silently misses, so
-// the brand package stops being the single edit point it exists to be. A hardcoded RETIRED name
-// (NUCLEON_X, TEGRON_X) read directly means the current name is never consulted at all, so the
-// value an operator sets under the documented name is silently dropped.
+// dynamicEnvReads is every read site whose key is not a constant the gate can resolve, by file.
+var dynamicEnvReads = map[string]string{
+	"telemetry/provider.go": "loops over the three OTEL_EXPORTER_OTLP_ endpoint constants",
+}
+
+// TestNoHardcodedBrandEnvLiteral fails on a string literal that spells out a complete
+// "<EnvPrefix>_X" name. Every such name is declared as EnvPrefix+"_X", so the brand package stays
+// the single place a rebrand edits. It does not match the bare prefix or a "_X" suffix fragment.
 //
-// It is a plain Go test, not a go/analysis vet-style analyzer, on purpose: it needs zero extra
-// CI wiring (no -vettool= flag, no separate lint step to keep configured) — it runs wherever
-// `go test ./...` already runs, which is every PR. An AST walk over source files is exactly as
-// precise here as a vet analyzer would be; nothing about this check needs vet's package-loading
-// or type-checking machinery, since it operates on syntax (string-literal shape), not types.
-//
-// Scope: ferralon-assay/ only, non-test .go files, excluding corpus/testdata/repros/** (those are
-// intentionally-realistic vulnerable-repro fixtures whose env vars are read by the SUBJECT
-// programs under test, not by ferralon-assay itself — TEGRON_OOB_URL there names the detonation
-// harness's callback channel, unrelated to brand identity). service/ is out of scope: it is the
-// proprietary module, never a customer-editable surface, so its TEGRON_ literals are not a brand
-// leak. action.yml and other non-.go files are out of scope structurally — the AST parser only
-// reads *.go — which is correct: the Action's YAML env mapping is a consumer of these names, not
-// a definition site, and must not trip this gate.
-//
-// Demonstrated failure (see cycle execution note 07-brand-gate.md): reverting
-// cmd/ferralon-assay/run.go's envTrustObservedGo/legacyEnvTrustObservedGo pair to the single bare
-// `const envTrustObservedGo = "TEGRON_TRUST_OBSERVED_GO"` read via direct os.Getenv — the exact
-// shape #229 landed on main — makes this test fail with that file:line.
+// Demonstrated failure: declaring `const envTrustObservedGo = "ASSAY_TRUST_OBSERVED_GO"` in
+// cmd/ferralon-assay/run.go makes this test fail with that file:line.
 func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(EnvPrefix) + `_[A-Z0-9]+(?:_[A-Z0-9]+)*$`)
+	var violations []string
+	walkSources(t, func(rel string, fset *token.FileSet, file *ast.File, _ map[string]string) {
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			if v, err := strconv.Unquote(lit.Value); err == nil && re.MatchString(v) {
+				violations = append(violations, fmt.Sprintf("%s:%d: hardcoded %q; declare it as brand.EnvPrefix+%q",
+					rel, fset.Position(lit.Pos()).Line, v, strings.TrimPrefix(v, EnvPrefix)))
+			}
+			return true
+		})
+	})
+	report(t, violations)
+}
+
+// TestEnvReadsStayAtEntryPoints is the gate that keeps configuration explicit: a library package
+// takes its settings from its caller and never reads the process environment on an embedder's
+// behalf. Every os.Getenv / os.LookupEnv call in non-test source must resolve to a constant key
+// that is either this tool's own EnvPrefix_ name, read only by an entry point under cmd/, or a
+// platformEnv name, read only by a package listed for it. A read whose key cannot be resolved must
+// be listed in dynamicEnvReads.
+//
+// Scope: the whole module, non-test .go files, skipping testdata directories (fixture programs
+// read their own environment, not this module's).
+func TestEnvReadsStayAtEntryPoints(t *testing.T) {
+	var violations []string
+	walkSources(t, func(rel string, fset *token.FileSet, file *ast.File, consts map[string]string) {
+		dir := filepath.ToSlash(filepath.Dir(rel))
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || (sel.Sel.Name != "Getenv" && sel.Sel.Name != "LookupEnv") {
+				return true
+			}
+			if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "os" {
+				return true
+			}
+			at := fmt.Sprintf("%s:%d", rel, fset.Position(call.Pos()).Line)
+			key, ok := evalString(call.Args[0], consts)
+			if !ok {
+				if dynamicEnvReads[filepath.ToSlash(rel)] == "" {
+					violations = append(violations, at+": env key is not a resolvable constant; list the site in dynamicEnvReads")
+				}
+				return true
+			}
+			if msg := checkEnvRead(dir, key); msg != "" {
+				violations = append(violations, fmt.Sprintf("%s: reads %s: %s", at, key, msg))
+			}
+			return true
+		})
+	})
+	report(t, violations)
+}
+
+// checkEnvRead returns why package dir may not read key, or "" when it may.
+func checkEnvRead(dir, key string) string {
+	entry := dir == "cmd" || strings.HasPrefix(dir, "cmd/")
+	if strings.HasPrefix(key, EnvPrefix+"_") {
+		if entry {
+			return ""
+		}
+		return "a library package takes this setting as an option; only an entry point under cmd/ reads it"
+	}
+	for name, p := range platformEnv {
+		if key != name && !(strings.HasSuffix(name, "_") && strings.HasPrefix(key, name)) {
+			continue
+		}
+		for _, d := range p.dirs {
+			if d == dir || (d == "cmd" && entry) {
+				return ""
+			}
+		}
+		return "this package is not listed for the variable in platformEnv"
+	}
+	return "neither an EnvPrefix_ name nor a platformEnv name"
+}
+
+// walkSources parses every non-test .go file outside testdata and hands each to visit with the
+// string constants declared in its package directory.
+func walkSources(t *testing.T, visit func(rel string, fset *token.FileSet, file *ast.File, consts map[string]string)) {
+	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not determine this test file's own location via runtime.Caller")
 	}
-	// thisFile is .../ferralon-assay/brand/brand_envliteral_gate_test.go; its grandparent dir is
-	// the ferralon-assay module root, which is also the intended scan root.
-	openTegronRoot := filepath.Dir(filepath.Dir(thisFile))
-	excludedPrefix := filepath.Join("corpus", "testdata", "repros")
+	// thisFile is <module>/internal/brand/<this file>, so the module root is three levels up.
+	root := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 
 	fset := token.NewFileSet()
-
-	// legacySanctioned{Idents,Literals}: identifiers or inline literals observed in a TRAILING
-	// (legacyNames...) argument position of a real brand.EnvOrLegacy(...) call anywhere in the
-	// scanned tree — the sanctioned fallback position. EnvOrLegacy is variadic, so every argument
-	// from index 1 onward counts; only argument 0 (the brand-derived name) does not. A const
-	// following the legacyEnvX naming convention is exempted only if it is ACTUALLY consumed this
-	// way, not merely because of its name: naming something "legacyEnvFoo" and reading it via a
-	// bare os.Getenv instead still trips the gate.
-	legacySanctionedIdents := map[string]bool{}
-	legacySanctionedLiterals := map[string]bool{}
-
-	type site struct {
-		ident string // "" when the literal isn't bound to a named const/var
-		pos   token.Pos
-		lit   string
-	}
-	sitesByPos := map[token.Pos]site{}
-
-	walkErr := filepath.WalkDir(openTegronRoot, func(path string, d fs.DirEntry, err error) error {
+	files := map[string][]*ast.File{} // by package directory
+	rels := map[*ast.File]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			rel, _ := filepath.Rel(openTegronRoot, path)
-			if rel == excludedPrefix || strings.HasPrefix(rel, excludedPrefix+string(filepath.Separator)) {
+			if path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" || d.Name() == "vendor") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -126,104 +173,100 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-
-		src, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return fmt.Errorf("read %s: %w", path, rerr)
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
-		file, perr := parser.ParseFile(fset, path, src, 0)
-		if perr != nil {
-			return fmt.Errorf("parse %s: %w", path, perr)
+		f, err := parser.ParseFile(fset, path, src, 0)
+		if err != nil {
+			return err
 		}
+		rel, _ := filepath.Rel(root, path)
+		files[filepath.Dir(rel)] = append(files[filepath.Dir(rel)], f)
+		rels[f] = rel
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk module tree: %v", err)
+	}
+	for _, pkgFiles := range files {
+		consts := packageConsts(pkgFiles)
+		for _, f := range pkgFiles {
+			visit(rels[f], fset, f, consts)
+		}
+	}
+}
 
-		ast.Inspect(file, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.CallExpr:
-				sel, ok := node.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "EnvOrLegacy" {
-					return true
+// packageConsts resolves the package-level string constants of one package, iterating so a
+// constant defined in terms of another resolves regardless of declaration order.
+func packageConsts(files []*ast.File) map[string]string {
+	consts := map[string]string{}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				gd, ok := decl.(*ast.GenDecl)
+				if !ok || gd.Tok != token.CONST {
+					continue
 				}
-				pkgIdent, ok := sel.X.(*ast.Ident)
-				if !ok || pkgIdent.Name != "brand" || len(node.Args) < 2 {
-					return true
-				}
-				for _, rawArg := range node.Args[1:] {
-					switch arg := rawArg.(type) {
-					case *ast.Ident:
-						legacySanctionedIdents[arg.Name] = true
-					case *ast.BasicLit:
-						if arg.Kind == token.STRING {
-							if v, uerr := strconv.Unquote(arg.Value); uerr == nil {
-								legacySanctionedLiterals[v] = true
-							}
+				for _, spec := range gd.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for i, name := range vs.Names {
+						if i >= len(vs.Values) {
+							continue
+						}
+						if _, done := consts[name.Name]; done {
+							continue
+						}
+						if v, ok := evalString(vs.Values[i], consts); ok {
+							consts[name.Name] = v
+							changed = true
 						}
 					}
 				}
-			case *ast.ValueSpec:
-				for i, name := range node.Names {
-					if i >= len(node.Values) {
-						continue
-					}
-					lit, ok := node.Values[i].(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
-						continue
-					}
-					v, uerr := strconv.Unquote(lit.Value)
-					if uerr != nil || !brandEnvLiteralRe.MatchString(v) {
-						continue
-					}
-					sitesByPos[lit.Pos()] = site{ident: name.Name, pos: lit.Pos(), lit: v}
-				}
-			case *ast.BasicLit:
-				// Catches a literal NOT bound to any name (e.g. os.Getenv("TEGRON_X") inlined
-				// directly). If the ValueSpec case above already recorded this exact node
-				// (same Pos, visited as a parent before this generic case sees the same
-				// literal as a child), don't clobber the ident it carries.
-				if node.Kind != token.STRING {
-					return true
-				}
-				if _, already := sitesByPos[node.Pos()]; already {
-					return true
-				}
-				v, uerr := strconv.Unquote(node.Value)
-				if uerr == nil && brandEnvLiteralRe.MatchString(v) {
-					sitesByPos[node.Pos()] = site{ident: "", pos: node.Pos(), lit: v}
-				}
 			}
-			return true
-		})
-		return nil
-	})
-	if walkErr != nil {
-		t.Fatalf("walk ferralon-assay tree: %v", walkErr)
-	}
-
-	var violations []string
-	for _, s := range sitesByPos {
-		if legacySanctionedLiterals[s.lit] {
-			continue
 		}
-		if s.ident != "" && (legacySanctionedIdents[s.ident] || allowedInternalEnvIdents[s.ident] != "") {
-			continue
-		}
-		pos := fset.Position(s.pos)
-		rel, _ := filepath.Rel(openTegronRoot, pos.Filename)
-		violations = append(violations, fmt.Sprintf(
-			"ferralon-assay/%s:%d: hardcoded literal %q — a customer-facing TEGRON_* env var must "+
-				"never be a bare string literal read outside brand.EnvOrLegacy, because a stealth "+
-				"build's public surfaces (action.yml env mapping, --help, CI config) must carry no "+
-				"\"TEGRON\" engine identifier. Fix: declare a brand.EnvPrefix+\"_X\" derived name and "+
-				"a %q legacy fallback const, then read both via brand.EnvOrLegacy(derived, legacy) — "+
-				"see cmd/ferralon-assay/run.go's envAdvisoryCorpusDir/legacyEnvAdvisoryCorpusDir for the "+
-				"pattern. If this really is internal-only and can never reach a customer surface, add "+
-				"it to allowedInternalEnvIdents in this file with a one-line justification — that is "+
-				"a deliberate, reviewed act, not a default.",
-			rel, pos.Line, s.lit, s.lit))
 	}
+	return consts
+}
 
+// evalString folds a string constant expression built from literals, same-package constants,
+// brand.EnvPrefix and +.
+func evalString(e ast.Expr, consts map[string]string) (string, bool) {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		if x.Kind != token.STRING {
+			return "", false
+		}
+		v, err := strconv.Unquote(x.Value)
+		return v, err == nil
+	case *ast.Ident:
+		if x.Name == "EnvPrefix" { // inside package brand itself
+			return EnvPrefix, true
+		}
+		v, ok := consts[x.Name]
+		return v, ok
+	case *ast.SelectorExpr:
+		if pkg, ok := x.X.(*ast.Ident); ok && pkg.Name == "brand" && x.Sel.Name == "EnvPrefix" {
+			return EnvPrefix, true
+		}
+	case *ast.ParenExpr:
+		return evalString(x.X, consts)
+	case *ast.BinaryExpr:
+		if x.Op != token.ADD {
+			return "", false
+		}
+		l, lok := evalString(x.X, consts)
+		r, rok := evalString(x.Y, consts)
+		return l + r, lok && rok
+	}
+	return "", false
+}
+
+func report(t *testing.T, violations []string) {
+	t.Helper()
 	if len(violations) > 0 {
 		sort.Strings(violations)
-		t.Fatalf("found %d hardcoded TEGRON_* env-var literal(s) outside brand.EnvOrLegacy:\n\n%s",
-			len(violations), strings.Join(violations, "\n\n"))
+		t.Fatalf("%d violation(s):\n%s", len(violations), strings.Join(violations, "\n"))
 	}
 }

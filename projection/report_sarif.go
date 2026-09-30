@@ -116,7 +116,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			Message:    SARIFMessage{Text: reportSARIFMessage(f)},
 			Locations:  reportSARIFLocations(f),
 			Rank:       rank,
-			Properties: &SARIFProperties{Tegron: props},
+			Properties: &SARIFProperties{Scanner: props},
 		})
 	}
 
@@ -229,7 +229,7 @@ func reportSARIFNotAssessed(notes []report.PartialityNote, rowIDs map[string]str
 						"This is not a statement that the codebase is unaffected.",
 					id, brand.Name, n.Reason)},
 				Locations:  []SARIFLocation{{PhysicalLocation: &SARIFPhysicalLocation{ArtifactLocation: SARIFArtifactLocation{URI: sarifFallbackURI}, Region: &SARIFRegion{StartLine: 1}}}},
-				Properties: &SARIFProperties{Tegron: props},
+				Properties: &SARIFProperties{Scanner: props},
 			})
 		}
 	}
@@ -300,11 +300,11 @@ func reportSARIFPartialityResults(r report.Report) []SARIFResult {
 			props["detail"] = n.Detail
 		}
 		// withheld_advisories names the specific advisory ids this limit suppressed a verdict
-		// for, when the producer identified them (e.g. a Go-toolchain advisory withheld under
-		// ADR 0014 §3.3). Empty for a limit that narrows coverage without suppressing any
-		// specific verdict (report.go's PartialityNote.Advisories doc). Enrichment on the
-		// existing per-note result, not a separate result per id: a second id-keyed result set
-		// would either lack the loud/quiet arm this result already carries, or duplicate it.
+		// for. Only a stored v1 document carries them; this analyzer emits an advisory it could
+		// not adjudicate as an undetermined row instead, so the list is empty for every limit it
+		// produces (report.go's PartialityNote.Advisories doc). Enrichment on the existing per-note result, not a
+		// separate result per id: a second id-keyed result set would either lack the loud/quiet
+		// arm this result already carries, or duplicate it.
 		if len(n.Advisories) > 0 {
 			props["withheld_advisories"] = n.Advisories
 		}
@@ -319,7 +319,7 @@ func reportSARIFPartialityResults(r report.Report) []SARIFResult {
 					Region:           &SARIFRegion{StartLine: 1},
 				},
 			}},
-			Properties: &SARIFProperties{Tegron: props},
+			Properties: &SARIFProperties{Scanner: props},
 		})
 	}
 	return out

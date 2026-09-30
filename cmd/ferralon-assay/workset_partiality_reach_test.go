@@ -130,7 +130,7 @@ func TestWorkSetPartiality_UnassessedIDsReachSARIF(t *testing.T) {
 	if res.Level != "warning" {
 		t.Errorf("level = %q, want %q", res.Level, "warning")
 	}
-	detail, _ := res.Properties.Tegron["detail"].(string)
+	detail, _ := res.Properties.Scanner["detail"].(string)
 	for _, id := range unassessed {
 		if !strings.Contains(detail, id) {
 			t.Errorf("SARIF detail property does not name %s:\n%s", id, detail)
@@ -169,7 +169,7 @@ func TestWorkSetPartiality_CleanRunEmitsNoLimit(t *testing.T) {
 		if r.Properties == nil {
 			continue
 		}
-		if reason, _ := r.Properties.Tegron["partiality_reason"].(string); reason == reasonAdvisoryFactsUnavailable {
+		if reason, _ := r.Properties.Scanner["partiality_reason"].(string); reason == reasonAdvisoryFactsUnavailable {
 			t.Errorf("a run with nothing unassessed still emitted %q:\n%s", reason, r.Message.Text)
 		}
 	}
@@ -192,7 +192,7 @@ func findSARIFResult(t *testing.T, results []projection.SARIFResult, reason stri
 		if r.Properties == nil {
 			continue
 		}
-		if got, _ := r.Properties.Tegron["partiality_reason"].(string); got == reason {
+		if got, _ := r.Properties.Scanner["partiality_reason"].(string); got == reason {
 			return r
 		}
 	}

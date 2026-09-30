@@ -12,13 +12,13 @@
 // So the release could bake an analyzer for a language and the Action could still fail to expose it.
 // That is exactly what shipped: action.yml carried two hand-typed lists — a chmod list and a symlink
 // list — naming the CLI plus Go, Python and JS. Java and .NET were extracted from the tarball onto
-// the runner's disk and then left with no `tegron-plugin-<lang>` lookup name, so the CLI's
+// the runner's disk and then left with no lookup name on PATH, so the CLI's
 // exec.LookPath found nothing and the run died at the customer's runner. In-module every language
 // completed a scan; through the Action two of them could not start one.
 //
 // # Why this test runs the shell instead of reading it
 //
-// A test that greps action.yml for `tegron-plugin-java` passes the moment somebody writes that
+// A test that greps action.yml for `assay-plugin-java` passes the moment somebody writes that
 // literal back — it locks in the very failure mode being removed (a second spelling of a value that
 // should be derived). So this file extracts the wiring block from action.yml VERBATIM, runs it
 // against a staged directory holding the REAL baked asset names, and asserts on the lookup names
@@ -28,7 +28,7 @@
 // binaries`, the one target table. The chain is therefore closed end to end —
 //
 //	supportedLanguages -> build-release.sh -> the baked asset names -> action.yml's derivation
-//	                                                                -> tegron-plugin-<lang>
+//	                                                                -> plugin.BinaryName(<lang>)
 //
 // — and every link is exercised rather than asserted.
 //
@@ -37,22 +37,29 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 const (
-	actionYMLPath      = "../../action.yml"
-	buildReleasePath   = "../../scripts/build-release.sh"
-	wiringBeginMarker  = ">>> BEGIN plugin wiring >>>"
-	wiringEndMarker    = "<<< END plugin wiring <<<"
-	cliAssetName       = "ferralon-assay-scan"
-	pluginAssetPrefix  = "ferralon-assay-scan-plugin"
-	pluginLookupPrefix = "tegron-plugin-"
+	actionYMLPath     = "../../action.yml"
+	buildReleasePath  = "../../scripts/build-release.sh"
+	wiringBeginMarker = ">>> BEGIN plugin wiring >>>"
+	wiringEndMarker   = "<<< END plugin wiring <<<"
+	cliAssetName      = "ferralon-assay-scan"
+	pluginAssetPrefix = "ferralon-assay-scan-plugin"
+
+	// preV04LookupPrefix is the name scanners released before v0.4.0 resolve their analyzer
+	// under. action.yml links it alongside plugin.BinaryName while its scanner-version default
+	// still resolves such a scanner; drop this and its assertions when that link goes.
+	preV04LookupPrefix = "tegron-plugin-"
 )
 
 // actionWiringScript extracts the plugin-wiring block from the published action.yml and returns it
@@ -209,8 +216,9 @@ func lookupNames(t *testing.T, work string) []string {
 
 // TestActionWiringExposesEverySupportedLanguage is the missing edge.
 //
-// It stages the real baked asset names, runs the Action's real wiring, and requires a
-// `tegron-plugin-<lang>` lookup name for every supported language. Drop a language from the
+// It stages the real baked asset names, runs the Action's real wiring, and requires the
+// plugin.BinaryName lookup name (plus the pre-v0.4.0 scanner's name) for every supported language.
+// Drop a language from the
 // derivation — including by removing the bare-name arm that maps `ferralon-assay-scan-plugin` to Go
 // — and this goes red.
 func TestActionWiringExposesEverySupportedLanguage(t *testing.T) {
@@ -229,32 +237,46 @@ func TestActionWiringExposesEverySupportedLanguage(t *testing.T) {
 	}
 
 	for _, language := range supportedLanguages {
-		want := pluginLookupPrefix + language
-		if !have[want] {
-			t.Errorf("the Action exposes no %s: %s is a supported language whose analyzer IS in the "+
-				"tarball, but the wiring gives it no lookup name, so exec.LookPath finds nothing and "+
-				"the run dies at the runner.\n  exposed: %v\n  wiring output:\n%s",
-				want, language, got, out)
+		for _, want := range []string{plugin.BinaryName(language), preV04LookupPrefix + language} {
+			if !have[want] {
+				t.Errorf("the Action exposes no %s: %s is a supported language whose analyzer IS in the "+
+					"tarball, but the wiring gives it no lookup name, so exec.LookPath finds nothing and "+
+					"the run dies at the runner.\n  exposed: %v\n  wiring output:\n%s",
+					want, language, got, out)
+			}
 		}
 	}
 
 	// The other direction: every lookup name must correspond to a plugin asset that was actually
 	// extracted. A stray name means the derivation invented a language, which would route a repo to
-	// an analyzer that is not there.
+	// an analyzer that is not there. Each asset gets exactly one link per naming scheme, and the
+	// wired count reports assets, not links.
 	wantCount := 0
 	for _, a := range assets {
 		if strings.HasPrefix(a, pluginAssetPrefix) {
 			wantCount++
 		}
 	}
-	if len(got) != wantCount {
-		t.Errorf("the extraction carried %d analyzer plugin(s) but the wiring exposed %d lookup name(s) %v — "+
-			"the two must correspond one-for-one", wantCount, len(got), got)
-	}
+	currentPrefix := strings.TrimSuffix(plugin.BinaryName("go"), "go")
+	var current, preV04 []string
 	for _, name := range got {
-		if !strings.HasPrefix(name, pluginLookupPrefix) {
-			t.Errorf("the wiring exposed %q, which is not a %s* lookup name", name, pluginLookupPrefix)
+		switch {
+		case strings.HasPrefix(name, currentPrefix):
+			current = append(current, name)
+		case strings.HasPrefix(name, preV04LookupPrefix):
+			preV04 = append(preV04, name)
+		default:
+			t.Errorf("the wiring exposed %q, which is neither a %s* nor a %s* lookup name",
+				name, currentPrefix, preV04LookupPrefix)
 		}
+	}
+	if len(current) != wantCount || len(preV04) != wantCount {
+		t.Errorf("the extraction carried %d analyzer plugin(s) but the wiring exposed %d %s* name(s) %v "+
+			"and %d %s* name(s) %v — each scheme must correspond one-for-one with the assets",
+			wantCount, len(current), currentPrefix, current, len(preV04), preV04LookupPrefix, preV04)
+	}
+	if want := fmt.Sprintf("==> %d analyzer plugin(s) reachable by lookup name", wantCount); !strings.Contains(out, want) {
+		t.Errorf("the wiring's summary line does not count assets (want %q):\n%s", want, out)
 	}
 
 	t.Logf("plugin-path from a %d-asset extraction: %v", len(assets), got)

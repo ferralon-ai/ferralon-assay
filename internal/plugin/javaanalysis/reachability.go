@@ -17,7 +17,7 @@ import (
 // op is real rather than a declared stub.
 //
 // It builds on the EXISTING infra: CallGraph and FindIngresses (both already
-// Prove-path enriched when TEGRON_JAVA_ANALYZER_IMAGE is set; pure-Go lexical in
+// Prove-path enriched when opts carry WithAnalyzerImage; pure-Go lexical in
 // the Assess path). Because it consumes their results, reachability is
 // automatically enriched by the container when present and degrades gracefully to
 // the lexical graph when it is not.
@@ -29,7 +29,7 @@ import (
 // rendered as clean reachability. A path that reaches only a root (not a
 // recognized attacker-facing ingress) also declares no_known_ingress. A load
 // failure in CallGraph/FindIngresses is a hard error (inv.4).
-func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...Option) (plugin.ReachabilityResult, error) {
 	// TODO(perf): this reparses the tree independently of CallGraph's internal
 	// loadProgram — acceptable for pass 1 (zero-egress, deterministic); CallGraph
 	// could instead return its program to avoid the second parse.
@@ -37,11 +37,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir}, opts...)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
-	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir}, opts...)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

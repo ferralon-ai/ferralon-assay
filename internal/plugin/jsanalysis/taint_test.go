@@ -15,7 +15,7 @@ import (
 // precision), with the standing PrecisionNote.
 func TestTaint_SourceToSinkReportsPartial(t *testing.T) {
 	ctx := context.Background()
-	src := "../../../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable/src"
+	src := "../../../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable/src"
 	sink := resolveSink(t, src, "fetchUrl")
 
 	res, err := ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: src, Sinks: []string{sink}})

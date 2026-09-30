@@ -123,14 +123,14 @@ func TestAdvisoryCorpusByLanguage(t *testing.T) {
 }
 
 // TestNoCodenameOnDefaultSurface is the regression gate on the house-canary ids: no advisory id
-// reaching a default, ungated scan may carry the TEGRON- prefix, in any ecosystem.
+// reaching a default, ungated scan may carry the FERRALON- prefix, in any ecosystem.
 func TestNoCodenameOnDefaultSurface(t *testing.T) {
 	for _, lang := range []string{
 		checkout.LangGo, checkout.LangJava, checkout.LangJS,
 		checkout.LangPython, checkout.LangDotNet,
 	} {
 		for _, v := range advisoryCorpus(lang, false) {
-			if strings.HasPrefix(v.ID, "TEGRON-") {
+			if strings.HasPrefix(v.ID, "FERRALON-") {
 				t.Fatalf("default %s corpus advertises codename-bearing advisory %q on the customer-facing surface", lang, v.ID)
 			}
 		}

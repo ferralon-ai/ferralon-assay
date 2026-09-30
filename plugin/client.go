@@ -10,13 +10,13 @@ import (
 )
 
 // goPlugin is the out-of-process client stub: it implements LanguagePlugin by execing
-// the tegron-plugin-go subprocess once per operation and exchanging a single
+// the assay-plugin-go subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout (§4.1). It
 // deliberately imports neither internal/plugin/goanalysis nor the heavy analysis
 // libraries (x/tools, x/vuln) — the analysis code links only into the subprocess
 // binary. That import-light boundary is the inv.8 mechanism (§6).
 type goPlugin struct {
-	bin string // resolved path to the tegron-plugin-go binary
+	bin string // resolved path to the assay-plugin-go binary
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,7 +27,7 @@ var _ LanguagePlugin = (*goPlugin)(nil)
 // Option configures a goPlugin during construction.
 type Option func(*goPlugin)
 
-// WithBinaryPath sets an explicit path to the tegron-plugin-go binary, taking
+// WithBinaryPath sets an explicit path to the assay-plugin-go binary, taking
 // precedence over PATH lookup (§4.4).
 func WithBinaryPath(path string) Option {
 	return func(p *goPlugin) { p.bin = path }
@@ -35,16 +35,16 @@ func WithBinaryPath(path string) Option {
 
 // NewGoPlugin constructs the subprocess-backed plugin client. Binary discovery (§4.4):
 // an explicit path via WithBinaryPath takes precedence; otherwise exec.LookPath resolves
-// "tegron-plugin-go" on PATH.
+// BinaryName("go") on PATH.
 func NewGoPlugin(opts ...Option) (LanguagePlugin, error) {
 	p := &goPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-go")
+		bin, err := exec.LookPath(BinaryName("go"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-go: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("go"), err)
 		}
 		p.bin = bin
 	}

@@ -184,11 +184,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // govulncheck loads packages via go/packages, which spawns `go list` with THIS Env
 // (x/vuln passes cfg.env straight through to packages.Config.Env). The analyzed module
 // is NEVER a member of any workspace the plugin process happens to sit inside — e.g.
-// Tegron's own go.work when assessing an in-repo corpus repro under ferralon-assay/. Force
+// an enclosing repository's go.work when assessing an in-repo corpus repro. Force
 // GOWORK=off LOCALLY here so the load resolves the target module standalone, mirroring
 // LoadProgram (packages.go). This keeps the reachability path workspace-blind on its own
 // merits rather than relying solely on the process-global GOWORK=off set far away at
-// plugin entry (cmd/tegron-plugin-go/main.go) — and an unset cmd.Env would otherwise
+// plugin entry (cmd/assay-plugin-go/main.go) — and an unset cmd.Env would otherwise
 // default to os.Environ(), reintroducing the ambient leak if any code path runs before
 // that entry-point Setenv.
 func reachBaseEnv() []string {

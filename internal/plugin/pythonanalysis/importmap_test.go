@@ -11,7 +11,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-const airflowVulnSrc = "../../../corpus/testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable/src"
+const airflowVulnSrc = "../../../corpus/testdata/repros/FERRALON-PY-AIRFLOW-EXPAPI-0001-vulnerable/src"
 
 // assembledMap builds the shipped mapping the way production assembly would: the six inline
 // curated rows + the first-party declared derivation from the AIRFLOW repro + a declared-unknown

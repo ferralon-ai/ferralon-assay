@@ -15,7 +15,7 @@
 // OSV.dev's public querybatch endpoint (a list of {ecosystem, name, version}
 // coordinates from the stored SBOM). It sends package coordinates only — never
 // source, never analysis results. The baseline and PR-inherit run modes do not make
-// it: the scan-path OSV work-set widening (-osv-work-set / TEGRON_OSV_WORK_SET,
+// it: the scan-path OSV work-set widening (-osv-work-set / ASSAY_OSV_WORK_SET,
 // defaulting to cmd/ferralon-assay's osvWorkSetDefault, which is false) is the ONE
 // switch that turns it on, and switched on it sends the same shape of payload to the
 // same endpoint.

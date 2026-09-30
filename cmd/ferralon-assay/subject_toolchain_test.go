@@ -9,14 +9,11 @@ import (
 // The env var names action.yml exports on the run step, duplicated here on purpose: a typo on
 // either side of that seam would silently disable the two exact toolchain tiers forever, with no
 // other test in the tree going red — the same shape of dead wiring the toolchain fact exists to repair.
-// Keep these in step with action.yml's "Run ferralon-assay" env block. These are both the
-// brand-derived and legacy names on the OSS default build (brand.EnvPrefix == "TEGRON") — see
-// envSubjectGoVersion/envCIGoVersion in run.go. Precedence (derived wins, legacy honored,
-// regression guard) is proven build-tag-independently in brand/brand_env_test.go.
+// Keep these in step with action.yml's "Run ferralon-assay" env block.
 const (
-	subjectGoEnv = "TEGRON_SUBJECT_GO_VERSION"
-	ciGoEnv      = "TEGRON_CI_GO_VERSION"
-	trustGoEnv   = "TEGRON_TRUST_OBSERVED_GO"
+	subjectGoEnv = "ASSAY_SUBJECT_GO_VERSION"
+	ciGoEnv      = "ASSAY_CI_GO_VERSION"
+	trustGoEnv   = "ASSAY_TRUST_OBSERVED_GO"
 )
 
 // optionToolchain applies an AssessOption and reports the toolchain sources it installed, so the

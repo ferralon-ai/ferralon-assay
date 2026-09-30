@@ -15,9 +15,9 @@ import (
 // the scanner reads the vendored first-party source only. Sink paths are the /src roots,
 // matching the Airflow precedent (firstparty_test.go).
 const (
-	reachableReproSrc   = "../../../corpus/testdata/repros/TEGRON-PY-SSRF-0001-REACHABLE/src"
-	unreachableReproSrc = "../../../corpus/testdata/repros/TEGRON-PY-SSRF-0001-UNREACHABLE/src"
-	toolfailReproSrc    = "../../../corpus/testdata/repros/TEGRON-PY-SSRF-0001-TOOLFAIL/src"
+	reachableReproSrc   = "../../../corpus/testdata/repros/FERRALON-PY-SSRF-0001-REACHABLE/src"
+	unreachableReproSrc = "../../../corpus/testdata/repros/FERRALON-PY-SSRF-0001-UNREACHABLE/src"
+	toolfailReproSrc    = "../../../corpus/testdata/repros/FERRALON-PY-SSRF-0001-TOOLFAIL/src"
 )
 
 // toolfailBuildDir materializes the tool-failure repro in a fresh temp dir: it copies the

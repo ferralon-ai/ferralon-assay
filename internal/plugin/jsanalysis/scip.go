@@ -1,5 +1,5 @@
 // Package jsanalysis is the in-process JavaScript/TypeScript analysis engine that
-// backs the tegron-plugin-js subprocess. It parses JS/TS source from a checked-out
+// backs the assay-plugin-js subprocess. It parses JS/TS source from a checked-out
 // build directory with a focused, dependency-free lexical scanner, emits stable
 // SCIP-shaped symbol identities for the declared module-level functions and class
 // methods, and answers the IndexSymbols / ResolveDependencySymbols / CallGraph /
@@ -19,7 +19,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the
 // shared value types. The FORBIDDEN edge is the reverse one — internal/plugin MUST
 // NOT import jsanalysis — so the scanner links only into the subprocess binary,
-// never into tegrond.
+// never into the host binary.
 package jsanalysis
 
 import (

@@ -134,7 +134,7 @@ function run() {
 // a non-empty producer algorithm, via the package-internal provenance side table — the
 // wire CallEdge stays frozen.
 func TestC5_EveryEdgeHasProvenance(t *testing.T) {
-	dir := "../../../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable/src"
+	dir := "../../../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable/src"
 	res, prov, err := callGraphInternal(dir)
 	if err != nil {
 		t.Fatalf("callGraphInternal: %v", err)

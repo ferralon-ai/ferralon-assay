@@ -25,15 +25,15 @@ import (
 
 // bundleOnlyID is carried by the test bundle and by nothing else: not the built-in table, not the
 // fixture directory corpus. A hit on it proves the bundle is being consulted.
-const bundleOnlyID = "TEGRON-TEST-BUNDLE-0001"
+const bundleOnlyID = "FERRALON-TEST-BUNDLE-0001"
 
 // writeTestBundle writes a one-gzip-stream JSONL corpus bundle in the producer's wire shape
 // ({identifier, path, output_digest, bytes}) holding one valid record per id, each derived from the
-// committed TEGRON-TEST-0001 fixture with its vuln_id rewritten. Returns the bundle path and the
+// committed FERRALON-TEST-0001 fixture with its vuln_id rewritten. Returns the bundle path and the
 // "sha256:<hex>" of the .gz bytes, which is what Describe reports as the corpus identity.
 func writeTestBundle(t *testing.T, ids ...string) (string, string) {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "pipeline", "testdata", "advisory_source", "TEGRON-TEST-0001.json"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "pipeline", "testdata", "advisory_source", "FERRALON-TEST-0001.json"))
 	if err != nil {
 		t.Fatalf("read fixture record: %v", err)
 	}
@@ -82,7 +82,7 @@ func writeTestBundle(t *testing.T, ids ...string) (string, string) {
 // a directory, a bundle, nothing, and each way a bundle can be broken.
 func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 	dirRoot := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")
-	bundle, bundleDigest := writeTestBundle(t, bundleOnlyID, "TEGRON-TEST-BUNDLE-0002")
+	bundle, bundleDigest := writeTestBundle(t, bundleOnlyID, "FERRALON-TEST-BUNDLE-0002")
 
 	notGzip := filepath.Join(t.TempDir(), "corpus.jsonl.gz")
 	if err := os.WriteFile(notGzip, []byte("this is not a gzip stream\n"), 0o644); err != nil {
@@ -108,7 +108,7 @@ func TestAdvisoryCorpusOption_DirectoryOrBundle(t *testing.T) {
 		wantRecords int    // 0 = don't check
 		hitID       string // an id that must resolve through the installed source
 	}{
-		{name: "directory → tree reader", path: dirRoot, wantOption: true, hitID: "TEGRON-TEST-0001"},
+		{name: "directory → tree reader", path: dirRoot, wantOption: true, hitID: "FERRALON-TEST-0001"},
 		{name: "bundle file → bundle reader", path: bundle, wantOption: true, wantDigest: bundleDigest, wantRecords: 2, hitID: bundleOnlyID},
 		{name: "bundle file, required → bundle reader", path: bundle, required: true, wantOption: true, wantRecords: 2, hitID: bundleOnlyID},
 		{name: "neither set → built-in table", path: ""},

@@ -10,7 +10,7 @@ import (
 // reproSrc is the source root of the vendored Java SSRF repro, relative to this
 // package. The hermetic first-party-reachability proof runs the REAL Java analysis
 // over it.
-const reproSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SSRF-0001-vulnerable/src"
+const reproSrc = "../../../corpus/testdata/repros/FERRALON-JAVA-SSRF-0001-vulnerable/src"
 
 // reverseReachable reports whether sink is reachable from any of entries over the
 // directed call-graph edges. This mirrors the pipeline's firstPartyReachPaths BFS
@@ -119,7 +119,7 @@ func TestFirstParty_ReproSinkReachableFromServletIngress(t *testing.T) {
 // the sink's runtime guard forecloses the beacon, which is the live gate's call.
 func TestFirstParty_PatchedReproStillResolvesSinkAndIngress(t *testing.T) {
 	ctx := context.Background()
-	const patchedSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SSRF-0001-patched/src"
+	const patchedSrc = "../../../corpus/testdata/repros/FERRALON-JAVA-SSRF-0001-patched/src"
 
 	res, err := ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{
 		BuildDir:        patchedSrc,

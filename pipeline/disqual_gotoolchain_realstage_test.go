@@ -220,7 +220,7 @@ func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 		{"GO-2021-0264", true, "pkg:golang/stdlib PURL, scheme derives to gomod"},
 		{"GO-2021-0113", false, "a real module dependency (golang.org/x/text)"},
 		{"CVE-2024-55947", false, "a first-party application advisory"},
-		{"TEGRON-JS-DEP-0001", false, "an npm dependency"},
+		{"FERRALON-JS-DEP-0001", false, "an npm dependency"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.vulnID, func(t *testing.T) {

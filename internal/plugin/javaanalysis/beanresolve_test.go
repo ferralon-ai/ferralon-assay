@@ -38,7 +38,6 @@ func hasEdgeContaining(edges []plugin.CallEdge, callerSub, calleeSub string) boo
 // concrete impl is bridged — the resolved caller→impl edge appears and dynamic_dispatch
 // is retired for that (sole) unresolved call.
 func TestBeanGraph_UniqueImplResolvesEdge(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
 	dir := writeModule(t, map[string]string{
 		"Greeter.java":     `package com.ex; interface Greeter { String greet(); }`,
 		"GreeterImpl.java": `package com.ex; @Service class GreeterImpl implements Greeter { public String greet(){ return here(); } String here(){ return ""; } }`,
@@ -62,7 +61,6 @@ func TestBeanGraph_UniqueImplResolvesEdge(t *testing.T) {
 // @Qualifier is honest residue — NO edge is emitted, dynamic_dispatch survives, and the
 // bean_ambiguous localizer is declared. inv.5: never guess a bean.
 func TestBeanGraph_AmbiguousStaysPartial(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
 	dir := writeModule(t, map[string]string{
 		"Mailer.java":     `package com.ex; interface Mailer { void send(); }`,
 		"SmtpMailer.java": `package com.ex; @Service class SmtpMailer implements Mailer { public void send(){} }`,
@@ -88,7 +86,6 @@ func TestBeanGraph_AmbiguousStaysPartial(t *testing.T) {
 // TestBeanGraph_PrimaryResolvesAmbiguity: the same two impls, but one @Primary, resolves
 // to a unique edge — confirming @Primary is honored and the edge lands.
 func TestBeanGraph_PrimaryResolvesAmbiguity(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
 	dir := writeModule(t, map[string]string{
 		"Mailer.java":     `package com.ex; interface Mailer { void send(); }`,
 		"SmtpMailer.java": `package com.ex; @Service @Primary class SmtpMailer implements Mailer { public void send(){} }`,

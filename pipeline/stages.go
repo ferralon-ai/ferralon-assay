@@ -39,13 +39,14 @@ type AssessConfig struct {
 	Checkout checkout.Checkout
 	Source   AdvisorySource
 	// SubjectGoVersion/CIGoVersion carry the two candidate subject-toolchain sources into
-	// codebase_inventory (ADR 0014 tiers 1–2), and TrustCIGoVersion is the caller's assertion that
-	// the second describes the subject. See WithSubjectToolchain.
+	// codebase_inventory, where both are exact and outrank the go.mod floors, and TrustCIGoVersion
+	// is the caller's assertion that the second describes the subject. See WithSubjectToolchain.
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
-	// SUBJECT's toolchain (ADR 0014 M4). Off by default. See WithSubjectToolchainReachability.
+	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
+	// WithSubjectToolchainReachability.
 	SubjectToolchainReachability bool
 }
 
@@ -74,11 +75,11 @@ func WithAdvisorySource(src AdvisorySource) AssessOption {
 }
 
 // WithSubjectToolchain injects the two candidate EXACT sources of the subject's Go toolchain that
-// the pipeline cannot read off the tree (ADR 0014 §2.2 tiers 1–2): declared is the subject's own
-// statement of the toolchain it builds with, observed is `go env GOVERSION` sampled on the CI runner
-// BEFORE the Action installed the scanner's own Go. Either may be empty; absent both, the fact falls
-// back to the subject's go.mod floors and then to unresolved, so every non-Action caller is
-// unchanged.
+// the pipeline cannot read off the tree, both ranked above its go.mod floors: declared is the
+// subject's own statement of the toolchain it builds with, observed is `go env GOVERSION` sampled
+// on the CI runner BEFORE the Action installed the scanner's own Go. Either may be empty; absent
+// both, the fact falls back to the subject's go.mod floors and then to unresolved, so every
+// non-Action caller is unchanged.
 //
 // trustObserved is a required third argument rather than a separate option because the observation
 // alone does not carry its own provenance. `go env GOVERSION` on a runner answers "what Go is
@@ -90,7 +91,7 @@ func WithAdvisorySource(src AdvisorySource) AssessOption {
 // lower bound on the subject's toolchain).
 //
 // Never pass the SCANNER's toolchain here. That value is a property of the analysis environment, and
-// mistaking it for a statement about the subject is precisely the defect ADR 0014 exists to close.
+// mistaking it for a statement about the subject yields verdicts about the wrong toolchain.
 func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessOption {
 	return func(c *AssessConfig) {
 		c.SubjectGoVersion, c.CIGoVersion, c.TrustCIGoVersion = declared, observed, trustObserved
@@ -99,7 +100,7 @@ func WithSubjectToolchain(declared, observed string, trustObserved bool) AssessO
 
 // WithSubjectToolchainReachability opts the Go reachability analysis into running under the
 // SUBJECT's Go toolchain instead of the analyzer's, when — and only when — the subject's toolchain
-// resolved to an EXACT bound (ADR 0014 M4). It is OFF by default and ships that way for one release
+// resolved to an EXACT bound. It is OFF by default and ships that way for one release
 // (ruling 3), because it is the step that makes findings appear on scans that are green today: a
 // subject on an older toolchain has stdlib symbols the analyzer's newer toolchain does not flag.
 //
@@ -239,7 +240,7 @@ type AdvisoryFacts struct {
 	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
-	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are Tegron's own
+	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
 	// curated entries and carry none, so "" is the permanent state for every floor entry, not a field
 	// the corpus fell behind on. Serializing it as ""/present on ~40 fixtures would be misrepresentative
 	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
@@ -700,9 +701,9 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// tree resolves nothing → reachable_candidate → not_exploitable. Module is
 	// empty (first-party, no go.mod require to version-resolve); PURL names the app
 	// so symbol resolution scopes there, and the /api/ds/query http_route handler
-	// is the recognized ingress (ADR 0005 first-party reachability). No version
+	// is the recognized ingress the call graph reaches the sink from. No version
 	// keying — this is a reachability firing, not a version-axis case.
-	"TEGRON-GO-GRAFANA-DUCKDB-0001": {
+	"FERRALON-GO-GRAFANA-DUCKDB-0001": {
 		Aliases: []string{"CVE-2024-9264", "GHSA-q99m-qcv4-fpm7"},
 		PURL:    "pkg:golang/github.com/grafana/grafana",
 		Symbols: []string{"main.runDuckQuery"},
@@ -773,8 +774,8 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// itself, not a dependency, so Module is empty (no go.mod require to version-resolve — the
 	// version axis fails open and every checkpoint proceeds to reachability). PURL names the
 	// precise sink package (gogs.io/gogs/internal/db) so symbol resolution scopes to it; the
-	// macaron route handlers reaching it are recognized ingresses (ADR 0005 first-party
-	// reachability). The sink is the same symbol in both: (*Repository).UpdateRepoFile.
+	// macaron route handlers reaching it are recognized ingresses, so the call graph supplies the
+	// ingress-to-sink path. The sink is the same symbol in both: (*Repository).UpdateRepoFile.
 	//
 	// Facts resolved against api.osv.dev, and the guard attribution read off the real gogs
 	// sources at each release tag (internal/db/repo_editor.go):
@@ -838,19 +839,19 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		Lineage: Lineage{IncompleteFixOf: "CVE-2024-55947"},
 		Summary: "arbitrary file write via symlink: a committed in-repo symlink at an interior path component is followed by UpdateRepoFile, escaping the working tree; bypasses the v0.13.1 traversal fix and v0.13.3's leaf-only symlink check, and is closed by the full-hierarchy walk added in v0.13.4",
 	},
-	"TEGRON-JAVA-SSRF-0001": {
+	"FERRALON-JAVA-SSRF-0001": {
 		PURL:    "pkg:maven/com.example.web/ssrf",
 		Symbols: []string{"UrlFetcher.fetch"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: a servlet forwards an attacker-controlled target through UrlFetcher.fetch to an outbound HTTP request with no allowlist",
 	},
-	"TEGRON-JAVA-SPRING-SSRF-0001": {
+	"FERRALON-JAVA-SPRING-SSRF-0001": {
 		PURL:    "pkg:maven/com.example.web/spring-ssrf",
 		Symbols: []string{"UrlServiceImpl.fetch"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired interface field; the sink issues an outbound request with no allowlist",
 	},
-	"TEGRON-JAVA-SSRF-0002": {
+	"FERRALON-JAVA-SSRF-0002": {
 		Coordinate:     "com.example.net:urlkit",
 		UpperExclusive: "2.1.0",
 		FixedVersion:   "2.1.0",
@@ -860,7 +861,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:           []string{"CWE-918"},
 		Summary:        "server-side request forgery: com.example.net:urlkit reaches an outbound HTTP GET to a caller-supplied URL with no allowlist; fixed in 2.1.0. In the unreachable repro the sink App.fetch is present but dead — never called from an ingress — so the case is not_exploitable at the reach axis.",
 	},
-	"TEGRON-JAVA-SSRF-0003": {
+	"FERRALON-JAVA-SSRF-0003": {
 		Coordinate:    "com.example.svc:iface-fetch",
 		VersionScheme: "maven",
 		PURL:          "pkg:maven/com.example.svc/iface-fetch",
@@ -871,20 +872,20 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: com.example.svc:iface-fetch reaches SomeServiceImpl.fetch through an @Autowired SomeService interface field; the sink issues an outbound request with no allowlist. Fixed in 1.3.0 (affects [1.0.0, 1.3.0)). The tool-unavailable repro is undetermined under the analyzer-gated-but-absent overlay and not_exploitable ungated.",
 	},
-	"TEGRON-JS-SSRF-0001": {
+	"FERRALON-JS-SSRF-0001": {
 		PURL:    "pkg:npm/tegron-corpus-ssrf",
 		Symbols: []string{"fetchUrl"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
 	},
-	"TEGRON-JS-NEXTRCE-0001": {
+	"FERRALON-JS-NEXTRCE-0001": {
 		Aliases: []string{"GHSA-5vj8-3v2h-h38v"},
 		PURL:    "pkg:npm/next",
 		Symbols: []string{"requireModule"},
 		CWEs:    []string{"CWE-94"},
 		Summary: "module-resolution RCE: the catch-all page route reaches requireModule, which require()s an attacker-controlled path with no bundles-directory containment (Next.js < 5.1.0)",
 	},
-	"TEGRON-JAVA-DEP-0001": {
+	"FERRALON-JAVA-DEP-0001": {
 		Coordinate:     "com.example.lib:widget",
 		UpperExclusive: "1.4.0",
 		FixedVersion:   "1.4.0",
@@ -892,7 +893,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		PURL:           "pkg:maven/com.example.lib/widget",
 		Summary:        "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
 	},
-	"TEGRON-JS-DEP-0001": {
+	"FERRALON-JS-DEP-0001": {
 		Coordinate:     "left-pad",
 		UpperExclusive: "1.4.0",
 		FixedVersion:   "1.4.0",
@@ -905,21 +906,21 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// how the U8 corpus feed will light up the pypi/nuget comparators versionOutsideRange
 	// already dispatches. Version-axis fixtures only (like the Java/JS DEP entries above): no
 	// live repro, no symbols — they exercise the derived-scheme disqualification path.
-	"TEGRON-PY-DEP-0001": {
+	"FERRALON-PY-DEP-0001": {
 		Coordinate:     "flask",
 		UpperExclusive: "2.3.2",
 		FixedVersion:   "2.3.2",
 		PURL:           "pkg:pypi/flask",
 		Summary:        "reflected header injection in flask fixed in 2.3.2",
 	},
-	"TEGRON-NET-DEP-0001": {
+	"FERRALON-NET-DEP-0001": {
 		Coordinate:     "Newtonsoft.Json",
 		UpperExclusive: "13.0.1",
 		FixedVersion:   "13.0.1",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
 		Summary:        "insecure default deserialization in Newtonsoft.Json fixed in 13.0.1",
 	},
-	"TEGRON-NET-REACH-0001": {
+	"FERRALON-NET-REACH-0001": {
 		Aliases:        []string{"CVE-2021-32840"},
 		UpperExclusive: "1.3.3",
 		FixedVersion:   "1.3.3",
@@ -938,7 +939,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// prove outside, so it MUST stay OPEN. Deriving a scheme selects a comparator; it never
 	// manufactures a bound. Guards inv.5 (§3): a known scheme must never disqualify an
 	// unbounded advisory.
-	"TEGRON-PY-FIRSTPARTY-0001": {
+	"FERRALON-PY-FIRSTPARTY-0001": {
 		PURL:    "pkg:pypi/tegron-corpus-app",
 		Symbols: []string{"app.handler"},
 		CWEs:    []string{"CWE-22"},
@@ -954,7 +955,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// is a recognized http_route ingress. At the fix commit BOTH the sink module (get_code.py)
 	// and the decorated handler are removed — symbol-removal AND path-removal — so the sink no
 	// longer resolves and no ingress→sink path exists: reachable_candidate → not_exploitable.
-	"TEGRON-PY-AIRFLOW-EXPAPI-0001": {
+	"FERRALON-PY-AIRFLOW-EXPAPI-0001": {
 		Aliases: []string{"CVE-2020-13927"},
 		PURL:    "pkg:pypi/apache-airflow",
 		Symbols: []string{"airflow.api.common.experimental.get_code.get_code"},
@@ -1050,7 +1051,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// advisory floor for Java, JS, Python and .NET, exactly as the real Go advisories above are for
 	// Go, and they are what makes a default scan of those repositories complete.
 	//
-	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the TEGRON-* house
+	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the FERRALON-* house
 	// canaries below, which are gated off the default surface because they carry no CVE. That left
 	// the default floor for four of the five supported languages EMPTY, and scanWorkSet halts a run
 	// whose work set resolves to zero — so a default Java, JS, Python or .NET scan could not
@@ -1421,9 +1422,9 @@ type codebaseInventory struct {
 	// is byte-identical to the historical inline AdvisoryTable[id] lookup.
 	src AdvisorySource
 	// subjectGoVersion/ciGoVersion are the two candidate EXACT subject-toolchain sources this stage
-	// cannot discover from the tree on disk (ADR 0014 tiers 1–2): the subject's own declaration and
-	// the Go the CI runner already had before the Action installed the scanner's. Both empty is the
-	// normal non-Action case and simply leaves the fact to the go.mod floors.
+	// cannot discover from the tree on disk, both ranked above the go.mod floors: the subject's own
+	// declaration and the Go the CI runner already had before the Action installed the scanner's.
+	// Both empty is the normal non-Action case and simply leaves the fact to the go.mod floors.
 	//
 	// trustCIGoVersion is the caller's assertion that ciGoVersion describes the SUBJECT. Absent it,
 	// the observation is discarded rather than demoted — see resolveToolchainFact.
@@ -1445,7 +1446,7 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 //
 // A "go-toolchain" scheme package (the Go stdlib/toolchain entry: empty module, coordinate
 // "stdlib") is not a plugin-resolvable dependency coordinate: the version it is adjudicated against
-// is the SUBJECT'S TOOLCHAIN, resolved once per run into the bounded ToolchainFact (ADR 0014), not
+// is the SUBJECT'S TOOLCHAIN, resolved once per run into the bounded ToolchainFact, not
 // a version any manifest or plugin resolver can report. So it takes the toolchain fact directly and
 // returns before the plugin branch — which also means a Go plugin that errors on the non-go.mod
 // "stdlib" coordinate can never abort Run (the PR #219 guard, preserved).
@@ -1458,7 +1459,7 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 //
 // This is the ONLY production writer of a go-toolchain-shaped resolved_version. Before it, the
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
-// verdict depends on the toolchain (ADR 0014 §0). There is no "separate comparator path off the
+// verdict depends on the toolchain. There is no "separate comparator path off the
 // AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
 func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (version string, partiality []string, err error) {
 	if scheme == "go-toolchain" {
@@ -1506,7 +1507,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		return v, flags, nil
 	}
 	// A managed-ecosystem coordinate with no language-matched analyzer available (the
-	// tegron-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
+	// assay-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
 	// detected tree language does not match the advisory's ecosystem). The version cannot
 	// be established, and returning it bare reads downstream as "not installed" — which
 	// disqualifies the advisory on a version comparison that never happened. Disclose the
@@ -1645,7 +1646,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		toolchainDirective = mani.Runtime.Toolchain
 	}
 
-	// The subject's Go toolchain as ONE resolved fact carrying its own strength (ADR 0014). This is
+	// The subject's Go toolchain as ONE resolved fact carrying its own strength. This is
 	// the single resolution site: the raw go_version above stays exactly what it was (the verbatim
 	// `go` directive, read by nobody) and the fact is derived beside it, never instead of it. It is
 	// resolved BEFORE dependency-version resolution because the version axis consumes it: for a
@@ -1729,7 +1730,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		GoVersion       string                 `json:"go_version,omitempty"`
 		BuildCommand    string                 `json:"build_command,omitempty"`
 		PartialityFlags []string               `json:"partiality_flags,omitempty"`
-		// Toolchain is the subject's Go toolchain resolved to one bounded fact (ADR 0014). Always
+		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
 		// stayed dark. Read back by Toolchain() (the version axis, and the scan-level disclosure
@@ -2358,8 +2359,8 @@ func ResolvedVersion(store artifact.Store, caseID string) (string, bool) {
 	return extractResolvedVersion(store, caseID)
 }
 
-// Toolchain returns the subject's Go toolchain as the bounded fact codebase_inventory resolved
-// (ADR 0014 §2.1). ok is false when there is no inventory artifact at all; a run that looked and
+// Toolchain returns the subject's Go toolchain as the bounded fact codebase_inventory resolved.
+// ok is false when there is no inventory artifact at all; a run that looked and
 // established nothing returns ok=true with {Bound: none, Source: unresolved} — "we could not tell"
 // is a fact, and collapsing it into the same ok=false as "no run happened" is what let the version
 // axis stay dark. Consumers MUST branch on Bound, never on a non-empty Version: exact licenses a
@@ -2384,7 +2385,7 @@ func Toolchain(store artifact.Store, caseID string) (ToolchainFact, bool) {
 }
 
 // SubjectToolchainScanned reports whether reachability for this case actually ran under the
-// SUBJECT's Go toolchain (ADR 0014 M4). It is the licence a stdlib refutation-by-absence needs: only
+// SUBJECT's Go toolchain. It is the licence a stdlib refutation-by-absence needs: only
 // when it is true is an empty path set evidence about the subject rather than about the analyzer.
 //
 // It is false in every other state, and deliberately conflates none of them — flag off, floor-only
@@ -2671,7 +2672,8 @@ func govulnMatchID(store artifact.Store, caseID, primary string) string {
 type reachabilityIngress struct {
 	plugin plugin.LanguagePlugin
 	// subjectToolchain opts this stage into asking the analyzer to run under the subject's Go
-	// toolchain (ADR 0014 M4, flag-gated one release). See WithSubjectToolchainReachability.
+	// toolchain when it resolved to an exact version (flag-gated, off by default). See
+	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 }
 
@@ -2717,13 +2719,15 @@ func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, 
 }
 
 // requestedToolchain returns the subject's Go toolchain this run must execute under, or "" for
-// "run under the analyzer's own" — which is every case but one (ADR 0014 M4).
+// "run under the analyzer's own" — which is every case but one: the flag is on and the subject's
+// toolchain resolved EXACT.
 //
 // Three gates, and each is load-bearing rather than defensive:
 //
-//   - The flag. M4 changes the meaning of a green scan, so it ships off for one release (ruling 3).
+//   - The flag. Running under the subject's toolchain changes the meaning of a green scan, so it
+//     ships off by default for one release.
 //   - An inventory fact must exist. No fact means no run resolved one; nothing to request.
-//   - The bound must be EXACT. This is the asymmetry the whole ADR turns on: reachability's output
+//   - The bound must be EXACT. This is the asymmetry the whole design turns on: reachability's output
 //     is a refutation by ABSENCE, and absence is only evidence about the toolchain the analysis ran
 //     on. A floor ("at least go1.20") licenses a disqualification because outside() is monotone, but
 //     scanning AT the floor would let a symbol missing from go1.20 be reported absent from a subject
@@ -2800,7 +2804,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	reachPayload := struct {
 		Reachability plugin.ReachabilityResult `json:"reachability"`
 		CallGraph    plugin.CallGraphResult    `json:"call_graph"`
-		// ToolchainScan records which Go toolchain this analysis actually ran under (ADR 0014 M4).
+		// ToolchainScan records which Go toolchain this analysis actually ran under.
 		// It is the fact SubjectToolchainScanned reads back, and the reason a fallback cannot pass
 		// itself off as a subject scan.
 		ToolchainScan ToolchainScan `json:"toolchain_scan"`

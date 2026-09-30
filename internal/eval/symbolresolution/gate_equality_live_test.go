@@ -3,11 +3,11 @@
 // PLAN-290 Phase-2 exit-gate verification for the {go} reference lane. This is GATE evidence,
 // not product code: it READS existing producer outputs and asserts they agree. It changes no
 // producer, normaliser, or indexer (C7), and it is opt-in twice over — the `//go:build eval_live`
-// tag keeps it out of `go test ./...`, and the TEGRON_EVAL=1 gate keeps it out of an accidental
-// `-tags eval_live` run. It needs the real Go toolchain + a CURRENT tegron-plugin-go on PATH:
+// tag keeps it out of `go test ./...`, and the ASSAY_EVAL=1 gate keeps it out of an accidental
+// `-tags eval_live` run. It needs the real Go toolchain + a CURRENT assay-plugin-go on PATH:
 //
-//	go build -o "$SOMEDIR/tegron-plugin-go" ./cmd/tegron-plugin-go   # a FRESH binary — a stale
-//	PATH="$SOMEDIR:$PATH" TEGRON_EVAL=1 \                            # plugin fails call_graph
+//	go build -o "$SOMEDIR/assay-plugin-go" ./cmd/assay-plugin-go   # a FRESH binary — a stale
+//	PATH="$SOMEDIR:$PATH" ASSAY_EVAL=1 \                                             # plugin fails call_graph
 //	  go test -tags eval_live ./internal/eval/symbolresolution/ -run TestGate -v
 //
 // Two checks:
@@ -37,14 +37,14 @@ import (
 
 func requireLiveGoToolchain(t *testing.T) plugin.LanguagePlugin {
 	t.Helper()
-	if os.Getenv("TEGRON_EVAL") != "1" {
-		t.Skip("set TEGRON_EVAL=1 to run the PLAN-290 {go} gate verification (opt-in)")
+	if os.Getenv("ASSAY_EVAL") != "1" {
+		t.Skip("set ASSAY_EVAL=1 to run the PLAN-290 {go} gate verification (opt-in)")
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no `go` on PATH: cannot drive the live {go} resolver")
 	}
-	if _, err := exec.LookPath("tegron-plugin-go"); err != nil {
-		t.Skip("tegron-plugin-go not on PATH (build a FRESH one from ./cmd/tegron-plugin-go)")
+	if _, err := exec.LookPath(plugin.BinaryName("go")); err != nil {
+		t.Skipf("%s not on PATH (build a FRESH one from ./cmd/assay-plugin-go)", plugin.BinaryName("go"))
 	}
 	p, err := plugin.NewGoPlugin()
 	if err != nil {
@@ -287,7 +287,7 @@ func TestGateFiveProducerSCIPEquality(t *testing.T) {
 	// (unobserved), never a pass. A stale/missing plugin binary lands here.
 	if fullAgreement == 0 {
 		t.Skip("no {go} record resolved end-to-end (dependency+graph+ingress) — equality UNOBSERVED; " +
-			"ensure a FRESH tegron-plugin-go is on PATH (a stale binary fails call_graph)")
+			"ensure a FRESH assay-plugin-go is on PATH (a stale binary fails call_graph)")
 	}
 	t.Logf("five-producer SCIP-equality observed on %d/%d buildable {go} records", fullAgreement, len(ids))
 }

@@ -14,7 +14,7 @@ func testActuatorCfg() ActuatorConfig {
 		WorkflowPath:  ".github/workflows/ferralon-assay.yml",
 		WorkflowFile:  "ferralon-assay.yml",
 		GitDir:        "/ws",
-		StateRef:      "refs/tegron/state",
+		StateRef:      "refs/assay/env-staging/state",
 		Token:         "ghs_x",
 	}
 }
@@ -131,7 +131,7 @@ func TestActuatorCleanupIssueAndStateRef(t *testing.T) {
 	if !strings.Contains(all, "gh issue create --repo acme/widget --title Ferralon removed — one manual step to finish cleanup") {
 		t.Errorf("issue-create shape wrong:\n%s", all)
 	}
-	if !strings.Contains(all, "git -C /ws push origin --delete refs/tegron/state") {
+	if !strings.Contains(all, "git -C /ws push origin --delete refs/assay/env-staging/state") {
 		t.Errorf("state-ref delete shape wrong:\n%s", all)
 	}
 }

@@ -28,14 +28,14 @@ func CuratedContributions() []Contribution {
 			Distribution:  "apache-airflow",
 			ImportPackage: "airflow", // NON-IDENTITY: distribution "apache-airflow" imports as "airflow"
 			Provenance:    ProvenanceCurated,
-			Source:        "Advisory TEGRON-PY-AIRFLOW-EXPAPI-0001 (pkg:pypi/apache-airflow); the AIRFLOW repro (corpus/testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-*/src) is a faithful reduction of apache/airflow source per its file-header comments (the reduced src imports flask, not airflow); Apache Airflow PyPI project page / docs confirms the distribution imports as `airflow`",
+			Source:        "Advisory FERRALON-PY-AIRFLOW-EXPAPI-0001 (pkg:pypi/apache-airflow); the AIRFLOW repro (corpus/testdata/repros/FERRALON-PY-AIRFLOW-EXPAPI-0001-*/src) is a faithful reduction of apache/airflow source per its file-header comments (the reduced src imports flask, not airflow); Apache Airflow PyPI project page / docs confirms the distribution imports as `airflow`",
 			Date:          curatedTableDate,
 		},
 		{
 			Distribution:  "flask",
 			ImportPackage: "flask",
 			Provenance:    ProvenanceCurated,
-			Source:        "Advisory TEGRON-PY-DEP-0001 (pkg:pypi/flask); `from flask import ...` in the AIRFLOW and SSRF repros; Flask PyPI project page",
+			Source:        "Advisory FERRALON-PY-DEP-0001 (pkg:pypi/flask); `from flask import ...` in the AIRFLOW and SSRF repros; Flask PyPI project page",
 			Date:          curatedTableDate,
 		},
 		{

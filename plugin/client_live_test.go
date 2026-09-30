@@ -4,7 +4,7 @@
 // build tag. Run it with `go test -tags live ./internal/plugin/...`.
 //
 // Unlike the hermetic client_test.go (which re-execs the test binary with a canned
-// helper), this test builds the REAL cmd/tegron-plugin-go binary to a temp dir, points a
+// helper), this test builds the REAL cmd/assay-plugin-go binary to a temp dir, points a
 // goPlugin at it, and drives IndexSymbols + CallGraph end-to-end over exec + JSON/stdio
 // against the offline, stdlib-only testdata/fixturemod fixture. It proves the full
 // transport + subprocess dispatch + real go/packages + x/tools analysis path works
@@ -22,11 +22,11 @@ import (
 	"testing"
 )
 
-// buildPluginBinary compiles cmd/tegron-plugin-go into a temp dir and returns its path.
+// buildPluginBinary compiles cmd/assay-plugin-go into a temp dir and returns its path.
 func buildPluginBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "assay-plugin-go")
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/tegron-plugin-go")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/assay-plugin-go")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build assay-plugin-go: %v\n%s", err, out)
 	}

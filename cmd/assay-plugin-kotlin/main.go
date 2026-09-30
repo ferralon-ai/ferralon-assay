@@ -4,7 +4,7 @@
 // JSON plugin.Response to stdout. The Kotlin bytecode analyzer links ONLY into this binary —
 // never into tegrond.
 //
-// This binary deliberately mirrors cmd/tegron-plugin-java / cmd/tegron-plugin-dotnet: same
+// This binary deliberately mirrors cmd/assay-plugin-java / cmd/assay-plugin-dotnet: same
 // one-shot protocol, same hard-error-vs-declared-partiality contract. Several ops are LIVE,
 // backed by the shared JVM-bytecode substrate (index_symbols, call_graph, find_ingresses,
 // reachability, compute_taint); capability_manifest publishes the lane's honest capability

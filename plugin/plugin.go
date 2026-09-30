@@ -6,7 +6,7 @@
 // This package is import-light by design: tegrond (internal/pipeline) imports it, and
 // it MUST NOT import internal/plugin/goanalysis (which links the heavy analysis
 // libraries). That import boundary is the inv.8 mechanism — analysis code lives only in
-// the cmd/tegron-plugin-go subprocess binary, never in-process in the daemon.
+// the cmd/assay-plugin-go subprocess binary, never in-process in the daemon.
 package plugin
 
 import (

@@ -341,7 +341,7 @@ func TestBakedTargetsCoverEverySupportedLanguage(t *testing.T) {
 	}
 	script := string(data)
 	for _, language := range supportedLanguages {
-		want := "./cmd/tegron-plugin-" + language
+		want := "./cmd/" + plugin.BinaryName(language)
 		if !strings.Contains(script, want) {
 			t.Errorf("build-release.sh BAKED_TARGETS does not build %s, but %s is a supported language: "+
 				"the release would ship a scanner whose plugin binary is missing from the tarball",

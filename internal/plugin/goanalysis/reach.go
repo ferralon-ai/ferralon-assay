@@ -188,7 +188,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // GOWORK=off LOCALLY here so the load resolves the target module standalone, mirroring
 // LoadProgram (packages.go). This keeps the reachability path workspace-blind on its own
 // merits rather than relying solely on the process-global GOWORK=off set far away at
-// plugin entry (cmd/tegron-plugin-go/main.go) — and an unset cmd.Env would otherwise
+// plugin entry (cmd/assay-plugin-go/main.go) — and an unset cmd.Env would otherwise
 // default to os.Environ(), reintroducing the ambient leak if any code path runs before
 // that entry-point Setenv.
 func reachBaseEnv() []string {

@@ -6,7 +6,7 @@
 // accident. It needs the real Go toolchain + assay-plugin-go on PATH — do NOT run it inline
 // from a /team agent (it stalls the watchdog); hand it to the orchestrator's background bash:
 //
-//	go build -o "$(go env GOPATH)/bin/assay-plugin-go" ./cmd/tegron-plugin-go
+//	go install ./cmd/assay-plugin-go
 //	PATH="$(go env GOPATH)/bin:$PATH" TEGRON_EVAL=1 \
 //	  go test -tags eval_live ./eval/reachcandidate/ -run TestLiveReachCandidateEval -v
 //
@@ -39,7 +39,7 @@ func TestLiveReachCandidateEval(t *testing.T) {
 		t.Skip("set TEGRON_EVAL=1 to run the live reachable-candidate eval (opt-in)")
 	}
 	if _, err := exec.LookPath(plugin.BinaryName("go")); err != nil {
-		t.Skipf("%s not on PATH (build it from ./cmd/tegron-plugin-go under that name)", plugin.BinaryName("go"))
+		t.Skipf("%s not on PATH (go install ./cmd/assay-plugin-go first)", plugin.BinaryName("go"))
 	}
 	// Go is the floor: its LookPath skip above guarantees the constructor succeeds.
 	goPlugin, err := plugin.NewGoPlugin()

@@ -51,7 +51,7 @@ func WithJavaAnalyzerDocker(bin string) JavaOption {
 }
 
 // The subprocess reads the analyzer settings from these env vars (see
-// cmd/tegron-plugin-java), so the options travel on the child's environment
+// cmd/assay-plugin-java), so the options travel on the child's environment
 // rather than on the plugin protocol.
 const (
 	javaAnalyzerImageEnv  = brand.EnvPrefix + "_JAVA_ANALYZER_IMAGE"

@@ -4,7 +4,7 @@
 // one newline-delimited JSON plugin.Response to stdout. The Python source scanner links
 // ONLY into this binary — never into tegrond.
 //
-// This binary deliberately mirrors cmd/tegron-plugin-js: same one-shot protocol, same
+// This binary deliberately mirrors cmd/assay-plugin-js: same one-shot protocol, same
 // hard-error-vs-declared-partiality contract. Nine ops are LIVE, all backed by the real
 // pure-Go lexical source analysis (no scip-python container on the Assess path):
 // index_symbols, resolve_symbols, resolve_versions (installed versions from

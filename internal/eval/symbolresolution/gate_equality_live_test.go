@@ -6,8 +6,8 @@
 // tag keeps it out of `go test ./...`, and the TEGRON_EVAL=1 gate keeps it out of an accidental
 // `-tags eval_live` run. It needs the real Go toolchain + a CURRENT assay-plugin-go on PATH:
 //
-//	go build -o "$SOMEDIR/assay-plugin-go" ./cmd/tegron-plugin-go   # a FRESH binary — a stale
-//	PATH="$SOMEDIR:$PATH" TEGRON_EVAL=1 \                                    # plugin fails call_graph
+//	go build -o "$SOMEDIR/assay-plugin-go" ./cmd/assay-plugin-go   # a FRESH binary — a stale
+//	PATH="$SOMEDIR:$PATH" TEGRON_EVAL=1 \                                            # plugin fails call_graph
 //	  go test -tags eval_live ./internal/eval/symbolresolution/ -run TestGate -v
 //
 // Two checks:
@@ -44,7 +44,7 @@ func requireLiveGoToolchain(t *testing.T) plugin.LanguagePlugin {
 		t.Skip("no `go` on PATH: cannot drive the live {go} resolver")
 	}
 	if _, err := exec.LookPath(plugin.BinaryName("go")); err != nil {
-		t.Skipf("%s not on PATH (build a FRESH one from ./cmd/tegron-plugin-go)", plugin.BinaryName("go"))
+		t.Skipf("%s not on PATH (build a FRESH one from ./cmd/assay-plugin-go)", plugin.BinaryName("go"))
 	}
 	p, err := plugin.NewGoPlugin()
 	if err != nil {

@@ -4,7 +4,7 @@
 // writes exactly one newline-delimited JSON plugin.Response to stdout. The Java
 // source parser links ONLY into this binary — never into tegrond.
 //
-// This binary deliberately mirrors cmd/tegron-plugin-go: same one-shot protocol,
+// This binary deliberately mirrors cmd/assay-plugin-go: same one-shot protocol,
 // same hard-error-vs-declared-partiality contract. Six ops are live source-level
 // Java analysis (index_symbols, resolve_symbols, resolve_versions, call_graph,
 // find_ingresses, reachability, compute_taint); generate_harness and

@@ -4,7 +4,7 @@
 // and writes exactly one newline-delimited JSON plugin.Response to stdout. The JS
 // source scanner links ONLY into this binary — never into tegrond.
 //
-// This binary deliberately mirrors cmd/tegron-plugin-java: same one-shot protocol,
+// This binary deliberately mirrors cmd/assay-plugin-java: same one-shot protocol,
 // same hard-error-vs-declared-partiality contract. It ships nine LIVE ops —
 // index_symbols, resolve_symbols, call_graph, find_ingresses, resolve_versions,
 // reachability, compute_taint, generate_harness, build_manifest — backed by the real

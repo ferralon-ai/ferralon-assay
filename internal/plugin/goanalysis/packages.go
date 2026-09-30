@@ -1,5 +1,5 @@
 // Package goanalysis is the in-process Go analysis engine that backs the
-// tegron-plugin-go subprocess. It loads the target program with go/packages +
+// assay-plugin-go subprocess. It loads the target program with go/packages +
 // go/types, emits stable SCIP symbol identities from the loaded program (no
 // scip-go dependency), and answers the IndexSymbols / ResolveDependencySymbols
 // operations of the LanguagePlugin contract in the plugin package.

@@ -1,5 +1,5 @@
 // Package pythonanalysis is the in-process Python analysis engine that backs the
-// tegron-plugin-python subprocess. It parses Python source from a checked-out build
+// assay-plugin-python subprocess. It parses Python source from a checked-out build
 // directory with a focused, dependency-free lexical scanner, emits stable SCIP-shaped
 // symbol identities for the declared module-level functions, classes, and methods, and
 // answers the IndexSymbols / ResolveDependencySymbols / ResolveDependencyVersions

@@ -1,4 +1,4 @@
-// Command tegron-plugin-java is the out-of-process Java language analysis
+// Command assay-plugin-java is the out-of-process Java language analysis
 // subprocess (inv.8). It reads exactly one newline-delimited JSON plugin.Request
 // from stdin, dispatches on Op to the in-process javaanalysis functions, and
 // writes exactly one newline-delimited JSON plugin.Response to stdout. The Java

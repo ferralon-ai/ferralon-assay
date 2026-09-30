@@ -1,4 +1,4 @@
-// Command tegron-plugin-go is the out-of-process Go language analysis subprocess
+// Command assay-plugin-go is the out-of-process Go language analysis subprocess
 // (inv.8). It reads exactly one newline-delimited JSON plugin.Request from stdin,
 // dispatches on Op to the in-process goanalysis functions (the 5 live ops) or returns a
 // declared-Unsupported partiality (the 3 Phase-1 contract stubs), and writes exactly one

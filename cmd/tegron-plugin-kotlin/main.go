@@ -1,4 +1,4 @@
-// Command tegron-plugin-kotlin is the out-of-process Kotlin language analysis subprocess
+// Command assay-plugin-kotlin is the out-of-process Kotlin language analysis subprocess
 // (inv.8). It reads exactly one newline-delimited JSON plugin.Request from stdin, dispatches
 // on Op to the in-process kotlinanalysis functions, and writes exactly one newline-delimited
 // JSON plugin.Response to stdout. The Kotlin bytecode analyzer links ONLY into this binary —

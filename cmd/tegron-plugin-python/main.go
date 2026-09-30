@@ -1,4 +1,4 @@
-// Command tegron-plugin-python is the out-of-process Python language analysis
+// Command assay-plugin-python is the out-of-process Python language analysis
 // subprocess (inv.8). It reads exactly one newline-delimited JSON plugin.Request from
 // stdin, dispatches on Op to the in-process pythonanalysis functions, and writes exactly
 // one newline-delimited JSON plugin.Response to stdout. The Python source scanner links

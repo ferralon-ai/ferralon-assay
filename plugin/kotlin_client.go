@@ -11,12 +11,12 @@ import (
 
 // kotlinPlugin is the out-of-process client for the Kotlin language plugin. It is the
 // exact analog of goPlugin/javaPlugin/dotnetPlugin: it implements LanguagePlugin by execing
-// the tegron-plugin-kotlin subprocess once per operation and exchanging a single
+// the assay-plugin-kotlin subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout. Like the others it
 // imports neither internal/plugin/kotlinanalysis nor any bytecode-parsing code — the Kotlin
 // analysis links only into the subprocess binary (inv.8).
 type kotlinPlugin struct {
-	bin string // resolved path to the tegron-plugin-kotlin binary
+	bin string // resolved path to the assay-plugin-kotlin binary
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,7 +27,7 @@ var _ LanguagePlugin = (*kotlinPlugin)(nil)
 // KotlinOption configures a kotlinPlugin during construction.
 type KotlinOption func(*kotlinPlugin)
 
-// WithKotlinBinaryPath sets an explicit path to the tegron-plugin-kotlin binary, taking
+// WithKotlinBinaryPath sets an explicit path to the assay-plugin-kotlin binary, taking
 // precedence over PATH lookup.
 func WithKotlinBinaryPath(path string) KotlinOption {
 	return func(p *kotlinPlugin) { p.bin = path }
@@ -35,16 +35,16 @@ func WithKotlinBinaryPath(path string) KotlinOption {
 
 // NewKotlinPlugin constructs the subprocess-backed Kotlin plugin client. Binary discovery
 // mirrors NewJavaPlugin: an explicit path via WithKotlinBinaryPath takes precedence;
-// otherwise exec.LookPath resolves "tegron-plugin-kotlin" on PATH.
+// otherwise exec.LookPath resolves BinaryName("kotlin") on PATH.
 func NewKotlinPlugin(opts ...KotlinOption) (LanguagePlugin, error) {
 	p := &kotlinPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-kotlin")
+		bin, err := exec.LookPath(BinaryName("kotlin"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-kotlin: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("kotlin"), err)
 		}
 		p.bin = bin
 	}

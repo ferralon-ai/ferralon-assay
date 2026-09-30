@@ -1,5 +1,5 @@
 // Package dotnetanalysis is the in-process .NET/C# analysis engine that backs the
-// tegron-plugin-dotnet subprocess. It parses C# source from a checked-out build directory
+// assay-plugin-dotnet subprocess. It parses C# source from a checked-out build directory
 // with a focused, dependency-free lexical scanner, emits stable SCIP-shaped symbol
 // identities for the declared namespaces, types, and methods, and answers the IndexSymbols
 // / ResolveDependencySymbols / ResolveDependencyVersions operations of the LanguagePlugin

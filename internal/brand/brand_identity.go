@@ -51,6 +51,11 @@ const (
 	// older namespace simply re-establishes it on the next run.
 	RefNamespace = "assay"
 
+	// PluginPrefix is the executable-name prefix of the per-language analyzer plugins:
+	// PluginPrefix+"go" is the Go analyzer the scanner resolves on PATH, and each
+	// cmd/<PluginPrefix><lang> directory builds the binary of that name.
+	PluginPrefix = "assay-plugin-"
+
 	// Tier0SummaryHeading is the customer-facing heading for the Tier-0 GitHub
 	// job-summary surface — the "assess summary" panel a viewer sees right after the
 	// Action runs. Kept DISTINCT from SummaryHeading() (the raw Name-derived form) so

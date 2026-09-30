@@ -12,12 +12,12 @@ import (
 
 // javaPlugin is the out-of-process client for the Java language plugin. It is the
 // exact analog of goPlugin: it implements LanguagePlugin by execing the
-// tegron-plugin-java subprocess once per operation and exchanging a single
+// assay-plugin-java subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout. Like
 // goPlugin it imports neither internal/plugin/javaanalysis nor any heavy parsing
 // code — the Java analysis links only into the subprocess binary (inv.8).
 type javaPlugin struct {
-	bin string   // resolved path to the tegron-plugin-java binary
+	bin string   // resolved path to the assay-plugin-java binary
 	env []string // KEY=VALUE pairs added to the subprocess environment
 
 	metricsOnce sync.Once
@@ -29,7 +29,7 @@ var _ LanguagePlugin = (*javaPlugin)(nil)
 // JavaOption configures a javaPlugin during construction.
 type JavaOption func(*javaPlugin)
 
-// WithJavaBinaryPath sets an explicit path to the tegron-plugin-java binary,
+// WithJavaBinaryPath sets an explicit path to the assay-plugin-java binary,
 // taking precedence over PATH lookup.
 func WithJavaBinaryPath(path string) JavaOption {
 	return func(p *javaPlugin) { p.bin = path }
@@ -68,16 +68,16 @@ func withJavaEnv(key, value string) JavaOption {
 
 // NewJavaPlugin constructs the subprocess-backed Java plugin client. Binary
 // discovery mirrors NewGoPlugin: an explicit path via WithJavaBinaryPath takes
-// precedence; otherwise exec.LookPath resolves "tegron-plugin-java" on PATH.
+// precedence; otherwise exec.LookPath resolves BinaryName("java") on PATH.
 func NewJavaPlugin(opts ...JavaOption) (LanguagePlugin, error) {
 	p := &javaPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-java")
+		bin, err := exec.LookPath(BinaryName("java"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-java: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("java"), err)
 		}
 		p.bin = bin
 	}

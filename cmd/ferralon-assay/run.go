@@ -335,7 +335,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		repo:           fs.String("subject-repo", "", "neutral repository identity recorded on the Report (default: target basename)"),
 		revision:       fs.String("revision", "", "revision recorded on the Report (e.g. a PR head branch)"),
 		commit:         fs.String("commit", "", "resolved commit SHA recorded on the Report"),
-		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (tegron-plugin-<lang>; default: PATH lookup)"),
+		plugin:         fs.String("plugin-go", "", "explicit path to the analyzer binary for the detected language (assay-plugin-<lang>; default: PATH lookup)"),
 		advisoryCorpus: fs.String("advisory-corpus", "", "path to an advisory corpus consulted BEFORE the built-in advisory table: a directory (manifest.json + digest-pinned per-advisory JSON) or a compressed corpus bundle file (<policy>.jsonl.gz). Without -advisory-corpus-policy it supplies facts only and does not change what is scanned; overrides "+envAdvisoryCorpusDir),
 		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
 		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.

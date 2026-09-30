@@ -11,12 +11,12 @@ import (
 
 // pythonPlugin is the out-of-process client for the Python language plugin. It is the
 // exact analog of goPlugin/javaPlugin/jsPlugin: it implements LanguagePlugin by execing
-// the tegron-plugin-python subprocess once per operation and exchanging a single
+// the assay-plugin-python subprocess once per operation and exchanging a single
 // newline-delimited JSON Request/Response over the child's stdin/stdout. Like the
 // others it imports neither internal/plugin/pythonanalysis nor any parsing code — the
 // Python analysis links only into the subprocess binary (inv.8).
 type pythonPlugin struct {
-	bin string // resolved path to the tegron-plugin-python binary
+	bin string // resolved path to the assay-plugin-python binary
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -27,7 +27,7 @@ var _ LanguagePlugin = (*pythonPlugin)(nil)
 // PythonOption configures a pythonPlugin during construction.
 type PythonOption func(*pythonPlugin)
 
-// WithPythonBinaryPath sets an explicit path to the tegron-plugin-python binary, taking
+// WithPythonBinaryPath sets an explicit path to the assay-plugin-python binary, taking
 // precedence over PATH lookup.
 func WithPythonBinaryPath(path string) PythonOption {
 	return func(p *pythonPlugin) { p.bin = path }
@@ -35,16 +35,16 @@ func WithPythonBinaryPath(path string) PythonOption {
 
 // NewPythonPlugin constructs the subprocess-backed Python plugin client. Binary
 // discovery mirrors NewGoPlugin/NewJSPlugin: an explicit path via WithPythonBinaryPath
-// takes precedence; otherwise exec.LookPath resolves "tegron-plugin-python" on PATH.
+// takes precedence; otherwise exec.LookPath resolves BinaryName("python") on PATH.
 func NewPythonPlugin(opts ...PythonOption) (LanguagePlugin, error) {
 	p := &pythonPlugin{}
 	for _, opt := range opts {
 		opt(p)
 	}
 	if p.bin == "" {
-		bin, err := exec.LookPath("tegron-plugin-python")
+		bin, err := exec.LookPath(BinaryName("python"))
 		if err != nil {
-			return nil, fmt.Errorf("plugin: discover tegron-plugin-python: %w", err)
+			return nil, fmt.Errorf("plugin: discover %s: %w", BinaryName("python"), err)
 		}
 		p.bin = bin
 	}

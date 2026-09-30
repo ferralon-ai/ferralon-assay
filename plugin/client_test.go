@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // These hermetic tests exercise the exec + newline-JSON/stdio transport WITHOUT the real
-// tegron-plugin-go binary, network, or govulncheck. The pattern is the standard
+// assay-plugin-go binary, network, or govulncheck. The pattern is the standard
 // TestHelperProcess re-exec: each test points goPlugin at this test binary itself, with
 // an env flag that makes TestHelperProcess read the Request and emit a CANNED Response.
 // The env vars select the canned behavior.
@@ -50,7 +51,7 @@ func helperCmd(t *testing.T, mode string) string {
 }
 
 // TestHelperProcess is not a real test: when GO_WANT_HELPER_PROCESS=1 it acts as the
-// tegron-plugin-go subprocess, reading one Request and writing one canned Response per the
+// assay-plugin-go subprocess, reading one Request and writing one canned Response per the
 // GO_PLUGIN_HELPER_MODE env var. Run only as a re-exec child.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv(helperFlag) != "1" {
@@ -163,7 +164,7 @@ func TestGoPlugin_ProtocolMismatchIsError(t *testing.T) {
 }
 
 func TestNewGoPlugin_ExplicitPathWins(t *testing.T) {
-	p, err := NewGoPlugin(WithBinaryPath("/some/explicit/tegron-plugin-go"))
+	p, err := NewGoPlugin(WithBinaryPath("/some/explicit/assay-plugin-go"))
 	if err != nil {
 		t.Fatalf("NewGoPlugin: %v", err)
 	}
@@ -171,7 +172,67 @@ func TestNewGoPlugin_ExplicitPathWins(t *testing.T) {
 	if !ok {
 		t.Fatalf("want *goPlugin, got %T", p)
 	}
-	if gp.bin != "/some/explicit/tegron-plugin-go" {
+	if gp.bin != "/some/explicit/assay-plugin-go" {
 		t.Errorf("explicit path should win, got %q", gp.bin)
+	}
+}
+
+func TestBinaryName(t *testing.T) {
+	for _, tc := range []struct {
+		language string
+		want     string
+	}{
+		{"go", "assay-plugin-go"},
+		{"java", "assay-plugin-java"},
+		{"kotlin", "assay-plugin-kotlin"},
+		{"js", "assay-plugin-js"},
+		{"python", "assay-plugin-python"},
+		{"dotnet", "assay-plugin-dotnet"},
+	} {
+		if got := BinaryName(tc.language); got != tc.want {
+			t.Errorf("BinaryName(%q) = %q, want %q", tc.language, got, tc.want)
+		}
+	}
+}
+
+// TestConstructorsDiscoverBinaryName pins that every client resolves exactly BinaryName(language)
+// on PATH: a caller that stages the binary under that name is found, and a miss names it.
+func TestConstructorsDiscoverBinaryName(t *testing.T) {
+	for _, tc := range []struct {
+		language string
+		ctor     func() (LanguagePlugin, error)
+	}{
+		{"go", func() (LanguagePlugin, error) { return NewGoPlugin() }},
+		{"java", func() (LanguagePlugin, error) { return NewJavaPlugin() }},
+		{"kotlin", func() (LanguagePlugin, error) { return NewKotlinPlugin() }},
+		{"js", func() (LanguagePlugin, error) { return NewJSPlugin() }},
+		{"python", func() (LanguagePlugin, error) { return NewPythonPlugin() }},
+		{"dotnet", func() (LanguagePlugin, error) { return NewDotNetPlugin() }},
+	} {
+		t.Run(tc.language, func(t *testing.T) {
+			name := BinaryName(tc.language)
+
+			t.Setenv("PATH", t.TempDir())
+			_, err := tc.ctor()
+			if err == nil {
+				t.Fatalf("constructor succeeded with no %s on PATH", name)
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("discovery error does not name %s: %v", name, err)
+			}
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			p, err := tc.ctor()
+			if err != nil {
+				t.Fatalf("constructor did not find %s on PATH: %v", name, err)
+			}
+			if got := p.Language(); got != tc.language {
+				t.Errorf("Language() = %q, want %q", got, tc.language)
+			}
+		})
 	}
 }

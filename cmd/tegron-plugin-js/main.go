@@ -1,4 +1,4 @@
-// Command tegron-plugin-js is the out-of-process JavaScript/TypeScript language
+// Command assay-plugin-js is the out-of-process JavaScript/TypeScript language
 // analysis subprocess (inv.8). It reads exactly one newline-delimited JSON
 // plugin.Request from stdin, dispatches on Op to the in-process jsanalysis functions,
 // and writes exactly one newline-delimited JSON plugin.Response to stdout. The JS

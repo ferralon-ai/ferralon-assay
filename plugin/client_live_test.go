@@ -25,10 +25,10 @@ import (
 // buildPluginBinary compiles cmd/tegron-plugin-go into a temp dir and returns its path.
 func buildPluginBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "tegron-plugin-go")
+	bin := filepath.Join(t.TempDir(), "assay-plugin-go")
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/tegron-plugin-go")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build tegron-plugin-go: %v\n%s", err, out)
+		t.Fatalf("go build assay-plugin-go: %v\n%s", err, out)
 	}
 	return bin
 }

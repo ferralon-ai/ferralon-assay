@@ -12,7 +12,16 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
+
+// BinaryName returns the executable name of the analyzer subprocess for language (e.g. "go",
+// "java"): the name each New*Plugin constructor resolves on PATH when no explicit binary path is
+// given. Callers that stage or probe for an analyzer binary use it rather than spelling the name.
+func BinaryName(language string) string {
+	return brand.PluginPrefix + language
+}
 
 // runSubprocessCall is the ONE shared choke point every language plugin's run funnels through,
 // and so the one place analyzer compute is metered.

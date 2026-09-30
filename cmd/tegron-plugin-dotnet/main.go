@@ -1,4 +1,4 @@
-// Command tegron-plugin-dotnet is the out-of-process .NET/C# language analysis subprocess
+// Command assay-plugin-dotnet is the out-of-process .NET/C# language analysis subprocess
 // (inv.8). It reads exactly one newline-delimited JSON plugin.Request from stdin, dispatches
 // on Op to the in-process dotnetanalysis functions, and writes exactly one newline-delimited
 // JSON plugin.Response to stdout. The C# source scanner links ONLY into this binary — never

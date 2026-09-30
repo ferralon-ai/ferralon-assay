@@ -7,7 +7,7 @@ import (
 )
 
 // These hermetic tests exercise the javaPlugin exec + newline-JSON/stdio
-// transport WITHOUT the real tegron-plugin-java binary. They reuse the shared
+// transport WITHOUT the real assay-plugin-java binary. They reuse the shared
 // TestHelperProcess re-exec harness (defined in client_test.go): newHelperPlugin
 // points a goPlugin at the test binary, and javaPlugin shares the identical
 // transport, so we construct a javaPlugin bound to the same helper command.
@@ -68,7 +68,7 @@ func TestJavaPlugin_ProtocolMismatchIsError(t *testing.T) {
 }
 
 func TestNewJavaPlugin_ExplicitPathWins(t *testing.T) {
-	p, err := NewJavaPlugin(WithJavaBinaryPath("/some/explicit/tegron-plugin-java"))
+	p, err := NewJavaPlugin(WithJavaBinaryPath("/some/explicit/assay-plugin-java"))
 	if err != nil {
 		t.Fatalf("NewJavaPlugin: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestNewJavaPlugin_ExplicitPathWins(t *testing.T) {
 	if !ok {
 		t.Fatalf("want *javaPlugin, got %T", p)
 	}
-	if jp.bin != "/some/explicit/tegron-plugin-java" {
+	if jp.bin != "/some/explicit/assay-plugin-java" {
 		t.Errorf("explicit path should win, got %q", jp.bin)
 	}
 }

@@ -165,7 +165,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 }
 
 // selectPlugin constructs the subprocess-backed analyzer client for the detected language.
-// A non-empty bin is an explicit path to that language's tegron-plugin-<lang> binary
+// A non-empty bin is an explicit path to that language's assay-plugin-<lang> binary
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
 // plugin runs per scan (the tree is a single language), so a single override suffices.
 func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {

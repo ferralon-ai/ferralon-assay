@@ -1506,7 +1506,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		return v, flags, nil
 	}
 	// A managed-ecosystem coordinate with no language-matched analyzer available (the
-	// tegron-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
+	// assay-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
 	// detected tree language does not match the advisory's ecosystem). The version cannot
 	// be established, and returning it bare reads downstream as "not installed" — which
 	// disqualifies the advisory on a version comparison that never happened. Disclose the

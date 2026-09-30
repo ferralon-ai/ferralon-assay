@@ -24,10 +24,10 @@ import (
 
 func buildJavaPluginBinary(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "tegron-plugin-java")
+	bin := filepath.Join(t.TempDir(), "assay-plugin-java")
 	cmd := exec.Command("go", "build", "-o", bin, "github.com/ferralon-ai/ferralon-assay/cmd/tegron-plugin-java")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("go build tegron-plugin-java: %v\n%s", err, out)
+		t.Fatalf("go build assay-plugin-java: %v\n%s", err, out)
 	}
 	return bin
 }

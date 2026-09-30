@@ -2,7 +2,7 @@
 
 // gogs_reach_gate_live_test.go — the A-vs-B reachability gate for the pone-gogs
 // platform-verdict cycle. It is OPT-IN via the `live` build tag and drives the REAL
-// Go analysis engine (goanalysis, the same code linked into tegron-plugin-go) over a
+// Go analysis engine (goanalysis, the same code linked into assay-plugin-go) over a
 // REAL gogs source tree — NOT a stub plugin. The hermetic firstparty_reach_test.go
 // proves the SEAM with a stub; this test proves the seam RESOLVES THE REAL gogs sink.
 //

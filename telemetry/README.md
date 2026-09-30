@@ -1,4 +1,4 @@
-# `telemetry` — shared OpenTelemetry provider for the tegron engine
+# `telemetry` — shared OpenTelemetry provider for the engine
 
 The OpenTelemetry SDK foundation both engine binaries construct at startup. It
 builds a
@@ -18,7 +18,7 @@ The dependency direction is **`service` → `ferralon-assay`, never the reverse*
 single shared provider must therefore be an **exported** package in the lower
 (`ferralon-assay`) module — Go `internal/` visibility would block the cross-module
 import from `service`. Both binaries import it: `ferralon-assay` (the OSS CLI
-scanner) and `tegrond` (the service daemon).
+scanner) and the service daemon that embeds it.
 
 ## Usage
 
@@ -28,10 +28,10 @@ exit:
 ```go
 level, _ := telemetry.ParseLevel(levelName) // unrecognized → essential
 tel, err := telemetry.New(ctx, telemetry.Config{
-    ServiceName:    "tegron-cli",   // tegron-cli | tegron-service | tegron-sandbox-runner
-    ServiceVersion: version,        // build version
-    Component:      "assess",       // assess | prove | sandbox-runner | callgraph | assay | model-client
-    Level:          level,          // zero value: essential
+    ServiceName:    "ferralon-assay-cli", // the CLI's own service.name
+    ServiceVersion: version,              // build version
+    Component:      "assess",             // assess | prove | sandbox-runner | callgraph | assay | model-client
+    Level:          level,                // zero value: essential
 })
 if err != nil {
     // Non-fatal: telemetry must NEVER break the boot. Warn and continue.

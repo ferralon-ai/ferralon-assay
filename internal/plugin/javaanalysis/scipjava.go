@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // scipjava.go is the Prove-path-ONLY container seam. It runs the digest-pinned
@@ -135,7 +137,7 @@ func stagingDir() (string, error) {
 	if err != nil || home == "" {
 		return "", err
 	}
-	base := filepath.Join(home, ".tegron", "java-analyzer-stage")
+	base := filepath.Join(home, "."+brand.Name, "java-analyzer-stage")
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}

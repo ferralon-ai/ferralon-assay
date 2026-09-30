@@ -26,7 +26,7 @@ func fixtureReasonedNotExploitable() verdict.PoE {
 	}
 }
 
-// fixtureIndeterminate returns a well-formed indeterminate PoE (ADR 0016 — nothing established).
+// fixtureIndeterminate returns a well-formed indeterminate PoE (nothing established).
 func fixtureIndeterminate() verdict.PoE {
 	return verdict.PoE{
 		SchemaVersion:    verdict.SchemaVersion,

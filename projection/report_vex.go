@@ -164,8 +164,8 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 	case report.VerdictUndetermined:
 		// No verdict was established, so there is nothing to justify and nothing to
 		// characterize as impact. The status alone is the whole honest statement; a
-		// justification here would be the not_affected attestation ADR 0014 removed,
-		// re-entering through the field that licenses it.
+		// justification here would be a not_affected attestation the scan never earned,
+		// entering through the field that licenses it.
 		//
 		// This arm is stated explicitly even though the default arm below already returns
 		// the same status: relying on the fallthrough would mean the correct mapping for a

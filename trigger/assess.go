@@ -129,10 +129,11 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 			},
 		}
 	default:
-		// This arm is the one that shipped the defect ADR 0014 records, and the only one
-		// that can rest on an absence. Reaching it means the axes established nothing
-		// POSITIVE: no disqualification and no path. Whether the absent path is evidence
-		// about the SUBJECT is a separate question, and undeterminedReason answers it.
+		// This arm is the only one that can rest on an absence, so it is the one that can
+		// mistake the analyzer's blind spot for a refutation. Reaching it means the axes
+		// established nothing POSITIVE: no disqualification and no path. Whether the absent
+		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
+		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID)
 		if undetermined {
 			f = report.AdvisoryFinding{
@@ -770,7 +771,7 @@ type inventoryFacts struct {
 
 // undeterminedReason decides whether this assessment established NOTHING about the advisory —
 // in which case the honest emission is report.VerdictUndetermined rather than a refutation —
-// and returns the machine-readable reason (ADR 0014 §3.3).
+// and returns the machine-readable reason.
 //
 // It is called from ONE place: finding()'s default arm. That placement is load-bearing and
 // replaces two clauses this predicate used to carry itself. A disqualified advisory is
@@ -782,7 +783,8 @@ type inventoryFacts struct {
 //
 // Two axes decide it, in order of how specifically they can name the missing fact:
 //
-//   - toolchainUndetermined, the Go toolchain/stdlib case (ADR 0014 M4), which names WHICH fact
+//   - toolchainUndetermined, the Go toolchain/stdlib case (the subject's toolchain was not
+//     resolved exactly, or reachability did not run under it), which names WHICH fact
 //     was missing and is therefore tried first.
 //   - analysisDidNotRun, the general case for every ecosystem: whether any step this refutation
 //     would have to rest on declared that it did not run.

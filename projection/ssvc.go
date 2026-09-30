@@ -163,7 +163,7 @@ func ssvcDecisionPoints(p verdict.PoE) SSVCDecisionPts {
 
 func ssvcExploitation(p verdict.PoE) string {
 	// Only a genuinely exploitable direction gets a poc/active signal. not_exploitable AND
-	// indeterminate (nothing established — ADR 0016) both yield `none`: an unknown verdict must
+	// indeterminate (nothing established) both yield `none`: an unknown verdict must
 	// never read as active exploitation.
 	if p.Direction != verdict.DirectionExploitable {
 		return SSVCExploitationNone
@@ -179,7 +179,7 @@ func ssvcExploitation(p verdict.PoE) string {
 }
 
 func ssvcAutomatable(p verdict.PoE) string {
-	// not_exploitable AND indeterminate (ADR 0016) → not automatable: no evidence of an automatable
+	// not_exploitable AND indeterminate → not automatable: no evidence of an automatable
 	// attack for a verdict that established nothing.
 	if p.Direction != verdict.DirectionExploitable {
 		return SSVCAutomatableNo
@@ -199,7 +199,7 @@ func ssvcTechnicalImpact(p verdict.PoE) string {
 	}
 	// not_exploitable AND indeterminate → the floor. SSVC has no "unknown" impact tier, and
 	// mapping an indeterminate verdict to `total` would OVERSTATE impact for a run that established
-	// nothing (ADR 0016). An indeterminate verdict is therefore SSVC-indistinguishable from a
+	// nothing. An indeterminate verdict is therefore SSVC-indistinguishable from a
 	// grounded not_exploitable on the impact axes — a known limitation; the distinguishing
 	// containment lives on the exploitation/automatable axes (both `none`/`no` for indeterminate)
 	// and in the verdict itself (direction=indeterminate), not in the SSVC vector.

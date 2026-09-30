@@ -16,7 +16,7 @@ func TestPoEProofReportRefRoundTrips(t *testing.T) {
 		Direction:           DirectionNotExploitable,
 		Strength:            StrengthReasoned,
 		ReasonedGrounds:     "no engine",
-		NonExploitableBasis: BasisStaticRefutation, // a reasoned not_exploitable must be grounded (ADR 0016)
+		NonExploitableBasis: BasisStaticRefutation, // a reasoned not_exploitable must be grounded
 		Confidence:          ConfidenceFromFlags(nil),
 		ProofReport:         &ref,
 	}
@@ -71,7 +71,7 @@ func wellFormedReasonedNotExploitable() PoE {
 		Strength:            StrengthReasoned,
 		Conditions:          nil,
 		ReasonedGrounds:     "no reachable call path from any ingress to the vulnerable symbol",
-		NonExploitableBasis: BasisStaticRefutation, // reachability_refutation grounds this lean (ADR 0016)
+		NonExploitableBasis: BasisStaticRefutation, // reachability_refutation grounds this lean
 		Confidence:          ConfidenceFromFlags([]EvidenceFlag{FlagStaticTaintPathComplete}),
 		CompletionStatus:    CompletionCompleted,
 		Episodes:            []string{"01890000-0000-7000-8000-0000000000bb"},
@@ -105,7 +105,8 @@ func TestValidate_RejectsUngroundedReasonedNotExploitable(t *testing.T) {
 	}
 }
 
-// TestValidate_Indeterminate covers the ADR 0016 indeterminate invariants.
+// TestValidate_Indeterminate covers the indeterminate invariants: direction and strength both
+// indeterminate, and no field that would constitute an assertion.
 func TestValidate_Indeterminate(t *testing.T) {
 	t.Run("clean_indeterminate_validates", func(t *testing.T) {
 		if err := wellFormedIndeterminate().Validate(); err != nil {

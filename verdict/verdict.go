@@ -57,7 +57,7 @@ const (
 	// negative space (OpenVEX `under_investigation`), never as a positive status. A
 	// `not_exploitable` verdict is reachable ONLY when analysis grounded it (a disqualification,
 	// a held static refutation, or a two-trace PoNE); an ungrounded run lands here instead. See
-	// Validate and ADR 0016.
+	// Validate.
 	DirectionIndeterminate Direction = "indeterminate"
 )
 
@@ -264,14 +264,14 @@ func hasProofFlag(flags []EvidenceFlag) bool {
 //     (RFC 0010). This tightens, never loosens: it adds a structural obligation.
 //   - Direction==indeterminate requires Strength==indeterminate and makes no assertion: no proof
 //     flag, no PatchValidation, no NonExploitableBasis, no Reproducer, no ReasonedGrounds. It
-//     asserts nothing, so it may assert nothing (ADR 0016). Non-proof evidence flags, reachability
+//     asserts nothing, so it may assert nothing. Non-proof evidence flags, reachability
 //     refs, and an Objection (downgrade-audit metadata, not an assertion) are permitted — a run
 //     can gather partial reachability, and a verdict can collapse here by downgrade, without
 //     asserting a direction.
 //   - Direction==not_exploitable && Strength==reasoned requires a grounded NonExploitableBasis
 //     (!= BasisNone): an ungrounded "nothing established" lean is DirectionIndeterminate now, not
 //     a reasoned not_exploitable. This is what makes an ungrounded not_exploitable structurally
-//     unrepresentable (ADR 0016). Proven not_exploitable is grounded by its two-trace
+//     unrepresentable. Proven not_exploitable is grounded by its two-trace
 //     PatchValidation instead and keeps BasisNone — unchanged.
 func (p PoE) Validate() error {
 	// Indeterminate is a third disjoint stratum: it asserts nothing, so Direction and Strength
@@ -302,7 +302,7 @@ func (p PoE) Validate() error {
 		// proven not_exploitable whose two-trace was incomplete collapses here) records that
 		// downgrade in Objection. An Objection is history/audit metadata — FromLabel/ToLabel/
 		// AttackClass/rationale — not an assertion of a direction, so it is compatible with
-		// "asserts nothing" (ADR 0016 §2.2). A fresh indeterminate (skeleton stub) simply leaves
+		// "asserts nothing". A fresh indeterminate (skeleton stub) simply leaves
 		// it nil.
 		return nil
 	}
@@ -315,7 +315,7 @@ func (p PoE) Validate() error {
 		// what refuted exploitability (a disqualification or a held static refutation). A bare
 		// "nothing established" lean (BasisNone) is no longer a reasoned not_exploitable — it is
 		// DirectionIndeterminate. This is the invariant that makes an ungrounded not_exploitable
-		// structurally impossible to emit (ADR 0016).
+		// structurally impossible to emit.
 		if p.Direction == DirectionNotExploitable && p.NonExploitableBasis == BasisNone {
 			return errors.New("verdict: reasoned not_exploitable requires a grounded NonExploitableBasis (an ungrounded lean is DirectionIndeterminate)")
 		}

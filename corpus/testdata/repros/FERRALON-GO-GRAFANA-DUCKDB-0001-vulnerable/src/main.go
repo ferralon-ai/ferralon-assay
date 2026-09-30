@@ -32,7 +32,7 @@ func queryHandler(w http.ResponseWriter, r *http.Request) {
 // attacker SQL through the DuckDB engine binary — SQL command-injection plus
 // DuckDB file functions yield LFI/RCE (CVE-2024-9264). The advisory names it as
 // a first-party sink; govulncheck never traces it, so reachability falls back to
-// the static call graph from the /api/ds/query ingress (ADR 0005).
+// the static call graph from the /api/ds/query ingress.
 func runDuckQuery(query string) (string, error) {
 	cmd := exec.Command("duckdb", "-c", query)
 	b, err := cmd.CombinedOutput()

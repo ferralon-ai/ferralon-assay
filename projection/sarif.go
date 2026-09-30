@@ -40,7 +40,7 @@ func sarifLevel(p verdict.PoE) string {
 	case p.Direction == verdict.DirectionNotExploitable && p.Strength == verdict.StrengthProven:
 		return "note"
 	case p.Direction == verdict.DirectionIndeterminate:
-		// Nothing established (ADR 0016): not an error/warning finding, but kind="review" (sarifKind)
+		// Nothing established: not an error/warning finding, but kind="review" (sarifKind)
 		// marks it for a human to look at. Never narrated as a safe result — see sarifMessage.
 		return "none"
 	default: // reasoned_not_exploitable

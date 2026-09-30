@@ -2,7 +2,7 @@
 //
 // Hermetic proof of the M0 intake disqualification guards folded into
 // disqualification_discovery (S3): the two language-agnostic short-circuits that fire BEFORE
-// symbol mapping / call-graph for advisories Tegron can never adjudicate against the resolved
+// symbol mapping / call-graph for advisories the pipeline can never adjudicate against the resolved
 // codebase.
 //
 //   - Guard 1 (advisory_ecosystem_mismatch): the advisory's ecosystem matches no package

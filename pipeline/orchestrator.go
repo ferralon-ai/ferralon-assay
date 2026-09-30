@@ -34,7 +34,7 @@ type OrchestratorOption func(*Orchestrator)
 
 // WithProgressLog makes the orchestrator emit one line per stage transition and at completion,
 // using logf (e.g. log.Printf). Without it the orchestrator is silent — so library use and tests
-// stay quiet by default; tegrond opts in to give an operator real-time lifecycle visibility.
+// stay quiet by default; a long-running host opts in to give an operator real-time lifecycle visibility.
 func WithProgressLog(logf func(format string, args ...any)) OrchestratorOption {
 	return func(o *Orchestrator) { o.logf = logf }
 }

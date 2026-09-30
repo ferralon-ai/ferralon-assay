@@ -1,7 +1,7 @@
 package telemetry
 
 // instrumentTier is the coverage-tier catalog: it maps every metric instrument in the
-// tegron OTEL convention to the LOWEST coverage Level at which that instrument's stream
+// tegron.* OTEL convention to the LOWEST coverage Level at which that instrument's stream
 // is exported: 17 essential, 20 standard, 3 full, plus the reused gen_ai.* pair and the
 // foundational health counter. It is the single source of truth the View builder consumes
 // to drop higher-tier streams (see viewsForLevel).

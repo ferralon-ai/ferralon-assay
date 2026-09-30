@@ -19,7 +19,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the
 // shared value types. The FORBIDDEN edge is the reverse one — internal/plugin MUST
 // NOT import jsanalysis — so the scanner links only into the subprocess binary,
-// never into tegrond.
+// never into the host binary.
 package jsanalysis
 
 import (

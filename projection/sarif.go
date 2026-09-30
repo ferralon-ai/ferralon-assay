@@ -1,6 +1,6 @@
 // internal/projection/sarif.go
 //
-// SARIF 2.1.0 projection of a Tegron PoE verdict.
+// SARIF 2.1.0 projection of a PoE verdict.
 //
 // Mapping rationale (inv.5 honesty rule):
 //   - proven   exploitable       → level "error"   (confirmed exploit fire)

@@ -24,7 +24,7 @@ const (
 	attrErrorType = "error.type"
 
 	// costClassCOGS classifies a real external compute cost. The
-	// analyzer subprocess exec is compute Tegron pays for; downstream routes on this, never a rate.
+	// analyzer subprocess exec is compute the operator pays for; downstream routes on this, never a rate.
 	costClassCOGS = "cogs"
 )
 

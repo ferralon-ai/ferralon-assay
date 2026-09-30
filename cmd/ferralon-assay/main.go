@@ -3,8 +3,8 @@
 // It runs the deterministic Assess pipeline (S1–S6) over a target repository and emits a
 // neutral scan Report plus its host-agnostic projections (OpenVEX, SARIF, a self-contained HTML
 // report). The Prove stages (live confirmation, the tiered GitHub ResultSink, the living-verdict
-// Case) are NOT reachable from this binary — depguard and the keystone linker-
-// reachability gate enforce that nothing under github.com/ferralon-ai/tegron is imported here.
+// Case) are NOT reachable from this binary: the module requires nothing that implements them, and
+// depguard's strict import allowlist (.golangci.yml) flags any import outside it.
 //
 // The run modes are `baseline` (a full S1–S6 scan of every known advisory against the target),
 // `pr-inherit` (diff a PR head SBOM vs the stored baseline) and `cve-watch` (scheduled OSV.dev

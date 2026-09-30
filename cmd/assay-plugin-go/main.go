@@ -3,7 +3,7 @@
 // dispatches on Op to the in-process goanalysis functions (the 5 live ops) or returns a
 // declared-Unsupported partiality (the 3 Phase-1 contract stubs), and writes exactly one
 // newline-delimited JSON plugin.Response to stdout. The analysis libraries (go/packages,
-// x/tools, x/vuln) link ONLY into this binary — never into tegrond.
+// x/tools, x/vuln) link ONLY into this binary — never into the host binary.
 //
 // The client (internal/plugin.goPlugin) owns the timeout via exec.CommandContext; this
 // process runs to completion on a single request. A hard failure sets Response.Error and
@@ -24,8 +24,8 @@ import (
 
 func main() {
 	// This process exists ONLY to analyze a single standalone module dir (the analyzed
-	// target's own module) — it must NEVER consult an ambient Go workspace, e.g. Tegron's
-	// own go.work when the plugin runs during development or from the live corpus suite
+	// target's own module) — it must NEVER consult an ambient Go workspace, e.g. the
+	// go.work of an enclosing repository when the plugin runs during development or from the live corpus suite
 	// (whose repro modules live UNDER the ferralon-assay module tree and are not go.work
 	// members). LoadProgram already forces GOWORK=off per-call, but Reachability runs
 	// govulncheck in-process via x/vuln/scan, which reads the ambient GOWORK and would

@@ -162,7 +162,7 @@ func TestNew_NoopWhenEndpointUnset(t *testing.T) {
 	t.Setenv(envOTLPTracesEndpoint, "")
 
 	p, err := New(context.Background(), Config{
-		ServiceName:    "tegron-cli",
+		ServiceName:    "ferralon-assay-cli",
 		ServiceVersion: "0.0.0-test",
 		Component:      "assess",
 	})

@@ -80,7 +80,7 @@ func TestReachability_Live(t *testing.T) {
 // TestReachability_Live_HostileWorkspace is the non-live-trial reproducer for the
 // go.work auto-discovery blocker: when the analyzed module sits UNDER a Go
 // workspace the plugin process happens to run inside (e.g. an in-repo corpus
-// repro under Tegron's own go.work), an ambient GOWORK pointing at that workspace
+// repro under an enclosing go.work), an ambient GOWORK pointing at that workspace
 // makes govulncheck's go/packages load fail with "directory prefix . does not
 // contain modules listed in go.work" — because the repro module is not a go.work
 // member. The fix forces GOWORK=off LOCALLY on the scan command's Env (reach.go),

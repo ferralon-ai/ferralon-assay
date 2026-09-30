@@ -2,7 +2,7 @@
 // in the ferralon-assay (lower) module because the dependency
 // direction is service → ferralon-assay only: a single shared provider must therefore be an
 // EXPORTED package here so both engine binaries — ferralon-assay (the OSS CLI scanner) and
-// tegrond (the service daemon) — can construct it. Go internal/ visibility would block the
+// the service daemon that embeds it — can construct it. Go internal/ visibility would block the
 // cross-module import.
 //
 // # No API-stability promise
@@ -60,8 +60,8 @@ const (
 // The zero value of every coverage field is the default, so a caller sets only what it overrides.
 // New reads no environment variable on the caller's behalf except the standard OTLP endpoint knobs.
 type Config struct {
-	// ServiceName is the reused service.name resource attribute — one of
-	// tegron-cli | tegron-service | tegron-sandbox-runner.
+	// ServiceName is the reused service.name resource attribute, e.g.
+	// ferralon-assay-cli.
 	ServiceName string
 	// ServiceVersion is the reused service.version resource attribute (build version).
 	ServiceVersion string

@@ -19,7 +19,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the shared
 // value types. The FORBIDDEN edge is the reverse one — internal/plugin MUST NOT import
 // pythonanalysis — so the scanner links only into the subprocess binary, never into
-// tegrond.
+// the host binary.
 package pythonanalysis
 
 import (

@@ -17,7 +17,7 @@ import (
 // The distribution identity (dist) is supplied by the caller — checkout knows the source layout
 // but not the distribution name (there is no `packages` field to read it from), so the
 // first-party distribution's PEP 503 name comes from the resolved set / advisory that already
-// names it (e.g. tegron-corpus-app). Import packages come from layout; the name comes from the
+// names it (e.g. apache-airflow). Import packages come from layout; the name comes from the
 // known first-party identity. Each Python project root in the plan is walked; the plan holds
 // exactly one project today (checkout.WorkspacePlan.Primary), but multiple are folded into one
 // distribution's top-level set so the shape survives PLAN-400's monorepo enumeration.

@@ -96,7 +96,7 @@ func TestBaselineStoreSelection(t *testing.T) {
 }
 
 // TestBaselineSeedsPersistentRef proves the closed gap: a baseline against a -git-dir store seeds
-// refs/tegron/state so a subsequent Read sees the baseline (what pr-inherit / cve-watch rely on).
+// refs/assay/state so a subsequent Read sees the baseline (what pr-inherit / cve-watch rely on).
 func TestBaselineSeedsPersistentRef(t *testing.T) {
 	dir := t.TempDir()
 	if err := gitInitBare(dir); err != nil {

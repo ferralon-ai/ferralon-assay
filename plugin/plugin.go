@@ -3,10 +3,10 @@
 // the pipeline, the first-class Partiality declaration (inv.5), and an in-memory
 // StubPlugin used by hermetic tests.
 //
-// This package is import-light by design: tegrond (internal/pipeline) imports it, and
+// This package is import-light by design: the pipeline package imports it, and
 // it MUST NOT import internal/plugin/goanalysis (which links the heavy analysis
 // libraries). That import boundary is the inv.8 mechanism — analysis code lives only in
-// the cmd/assay-plugin-go subprocess binary, never in-process in the daemon.
+// the cmd/assay-plugin-go subprocess binary, never in-process in the host.
 package plugin
 
 import (

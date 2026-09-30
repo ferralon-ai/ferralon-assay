@@ -16,7 +16,7 @@
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the
 // shared value types. The FORBIDDEN edge is the reverse one — internal/plugin
 // MUST NOT import javaanalysis — so the parser links only into the subprocess
-// binary, never into tegrond.
+// binary, never into the host binary.
 package javaanalysis
 
 import (

@@ -239,7 +239,7 @@ type AdvisoryFacts struct {
 	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
-	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are Tegron's own
+	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
 	// curated entries and carry none, so "" is the permanent state for every floor entry, not a field
 	// the corpus fell behind on. Serializing it as ""/present on ~40 fixtures would be misrepresentative
 	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag

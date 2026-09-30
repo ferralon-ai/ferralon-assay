@@ -98,7 +98,7 @@ func (tableSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	if !ok {
 		return AdvisoryFacts{}, false
 	}
-	// The curated AdvisoryTable is Tegron's own offline, osv-verified first-party corpus. Stamp
+	// The curated AdvisoryTable is this module's own offline, osv-verified first-party corpus. Stamp
 	// that provenance when the entry left it zero (fill-only; never overwrite a declared tier) so
 	// legitimate refutes stay eligible under the inv.5 trust-gate. `facts` is a copy of the map
 	// value, so this never mutates the table. Every other field is byte-identical to the bare
@@ -319,7 +319,7 @@ func (s *artifactSource) Describe() (CorpusInfo, bool) {
 // vocabularies are all declared here, and this file is the source of truth a producer conforms to.
 
 // advisoryManifest is the on-disk manifest: the producer's corpus-manifest encoding, extended
-// with the per-record relative `path` Tegron needs to locate each document under root. `records` is
+// with the per-record relative `path` the reader needs to locate each document under root. `records` is
 // sorted ascending by identifier and is byte-deterministic across regenerations. RecordCount must
 // equal len(Records); a mismatch marks the manifest invalid (loadManifest fails it before any
 // Lookup runs). CorpusDigest is the outer integrity handle the published feed is pinned by (not
@@ -1103,7 +1103,7 @@ var intelSinkKindClass = map[string]vulnclass.Class{
 //     intelSinkKindClass; "code_execution" FANS OUT by the advisory's cwe[] (deserialization /
 //     template_injection / injection) via classFromCodeExecutionCWEs.
 //
-// Intel keeps its own vocabulary; Tegron's projection layer (this function) owns the mapping — the
+// Intel keeps its own vocabulary; this projection layer (this function) owns the mapping — the
 // corpus never has to speak vulnclass.Class. An empty, unrecognized, or ambiguous value returns
 // ok=false (HONEST-ABSENT, BINDING zero-regressions invariant): the caller keeps the CWE/keyword
 // classifier result rather than risk overriding a correct classification with a wrong mapped class.

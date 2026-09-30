@@ -446,7 +446,7 @@ func errEmptyWorkSet(language string) error {
 // flag > env precedence (decisions.md #3): the -advisory-corpus flag wins; absent it, the
 // envAdvisoryCorpusDir env var (the orchestrator's channel) is consulted; absent both it returns
 // (nil, nil) — the built-in AdvisoryTable default, unchanged. This is the CLI half of the
-// system-wide "both flag + env, flag wins" surface (tegrond is env-only by its own idiom).
+// system-wide "both flag + env, flag wins" surface.
 //
 // THE CORPUS SUPPLEMENTS THE TABLE, IT DOES NOT REPLACE IT. This used to install the corpus as THE
 // source, which meant every id the corpus did not carry resolved to zero facts and failed open.

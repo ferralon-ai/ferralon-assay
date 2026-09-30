@@ -16,6 +16,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1254,6 +1255,14 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 	src := s.src
 	if src == nil {
 		src = defaultAdvisorySource()
+	}
+	// The start of an assessment is the corpus freshness boundary: a long-lived process picks up a
+	// rewritten corpus here, never mid-Lookup. A failed reload keeps the last good corpus serving, so
+	// it is logged, not returned.
+	if r, ok := src.(CorpusRefresher); ok {
+		if err := r.Refresh(); err != nil {
+			log.Printf("pipeline: advisory_intake: advisory corpus refresh: %v", err)
+		}
 	}
 	facts, _ := src.Lookup(vulnID) // miss → zero facts → fail-open downstream (bool intentionally discarded)
 

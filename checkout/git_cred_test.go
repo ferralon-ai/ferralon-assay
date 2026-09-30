@@ -28,7 +28,7 @@ const testToken = "ghs_TEG042s3cr3tInstallationToken" // sentinel: MUST NOT appe
 
 // fakeGit writes a shell script that stands in for `git`: it records, per subcommand, the exact
 // argv (one element per line) and the full environment into capDir, materializes a go.mod on
-// `clone` (so DetectLanguage sees a Go module), and — when TEGRON_FAKE_FAIL=1 — fails `clone`
+// `clone` (so DetectLanguage sees a Go module), and — when ASSAY_FAKE_FAIL=1 — fails `clone`
 // with an error that ECHOES its argv to stderr (never its env), simulating git quoting the URL in
 // a failure. It returns the script path to assign to GitCheckout.Bin.
 func fakeGit(t *testing.T, capDir string) string {
@@ -55,7 +55,7 @@ if [ "$sub" = "clone" ]; then
   for a in "$@"; do dest="$a"; done   # last arg is the destination dir
   mkdir -p "$dest"
   printf 'module example.com/svc\n\ngo 1.22\n' > "$dest/go.mod"
-  if [ "${TEGRON_FAKE_FAIL}" = "1" ]; then
+  if [ "${ASSAY_FAKE_FAIL}" = "1" ]; then
     printf 'fatal: could not read from remote repository for args: %s\n' "$*" >&2
     exit 128
   fi
@@ -134,7 +134,7 @@ func TestFetchAuthenticatedTokenAbsentFromError(t *testing.T) {
 	capDir := t.TempDir()
 	gc := &GitCheckout{Bin: fakeGit(t, capDir)}
 
-	t.Setenv("TEGRON_FAKE_FAIL", "1")
+	t.Setenv("ASSAY_FAKE_FAIL", "1")
 	ctx := WithCredential(context.Background(), NewCredential(testToken))
 	_, err := gc.Fetch(ctx, "https://github.com/ferralon-demo/demo-go-svc", "main")
 	if err == nil {

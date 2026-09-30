@@ -7,7 +7,7 @@
 //
 //   - the `live` build tag, like the tree's other network/toolchain tests; AND
 //   - ASSAY_OSV_EXISTENCE_CHECK=1, a dedicated env var (the same belt-and-braces idiom as
-//     advisory_source_overlap_live_test.go's OPEN_TEGRON_OVERLAP_CORPUS).
+//     advisory_source_overlap_live_test.go's ASSAY_OVERLAP_CORPUS).
 //
 // # Why two gates and not one
 //

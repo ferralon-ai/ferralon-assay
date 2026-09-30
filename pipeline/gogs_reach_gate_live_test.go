@@ -16,12 +16,12 @@
 //
 // The gogs tree is NOT vendored (heavy, third-party). Point the test at a checkout via:
 //
-//	TEGRON_GOGS_DIR=/path/to/gogs go test -tags live -run TestGogsReachGate \
+//	ASSAY_GOGS_DIR=/path/to/gogs go test -tags live -run TestGogsReachGate \
 //	    ./ferralon-assay/pipeline/ -v -count=1
 //
 // Get the tree (v0.13.4 = the patched leg the demo proves non-exploitable):
 //
-//	git clone --depth 1 --branch v0.13.4 https://github.com/gogs/gogs "$TEGRON_GOGS_DIR"
+//	git clone --depth 1 --branch v0.13.4 https://github.com/gogs/gogs "$ASSAY_GOGS_DIR"
 //
 // The load runs offline against the tree's own go.mod (GOWORK=off inside LoadProgram),
 // so gogs's deps must be resolvable from the module cache/GOPROXY. Wall-clock: dominated
@@ -52,12 +52,12 @@ const (
 // TestGogsReachGate is the A-vs-B decision gate. PASS ⇒ Option A viable. It emits three
 // GATE lines the orchestrator greps; the final PASS/FAIL is the standard go test verdict.
 func TestGogsReachGate(t *testing.T) {
-	dir := os.Getenv("TEGRON_GOGS_DIR")
+	dir := os.Getenv("ASSAY_GOGS_DIR")
 	if dir == "" {
-		t.Skip("set TEGRON_GOGS_DIR to a gogs source checkout (git clone --branch v0.13.4 https://github.com/gogs/gogs)")
+		t.Skip("set ASSAY_GOGS_DIR to a gogs source checkout (git clone --branch v0.13.4 https://github.com/gogs/gogs)")
 	}
 	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("TEGRON_GOGS_DIR %q not a directory: %v", dir, err)
+		t.Fatalf("ASSAY_GOGS_DIR %q not a directory: %v", dir, err)
 	}
 	ctx := context.Background()
 

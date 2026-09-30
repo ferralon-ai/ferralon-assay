@@ -20,7 +20,7 @@
 //
 // To regenerate after editing the fixtures below or an AdvisoryTable entry:
 //
-//	TEGRON_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen
+//	ASSAY_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen
 package pipeline
 
 import (
@@ -113,11 +113,11 @@ func advisoryCorpusEntries() map[string]AdvisoryFacts {
 }
 
 // TestAdvisoryCorpus_Regen regenerates the on-disk corpus (JSON files + manifest) from
-// advisoryCorpusEntries. Opt-in (TEGRON_REGEN_ADVISORIES=1) so a normal test run never mutates
+// advisoryCorpusEntries. Opt-in (ASSAY_REGEN_ADVISORIES=1) so a normal test run never mutates
 // checked-in fixtures; it is the executable definition of the digest scheme.
 func TestAdvisoryCorpus_Regen(t *testing.T) {
-	if os.Getenv("TEGRON_REGEN_ADVISORIES") == "" {
-		t.Skip("set TEGRON_REGEN_ADVISORIES=1 to regenerate the advisory corpus")
+	if os.Getenv("ASSAY_REGEN_ADVISORIES") == "" {
+		t.Skip("set ASSAY_REGEN_ADVISORIES=1 to regenerate the advisory corpus")
 	}
 	if err := os.MkdirAll(advisoryCorpusDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestAdvisoryCorpus_Regen(t *testing.T) {
 func TestAdvisoryCorpus_Valid(t *testing.T) {
 	mb, err := os.ReadFile(filepath.Join(advisoryCorpusDir, advisoryCorpusManifestFile))
 	if err != nil {
-		t.Fatalf("read manifest (run TEGRON_REGEN_ADVISORIES=1 go test -run TestAdvisoryCorpus_Regen first): %v", err)
+		t.Fatalf("read manifest (run ASSAY_REGEN_ADVISORIES=1 go test -run TestAdvisoryCorpus_Regen first): %v", err)
 	}
 	var man corpusManifest
 	if err := json.Unmarshal(mb, &man); err != nil {
@@ -251,11 +251,11 @@ func TestAdvisoryCorpus_Valid(t *testing.T) {
 			continue
 		}
 		if missing := missingDeclaredKeys(wantBytes, b); len(missing) > 0 {
-			t.Errorf("%s omits declared field(s) %v — the corpus no longer round-trips the schema it declares; regenerate with TEGRON_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen",
+			t.Errorf("%s omits declared field(s) %v — the corpus no longer round-trips the schema it declares; regenerate with ASSAY_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen",
 				id, missing)
 			continue
 		}
-		t.Errorf("%s on-disk bytes differ from the generated form (value drift from the live entry); regenerate with TEGRON_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen", id)
+		t.Errorf("%s on-disk bytes differ from the generated form (value drift from the live entry); regenerate with ASSAY_REGEN_ADVISORIES=1 go test ./pipeline/ -run TestAdvisoryCorpus_Regen", id)
 	}
 
 	// SOUNDNESS (inv.5): BOTH gogs advisories backing the honesty-guard fixtures must stay

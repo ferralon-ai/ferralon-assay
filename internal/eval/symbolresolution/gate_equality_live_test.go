@@ -3,11 +3,11 @@
 // PLAN-290 Phase-2 exit-gate verification for the {go} reference lane. This is GATE evidence,
 // not product code: it READS existing producer outputs and asserts they agree. It changes no
 // producer, normaliser, or indexer (C7), and it is opt-in twice over — the `//go:build eval_live`
-// tag keeps it out of `go test ./...`, and the TEGRON_EVAL=1 gate keeps it out of an accidental
+// tag keeps it out of `go test ./...`, and the ASSAY_EVAL=1 gate keeps it out of an accidental
 // `-tags eval_live` run. It needs the real Go toolchain + a CURRENT assay-plugin-go on PATH:
 //
 //	go build -o "$SOMEDIR/assay-plugin-go" ./cmd/assay-plugin-go   # a FRESH binary — a stale
-//	PATH="$SOMEDIR:$PATH" TEGRON_EVAL=1 \                                            # plugin fails call_graph
+//	PATH="$SOMEDIR:$PATH" ASSAY_EVAL=1 \                                             # plugin fails call_graph
 //	  go test -tags eval_live ./internal/eval/symbolresolution/ -run TestGate -v
 //
 // Two checks:
@@ -37,8 +37,8 @@ import (
 
 func requireLiveGoToolchain(t *testing.T) plugin.LanguagePlugin {
 	t.Helper()
-	if os.Getenv("TEGRON_EVAL") != "1" {
-		t.Skip("set TEGRON_EVAL=1 to run the PLAN-290 {go} gate verification (opt-in)")
+	if os.Getenv("ASSAY_EVAL") != "1" {
+		t.Skip("set ASSAY_EVAL=1 to run the PLAN-290 {go} gate verification (opt-in)")
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no `go` on PATH: cannot drive the live {go} resolver")

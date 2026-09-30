@@ -10,13 +10,11 @@
 // downstream rebrand silently misses, exactly the failure stateref_literal_test.go guards
 // against for the state ref.
 //
-// internal/brand already carries a wider gate for this shape
-// (brand_envliteral_gate_test.go, TestNoHardcodedBrandEnvLiteral), which also flags the
-// NUCLEON_/TEGRON_ prefixes and carries an allowlist for genuinely internal knobs. This test does
-// not attempt to replace that: it is deliberately narrower (it flags ONLY the current prefix and
-// has no allowlist) and deliberately more paranoid about one specific thing — it derives its own
-// matcher from brand.EnvPrefix at test-RUN time, never a hardcoded prefix string in its own
-// source, so it keeps working unattended across a future rebrand.
+// internal/brand carries the wider gates (brand_envliteral_gate_test.go): the same literal check
+// plus TestEnvReadsStayAtEntryPoints, which decides which packages may read which variables. This
+// test does not attempt to replace them. It stays deliberately narrow and self-contained: it flags
+// ONLY the current prefix, has no allowlist, and derives its matcher from brand.EnvPrefix at
+// test-RUN time, so it keeps working unattended across a future rebrand.
 package selfdesc
 
 import (

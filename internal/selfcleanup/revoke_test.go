@@ -93,23 +93,19 @@ func TestCanonicalHTMLEscapingOff(t *testing.T) {
 	}
 }
 
-func TestTrustedKeyEnvOverride(t *testing.T) {
+func TestTrustedKeyOverride(t *testing.T) {
 	pub, _ := testKeypair(t)
-	t.Setenv(envRevokePubKey, base64.StdEncoding.EncodeToString(pub))
-	t.Setenv(envRevokeKeyID, "kX")
-	got, id, err := TrustedKey()
+	got, id, err := TrustedKey(base64.StdEncoding.EncodeToString(pub), "kX")
 	if err != nil {
 		t.Fatalf("TrustedKey: %v", err)
 	}
 	if id != "kX" || !got.Equal(pub) {
-		t.Fatalf("env override not honored: id=%q equal=%v", id, got.Equal(pub))
+		t.Fatalf("override not honored: id=%q equal=%v", id, got.Equal(pub))
 	}
 }
 
 func TestTrustedKeyAbsent(t *testing.T) {
-	t.Setenv(envRevokePubKey, "")
-	t.Setenv(envRevokeKeyID, "")
-	got, _, err := TrustedKey()
+	got, _, err := TrustedKey("", "")
 	if err != nil {
 		t.Fatalf("absent key must not error, got %v", err)
 	}

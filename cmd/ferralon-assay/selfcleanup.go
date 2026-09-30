@@ -34,6 +34,8 @@ const (
 	envGitHubSHA           = "GITHUB_SHA"                      // resolved commit
 	envActionsIDURL        = "ACTIONS_ID_TOKEN_REQUEST_URL"
 	envActionsIDTok        = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+	envRevokePubKey        = "FERRALON_REVOKE_PUBLIC_KEY" // revoke-signature key OVERRIDE (else the baked release key)
+	envRevokeKeyID         = "FERRALON_REVOKE_KEY_ID"     // key id for that override
 
 	workflowFile = "ferralon-assay.yml"
 	workflowPath = ".github/workflows/" + workflowFile
@@ -113,7 +115,7 @@ func postScan(ctx context.Context, store statestore.StateStore, subject trigger.
 		commit = subject.ResolvedCommit
 	}
 
-	pub, keyID, err := selfcleanup.TrustedKey()
+	pub, keyID, err := selfcleanup.TrustedKey(os.Getenv(envRevokePubKey), os.Getenv(envRevokeKeyID))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  self-cleanup: bad revoke key, skipping: %v\n", err)
 		return

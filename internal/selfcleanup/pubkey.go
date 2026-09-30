@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
-	"os"
 )
 
 // The Ferralon revoke-signing PUBLIC key is baked into the pinned Assay scanner
@@ -24,23 +23,16 @@ var (
 	bakedRevokeKeyID  string // rotation key id
 )
 
-// Environment overrides for hermetic tests and dev/integration runs. When set they
-// take precedence over the baked-in values, letting a test drive a known keypair
-// without relinking. The names match dispatch 03's public-key handoff contract
-// (FERRALON_REVOKE_PUBLIC_KEY = standard-base64 of the raw 32-byte Ed25519 public
-// key; FERRALON_REVOKE_KEY_ID = the rotation key id).
-const (
-	envRevokePubKey = "FERRALON_REVOKE_PUBLIC_KEY"
-	envRevokeKeyID  = "FERRALON_REVOKE_KEY_ID"
-)
-
 // TrustedKey resolves the public key + key id the scanner trusts for revoke
-// signatures: the env override if present, else the build-time baked value. It
-// returns (nil, "", nil) when no key is configured — a legitimate state (OSS build)
-// in which the caller must treat every 410 as transient and never actuate.
-func TrustedKey() (ed25519.PublicKey, string, error) {
-	b64 := firstNonEmpty(os.Getenv(envRevokePubKey), bakedRevokePubKey)
-	keyID := firstNonEmpty(os.Getenv(envRevokeKeyID), bakedRevokeKeyID)
+// signatures: the caller's override if non-empty, else the build-time baked value.
+// The overrides let a hermetic test or a dev/integration run drive a known keypair
+// without relinking; pubKeyOverride is standard-base64 of the raw 32-byte Ed25519
+// public key. It returns (nil, "", nil) when no key is configured — a legitimate
+// state (OSS build) in which the caller must treat every 410 as transient and never
+// actuate.
+func TrustedKey(pubKeyOverride, keyIDOverride string) (ed25519.PublicKey, string, error) {
+	b64 := firstNonEmpty(pubKeyOverride, bakedRevokePubKey)
+	keyID := firstNonEmpty(keyIDOverride, bakedRevokeKeyID)
 	if b64 == "" {
 		return nil, "", nil
 	}

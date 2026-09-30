@@ -216,6 +216,14 @@ that policy's manifest. On the CLI, `-advisory-corpus` takes either a corpus dir
 file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`
 publishes for it.
 
+The CLI reads the corpus from `-advisory-corpus` or, when the flag is absent, the
+`ASSAY_ADVISORY_CORPUS_DIR` environment variable (the name says directory; it accepts a bundle file
+too). A corpus supplements the built-in table rather than replacing it: the corpus answers first, and
+an advisory it lacks still resolves from the table. To make a missing corpus a failure instead of a
+quiet fall-back to the built-in table, pass `-require-advisory-corpus` or set
+`ASSAY_ADVISORY_CORPUS_REQUIRED` to `true`; the flag wins over the variable. The Action sets that
+declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
+
 ## Scope
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
@@ -323,7 +331,7 @@ implementation detail with no compatibility promise; the packages below are the 
 | `checkout` | The codebase-acquisition seam (`Checkout`) and its git implementation. |
 | `statestore` | The persisted-state seam (`StateStore`) and its git-ref implementations. |
 | `resultsink` | The publish seam (`ResultSink`) and the GitHub adapters under `resultsink/github`. |
-| `corpus` | The built-in advisory corpus and its loader. |
+| `corpus` | Checked-in golden regression fixtures and their loader, used by the evaluation harnesses; not a supported API. The built-in advisory table is `pipeline.AdvisoryTable`. |
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |

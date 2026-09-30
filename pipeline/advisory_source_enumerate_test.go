@@ -16,8 +16,8 @@ func TestArtifactSource_KnownIDs(t *testing.T) {
 	}
 	got := enum.KnownIDs()
 	want := []string{
-		"TEGRON-TEST-0001", "TEGRON-TEST-ABSPATH", "TEGRON-TEST-BACKSLASH", "TEGRON-TEST-BADDIGEST",
-		"TEGRON-TEST-DATED", "TEGRON-TEST-DOTDOT", "TEGRON-TEST-MALFORMED",
+		"FERRALON-TEST-0001", "FERRALON-TEST-ABSPATH", "FERRALON-TEST-BACKSLASH", "FERRALON-TEST-BADDIGEST",
+		"FERRALON-TEST-DATED", "FERRALON-TEST-DOTDOT", "FERRALON-TEST-MALFORMED",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("KnownIDs() = %v, want %v", got, want)

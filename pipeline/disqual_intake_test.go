@@ -123,7 +123,7 @@ func TestIntakeRun_NpmAdvisoryUnderJava_Mismatch(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-npm-under-java"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id": "TEGRON-JS-DEP-0001",
+		"vuln_id": "FERRALON-JS-DEP-0001",
 		"purl":    "pkg:npm/left-pad",
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
@@ -171,7 +171,7 @@ func TestIntakeRun_UnknownCodebaseLanguage_FailsOpen(t *testing.T) {
 	store := artifact.NewMemStore()
 	caseID := "case-unknown-lang"
 	putJSON(t, store, caseID, artifact.TypeNormalizedAdvisory, map[string]any{
-		"vuln_id": "TEGRON-JS-DEP-0001", "purl": "pkg:npm/left-pad",
+		"vuln_id": "FERRALON-JS-DEP-0001", "purl": "pkg:npm/left-pad",
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"build_dir": ""})
 	res := runDisqual(t, store, caseID)

@@ -215,7 +215,7 @@ func TestResolveVersions_MissingBuildDirIsHardError(t *testing.T) {
 // --- against the real corpus repro fixtures ---------------------------------
 
 // TestResolveVersions_CorpusRepros proves the pure-Go resolver produces, against the ACTUAL
-// TEGRON-JAVA-DEP-0001 repro poms, the exact (version, resolved) the pipeline disqualification
+// FERRALON-JAVA-DEP-0001 repro poms, the exact (version, resolved) the pipeline disqualification
 // path consumes: patched=1.4.0 resolved, vulnerable=1.3.9 resolved, unresolved=UNRESOLVED.
 func TestResolveVersions_CorpusRepros(t *testing.T) {
 	const coord = "com.example.lib:widget"
@@ -224,9 +224,9 @@ func TestResolveVersions_CorpusRepros(t *testing.T) {
 		wantVer      string
 		wantResolved bool
 	}{
-		{"TEGRON-JAVA-DEP-0001-patched", "1.4.0", true},
-		{"TEGRON-JAVA-DEP-0001-vulnerable", "1.3.9", true},
-		{"TEGRON-JAVA-DEP-0001-unresolved", "", false},
+		{"FERRALON-JAVA-DEP-0001-patched", "1.4.0", true},
+		{"FERRALON-JAVA-DEP-0001-vulnerable", "1.3.9", true},
+		{"FERRALON-JAVA-DEP-0001-unresolved", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.repro, func(t *testing.T) {

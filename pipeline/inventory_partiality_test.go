@@ -65,13 +65,13 @@ func runInventory(t *testing.T, complete bool) (*artifact.MemStore, string, inve
 	t.Helper()
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-inv-partiality", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-JS-DEP-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
 			Repo:     "tegron/js-dep-repro",
 			Revision: "v1",
 			Acquisition: assessment.Acquisition{
 				Mode: "vendored_repro",
-				Path: "../corpus/testdata/repros/TEGRON-JS-SSRF-0001-vulnerable",
+				Path: "../corpus/testdata/repros/FERRALON-JS-SSRF-0001-vulnerable",
 			},
 		},
 	}}

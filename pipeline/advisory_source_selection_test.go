@@ -70,9 +70,9 @@ func TestSetDefaultAdvisorySource_SwapsDefaultAndLookupAdvisoryFacts(t *testing.
 // NewArtifactSource resolves a known fixture advisory from the schema-compatible corpus root.
 func TestNewArtifactSource_ResolvesKnownFixture(t *testing.T) {
 	src := NewArtifactSource(advisoryFixtureRoot)
-	facts, ok := src.Lookup("TEGRON-TEST-0001")
+	facts, ok := src.Lookup("FERRALON-TEST-0001")
 	if !ok {
-		t.Fatal("NewArtifactSource Lookup(TEGRON-TEST-0001) ok=false, want true")
+		t.Fatal("NewArtifactSource Lookup(FERRALON-TEST-0001) ok=false, want true")
 	}
 	if facts.Coordinate != "com.example.lib:widget" {
 		t.Fatalf("Coordinate = %q, want com.example.lib:widget", facts.Coordinate)
@@ -83,7 +83,7 @@ func TestNewArtifactSource_ResolvesKnownFixture(t *testing.T) {
 // (zero, false) — never a partial or laundered fact.
 func TestNewArtifactSource_UnknownIDFailsOpen(t *testing.T) {
 	src := NewArtifactSource(advisoryFixtureRoot)
-	facts, ok := src.Lookup("TEGRON-TEST-NOPE")
+	facts, ok := src.Lookup("FERRALON-TEST-NOPE")
 	if ok {
 		t.Fatal("NewArtifactSource Lookup(unknown) ok=true, want false (fail open)")
 	}
@@ -116,9 +116,9 @@ func TestValidate_ErrorsButLookupStillFailsOpen(t *testing.T) {
 		lookupID    string
 		errContains string
 	}{
-		{"missing dir", "testdata/advisory_source/does-not-exist", "TEGRON-TEST-0001", "read advisory manifest"},
-		{"record_count mismatch", "testdata/advisory_source/badcount", "TEGRON-TEST-BADCOUNT", "record_count"},
-		{"duplicate identifier", "testdata/advisory_source/dupid", "TEGRON-TEST-DUP", "duplicate identifier"},
+		{"missing dir", "testdata/advisory_source/does-not-exist", "FERRALON-TEST-0001", "read advisory manifest"},
+		{"record_count mismatch", "testdata/advisory_source/badcount", "FERRALON-TEST-BADCOUNT", "record_count"},
+		{"duplicate identifier", "testdata/advisory_source/dupid", "FERRALON-TEST-DUP", "duplicate identifier"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -48,7 +48,7 @@ func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 	reach := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)}
 	seedReachArtifact(t, store, aid, cg, reach)
 
-	f := finding(store, aid, report.Advisory{ID: "TEGRON-JAVA-SSRF-0002", Source: "corpus"}, nil)
+	f := finding(store, aid, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, nil)
 	if f.Verdict != report.VerdictNotExploitable {
 		t.Fatalf("verdict = %q, want %q — a searched COMPLETE-enough graph with no reaching path refutes",
 			f.Verdict, report.VerdictNotExploitable)
@@ -77,7 +77,7 @@ func TestFinding_EmptyGraphYieldsUndetermined(t *testing.T) {
 	reach := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)}
 	seedReachArtifact(t, store, aid, cg, reach)
 
-	f := finding(store, aid, report.Advisory{ID: "TEGRON-JAVA-SSRF-0002", Source: "corpus"}, nil)
+	f := finding(store, aid, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, nil)
 	if f.Verdict != report.VerdictUndetermined {
 		t.Fatalf("verdict = %q, want %q — an empty partial graph is a refutation with nothing under it",
 			f.Verdict, report.VerdictUndetermined)

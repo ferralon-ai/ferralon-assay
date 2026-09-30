@@ -8,7 +8,7 @@ import (
 )
 
 // springIndexFixture is the REAL index.scip emitted by scip-java 0.10.3 over the
-// TEGRON-JAVA-SPRING-SSRF-0001 repro (committed verbatim, 30262 bytes). It is the
+// FERRALON-JAVA-SPRING-SSRF-0001 repro (committed verbatim, 30262 bytes). It is the
 // authoritative parser fixture: a hand-crafted sample previously masked the fact
 // that scip-java emits NAME-only definition ranges and no enclosing_range/
 // enclosing_symbol, so the parser must derive enclosing methods positionally. The

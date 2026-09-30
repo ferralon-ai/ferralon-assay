@@ -444,7 +444,7 @@ func TestInventory_UnknownLanguageQueriesNothing(t *testing.T) {
 // TestWorkSet_EveryLanguageFloorSurvives is the handoff's "Java, JS and Python scans produce at
 // least what they produce today" gate, generalized to every language that has a floor.
 //
-// It matters most for the three non-Go ecosystems, whose floors are entirely first-party TEGRON-*
+// It matters most for the three non-Go ecosystems, whose floors are entirely first-party FERRALON-*
 // fixtures that OSV.dev has never heard of and never will. Any design that REPLACED the compiled-in
 // set with the OSV answer — rather than unioning with it — would silently delete all seven of them
 // and turn those scans from demo-quality into nothing.

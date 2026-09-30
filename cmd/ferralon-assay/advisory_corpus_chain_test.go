@@ -47,9 +47,9 @@ func TestAdvisoryCorpus_ChainsBehindTheBuiltinTable(t *testing.T) {
 	for _, id := range []string{
 		"GO-2021-0113", "GO-2022-0322", "GO-2021-0264", "CVE-2024-55947", "CVE-2025-8110",
 		"CVE-2024-45337", "CVE-2026-46595", "CVE-2026-39831", "CVE-2026-39821", "CVE-2020-36569",
-		"TEGRON-JAVA-SSRF-0001", "TEGRON-JAVA-SPRING-SSRF-0001", "TEGRON-JAVA-DEP-0001",
-		"TEGRON-JS-SSRF-0001", "TEGRON-JS-DEP-0001",
-		"TEGRON-PY-AIRFLOW-EXPAPI-0001", "TEGRON-PY-DEP-0001",
+		"FERRALON-JAVA-SSRF-0001", "FERRALON-JAVA-SPRING-SSRF-0001", "FERRALON-JAVA-DEP-0001",
+		"FERRALON-JS-SSRF-0001", "FERRALON-JS-DEP-0001",
+		"FERRALON-PY-AIRFLOW-EXPAPI-0001", "FERRALON-PY-DEP-0001",
 	} {
 		if _, ok := src.Lookup(id); !ok {
 			t.Errorf("%s lost its facts when a corpus was configured — the corpus must supplement the table, not replace it", id)
@@ -57,7 +57,7 @@ func TestAdvisoryCorpus_ChainsBehindTheBuiltinTable(t *testing.T) {
 	}
 
 	// And the corpus half is live: an id only the corpus carries resolves.
-	if _, ok := src.Lookup("TEGRON-TEST-0001"); !ok {
+	if _, ok := src.Lookup("FERRALON-TEST-0001"); !ok {
 		t.Error("a corpus-only id did not resolve — the corpus is not being consulted")
 	}
 }

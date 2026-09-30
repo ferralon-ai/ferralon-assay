@@ -5,7 +5,7 @@
 //
 // The scanner shipped analyzer plugins for Go, Java, JavaScript, Python and .NET, and only Go could
 // complete a run. The compiled-in advisory table held no Maven, npm, PyPI or NuGet facts at all —
-// the only entries in those ecosystems were TEGRON-* house canaries, gated off the default surface
+// the only entries in those ecosystems were FERRALON-* house canaries, gated off the default surface
 // because they carry no CVE — so the default advisory floor for four of the five languages was
 // empty, and scanWorkSet halts a run whose work set resolves to zero. A default Java, JS, Python or
 // .NET scan exited non-zero.
@@ -269,7 +269,7 @@ func TestDefaultFloorCarriesNoHouseCanary(t *testing.T) {
 	for _, language := range supportedLanguages {
 		t.Run(language, func(t *testing.T) {
 			for _, ref := range advisoryCorpus(language, false) {
-				if strings.HasPrefix(ref.ID, "TEGRON-") || strings.HasPrefix(ref.ID, "FERRALON-") {
+				if strings.HasPrefix(ref.ID, "FERRALON-") {
 					t.Errorf("%s default floor names the house canary %s", language, ref.ID)
 					continue
 				}

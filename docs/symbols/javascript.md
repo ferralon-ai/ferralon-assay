@@ -85,7 +85,7 @@ forms, not SCIP strings.
 
 One row per category. The example strings are literal `scipSymbol` output. Only the `fetchUrl`
 example corresponds to an on-disk corpus fixture
-(`TEGRON-JS-SSRF-0001-vulnerable/src/fetcher.js`); the rest are grammar-derived traces of the code
+(`FERRALON-JS-SSRF-0001-vulnerable/src/fetcher.js`); the rest are grammar-derived traces of the code
 path (there is no class in the current corpus fixtures), each constructed to match `scipSymbol`'s
 emitted form exactly.
 

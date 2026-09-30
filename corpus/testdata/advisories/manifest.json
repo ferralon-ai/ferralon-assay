@@ -97,6 +97,62 @@
       "file": "FERRALON-APP-SSRF-0001.json",
       "digest": "sha256:c35caeba7fef1fe714940165de66230a4cfc264c1981f4c1b1a3781ccbd7dfc7"
     },
+    "FERRALON-GO-GRAFANA-DUCKDB-0001": {
+      "file": "FERRALON-GO-GRAFANA-DUCKDB-0001.json",
+      "digest": "sha256:afa5d09c73e8e41242e865f0faa99e62dd707a9dba5aa9aa5c3999a29bb4a86a"
+    },
+    "FERRALON-JAVA-DEP-0001": {
+      "file": "FERRALON-JAVA-DEP-0001.json",
+      "digest": "sha256:c042a01b452a087b1904fe619818555555e3d3ae7df8da0038bb9ba228c5c388"
+    },
+    "FERRALON-JAVA-SPRING-SSRF-0001": {
+      "file": "FERRALON-JAVA-SPRING-SSRF-0001.json",
+      "digest": "sha256:69b1c89ce5193e9e9cee6b2ba78e48390156d5332af3825eab996428557a4bd5"
+    },
+    "FERRALON-JAVA-SSRF-0001": {
+      "file": "FERRALON-JAVA-SSRF-0001.json",
+      "digest": "sha256:01ccfd541860a83ebd230082fb94a42ef7a9d9e525c972b7e2afb09927b5ff90"
+    },
+    "FERRALON-JAVA-SSRF-0002": {
+      "file": "FERRALON-JAVA-SSRF-0002.json",
+      "digest": "sha256:fa7859551cdcb1ef9dc4c27a850ba9510d09e6a2eb46c0d9686bcda79b4a0973"
+    },
+    "FERRALON-JAVA-SSRF-0003": {
+      "file": "FERRALON-JAVA-SSRF-0003.json",
+      "digest": "sha256:58a71fa86b9953aaa49149c3ffc19d0331a5dc6c401cf3c3dcaaaff7534d0f61"
+    },
+    "FERRALON-JS-DEP-0001": {
+      "file": "FERRALON-JS-DEP-0001.json",
+      "digest": "sha256:41c352a37d1cc74413efb4e9df1b853c3b1cee3ad192ec33f713b31b52b35db3"
+    },
+    "FERRALON-JS-NEXTRCE-0001": {
+      "file": "FERRALON-JS-NEXTRCE-0001.json",
+      "digest": "sha256:4fd591bd5f5b8a0bcdd34dd009c6302eadceb2dd7193d0f0e2e21d79c9ff1993"
+    },
+    "FERRALON-JS-SSRF-0001": {
+      "file": "FERRALON-JS-SSRF-0001.json",
+      "digest": "sha256:38179e509525defaa56c20eb6b6495ed496e0ffbea7d9aced95595d42fe91911"
+    },
+    "FERRALON-NET-DEP-0001": {
+      "file": "FERRALON-NET-DEP-0001.json",
+      "digest": "sha256:4dde15e5796a677555060c6fc232c8a2f2304f19269f72adb7e409e7c6b39592"
+    },
+    "FERRALON-NET-REACH-0001": {
+      "file": "FERRALON-NET-REACH-0001.json",
+      "digest": "sha256:52607534da92679f1f9f8ebd688de42120c7b2f5d113c3fec2efacf4c2187611"
+    },
+    "FERRALON-PY-AIRFLOW-EXPAPI-0001": {
+      "file": "FERRALON-PY-AIRFLOW-EXPAPI-0001.json",
+      "digest": "sha256:907106a7cd60bf8a6b11b14aae34e52948e342520ab186ef848baf59089c39be"
+    },
+    "FERRALON-PY-DEP-0001": {
+      "file": "FERRALON-PY-DEP-0001.json",
+      "digest": "sha256:dd978ede9924c4b8e9251345493eb3ea53bcbcc402313ac5ba7114022cba1491"
+    },
+    "FERRALON-PY-FIRSTPARTY-0001": {
+      "file": "FERRALON-PY-FIRSTPARTY-0001.json",
+      "digest": "sha256:b9a196bc6275fc300bc8237bfacb850ab2e01fb844ea3d5a57d0f02d33083862"
+    },
     "GO-2021-0113": {
       "file": "GO-2021-0113.json",
       "digest": "sha256:5b1c1fd32c40257406f5a7e79d9078fbd1064465be8a303658b434aa88850d49"
@@ -108,63 +164,7 @@
     "GO-2022-0322": {
       "file": "GO-2022-0322.json",
       "digest": "sha256:f653515b083786f0d3c84969a2c158b3a2899950f445fc61f25983aa7bedf3e1"
-    },
-    "TEGRON-GO-GRAFANA-DUCKDB-0001": {
-      "file": "TEGRON-GO-GRAFANA-DUCKDB-0001.json",
-      "digest": "sha256:afa5d09c73e8e41242e865f0faa99e62dd707a9dba5aa9aa5c3999a29bb4a86a"
-    },
-    "TEGRON-JAVA-DEP-0001": {
-      "file": "TEGRON-JAVA-DEP-0001.json",
-      "digest": "sha256:c042a01b452a087b1904fe619818555555e3d3ae7df8da0038bb9ba228c5c388"
-    },
-    "TEGRON-JAVA-SPRING-SSRF-0001": {
-      "file": "TEGRON-JAVA-SPRING-SSRF-0001.json",
-      "digest": "sha256:69b1c89ce5193e9e9cee6b2ba78e48390156d5332af3825eab996428557a4bd5"
-    },
-    "TEGRON-JAVA-SSRF-0001": {
-      "file": "TEGRON-JAVA-SSRF-0001.json",
-      "digest": "sha256:01ccfd541860a83ebd230082fb94a42ef7a9d9e525c972b7e2afb09927b5ff90"
-    },
-    "TEGRON-JAVA-SSRF-0002": {
-      "file": "TEGRON-JAVA-SSRF-0002.json",
-      "digest": "sha256:fa7859551cdcb1ef9dc4c27a850ba9510d09e6a2eb46c0d9686bcda79b4a0973"
-    },
-    "TEGRON-JAVA-SSRF-0003": {
-      "file": "TEGRON-JAVA-SSRF-0003.json",
-      "digest": "sha256:58a71fa86b9953aaa49149c3ffc19d0331a5dc6c401cf3c3dcaaaff7534d0f61"
-    },
-    "TEGRON-JS-DEP-0001": {
-      "file": "TEGRON-JS-DEP-0001.json",
-      "digest": "sha256:41c352a37d1cc74413efb4e9df1b853c3b1cee3ad192ec33f713b31b52b35db3"
-    },
-    "TEGRON-JS-NEXTRCE-0001": {
-      "file": "TEGRON-JS-NEXTRCE-0001.json",
-      "digest": "sha256:4fd591bd5f5b8a0bcdd34dd009c6302eadceb2dd7193d0f0e2e21d79c9ff1993"
-    },
-    "TEGRON-JS-SSRF-0001": {
-      "file": "TEGRON-JS-SSRF-0001.json",
-      "digest": "sha256:38179e509525defaa56c20eb6b6495ed496e0ffbea7d9aced95595d42fe91911"
-    },
-    "TEGRON-NET-DEP-0001": {
-      "file": "TEGRON-NET-DEP-0001.json",
-      "digest": "sha256:4dde15e5796a677555060c6fc232c8a2f2304f19269f72adb7e409e7c6b39592"
-    },
-    "TEGRON-NET-REACH-0001": {
-      "file": "TEGRON-NET-REACH-0001.json",
-      "digest": "sha256:52607534da92679f1f9f8ebd688de42120c7b2f5d113c3fec2efacf4c2187611"
-    },
-    "TEGRON-PY-AIRFLOW-EXPAPI-0001": {
-      "file": "TEGRON-PY-AIRFLOW-EXPAPI-0001.json",
-      "digest": "sha256:907106a7cd60bf8a6b11b14aae34e52948e342520ab186ef848baf59089c39be"
-    },
-    "TEGRON-PY-DEP-0001": {
-      "file": "TEGRON-PY-DEP-0001.json",
-      "digest": "sha256:dd978ede9924c4b8e9251345493eb3ea53bcbcc402313ac5ba7114022cba1491"
-    },
-    "TEGRON-PY-FIRSTPARTY-0001": {
-      "file": "TEGRON-PY-FIRSTPARTY-0001.json",
-      "digest": "sha256:b9a196bc6275fc300bc8237bfacb850ab2e01fb844ea3d5a57d0f02d33083862"
     }
   },
-  "corpus_digest": "sha256:6f9b6e76765ef364fe8c3783ccba096174db0bcc07f583eb4e200d3b1e4d5643"
+  "corpus_digest": "sha256:c87c19a40fca54695cfcb1b9f85a124bac2a79dec0248754e17e358cadb6b656"
 }

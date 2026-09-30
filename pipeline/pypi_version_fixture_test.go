@@ -3,8 +3,8 @@ package pipeline
 import "testing"
 
 // TestParityShape_OutOfRange is the PLAN-070 out-of-range fixture arm. The fixture
-// corpus/testdata/repros/TEGRON-PY-JINJA2-SSTI-0001-OUTOFRANGE declares Jinja2==3.1.2
-// (requirements.txt) against advisory TEGRON-PY-JINJA2-SSTI-0001 (affects < 2.11.3). The
+// corpus/testdata/repros/FERRALON-PY-JINJA2-SSTI-0001-OUTOFRANGE declares Jinja2==3.1.2
+// (requirements.txt) against advisory FERRALON-PY-JINJA2-SSTI-0001 (affects < 2.11.3). The
 // exercised arm is the PyPI disqualification comparator (pypi_version.go:42): a declared
 // version provably >= the advisory upper bound must return (outside=true, ok=true), the
 // version-disqualified arm. Both operands must parse as PEP 440 -- an un-parseable operand

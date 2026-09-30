@@ -8,14 +8,14 @@ import (
 )
 
 // vulnReproSrc / fixedReproSrc are the source roots of the Apache Airflow experimental-API
-// removal repro (advisory TEGRON-PY-AIRFLOW-EXPAPI-0001), relative to this package. The
+// removal repro (advisory FERRALON-PY-AIRFLOW-EXPAPI-0001), relative to this package. The
 // hermetic first-party-reachability proof runs the REAL Python analysis over both trees to
 // MEASURE the reachable_candidate -> not_exploitable flip the real fix (apache/airflow
 // PR #41434, Airflow 3.0.0) produces: at the fix commit the get_code sink module AND the
 // decorated route handler are deleted wholesale (symbol-removal + path-removal).
 const (
-	vulnReproSrc  = "../../../corpus/testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-vulnerable/src"
-	fixedReproSrc = "../../../corpus/testdata/repros/TEGRON-PY-AIRFLOW-EXPAPI-0001-fixed/src"
+	vulnReproSrc  = "../../../corpus/testdata/repros/FERRALON-PY-AIRFLOW-EXPAPI-0001-vulnerable/src"
+	fixedReproSrc = "../../../corpus/testdata/repros/FERRALON-PY-AIRFLOW-EXPAPI-0001-fixed/src"
 )
 
 // reverseReachable reports whether sink is reachable from any of entries over the directed

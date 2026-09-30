@@ -263,9 +263,9 @@ func TestEmptyWorkSet_WideningRunsBeforeTheGate(t *testing.T) {
 //
 // Unreachable under the old placement for the same reason as the test above.
 func TestEmptyWorkSet_WideningPopulatesAnEmptyFloor(t *testing.T) {
-	// TEGRON-JAVA-DEP-0001 is a Maven advisory the built-in table holds facts for and that the
+	// FERRALON-JAVA-DEP-0001 is a Maven advisory the built-in table holds facts for and that the
 	// canaries-off floor does NOT carry, so admitting it is a real widening rather than a floor hit.
-	const admitted = "TEGRON-JAVA-DEP-0001"
+	const admitted = "FERRALON-JAVA-DEP-0001"
 	stubOSV(t, admitted)
 
 	f := runFlagsFor(t, "-osv-work-set=true")

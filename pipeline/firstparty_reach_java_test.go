@@ -2,7 +2,7 @@
 //
 // Hermetic proof that the Java Increment-1 analysis outputs flow through the SAME language-agnostic
 // first-party reachability fallback the Go plugin uses. The SCIP ids below are the EXACT strings the
-// real javaanalysis emitter produces for the TEGRON-JAVA-SSRF-0001 repro (servlet doGet ingress →
+// real javaanalysis emitter produces for the FERRALON-JAVA-SSRF-0001 repro (servlet doGet ingress →
 // handle utility → UrlFetcher.fetch sink); the javaanalysis-layer test
 // TestFirstParty_ReproSinkReachableFromServletIngress proves the real analyzer emits them, and this
 // test proves reachability_ingress turns them into a CandidatePair via firstPartyReachPaths — with

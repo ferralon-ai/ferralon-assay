@@ -145,7 +145,7 @@ func (dotnetUnresolvedStub) CallGraph(_ context.Context, _ plugin.CallGraphReque
 func TestInventoryDotNetRepro_RoutesToDotNetPlugin(t *testing.T) {
 	store := artifact.NewMemStore()
 	c := &assessment.Assessment{ID: "case-dotnet", Request: assessment.Request{
-		Vulnerability: assessment.VulnRef{ID: "TEGRON-DOTNET-SSRF-0001", Source: "corpus"},
+		Vulnerability: assessment.VulnRef{ID: "FERRALON-DOTNET-SSRF-0001", Source: "corpus"},
 		Codebase: assessment.CodebaseRef{
 			Repo:     "tegron.corpus/ssrf-dotnet",
 			Revision: "v1",

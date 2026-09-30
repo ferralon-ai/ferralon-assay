@@ -349,14 +349,14 @@ func missingDeclaredKeys(want, got []byte) []string {
 // table — the default advisory floor for the four non-Go languages.
 //
 // It is derived rather than listed so an advisory added to that floor is covered by the properties
-// below automatically. First-party synthetic ids are excluded: the TEGRON-*/FERRALON-* house
+// below automatically. First-party synthetic ids are excluded: the FERRALON-* house
 // canaries share those ecosystems but are gated off the default surface and are deliberately
 // version-axis-only or reachability-only fixtures, so the "lights an engine" property does not
 // apply to them.
 func realNonGoAdvisoryIDs() []string {
 	ids := make([]string, 0, len(AdvisoryTable))
 	for id, facts := range AdvisoryTable {
-		if strings.HasPrefix(id, "TEGRON-") || strings.HasPrefix(id, "FERRALON-") {
+		if strings.HasPrefix(id, "FERRALON-") {
 			continue
 		}
 		switch purlEcosystem(facts.PURL) {

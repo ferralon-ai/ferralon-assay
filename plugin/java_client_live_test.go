@@ -88,7 +88,7 @@ func TestLiveJava_IndexSymbols(t *testing.T) {
 func TestLiveJava_ResolveDependencyVersions(t *testing.T) {
 	p := newLiveJavaPlugin(t)
 	_, thisFile, _, _ := runtime.Caller(0)
-	repro := filepath.Join(filepath.Dir(thisFile), "..", "corpus", "testdata", "repros", "TEGRON-JAVA-DEP-0001-patched")
+	repro := filepath.Join(filepath.Dir(thisFile), "..", "corpus", "testdata", "repros", "FERRALON-JAVA-DEP-0001-patched")
 	res, err := p.ResolveDependencyVersions(context.Background(), ResolveVersionsRequest{
 		BuildDir:   repro,
 		Coordinate: "com.example.lib:widget",

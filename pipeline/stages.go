@@ -702,7 +702,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// so symbol resolution scopes there, and the /api/ds/query http_route handler
 	// is the recognized ingress (ADR 0005 first-party reachability). No version
 	// keying — this is a reachability firing, not a version-axis case.
-	"TEGRON-GO-GRAFANA-DUCKDB-0001": {
+	"FERRALON-GO-GRAFANA-DUCKDB-0001": {
 		Aliases: []string{"CVE-2024-9264", "GHSA-q99m-qcv4-fpm7"},
 		PURL:    "pkg:golang/github.com/grafana/grafana",
 		Symbols: []string{"main.runDuckQuery"},
@@ -838,19 +838,19 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		Lineage: Lineage{IncompleteFixOf: "CVE-2024-55947"},
 		Summary: "arbitrary file write via symlink: a committed in-repo symlink at an interior path component is followed by UpdateRepoFile, escaping the working tree; bypasses the v0.13.1 traversal fix and v0.13.3's leaf-only symlink check, and is closed by the full-hierarchy walk added in v0.13.4",
 	},
-	"TEGRON-JAVA-SSRF-0001": {
+	"FERRALON-JAVA-SSRF-0001": {
 		PURL:    "pkg:maven/com.example.web/ssrf",
 		Symbols: []string{"UrlFetcher.fetch"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: a servlet forwards an attacker-controlled target through UrlFetcher.fetch to an outbound HTTP request with no allowlist",
 	},
-	"TEGRON-JAVA-SPRING-SSRF-0001": {
+	"FERRALON-JAVA-SPRING-SSRF-0001": {
 		PURL:    "pkg:maven/com.example.web/spring-ssrf",
 		Symbols: []string{"UrlServiceImpl.fetch"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: a Spring @RestController reaches UrlServiceImpl.fetch through an @Autowired interface field; the sink issues an outbound request with no allowlist",
 	},
-	"TEGRON-JAVA-SSRF-0002": {
+	"FERRALON-JAVA-SSRF-0002": {
 		Coordinate:     "com.example.net:urlkit",
 		UpperExclusive: "2.1.0",
 		FixedVersion:   "2.1.0",
@@ -860,7 +860,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:           []string{"CWE-918"},
 		Summary:        "server-side request forgery: com.example.net:urlkit reaches an outbound HTTP GET to a caller-supplied URL with no allowlist; fixed in 2.1.0. In the unreachable repro the sink App.fetch is present but dead — never called from an ingress — so the case is not_exploitable at the reach axis.",
 	},
-	"TEGRON-JAVA-SSRF-0003": {
+	"FERRALON-JAVA-SSRF-0003": {
 		Coordinate:    "com.example.svc:iface-fetch",
 		VersionScheme: "maven",
 		PURL:          "pkg:maven/com.example.svc/iface-fetch",
@@ -871,20 +871,20 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: com.example.svc:iface-fetch reaches SomeServiceImpl.fetch through an @Autowired SomeService interface field; the sink issues an outbound request with no allowlist. Fixed in 1.3.0 (affects [1.0.0, 1.3.0)). The tool-unavailable repro is undetermined under the analyzer-gated-but-absent overlay and not_exploitable ungated.",
 	},
-	"TEGRON-JS-SSRF-0001": {
+	"FERRALON-JS-SSRF-0001": {
 		PURL:    "pkg:npm/tegron-corpus-ssrf",
 		Symbols: []string{"fetchUrl"},
 		CWEs:    []string{"CWE-918"},
 		Summary: "server-side request forgery: an Express route forwards an attacker-controlled target through fetchUrl to an outbound HTTP request with no allowlist",
 	},
-	"TEGRON-JS-NEXTRCE-0001": {
+	"FERRALON-JS-NEXTRCE-0001": {
 		Aliases: []string{"GHSA-5vj8-3v2h-h38v"},
 		PURL:    "pkg:npm/next",
 		Symbols: []string{"requireModule"},
 		CWEs:    []string{"CWE-94"},
 		Summary: "module-resolution RCE: the catch-all page route reaches requireModule, which require()s an attacker-controlled path with no bundles-directory containment (Next.js < 5.1.0)",
 	},
-	"TEGRON-JAVA-DEP-0001": {
+	"FERRALON-JAVA-DEP-0001": {
 		Coordinate:     "com.example.lib:widget",
 		UpperExclusive: "1.4.0",
 		FixedVersion:   "1.4.0",
@@ -892,7 +892,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		PURL:           "pkg:maven/com.example.lib/widget",
 		Summary:        "deserialization flaw in com.example.lib:widget fixed in 1.4.0",
 	},
-	"TEGRON-JS-DEP-0001": {
+	"FERRALON-JS-DEP-0001": {
 		Coordinate:     "left-pad",
 		UpperExclusive: "1.4.0",
 		FixedVersion:   "1.4.0",
@@ -905,21 +905,21 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// how the U8 corpus feed will light up the pypi/nuget comparators versionOutsideRange
 	// already dispatches. Version-axis fixtures only (like the Java/JS DEP entries above): no
 	// live repro, no symbols — they exercise the derived-scheme disqualification path.
-	"TEGRON-PY-DEP-0001": {
+	"FERRALON-PY-DEP-0001": {
 		Coordinate:     "flask",
 		UpperExclusive: "2.3.2",
 		FixedVersion:   "2.3.2",
 		PURL:           "pkg:pypi/flask",
 		Summary:        "reflected header injection in flask fixed in 2.3.2",
 	},
-	"TEGRON-NET-DEP-0001": {
+	"FERRALON-NET-DEP-0001": {
 		Coordinate:     "Newtonsoft.Json",
 		UpperExclusive: "13.0.1",
 		FixedVersion:   "13.0.1",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
 		Summary:        "insecure default deserialization in Newtonsoft.Json fixed in 13.0.1",
 	},
-	"TEGRON-NET-REACH-0001": {
+	"FERRALON-NET-REACH-0001": {
 		Aliases:        []string{"CVE-2021-32840"},
 		UpperExclusive: "1.3.3",
 		FixedVersion:   "1.3.3",
@@ -938,7 +938,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// prove outside, so it MUST stay OPEN. Deriving a scheme selects a comparator; it never
 	// manufactures a bound. Guards inv.5 (§3): a known scheme must never disqualify an
 	// unbounded advisory.
-	"TEGRON-PY-FIRSTPARTY-0001": {
+	"FERRALON-PY-FIRSTPARTY-0001": {
 		PURL:    "pkg:pypi/tegron-corpus-app",
 		Symbols: []string{"app.handler"},
 		CWEs:    []string{"CWE-22"},
@@ -954,7 +954,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// is a recognized http_route ingress. At the fix commit BOTH the sink module (get_code.py)
 	// and the decorated handler are removed — symbol-removal AND path-removal — so the sink no
 	// longer resolves and no ingress→sink path exists: reachable_candidate → not_exploitable.
-	"TEGRON-PY-AIRFLOW-EXPAPI-0001": {
+	"FERRALON-PY-AIRFLOW-EXPAPI-0001": {
 		Aliases: []string{"CVE-2020-13927"},
 		PURL:    "pkg:pypi/apache-airflow",
 		Symbols: []string{"airflow.api.common.experimental.get_code.get_code"},
@@ -1050,7 +1050,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// advisory floor for Java, JS, Python and .NET, exactly as the real Go advisories above are for
 	// Go, and they are what makes a default scan of those repositories complete.
 	//
-	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the TEGRON-* house
+	// Until 2026-08-05 the only Maven/npm/PyPI/NuGet entries in this table were the FERRALON-* house
 	// canaries below, which are gated off the default surface because they carry no CVE. That left
 	// the default floor for four of the five supported languages EMPTY, and scanWorkSet halts a run
 	// whose work set resolves to zero — so a default Java, JS, Python or .NET scan could not

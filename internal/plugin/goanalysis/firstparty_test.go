@@ -27,11 +27,11 @@ const firstPartyFixtureDir = "testdata/firstpartymod"
 // inert stub — so the advisory symbol resolves to nothing. These live in the
 // shared corpus repro tree, loaded here via a relative path from the package dir.
 const (
-	grafanaVulnFixtureDir  = "../../../corpus/testdata/repros/TEGRON-GO-GRAFANA-DUCKDB-0001-vulnerable/src"
-	grafanaFixedFixtureDir = "../../../corpus/testdata/repros/TEGRON-GO-GRAFANA-DUCKDB-0001-fixed/src"
+	grafanaVulnFixtureDir  = "../../../corpus/testdata/repros/FERRALON-GO-GRAFANA-DUCKDB-0001-vulnerable/src"
+	grafanaFixedFixtureDir = "../../../corpus/testdata/repros/FERRALON-GO-GRAFANA-DUCKDB-0001-fixed/src"
 	grafanaPURL            = "pkg:golang/github.com/grafana/grafana"
 	grafanaSink            = "main.runDuckQuery"
-	grafanaVulnID          = "TEGRON-GO-GRAFANA-DUCKDB-0001"
+	grafanaVulnID          = "FERRALON-GO-GRAFANA-DUCKDB-0001"
 )
 
 // TestFirstParty_IndexesUnexportedMainHandler proves the unexported package-main handler is indexed

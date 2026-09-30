@@ -331,7 +331,7 @@ implementation detail with no compatibility promise; the packages below are the 
 | `checkout` | The codebase-acquisition seam (`Checkout`) and its git implementation. |
 | `statestore` | The persisted-state seam (`StateStore`) and its git-ref implementations. |
 | `resultsink` | The publish seam (`ResultSink`) and the GitHub adapters under `resultsink/github`. |
-| `corpus` | Checked-in golden regression fixtures and their loader, used by the evaluation harnesses; not a supported API. The built-in advisory table is `pipeline.AdvisoryTable`. |
+| `corpus` | Checked-in golden regression fixtures and their loader. Importable only so another module's tests can reach them, with no API-stability promise. The built-in advisory table is `pipeline.AdvisoryTable`. |
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |

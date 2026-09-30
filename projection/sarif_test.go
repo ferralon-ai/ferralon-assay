@@ -160,8 +160,8 @@ func TestSARIF_Indeterminate_IsNone_NeverSafeNarrative(t *testing.T) {
 	if result.Level == "error" || result.Level == "warning" {
 		t.Fatalf("indeterminate must not be an error/warning finding, got level=%q", result.Level)
 	}
-	if result.Kind != "open" {
-		t.Fatalf("indeterminate must be kind=open (needs follow-up), got %q", result.Kind)
+	if result.Kind != "review" {
+		t.Fatalf("indeterminate must be kind=review (needs a human), got %q", result.Kind)
 	}
 	// The message must not narrate a safe result.
 	msg := result.Message.Text

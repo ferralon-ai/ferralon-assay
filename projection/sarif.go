@@ -40,8 +40,8 @@ func sarifLevel(p verdict.PoE) string {
 	case p.Direction == verdict.DirectionNotExploitable && p.Strength == verdict.StrengthProven:
 		return "note"
 	case p.Direction == verdict.DirectionIndeterminate:
-		// Nothing established (ADR 0016): not an error/warning finding, but kind="open" (sarifKind)
-		// marks it for follow-up. Never narrated as a safe result — see sarifMessage.
+		// Nothing established (ADR 0016): not an error/warning finding, but kind="review" (sarifKind)
+		// marks it for a human to look at. Never narrated as a safe result — see sarifMessage.
 		return "none"
 	default: // reasoned_not_exploitable
 		return "none"
@@ -50,8 +50,12 @@ func sarifLevel(p verdict.PoE) string {
 
 // sarifKind maps a PoE verdict to a SARIF result kind.
 // "fail" is reserved for confirmed findings; reasoned leans use "open" to signal
-// they require follow-up.
+// they require follow-up. An indeterminate verdict is "review": nothing was established,
+// so a human has to look, and tooling must be able to tell it apart from a reasoned lean.
 func sarifKind(p verdict.PoE) string {
+	if p.Direction == verdict.DirectionIndeterminate {
+		return "review"
+	}
 	if p.Strength == verdict.StrengthProven {
 		return "fail"
 	}

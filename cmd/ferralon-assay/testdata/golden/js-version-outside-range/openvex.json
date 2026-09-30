@@ -1,0 +1,78 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/ferralon-assay/0123456789abcdef0123456789abcdef01234567",
+  "author": "ferralon-assay",
+  "timestamp": "<TIMESTAMP>",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "CVE-2022-46175",
+        "aliases": [
+          "GHSA-9c47-m6qq-7p4h"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-version-outside-range@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2023-26136",
+        "aliases": [
+          "GHSA-72xf-g2v4-qvf3"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-version-outside-range@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2024-29041",
+        "aliases": [
+          "GHSA-rv95-896h-c2vc"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-version-outside-range@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JS-DEP-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-version-outside-range@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JS-SSRF-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-version-outside-range@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    }
+  ]
+}

@@ -1,0 +1,213 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "ferralon-assay",
+          "version": "ferralon-assay/dev",
+          "informationUri": "https://github.com/ferralon-ai/ferralon-assay",
+          "semanticVersion": "ferralon-assay/dev"
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "note",
+              "message": {
+                "text": "Analysis limit: dynamic_dispatch is an inherent limit of static analysis and holds for every run of the npm dependency analysis. It is reported for completeness — no step of this run was skipped and no result in this log depends on it."
+              }
+            }
+          ]
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "CVE-2022-46175",
+          "level": "none",
+          "kind": "notApplicable",
+          "message": {
+            "text": "CVE-2022-46175: disqualified. resolved dependency version is outside the advisory's affected range"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 94.853,
+          "properties": {
+            "scanner": {
+              "basis": "version_not_in_affected_range",
+              "detail": "resolved dependency version is outside the advisory's affected range",
+              "epss_percentile": 0.94853,
+              "epss_score": 0.09304,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "verdict": "disqualified"
+            }
+          }
+        },
+        {
+          "ruleId": "CVE-2023-26136",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "CVE-2023-26136: not exploitable. no reachable path to the advisory symbol was found"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 83.351,
+          "properties": {
+            "scanner": {
+              "basis": "vulnerable_symbol_absent",
+              "detail": "no reachable path to the advisory symbol was found",
+              "epss_percentile": 0.83351,
+              "epss_score": 0.02542,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "verdict": "not_exploitable"
+            }
+          }
+        },
+        {
+          "ruleId": "CVE-2024-29041",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "CVE-2024-29041: not exploitable. no reachable path to the advisory symbol was found"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 52.439,
+          "properties": {
+            "scanner": {
+              "basis": "vulnerable_symbol_absent",
+              "detail": "no reachable path to the advisory symbol was found",
+              "epss_percentile": 0.52439,
+              "epss_score": 0.00786,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "verdict": "not_exploitable"
+            }
+          }
+        },
+        {
+          "ruleId": "FERRALON-JS-DEP-0001",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "FERRALON-JS-DEP-0001: not exploitable. no reachable path to the advisory symbol was found"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "basis": "vulnerable_symbol_absent",
+              "detail": "no reachable path to the advisory symbol was found",
+              "source": "osv",
+              "verdict": "not_exploitable"
+            }
+          }
+        },
+        {
+          "ruleId": "FERRALON-JS-SSRF-0001",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "FERRALON-JS-SSRF-0001: not exploitable. no reachable path to the advisory symbol was found"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "basis": "vulnerable_symbol_absent",
+              "detail": "no reachable path to the advisory symbol was found",
+              "source": "osv",
+              "verdict": "not_exploitable"
+            }
+          }
+        },
+        {
+          "ruleId": "ferralon-assay/analysis-limits",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "Analysis limit: dynamic_dispatch is an inherent limit of static analysis and holds for every run of the npm dependency analysis. It is reported for completeness — no step of this run was skipped and no result in this log depends on it."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "ecosystem": "npm",
+              "partiality_class": "inherent_limit",
+              "partiality_reason": "dynamic_dispatch"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

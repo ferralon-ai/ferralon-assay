@@ -1,0 +1,140 @@
+{
+  "schema_version": "tegron.report.v2",
+  "subject": {
+    "repo": "example.com/golden/js-reachable-house-canary",
+    "revision": "main",
+    "resolved_commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "sbom": {
+    "packages": null
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "FERRALON-JS-SSRF-0001",
+        "source": "osv"
+      },
+      "verdict": "reachable_candidate",
+      "evidence": {
+        "reachable_path": "entrypoint → advisory symbol",
+        "reachability_grade": "attacker_tainted",
+        "entry_point": {
+          "symbol": "scip-typescript npm . . src/app/handleFetch(2).",
+          "kind": "http_route",
+          "attacker_controllable": true
+        },
+        "call_path": [
+          {
+            "symbol": "scip-typescript npm . . src/app/handleFetch(2)."
+          },
+          {
+            "symbol": "scip-typescript npm . . src/app/handle(1)."
+          },
+          {
+            "symbol": "scip-typescript npm . . src/fetcher/fetchUrl(1)."
+          }
+        ]
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2022-46175",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-9c47-m6qq-7p4h"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.09304,
+        "epss_percentile": 0.94853,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2023-26136",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-72xf-g2v4-qvf3"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.02542,
+        "epss_percentile": 0.83351,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-29041",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-rv95-896h-c2vc"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.00786,
+        "epss_percentile": 0.52439,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-JS-DEP-0001",
+        "source": "osv"
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "npm",
+      "class": "inherent_limit"
+    },
+    {
+      "reason": "no_manifest",
+      "ecosystem": "npm",
+      "class": "did_not_run"
+    },
+    {
+      "reason": "no_manifest",
+      "ecosystem": "npm",
+      "detail": "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem",
+      "class": "did_not_run"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "<TIMESTAMP>",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 5,
+      "fact_source": ""
+    }
+  }
+}

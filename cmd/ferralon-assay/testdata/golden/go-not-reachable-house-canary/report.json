@@ -1,0 +1,254 @@
+{
+  "schema_version": "tegron.report.v2",
+  "subject": {
+    "repo": "example.com/golden/go-not-reachable-house-canary",
+    "revision": "main",
+    "resolved_commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "sbom": {
+    "packages": null
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "GO-2021-0264",
+        "source": "osv",
+        "aliases": [
+          "CVE-2021-41772"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "go_toolchain_not_scanned",
+      "evidence": {
+        "detail": "the analysis did not run under this codebase's own Go toolchain version, so no verdict was established for an advisory affecting the toolchain itself"
+      },
+      "priority": {
+        "epss_score": 0.03051,
+        "epss_percentile": 0.86209,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2025-8110",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-mq8m-42gh-wq7r",
+          "GO-2025-4225"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.82482,
+        "epss_percentile": 0.99632,
+        "kev_listed": true,
+        "kev_date_added": "2026-01-12",
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-55947",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-qf5v-rp47-55gg",
+          "GO-2024-3356"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.75197,
+        "epss_percentile": 0.99462,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "GO-2022-0322",
+        "source": "osv",
+        "aliases": [
+          "CVE-2022-21698",
+          "GHSA-cg3q-j54f-5p7p"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.05994,
+        "epss_percentile": 0.92565,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-45337",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-v778-237x-gjrc",
+          "GO-2024-3321"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.03153,
+        "epss_percentile": 0.86626,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "GO-2021-0113",
+        "source": "osv",
+        "aliases": [
+          "CVE-2021-38561",
+          "GHSA-ppp9-7jff-5vj2"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.01356,
+        "epss_percentile": 0.68819,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2020-36569",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-hrm3-3xm6-x33h",
+          "GO-2020-0004"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.00811,
+        "epss_percentile": 0.5328,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2026-39821",
+        "source": "osv",
+        "aliases": [
+          "GO-2026-5026"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.00655,
+        "epss_percentile": 0.47713,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2026-46595",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-x527-x647-q7gg",
+          "GO-2026-5023"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.00503,
+        "epss_percentile": 0.40187,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2026-39831",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-89gr-r52h-f8rx",
+          "GO-2026-5019"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "detail": "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+      },
+      "priority": {
+        "epss_score": 0.0042,
+        "epss_percentile": 0.34531,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-APP-DOS-0001",
+        "source": "osv"
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "Go",
+      "class": "inherent_limit"
+    },
+    {
+      "reason": "go_toolchain_not_scanned",
+      "ecosystem": "Go",
+      "class": "did_not_run"
+    },
+    {
+      "reason": "reflection",
+      "ecosystem": "Go",
+      "class": "inherent_limit"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "<TIMESTAMP>",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 11,
+      "fact_source": ""
+    }
+  }
+}

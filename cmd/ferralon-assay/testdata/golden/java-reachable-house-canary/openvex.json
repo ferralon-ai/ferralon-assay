@@ -1,0 +1,85 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/ferralon-assay/0123456789abcdef0123456789abcdef01234567",
+  "author": "ferralon-assay",
+  "timestamp": "<TIMESTAMP>",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JAVA-SPRING-SSRF-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation",
+      "impact_statement": "ferralon-assay found a reachable code path to the advisory symbol. This is a candidate for exploitability, not a proof: proving it requires observing the path execute. Candidate path: entrypoint → advisory symbol."
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2019-14540",
+        "aliases": [
+          "GHSA-h822-r4r5-v8jg"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2020-36518",
+        "aliases": [
+          "GHSA-57j2-w4cx-62h2"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2024-22243",
+        "aliases": [
+          "GHSA-ccgv-vj62-xf9h"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JAVA-DEP-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JAVA-SSRF-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/java-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    }
+  ]
+}

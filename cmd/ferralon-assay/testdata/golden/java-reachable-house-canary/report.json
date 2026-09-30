@@ -1,0 +1,148 @@
+{
+  "schema_version": "tegron.report.v2",
+  "subject": {
+    "repo": "example.com/golden/java-reachable-house-canary",
+    "revision": "main",
+    "resolved_commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "sbom": {
+    "packages": null
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "FERRALON-JAVA-SPRING-SSRF-0001",
+        "source": "osv"
+      },
+      "verdict": "reachable_candidate",
+      "evidence": {
+        "reachable_path": "entrypoint → advisory symbol",
+        "reachability_grade": "attacker_tainted",
+        "entry_point": {
+          "symbol": "/fetch",
+          "kind": "http_route",
+          "attacker_controllable": true
+        },
+        "call_path": [
+          {
+            "symbol": "scip-java maven . . com/example/web/FetchController#fetch(1)."
+          },
+          {
+            "symbol": "scip-java maven . . com/example/web/UrlServiceImpl#fetch(1)."
+          }
+        ]
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2019-14540",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-h822-r4r5-v8jg"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.10763,
+        "epss_percentile": 0.95369,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2020-36518",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-57j2-w4cx-62h2"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.0486,
+        "epss_percentile": 0.91133,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-22243",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-ccgv-vj62-xf9h"
+        ]
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      },
+      "priority": {
+        "epss_score": 0.03967,
+        "epss_percentile": 0.89398,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-JAVA-DEP-0001",
+        "source": "osv"
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-JAVA-SSRF-0001",
+        "source": "osv"
+      },
+      "verdict": "undetermined",
+      "undetermined_reason": "analysis_did_not_run",
+      "evidence": {
+        "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "Maven",
+      "class": "inherent_limit"
+    },
+    {
+      "reason": "no_manifest",
+      "ecosystem": "Maven",
+      "detail": "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem",
+      "class": "did_not_run"
+    },
+    {
+      "reason": "unsupported_phase1",
+      "ecosystem": "Maven",
+      "class": "did_not_run"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "<TIMESTAMP>",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 6,
+      "fact_source": ""
+    }
+  }
+}

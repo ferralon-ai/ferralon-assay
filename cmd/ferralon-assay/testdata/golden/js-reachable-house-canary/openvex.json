@@ -1,0 +1,74 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/ferralon-assay/0123456789abcdef0123456789abcdef01234567",
+  "author": "ferralon-assay",
+  "timestamp": "<TIMESTAMP>",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JS-SSRF-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation",
+      "impact_statement": "ferralon-assay found a reachable code path to the advisory symbol. This is a candidate for exploitability, not a proof: proving it requires observing the path execute. Candidate path: entrypoint → advisory symbol."
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2022-46175",
+        "aliases": [
+          "GHSA-9c47-m6qq-7p4h"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2023-26136",
+        "aliases": [
+          "GHSA-72xf-g2v4-qvf3"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2024-29041",
+        "aliases": [
+          "GHSA-rv95-896h-c2vc"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-JS-DEP-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/js-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    }
+  ]
+}

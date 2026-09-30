@@ -1,0 +1,134 @@
+{
+  "schema_version": "tegron.report.v2",
+  "subject": {
+    "repo": "example.com/golden/js-version-outside-range",
+    "revision": "main",
+    "resolved_commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "sbom": {
+    "packages": [
+      {
+        "ecosystem": "npm",
+        "name": "cve-2022-46175-outofrange",
+        "version": "1.0.0",
+        "purl": "pkg:npm/cve-2022-46175-outofrange@1.0.0",
+        "direct": false
+      },
+      {
+        "ecosystem": "npm",
+        "name": "json5",
+        "version": "2.2.3",
+        "purl": "pkg:npm/json5@2.2.3",
+        "direct": true
+      }
+    ],
+    "relationships": [
+      {
+        "parent": "pkg:npm/cve-2022-46175-outofrange@1.0.0",
+        "child": "pkg:npm/json5@2.2.3"
+      }
+    ]
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "CVE-2022-46175",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-9c47-m6qq-7p4h"
+        ]
+      },
+      "verdict": "disqualified",
+      "evidence": {
+        "basis": "version_not_in_affected_range",
+        "detail": "resolved dependency version is outside the advisory's affected range"
+      },
+      "priority": {
+        "epss_score": 0.09304,
+        "epss_percentile": 0.94853,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2023-26136",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-72xf-g2v4-qvf3"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.02542,
+        "epss_percentile": 0.83351,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-29041",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-rv95-896h-c2vc"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.00786,
+        "epss_percentile": 0.52439,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-JS-DEP-0001",
+        "source": "osv"
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-JS-SSRF-0001",
+        "source": "osv"
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "npm",
+      "class": "inherent_limit"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "<TIMESTAMP>",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 5,
+      "fact_source": ""
+    }
+  }
+}

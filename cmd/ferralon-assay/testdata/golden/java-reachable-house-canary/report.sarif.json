@@ -1,0 +1,315 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "ferralon-assay",
+          "version": "ferralon-assay/dev",
+          "informationUri": "https://github.com/ferralon-ai/ferralon-assay",
+          "semanticVersion": "ferralon-assay/dev"
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true,
+          "toolExecutionNotifications": [
+            {
+              "level": "note",
+              "message": {
+                "text": "Analysis limit: dynamic_dispatch is an inherent limit of static analysis and holds for every run of the Maven dependency analysis. It is reported for completeness — no step of this run was skipped and no result in this log depends on it."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "Partial coverage: part of the Maven dependency analysis could not be completed — no_manifest (dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem). The results in this run cover less than the whole codebase; advisories in the unanalyzed part were not ruled out, they were not assessed."
+              }
+            },
+            {
+              "level": "warning",
+              "message": {
+                "text": "Partial coverage: part of the Maven dependency analysis could not be completed — unsupported_phase1. The results in this run cover less than the whole codebase; advisories in the unanalyzed part were not ruled out, they were not assessed."
+              }
+            }
+          ]
+        }
+      ],
+      "results": [
+        {
+          "ruleId": "FERRALON-JAVA-SPRING-SSRF-0001",
+          "level": "warning",
+          "kind": "open",
+          "message": {
+            "text": "FERRALON-JAVA-SPRING-SSRF-0001: ferralon-assay found a reachable candidate path (entrypoint → advisory symbol). This is a candidate for exploitability, not a proof: proving it requires observing the path execute."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "attacker_controllable": true,
+              "entry_point": "/fetch",
+              "reachability_grade": "attacker_tainted",
+              "reachable_path": "entrypoint → advisory symbol",
+              "source": "osv",
+              "verdict": "reachable_candidate"
+            }
+          }
+        },
+        {
+          "ruleId": "CVE-2019-14540",
+          "level": "none",
+          "kind": "review",
+          "message": {
+            "text": "CVE-2019-14540: NOT ASSESSED. ferralon-assay established no verdict for this advisory — the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase. This is not a statement that the codebase is unaffected."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 95.369,
+          "properties": {
+            "scanner": {
+              "assessed": false,
+              "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase",
+              "epss_percentile": 0.95369,
+              "epss_score": 0.10763,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "undetermined_reason": "analysis_did_not_run",
+              "verdict": "undetermined"
+            }
+          }
+        },
+        {
+          "ruleId": "CVE-2020-36518",
+          "level": "none",
+          "kind": "review",
+          "message": {
+            "text": "CVE-2020-36518: NOT ASSESSED. ferralon-assay established no verdict for this advisory — the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase. This is not a statement that the codebase is unaffected."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 91.133,
+          "properties": {
+            "scanner": {
+              "assessed": false,
+              "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase",
+              "epss_percentile": 0.91133,
+              "epss_score": 0.0486,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "undetermined_reason": "analysis_did_not_run",
+              "verdict": "undetermined"
+            }
+          }
+        },
+        {
+          "ruleId": "CVE-2024-22243",
+          "level": "none",
+          "kind": "review",
+          "message": {
+            "text": "CVE-2024-22243: NOT ASSESSED. ferralon-assay established no verdict for this advisory — the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase. This is not a statement that the codebase is unaffected."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "rank": 89.398,
+          "properties": {
+            "scanner": {
+              "assessed": false,
+              "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase",
+              "epss_percentile": 0.89398,
+              "epss_score": 0.03967,
+              "intel_snapshot": "2026-07-29",
+              "kev_listed": false,
+              "source": "ghsa",
+              "undetermined_reason": "analysis_did_not_run",
+              "verdict": "undetermined"
+            }
+          }
+        },
+        {
+          "ruleId": "FERRALON-JAVA-DEP-0001",
+          "level": "none",
+          "kind": "review",
+          "message": {
+            "text": "FERRALON-JAVA-DEP-0001: NOT ASSESSED. ferralon-assay established no verdict for this advisory — the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase. This is not a statement that the codebase is unaffected."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "assessed": false,
+              "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase",
+              "source": "osv",
+              "undetermined_reason": "analysis_did_not_run",
+              "verdict": "undetermined"
+            }
+          }
+        },
+        {
+          "ruleId": "FERRALON-JAVA-SSRF-0001",
+          "level": "none",
+          "kind": "review",
+          "message": {
+            "text": "FERRALON-JAVA-SSRF-0001: NOT ASSESSED. ferralon-assay established no verdict for this advisory — the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase. This is not a statement that the codebase is unaffected."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "assessed": false,
+              "detail": "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase",
+              "source": "osv",
+              "undetermined_reason": "analysis_did_not_run",
+              "verdict": "undetermined"
+            }
+          }
+        },
+        {
+          "ruleId": "ferralon-assay/analysis-limits",
+          "level": "note",
+          "kind": "informational",
+          "message": {
+            "text": "Analysis limit: dynamic_dispatch is an inherent limit of static analysis and holds for every run of the Maven dependency analysis. It is reported for completeness — no step of this run was skipped and no result in this log depends on it."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "ecosystem": "Maven",
+              "partiality_class": "inherent_limit",
+              "partiality_reason": "dynamic_dispatch"
+            }
+          }
+        },
+        {
+          "ruleId": "ferralon-assay/partial-coverage",
+          "level": "warning",
+          "kind": "review",
+          "message": {
+            "text": "Partial coverage: part of the Maven dependency analysis could not be completed — no_manifest (dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem). The results in this run cover less than the whole codebase; advisories in the unanalyzed part were not ruled out, they were not assessed."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "detail": "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem",
+              "ecosystem": "Maven",
+              "partiality_class": "did_not_run",
+              "partiality_reason": "no_manifest"
+            }
+          }
+        },
+        {
+          "ruleId": "ferralon-assay/partial-coverage",
+          "level": "warning",
+          "kind": "review",
+          "message": {
+            "text": "Partial coverage: part of the Maven dependency analysis could not be completed — unsupported_phase1. The results in this run cover less than the whole codebase; advisories in the unanalyzed part were not ruled out, they were not assessed."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "."
+                },
+                "region": {
+                  "startLine": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "scanner": {
+              "ecosystem": "Maven",
+              "partiality_class": "did_not_run",
+              "partiality_reason": "unsupported_phase1"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

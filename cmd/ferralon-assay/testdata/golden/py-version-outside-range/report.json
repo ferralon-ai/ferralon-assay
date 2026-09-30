@@ -1,0 +1,133 @@
+{
+  "schema_version": "tegron.report.v2",
+  "subject": {
+    "repo": "example.com/golden/py-version-outside-range",
+    "revision": "main",
+    "resolved_commit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "sbom": {
+    "packages": [
+      {
+        "ecosystem": "PyPI",
+        "name": "Jinja2",
+        "version": "3.1.2",
+        "purl": "pkg:pypi/Jinja2@3.1.2",
+        "direct": false,
+        "partial_reason": "relationship_unexpressed"
+      }
+    ]
+  },
+  "advisories": [
+    {
+      "advisory": {
+        "id": "FERRALON-PY-AIRFLOW-EXPAPI-0001",
+        "source": "ghsa",
+        "aliases": [
+          "CVE-2020-13927"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.99778,
+        "epss_percentile": 0.99956,
+        "kev_listed": true,
+        "kev_date_added": "2022-01-18",
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-23334",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-5h86-8mv2-jq9f"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.76875,
+        "epss_percentile": 0.99498,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-3772",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-mr82-8j83-vxmv"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.00949,
+        "epss_percentile": 0.57641,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "CVE-2024-22195",
+        "source": "ghsa",
+        "aliases": [
+          "GHSA-h5c8-rqwp-cp95",
+          "GHSA-h75v-3vvj-5mfj"
+        ]
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      },
+      "priority": {
+        "epss_score": 0.00892,
+        "epss_percentile": 0.55793,
+        "kev_listed": false,
+        "snapshot": "2026-07-29"
+      }
+    },
+    {
+      "advisory": {
+        "id": "FERRALON-PY-DEP-0001",
+        "source": "osv"
+      },
+      "verdict": "not_exploitable",
+      "evidence": {
+        "basis": "vulnerable_symbol_absent",
+        "detail": "no reachable path to the advisory symbol was found"
+      }
+    }
+  ],
+  "partiality": [
+    {
+      "reason": "dynamic_dispatch",
+      "ecosystem": "PyPI",
+      "class": "inherent_limit"
+    }
+  ],
+  "provenance": {
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "analyzer_version": "ferralon-assay/dev",
+    "advisory_cursor": "",
+    "timestamp": "<TIMESTAMP>",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 5,
+      "fact_source": ""
+    }
+  }
+}

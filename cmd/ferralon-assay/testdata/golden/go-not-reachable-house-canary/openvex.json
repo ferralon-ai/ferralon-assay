@@ -1,0 +1,171 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/ferralon-assay/0123456789abcdef0123456789abcdef01234567",
+  "author": "ferralon-assay",
+  "timestamp": "<TIMESTAMP>",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "GO-2021-0264",
+        "aliases": [
+          "CVE-2021-41772"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "under_investigation"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2025-8110",
+        "aliases": [
+          "GHSA-mq8m-42gh-wq7r",
+          "GO-2025-4225"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2024-55947",
+        "aliases": [
+          "GHSA-qf5v-rp47-55gg",
+          "GO-2024-3356"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    },
+    {
+      "vulnerability": {
+        "@id": "GO-2022-0322",
+        "aliases": [
+          "CVE-2022-21698",
+          "GHSA-cg3q-j54f-5p7p"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2024-45337",
+        "aliases": [
+          "GHSA-v778-237x-gjrc",
+          "GO-2024-3321"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "GO-2021-0113",
+        "aliases": [
+          "CVE-2021-38561",
+          "GHSA-ppp9-7jff-5vj2"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2020-36569",
+        "aliases": [
+          "GHSA-hrm3-3xm6-x33h",
+          "GO-2020-0004"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2026-39821",
+        "aliases": [
+          "GO-2026-5026"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2026-46595",
+        "aliases": [
+          "GHSA-x527-x647-q7gg",
+          "GO-2026-5023"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "CVE-2026-39831",
+        "aliases": [
+          "GHSA-89gr-r52h-f8rx",
+          "GO-2026-5019"
+        ]
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected"
+    },
+    {
+      "vulnerability": {
+        "@id": "FERRALON-APP-DOS-0001"
+      },
+      "products": [
+        {
+          "@id": "example.com/golden/go-not-reachable-house-canary@0123456789abcdef0123456789abcdef01234567"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present"
+    }
+  ]
+}

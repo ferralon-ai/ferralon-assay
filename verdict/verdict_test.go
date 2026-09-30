@@ -55,8 +55,8 @@ func TestLabel(t *testing.T) {
 }
 
 func TestSchemaVersionConst(t *testing.T) {
-	if SchemaVersion != "tegron.poe.v1" {
-		t.Fatalf("SchemaVersion = %q, want %q", SchemaVersion, "tegron.poe.v1")
+	if SchemaVersion != "tegron.poe.v2" {
+		t.Fatalf("SchemaVersion = %q, want %q", SchemaVersion, "tegron.poe.v2")
 	}
 }
 

@@ -10,7 +10,7 @@
 //
 // Opt-in — set OPEN_TEGRON_OVERLAP_CORPUS to a corpus root (a directory with manifest.json). It is
 // skipped otherwise, so it never gates CI on an artifact the public module does not carry. Deliberately
-// a separate env var from TEGRON_ADVISORY_CORPUS_DIR: pointing the CLI at a corpus must not silently
+// a separate env var from ASSAY_ADVISORY_CORPUS_DIR: pointing the CLI at a corpus must not silently
 // turn a measurement on.
 //
 //	OPEN_TEGRON_OVERLAP_CORPUS=/path/to/vulnerability-corpus go test ./pipeline -run Overlap -v

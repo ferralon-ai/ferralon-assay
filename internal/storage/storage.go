@@ -1,38 +1,13 @@
-// Package storage provides shared filesystem primitives for all Tegron stores.
+// Package storage provides shared filesystem primitives for the on-disk stores.
 package storage
 
 import (
 	"os"
 	"path/filepath"
-
-	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // LayoutVersion is the on-disk layout version written to the VERSION file.
 const LayoutVersion = "1"
-
-// envHome / nucleonEnvHome / legacyEnvHome are brand-derived so a rebranded fork's data-root
-// override carries no prior codename; the retired NUCLEON_HOME and TEGRON_HOME literals are
-// honored as fallbacks (brand.EnvOrLegacy) — the shipped build was -tags stealth, so an
-// operator's data-root override may carry either name.
-const (
-	envHome        = brand.EnvPrefix + "_HOME"
-	nucleonEnvHome = "NUCLEON_HOME"
-	legacyEnvHome  = "TEGRON_HOME"
-)
-
-// DefaultRoot returns $TEGRON_HOME (or its brand-derived equivalent) if set, else
-// <user-home>/.ferralon/tegron.
-func DefaultRoot() (string, error) {
-	if v := brand.EnvOrLegacy(envHome, nucleonEnvHome, legacyEnvHome); v != "" {
-		return v, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".ferralon", "tegron"), nil
-}
 
 // Ensure creates root at mode 0o700 (no-op if it exists) and writes a VERSION
 // file containing "1\n" at 0o600 if the file is not already present. Idempotent.

@@ -229,7 +229,7 @@ func TestWorkSet_DisabledIsNotAPartiality(t *testing.T) {
 // TestWorkSet_EnvOptOut proves the env channel actually reaches the decision.
 //
 // The interesting direction inverted when the widening became opt-in: with the default now FALSE,
-// asserting that TEGRON_OSV_WORK_SET=0 yields "disabled" would pass on a build that ignored the
+// asserting that ASSAY_OSV_WORK_SET=0 yields "disabled" would pass on a build that ignored the
 // env var completely. So this asserts the direction that can only succeed by reading it.
 func TestWorkSet_EnvOptOut(t *testing.T) {
 	t.Setenv(envOSVWorkSet, "1")
@@ -248,7 +248,7 @@ func TestWorkSet_EnvOptOut(t *testing.T) {
 // the direction that matters after the default flip: an operator whose orchestrator sets the env
 // var must still be able to force a run offline from the command line. This is what the Visit in
 // osvWorkSetEnabled buys — without it an unset flag is indistinguishable from one set to the
-// default, and -osv-work-set=false could not beat TEGRON_OSV_WORK_SET=1.
+// default, and -osv-work-set=false could not beat ASSAY_OSV_WORK_SET=1.
 func TestWorkSet_ExplicitFlagBeatsEnv(t *testing.T) {
 	t.Setenv(envOSVWorkSet, "1")
 	f := runFlagsFor(t, "-osv-work-set=false")

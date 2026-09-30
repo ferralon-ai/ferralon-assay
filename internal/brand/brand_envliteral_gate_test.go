@@ -16,8 +16,8 @@ import (
 	"testing"
 )
 
-// brandEnvLiteralRe matches a fully-formed environment-variable literal under any prefix the
-// tool has shipped under — the current ASSAY_ and the retired NUCLEON_ / TEGRON_ — e.g.
+// brandEnvLiteralRe matches a fully-formed environment-variable literal under the current ASSAY_
+// prefix or the NUCLEON_ / TEGRON_ prefixes, which are never this module's to read — e.g.
 // "TEGRON_ADVISORY_CORPUS_DIR". It deliberately does NOT match a bare prefix ("ASSAY", the
 // value of EnvPrefix in brand_identity.go) or a suffix fragment like "_ADVISORY_CORPUS_DIR"
 // (the string-literal half of brand.EnvPrefix+"_ADVISORY_CORPUS_DIR") — only a complete,
@@ -25,15 +25,12 @@ import (
 var brandEnvLiteralRe = regexp.MustCompile(`^(?:ASSAY|NUCLEON|TEGRON)_[A-Z0-9]+(?:_[A-Z0-9]+)*$`)
 
 // allowedInternalEnvIdents is the explicit, commented allowlist of const/var identifiers that
-// are permitted to hold a bare brand-prefixed literal WITHOUT routing through brand.EnvOrLegacy.
-// Every entry here is a deliberate, reviewed exception — a genuinely internal knob (build/CI
-// gate, process-scoped credential handoff, or telemetry-internal setting) that is never
-// surfaced on a customer-facing surface (action.yml env mapping, --help, a CLI flag, or any
-// operator-facing doc). Adding an entry must be a deliberate act: name the identifier, name the
-// file, and state WHY it never reaches a customer. Do not add an entry to silence this gate for
-// a var that might reach a customer — route it through brand.EnvOrLegacy instead (see run.go /
-// storage.go for the pattern: brand.EnvPrefix+"_X" as the derived name, with the retired
-// "NUCLEON_X" and "TEGRON_X" names passed as EnvOrLegacy's trailing legacy arguments).
+// are permitted to hold a bare prefixed env-var literal. Every entry here is a deliberate,
+// reviewed exception, and adding one must be a deliberate act: name the identifier, name the
+// file, and state WHY it can never be read on behalf of an embedding host or reach a customer
+// surface (action.yml env mapping, --help, a CLI flag, or any operator-facing doc). The fix for
+// almost every violation is not an entry here but brand.EnvPrefix+"_X", read only by an entry
+// point under cmd/ and passed into the library as an explicit option.
 var allowedInternalEnvIdents = map[string]string{
 	"scipAnalyzerImageEnv": "internal/plugin/javaanalysis/scipjava.go — gates the Prove-only Java/SCIP " +
 		"container image. Build/CI knob only: not wired into action.yml, --help, or any operator doc " +
@@ -53,13 +50,13 @@ var allowedInternalEnvIdents = map[string]string{
 		"and no customer ever sets it.",
 }
 
-// TestNoHardcodedBrandEnvLiteral is the tree-wide regression gate for the incident this gate
-// was written for: a customer-facing environment-variable name hardcoded as a bare
-// "<PREFIX>_..." string literal, bypassing brand.EnvOrLegacy. Two failures follow from that
-// shape. A hardcoded CURRENT name (ASSAY_X) is a site a downstream rebrand silently misses, so
-// the brand package stops being the single edit point it exists to be. A hardcoded RETIRED name
-// (NUCLEON_X, TEGRON_X) read directly means the current name is never consulted at all, so the
-// value an operator sets under the documented name is silently dropped.
+// TestNoHardcodedBrandEnvLiteral is the tree-wide regression gate against a prefixed
+// environment-variable name hardcoded as a bare "<PREFIX>_..." string literal. Two failures follow
+// from that shape. A hardcoded ASSAY_X is a site a downstream rebrand silently misses, so the brand
+// package stops being the single edit point it exists to be. A hardcoded NUCLEON_X or TEGRON_X is a
+// library reading, under an embedding host's name, configuration that host should pass in
+// explicitly — the host then configures this module through an ambient side channel it cannot see
+// in any signature.
 //
 // It is a plain Go test, not a go/analysis vet-style analyzer, on purpose: it needs zero extra
 // CI wiring (no -vettool= flag, no separate lint step to keep configured) — it runs wherever
@@ -67,40 +64,27 @@ var allowedInternalEnvIdents = map[string]string{
 // precise here as a vet analyzer would be; nothing about this check needs vet's package-loading
 // or type-checking machinery, since it operates on syntax (string-literal shape), not types.
 //
-// Scope: ferralon-assay/ only, non-test .go files, excluding corpus/testdata/repros/** (those are
+// Scope: the whole module, non-test .go files, excluding corpus/testdata/repros/** (those are
 // intentionally-realistic vulnerable-repro fixtures whose env vars are read by the SUBJECT
-// programs under test, not by ferralon-assay itself — TEGRON_OOB_URL there names the detonation
-// harness's callback channel, unrelated to brand identity). service/ is out of scope: it is the
-// proprietary module, never a customer-editable surface, so its TEGRON_ literals are not a brand
-// leak. action.yml and other non-.go files are out of scope structurally — the AST parser only
-// reads *.go — which is correct: the Action's YAML env mapping is a consumer of these names, not
-// a definition site, and must not trip this gate.
+// programs under test, not by this module — TEGRON_OOB_URL there names the detonation
+// harness's callback channel, unrelated to brand identity). action.yml and other non-.go files are
+// out of scope structurally — the AST parser only reads *.go — which is correct: the Action's YAML
+// env mapping is a consumer of these names, not a definition site, and must not trip this gate.
 //
-// Demonstrated failure (see cycle execution note 07-brand-gate.md): reverting
-// cmd/ferralon-assay/run.go's envTrustObservedGo/legacyEnvTrustObservedGo pair to the single bare
-// `const envTrustObservedGo = "TEGRON_TRUST_OBSERVED_GO"` read via direct os.Getenv — the exact
-// shape #229 landed on main — makes this test fail with that file:line.
+// Demonstrated failure: declaring `const envTrustObservedGo = "ASSAY_TRUST_OBSERVED_GO"` in
+// cmd/ferralon-assay/run.go instead of deriving it from brand.EnvPrefix makes this test fail with
+// that file:line.
 func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not determine this test file's own location via runtime.Caller")
 	}
-	// thisFile is .../ferralon-assay/brand/brand_envliteral_gate_test.go; its grandparent dir is
-	// the ferralon-assay module root, which is also the intended scan root.
-	openTegronRoot := filepath.Dir(filepath.Dir(thisFile))
+	// thisFile is <module>/internal/brand/brand_envliteral_gate_test.go, so the module root —
+	// the scan root — is three levels up.
+	moduleRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 	excludedPrefix := filepath.Join("corpus", "testdata", "repros")
 
 	fset := token.NewFileSet()
-
-	// legacySanctioned{Idents,Literals}: identifiers or inline literals observed in a TRAILING
-	// (legacyNames...) argument position of a real brand.EnvOrLegacy(...) call anywhere in the
-	// scanned tree — the sanctioned fallback position. EnvOrLegacy is variadic, so every argument
-	// from index 1 onward counts; only argument 0 (the brand-derived name) does not. A const
-	// following the legacyEnvX naming convention is exempted only if it is ACTUALLY consumed this
-	// way, not merely because of its name: naming something "legacyEnvFoo" and reading it via a
-	// bare os.Getenv instead still trips the gate.
-	legacySanctionedIdents := map[string]bool{}
-	legacySanctionedLiterals := map[string]bool{}
 
 	type site struct {
 		ident string // "" when the literal isn't bound to a named const/var
@@ -109,7 +93,7 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 	}
 	sitesByPos := map[token.Pos]site{}
 
-	walkErr := filepath.WalkDir(openTegronRoot, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(moduleRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -117,7 +101,7 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 			if strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
-			rel, _ := filepath.Rel(openTegronRoot, path)
+			rel, _ := filepath.Rel(moduleRoot, path)
 			if rel == excludedPrefix || strings.HasPrefix(rel, excludedPrefix+string(filepath.Separator)) {
 				return filepath.SkipDir
 			}
@@ -138,27 +122,6 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 
 		ast.Inspect(file, func(n ast.Node) bool {
 			switch node := n.(type) {
-			case *ast.CallExpr:
-				sel, ok := node.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "EnvOrLegacy" {
-					return true
-				}
-				pkgIdent, ok := sel.X.(*ast.Ident)
-				if !ok || pkgIdent.Name != "brand" || len(node.Args) < 2 {
-					return true
-				}
-				for _, rawArg := range node.Args[1:] {
-					switch arg := rawArg.(type) {
-					case *ast.Ident:
-						legacySanctionedIdents[arg.Name] = true
-					case *ast.BasicLit:
-						if arg.Kind == token.STRING {
-							if v, uerr := strconv.Unquote(arg.Value); uerr == nil {
-								legacySanctionedLiterals[v] = true
-							}
-						}
-					}
-				}
 			case *ast.ValueSpec:
 				for i, name := range node.Names {
 					if i >= len(node.Values) {
@@ -195,35 +158,29 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 		return nil
 	})
 	if walkErr != nil {
-		t.Fatalf("walk ferralon-assay tree: %v", walkErr)
+		t.Fatalf("walk module tree: %v", walkErr)
 	}
 
 	var violations []string
 	for _, s := range sitesByPos {
-		if legacySanctionedLiterals[s.lit] {
-			continue
-		}
-		if s.ident != "" && (legacySanctionedIdents[s.ident] || allowedInternalEnvIdents[s.ident] != "") {
+		if s.ident != "" && allowedInternalEnvIdents[s.ident] != "" {
 			continue
 		}
 		pos := fset.Position(s.pos)
-		rel, _ := filepath.Rel(openTegronRoot, pos.Filename)
+		rel, _ := filepath.Rel(moduleRoot, pos.Filename)
 		violations = append(violations, fmt.Sprintf(
-			"ferralon-assay/%s:%d: hardcoded literal %q — a customer-facing TEGRON_* env var must "+
-				"never be a bare string literal read outside brand.EnvOrLegacy, because a stealth "+
-				"build's public surfaces (action.yml env mapping, --help, CI config) must carry no "+
-				"\"TEGRON\" engine identifier. Fix: declare a brand.EnvPrefix+\"_X\" derived name and "+
-				"a %q legacy fallback const, then read both via brand.EnvOrLegacy(derived, legacy) — "+
-				"see cmd/ferralon-assay/run.go's envAdvisoryCorpusDir/legacyEnvAdvisoryCorpusDir for the "+
-				"pattern. If this really is internal-only and can never reach a customer surface, add "+
-				"it to allowedInternalEnvIdents in this file with a one-line justification — that is "+
-				"a deliberate, reviewed act, not a default.",
-			rel, pos.Line, s.lit, s.lit))
+			"%s:%d: hardcoded env-var literal %q. Fix: an ASSAY_ name is declared as "+
+				"brand.EnvPrefix+\"_X\" (see cmd/ferralon-assay/run.go's envAdvisoryCorpusDir); a "+
+				"setting a library needs is read by an entry point under cmd/ and passed in as an "+
+				"explicit option, never read from the environment by the library itself. Only a knob "+
+				"that can never be read on behalf of an embedding host belongs in "+
+				"allowedInternalEnvIdents, with a one-line justification.",
+			rel, pos.Line, s.lit))
 	}
 
 	if len(violations) > 0 {
 		sort.Strings(violations)
-		t.Fatalf("found %d hardcoded TEGRON_* env-var literal(s) outside brand.EnvOrLegacy:\n\n%s",
+		t.Fatalf("found %d hardcoded prefixed env-var literal(s):\n\n%s",
 			len(violations), strings.Join(violations, "\n\n"))
 	}
 }

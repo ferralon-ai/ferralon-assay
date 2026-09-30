@@ -9,33 +9,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/storage"
 )
 
-// TEGRON_HOME is both the brand-derived and legacy name on the OSS default build
-// (brand.EnvPrefix == "TEGRON") — see envHome/legacyEnvHome in storage.go. Precedence (derived
-// wins, legacy honored, regression guard) is proven build-tag-independently in
-// brand/brand_env_test.go; these two tests prove the real DefaultRoot integration.
-func TestDefaultRoot_HonorsTEGRON_HOME(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("TEGRON_HOME", dir)
-	got, err := storage.DefaultRoot()
-	if err != nil {
-		t.Fatalf("DefaultRoot: %v", err)
-	}
-	if got != dir {
-		t.Fatalf("got %q, want %q", got, dir)
-	}
-}
-
-func TestDefaultRoot_FallsBackToHome(t *testing.T) {
-	t.Setenv("TEGRON_HOME", "")
-	got, err := storage.DefaultRoot()
-	if err != nil {
-		t.Fatalf("DefaultRoot: %v", err)
-	}
-	if !strings.HasSuffix(got, filepath.Join(".ferralon", "tegron")) {
-		t.Fatalf("got %q, want suffix .ferralon/tegron", got)
-	}
-}
-
 func TestEnsure_WritesVersionAndIdempotent(t *testing.T) {
 	root := t.TempDir()
 	if err := storage.Ensure(root); err != nil {

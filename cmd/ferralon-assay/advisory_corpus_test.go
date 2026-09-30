@@ -31,12 +31,8 @@ func optionInjectsSource(opt pipeline.AssessOption) bool {
 // TestAdvisoryCorpusOption_Precedence covers the resolve()-path selector: flag > env, and the
 // hard-fail on an unusable corpus. The schema-compatible valid corpus and the negative badcount
 // fixture both live under ferralon-assay/pipeline/testdata (two dirs up from this cmd package).
-// This env var name is both the brand-derived and legacy name on the OSS default build
-// (brand.EnvPrefix == "TEGRON") — see envAdvisoryCorpusDir/legacyEnvAdvisoryCorpusDir in run.go.
-// The precedence logic itself (derived wins, legacy honored, regression guard) is proven
-// build-tag-independently in brand/brand_env_test.go; this test proves the real integration.
 func TestAdvisoryCorpusOption_Precedence(t *testing.T) {
-	const envKey = "TEGRON_ADVISORY_CORPUS_DIR"
+	const envKey = envAdvisoryCorpusDir
 	validRoot := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source")
 	altValidRoot := filepath.Join("..", "..", "pipeline", "testdata", "ferralon-corpus")
 	invalidRoot := filepath.Join("..", "..", "pipeline", "testdata", "advisory_source", "badcount") // record_count mismatch

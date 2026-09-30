@@ -584,19 +584,18 @@ runs:
         # '0' = off, '1' = on; keep the non-empty value on the truthy branch (the GitHub ternary
         # footgun).
         #
-        # These three names MUST track brand.EnvPrefix. Unlike the CLI env vars in
-        # cmd/ferralon-assay/run.go, which resolve through an EnvOrLegacy chain, detect.go reads
-        # these with a plain os.Getenv (resultsink/github/detect.go:177-179) and has no fallback --
-        # so a stale prefix here is not a warning, it is a silently ignored opt-out. That is safe
-        # only because every release tag of action.yml names the exact scanner-version it was cut
-        # with, so a consumer on a tag always gets a matched pair; main's vX.Y alias floats only
-        # across patch releases, which keep these names.
+        # These three names MUST track brand.EnvPrefix. detect.go reads them with a plain os.Getenv
+        # (resultsink/github/detect.go:177-179) and has no fallback -- so a stale prefix here is not
+        # a warning, it is a silently ignored opt-out. That is safe only because every release tag of
+        # action.yml names the exact scanner-version it was cut with, so a consumer on a tag always
+        # gets a matched pair; main's vX.Y alias floats only across patch releases, which keep these
+        # names.
         ASSAY_ISSUE: ${{ inputs.issue != 'false' && '1' || '0' }}
         ASSAY_PR_COMMENT: ${{ inputs.pr-comment != 'false' && '1' || '0' }}
         ASSAY_CODE_SCANNING: ${{ inputs.code-scanning != 'false' && '1' || '0' }}
-        # M4 subject-toolchain-reachability gate (opt-in, default OFF). Read by run.go via
-        # brand.EnvOrLegacy; only an explicit affirmative ('true') enables it — the ternary yields
-        # the literal 'false' otherwise, which envEnabled reads as off.
+        # M4 subject-toolchain-reachability gate (opt-in, default OFF). Read by run.go; only an
+        # explicit affirmative ('true') enables it — the ternary yields the literal 'false'
+        # otherwise, which envEnabled reads as off.
         ASSAY_SUBJECT_TOOLCHAIN_REACHABILITY: ${{ inputs.subject-toolchain-reachability == 'true' }}
         GITHUB_TOKEN: ${{ github.token }}
         # Route every ${{ }} value through the step env and reference it as a shell $VAR below,

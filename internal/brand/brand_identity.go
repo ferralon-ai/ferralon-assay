@@ -42,8 +42,7 @@ const (
 	RepoURL = "https://github.com/ferralon-ai/ferralon-assay"
 	// EnvPrefix is the prefix for the tool's own opt-in/opt-out toggle env vars
 	// (e.g. EnvPrefix+"_PAGES"). Brand-derived so a rebranded fork's public workflow
-	// YAML carries this project's name nowhere. Prior prefixes stay readable through
-	// EnvOrLegacy, because an operator may have set one by hand in workflow YAML.
+	// YAML carries this project's name nowhere.
 	EnvPrefix = "ASSAY"
 	// RefNamespace is the git-ref namespace segment for the durable StateStore ref
 	// (refs/RefNamespace/state). Brand-derived so a rebranded fork's public git refs

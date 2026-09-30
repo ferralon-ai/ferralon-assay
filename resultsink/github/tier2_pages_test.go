@@ -42,7 +42,7 @@ func TestTier2Pages_DisabledByDefault(t *testing.T) {
 
 	// Verify the sink reports itself disabled.
 	if sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be false when TEGRON_PAGES is unset")
+		t.Fatal("NewTier2Pages: Enabled should be false when ASSAY_PAGES is unset")
 	}
 
 	// Point StagingDir at a temp dir so we can assert nothing is written.
@@ -67,7 +67,7 @@ func TestTier2Pages_DisabledByDefault(t *testing.T) {
 	}
 }
 
-// TestTier2Pages_OptInWithToken asserts that when TEGRON_PAGES=true and a token is
+// TestTier2Pages_OptInWithToken asserts that when ASSAY_PAGES=true and a token is
 // present, Publish stages report.html and index.html into StagingDir.
 func TestTier2Pages_OptInWithToken(t *testing.T) {
 	t.Setenv(ghsink.EnvPagesOptIn, "true")
@@ -78,7 +78,7 @@ func TestTier2Pages_OptInWithToken(t *testing.T) {
 	sink := ghsink.NewTier2Pages(env)
 
 	if !sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be true when TEGRON_PAGES=true and token present")
+		t.Fatal("NewTier2Pages: Enabled should be true when ASSAY_PAGES=true and token present")
 	}
 
 	dir := t.TempDir()
@@ -128,7 +128,7 @@ func TestTier2Pages_OptInWithoutToken(t *testing.T) {
 	sink := ghsink.NewTier2Pages(env)
 
 	if sink.Enabled {
-		t.Fatal("NewTier2Pages: Enabled should be false when token is absent, even with TEGRON_PAGES=true")
+		t.Fatal("NewTier2Pages: Enabled should be false when token is absent, even with ASSAY_PAGES=true")
 	}
 }
 

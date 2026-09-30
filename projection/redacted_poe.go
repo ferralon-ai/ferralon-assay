@@ -65,7 +65,8 @@ type RedactedPoE struct {
 	// when the caller did not provide one.
 	VulnID string `json:"vuln_id,omitempty"`
 
-	// Direction is the verdict direction: "exploitable" or "not_exploitable".
+	// Direction is the verdict direction: "exploitable", "not_exploitable", or "indeterminate"
+	// (nothing established — ADR 0016).
 	Direction verdict.Direction `json:"direction"`
 
 	// Strength is how the verdict is known: "proven" or "reasoned".

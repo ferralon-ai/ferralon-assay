@@ -10,14 +10,15 @@ import (
 func TestPoEProofReportRefRoundTrips(t *testing.T) {
 	ref := artifact.Ref{ID: "rep-1", Type: artifact.Type("proof_report")}
 	poe := PoE{
-		SchemaVersion:   SchemaVersion,
-		AssessmentID:    "case-1",
-		CaseID:          "matter-1",
-		Direction:       DirectionNotExploitable,
-		Strength:        StrengthReasoned,
-		ReasonedGrounds: "no engine",
-		Confidence:      ConfidenceFromFlags(nil),
-		ProofReport:     &ref,
+		SchemaVersion:       SchemaVersion,
+		AssessmentID:        "case-1",
+		CaseID:              "matter-1",
+		Direction:           DirectionNotExploitable,
+		Strength:            StrengthReasoned,
+		ReasonedGrounds:     "no engine",
+		NonExploitableBasis: BasisStaticRefutation, // a reasoned not_exploitable must be grounded (ADR 0016)
+		Confidence:          ConfidenceFromFlags(nil),
+		ProofReport:         &ref,
 	}
 	if err := poe.Validate(); err != nil {
 		t.Fatalf("adding a ProofReport ref must not affect Validate: %v", err)
@@ -41,6 +42,7 @@ func TestLabel(t *testing.T) {
 		{"proven_not_exploitable", DirectionNotExploitable, StrengthProven, "not_exploitable"},
 		{"reasoned_exploitable", DirectionExploitable, StrengthReasoned, "reasoned_exploitable"},
 		{"reasoned_not_exploitable", DirectionNotExploitable, StrengthReasoned, "reasoned_not_exploitable"},
+		{"indeterminate", DirectionIndeterminate, StrengthIndeterminate, "indeterminate"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,18 +63,97 @@ func TestSchemaVersionConst(t *testing.T) {
 // helper: a minimal well-formed reasoned_not_exploitable PoE.
 func wellFormedReasonedNotExploitable() PoE {
 	return PoE{
-		SchemaVersion:    SchemaVersion,
-		ArtifactID:       "01890000-0000-7000-8000-000000000001",
-		AssessmentID:     "01890000-0000-7000-8000-0000000000aa",
-		CaseID:           "01890000-0000-7000-8000-0000000000a0",
-		Direction:        DirectionNotExploitable,
-		Strength:         StrengthReasoned,
-		Conditions:       nil,
-		ReasonedGrounds:  "no reachable call path from any ingress to the vulnerable symbol",
-		Confidence:       ConfidenceFromFlags([]EvidenceFlag{FlagStaticTaintPathComplete}),
-		CompletionStatus: CompletionCompleted,
-		Episodes:         []string{"01890000-0000-7000-8000-0000000000bb"},
+		SchemaVersion:       SchemaVersion,
+		ArtifactID:          "01890000-0000-7000-8000-000000000001",
+		AssessmentID:        "01890000-0000-7000-8000-0000000000aa",
+		CaseID:              "01890000-0000-7000-8000-0000000000a0",
+		Direction:           DirectionNotExploitable,
+		Strength:            StrengthReasoned,
+		Conditions:          nil,
+		ReasonedGrounds:     "no reachable call path from any ingress to the vulnerable symbol",
+		NonExploitableBasis: BasisStaticRefutation, // reachability_refutation grounds this lean (ADR 0016)
+		Confidence:          ConfidenceFromFlags([]EvidenceFlag{FlagStaticTaintPathComplete}),
+		CompletionStatus:    CompletionCompleted,
+		Episodes:            []string{"01890000-0000-7000-8000-0000000000bb"},
 	}
+}
+
+// wellFormedIndeterminate is the canonical "nothing established" verdict.
+func wellFormedIndeterminate() PoE {
+	return PoE{
+		SchemaVersion:    SchemaVersion,
+		ArtifactID:       "01890000-0000-7000-8000-0000000000c1",
+		AssessmentID:     "01890000-0000-7000-8000-0000000000cc",
+		CaseID:           "01890000-0000-7000-8000-0000000000c0",
+		Direction:        DirectionIndeterminate,
+		Strength:         StrengthIndeterminate,
+		Confidence:       ConfidenceFromFlags(nil),
+		CompletionStatus: CompletionStoppedCapability,
+		Episodes:         []string{"01890000-0000-7000-8000-0000000000cb"},
+	}
+}
+
+// TestValidate_RejectsUngroundedReasonedNotExploitable is the unit-level acceptance test for ADR
+// 0016: a reasoned not_exploitable with BasisNone (nothing established) must NOT validate — that
+// shape is now DirectionIndeterminate. This is what makes an ungrounded not_exploitable
+// structurally impossible to emit.
+func TestValidate_RejectsUngroundedReasonedNotExploitable(t *testing.T) {
+	p := wellFormedReasonedNotExploitable()
+	p.NonExploitableBasis = BasisNone
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected ungrounded reasoned not_exploitable (BasisNone) to be rejected, got nil")
+	}
+}
+
+// TestValidate_Indeterminate covers the ADR 0016 indeterminate invariants.
+func TestValidate_Indeterminate(t *testing.T) {
+	t.Run("clean_indeterminate_validates", func(t *testing.T) {
+		if err := wellFormedIndeterminate().Validate(); err != nil {
+			t.Fatalf("clean indeterminate must validate, got %v", err)
+		}
+	})
+	t.Run("indeterminate_direction_needs_indeterminate_strength", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.Strength = StrengthReasoned
+		if err := p.Validate(); err == nil {
+			t.Fatal("indeterminate direction with reasoned strength must be rejected")
+		}
+	})
+	t.Run("indeterminate_strength_needs_indeterminate_direction", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.Direction = DirectionNotExploitable
+		if err := p.Validate(); err == nil {
+			t.Fatal("indeterminate strength with not_exploitable direction must be rejected")
+		}
+	})
+	t.Run("indeterminate_forbids_proof_flag", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.Confidence = ConfidenceFromFlags([]EvidenceFlag{FlagCanaryTriggered})
+		if err := p.Validate(); err == nil {
+			t.Fatal("indeterminate carrying a proof flag must be rejected")
+		}
+	})
+	t.Run("indeterminate_forbids_basis", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.NonExploitableBasis = BasisStaticRefutation
+		if err := p.Validate(); err == nil {
+			t.Fatal("indeterminate carrying a NonExploitableBasis must be rejected")
+		}
+	})
+	t.Run("indeterminate_forbids_reasoned_grounds", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.ReasonedGrounds = "some lean"
+		if err := p.Validate(); err == nil {
+			t.Fatal("indeterminate carrying ReasonedGrounds must be rejected")
+		}
+	})
+	t.Run("indeterminate_allows_reachability_flag", func(t *testing.T) {
+		p := wellFormedIndeterminate()
+		p.Confidence = ConfidenceFromFlags([]EvidenceFlag{FlagStaticTaintPathComplete}) // non-proof flag
+		if err := p.Validate(); err != nil {
+			t.Fatalf("indeterminate may carry non-proof reachability evidence, got %v", err)
+		}
+	})
 }
 
 func TestValidate_RejectsReasonedWithoutGrounds(t *testing.T) {

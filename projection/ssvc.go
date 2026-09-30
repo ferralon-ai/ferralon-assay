@@ -162,7 +162,10 @@ func ssvcDecisionPoints(p verdict.PoE) SSVCDecisionPts {
 }
 
 func ssvcExploitation(p verdict.PoE) string {
-	if p.Direction == verdict.DirectionNotExploitable {
+	// Only a genuinely exploitable direction gets a poc/active signal. not_exploitable AND
+	// indeterminate (nothing established — ADR 0016) both yield `none`: an unknown verdict must
+	// never read as active exploitation.
+	if p.Direction != verdict.DirectionExploitable {
 		return SSVCExploitationNone
 	}
 	// exploitable direction (proven or reasoned)
@@ -176,7 +179,9 @@ func ssvcExploitation(p verdict.PoE) string {
 }
 
 func ssvcAutomatable(p verdict.PoE) string {
-	if p.Direction == verdict.DirectionNotExploitable {
+	// not_exploitable AND indeterminate (ADR 0016) → not automatable: no evidence of an automatable
+	// attack for a verdict that established nothing.
+	if p.Direction != verdict.DirectionExploitable {
 		return SSVCAutomatableNo
 	}
 	// exploitable: if there are preconditions (auth, file mode, etc.) the attack is
@@ -192,6 +197,12 @@ func ssvcTechnicalImpact(p verdict.PoE) string {
 		// Conservative: Tegron does not classify impact scope; "total" avoids under-reporting.
 		return SSVCTechnicalImpactTotal
 	}
+	// not_exploitable AND indeterminate → the floor. SSVC has no "unknown" impact tier, and
+	// mapping an indeterminate verdict to `total` would OVERSTATE impact for a run that established
+	// nothing (ADR 0016). An indeterminate verdict is therefore SSVC-indistinguishable from a
+	// grounded not_exploitable on the impact axes — a known limitation; the distinguishing
+	// containment lives on the exploitation/automatable axes (both `none`/`no` for indeterminate)
+	// and in the verdict itself (direction=indeterminate), not in the SSVC vector.
 	return SSVCTechnicalImpactPartial
 }
 
@@ -199,6 +210,8 @@ func ssvcMissionImpact(p verdict.PoE) string {
 	if p.Direction == verdict.DirectionExploitable {
 		return SSVCMissionImpactHigh
 	}
+	// not_exploitable AND indeterminate → `low`, the floor (see ssvcTechnicalImpact: no SSVC
+	// "unknown" tier; `high` would overstate an indeterminate verdict).
 	return SSVCMissionImpactLow
 }
 

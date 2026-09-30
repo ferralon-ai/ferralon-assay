@@ -16,7 +16,7 @@ import java.nio.file.Path;
  * caller-supplied target to an outbound HTTP request with no allowlist.
  *
  * SOUNDNESS (intrinsic canary — identical mechanics to the sibling SSRF repros):
- * resolveTarget maps the special target name "internal" to the Tegron-controlled OOB URL
+ * resolveTarget maps the special target name "internal" to the harness-controlled OOB URL
  * ($TEGRON_OOB_URL) WITH the planted seed (/tmp/tegron_canary) appended. There is NO
  * allowlist here, so the unguarded outbound request actually issues — that request IS
  * the SSRF and is the only thing that carries the seed off-host; a fired beacon is
@@ -28,7 +28,7 @@ class SomeServiceImpl implements SomeService {
     private static final String CANARY_SEED_PATH = "/tmp/tegron_canary";
 
     // resolveTarget maps a request target name to the URL the server will fetch.
-    // "internal" resolves to the Tegron-controlled OOB endpoint with the planted seed
+    // "internal" resolves to the harness-controlled OOB endpoint with the planted seed
     // appended (the SSRF exfil path); any other target is returned verbatim and never
     // touches the seed.
     private static String resolveTarget(String name) throws Exception {

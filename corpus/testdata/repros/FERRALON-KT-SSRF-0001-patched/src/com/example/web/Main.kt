@@ -7,7 +7,7 @@ import java.net.InetSocketAddress
  * Main starts the repro HTTP server on 127.0.0.1:8080 and routes GET /fetch to the
  * FetchHandler ingress. The proof engine's trigger argv ("/server & sleep 1; wget
  * .../fetch?target=internal") drives this ingress; in the VULNERABLE build the SSRF
- * sink beacons the seed to the Tegron-controlled OOB endpoint. With
+ * sink beacons the seed to the harness-controlled OOB endpoint. With
  * `kotlinc -include-runtime -d app.jar`, the JVM entry point is
  * com.example.web.MainKt.
  */

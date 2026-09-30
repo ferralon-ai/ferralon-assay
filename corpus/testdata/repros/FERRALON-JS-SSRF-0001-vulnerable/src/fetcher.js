@@ -9,7 +9,7 @@ const https = require('https');
 // outbound HTTP request with no allowlist.
 //
 // SOUNDNESS: the canary beacon is intrinsic to the SSRF sink's own execution.
-// resolveTarget maps the special target name "internal" to the Tegron-controlled OOB
+// resolveTarget maps the special target name "internal" to the harness-controlled OOB
 // URL ($TEGRON_OOB_URL) WITH the planted seed (/tmp/tegron_canary) appended. In the
 // VULNERABLE build there is NO allowlist, so the unguarded outbound request in
 // fetchUrl() actually issues that request — that outbound request IS the SSRF, and it
@@ -22,7 +22,7 @@ const https = require('https');
 const CANARY_SEED_PATH = '/tmp/tegron_canary';
 
 // resolveTarget maps a request target name to the URL the server will fetch. The
-// VULNERABLE build has no allowlist: "internal" resolves to the Tegron-controlled OOB
+// VULNERABLE build has no allowlist: "internal" resolves to the harness-controlled OOB
 // endpoint with the planted seed appended (the SSRF exfil path); any other target is
 // returned verbatim and never touches the seed.
 function resolveTarget(name) {

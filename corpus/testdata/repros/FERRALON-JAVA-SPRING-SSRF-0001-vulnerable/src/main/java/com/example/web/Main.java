@@ -17,7 +17,7 @@ import java.net.InetSocketAddress;
  *
  * The proof engine's trigger argv ("/server & sleep 1; wget .../fetch?
  * target=internal") drives this ingress; in the VULNERABLE build the SSRF sink
- * beacons the seed to the Tegron-controlled OOB endpoint.
+ * beacons the seed to the harness-controlled OOB endpoint.
  */
 public final class Main {
     public static void main(String[] args) throws Exception {

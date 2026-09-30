@@ -9,7 +9,7 @@
                                                           lexical edges — NEVER a
                                                           clean empty graph.
   The tool-unavailability is a RUN-ENVIRONMENT OVERLAY applied by the LATER consuming
-  test's harness (TEGRON_JAVA_ANALYZER_IMAGE set + the analyzer binary absent, so
+  test's harness (analyzer image set + the analyzer binary absent, so
   exec.LookPath fails before any container starts). That overlay is NOT present in this
   directory: there is no env var, gate, script, or Dockerfile here. This is a normal,
   self-contained interface-dispatch Java checkout. The asymmetry between the two runs of

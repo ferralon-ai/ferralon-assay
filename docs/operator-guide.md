@@ -151,8 +151,10 @@ zero-config path the README Quickstart uses.
 
 Resolves the SBOM of the checked-out PR head and diffs it against the stored baseline. If the
 dependency set is unchanged, it inherits the baseline's findings without re-scanning. If it changed, it
-re-analyzes only the affected advisories and writes the result back to the state ref, so that path
-needs a write-capable token. With no baseline in the selected store it stops with:
+re-analyzes only the affected advisories and merges them over the inherited findings. Either way it
+publishes the PR's Report without storing it: the baseline stays the default branch's, so later PRs
+inherit from it and `cve-watch` diffs against it, and a read-only token is enough — including a
+fork's. With no baseline in the selected store it stops with:
 
 ```text
 no baseline in state at the selected StateStore — run `ferralon-assay baseline` against the default branch first
@@ -256,5 +258,5 @@ and job summary still land.
 
 A toggle can only turn a surface off. It cannot turn one on where the token can't write: each surface
 fires only when its toggle is on **and** the run is write-capable. Keep that in mind for state too:
-a run that writes state (`baseline` with `state-repo` set, or a `pr-inherit` that re-analyzes) needs a
-token that can write, which a fork's token cannot.
+a run that writes state (`baseline` with `state-repo` set, or `cve-watch`) needs a token that can
+write, which a fork's token cannot. `pr-inherit` never stores its Report, so it runs the same on a fork.

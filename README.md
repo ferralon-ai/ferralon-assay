@@ -259,7 +259,7 @@ Three run modes, all built on the same S1–S6 pipeline:
 - **`baseline`** — a full scan of every advisory against the target. The entry point above.
 - **`pr-inherit`** — diffs a PR head's resolved dependency set (SBOM) against a stored baseline. If
   nothing relevant changed it inherits the baseline's findings instead of re-scanning; otherwise it
-  re-scans only the affected advisories.
+  re-scans only the affected advisories. It publishes the PR's Report without storing it, so the baseline stays the default branch's.
 - **`cve-watch`** — a scheduled check against OSV.dev for advisories newly affecting the stored SBOM.
 
 `pr-inherit` and `cve-watch` read persisted state from a prior `baseline` run. State is stored as a

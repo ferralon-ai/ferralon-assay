@@ -17,12 +17,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/vulnclass"
@@ -153,6 +155,20 @@ func (c chainSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	return AdvisoryFacts{}, false
 }
 
+// Refresh forwards the freshness check to every member that implements CorpusRefresher and joins their
+// errors. Members that cannot refresh (the built-in table) are skipped.
+func (c chainSource) Refresh() error {
+	var errs []error
+	for _, s := range c.sources {
+		if r, ok := s.(CorpusRefresher); ok {
+			if err := r.Refresh(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // normalizedAdvisorySchemaVersion is the schema id an on-disk advisory document must declare to be
 // accepted. It is the cross-repo wire tag between this reader and the advisory-corpus producer,
 // which is a separate codebase: every field of the shape below is one the producer's projection
@@ -195,28 +211,57 @@ func schemaVersionRecognized(v string) bool {
 // decodes, and SHAPE-VALIDATES; it returns (facts, true) only if every step passes. Any failure
 // returns (zero, false) — fail open, never refute, never a laundered fact.
 //
-// The manifest is read, validated, and indexed by identifier ONCE, on the first
-// Lookup/Validate/Describe, under a sync.Once; the outcome (index or load error) is then read-only, so
-// concurrent reads take no lock. This is the same set-before-spawn contract as bundleSource. The corpus
-// root is treated as immutable for the source's lifetime: a manifest rewritten after the first load is
-// not re-read. Per-advisory documents are still read and digest-verified on every Lookup.
+// MANIFEST LIFECYCLE — load once, index once, refresh at scan boundaries:
+//   - The first Lookup/Validate/Describe/Refresh reads, validates, and indexes manifest.json by
+//     identifier, recording the file's identity (os.Stat: same file, size, mtime) as it was read.
+//   - Lookup never touches the manifest again: it reads the served manifestState through an atomic
+//     pointer, lock-free, so concurrent Lookups cost one map read.
+//   - Refresh (CorpusRefresher) is the freshness check. advisory_intake calls it at the start of every
+//     assessment. It stats the manifest; an unchanged identity costs nothing more. A changed identity
+//     is re-read and re-validated, and the new state is swapped in atomically. A reload that fails
+//     while a good manifest is served KEEPS serving the last good manifest and returns the error;
+//     that failed identity is not retried until the file changes again.
+//
+// Per-advisory documents are read and digest-verified against the SERVED manifest on every Lookup, so
+// between a corpus rewrite and the next Refresh a rewritten document fails its digest and misses (fail
+// open) rather than resolving against the wrong pin.
 type artifactSource struct {
 	root string
 
 	// readFile reads the manifest; nil means os.ReadFile. Tests set it to count manifest reads.
 	readFile func(string) ([]byte, error)
 
-	once    sync.Once
-	man     advisoryManifest
-	index   map[string]advisoryManifestEntry
-	loadErr error
+	state atomic.Pointer[manifestState] // the served load outcome; nil until the first load
+
+	mu         sync.Mutex  // serializes loads and refreshes
+	refreshErr error       // guarded by mu: the last failed reload while a good manifest is served
+	failedInfo os.FileInfo // guarded by mu: the identity that failed to reload
+}
+
+// manifestState is one immutable load outcome. err != nil means no usable manifest (index nil).
+// info is the manifest's identity when it was read; nil when it could not be stat'd.
+type manifestState struct {
+	man   advisoryManifest
+	index map[string]advisoryManifestEntry
+	err   error
+	info  os.FileInfo
+}
+
+// CorpusRefresher is implemented by an AdvisorySource whose backing corpus can change under a
+// long-lived process. Refresh is a cheap freshness check meant for coarse boundaries (the pipeline calls
+// it at the start of each assessment), never per Lookup. It reloads the corpus index only when the
+// corpus changed. A non-nil error means the source could not load the changed corpus; a source that
+// already served a good corpus keeps serving it, so the error is for logging and health, never a
+// reason to abort a run (inv.5).
+type CorpusRefresher interface {
+	Refresh() error
 }
 
 // NewArtifactSource constructs a digest-pinned filesystem AdvisorySource rooted at root. It is cheap
-// and does no I/O; the first Lookup/Validate/Describe loads the manifest once. An entrypoint hands it
+// and does no I/O; the first Lookup/Validate/Describe loads the manifest. An entrypoint hands it
 // to SetDefaultAdvisorySource (process-wide) and/or WithAdvisorySource (per-run). The returned value
-// also satisfies CorpusValidator and CorpusDescriber, so the entrypoint can preflight the corpus at
-// boot and record its identity.
+// also satisfies CorpusValidator, CorpusDescriber, and CorpusRefresher, so the entrypoint can preflight
+// the corpus at boot, record its identity, and pick up a rewritten manifest at the next assessment.
 func NewArtifactSource(root string) AdvisorySource { return &artifactSource{root: root} }
 
 // CorpusValidator is implemented by an AdvisorySource that supports a STARTUP-ONLY preflight of its
@@ -508,11 +553,11 @@ type docLineage struct {
 }
 
 func (s *artifactSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
-	s.load()
-	if s.loadErr != nil {
+	st := s.current()
+	if st.err != nil {
 		return AdvisoryFacts{}, false
 	}
-	entry, ok := s.index[vulnID]
+	entry, ok := st.index[vulnID]
 	if !ok {
 		return AdvisoryFacts{}, false
 	}
@@ -547,25 +592,26 @@ func (s *artifactSource) resolveEntry(entry advisoryManifestEntry, vulnID string
 // The manifest's records are already producer-sorted, but the order is re-established here rather
 // than trusted, since the enumerator contract promises it.
 func (s *artifactSource) KnownIDs() []string {
-	man, ok := s.loadManifest()
-	if !ok {
+	st := s.current()
+	if st.err != nil {
 		return nil
 	}
-	ids := make([]string, 0, len(man.Records))
-	for _, r := range man.Records {
+	ids := make([]string, 0, len(st.man.Records))
+	for _, r := range st.man.Records {
 		ids = append(ids, r.Identifier)
 	}
 	sort.Strings(ids)
 	return ids
 }
 
-// lookupEach resolves every id against the loaded manifest index, calling fn with exactly what
-// Lookup(id) would return.
+// lookupEach resolves every id against ONE snapshot of the served manifest index, calling fn with
+// exactly what Lookup(id) would return against that snapshot. A Refresh that swaps the index mid-batch
+// does not split the batch across two manifests.
 func (s *artifactSource) lookupEach(ids []string, fn func(id string, facts AdvisoryFacts, ok bool)) {
-	s.load()
+	st := s.current()
 	for _, id := range ids {
-		entry, found := s.index[id]
-		if s.loadErr != nil || !found {
+		entry, found := st.index[id]
+		if st.err != nil || !found {
 			fn(id, AdvisoryFacts{}, false)
 			continue
 		}
@@ -602,37 +648,104 @@ var (
 	_ CorpusValidator    = (*artifactSource)(nil)
 	_ CorpusDescriber    = (*artifactSource)(nil)
 	_ AdvisoryEnumerator = (*artifactSource)(nil)
+	_ CorpusRefresher    = (*artifactSource)(nil)
 	_ bulkLookup         = (*artifactSource)(nil)
 )
 
-// load performs the one-time manifest read + validate + index build, guarded by s.once. On failure it
-// records the descriptive error in s.loadErr and leaves s.index nil; Lookup/Describe collapse that to
+// current returns the served manifestState, performing the first load if none has happened. On a
+// failed load the state carries the descriptive error and a nil index; Lookup/Describe collapse that to
 // the fail-open shape, Validate surfaces it verbatim.
-func (s *artifactSource) load() {
-	s.once.Do(func() {
-		s.man, s.index, s.loadErr = s.readManifest()
-	})
+func (s *artifactSource) current() *manifestState {
+	if st := s.state.Load(); st != nil {
+		return st
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.state.Load(); st != nil {
+		return st
+	}
+	st := s.loadState()
+	s.state.Store(st)
+	return st
 }
 
-// loadManifest returns the loaded manifest, or ok=false when it could not be loaded. record_count must
+// loadState stats, then reads and validates, the manifest. The stat comes first, so a file replaced
+// between the two is recorded under its older identity and simply reloads again at the next Refresh;
+// the reverse order could pair a newer identity with older content and miss the change.
+func (s *artifactSource) loadState() *manifestState {
+	info, statErr := os.Stat(s.manifestPath())
+	if statErr != nil {
+		info = nil
+	}
+	man, index, err := s.readManifest()
+	return &manifestState{man: man, index: index, err: err, info: info}
+}
+
+// Refresh implements CorpusRefresher: reload the manifest if its identity (same file, size, mtime)
+// changed since the served state was read. See artifactSource's lifecycle for the failure rules.
+func (s *artifactSource) Refresh() error {
+	s.current()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.state.Load()
+	path := s.manifestPath()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if cur.err != nil {
+			return cur.err
+		}
+		s.refreshErr = fmt.Errorf("advisory manifest %s is no longer readable; serving the last good manifest: %w", path, err)
+		return s.refreshErr
+	}
+	if sameFileIdentity(info, cur.info) {
+		s.refreshErr, s.failedInfo = nil, nil
+		return cur.err
+	}
+	if sameFileIdentity(info, s.failedInfo) {
+		return s.refreshErr
+	}
+
+	next := s.loadState()
+	if next.err == nil || cur.err != nil {
+		// A good reload replaces whatever was served; with no good manifest to protect, a failed
+		// reload replaces the older failure so the error stays current.
+		s.state.Store(next)
+		s.refreshErr, s.failedInfo = nil, nil
+		return next.err
+	}
+	s.failedInfo = next.info
+	s.refreshErr = fmt.Errorf("advisory manifest changed but failed to reload; serving the last good manifest: %w", next.err)
+	return s.refreshErr
+}
+
+// sameFileIdentity reports whether a and b describe the same unchanged file. A nil side never matches,
+// so a manifest that could not be stat'd is always re-checked.
+func sameFileIdentity(a, b os.FileInfo) bool {
+	return a != nil && b != nil && os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func (s *artifactSource) manifestPath() string { return filepath.Join(s.root, "manifest.json") }
+
+// loadManifest returns the served manifest, or ok=false when none could be loaded. record_count must
 // equal len(records) and every identifier must be unique; either violation marks the whole manifest
 // invalid (every Lookup against it then fails open), since a manifest that cannot account for its
 // own record set cannot be trusted to name the right file for any single id.
 func (s *artifactSource) loadManifest() (advisoryManifest, bool) {
-	s.load()
-	if s.loadErr != nil {
+	st := s.current()
+	if st.err != nil {
 		return advisoryManifest{}, false
 	}
-	return s.man, true
+	return st.man, true
 }
 
 // readManifest reads and validates the manifest and indexes its records by identifier, returning a
-// DESCRIPTIVE error (naming the manifest path and the specific violation) on any failure. It runs once
-// per source via load. Lookup collapses the error to (zero, false) (inv.5 — a per-advisory read never
-// surfaces an error); Validate surfaces it verbatim for the startup preflight. Both read the same load
-// outcome, so the fail-open Lookup path and the loud Validate path can never diverge.
+// DESCRIPTIVE error (naming the manifest path and the specific violation) on any failure. Lookup
+// collapses the error to (zero, false) (inv.5 — a per-advisory read never surfaces an error); Validate
+// surfaces it verbatim for the startup preflight. Both read the same served state, so the fail-open
+// Lookup path and the loud Validate path can never diverge.
 func (s *artifactSource) readManifest() (advisoryManifest, map[string]advisoryManifestEntry, error) {
-	path := filepath.Join(s.root, "manifest.json")
+	path := s.manifestPath()
 	readFile := s.readFile
 	if readFile == nil {
 		readFile = os.ReadFile
@@ -664,15 +777,15 @@ func (s *artifactSource) readManifest() (advisoryManifest, map[string]advisoryMa
 // process on error, so a broken orchestrator-materialized corpus is loud, never silently degraded to
 // stale built-in intel.
 //
-// It reads the same one-time load outcome as Lookup, so it can never accept a manifest Lookup would choke on, nor
-// reject one Lookup would accept. It does NOT read or validate individual advisory documents: a single
+// It reads the same served state as Lookup, so it can never accept a manifest Lookup would choke on, nor
+// reject one Lookup would accept. After a failed Refresh it still reports on the manifest being served
+// (the last good one); the reload failure is Refresh's error. It does NOT read or validate individual advisory documents: a single
 // malformed / digest-mismatched advisory is a per-advisory fail-open concern (inv.5), NOT a
 // corpus-unusable one — Validate gates the manifest, Lookup gates each document.
 //
 // inv.5 SPLIT: Validate never runs inside Lookup and never changes Lookup's per-advisory (zero, false).
 func (s *artifactSource) Validate() error {
-	s.load()
-	return s.loadErr
+	return s.current().err
 }
 
 // toFacts shape-validates the decoded document and maps it to AdvisoryFacts. It returns

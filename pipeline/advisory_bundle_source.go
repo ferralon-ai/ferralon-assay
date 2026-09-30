@@ -1,9 +1,9 @@
 // advisory_bundle_source.go
 //
 // bundleSource: a memory-resident, digest-pinned AdvisorySource that consumes ONE compressed corpus
-// bundle (`<policy>.jsonl.gz`) instead of a 128k-file on-disk tree. It is the corpus-native reader
-// that replaces artifactSource's per-Lookup manifest re-read + one-os.ReadFile-per-advisory with a
-// decompress-once / index-once / verify-per-lookup discipline.
+// bundle (`<policy>.jsonl.gz`) instead of a 128k-file on-disk tree. Where artifactSource does one
+// os.ReadFile per advisory against its indexed manifest, this reader holds every record in memory:
+// decompress-once / index-once / verify-per-lookup.
 //
 // LIFECYCLE — decompress-once, index-once, verify-per-lookup:
 //   - NewBundleSource stores the path and does NO work (mirrors NewArtifactSource): cheap, no error.

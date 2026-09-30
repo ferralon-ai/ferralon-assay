@@ -31,12 +31,7 @@ var brandEnvLiteralRe = regexp.MustCompile(`^(?:ASSAY|NUCLEON|TEGRON)_[A-Z0-9]+(
 // surface (action.yml env mapping, --help, a CLI flag, or any operator-facing doc). The fix for
 // almost every violation is not an entry here but brand.EnvPrefix+"_X", read only by an entry
 // point under cmd/ and passed into the library as an explicit option.
-var allowedInternalEnvIdents = map[string]string{
-	"credEnvVar": "checkout/git.go — names the env key used to hand a GitHub installation token " +
-		"to a child git process for one clone/fetch. The token lives in that child process's " +
-		"environment only (never at rest, never in argv); ferralon-assay never reads this var itself, " +
-		"and no customer ever sets it.",
-}
+var allowedInternalEnvIdents = map[string]string{}
 
 // TestNoHardcodedBrandEnvLiteral is the tree-wide regression gate against a prefixed
 // environment-variable name hardcoded as a bare "<PREFIX>_..." string literal. Two failures follow

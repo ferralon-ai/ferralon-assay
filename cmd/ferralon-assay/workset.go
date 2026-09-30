@@ -85,7 +85,9 @@ const (
 	reasonWorkSetPolicyNotEnumerable = "work_set_policy_not_enumerable"
 	// reasonPolicyAdvisoryNoCoordinates: advisories in the selected policy name no affected package,
 	// so there is nothing to match against this repository's dependencies. They were NOT evaluated.
-	reasonPolicyAdvisoryNoCoordinates = "policy_advisory_no_coordinates"
+	// A limit of the corpus data, so the report classes it inherent: disclosed in full, never
+	// qualifying the headline.
+	reasonPolicyAdvisoryNoCoordinates = plugin.PartialReasonPolicyAdvisoryNoCoordinates
 	// reasonPolicyAdvisoryUnresolvable: advisories in the selected policy whose corpus record could
 	// not be resolved to facts (digest mismatch, malformed or unrecognized record). They were NOT
 	// evaluated.

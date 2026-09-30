@@ -390,8 +390,11 @@ func TestPolicyWorkSet_UnjudgeableIDsAreDisclosed(t *testing.T) {
 			if !strings.Contains(unresolvable.Detail, "TEST-BADDIGEST") {
 				t.Errorf("unresolvable Detail must name the id: %q", unresolvable.Detail)
 			}
-			if report.ClassifyPartialityReason(noCoord.Reason) != report.PartialityDidNotRun {
-				t.Errorf("unassessed policy ids must classify loud (did_not_run), got %q", report.ClassifyPartialityReason(noCoord.Reason))
+			if got := report.ClassifyPartialityReason(noCoord.Reason); got != report.PartialityInherentLimit {
+				t.Errorf("ids naming no affected package are a corpus-data limit and must classify inherent, got %q", got)
+			}
+			if got := report.ClassifyPartialityReason(unresolvable.Reason); got != report.PartialityDidNotRun {
+				t.Errorf("ids whose record failed to resolve did not get assessed and must classify loud, got %q", got)
 			}
 			line := ws.describe()
 			if !strings.Contains(line, "name no affected package") || !strings.Contains(line, "TEST-BADDIGEST") {

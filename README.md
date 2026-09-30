@@ -212,7 +212,9 @@ whose affected package is one of your repository's own dependencies — matched 
 coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
 the work set this way reads only the corpus and your manifests; it makes no OSV.dev query. An
 advisory in the policy that names no affected package cannot be matched against your dependencies,
-so it is not assessed, and the `Report` says how many there were and names the first twelve. Without
+so it is not assessed. That is a limit of the corpus data rather than of your scan, so the `Report`
+discloses it in the analysis-limits footer, with how many there were and the first twelve ids,
+without qualifying the headline. Without
 a policy, the corpus supplies facts only and does not change what the scan evaluates. For a policy
 the corpus release publishes a bundle for, the Action downloads that single `<policy>.jsonl.gz` from
 the `corpus-*` release named by `advisory-corpus-ref` (the default `main` resolves to the most recent

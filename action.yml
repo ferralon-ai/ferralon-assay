@@ -275,8 +275,8 @@ inputs:
       Policy of advisory-corpus-repo that defines what the scan evaluates (e.g. published-7d,
       full), in place of the whole corpus. Every advisory in the policy whose affected package is
       one of this repository's own dependencies joins the scan's work set, alongside the scanner's
-      built-in floor; an advisory that names no affected package cannot be matched and is reported
-      as not assessed. When the corpus release named by advisory-corpus-ref publishes a bundle for the
+      built-in floor; an advisory that names no affected package cannot be matched; it is disclosed
+      as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
       policy, the run downloads that one file instead of git-fetching the record tree, and verifies
       it first (sha256 against the release's bundles.json; members against the policy manifest at
       the release's git tag). A bundle that fails any check FAILS the run. A policy the release

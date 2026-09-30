@@ -16,6 +16,8 @@ func TestClassifyPartialityReason(t *testing.T) {
 	for reason, want := range map[string]report.PartialityClass{
 		plugin.PartialReasonReflection:      report.PartialityInherentLimit,
 		plugin.PartialReasonDynamicDispatch: report.PartialityInherentLimit,
+		// A limit of the corpus data, true of every scan of the policy.
+		plugin.PartialReasonPolicyAdvisoryNoCoordinates: report.PartialityInherentLimit,
 
 		plugin.PartialReasonCgo:                      report.PartialityDidNotRun,
 		plugin.PartialReasonUnsupported:              report.PartialityDidNotRun,

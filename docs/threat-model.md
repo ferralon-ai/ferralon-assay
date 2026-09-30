@@ -16,7 +16,7 @@ A default `baseline` or `pr-inherit` run contacts two public hosts:
 These are the same fetches `go build` and `govulncheck` perform.
 
 A run configured with `advisory-corpus-repo` (recommended — see the README's
-[Scope](../README.md#scope--what-this-does-not-do)) additionally clones that public corpus repository
+[Scope](../README.md#scope)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
 and sparse (the manifest and record partitions only). It sends the repository coordinates and nothing
 about your code. With `advisory-corpus-policy` set and a bundle published for that policy, it instead

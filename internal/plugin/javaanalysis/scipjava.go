@@ -13,39 +13,62 @@ import (
 // which scipindex.go parses into resolved interface→impl call edges.
 //
 // THE GATE (inv.5 + the free/Assess separation): the analyzer container is
-// invoked ONLY when the env var TEGRON_JAVA_ANALYZER_IMAGE is set (the Prove
-// pipeline sets it to a digest-pinned ref; Assess never does). When it is unset,
-// scipJavaResolve returns ok=false WITHOUT touching docker — so the Assess
-// image and every existing Java test are byte-identical pure-Go, with no JDK, no
-// container pull, no scip-java. On ANY failure (no docker, image pull/run error,
-// non-zero exit / dirty compile, missing or unparseable index.scip) it also
-// returns ok=false: the caller falls back to the pure-Go graph and declares
-// Partial(tool_failure). It NEVER fabricates an edge — the analyzer does ANALYSIS
-// only; the proof is still the sandbox canary detonation on the repro runtime
-// image (a SEPARATE image from this analyzer image).
+// invoked ONLY when the caller passes WithAnalyzerImage (the Prove pipeline
+// passes a digest-pinned ref; Assess never does). Without it, scipJavaResolve
+// returns ok=false WITHOUT touching docker — so the Assess image and every
+// existing Java test are byte-identical pure-Go, with no JDK, no container pull,
+// no scip-java. On ANY failure (no docker, image pull/run error, non-zero exit /
+// dirty compile, missing or unparseable index.scip) it also returns ok=false:
+// the caller falls back to the pure-Go graph and declares Partial(tool_failure).
+// It NEVER fabricates an edge — the analyzer does ANALYSIS only; the proof is
+// still the sandbox canary detonation on the repro runtime image (a SEPARATE
+// image from this analyzer image).
 
-// scipAnalyzerImageEnv is the single env var that gates the Prove-only container
-// seam. Set ⇒ Prove path (container-backed semantic graph). Unset ⇒ Assess
-// (pure-Go lexical only).
-const scipAnalyzerImageEnv = "TEGRON_JAVA_ANALYZER_IMAGE"
+// Option configures the Prove-path analyzer container seam for CallGraph,
+// FindIngresses, Reachability and ComputeTaint. With no option the gate is
+// closed and every op is pure-Go lexical only.
+type Option func(*analyzer)
 
-// scipDockerBinEnv optionally overrides the docker binary (defaults to "docker").
-const scipDockerBinEnv = "TEGRON_JAVA_ANALYZER_DOCKER"
+// analyzer is the resolved container-seam configuration. The zero value is the
+// closed gate.
+type analyzer struct {
+	image     string // digest-pinned scip-java image ref; "" closes the gate
+	dockerBin string // docker binary; "" means "docker"
+}
+
+// WithAnalyzerImage opens the Prove-path gate: the ops run the given scip-java
+// analyzer image over the build dir. An empty image leaves the gate closed.
+func WithAnalyzerImage(image string) Option {
+	return func(a *analyzer) { a.image = image }
+}
+
+// WithAnalyzerDocker overrides the docker binary the gate runs the analyzer
+// image with (default "docker"). It has no effect while the gate is closed.
+func WithAnalyzerDocker(bin string) Option {
+	return func(a *analyzer) { a.dockerBin = bin }
+}
+
+func resolveOptions(opts []Option) analyzer {
+	var a analyzer
+	for _, opt := range opts {
+		opt(&a)
+	}
+	return a
+}
 
 // scipJavaResolve runs the analyzer container over buildDir and parses the emitted
 // index.scip into a resolved call graph + ingress set. ok is true ONLY when the
-// env gate is set, the container exits cleanly, and a usable index.scip was
+// gate is open, the container exits cleanly, and a usable index.scip was
 // produced and parsed. Every other path returns ok=false (and the caller keeps
-// the pure-Go result, declaring Partial(tool_failure) when the gate WAS set but
+// the pure-Go result, declaring Partial(tool_failure) when the gate WAS open but
 // the run failed). It never returns a fabricated graph.
-func scipJavaResolve(ctx context.Context, buildDir string) (graph scipGraph, gated bool, ok bool) {
-	image := os.Getenv(scipAnalyzerImageEnv)
-	if image == "" {
+func scipJavaResolve(ctx context.Context, buildDir string, an analyzer) (graph scipGraph, gated bool, ok bool) {
+	if an.image == "" {
 		return scipGraph{}, false, false // free/Assess: gate closed, pure-Go only.
 	}
 	// From here on the Prove gate is OPEN; any failure is an honest tool_failure
 	// fallback, never an empty success.
-	dockerBin := os.Getenv(scipDockerBinEnv)
+	dockerBin := an.dockerBin
 	if dockerBin == "" {
 		dockerBin = "docker"
 	}
@@ -78,7 +101,7 @@ func scipJavaResolve(ctx context.Context, buildDir string) (graph scipGraph, gat
 	// /work/index.scip. The image must be a digest-pinned ref the Prove path owns.
 	cmd := exec.CommandContext(ctx, dockerBin, "run", "--rm",
 		"-v", stage+":/work",
-		image,
+		an.image,
 		"index", "--output", "/work/index.scip",
 	)
 	if err := cmd.Run(); err != nil {

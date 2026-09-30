@@ -11,9 +11,10 @@
 // choice to emit SCIP "purely from the loaded program (no external indexer dependency)":
 // for symbol IDENTITY a lexical scan over the declarations is sufficient and runs with zero
 // external tools. A semantic scip-dotnet index is a DEFERRED, optional Prove-tier seam
-// (env-gated, TEGRON_DOTNET_ANALYZER_IMAGE), never on the Assess critical path. Where the
-// scanner cannot resolve a construct (it never resolves interface/DI dispatch, reflection,
-// or dynamic) it declares partiality rather than over-claiming an edge it did not resolve.
+// (gated on an explicit analyzer image, as the Java lane's is), never on the Assess critical
+// path. Where the scanner cannot resolve a construct (it never resolves interface/DI dispatch,
+// reflection, or dynamic) it declares partiality rather than over-claiming an edge it did not
+// resolve.
 //
 // Import boundary (inv.8): this sub-package MAY import internal/plugin for the shared value
 // types. The FORBIDDEN edge is the reverse one — internal/plugin MUST NOT import

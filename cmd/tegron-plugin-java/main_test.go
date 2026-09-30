@@ -122,3 +122,39 @@ func TestDispatch_ResolveInventoryNilPayload_HardError(t *testing.T) {
 		t.Error("hard-error Response must carry a structured Error")
 	}
 }
+
+// TestAnalyzerGate_ReadsBrandEnv asserts the binary opens the javaanalysis Prove-path gate from its
+// own env vars: unset, call_graph stays pure-Go and declares no tool_failure; set with an
+// unrunnable docker binary, the gate is open and the run degrades to tool_failure. Hermetic — the
+// docker lookup fails before anything is executed.
+func TestAnalyzerGate_ReadsBrandEnv(t *testing.T) {
+	dir := t.TempDir()
+	src := "package app;\npublic class App {\n  public static void main(String[] a) { run(); }\n  static void run() {}\n}\n"
+	if err := os.WriteFile(dir+"/App.java", []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hasToolFailure := func(resp plugin.Response) bool {
+		if resp.CallGraph == nil {
+			t.Fatal("missing call_graph payload")
+		}
+		for _, r := range resp.CallGraph.Partiality.Reasons {
+			if r == plugin.PartialReasonToolFailure {
+				return true
+			}
+		}
+		return false
+	}
+	req := plugin.Request{Op: plugin.OpCallGraph, CallGraph: &plugin.CallGraphRequest{BuildDir: dir}}
+
+	t.Setenv(envAnalyzerImage, "")
+	t.Setenv(envAnalyzerDocker, "")
+	if hasToolFailure(roundTrip(t, req)) {
+		t.Error("image unset: tool_failure declared, want the gate closed")
+	}
+
+	t.Setenv(envAnalyzerImage, "example.invalid/scip-java@sha256:deadbeef")
+	t.Setenv(envAnalyzerDocker, "no-such-docker-binary-for-this-test")
+	if !hasToolFailure(roundTrip(t, req)) {
+		t.Error("image set, docker unrunnable: want tool_failure (gate open, analyzer failed)")
+	}
+}

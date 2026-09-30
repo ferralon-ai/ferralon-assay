@@ -32,7 +32,6 @@ func TestParseSpringXMLBeans_NonSpringXMLIgnored(t *testing.T) {
 // TestXMLBean_ResolvesInjection: an interface impl declared ONLY in XML (no stereotype
 // annotation) still resolves an @Autowired interface injection — end to end.
 func TestXMLBean_ResolvesInjection(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
 	dir := writeModule(t, map[string]string{
 		"Mailer.java":     `package com.ex; interface Mailer { void send(); }`,
 		"SmtpMailer.java": `package com.ex; class SmtpMailer implements Mailer { public void send(){} }`,

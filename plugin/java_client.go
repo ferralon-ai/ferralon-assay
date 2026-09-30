@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // javaPlugin is the out-of-process client for the Java language plugin. It is the
@@ -16,7 +17,8 @@ import (
 // goPlugin it imports neither internal/plugin/javaanalysis nor any heavy parsing
 // code — the Java analysis links only into the subprocess binary (inv.8).
 type javaPlugin struct {
-	bin string // resolved path to the tegron-plugin-java binary
+	bin string   // resolved path to the tegron-plugin-java binary
+	env []string // KEY=VALUE pairs added to the subprocess environment
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -31,6 +33,37 @@ type JavaOption func(*javaPlugin)
 // taking precedence over PATH lookup.
 func WithJavaBinaryPath(path string) JavaOption {
 	return func(p *javaPlugin) { p.bin = path }
+}
+
+// WithJavaAnalyzerImage opens the subprocess's Prove-path analyzer gate: the
+// call_graph, find_ingresses, reachability and compute_taint ops run the given
+// digest-pinned scip-java image over the build dir. Without it the subprocess
+// inherits the gate setting from this process's environment. An empty image
+// adds nothing.
+func WithJavaAnalyzerImage(image string) JavaOption {
+	return withJavaEnv(javaAnalyzerImageEnv, image)
+}
+
+// WithJavaAnalyzerDocker sets the docker binary the subprocess runs the analyzer
+// image with (default "docker"). An empty bin adds nothing.
+func WithJavaAnalyzerDocker(bin string) JavaOption {
+	return withJavaEnv(javaAnalyzerDockerEnv, bin)
+}
+
+// The subprocess reads the analyzer settings from these env vars (see
+// cmd/tegron-plugin-java), so the options travel on the child's environment
+// rather than on the plugin protocol.
+const (
+	javaAnalyzerImageEnv  = brand.EnvPrefix + "_JAVA_ANALYZER_IMAGE"
+	javaAnalyzerDockerEnv = brand.EnvPrefix + "_JAVA_ANALYZER_DOCKER"
+)
+
+func withJavaEnv(key, value string) JavaOption {
+	return func(p *javaPlugin) {
+		if value != "" {
+			p.env = append(p.env, key+"="+value)
+		}
+	}
 }
 
 // NewJavaPlugin constructs the subprocess-backed Java plugin client. Binary
@@ -59,7 +92,7 @@ func (*javaPlugin) Language() string { return "java" }
 // identical in shape to goPlugin.run/jsPlugin.run/pythonPlugin.run/dotnetPlugin.run.
 func (p *javaPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

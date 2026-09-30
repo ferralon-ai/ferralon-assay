@@ -11,8 +11,8 @@
 // choice to emit SCIP "purely from the loaded program (no external indexer
 // dependency)": for symbol IDENTITY a lexical scan over the declarations is sufficient
 // and runs with zero external tools. A semantic scip-python index is a DEFERRED,
-// optional Prove-tier seam (env-gated, TEGRON_PYTHON_ANALYZER_IMAGE), never on the
-// Assess critical path. Where the scanner cannot resolve a construct (it never resolves
+// optional Prove-tier seam (gated on an explicit analyzer image, as the Java lane's
+// is), never on the Assess critical path. Where the scanner cannot resolve a construct (it never resolves
 // getattr/decorator/metaclass dynamism) it declares partiality rather than over-claiming
 // an edge it did not resolve.
 //

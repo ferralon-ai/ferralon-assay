@@ -25,7 +25,7 @@ const javaTaintPrecisionNote = "call-graph path presence: an ingress→sink path
 // declared no_known_ingress — UNKNOWN, never a false "not tainted" — and the
 // call-graph/ingress partiality is folded in. A load failure is a hard error
 // (inv.4). PrecisionNote is always set so the path-presence limit is explicit.
-func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest, opts ...Option) (plugin.TaintResult, error) {
 	// TODO(perf): this reparses the tree independently of CallGraph's internal
 	// loadProgram — acceptable for pass 1 (zero-egress, deterministic); CallGraph
 	// could instead return its program to avoid the second parse.
@@ -33,11 +33,11 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir}, opts...)
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}
-	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir}, opts...)
 	if err != nil {
 		return plugin.TaintResult{}, err
 	}

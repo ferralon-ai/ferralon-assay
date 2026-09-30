@@ -25,8 +25,17 @@ import (
 	"os"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+// Env var names for the Prove-path analyzer container seam. This binary is the only place they
+// are read; javaanalysis takes the values as explicit options, and plugin.WithJavaAnalyzerImage /
+// plugin.WithJavaAnalyzerDocker set them on this process's environment.
+const (
+	envAnalyzerImage  = brand.EnvPrefix + "_JAVA_ANALYZER_IMAGE"
+	envAnalyzerDocker = brand.EnvPrefix + "_JAVA_ANALYZER_DOCKER"
 )
 
 func main() {
@@ -54,12 +63,26 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 		return writeError(stdout, fmt.Sprintf("protocol mismatch: got %q, want %q", req.Protocol, plugin.ProtocolVersion))
 	}
 
-	resp, opErr := dispatch(ctx, req)
+	resp, opErr := dispatch(ctx, req, analyzerOptions()...)
 	if opErr != nil {
 		return writeError(stdout, opErr.Error())
 	}
 	resp.Protocol = plugin.ProtocolVersion
 	return writeResponse(stdout, resp)
+}
+
+// analyzerOptions opens the javaanalysis Prove-path gate when envAnalyzerImage is set, with the
+// docker binary override from envAnalyzerDocker. Unset, the gate stays closed (pure-Go only).
+func analyzerOptions() []javaanalysis.Option {
+	image := os.Getenv(envAnalyzerImage)
+	if image == "" {
+		return nil
+	}
+	opts := []javaanalysis.Option{javaanalysis.WithAnalyzerImage(image)}
+	if bin := os.Getenv(envAnalyzerDocker); bin != "" {
+		opts = append(opts, javaanalysis.WithAnalyzerDocker(bin))
+	}
+	return opts
 }
 
 // dispatch runs the requested operation. index_symbols, resolve_symbols,
@@ -70,7 +93,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // parity). generate_harness and build_manifest remain contract-present stubs:
 // Java's effect proof rides the repro-runtime sandbox, not a plugin-generated
 // harness. An unknown op, or a missing per-op payload, is a hard failure (inv.4).
-func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
+func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Option) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
 		if req.IndexSymbols == nil {
@@ -106,7 +129,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.CallGraph == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing call_graph request", req.Op)
 		}
-		res, err := javaanalysis.CallGraph(ctx, *req.CallGraph)
+		res, err := javaanalysis.CallGraph(ctx, *req.CallGraph, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -116,7 +139,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.FindIngresses == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing find_ingresses request", req.Op)
 		}
-		res, err := javaanalysis.FindIngresses(ctx, *req.FindIngresses)
+		res, err := javaanalysis.FindIngresses(ctx, *req.FindIngresses, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -126,7 +149,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.Reachability == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing reachability request", req.Op)
 		}
-		res, err := javaanalysis.Reachability(ctx, *req.Reachability)
+		res, err := javaanalysis.Reachability(ctx, *req.Reachability, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -136,7 +159,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ComputeTaint == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing compute_taint request", req.Op)
 		}
-		res, err := javaanalysis.ComputeTaint(ctx, *req.ComputeTaint)
+		res, err := javaanalysis.ComputeTaint(ctx, *req.ComputeTaint, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}

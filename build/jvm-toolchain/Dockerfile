@@ -6,8 +6,8 @@
 # written — the native tool captures (mvn dependency:tree / gradle dependencies,
 # the oracle) plus the resolved .m2 / modules-2 cache slice the resolver reads.
 # The resolver code itself stays build-tool-free and NEVER runs this image at
-# analysis time (mirrors the scipjava.go TEGRON_JAVA_ANALYZER_IMAGE gate: the
-# container is a Prove/fixture seam, never the Assess path).
+# analysis time (mirrors the scipjava.go analyzer-image gate: the container is
+# a Prove/fixture seam, never the Assess path).
 #
 # One image, two consumers (the reuse seam): (1) this cycle's benchmark captures
 # under internal/plugin/javaanalysis/testdata/, and (2) BASALT's corpus harness

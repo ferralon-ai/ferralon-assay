@@ -159,14 +159,13 @@ func TestCanonicalizeSCIP(t *testing.T) {
 	}
 }
 
-// TestSCIPResolveGate_Unset asserts the Prove gate is closed when the analyzer
-// image env is unset: scipJavaResolve returns gated=false WITHOUT invoking docker,
+// TestSCIPResolveGate_Unset asserts the Prove gate is closed when no analyzer
+// image is configured: scipJavaResolve returns gated=false WITHOUT invoking docker,
 // so Assess stays byte-identical pure-Go.
 func TestSCIPResolveGate_Unset(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
-	_, gated, ok := scipJavaResolve(t.Context(), reproSrc)
+	_, gated, ok := scipJavaResolve(t.Context(), reproSrc, analyzer{})
 	if gated || ok {
-		t.Fatalf("env unset: gated=%v ok=%v, want both false (pure-Go only)", gated, ok)
+		t.Fatalf("image unset: gated=%v ok=%v, want both false (pure-Go only)", gated, ok)
 	}
 }
 
@@ -175,11 +174,13 @@ func TestSCIPResolveGate_Unset(t *testing.T) {
 // — the caller's signal to keep the lexical graph and declare
 // Partial(tool_failure), never a fabricated edge.
 func TestSCIPResolveGate_SetNoDocker(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "tegron-java-analyzer@sha256:deadbeef")
-	t.Setenv(scipDockerBinEnv, "tegron-no-such-docker-binary-xyz")
-	_, gated, ok := scipJavaResolve(t.Context(), reproSrc)
+	an := resolveOptions([]Option{
+		WithAnalyzerImage("tegron-java-analyzer@sha256:deadbeef"),
+		WithAnalyzerDocker("tegron-no-such-docker-binary-xyz"),
+	})
+	_, gated, ok := scipJavaResolve(t.Context(), reproSrc, an)
 	if !gated {
-		t.Fatalf("env set: gated=%v, want true", gated)
+		t.Fatalf("image set: gated=%v, want true", gated)
 	}
 	if ok {
 		t.Fatalf("no docker: ok=%v, want false (tool_failure fallback)", ok)
@@ -190,7 +191,6 @@ func TestSCIPResolveGate_SetNoDocker(t *testing.T) {
 // the pure-Go lexical result (Algorithm source-lexical) — the free Assess image
 // is unchanged by Increment 3.
 func TestCallGraph_GateUnset_ByteIdentical(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "")
 	cg, err := CallGraph(t.Context(), plugin.CallGraphRequest{BuildDir: reproSrc})
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
@@ -204,9 +204,9 @@ func TestCallGraph_GateUnset_ByteIdentical(t *testing.T) {
 // but docker absent keeps the lexical edges and declares Partial(tool_failure) —
 // honest degradation, never a fabricated edge.
 func TestCallGraph_GateSetNoDocker_ToolFailure(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "tegron-java-analyzer@sha256:deadbeef")
-	t.Setenv(scipDockerBinEnv, "tegron-no-such-docker-binary-xyz")
-	cg, err := CallGraph(t.Context(), plugin.CallGraphRequest{BuildDir: reproSrc})
+	cg, err := CallGraph(t.Context(), plugin.CallGraphRequest{BuildDir: reproSrc},
+		WithAnalyzerImage("tegron-java-analyzer@sha256:deadbeef"),
+		WithAnalyzerDocker("tegron-no-such-docker-binary-xyz"))
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
 	}

@@ -155,7 +155,7 @@ func loadProgram(buildDir string) (*program, error) {
 // declaration), NO edge is fabricated and the result is declared partial with
 // reason dynamic_dispatch — the inv.5 honesty boundary: an unresolved callee is
 // never rendered as a (wrong) edge or as reachability.
-func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
+func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option) (plugin.CallGraphResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
@@ -264,13 +264,13 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 		}
 	}
 
-	// Prove-path enrichment (gated by TEGRON_JAVA_ANALYZER_IMAGE). The pure-Go
+	// Prove-path enrichment (gated by WithAnalyzerImage). The pure-Go
 	// lexical graph above is the Assess baseline AND the fallback; only when the
 	// analyzer container resolves a semantic graph do we MERGE its type-resolved
 	// edges (interface→impl dispatch) on top — the edges lexical declares
 	// Partial(dynamic_dispatch) on. On a gated-but-failed run we keep the lexical
 	// graph and declare Partial(tool_failure) (never a fabricated edge, inv.5).
-	resolved, gated, ok := scipJavaResolve(ctx, req.BuildDir)
+	resolved, gated, ok := scipJavaResolve(ctx, req.BuildDir, resolveOptions(opts))
 	if !gated {
 		return lexical, nil
 	}

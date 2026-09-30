@@ -24,7 +24,6 @@ const springReproSrc = "../../../corpus/testdata/repros/TEGRON-JAVA-SPRING-SSRF-
 // because other, genuinely-unresolvable library calls (java.net.* and the stub helpers)
 // remain unresolved. The bean hop is bridged; the residual is not silently retired.
 func TestSpringRepro_BeanGraphBridgesDispatch(t *testing.T) {
-	t.Setenv(scipAnalyzerImageEnv, "") // gate closed: pure-Go Assess path only.
 	ctx := t.Context()
 
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: springReproSrc})

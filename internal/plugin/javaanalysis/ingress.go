@@ -16,7 +16,7 @@ import (
 // ingress to a reachable sink. An unrecognized method is simply not an ingress
 // (absence is declared at the reachability layer, never fabricated here). A
 // missing build dir is a hard error (inv.4).
-func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
+func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest, opts ...Option) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.IngressResult{}, err
@@ -40,13 +40,13 @@ func FindIngresses(ctx context.Context, req plugin.FindIngressesRequest) (plugin
 		}
 	}
 
-	// Prove-path enrichment (gated by TEGRON_JAVA_ANALYZER_IMAGE). Merge the
+	// Prove-path enrichment (gated by WithAnalyzerImage). Merge the
 	// container-resolved @RestController/@GetMapping routes — DI-wired ingresses
 	// the lexical scanner can also see annotationally, but the semantic pass
 	// confirms them in the resolved id space the merged call graph uses. On a
 	// gated-but-failed run, keep the lexical ingresses and declare
-	// Partial(tool_failure). Env unset ⇒ lexical only (byte-identical Assess).
-	resolved, gated, ok := scipJavaResolve(ctx, req.BuildDir)
+	// Partial(tool_failure). Gate closed ⇒ lexical only (byte-identical Assess).
+	resolved, gated, ok := scipJavaResolve(ctx, req.BuildDir, resolveOptions(opts))
 	if gated && ok {
 		// Relabel the resolved ingresses into the pure-Go true-arity id space (see
 		// reconcileResolvedArity in callgraph.go) so a resolved @GetMapping route

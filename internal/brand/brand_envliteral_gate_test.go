@@ -32,11 +32,6 @@ var brandEnvLiteralRe = regexp.MustCompile(`^(?:ASSAY|NUCLEON|TEGRON)_[A-Z0-9]+(
 // almost every violation is not an entry here but brand.EnvPrefix+"_X", read only by an entry
 // point under cmd/ and passed into the library as an explicit option.
 var allowedInternalEnvIdents = map[string]string{
-	"scipAnalyzerImageEnv": "internal/plugin/javaanalysis/scipjava.go — gates the Prove-only Java/SCIP " +
-		"container image. Build/CI knob only: not wired into action.yml, --help, or any operator doc " +
-		"(Java packaging is a known separate blocker, task 01 inventory).",
-	"scipDockerBinEnv": "internal/plugin/javaanalysis/scipjava.go — docker binary override for the same " +
-		"internal container gate as scipAnalyzerImageEnv above.",
 	"credEnvVar": "checkout/git.go — names the env key used to hand a GitHub installation token " +
 		"to a child git process for one clone/fetch. The token lives in that child process's " +
 		"environment only (never at rest, never in argv); ferralon-assay never reads this var itself, " +

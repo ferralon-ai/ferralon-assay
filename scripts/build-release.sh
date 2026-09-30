@@ -79,19 +79,19 @@ ASSAY_RUNS_URL="${ASSAY_RUNS_URL:-}"
 
 # ---- the target table -------------------------------------------------------
 # <baked asset name>=<cmd package>. The CLI plus the per-language analyzer plugins. The ASSET names
-# are codename-free because they ship to customers; the cmd/ package paths are not, and stay as they
-# are — cmd/tegron-plugin-* is this repository's package layout, not a released name.
+# are what ships to customers; the cmd/ package paths are this repository's layout, not a released
+# name.
 #
 # ORDER IS LOAD-BEARING. It is the tar member order, and member order is part of the
 # byte-identical-tarball guarantee. APPEND, never insert.
 BAKED_TARGETS=(
   ferralon-assay-scan=./cmd/ferralon-assay
-  ferralon-assay-scan-plugin=./cmd/tegron-plugin-go
-  ferralon-assay-scan-plugin-python=./cmd/tegron-plugin-python
-  ferralon-assay-scan-plugin-js=./cmd/tegron-plugin-js
-  ferralon-assay-scan-plugin-java=./cmd/tegron-plugin-java
-  ferralon-assay-scan-plugin-dotnet=./cmd/tegron-plugin-dotnet
-  ferralon-assay-scan-plugin-kotlin=./cmd/tegron-plugin-kotlin
+  ferralon-assay-scan-plugin=./cmd/assay-plugin-go
+  ferralon-assay-scan-plugin-python=./cmd/assay-plugin-python
+  ferralon-assay-scan-plugin-js=./cmd/assay-plugin-js
+  ferralon-assay-scan-plugin-java=./cmd/assay-plugin-java
+  ferralon-assay-scan-plugin-dotnet=./cmd/assay-plugin-dotnet
+  ferralon-assay-scan-plugin-kotlin=./cmd/assay-plugin-kotlin
 )
 
 BAKED_BINARIES=()

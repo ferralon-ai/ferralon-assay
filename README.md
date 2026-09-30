@@ -205,10 +205,18 @@ a given run saw comes from the `corpus_digest` the `Report` records, not from pi
 you pin the Action itself is a separate, supply-chain question — see the Quickstart.)
 
 To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
-example `published-7d` or `full`). For a policy the corpus release publishes a bundle for, the Action
-downloads that single `<policy>.jsonl.gz` from the `corpus-*` release named by `advisory-corpus-ref`
-(the default `main` resolves to the most recent release) instead of git-fetching the record tree, and
-verifies it before the scan: its sha256 against the release's `bundles.json`, and its member set
+example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
+advisory facts are available: the work set is the built-in floor plus every advisory in the policy
+whose affected package is one of your repository's own dependencies — matched by package identity
+(the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
+coordinate) — and each advisory's affected version range is then checked during the scan. Choosing
+the work set this way reads only the corpus and your manifests; it makes no OSV.dev query. An
+advisory in the policy that names no affected package cannot be matched against your dependencies,
+so it is not assessed, and the `Report` says how many there were and names the first twelve. Without
+a policy, the corpus supplies facts only and does not change what the scan evaluates. For a policy
+the corpus release publishes a bundle for, the Action downloads that single `<policy>.jsonl.gz` from
+the `corpus-*` release named by `advisory-corpus-ref` (the default `main` resolves to the most recent
+release) instead of git-fetching the record tree, and verifies it before the scan: its sha256 against the release's `bundles.json`, and its member set
 against the policy manifest at the release's git tag. Any mismatch fails the run. Those checks detect
 a corrupt or mismatched bundle; they do not make an unsigned release trustworthy, because every input
 to them comes from the same repository. A policy with no bundle is read through the git fetch using
@@ -218,7 +226,9 @@ publishes for it.
 
 The CLI reads the corpus from `-advisory-corpus` or, when the flag is absent, the
 `ASSAY_ADVISORY_CORPUS_DIR` environment variable (the name says directory; it accepts a bundle file
-too). A corpus supplements the built-in table rather than replacing it: the corpus answers first, and
+too). `-advisory-corpus-policy` or `ASSAY_ADVISORY_CORPUS_POLICY` declares the policy the corpus was
+selected by; the flag wins over the variable. Only a declared policy makes the corpus define the work
+set, and the `Report` records it as `corpus_policy`. A corpus supplements the built-in table rather than replacing it: the corpus answers first, and
 an advisory it lacks still resolves from the table. To make a missing corpus a failure instead of a
 quiet fall-back to the built-in table, pass `-require-advisory-corpus` or set
 `ASSAY_ADVISORY_CORPUS_REQUIRED` to `true`; the flag wins over the variable. The Action sets that

@@ -309,6 +309,11 @@ func isolateToolEnv(t *testing.T) {
 	t.Setenv("GOPROXY", "off")
 	t.Setenv("GOTOOLCHAIN", "local")
 	t.Setenv("GOWORK", "off")
+	// With cgo enabled, a linux host builds the Go fixtures' standard-library dependencies with
+	// cgo where darwin does not; the call graph then reports cgo partiality and the Go advisories
+	// come out undetermined. Pinning cgo off makes the analyzed package set, and so every golden,
+	// the same on every host.
+	t.Setenv("CGO_ENABLED", "0")
 }
 
 // describeFirstDiff names the first differing line so a failure points at the change without

@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -197,7 +198,7 @@ func TestRunPRInherit_FastPath(t *testing.T) {
 }
 
 // TestRunPRInherit_ReanalyzeOnChangedDep proves a version bump triggers re-analysis
-// of the affected slice and a write.
+// of the affected slice and leaves the stored baseline alone.
 func TestRunPRInherit_ReanalyzeOnChangedDep(t *testing.T) {
 	store, _ := seedBaseline(t)
 
@@ -219,11 +220,89 @@ func TestRunPRInherit_ReanalyzeOnChangedDep(t *testing.T) {
 	if len(res.ChangedPackages) != 1 {
 		t.Fatalf("want 1 changed package, got %v", res.ChangedPackages)
 	}
-	if store.writes != 1 {
-		t.Fatalf("re-analysis must write state once, got %d", store.writes)
+	if store.writes != 0 {
+		t.Fatalf("re-analysis must not write state, got %d writes", store.writes)
 	}
 	if err := res.Report.Validate(); err != nil {
 		t.Fatalf("re-analyzed report invalid: %v", err)
+	}
+}
+
+// TestRunPRInherit_ChangedDepLeavesBaselineByteIdentical runs the re-analysis path
+// against the real git-ref StateStore and asserts the state ref still points at the
+// baseline's commit afterwards. Git objects are content-addressed, so an unchanged
+// commit SHA means every stored byte is unchanged.
+func TestRunPRInherit_ChangedDepLeavesBaselineByteIdentical(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	git("init", "--bare", "-q")
+	store := statestore.NewGitRefStore(statestore.Config{GitDir: dir})
+
+	seed, _ := seedBaseline(t)
+	if _, err := store.Write(context.Background(), seed.state); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+	before := git("rev-parse", statestore.DefaultRef)
+
+	res, err := RunPRInherit(context.Background(), store, PRInheritRequest{
+		Subject: Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		PRSBOM: report.SBOM{Packages: []report.Package{
+			{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.9.9"}, // bumped
+		}},
+		Advisories: []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}},
+		Cursor:     "GO-2021-0113,GO-2099-0001",
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit: %v", err)
+	}
+	if res.Inherited {
+		t.Fatalf("want re-analysis on changed dep, got fast-path")
+	}
+	if after := git("rev-parse", statestore.DefaultRef); after != before {
+		t.Fatalf("pr-inherit moved the baseline ref: %s → %s", before, after)
+	}
+}
+
+// readOnlyStore models a pull request from a fork: the token can read the state ref
+// but every write is refused.
+type readOnlyStore struct{ *memStore }
+
+func (s readOnlyStore) Write(context.Context, *statestore.State) (*statestore.State, error) {
+	return nil, errors.New("403: Resource not accessible by integration")
+}
+
+// TestRunPRInherit_ReadOnlyStore proves a fork PR — read-only token — completes the
+// re-analysis path and gets its Report.
+func TestRunPRInherit_ReadOnlyStore(t *testing.T) {
+	seed, _ := seedBaseline(t)
+
+	res, err := RunPRInherit(context.Background(), readOnlyStore{seed}, PRInheritRequest{
+		Subject: Subject{Repo: "r", ResolvedCommit: "pr-sha"},
+		PRSBOM: report.SBOM{Packages: []report.Package{
+			{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.9.9"}, // bumped
+		}},
+		Advisories: []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}},
+	})
+	if err != nil {
+		t.Fatalf("RunPRInherit against a read-only store: %v", err)
+	}
+	if res.Inherited {
+		t.Fatalf("want re-analysis on changed dep, got fast-path")
+	}
+	if res.Report == nil || res.Report.Subject.ResolvedCommit != "pr-sha" {
+		t.Fatalf("want the PR head's Report, got %+v", res.Report)
 	}
 }
 

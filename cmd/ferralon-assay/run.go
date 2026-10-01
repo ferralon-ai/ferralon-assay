@@ -623,6 +623,16 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 	if f.resolvedCorpusOK {
 		p.CorpusDigest = f.resolvedCorpus.Digest
 		p.CorpusRecords = f.resolvedCorpus.Records
+		if m := f.resolvedCorpus.Manifest; m != (pipeline.ManifestProvenance{}) {
+			p.CorpusManifest = &report.CorpusManifestProvenance{
+				GeneratedAt:          m.GeneratedAt,
+				Generator:            m.Generator,
+				PolicyID:             m.PolicyID,
+				PolicyQuery:          m.PolicyQuery,
+				SourceCorpusDigest:   m.SourceCorpusDigest,
+				SelectionIndexDigest: m.SelectionIndexDigest,
+			}
+		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
 	return p

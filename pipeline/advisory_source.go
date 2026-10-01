@@ -285,6 +285,10 @@ type CorpusValidator interface {
 type CorpusInfo struct {
 	Digest  string
 	Records int
+	// Manifest is the manifest's own provenance block: which policy selected the record set, from
+	// which corpus snapshot, and when. Zero when the corpus carries none (a bundle, or a manifest
+	// published without the block).
+	Manifest ManifestProvenance
 }
 
 // CorpusDescriber is implemented by an AdvisorySource backed by an on-disk corpus. Describe reports
@@ -312,7 +316,11 @@ func (s *artifactSource) Describe() (CorpusInfo, bool) {
 	if !ok {
 		return CorpusInfo{}, false
 	}
-	return CorpusInfo{Digest: man.CorpusDigest, Records: len(man.Records)}, true
+	info := CorpusInfo{Digest: man.CorpusDigest, Records: len(man.Records)}
+	if man.Provenance != nil {
+		info.Manifest = *man.Provenance
+	}
+	return info, true
 }
 
 // The types below ARE the corpus contract: directory layout, field tables, and closed-set
@@ -324,13 +332,42 @@ func (s *artifactSource) Describe() (CorpusInfo, bool) {
 // equal len(Records); a mismatch marks the manifest invalid (loadManifest fails it before any
 // Lookup runs). CorpusDigest is the outer integrity handle the published feed is pinned by (not
 // verified per-lookup here — the per-record Digest is the load-bearing pin verified on every
-// Lookup).
+// Lookup). Provenance is the manifest-level audit block (see ManifestProvenance); nil when absent.
 type advisoryManifest struct {
 	ManifestVersion string                  `json:"manifest_version"`
 	SchemaVersion   string                  `json:"schema_version"`
 	RecordCount     int                     `json:"record_count"`
 	Records         []advisoryManifestEntry `json:"records"`
 	CorpusDigest    string                  `json:"corpus_digest"`
+	Provenance      *ManifestProvenance     `json:"provenance,omitempty"`
+}
+
+// ManifestProvenance is a policy manifest's `provenance` block: which policy selected the manifest's
+// record set, the corpus snapshot it was selected from, and which producer generated it when. It is
+// audit metadata only. Like manifest_version it is carried through and never validated, and nothing
+// reads it into a Lookup, a work set, or a verdict.
+//
+// It is a different object from docProv, the per-advisory `provenance` block inside each corpus
+// document, whose trust_tier gates refute eligibility. The two share a JSON key at different levels
+// and have opposite verdict-sensitivity.
+type ManifestProvenance struct {
+	GeneratedAt          string `json:"generated_at,omitempty"`           // RFC 3339 as written by the producer; not parsed
+	Generator            string `json:"generator,omitempty"`              // producing tool, e.g. "ferralon-intel/enrichment"
+	PolicyID             string `json:"policy_id,omitempty"`              // e.g. "published-7d", "full"
+	PolicyQuery          string `json:"policy_query,omitempty"`           // human-readable selection predicate
+	SourceCorpusDigest   string `json:"source_corpus_digest,omitempty"`   // digest of the full corpus the selection ran over
+	SelectionIndexDigest string `json:"selection_index_digest,omitempty"` // digest of the selection index the selection read
+}
+
+// UnmarshalJSON decodes the block best-effort and never fails: an unvalidated audit field must not be
+// able to make a usable corpus unreadable. A member of the wrong type stays zero while the well-typed
+// members alongside it still decode, and a block that is not an object decodes to the zero value.
+func (p *ManifestProvenance) UnmarshalJSON(b []byte) error {
+	type plain ManifestProvenance
+	var v plain
+	_ = json.Unmarshal(b, &v)
+	*p = ManifestProvenance(v)
+	return nil
 }
 
 // advisoryManifestEntry pins one advisory by its content digest. Path is relative to root, forward-

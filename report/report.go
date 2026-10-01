@@ -580,6 +580,29 @@ type IntelProvenance struct {
 	// "published-7d"). Empty when no policy was declared. WorkSetSource says whether the
 	// policy actually defined the work set.
 	CorpusPolicy string `json:"corpus_policy,omitempty"`
+	// CorpusManifest is the provenance block the corpus manifest itself carries: the policy and
+	// corpus snapshot that produced the record set the pass read. Nil when the corpus carries none
+	// (a bundle file, or a manifest published without the block). It is reported as the producer
+	// wrote it and is not checked against CorpusPolicy or CorpusDigest.
+	CorpusManifest *CorpusManifestProvenance `json:"corpus_manifest,omitempty"`
+}
+
+// CorpusManifestProvenance mirrors a policy manifest's `provenance` block. It is audit metadata
+// about the corpus as a whole, distinct from the per-advisory trust tier a corpus document carries,
+// and like the rest of IntelProvenance it never feeds a verdict.
+type CorpusManifestProvenance struct {
+	// GeneratedAt is when the producer generated the manifest, as the producer wrote it.
+	GeneratedAt string `json:"generated_at,omitempty"`
+	// Generator names the producing tool.
+	Generator string `json:"generator,omitempty"`
+	// PolicyID is the policy that selected the record set (e.g. "published-7d", "full").
+	PolicyID string `json:"policy_id,omitempty"`
+	// PolicyQuery is the human-readable form of that policy's selection predicate.
+	PolicyQuery string `json:"policy_query,omitempty"`
+	// SourceCorpusDigest is the digest of the full corpus the selection ran over.
+	SourceCorpusDigest string `json:"source_corpus_digest,omitempty"`
+	// SelectionIndexDigest is the digest of the selection index the selection read.
+	SelectionIndexDigest string `json:"selection_index_digest,omitempty"`
 }
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.

@@ -205,6 +205,13 @@ published after the pin — you want the latest intel on every run. Reproducibil
 a given run saw comes from the `corpus_digest` the `Report` records, not from pinning the input. (How
 you pin the Action itself is a separate, supply-chain question — see the Quickstart.)
 
+The published policy manifests also carry a `provenance` block, and when the corpus the scan reads
+has one, the `Report` records it alongside the digest as `corpus_manifest`: the `policy_id` and
+`policy_query` that selected the records, the `source_corpus_digest` and `selection_index_digest`
+they were selected from, and the `generator` and `generated_at` of the manifest itself. It is
+recorded as the corpus wrote it, for audit, and has no effect on any verdict. A bundle file carries
+no manifest, so a scan that reads a bundle records its digest without this block.
+
 To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
 example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
 advisory facts are available: the work set is the built-in floor plus every advisory in the policy

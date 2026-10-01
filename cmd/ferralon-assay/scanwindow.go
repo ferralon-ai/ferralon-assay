@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -77,6 +78,15 @@ func describeScanWindow(sw report.ScanWindow) string {
 		from = "from " + repoconfig.DefaultPath + " scan.window"
 	case report.ScanWindowViaPolicyInput:
 		from = "from the workflow's advisory-corpus-policy"
+	case report.ScanWindowViaAPI:
+		switch sw.Source.Kind {
+		case report.ScanWindowKindCustomer:
+			from = "from this repository's Ferralon customer policy"
+		case report.ScanWindowKindAncestor:
+			from = fmt.Sprintf("from a Ferralon customer policy %d level(s) above this repository's", *sw.Source.Distance)
+		default:
+			from = "from Ferralon's default policy (no customer sets one)"
+		}
 	default:
 		from = "via " + sw.ResolvedVia
 	}
@@ -86,7 +96,11 @@ func describeScanWindow(sw report.ScanWindow) string {
 // runScanWindow runs the `scan-window` command: it resolves the scan window for a checked-out
 // repository and prints it as key=value lines (window, policy, source) for a CI step's outputs.
 // When nothing selects a window, window and policy are empty and source is
-// report.ScanWindowViaNone.
+// report.ScanWindowViaNone. When the window came from the Ferralon policy lookup, an api-source
+// line carries the lookup's source record for the scan (envScanWindowAPISource).
+//
+// The lookup runs only for a console-linked run (linkedToConsole) whose release has a Ferralon
+// endpoint, and only when .github/ferralon.yml sets no window.
 // The Action runs it BEFORE fetching the advisory corpus, because the window decides which policy
 // bundle is fetched; the scan itself later checks it ran against that same window
 // (scanTimeWindow).
@@ -115,7 +129,13 @@ func runScanWindow(args []string, stdout, stderr io.Writer) error {
 	for _, w := range warnings {
 		fmt.Fprintf(stderr, "warning: %s: %s\n", repoconfig.DefaultPath, w)
 	}
-	sw, ok, err := resolveScanWindow(repoConfigWindow(cfg.Scan.Window), policyInputWindow(*policy))
+	sources := []windowSource{repoConfigWindow(cfg.Scan.Window)}
+	if endpoint := scanWindowEndpoint(resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)); endpoint != "" {
+		lookup := scanWindowLookup{endpoint: endpoint, token: resolveOIDCToken, log: stderr}
+		sources = append(sources, lookup.source(context.Background()))
+	}
+	sources = append(sources, policyInputWindow(*policy))
+	sw, ok, err := resolveScanWindow(sources...)
 	if err != nil {
 		return err
 	}
@@ -125,7 +145,12 @@ func runScanWindow(args []string, stdout, stderr io.Writer) error {
 		sw.ResolvedVia = report.ScanWindowViaNone
 		fmt.Fprintln(stderr, "scan window: none set; the advisory corpus is a fact source only")
 	}
-	_, err = fmt.Fprintf(stdout, "window=%s\npolicy=%s\nsource=%s\n", sw.Window, sw.Policy, sw.ResolvedVia)
+	if _, err := fmt.Fprintf(stdout, "window=%s\npolicy=%s\nsource=%s\n", sw.Window, sw.Policy, sw.ResolvedVia); err != nil {
+		return err
+	}
+	if sw.ResolvedVia == report.ScanWindowViaAPI {
+		_, err = fmt.Fprintf(stdout, "api-source=%s\n", encodeAPISource(sw.Source))
+	}
 	return err
 }
 
@@ -139,7 +164,7 @@ func runScanWindow(args []string, stdout, stderr io.Writer) error {
 // scanner from different releases), a workflow that passes its own corpus, and a CLI run against
 // a repository that sets a window. With no declared policy and no repository window there is no
 // window to record (nil).
-func scanTimeWindow(repoWindow repoconfig.Window, policy, sourceHint string) (*report.ScanWindow, error) {
+func scanTimeWindow(repoWindow repoconfig.Window, policy, sourceHint, apiSource string) (*report.ScanWindow, error) {
 	if repoWindow != "" {
 		want := repoWindow.Policy()
 		switch policy {
@@ -163,14 +188,25 @@ func scanTimeWindow(repoWindow repoconfig.Window, policy, sourceHint string) (*r
 	case "", report.ScanWindowViaPolicyInput:
 		sw := newScanWindow(policy, report.ScanWindowViaPolicyInput)
 		return &sw, nil
+	case report.ScanWindowViaAPI:
+		if repoconfig.WindowForPolicy(policy) == "" {
+			return nil, fmt.Errorf("%s=%s, but the declared policy %s is not a scan window policy", envScanWindowSource, sourceHint, policy)
+		}
+		src, err := decodeAPISource(apiSource)
+		if err != nil {
+			return nil, err
+		}
+		sw := newScanWindow(policy, report.ScanWindowViaAPI)
+		sw.Source = src
+		return &sw, nil
 	default:
-		return nil, fmt.Errorf("%s=%q does not name a source for declared policy %s (want %s)", envScanWindowSource, sourceHint, policy, report.ScanWindowViaPolicyInput)
+		return nil, fmt.Errorf("%s=%q does not name a source for declared policy %s (want %s or %s)", envScanWindowSource, sourceHint, policy, report.ScanWindowViaPolicyInput, report.ScanWindowViaAPI)
 	}
 }
 
 // recordScanWindow resolves the scan-time window onto f and logs it.
 func (f *runFlags) recordScanWindow(policy string) error {
-	sw, err := scanTimeWindow(f.repoWindow, policy, os.Getenv(envScanWindowSource))
+	sw, err := scanTimeWindow(f.repoWindow, policy, os.Getenv(envScanWindowSource), os.Getenv(envScanWindowAPISource))
 	if err != nil {
 		return err
 	}

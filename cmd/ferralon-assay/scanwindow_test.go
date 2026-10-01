@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -82,6 +83,7 @@ func TestScanTimeWindow(t *testing.T) {
 		repo    repoconfig.Window
 		policy  string
 		hint    string
+		api     string
 		want    *report.ScanWindow
 		wantErr string
 	}{
@@ -95,9 +97,18 @@ func TestScanTimeWindow(t *testing.T) {
 		{name: "none hint, but a policy declared", policy: "published-7d", hint: "none", wantErr: "does not name a source"},
 		{name: "repo hint is never trusted", policy: "published-7d", hint: "repo_config", wantErr: "does not name a source"},
 		{name: "unknown hint", policy: "published-7d", hint: "console", wantErr: "does not name a source"},
+		{name: "api hint, ancestor", policy: "published-30d", hint: "api", api: `{"kind":"ancestor","customer_id":"cus_2f9","distance":2}`,
+			want: &report.ScanWindow{Window: "30d", Policy: "published-30d", ResolvedVia: "api", Source: report.ScanWindowSource{Kind: "ancestor", CustomerID: "cus_2f9", Distance: intPtr(2)}}},
+		{name: "api hint, default", policy: "published-24h", hint: "api", api: `{"kind":"default"}`,
+			want: &report.ScanWindow{Window: "24h", Policy: "published-24h", ResolvedVia: "api", Source: report.ScanWindowSource{Kind: "default"}}},
+		{name: "repo window beats an api hint", repo: repoconfig.Window7d, policy: "published-7d", hint: "api", api: `{"kind":"default"}`, want: sw("7d", "published-7d", "repo_config")},
+		{name: "api hint without a record", policy: "published-7d", hint: "api", wantErr: "not a source record"},
+		{name: "api hint, tampered record", policy: "published-7d", hint: "api", api: `{"kind":"customer","customer_id":"x y","distance":0}`, wantErr: "customer_id"},
+		{name: "api hint, extra field", policy: "published-7d", hint: "api", api: `{"kind":"default","name":"Acme"}`, wantErr: "not a source record"},
+		{name: "api hint, non-window policy", policy: "kev", hint: "api", api: `{"kind":"default"}`, wantErr: "not a scan window policy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := scanTimeWindow(tc.repo, tc.policy, tc.hint)
+			got, err := scanTimeWindow(tc.repo, tc.policy, tc.hint, tc.api)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("want error containing %q, got %v (%+v)", tc.wantErr, err, got)
@@ -107,7 +118,7 @@ func TestScanTimeWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("scanTimeWindow: %v", err)
 			}
-			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
 			}
 		})
@@ -173,7 +184,7 @@ func TestAdvisoryCorpusOption_RecordsScanWindow(t *testing.T) {
 				t.Fatalf("advisoryCorpusOption: %v", err)
 			}
 			got := f.intelProvenance(floorWorkSet(nil)).ScanWindow
-			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Report scan_window = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -224,6 +235,9 @@ func TestActionConsumesResolvedScanWindow(t *testing.T) {
 		{"run", "IN_ADVISORY_CORPUS_POLICY", policy},
 		{"run", "ASSAY_ADVISORY_CORPUS_POLICY", policy},
 		{"run", "ASSAY_SCAN_WINDOW_SOURCE", source},
+		{"run", "ASSAY_SCAN_WINDOW_API_SOURCE", "${{ steps.scan-window.outputs.api-source }}"},
+		{"scan-window", "FERRALON_LINK_TO_CONSOLE", "${{ inputs.link-to-console }}"},
+		{"scan-window", "FERRALON_RUNS_URL", "${{ inputs.runs-url }}"},
 	} {
 		i, ok := pos[tc.step]
 		if !ok {
@@ -241,3 +255,5 @@ func TestActionConsumesResolvedScanWindow(t *testing.T) {
 		t.Errorf("the bundle step must be gated on the resolved policy, got if: %s", bundle)
 	}
 }
+
+func intPtr(i int) *int { return &i }

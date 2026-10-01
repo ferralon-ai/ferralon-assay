@@ -286,8 +286,10 @@ inputs:
       (default) = the whole corpus via the git fetch, as a fact source only, unless the
       repository sets a window. The workflow Ferralon scaffolds for a console-linked repository
       sets this input (published-24h unless the console says otherwise). The repository's own
-      .github/ferralon.yml scan.window (24h, 7d, 30d or full) overrides this input; the run log
-      and the Report's provenance.intel.scan_window say which applied. The override needs a
+      .github/ferralon.yml scan.window (24h, 7d, 30d or full) overrides this input, and so, on a
+      link-to-console run, does the window the repository's Ferralon policy selects; this input
+      applies when that lookup fails. The run log and the Report's provenance.intel.scan_window
+      say which applied. The override needs a
       scanner release with the scan-window command; with an older release this input applies as
       given. Ignored when advisory-corpus is set. Bundles need a scanner release whose
       -advisory-corpus accepts a bundle file.
@@ -296,8 +298,9 @@ inputs:
   link-to-console:
     description: >-
       Link this run to your Ferralon console. The ONLY switch that decides whether the scan talks
-      to Ferralon at all: 'true' lets it post its scan results and a self-cleanup revoke beacon to
-      the endpoints baked into the pinned scanner release; anything else (including the 'false'
+      to Ferralon at all: 'true' lets it look up the repository's scan window from its Ferralon
+      policy (unless .github/ferralon.yml sets one) and post its scan results and a self-cleanup
+      revoke beacon, at the endpoints baked into the pinned scanner release; anything else (including the 'false'
       default) runs the scan fully standalone — nothing reaches Ferralon. Your code and your
       credentials never leave the runner. The scan fetches dependencies and the Go vulnerability
       database, the same as 'go build' and 'govulncheck' do. Which endpoints a linked run uses is a
@@ -484,9 +487,11 @@ runs:
         echo "plugin-path-dir=$PLUGIN_PATH_DIR" >> "$GITHUB_OUTPUT"
 
     # THE SCAN WINDOW. The window decides which policy the corpus fetch below selects, so it is
-    # resolved here, before the fetch: the repository's .github/ferralon.yml scan.window, else the
-    # advisory-corpus-policy input, else no window (the whole corpus as a fact source, as without
-    # this step). The scanner binary resolves it with the same
+    # resolved here, before the fetch: the repository's .github/ferralon.yml scan.window; else, on a
+    # console-linked run, the window Ferralon's policy for this repository selects (a fail-open
+    # lookup on the same OIDC token the run snapshot uses: any failure moves on, and the log says
+    # why); else the advisory-corpus-policy input; else no window (the whole corpus as a fact
+    # source, as without this step). The scanner binary resolves it with the same
     # parser the scan uses, so the repository file is never read by shell; every value it prints is
     # validated (one of four window names; a policy id). The scan re-checks at run time that the
     # corpus it reads was selected for the repository's window, and fails the run if not.
@@ -509,6 +514,10 @@ runs:
         BIN_DIR: ${{ steps.fetch.outputs.bin-dir }}
         IN_TARGET: ${{ inputs.target }}
         IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        # The policy lookup is gated on the same link switch, and reaches the same API origin, as
+        # the run snapshot; the ACTIONS_ID_TOKEN_REQUEST_* pair is already in the step's env.
+        FERRALON_LINK_TO_CONSOLE: ${{ inputs.link-to-console }}
+        FERRALON_RUNS_URL: ${{ inputs.runs-url }}
       run: |
         set -euo pipefail
         BIN="$BIN_DIR/ferralon-assay-scan"
@@ -692,10 +701,12 @@ runs:
         # from the corpus; without it the corpus is a fact source only. It is the scan window step's
         # policy, which exists only on the repo-fetch route, because advisory-corpus-policy is
         # ignored when advisory-corpus is set. ASSAY_SCAN_WINDOW_SOURCE says how that step chose it,
-        # for the Report. Both are env vars rather than flags on purpose: a scanner release that
+        # and ASSAY_SCAN_WINDOW_API_SOURCE carries Ferralon's source record when the policy lookup
+        # did, for the Report. All are env vars rather than flags on purpose: a scanner release that
         # predates them ignores an unknown env var, whereas an unknown flag fails the run.
         ASSAY_ADVISORY_CORPUS_POLICY: ${{ steps.scan-window.outputs.policy }}
         ASSAY_SCAN_WINDOW_SOURCE: ${{ steps.scan-window.outputs.source }}
+        ASSAY_SCAN_WINDOW_API_SOURCE: ${{ steps.scan-window.outputs.api-source }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
         # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
         # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two

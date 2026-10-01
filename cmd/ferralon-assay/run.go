@@ -12,6 +12,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/internal/repoconfig"
 	"github.com/ferralon-ai/ferralon-assay/internal/resultsink/ferralon"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/projection"
@@ -298,6 +299,8 @@ type runFlags struct {
 	resolvedSource   pipeline.AdvisorySource // the chain the pass resolves facts through
 	corpusReader     pipeline.AdvisorySource // the configured corpus's own reader; nil when none
 	resolvedPolicy   string                  // the declared advisory policy id; "" when none
+	repoWindow       repoconfig.Window       // the scanned tree's scan.window; set from acquireTarget
+	resolvedWindow   *report.ScanWindow      // the scan window the declared policy stands for; nil when none
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
@@ -470,6 +473,7 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.resolvedSource = pipeline.NewTableSource()
 	f.corpusReader = nil
 	f.resolvedPolicy = ""
+	f.resolvedWindow = nil
 
 	required, err := f.advisoryCorpusRequired()
 	if err != nil {
@@ -477,6 +481,9 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	}
 	policy, err := f.advisoryCorpusPolicy()
 	if err != nil {
+		return nil, err
+	}
+	if err := f.recordScanWindow(policy); err != nil {
 		return nil, err
 	}
 
@@ -635,6 +642,7 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
+	p.ScanWindow = f.resolvedWindow
 	return p
 }
 
@@ -727,6 +735,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		return nil, err
 	}
 
+	f.repoWindow = acq.window
 	assessOptions := []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin)}
 	if opt, err := f.advisoryCorpusOption(); err != nil {
 		acq.cleanup()

@@ -585,6 +585,10 @@ type IntelProvenance struct {
 	// (a bundle file, or a manifest published without the block). It is reported as the producer
 	// wrote it and is not checked against CorpusPolicy or CorpusDigest.
 	CorpusManifest *CorpusManifestProvenance `json:"corpus_manifest,omitempty"`
+	// ScanWindow records which scan window the corpus policy stands for and why that window
+	// was chosen. Nil when nothing selected a window: no policy was declared, and the corpus,
+	// if any, is a fact source only.
+	ScanWindow *ScanWindow `json:"scan_window,omitempty"`
 }
 
 // CorpusManifestProvenance mirrors a policy manifest's `provenance` block. It is audit metadata
@@ -604,6 +608,41 @@ type CorpusManifestProvenance struct {
 	// SelectionIndexDigest is the digest of the selection index the selection read.
 	SelectionIndexDigest string `json:"selection_index_digest,omitempty"`
 }
+
+// ScanWindow is the resolved scan window and where it came from, so a reader can tell how far
+// back a result looked and why. It is disclosure, like the rest of IntelProvenance.
+type ScanWindow struct {
+	// Window is the window name (24h, 7d, 30d, full). Empty when the declared policy is not
+	// one of the window policies.
+	Window string `json:"window,omitempty"`
+	// Policy is the advisory corpus policy the window resolved to; equals CorpusPolicy.
+	Policy string `json:"policy"`
+	// ResolvedVia names the resolution step that supplied the window — one of the
+	// ScanWindowVia* constants. The vocabulary is OPEN: a reader that meets an
+	// unrecognized value must surface it rather than drop it.
+	ResolvedVia string `json:"resolved_via"`
+	// Source identifies the setting behind the window within that step.
+	Source ScanWindowSource `json:"source"`
+}
+
+// ScanWindowSource identifies the setting a scan window came from.
+type ScanWindowSource struct {
+	// Kind is one of the ScanWindowVia* constants today. The vocabulary is OPEN.
+	Kind string `json:"kind"`
+}
+
+// The scan window source vocabulary, in precedence order. It is open — these are the values
+// in use today.
+const (
+	// ScanWindowViaRepoConfig is the repository's own .github/ferralon.yml scan.window.
+	ScanWindowViaRepoConfig = "repo_config"
+	// ScanWindowViaPolicyInput is the policy the workflow declared (the Action's
+	// advisory-corpus-policy input, or -advisory-corpus-policy on the CLI).
+	ScanWindowViaPolicyInput = "policy_input"
+	// ScanWindowViaNone means nothing selected a window. It is what the scan-window command
+	// reports as its source then; a Report omits ScanWindow instead of recording it.
+	ScanWindowViaNone = "none"
+)
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.
 const (

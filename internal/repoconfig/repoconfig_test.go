@@ -77,7 +77,17 @@ func TestParse_MalformedFailsClosed(t *testing.T) {
 		"two documents":       "version: 1\n---\nversion: 1\n",
 		"alias":               "x: &b baseline\nversion: 1\nanalyze:\n  ref: *b\n",
 		"version is string":   "version: one\n",
-		"unsupported version": "version: 2\nanalyze:\n  ref: baseline\n",
+		"unsupported version": "version: 3\nanalyze:\n  ref: baseline\n",
+		"version zero":        "version: 0\n",
+		"scan not map":        "version: 2\nscan: 7d\n",
+		"window unknown":      "version: 2\nscan:\n  window: 90d\n",
+		"window policy id":    "version: 2\nscan:\n  window: published-7d\n",
+		"window wrong case":   "version: 2\nscan:\n  window: Full\n",
+		"window is a number":  "version: 2\nscan:\n  window: 30\n",
+		"window is a list":    "version: 2\nscan:\n  window: [7d]\n",
+		"window on v1":        "version: 1\nscan:\n  window: 7d\n",
+		"window, no version":  "scan:\n  window: 7d\n",
+		"window before v1":    "scan:\n  window: 7d\nversion: 1\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, _, err := Parse([]byte(body))
@@ -206,5 +216,64 @@ func TestLoad_RefusesOversizedFile(t *testing.T) {
 	writeConfig(t, root, "version: 1\n# "+strings.Repeat("x", maxBytes)+"\n")
 	if _, _, err := Load(root); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized config must be refused, got %v", err)
+	}
+}
+
+func TestParse_ScanWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       Window
+		policy     string
+	}{
+		{"24h", "version: 2\nscan:\n  window: 24h\n", Window24h, "published-24h"},
+		{"7d", "version: 2\nscan:\n  window: 7d\n", Window7d, "published-7d"},
+		{"30d", "version: 2\nscan:\n  window: 30d\n", Window30d, "published-30d"},
+		{"full", "version: 2\nscan:\n  window: full\n", WindowFull, "full"},
+		{"quoted", "version: 2\nscan:\n  window: \"7d\"\n", Window7d, "published-7d"},
+		{"version after scan", "scan:\n  window: 30d\nversion: 2\n", Window30d, "published-30d"},
+		{"with analyze.ref", "version: 2\nanalyze:\n  ref: baseline\nscan:\n  window: full\n", WindowFull, "full"},
+		{"null window", "version: 2\nscan:\n  window: ~\n", "", ""},
+		{"empty scan", "version: 2\nscan:\n", "", ""},
+		{"v2 without scan", "version: 2\n", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, warns, err := Parse([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if len(warns) != 0 {
+				t.Fatalf("a clean v2 file must not warn, got %v", warns)
+			}
+			if cfg.Version != 2 || cfg.Scan.Window != tc.want || cfg.Scan.Window.Policy() != tc.policy {
+				t.Fatalf("got %+v (policy %q), want window %q policy %q", cfg, cfg.Scan.Window.Policy(), tc.want, tc.policy)
+			}
+		})
+	}
+}
+
+// An unknown key inside scan warns like one inside analyze; the window beside it still applies.
+func TestParse_UnknownScanKeyWarns(t *testing.T) {
+	cfg, warns, err := Parse([]byte("version: 2\nscan:\n  window: 7d\n  depth: 3\n"))
+	if err != nil || cfg.Scan.Window != Window7d {
+		t.Fatalf("got cfg=%+v err=%v", cfg, err)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], `"scan.depth"`) {
+		t.Fatalf("expected a warning naming scan.depth, got %v", warns)
+	}
+}
+
+func TestWindowForPolicy(t *testing.T) {
+	for policy, want := range map[string]Window{
+		"published-24h": Window24h,
+		"published-7d":  Window7d,
+		"published-30d": Window30d,
+		"full":          WindowFull,
+		"emerging-24h":  "",
+		"kev":           "",
+		"":              "",
+	} {
+		if got := WindowForPolicy(policy); got != want {
+			t.Errorf("WindowForPolicy(%q) = %q, want %q", policy, got, want)
+		}
 	}
 }

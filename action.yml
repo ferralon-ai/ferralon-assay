@@ -67,9 +67,11 @@
 # the `-advisory-corpus` flag; see the note on `advisory-corpus-repo` below. On its own a corpus
 # supplies advisory FACTS; it does not change which advisories the scan evaluates.
 #
-# With `advisory-corpus-policy` also set, the policy defines the scan's work set: the built-in floor
-# plus every advisory in the policy whose affected package is one of the repository's own
-# dependencies. The repo fetch downloads that policy's prebuilt bundle
+# On the `advisory-corpus-repo` route, a scan window can pick one corpus policy: the repository's
+# .github/ferralon.yml `scan.window` when it sets one, else `advisory-corpus-policy`. A picked
+# policy defines the scan's work set: the built-in floor plus every advisory in the policy whose
+# affected package is one of the repository's own dependencies. With neither set, the whole corpus
+# is fetched as a fact source and the work set is unchanged. For a policy, the repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
 # verifies it before the scan: the bundle's sha256 against the release's bundles.json, and its
 # member set against the policy manifest read from the git commit the release tag points at.
@@ -264,10 +266,10 @@ inputs:
       Branch, tag, or commit SHA of advisory-corpus-repo to fetch (all three resolve the same way).
       A commit SHA is the reproducible choice. Independently of this ref, the scanner records the
       corpus's own corpus_digest on the Report, which is what identifies the exact corpus state a
-      run read. With advisory-corpus-policy set, a corpus release tag (corpus-<12 hex>) is the
-      reproducible choice, and the default main (or latest) resolves to the most recent corpus
-      release rather than the branch head; a branch or commit SHA names no release, so it takes the
-      git fetch.
+      run read. With a scan window selecting a policy (advisory-corpus-policy or the repository's
+      scan.window), a corpus release tag (corpus-<12 hex>) is the reproducible choice, and the
+      default main (or latest) resolves to the most recent corpus release rather than the branch
+      head; a branch or commit SHA names no release, so it takes the git fetch.
     required: false
     default: main
   advisory-corpus-policy:
@@ -281,9 +283,14 @@ inputs:
       it first (sha256 against the release's bundles.json; members against the policy manifest at
       the release's git tag). A bundle that fails any check FAILS the run. A policy the release
       publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
-      (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
-      advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a
-      bundle file.
+      (default) = the whole corpus via the git fetch, as a fact source only, unless the
+      repository sets a window. The workflow Ferralon scaffolds for a console-linked repository
+      sets this input (published-24h unless the console says otherwise). The repository's own
+      .github/ferralon.yml scan.window (24h, 7d, 30d or full) overrides this input; the run log
+      and the Report's provenance.intel.scan_window say which applied. The override needs a
+      scanner release with the scan-window command; with an older release this input applies as
+      given. Ignored when advisory-corpus is set. Bundles need a scanner release whose
+      -advisory-corpus accepts a bundle file.
     required: false
     default: ""
   link-to-console:
@@ -472,6 +479,51 @@ runs:
         echo "bin-dir=$WORK" >> "$GITHUB_OUTPUT"
         echo "plugin-path-dir=$PLUGIN_PATH_DIR" >> "$GITHUB_OUTPUT"
 
+    # THE SCAN WINDOW. The window decides which policy the corpus fetch below selects, so it is
+    # resolved here, before the fetch: the repository's .github/ferralon.yml scan.window, else the
+    # advisory-corpus-policy input, else no window (the whole corpus as a fact source, as without
+    # this step). The scanner binary resolves it with the same
+    # parser the scan uses, so the repository file is never read by shell; every value it prints is
+    # validated (one of four window names; a policy id). The scan re-checks at run time that the
+    # corpus it reads was selected for the repository's window, and fails the run if not.
+    #
+    # Its outputs DO steer the corpus steps, unlike the configuration-derived paths below. That is
+    # safe because this step either succeeds or fails the job, and an empty policy output means it
+    # resolved no window, which is the configuration where the corpus steps take no policy. It is
+    # skipped only when no corpus repo is configured, which is exactly when the outputs should be
+    # empty.
+    #
+    # A scanner release without the scan-window command reads no scan.window either. A release that
+    # reads .github/ferralon.yml at all rejects a version 2 file, the only version that may set one;
+    # a release that predates the file does not read it. For either, the step passes
+    # advisory-corpus-policy through unchanged.
+    - name: Resolve the scan window
+      id: scan-window
+      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != ''
+      shell: bash
+      env:
+        BIN_DIR: ${{ steps.fetch.outputs.bin-dir }}
+        IN_TARGET: ${{ inputs.target }}
+        IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+      run: |
+        set -euo pipefail
+        BIN="$BIN_DIR/ferralon-assay-scan"
+        # Captured first, not piped: grep -q exiting early would SIGPIPE the scanner and, under
+        # pipefail, read as "no such command".
+        usage="$("$BIN" help)"
+        if grep -q ' scan-window ' <<<"$usage"; then
+          "$BIN" scan-window -target "$IN_TARGET" -advisory-corpus-policy "$IN_ADVISORY_CORPUS_POLICY" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::ferralon-assay: this scanner release has no scan-window command, so .github/ferralon.yml scan.window does not apply; using advisory-corpus-policy as given." >&2
+          if [ -n "$IN_ADVISORY_CORPUS_POLICY" ]; then
+            if ! [[ "$IN_ADVISORY_CORPUS_POLICY" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+              echo "::error::ferralon-assay: advisory-corpus-policy '$IN_ADVISORY_CORPUS_POLICY' is not a policy id (lowercase letters, digits, '-')." >&2
+              exit 1
+            fi
+            printf 'policy=%s\nsource=policy_input\n' "$IN_ADVISORY_CORPUS_POLICY" >> "$GITHUB_OUTPUT"
+          fi
+        fi
+
     # The corpus checkout directory is a FIXED, configuration-derived path, spelled out identically
     # here and in the run step below. It is deliberately NOT passed between the steps as a step
     # output: a step output only exists when the step ran and succeeded, so consuming one would make
@@ -487,12 +539,12 @@ runs:
     # the bundle route did not apply.
     - name: Fetch the advisory corpus bundle (release asset, digest-pinned)
       id: corpus-bundle
-      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-policy != ''
+      if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && steps.scan-window.outputs.policy != ''
       shell: bash
       env:
         CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
         CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
-        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        CORPUS_POLICY: ${{ steps.scan-window.outputs.policy }}
       run: |
         set -euo pipefail
         DEST="$RUNNER_TEMP/ferralon-assay-corpus-bundle" bash "$GITHUB_ACTION_PATH/scripts/fetch-corpus-bundle.sh"
@@ -508,7 +560,7 @@ runs:
         # The bundle step's resolved release tag when it ran (so a manifest-only policy reads the
         # same corpus state the release names), else the input ref unchanged.
         CORPUS_REF: ${{ steps.corpus-bundle.outputs.git-ref || inputs.advisory-corpus-ref }}
-        CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        CORPUS_POLICY: ${{ steps.scan-window.outputs.policy }}
       run: |
         set -euo pipefail
         DEST="$RUNNER_TEMP/ferralon-assay-corpus"
@@ -619,7 +671,7 @@ runs:
         IN_INCLUDE_HOUSE_CANARIES: ${{ inputs.include-house-canaries }}
         IN_ADVISORY_CORPUS: ${{ inputs.advisory-corpus }}
         IN_ADVISORY_CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
-        IN_ADVISORY_CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        IN_ADVISORY_CORPUS_POLICY: ${{ steps.scan-window.outputs.policy }}
         # THE REQUIREMENT DECLARATION. Computed from this action's INPUTS ALONE — it names no step,
         # reads no step output, and consults no step status, so it says "this workflow was
         # configured to scan against a corpus", never "a fetch worked". That distinction is the
@@ -633,11 +685,13 @@ runs:
         # — a supported, unchanged configuration — working for every consumer who sets no corpus.
         ASSAY_ADVISORY_CORPUS_REQUIRED: ${{ (inputs.advisory-corpus != '' || inputs.advisory-corpus-repo != '') && '1' || '0' }}
         # THE POLICY DECLARATION. Declaring the policy is what makes the scanner build its work set
-        # from the corpus; without it the corpus is a fact source only. It is set only for the
-        # repo-fetch route, because advisory-corpus-policy is ignored when advisory-corpus is set.
-        # Passed as an env var rather than a flag on purpose: a scanner release that predates it
-        # ignores an unknown env var, whereas an unknown flag fails the run.
-        ASSAY_ADVISORY_CORPUS_POLICY: ${{ (inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '') && inputs.advisory-corpus-policy || '' }}
+        # from the corpus; without it the corpus is a fact source only. It is the scan window step's
+        # policy, which exists only on the repo-fetch route, because advisory-corpus-policy is
+        # ignored when advisory-corpus is set. ASSAY_SCAN_WINDOW_SOURCE says how that step chose it,
+        # for the Report. Both are env vars rather than flags on purpose: a scanner release that
+        # predates them ignores an unknown env var, whereas an unknown flag fails the run.
+        ASSAY_ADVISORY_CORPUS_POLICY: ${{ steps.scan-window.outputs.policy }}
+        ASSAY_SCAN_WINDOW_SOURCE: ${{ steps.scan-window.outputs.source }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
         # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
         # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two

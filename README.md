@@ -96,8 +96,8 @@ Ferralon.
 | | |
 |---|---|
 | **What turns it on** | Setting `link-to-console: true` in the workflow. It is the *only* switch — no other input or default enables any part of this. |
-| **What it does when on** | After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v2` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
-| **What data leaves** | Your scan results (the `Report`) and, for a run of the canonical ref, the run-snapshot verdict layer — sent to the ingest/run-snapshot endpoints baked into the pinned release. Your code and credentials never leave the runner regardless of this switch. |
+| **What it does when on** | Before the corpus fetch, when `.github/ferralon.yml` sets no `scan.window`, the run asks the Ferralon API (the origin of the run-snapshot endpoint below) which [scan window](#choosing-the-scan-window) your Ferralon policy selects for this repository, under the workflow's OIDC token; that lookup is fail-open — any failure falls back to `advisory-corpus-policy` and the run log says why. After each run, the scan beacons your results to the ingest endpoint baked into the pinned scanner release (no Ferralon hostname appears in your workflow file). When the run analyzed the repository's canonical ref (the `analyze.ref` set in `.github/ferralon.yml`, else the default branch), it also pushes a `tegron.report.v2` verdict layer to a run-snapshot endpoint, under the workflow's own GitHub Actions OIDC token (`id-token: write`, audience `ferralon-ingest`); that push is fail-open — a rejected or unreachable endpoint only warns, it never fails the job. PR runs and runs of any other ref stay stateless and never file a run; a repository with no `analyze.ref` pushes on exactly the default-branch runs, as before. If a cryptographically-signed HTTP-410 install-revoke (the backing Ferralon App was uninstalled) is confirmed on two consecutive runs, the scan removes its own footprint: it deletes the workflow file (direct push, or a removal PR if it cannot push), and deletes the default state ref `refs/assay/state` — never a custom `state-ref` you configured. If git or API writes are refused, it degrades to disabling itself and opening a one-step manual Issue instead. As the release documents the flow, the removal fires only on a signature that verifies against the revoke key baked into the release and is bound to *this* repository, never on a transient outage — the signature check itself runs inside the pinned binary and is not verifiable from this repository's source. |
+| **What data leaves** | The scan-window lookup sends nothing but the OIDC token, whose claims identify the repository, its owner, and the workflow run (ref, commit, workflow, and triggering actor). Your scan results (the `Report`) and, for a run of the canonical ref, the run-snapshot verdict layer — sent to the ingest/run-snapshot endpoints baked into the pinned release. Your code and credentials never leave the runner regardless of this switch. |
 | **How to keep it permanently off** | Leave `link-to-console` unset, or delete the line entirely. Deleting it disables the link outright; it never silently re-enables. |
 
 This is a factual account of what the switch does today, not a design decision — see
@@ -256,7 +256,14 @@ or `full`. Each window is one corpus policy: `published-24h`, `published-7d`, `p
 corpus, from the first of these that sets one:
 
 1. `scan.window` in the repository's `.github/ferralon.yml`;
-2. the `advisory-corpus-policy` input.
+2. on a run with `link-to-console: true`, the window your Ferralon policy selects for the
+   repository, looked up from the Ferralon API under the workflow's OIDC token;
+3. the `advisory-corpus-policy` input.
+
+The lookup is skipped when the repository sets a window, and it never fails the run: with no OIDC
+token (as on a pull request from a fork), a network error, a timeout or an answer this scanner does
+not understand, the Action uses `advisory-corpus-policy` and the run log says why. A request gets
+3 seconds and one retry on a network error or a server error, 10 seconds in all.
 
 With neither set there is no window: the Action fetches the whole corpus as a fact source and the
 work set is unchanged. The workflow Ferralon scaffolds for a console-linked repository sets
@@ -295,12 +302,15 @@ under `provenance.intel.scan_window`:
 }
 ```
 
-`resolved_via` and `source.kind` are `repo_config` or `policy_input`; treat any other value as one
-to surface, not drop. With no window, the `Report` has no `scan_window`. `window` is absent when `advisory-corpus-policy` names a policy
+`resolved_via` is `repo_config`, `api` or `policy_input`; treat any other value as one to surface,
+not drop. Under `api`, `source.kind` says which policy applied: `customer` (your own), `ancestor` (one
+inherited from a customer above yours, with `distance` levels up) or `default` (Ferralon's, when no
+customer sets one), and `customer` and `ancestor` carry an opaque `customer_id`. Otherwise
+`source.kind` equals `resolved_via`. With no window, the `Report` has no `scan_window`. `window` is absent when `advisory-corpus-policy` names a policy
 that is not one of the four windows. `ferralon-assay scan-window -target <dir>
 -advisory-corpus-policy <policy>` prints the same resolution as `window=`, `policy=` and `source=`
-lines (`source=none`, with the other two empty, when nothing selects a window); it is the command
-the Action runs.
+lines (`source=none`, with the other two empty, when nothing selects a window, and an `api-source=`
+line with the source record when the lookup chose it); it is the command the Action runs.
 
 ## Scope
 

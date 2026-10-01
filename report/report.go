@@ -627,8 +627,16 @@ type ScanWindow struct {
 
 // ScanWindowSource identifies the setting a scan window came from.
 type ScanWindowSource struct {
-	// Kind is one of the ScanWindowVia* constants today. The vocabulary is OPEN.
+	// Kind is the ResolvedVia value, or — when ResolvedVia is ScanWindowViaAPI — one of the
+	// ScanWindowKind* constants. The vocabulary is OPEN.
 	Kind string `json:"kind"`
+	// CustomerID is the opaque id of the Ferralon customer whose policy set the window, as the
+	// run reported it: a consumer checks it against its own records and never authorizes on it.
+	// Present for ScanWindowKindCustomer and ScanWindowKindAncestor only.
+	CustomerID string `json:"customer_id,omitempty"`
+	// Distance is how many levels above the repository's own customer that policy sits: 0
+	// for ScanWindowKindCustomer, 1 or more for ScanWindowKindAncestor. Absent otherwise.
+	Distance *int `json:"distance,omitempty"`
 }
 
 // The scan window source vocabulary, in precedence order. It is open — these are the values
@@ -639,9 +647,23 @@ const (
 	// ScanWindowViaPolicyInput is the policy the workflow declared (the Action's
 	// advisory-corpus-policy input, or -advisory-corpus-policy on the CLI).
 	ScanWindowViaPolicyInput = "policy_input"
+	// ScanWindowViaAPI is the policy Ferralon reports for a console-linked repository;
+	// Source.Kind then says which policy (a ScanWindowKind* constant).
+	ScanWindowViaAPI = "api"
 	// ScanWindowViaNone means nothing selected a window. It is what the scan-window command
 	// reports as its source then; a Report omits ScanWindow instead of recording it.
 	ScanWindowViaNone = "none"
+)
+
+// The ScanWindowSource.Kind vocabulary under ScanWindowViaAPI. It is open.
+const (
+	// ScanWindowKindCustomer is the policy of the customer the repository's organization
+	// belongs to.
+	ScanWindowKindCustomer = "customer"
+	// ScanWindowKindAncestor is a policy inherited from a customer above that one.
+	ScanWindowKindAncestor = "ancestor"
+	// ScanWindowKindDefault is Ferralon's default, used when no customer sets a policy.
+	ScanWindowKindDefault = "default"
 )
 
 // The WorkSetSource vocabulary. It is open — these are the values in use today.

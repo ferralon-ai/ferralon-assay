@@ -22,7 +22,6 @@ package github
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -78,7 +77,7 @@ func (s *Tier1Issue) Publish(ctx context.Context, res Result) error {
 			return err
 		}
 		if status < 200 || status >= 300 {
-			return fmt.Errorf("resultsink/github: update dashboard issue: unexpected status %d", status)
+			return &StatusError{Op: "update dashboard issue", Status: status}
 		}
 		return nil
 	}
@@ -88,7 +87,7 @@ func (s *Tier1Issue) Publish(ctx context.Context, res Result) error {
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("resultsink/github: create dashboard issue: unexpected status %d", status)
+		return &StatusError{Op: "create dashboard issue", Status: status}
 	}
 	return nil
 }

@@ -20,7 +20,6 @@ package github
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
@@ -75,7 +74,7 @@ func (s *Tier1PRComment) Publish(ctx context.Context, res Result) error {
 			return err
 		}
 		if status < 200 || status >= 300 {
-			return fmt.Errorf("resultsink/github: update sticky comment: unexpected status %d", status)
+			return &StatusError{Op: "update sticky comment", Status: status}
 		}
 		return nil
 	}
@@ -85,7 +84,7 @@ func (s *Tier1PRComment) Publish(ctx context.Context, res Result) error {
 		return err
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("resultsink/github: create sticky comment: unexpected status %d", status)
+		return &StatusError{Op: "create sticky comment", Status: status}
 	}
 	return nil
 }

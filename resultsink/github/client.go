@@ -124,6 +124,20 @@ func (c *apiClient) do(ctx context.Context, method, path string, body, out any) 
 	return resp.StatusCode, nil
 }
 
+// StatusError is a Tier 1 write that reached GitHub and came back non-2xx. It carries the status
+// so a caller can tell a write GitHub refused (a 4xx: Issues disabled on the repository, a token
+// without the permission) from one it failed to serve (a 5xx).
+type StatusError struct {
+	// Op names the write, e.g. "create dashboard issue".
+	Op string
+	// Status is the HTTP status GitHub returned.
+	Status int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("resultsink/github: %s: unexpected status %d", e.Op, e.Status)
+}
+
 // --- Issue / comment API shapes (only the fields the sinks use) ---
 
 type ghIssueComment struct {

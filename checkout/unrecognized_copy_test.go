@@ -55,7 +55,7 @@ func TestGitCheckout_UnrecognizedCopy(t *testing.T) {
 	src := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},
-		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "seed"},
+		{"commit", "--allow-empty", "-q", "-m", "seed"},
 	} {
 		cmd := gittest.Command(args...)
 		cmd.Dir = src

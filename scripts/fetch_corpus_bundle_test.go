@@ -106,7 +106,7 @@ func (c fakeCorpus) write(t *testing.T, root string) (ghBase, rawBase string) {
 	}
 	run(t, src, "git", "init", "-q")
 	run(t, src, "git", "add", ".")
-	run(t, src, "git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "corpus")
+	run(t, src, "git", "commit", "-q", "-m", "corpus")
 	run(t, src, "git", "tag", fakeTag)
 	out, err := gittest.Command("-C", src, "rev-parse", "HEAD").Output()
 	if err != nil {

@@ -46,12 +46,11 @@ func writeResolverRepo(t *testing.T, root string, commits int, tags []resolverTa
 	resolverGit(t, src, "init", "-q")
 	var shas []string
 	for i := 0; i < commits; i++ {
-		resolverGit(t, src, "-c", "user.name=t", "-c", "user.email=t@example.com",
-			"commit", "-q", "--allow-empty", "-m", "c")
+		resolverGit(t, src, "commit", "-q", "--allow-empty", "-m", "c")
 		shas = append(shas, resolverGit(t, src, "rev-parse", "HEAD"))
 	}
 	for _, tg := range tags {
-		args := []string{"-c", "user.name=t", "-c", "user.email=t@example.com", "tag"}
+		args := []string{"tag"}
 		if tg.annotated {
 			args = append(args, "-a", "-m", tg.name)
 		}

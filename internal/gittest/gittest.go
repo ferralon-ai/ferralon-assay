@@ -99,11 +99,9 @@ func ScrubProcess() {
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
 		if isScrubbed(key) {
-			os.Unsetenv(key)
+			if err := os.Unsetenv(key); err != nil {
+				panic("gittest: unset " + key + ": " + err.Error())
+			}
 		}
-	}
-	for _, kv := range identity {
-		name, value, _ := strings.Cut(kv, "=")
-		os.Setenv(name, value)
 	}
 }

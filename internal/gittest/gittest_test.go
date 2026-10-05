@@ -2,6 +2,7 @@ package gittest
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -41,7 +42,7 @@ func TestCommandIgnoresInheritedRepository(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
-	if _, err := os.Stat(fixture + "/.git"); err != nil {
+	if _, err := os.Stat(filepath.Join(fixture, ".git")); err != nil {
 		t.Fatalf("fixture was not initialised: %v", err)
 	}
 	if entries, _ := os.ReadDir(enclosing); len(entries) != 0 {

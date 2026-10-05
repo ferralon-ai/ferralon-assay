@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
 
@@ -18,7 +19,7 @@ func newTempStore(t *testing.T) statestore.StateStore {
 		t.Skip("git not on PATH")
 	}
 	dir := t.TempDir()
-	cmd := exec.Command("git", "-C", dir, "init", "--bare", "-q")
+	cmd := gittest.Command("-C", dir, "init", "--bare", "-q")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}

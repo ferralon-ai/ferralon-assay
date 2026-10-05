@@ -12,6 +12,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 // metricsReader is a package-scoped, delta-temporality ManualReader installed as the global
@@ -28,6 +29,7 @@ var metricsReader = sdkmetric.NewManualReader(sdkmetric.WithTemporalitySelector(
 ))
 
 func TestMain(m *testing.M) {
+	gittest.ScrubProcess()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(metricsReader))
 	otel.SetMeterProvider(mp)
 	os.Exit(m.Run())

@@ -2,9 +2,10 @@ package checkout
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 // allLanguageMarkers is the marker enumeration every "not a recognized source tree" error must
@@ -56,7 +57,7 @@ func TestGitCheckout_UnrecognizedCopy(t *testing.T) {
 		{"init", "-q"},
 		{"-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "seed"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := gittest.Command(args...)
 		cmd.Dir = src
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

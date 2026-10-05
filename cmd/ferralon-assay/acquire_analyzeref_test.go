@@ -4,12 +4,12 @@ import (
 	"context"
 	"flag"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 // The fixture mirrors the real case that motivated analyze.ref: an upstream whose default branch
@@ -18,7 +18,7 @@ import (
 
 func gitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", append([]string{"-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "init.defaultBranch=main", "-c", "protocol.file.allow=always"}, args...)...)
+	cmd := gittest.Command(append([]string{"-c", "init.defaultBranch=main", "-c", "protocol.file.allow=always"}, args...)...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

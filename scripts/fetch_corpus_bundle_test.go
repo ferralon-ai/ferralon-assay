@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 const (
@@ -62,7 +64,7 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = append(gittest.Env(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
@@ -106,7 +108,7 @@ func (c fakeCorpus) write(t *testing.T, root string) (ghBase, rawBase string) {
 	run(t, src, "git", "add", ".")
 	run(t, src, "git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "corpus")
 	run(t, src, "git", "tag", fakeTag)
-	out, err := exec.Command("git", "-C", src, "rev-parse", "HEAD").Output()
+	out, err := gittest.Command("-C", src, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

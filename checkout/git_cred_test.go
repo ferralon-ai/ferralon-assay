@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 const testToken = "ghs_TEG042s3cr3tInstallationToken" // sentinel: MUST NOT appear in argv/error/disk
@@ -363,7 +365,7 @@ func TestCredentialHelperDeliversTokenToRealGit(t *testing.T) {
 
 	args := append(credentialConfigArgs("github.com"), "credential", "fill")
 	cmd := exec.Command("git", args...)
-	cmd.Env = credentialEnv(cred)
+	cmd.Env = gittest.Scrub(credentialEnv(cred))
 	cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

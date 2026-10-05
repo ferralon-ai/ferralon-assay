@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -323,9 +324,13 @@ func surfaceFailureNote(sf surface, err error) string {
 	if !errors.As(err, &se) {
 		return fmt.Sprintf("The %s could not be updated; the next run tries again.", sf.name)
 	}
-	if se.Status >= 400 && se.Status < 500 {
+	switch se.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
 		return fmt.Sprintf("GitHub refused the %s write (HTTP %d). %s; set the Action input `%s: false` to turn this surface off.",
 			sf.name, se.Status, sf.refusal, sf.input)
+	}
+	if se.Status >= 400 && se.Status < 500 {
+		return fmt.Sprintf("GitHub rejected the %s write (HTTP %d).", sf.name, se.Status)
 	}
 	return fmt.Sprintf("GitHub could not take the %s write (HTTP %d); the next run tries again.", sf.name, se.Status)
 }

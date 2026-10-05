@@ -26,6 +26,7 @@ func TestPublishAllSurfaceFailuresAreBestEffort(t *testing.T) {
 		localFails    bool
 		wantErr       bool
 		wantSummary   []string // substrings; nil means the summary file must not be written
+		wantAbsent    []string // substrings the summary must not contain
 		wantWarnings  int
 	}{
 		{
@@ -66,6 +67,22 @@ func TestPublishAllSurfaceFailuresAreBestEffort(t *testing.T) {
 			issueStatus:   http.StatusBadGateway,
 			commentStatus: http.StatusCreated,
 			wantSummary:   []string{"could not take the dashboard Issue write (HTTP 502)", "next run tries again"},
+			wantWarnings:  1,
+		},
+		{
+			name:          "payload rejected: 422 asserts no cause",
+			issueStatus:   http.StatusUnprocessableEntity,
+			commentStatus: http.StatusCreated,
+			wantSummary:   []string{"GitHub rejected the dashboard Issue write (HTTP 422)"},
+			wantAbsent:    []string{"Issues may be disabled", "`issue: false`"},
+			wantWarnings:  1,
+		},
+		{
+			name:          "rate limited: 429 asserts no cause",
+			issueStatus:   http.StatusCreated,
+			commentStatus: http.StatusTooManyRequests,
+			wantSummary:   []string{"GitHub rejected the pull request comment write (HTTP 429)"},
+			wantAbsent:    []string{"`pull-requests: write`", "`pr-comment: false`"},
 			wantWarnings:  1,
 		},
 		{
@@ -147,6 +164,11 @@ func TestPublishAllSurfaceFailuresAreBestEffort(t *testing.T) {
 			for _, want := range tc.wantSummary {
 				if !strings.Contains(string(b), want) {
 					t.Errorf("job summary missing %q:\n%s", want, b)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(string(b), absent) {
+					t.Errorf("job summary contains %q:\n%s", absent, b)
 				}
 			}
 		})

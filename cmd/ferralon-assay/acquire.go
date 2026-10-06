@@ -200,6 +200,9 @@ func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
 		if bin != "" {
 			return plugin.NewPythonPlugin(plugin.WithPythonBinaryPath(bin))
 		}
+		if pythonLaneIsCgx() {
+			return newPythonCgxPlugin()
+		}
 		return plugin.NewPythonPlugin()
 	case checkout.LangDotNet:
 		if bin != "" {

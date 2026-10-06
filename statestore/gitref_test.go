@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
@@ -22,7 +23,7 @@ func newTempStore(t *testing.T) *GitRefStore {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := gittest.Command(append([]string{"-C", dir}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
@@ -227,7 +228,7 @@ func TestHeartbeatWritesOnlyChangedCursorBlob(t *testing.T) {
 
 func treeSHAOf(t *testing.T, dir, commit string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "rev-parse", commit+"^{tree}").CombinedOutput()
+	out, err := gittest.Command("-C", dir, "rev-parse", commit+"^{tree}").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse tree: %v\n%s", err, out)
 	}
@@ -236,7 +237,7 @@ func treeSHAOf(t *testing.T, dir, commit string) string {
 
 func treeBlobSHAs(t *testing.T, dir, commit string) map[string]string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "ls-tree", commit+"^{tree}").CombinedOutput()
+	out, err := gittest.Command("-C", dir, "ls-tree", commit+"^{tree}").CombinedOutput()
 	if err != nil {
 		t.Fatalf("ls-tree: %v\n%s", err, out)
 	}

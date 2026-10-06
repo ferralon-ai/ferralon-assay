@@ -4,11 +4,12 @@ package checkout
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 var hex40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -34,15 +35,13 @@ func TestResolveHeadReturnsCommitSHA(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := gittest.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	run("init", "-q")
-	run("config", "user.email", "t@example.com")
-	run("config", "user.name", "t")
 	run("commit", "--allow-empty", "-q", "-m", "seed")
 
 	sha, err := ResolveHead(context.Background(), dir)
@@ -53,7 +52,7 @@ func TestResolveHeadReturnsCommitSHA(t *testing.T) {
 		t.Fatalf("ResolveHead must return a 40-hex SHA, got %q", sha)
 	}
 	// Cross-check against git itself.
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd := gittest.Command("rev-parse", "HEAD")
 	cmd.Dir = dir
 	want, err := cmd.Output()
 	if err != nil {
@@ -92,7 +91,7 @@ func TestNormalizeCloneURL(t *testing.T) {
 
 func gitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := gittest.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -116,8 +115,6 @@ func TestGitCheckoutNonDefaultRef(t *testing.T) {
 
 	origin := t.TempDir()
 	gitT(t, origin, "init", "-q")
-	gitT(t, origin, "config", "user.email", "test@example.test")
-	gitT(t, origin, "config", "user.name", "assay test")
 	// "vulnerable" is the default branch (first branch with a commit, HEAD points here).
 	gitT(t, origin, "checkout", "-q", "-b", "vulnerable")
 	if err := writeFile(filepath.Join(origin, "go.mod"), "module example.com/svc\n\ngo 1.22\n"); err != nil {

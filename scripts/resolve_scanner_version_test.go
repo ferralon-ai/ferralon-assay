@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 const resolverRepo = "acme/scanner"
@@ -24,9 +26,9 @@ type resolverTag struct {
 
 func resolverGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := gittest.Command(args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -44,12 +46,11 @@ func writeResolverRepo(t *testing.T, root string, commits int, tags []resolverTa
 	resolverGit(t, src, "init", "-q")
 	var shas []string
 	for i := 0; i < commits; i++ {
-		resolverGit(t, src, "-c", "user.name=t", "-c", "user.email=t@example.com",
-			"commit", "-q", "--allow-empty", "-m", "c")
+		resolverGit(t, src, "commit", "-q", "--allow-empty", "-m", "c")
 		shas = append(shas, resolverGit(t, src, "rev-parse", "HEAD"))
 	}
 	for _, tg := range tags {
-		args := []string{"-c", "user.name=t", "-c", "user.email=t@example.com", "tag"}
+		args := []string{"tag"}
 		if tg.annotated {
 			args = append(args, "-a", "-m", tg.name)
 		}

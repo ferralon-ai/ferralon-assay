@@ -7,11 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"os/exec"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -110,8 +110,8 @@ func TestRunBaseline_RealGitRefStore(t *testing.T) {
 	dir := t.TempDir()
 	run := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+		cmd := gittest.Command(append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -239,8 +239,8 @@ func TestRunPRInherit_ChangedDepLeavesBaselineByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+		cmd := gittest.Command(append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

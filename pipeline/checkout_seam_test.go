@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 )
 
 func TestInventoryRecordsResolvedBuildDir(t *testing.T) {
@@ -66,12 +66,10 @@ func TestInventoryPinsResolvedCommitSHA(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"init", "-q"},
-		{"config", "user.email", "t@example.com"},
-		{"config", "user.name", "t"},
 		{"add", "."},
 		{"commit", "-q", "-m", "seed"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := gittest.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

@@ -6,13 +6,13 @@ import (
 	"flag"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/gittest"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -25,8 +25,8 @@ import (
 func newStateStore(t *testing.T) (*statestore.GitRefStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	cmd := exec.Command("git", "-C", dir, "init", "--bare", "-q")
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	cmd := gittest.Command("-C", dir, "init", "--bare", "-q")
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init bare: %v: %s", err, out)
 	}
@@ -174,8 +174,8 @@ func TestStateStoreSelection(t *testing.T) {
 
 func TestStateShow_NoReportErrors(t *testing.T) {
 	dir := t.TempDir()
-	cmd := exec.Command("git", "-C", dir, "init", "--bare", "-q")
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	cmd := gittest.Command("-C", dir, "init", "--bare", "-q")
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init bare: %v: %s", err, out)
 	}

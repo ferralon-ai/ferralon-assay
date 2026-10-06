@@ -31,9 +31,6 @@ type acquired struct {
 	// the default path. See provenance.
 	analyzeRef     string
 	analyzedCommit string
-	// window is the scan.window .github/ferralon.yml sets; empty when it sets none, and on a
-	// remote target, which has no config read.
-	window repoconfig.Window
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default
@@ -80,7 +77,6 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 // surfaces as a reachable_candidate the pipeline can enumerate and fire.
 func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool) (*acquired, error) {
 	var buildDir, language, repo, analyzeRef, analyzedCommit string
-	var window repoconfig.Window
 	cleanup := func() {}
 
 	if isRemoteURL(target) {
@@ -110,7 +106,6 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		for _, w := range warnings {
 			fmt.Fprintf(os.Stderr, "warning: %s: %s\n", repoconfig.DefaultPath, w)
 		}
-		window = cfg.Scan.Window
 		if cfg.Analyze.Ref != "" {
 			dir, commit, done, err := checkout.NewGitCheckout().WorktreeAtRef(ctx, absTarget, cfg.Analyze.Ref)
 			if err != nil {
@@ -166,7 +161,6 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 
 		analyzeRef:     analyzeRef,
 		analyzedCommit: analyzedCommit,
-		window:         window,
 	}, nil
 }
 

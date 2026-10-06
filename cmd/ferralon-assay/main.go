@@ -90,11 +90,6 @@ func run() int {
 			fmt.Fprintln(os.Stderr, brand.Name+" state:", err)
 			return 1
 		}
-	case "scan-window":
-		if err := runScanWindow(os.Args[2:], os.Stdout, os.Stderr); err != nil {
-			fmt.Fprintln(os.Stderr, brand.Name+" scan-window:", err)
-			return 1
-		}
 	case "version", "-version", "--version":
 		fmt.Fprintf(os.Stdout, "%s %s\n", brand.Name, version)
 	case "help", "-h", "--help":
@@ -144,7 +139,6 @@ Usage:
   %[1]s pr-inherit [flags]   diff a PR head SBOM vs the stored baseline; inherit or re-analyze
   %[1]s cve-watch  [flags]   scheduled OSV.dev watch; heartbeat or earnest re-analysis
   %[1]s state <op> [flags]   operator views of the persisted StateStore ref (show | export)
-  %[1]s scan-window [flags]  resolve the scan window (.github/ferralon.yml, then the policy input)
   %[1]s version              print the build identity
   %[1]s help                 show this help
 
@@ -183,7 +177,6 @@ func runBaseline(args []string) error {
 	}
 	defer cleanup()
 
-	f.repoWindow = acq.window
 	assessOptions := []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin)}
 	if opt, err := f.advisoryCorpusOption(); err != nil {
 		return err

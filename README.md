@@ -157,11 +157,9 @@ applies to every run mode that scans a local target, including `pr-inherit`.
 With no file, or no `analyze.ref`, nothing changes. The file is treated as untrusted data: a
 malformed file, an unsupported `version`, or a ref that is not a plain branch/tag/SHA name fails the
 run instead of being skipped, and a ref that cannot be fetched fails naming the ref. Keys this
-scanner does not know produce a warning and are ignored, so newer settings that are safe to ignore do
-not break older scanners. A setting an older scanner must not ignore needs a newer `version`, which
-that scanner refuses: `scan.window` (see [Choosing the scan window](#choosing-the-scan-window))
-requires `version: 2`. The fetch uses the credentials `actions/checkout` left in the repository's
-git config; it contacts only your repository's own remote.
+scanner does not know produce a warning and are ignored, so newer settings do not break older
+scanners. The fetch uses the credentials `actions/checkout` left in the repository's git config;
+it contacts only your repository's own remote.
 
 ## What it reports
 
@@ -216,10 +214,8 @@ they were selected from, and the `generator` and `generated_at` of the manifest 
 recorded as the corpus wrote it, for audit, and has no effect on any verdict. A bundle file carries
 no manifest, so a scan that reads a bundle records its digest without this block.
 
-To scan against one corpus policy rather than the whole corpus, choose a
-[scan window](#choosing-the-scan-window): set `advisory-corpus-policy` (for example `published-7d`
-or `full`), or `scan.window` in the repository's `.github/ferralon.yml`. The policy then defines
-what the scan evaluates, not only which
+To scan against one corpus policy rather than the whole corpus, set `advisory-corpus-policy` (for
+example `published-7d` or `full`). The policy then defines what the scan evaluates, not only which
 advisory facts are available: the work set is the built-in floor plus every advisory in the policy
 whose affected package is one of your repository's own dependencies — matched by package identity
 (the Go module path, or the Go standard library for a toolchain advisory; otherwise the ecosystem
@@ -249,60 +245,6 @@ an advisory it lacks still resolves from the table. To make a missing corpus a f
 quiet fall-back to the built-in table, pass `-require-advisory-corpus` or set
 `ASSAY_ADVISORY_CORPUS_REQUIRED` to `true`; the flag wins over the variable. The Action sets that
 declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
-
-### Choosing the scan window
-
-The scan window is how far back the advisories a scan evaluates were published: `24h`, `7d`, `30d`
-or `full`. Each window is one corpus policy: `published-24h`, `published-7d`, `published-30d` and
-`full`. On the `advisory-corpus-repo` route, the Action resolves the window before it fetches the
-corpus, from the first of these that sets one:
-
-1. `scan.window` in the repository's `.github/ferralon.yml`;
-2. the `advisory-corpus-policy` input.
-
-With neither set there is no window: the Action fetches the whole corpus as a fact source and the
-work set is unchanged. The workflow Ferralon scaffolds for a console-linked repository sets
-`advisory-corpus-policy` (`published-24h` unless the console says otherwise).
-
-```yaml
-# .github/ferralon.yml
-version: 2
-scan:
-  window: 7d   # 24h, 7d, 30d or full
-```
-
-The repository's own setting overrides whatever the workflow passes. Like `analyze.ref`, it is read
-from a local target. `scan.window` requires `version: 2`: under `version: 1`, or with no `version`,
-it fails the run, as does any value other than the four windows. Resolving the window needs a
-scanner release with the `scan-window` command; with an older release the Action uses
-`advisory-corpus-policy` as given. A release that reads `.github/ferralon.yml` but predates
-`scan.window` refuses `version: 2`, so a file that sets a window fails the run on it rather than
-being scanned with a different window. A release that predates `.github/ferralon.yml` does not read
-the file at all.
-
-With `scan.window` set, the scan checks that its corpus was selected by the window's policy, and
-fails otherwise. That includes a run with no corpus, a corpus passed through `advisory-corpus`, and a
-CLI run that declares a different policy.
-
-The run log names the window and where it came from, for example
-`scan window: 7d (published-7d) from .github/ferralon.yml scan.window`, and the `Report` records it
-under `provenance.intel.scan_window`:
-
-```json
-"scan_window": {
-  "window": "7d",
-  "policy": "published-7d",
-  "resolved_via": "repo_config",
-  "source": { "kind": "repo_config" }
-}
-```
-
-`resolved_via` and `source.kind` are `repo_config` or `policy_input`; treat any other value as one
-to surface, not drop. With no window, the `Report` has no `scan_window`. `window` is absent when `advisory-corpus-policy` names a policy
-that is not one of the four windows. `ferralon-assay scan-window -target <dir>
--advisory-corpus-policy <policy>` prints the same resolution as `window=`, `policy=` and `source=`
-lines (`source=none`, with the other two empty, when nothing selects a window); it is the command
-the Action runs.
 
 ## Scope
 

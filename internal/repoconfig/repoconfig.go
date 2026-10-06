@@ -6,29 +6,19 @@
 // reflection into arbitrary types), size-capped, required to be a regular file (a symlink could
 // point the reader anywhere on the runner), and schema-validated. No value from it is ever
 // executed or interpolated into a shell string; the one value that reaches a subprocess —
-// analyze.ref — is validated here and handed to git as a single argv element by the caller, and
-// scan.window is one of four fixed names.
+// analyze.ref — is validated here and handed to git as a single argv element by the caller.
 //
-// Schema v2 (v1 is v2 without the scan section):
+// Schema v1:
 //
-//	version: 2
+//	version: 1
 //	analyze:
 //	  ref: <branch|tag|sha>   # optional; default = the ref CI checked out
-//	scan:
-//	  window: 24h|7d|30d|full # optional; overrides the workflow's advisory-corpus-policy
 //
-// Forward compatibility: an unknown key at the top level or inside analyze or scan is a WARNING
-// and the read proceeds, so the schema can grow (e.g. a future analyze.path for monorepos) without
-// breaking older scanners. Malformed YAML, a wrong type, an unsupported version, an invalid ref or
-// an invalid window FAIL CLOSED with an error — a config that says something the scanner cannot
-// honor must never be silently skipped, because the scan would then report on a tree, or a window,
-// the repository did not ask for.
-//
-// That is why scan.window requires an explicit version: 2. A scanner that understands only v1
-// rejects version 2, so a file that sets a window fails closed on it instead of being read as v1
-// with an unknown key — which would warn and scan a window the repository did not choose. A key
-// added later that an older scanner may safely ignore needs no version bump; one it must not
-// ignore does.
+// Forward compatibility: an unknown key at the top level or inside analyze is a WARNING and the
+// read proceeds, so the schema can grow (e.g. a future analyze.path for monorepos) without
+// breaking older scanners. Malformed YAML, a wrong type, an unsupported version or an invalid ref
+// FAIL CLOSED with an error — a config that says something the scanner cannot honor must never be
+// silently skipped, because the scan would then report on a tree the repository did not ask for.
 //
 // Absent file ⇒ the zero Config and no error: the default-preserving path.
 package repoconfig
@@ -50,16 +40,8 @@ import (
 // DefaultPath is where the config file lives, relative to the scan target.
 const DefaultPath = ".github/ferralon.yml"
 
-// SchemaVersion is the newest schema version this scanner understands. It also reads
-// MinSchemaVersion and every version between.
-const SchemaVersion = 2
-
-// MinSchemaVersion is the oldest schema version this scanner understands, and the version assumed
-// when a file omits the field.
-const MinSchemaVersion = 1
-
-// windowSchemaVersion is the first schema version that may set scan.window.
-const windowSchemaVersion = 2
+// SchemaVersion is the only schema version this scanner understands.
+const SchemaVersion = 1
 
 // maxBytes caps how much of the file is read. The v1 schema is a handful of lines; the cap keeps a
 // hostile file (or an alias-expansion bomb) from costing the runner anything.
@@ -71,17 +53,9 @@ const maxRefLen = 255
 // Config is the parsed, validated file. The zero value means "no configuration": scan exactly what
 // is on disk, as before the file existed.
 type Config struct {
-	// Version is the schema version the file declared (MinSchemaVersion when it omitted the field).
+	// Version is the schema version the file declared (SchemaVersion when it omitted the field).
 	Version int
 	Analyze Analyze
-	Scan    Scan
-}
-
-// Scan selects what the scan evaluates.
-type Scan struct {
-	// Window is the scan window the repository chose. Empty means the repository leaves it to the
-	// workflow.
-	Window Window
 }
 
 // Analyze selects what the scan analyzes.
@@ -162,8 +136,8 @@ func Parse(data []byte) (Config, []string, error) {
 				return fmt.Errorf("%s: version must be an integer", DefaultPath)
 			}
 			v, err := strconv.Atoi(val.Value)
-			if err != nil || v < MinSchemaVersion || v > SchemaVersion {
-				return fmt.Errorf("%s: unsupported version %q (this scanner understands versions %d to %d)", DefaultPath, val.Value, MinSchemaVersion, SchemaVersion)
+			if err != nil || v != SchemaVersion {
+				return fmt.Errorf("%s: unsupported version %q (this scanner understands version %d)", DefaultPath, val.Value, SchemaVersion)
 			}
 			cfg.Version = v
 		case "analyze":
@@ -186,26 +160,6 @@ func Parse(data []byte) (Config, []string, error) {
 				}
 				return nil
 			})
-		case "scan":
-			if isNull(val) {
-				return nil
-			}
-			if val.Kind != yaml.MappingNode {
-				return fmt.Errorf("%s: scan must be a mapping", DefaultPath)
-			}
-			return eachPair(val, "scan.", func(key string, v *yaml.Node) error {
-				switch key {
-				case "window":
-					w, err := scalarWindow(v)
-					if err != nil {
-						return err
-					}
-					cfg.Scan.Window = w
-				default:
-					warnings = append(warnings, fmt.Sprintf("unknown key %q ignored (not understood by this scanner version)", "scan."+key))
-				}
-				return nil
-			})
 		default:
 			warnings = append(warnings, fmt.Sprintf("unknown key %q ignored (not understood by this scanner version)", key))
 		}
@@ -215,12 +169,8 @@ func Parse(data []byte) (Config, []string, error) {
 		return Config{}, nil, err
 	}
 	if !sawVersion {
-		cfg.Version = MinSchemaVersion
-		warnings = append(warnings, fmt.Sprintf("no version field; assuming version %d", MinSchemaVersion))
-	}
-	// Checked after the walk so key order does not matter.
-	if cfg.Scan.Window != "" && cfg.Version < windowSchemaVersion {
-		return Config{}, nil, fmt.Errorf("%s: scan.window needs version: %d (a scanner that reads the file as version %d ignores the window)", DefaultPath, windowSchemaVersion, cfg.Version)
+		cfg.Version = SchemaVersion
+		warnings = append(warnings, fmt.Sprintf("no version field; assuming version %d", SchemaVersion))
 	}
 	return cfg, warnings, nil
 }
@@ -269,21 +219,6 @@ func scalarRef(v *yaml.Node) (string, error) {
 		return "", fmt.Errorf("%s: %w", DefaultPath, err)
 	}
 	return v.Value, nil
-}
-
-// scalarWindow extracts scan.window. A null value means unset.
-func scalarWindow(v *yaml.Node) (Window, error) {
-	if isNull(v) {
-		return "", nil
-	}
-	if v.Kind != yaml.ScalarNode || v.Tag != "!!str" {
-		return "", fmt.Errorf("%s: scan.window must be one of 24h, 7d, 30d, full", DefaultPath)
-	}
-	w, err := ParseWindow(v.Value)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", DefaultPath, err)
-	}
-	return w, nil
 }
 
 // ValidateRef accepts a branch name, tag name or commit SHA and rejects everything else. It is

@@ -19,8 +19,7 @@ A run configured with `advisory-corpus-repo` (recommended — see the README's
 [Scope](../README.md#scope)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
 and sparse (the manifest and record partitions only). It sends the repository coordinates and nothing
-about your code. When the corpus release publishes a bundle for the policy the
-[scan window](../README.md#choosing-the-scan-window) resolves to, it instead
+about your code. With `advisory-corpus-policy` set and a bundle published for that policy, it instead
 downloads the release's `bundles.json` and `<policy>.jsonl.gz` as **`github.com`** release assets
 (which redirect to **`release-assets.githubusercontent.com`**) and the policy manifest from
 **`raw.githubusercontent.com`**, likewise unauthenticated and carrying nothing

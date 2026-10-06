@@ -455,6 +455,9 @@ runs:
           fi
           chmod +x "$asset"
           ln -sf "$asset" "$PLUGIN_PATH_DIR/assay-plugin-$lang"
+          # Scanners released before v0.4.0 look the analyzer up as tegron-plugin-<lang>. This link
+          # serves a workflow whose scanner-version names one of them.
+          ln -sf "$asset" "$PLUGIN_PATH_DIR/tegron-plugin-$lang"
           echo "==> wired assay-plugin-$lang -> $(basename "$asset")"
           wired=$((wired + 1))
         done

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -200,7 +202,8 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
 	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
 	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
-	return publishAll(ctx, selectSinks(github.DetectEnv(surfaceToggles()), outDir, runSnapshot), res)
+	env := github.DetectEnv(surfaceToggles())
+	return publishAll(ctx, selectSinks(env, outDir, runSnapshot), res, env.StepSummaryPath, os.Stderr)
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
@@ -243,16 +246,118 @@ func buildResult(rep *report.Report) (resultsink.Result, error) {
 }
 
 // publishAll publishes res to every sink in order. It attempts ALL sinks even if an
-// earlier one fails (so a Tier-1 surface outage never suppresses the always-on Local
-// + Tier-0 deposit) and returns the joined set of errors (nil when all succeeded).
-func publishAll(ctx context.Context, sinks []resultsink.ResultSink, res resultsink.Result) error {
+// earlier one fails, so a Tier-1 surface outage never suppresses the always-on Local
+// + Tier-0 deposit, and returns the joined errors of the load-bearing sinks (nil when
+// they all succeeded).
+//
+// A best-effort surface (bestEffortSurface) never decides the result. Its failure is
+// reported as a ::warning:: on warn and a note appended to the job summary at
+// summaryPath (when set), and the run carries on: by then Local and Tier 0 have
+// deposited the scan result, and a repository that cannot accept a comment or a
+// dashboard Issue (Issues disabled, a token without the permission) says nothing about
+// that result.
+func publishAll(ctx context.Context, sinks []resultsink.ResultSink, res resultsink.Result, summaryPath string, warn io.Writer) error {
 	var errs []error
+	var notes []string
 	for _, s := range sinks {
-		if err := s.Publish(ctx, res); err != nil {
+		err := s.Publish(ctx, res)
+		if err == nil {
+			continue
+		}
+		sf, ok := bestEffortSurface(s)
+		if !ok {
 			errs = append(errs, err)
+			continue
+		}
+		note := surfaceFailureNote(sf, err)
+		notes = append(notes, note)
+		fmt.Fprintf(warn, "::warning title=%s::%s\n", brand.Name, escapeWorkflowData(note+" ("+err.Error()+")"))
+	}
+	if len(notes) > 0 && summaryPath != "" {
+		if err := appendSurfaceFailures(summaryPath, notes); err != nil {
+			fmt.Fprintf(warn, "%s: %v\n", brand.Name, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// surface names a best-effort result surface for a failure report: what it is called,
+// the likely reason GitHub refuses it, and the Action input that turns it off.
+type surface struct {
+	name    string
+	refusal string
+	input   string
+}
+
+// bestEffortSurface reports whether a failure of s is best-effort, and which surface it
+// is. The best-effort set is exactly the two Tier 1 surfaces that write to the
+// repository through the GitHub REST API: the sticky PR comment and the dashboard
+// Issue. They are views of a result already deposited elsewhere, and whether GitHub
+// accepts them depends on repository settings and token scope, not on the scan.
+//
+// Every other sink stays load-bearing. Local writes the output directory every later
+// workflow step reads; Tier 0 is the zero-permission summary that always lands; the
+// SARIF and Pages sinks write local files a workflow step uploads, so a failure there is
+// the runner's disk, not GitHub's say-so. The run-snapshot push is fail-open on its own.
+func bestEffortSurface(s resultsink.ResultSink) (surface, bool) {
+	switch s.(type) {
+	case *github.Tier1PRComment:
+		return surface{
+			name:    "pull request comment",
+			refusal: "The workflow token may lack `pull-requests: write`",
+			input:   "pr-comment",
+		}, true
+	case *github.Tier1Issue:
+		return surface{
+			name:    "dashboard Issue",
+			refusal: "Issues may be disabled on this repository, or the workflow token may lack `issues: write`",
+			input:   "issue",
+		}, true
+	}
+	return surface{}, false
+}
+
+// surfaceFailureNote is the one-line, user-facing account of a best-effort surface that
+// could not be written, with the remedy when GitHub refused the write outright.
+func surfaceFailureNote(sf surface, err error) string {
+	var se *github.StatusError
+	if !errors.As(err, &se) {
+		return fmt.Sprintf("The %s could not be updated; the next run tries again.", sf.name)
+	}
+	switch se.Status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+		return fmt.Sprintf("GitHub refused the %s write (HTTP %d). %s; set the Action input `%s: false` to turn this surface off.",
+			sf.name, se.Status, sf.refusal, sf.input)
+	}
+	if se.Status >= 400 && se.Status < 500 {
+		return fmt.Sprintf("GitHub rejected the %s write (HTTP %d).", sf.name, se.Status)
+	}
+	return fmt.Sprintf("GitHub could not take the %s write (HTTP %d); the next run tries again.", sf.name, se.Status)
+}
+
+// appendSurfaceFailures appends the best-effort surface failures to the job summary,
+// under the scan headline Tier 0 already wrote there.
+func appendSurfaceFailures(summaryPath string, notes []string) error {
+	var b strings.Builder
+	b.WriteString("\n### Surfaces not updated\n\n")
+	b.WriteString("The scan finished and its result above stands. These GitHub surfaces could not be written:\n\n")
+	for _, n := range notes {
+		b.WriteString("- " + n + "\n")
+	}
+	f, err := os.OpenFile(summaryPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open step summary: %w", err)
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write step summary: %w", err)
+	}
+	return f.Close()
+}
+
+// escapeWorkflowData escapes a GitHub Actions workflow-command message.
+func escapeWorkflowData(s string) string {
+	return strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(s)
 }
 
 // runConfig holds the resolved shared inputs for the pr-inherit / cve-watch run modes:

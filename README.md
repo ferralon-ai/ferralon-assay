@@ -68,7 +68,9 @@ jobs:
 ```
 
 Each write scope buys exactly one result surface, and each surface is an input you can turn
-off — set `issue`, `pr-comment` or `code-scanning` to `"false"` and drop the matching scope.
+off — set `issue`, `pr-comment` or `code-scanning` to `"false"` and drop the matching scope. The
+PR comment and the Issue are best-effort: if GitHub refuses one (say, Issues are disabled on the
+repository), the job summary says so and the job still passes or fails on the scan.
 Two more scopes are conditional on inputs this Quickstart does not set: `state-repo`/`state-ref`
 (persisting the baseline through the GitHub Refs API) needs `contents: write`, and
 `link-to-console: true` needs `id-token: write` for the run push. On a pull request from a fork

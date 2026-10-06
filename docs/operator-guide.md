@@ -252,6 +252,16 @@ The Action writes `report.sarif.json`; getting it into code scanning is a separa
 `github/codeql-action/upload-sarif` step, as in the README Quickstart. That step needs
 `security-events: write`.
 
+### When a surface can't be written
+
+The PR comment and the dashboard Issue are best-effort. If GitHub won't take one of those writes —
+Issues are disabled on the repository, the job's token lacks the scope, or GitHub has a bad moment —
+the run logs a `::warning::` and adds a "Surfaces not updated" note under the scan headline in the
+job summary, naming the surface, the HTTP status when GitHub answered and, for a refusal, the input
+that turns it off. The job still passes or fails on the scan alone. A failure to write the output directory, the job summary,
+or the SARIF or Pages files still fails the run: those are writes on the runner itself, not GitHub's
+call.
+
 ### Forked pull requests
 
 On a pull request from a fork, GitHub hands the workflow a read-only token. The scan detects this by

@@ -92,6 +92,7 @@ BAKED_TARGETS=(
   ferralon-assay-scan-plugin-java=./cmd/assay-plugin-java
   ferralon-assay-scan-plugin-dotnet=./cmd/assay-plugin-dotnet
   ferralon-assay-scan-plugin-kotlin=./cmd/assay-plugin-kotlin
+  ferralon-assay-scan-plugin-python-cgx=./cmd/assay-plugin-python-cgx
 )
 
 BAKED_BINARIES=()

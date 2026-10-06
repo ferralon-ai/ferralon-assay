@@ -19,6 +19,10 @@ The watched modules are `golang.org/x/tools`, `golang.org/x/vuln`, `golang.org/x
 `go.opentelemetry.io/otel`, including all sub-paths. Together with `github.com/google/uuid` they are
 this module's only non-stdlib dependencies.
 
+The cgx Go SDK (`github.com/ferralon-ai/cgx/sdk/go`, and wazero through it) is imported only by
+`internal/plugin/pythoncgx`, which links into the `assay-plugin-python-cgx` analyzer binary. It is
+not part of any importable package's API.
+
 **Today the importable packages expose zero third-party types.**
 
 The audit found two, both in `plugin/goanalysis` — `LoadResult.Packages` and `LoadProgram`, each

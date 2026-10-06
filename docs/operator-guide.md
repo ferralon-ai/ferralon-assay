@@ -118,6 +118,37 @@ Before turning it on:
   stays `undetermined` whatever you set.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
 
+## The Python analyzer
+
+Python repositories are analyzed by a lexical source scanner by default. Setting
+`ASSAY_PYTHON_LANE=cgx` swaps in `assay-plugin-python-cgx`, which answers the call-graph questions
+(symbol resolution, call graph, entry points, reachability, taint) from a
+[cgx](https://github.com/ferralon-ai/cgx) index and answers everything else (installed versions,
+build manifest, dependency inventory) exactly as the default analyzer does. Only the exact value
+`cgx` selects it; anything else, including a typo, keeps the default. An explicit `-plugin-go` path
+takes precedence over the variable.
+
+The cgx analyzer copies the files of the scanned directory, minus those its `.gitignore` files
+exclude, into a git repository under its cache directory and keeps the index there, so the
+scanned checkout is only read and an unchanged tree is indexed once. Its settings:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ASSAY_PYTHON_CGX_TRANSPORT` | `wasm` | `wasm` runs cgx in-process; `native` drives a `cgx` binary. |
+| `ASSAY_PYTHON_CGX_BIN` | `cgx` on `PATH` | The `cgx` binary for the native transport. |
+| `ASSAY_PYTHON_CGX_WASM` | the module embedded in the SDK | A cgx engine module file, for builds that embed none. |
+| `ASSAY_PYTHON_CGX_CACHE_DIR` | the user cache directory | Where indexes and compiled modules are kept. |
+| `ASSAY_PYTHON_CGX_POOL_SIZE` | the SDK's | Parallel extractors for the wasm transport. |
+| `ASSAY_PYTHON_CGX_MIN_CONFIDENCE` | `probable` | Lowest cgx edge confidence kept in the call graph: `certain`, `probable` or `possible`. |
+| `ASSAY_PYTHON_CGX_STATS` | unset | A file to append one JSON timing record per analyzer call to. |
+
+The call graph keeps only edges at or above the confidence floor, because cgx's `possible` tier
+holds over-approximated candidate sets that run to millions of edges on large Python trees. The
+floor is declared in the call graph's partiality. HTTP entry points still come from the
+lexical scanner's Flask/FastAPI decorator detection; a route handler cgx cannot match to a node is
+declared, and an advisory with no path is then reported `undetermined` rather than
+`not_exploitable`.
+
 ## State and run modes
 
 `baseline` works on its own. `pr-inherit` and `cve-watch` build on a prior baseline, which lives in a

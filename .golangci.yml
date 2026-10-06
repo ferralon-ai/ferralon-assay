@@ -35,6 +35,9 @@ linters:
             # matches only stdlib: no third-party import path lacks a domain segment.
             - "go/"
             - github.com/ferralon-ai/ferralon-assay
+            # cgx Go SDK, imported only by internal/plugin/pythoncgx (the cgx-backed Python
+            # analyzer subprocess); never on an exported signature (docs/api-stability.md).
+            - github.com/ferralon-ai/cgx/sdk/go
             - github.com/google/uuid
             - golang.org/x/mod
             - golang.org/x/tools

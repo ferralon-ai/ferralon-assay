@@ -55,6 +55,11 @@ const (
 	wiringEndMarker   = "<<< END plugin wiring <<<"
 	cliAssetName      = "ferralon-assay-scan"
 	pluginAssetPrefix = "ferralon-assay-scan-plugin"
+
+	// preV04LookupPrefix is the name scanners released before v0.4.0 resolve their analyzer
+	// under. action.yml links it alongside plugin.BinaryName so a workflow that sets
+	// scanner-version to such a release still finds its analyzer.
+	preV04LookupPrefix = "tegron-plugin-"
 )
 
 // actionWiringScript extracts the plugin-wiring block from the published action.yml and returns it
@@ -232,37 +237,43 @@ func TestActionWiringExposesEverySupportedLanguage(t *testing.T) {
 	}
 
 	for _, language := range supportedLanguages {
-		want := plugin.BinaryName(language)
-		if !have[want] {
-			t.Errorf("the Action exposes no %s: %s is a supported language whose analyzer IS in the "+
-				"tarball, but the wiring gives it no lookup name, so exec.LookPath finds nothing and "+
-				"the run dies at the runner.\n  exposed: %v\n  wiring output:\n%s",
-				want, language, got, out)
+		for _, want := range []string{plugin.BinaryName(language), preV04LookupPrefix + language} {
+			if !have[want] {
+				t.Errorf("the Action exposes no %s: %s is a supported language whose analyzer IS in the "+
+					"tarball, but the wiring gives it no lookup name, so exec.LookPath finds nothing and "+
+					"the run dies at the runner.\n  exposed: %v\n  wiring output:\n%s",
+					want, language, got, out)
+			}
 		}
 	}
 
 	// The other direction: every lookup name must correspond to a plugin asset that was actually
 	// extracted. A stray name means the derivation invented a language, which would route a repo to
-	// an analyzer that is not there. Each asset gets exactly one link, and the wired count reports
-	// assets.
+	// an analyzer that is not there. Each asset gets exactly one link per naming scheme, and the
+	// wired count reports assets, not links.
 	wantCount := 0
 	for _, a := range assets {
 		if strings.HasPrefix(a, pluginAssetPrefix) {
 			wantCount++
 		}
 	}
-	prefix := strings.TrimSuffix(plugin.BinaryName("go"), "go")
-	var named []string
+	currentPrefix := strings.TrimSuffix(plugin.BinaryName("go"), "go")
+	var current, preV04 []string
 	for _, name := range got {
-		if !strings.HasPrefix(name, prefix) {
-			t.Errorf("the wiring exposed %q, which is not a %s* lookup name", name, prefix)
-			continue
+		switch {
+		case strings.HasPrefix(name, currentPrefix):
+			current = append(current, name)
+		case strings.HasPrefix(name, preV04LookupPrefix):
+			preV04 = append(preV04, name)
+		default:
+			t.Errorf("the wiring exposed %q, which is neither a %s* nor a %s* lookup name",
+				name, currentPrefix, preV04LookupPrefix)
 		}
-		named = append(named, name)
 	}
-	if len(named) != wantCount {
+	if len(current) != wantCount || len(preV04) != wantCount {
 		t.Errorf("the extraction carried %d analyzer plugin(s) but the wiring exposed %d %s* name(s) %v "+
-			"— they must correspond one-for-one with the assets", wantCount, len(named), prefix, named)
+			"and %d %s* name(s) %v — each scheme must correspond one-for-one with the assets",
+			wantCount, len(current), currentPrefix, current, len(preV04), preV04LookupPrefix, preV04)
 	}
 	if want := fmt.Sprintf("==> %d analyzer plugin(s) reachable by lookup name", wantCount); !strings.Contains(out, want) {
 		t.Errorf("the wiring's summary line does not count assets (want %q):\n%s", want, out)

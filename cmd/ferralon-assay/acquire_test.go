@@ -70,6 +70,7 @@ func TestSelectPlugin(t *testing.T) {
 		{checkout.LangJS, "js"},
 		{checkout.LangPython, "python"},
 		{checkout.LangDotNet, "dotnet"},
+		{checkout.LangCFamily, "cfamily"}, // row-zero skeleton lane: routes even though not in supportedLanguages
 	}
 	for _, tc := range cases {
 		t.Run(tc.lang, func(t *testing.T) {
@@ -247,6 +248,31 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		}
 		if len(acq.advisories) != 6 {
 			t.Fatalf("advisories (canaries on) = %d, want java corpus (6: 3 real + 3 canaries)", len(acq.advisories))
+		}
+	})
+
+	t.Run("c tree → cfamily plugin, honest-absent floor", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "main.c"), "int main(void){return 0;}\n")
+		writeFile(t, filepath.Join(dir, "util.h"), "#pragma once\n")
+
+		acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false)
+		if err != nil {
+			t.Fatalf("acquireTarget: %v", err)
+		}
+		defer acq.cleanup()
+
+		if acq.language != checkout.LangCFamily {
+			t.Fatalf("language = %q, want cfamily", acq.language)
+		}
+		if acq.plugin.Language() != "cfamily" {
+			t.Fatalf("plugin = %q, want cfamily", acq.plugin.Language())
+		}
+		// Row-zero fail-open: the skeleton lane has no advisory floor. An empty floor makes a scan of
+		// a C/C++ tree halt at the empty-work-set gate (never a false clean verdict), which is the
+		// honest Phase-0 posture — NOT a fabricated floor forced in to make the scan complete.
+		if len(acq.advisories) != 0 {
+			t.Fatalf("cfamily default floor = %d advisories, want 0 (honest-absent skeleton)", len(acq.advisories))
 		}
 	})
 

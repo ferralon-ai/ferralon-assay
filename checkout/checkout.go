@@ -47,7 +47,7 @@ func (f FakeCheckout) Fetch(_ context.Context, repo, revision string) (Workspace
 	}
 	lang := DetectLanguage(abs)
 	if lang == LangUnknown {
-		return WorkspacePlan{}, fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod, no .java, no .kt/.kts, no .js/.ts, no .py, and no .cs/.csproj sources)", abs)
+		return WorkspacePlan{}, fmt.Errorf("checkout: fixture %q is not a recognized source tree (no go.mod, no .java, no .kt/.kts, no .js/.ts, no .py, no .cs/.csproj, and no .c/.cpp/.h sources)", abs)
 	}
 	return singleProjectPlan(abs, lang), nil
 }

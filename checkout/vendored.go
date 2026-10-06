@@ -30,7 +30,7 @@ func ResolveVendored(relPath string) (WorkspacePlan, error) {
 	}
 	lang := DetectLanguage(abs)
 	if lang == LangUnknown {
-		return WorkspacePlan{}, fmt.Errorf("checkout: vendored repro %q is not a recognized source tree (no go.mod, no .java, no .kt/.kts, no .js/.ts, no .py, and no .cs/.csproj sources); if your code lives on another branch, set analyze.ref in .github/ferralon.yml", abs)
+		return WorkspacePlan{}, fmt.Errorf("checkout: vendored repro %q is not a recognized source tree (no go.mod, no .java, no .kt/.kts, no .js/.ts, no .py, no .cs/.csproj, and no .c/.cpp/.h sources); if your code lives on another branch, set analyze.ref in .github/ferralon.yml", abs)
 	}
 	return singleProjectPlan(abs, lang), nil
 }

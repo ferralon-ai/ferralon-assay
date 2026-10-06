@@ -149,6 +149,48 @@ func TestDetectLanguageDominance(t *testing.T) {
 			files: []string{"settings.gradle.kts", "src/main/kotlin/App.kt"},
 			want:  LangKotlin,
 		},
+		// C-family (row zero): C and C++ share ONE bucket; sources and headers all count toward it.
+		{
+			name:  "c-only -> cfamily",
+			files: []string{"src/main.c", "src/util.c", "include/util.h"},
+			want:  LangCFamily,
+		},
+		{
+			name:  "cpp-only -> cfamily",
+			files: []string{"src/main.cpp", "src/widget.cxx", "src/legacy.cc", "include/widget.hpp"},
+			want:  LangCFamily,
+		},
+		{
+			// A mixed C/C++ tree is deliberately not split at detection: one build system, one
+			// bucket. Per-TU C-vs-C++ is decided later from compile_commands.json.
+			name:  "mixed c and cpp -> cfamily",
+			files: []string{"core/parse.c", "core/parse.h", "app/main.cpp", "app/render.cxx"},
+			want:  LangCFamily,
+		},
+		{
+			// Headers alone still detect the family: a header-only C/C++ library is a valid tree.
+			name:  "headers only -> cfamily",
+			files: []string{"include/api.h", "include/vec.hpp", "include/list.hxx", "include/node.hh"},
+			want:  LangCFamily,
+		},
+		{
+			// Dominance holds for cfamily like every other lane: a python-dominant tree with a few
+			// C files is Python, not cfamily.
+			name: "python-dominant with a few c -> python",
+			files: []string{
+				"app/models.py", "app/views.py", "app/dag.py",
+				"ext/fast.c", "ext/fast.h",
+			},
+			want: LangPython,
+		},
+		{
+			name: "cfamily-dominant with a stray py -> cfamily",
+			files: []string{
+				"src/a.c", "src/b.cpp", "src/c.cc", "include/d.hpp",
+				"scripts/gen.py",
+			},
+			want: LangCFamily,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,6 +295,7 @@ func TestCountSourcesTally(t *testing.T) {
 		"decl.d.ts", // excluded from js
 		"x.py", "y.py",
 		"P.cs", "P.csproj", "S.sln", "F.fsproj", "V.vbproj",
+		"m.c", "m.cc", "m.cpp", "m.cxx", "m.c++", "h.h", "h.hpp", "h.hh", "h.hxx", // cfamily: all 9
 		"node_modules/pkg/z.js", // pruned
 		"build/gen/G.java",      // pruned
 	)
@@ -271,5 +314,8 @@ func TestCountSourcesTally(t *testing.T) {
 	}
 	if c.dotnet != 5 {
 		t.Errorf("dotnet = %d, want 5", c.dotnet)
+	}
+	if c.cfamily != 9 {
+		t.Errorf("cfamily = %d, want 9 (.c/.cc/.cpp/.cxx/.c++ sources + .h/.hpp/.hh/.hxx headers)", c.cfamily)
 	}
 }

@@ -21,15 +21,21 @@
 //	ASSAY_PYTHON_CGX_POOL_SIZE       wasm extractor instances (default: the SDK's)
 //	ASSAY_PYTHON_CGX_MIN_CONFIDENCE  call-graph edge floor: certain | probable (default) | possible
 //	ASSAY_PYTHON_CGX_STATS           file to append one JSON timing record per operation to
+//	ASSAY_PYTHON_CGX_FALLBACK        native: after the wasm engine traps while indexing (its
+//	                                 memory limit included), retry once on the native transport
+//	                                 with ASSAY_PYTHON_CGX_BIN (default: off)
 //
 // A configuration error, a failed open or a failed query is a hard error (inv.4): Response.Error
-// is set and the process exits non-zero. Declared partiality is a success payload.
+// is set and the process exits non-zero. Declared partiality is a success payload. An engine
+// failure while indexing is recorded under the cache directory for the scan, so the scan's
+// later operations on the same tree fail at once with the same error instead of indexing again.
 package main
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +57,7 @@ const (
 	envPoolSize      = brand.EnvPrefix + "_PYTHON_CGX_POOL_SIZE"
 	envMinConfidence = brand.EnvPrefix + "_PYTHON_CGX_MIN_CONFIDENCE"
 	envStats         = brand.EnvPrefix + "_PYTHON_CGX_STATS"
+	envFallback      = brand.EnvPrefix + "_PYTHON_CGX_FALLBACK"
 )
 
 func main() {
@@ -83,7 +90,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 	}
 	resp, err := dispatch(ctx, lane, req)
 	if err != nil {
-		return writeError(stdout, err.Error())
+		return writeError(stdout, withRemedy(err).Error())
 	}
 	resp.Protocol = plugin.ProtocolVersion
 	return writeResponse(stdout, resp)
@@ -99,6 +106,10 @@ func newLane() (*pythoncgx.Lane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envMinConfidence, err)
 	}
+	fallback, err := pythoncgx.ParseFallback(os.Getenv(envFallback))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", envFallback, err)
+	}
 	cfg := pythoncgx.Config{
 		Transport:     transport,
 		CgxBin:        strings.TrimSpace(os.Getenv(envBin)),
@@ -106,6 +117,7 @@ func newLane() (*pythoncgx.Lane, error) {
 		CacheDir:      strings.TrimSpace(os.Getenv(envCacheDir)),
 		MinConfidence: minConf,
 		StatsFile:     strings.TrimSpace(os.Getenv(envStats)),
+		Fallback:      fallback,
 	}
 	if v := strings.TrimSpace(os.Getenv(envPoolSize)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -125,7 +137,30 @@ func newLane() (*pythoncgx.Lane, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pythoncgx.New(cfg, pythoncgx.OpenSDK, key), nil
+	var fallbackKey string
+	if cfg.Fallback != "" && cfg.Fallback != cfg.Transport {
+		fb := cfg
+		fb.Transport = cfg.Fallback
+		if fallbackKey, err = pythoncgx.CacheKey(fb); err != nil {
+			return nil, fmt.Errorf("%s: %w", envFallback, err)
+		}
+	}
+	return pythoncgx.New(cfg, pythoncgx.OpenSDK, key, fallbackKey), nil
+}
+
+// withRemedy appends what an operator can change to an engine failure while indexing, in terms
+// of this command's configuration.
+func withRemedy(err error) error {
+	var f *pythoncgx.IndexFailure
+	if !errors.As(err, &f) {
+		return err
+	}
+	switch {
+	case f.Transport == pythoncgx.TransportWasm:
+		return fmt.Errorf("%w; remedy: set %s=native (cgx binary via %s), or %s=native to retry on it", err, envTransport, envBin, envFallback)
+	default:
+		return fmt.Errorf("%w; remedy: the native cgx process exited; check its diagnostics and the memory available to it", err)
+	}
 }
 
 // dispatch answers the six graph operations from the cgx lane and the rest exactly as

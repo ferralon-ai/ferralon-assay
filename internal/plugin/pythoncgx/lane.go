@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,19 +35,25 @@ const (
 	reasonSinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
 	// cgx's selector engine hit its state cap, so a match may be incomplete.
 	reasonResolveTruncated = plugin.PartialReasonToolFailure + ":cgx_resolve_truncated"
+	// The cgx engine itself failed while indexing the tree (IndexFailure).
+	reasonIndexFailed = plugin.PartialReasonToolFailure + ":cgx_index_failed"
 )
 
 // taintPrecisionNote states what ComputeTaint's paths are.
 const taintPrecisionNote = "call-graph path presence over the cgx call graph (edges at or above the configured confidence floor): an ingress→sink path exists, found by cgx's own caller/reaches queries. NOT variable-level dataflow and not sanitizer-aware; Python's dynamic dispatch makes the graph an under-approximation."
 
 // Lane serves the six graph operations. One Lane serves one plugin process; each operation
-// snapshots the build dir, opens the graph, answers, and closes it.
+// snapshots the build dir, opens and indexes the graph, answers, and closes it.
 type Lane struct {
 	cfg  Config
 	open Opener
 	// cacheKey separates indexes written by different cgx builds: cgx's fragment cache is
 	// not keyed by extractor version, so an index from another build must not be reused.
-	cacheKey string
+	// fallbackKey is the same for the Config.Fallback transport's build.
+	cacheKey, fallbackKey string
+	// scan identifies the scan this process serves, scoping memoized index failures. The
+	// scanner runs every operation of a scan as a child of one process.
+	scan string
 	// routes finds decorator-registered route handlers; cgx's Python adapter has no web
 	// framework entrypoints, so ingress detection stays the lexical scanner's.
 	routes func(context.Context, string) ([]pythonanalysis.RouteHandler, plugin.Partiality, error)
@@ -55,13 +62,15 @@ type Lane struct {
 	stderr      io.Writer
 }
 
-// New returns a Lane. cacheKey identifies the cgx build behind open (see Lane.cacheKey).
-func New(cfg Config, open Opener, cacheKey string) *Lane {
+// New returns a Lane. cacheKey identifies the cgx build behind open (see Lane.cacheKey);
+// fallbackKey identifies the Config.Fallback build and is ignored without one.
+func New(cfg Config, open Opener, cacheKey, fallbackKey string) *Lane {
 	if cfg.MinConfidence == "" {
 		cfg.MinConfidence = DefaultMinConfidence
 	}
 	return &Lane{
-		cfg: cfg, open: open, cacheKey: cacheKey,
+		cfg: cfg, open: open, cacheKey: cacheKey, fallbackKey: fallbackKey,
+		scan:        strconv.Itoa(os.Getppid()),
 		routes:      pythonanalysis.RouteHandlers,
 		readFailure: pythonanalysis.SourceReadFailure,
 		stderr:      os.Stderr,
@@ -78,42 +87,91 @@ type session struct {
 
 // opStats is the per-operation measurement record (stderr and Config.StatsFile).
 type opStats struct {
-	Op            string          `json:"op"`
-	BuildDir      string          `json:"build_dir"`
-	Transport     Transport       `json:"transport"`
-	MinConfidence string          `json:"min_confidence"`
-	Tree          string          `json:"tree,omitempty"`
-	WallMS        int64           `json:"wall_ms"`
-	SnapshotMS    int64           `json:"snapshot_ms"`
-	OpenMS        int64           `json:"open_ms"`
-	QueryMS       int64           `json:"query_ms"`
-	ToolCalls     int             `json:"tool_calls"`
-	Pages         int             `json:"pages"`
-	Items         int             `json:"items"`
-	Resolutions   []resolution    `json:"resolutions,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	SDK           json.RawMessage `json:"sdk,omitempty"`
+	Op            string    `json:"op"`
+	BuildDir      string    `json:"build_dir"`
+	Transport     Transport `json:"transport"`
+	MinConfidence string    `json:"min_confidence"`
+	Tree          string    `json:"tree,omitempty"`
+	WallMS        int64     `json:"wall_ms"`
+	SnapshotMS    int64     `json:"snapshot_ms"`
+	OpenMS        int64     `json:"open_ms"`
+	IndexMS       int64     `json:"index_ms"`
+	QueryMS       int64     `json:"query_ms"`
+	// FallbackFrom names the configured transport when its index failed and the fallback
+	// transport answered (or failed) instead.
+	FallbackFrom Transport `json:"fallback_from,omitempty"`
+	// MemoizedFailure: an index failure recorded earlier in the scan was replayed, without
+	// opening the engine.
+	MemoizedFailure bool            `json:"memoized_failure,omitempty"`
+	ToolCalls       int             `json:"tool_calls"`
+	Pages           int             `json:"pages"`
+	Items           int             `json:"items"`
+	Resolutions     []resolution    `json:"resolutions,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	SDK             json.RawMessage `json:"sdk,omitempty"`
 }
 
 func (l *Lane) begin(ctx context.Context, op, buildDir string) (*session, error) {
 	s := &session{l: l, start: time.Now(), stats: opStats{Op: op, BuildDir: buildDir, Transport: l.cfg.Transport, MinConfidence: l.cfg.MinConfidence}}
-	repo, tree, err := snapshot(ctx, filepath.Join(l.cfg.CacheDir, l.cacheKey), buildDir)
-	s.stats.SnapshotMS = time.Since(s.start).Milliseconds()
+	err := s.attach(ctx, l.cfg, l.cacheKey, buildDir)
+	var f *IndexFailure
+	if errors.As(err, &f) && l.cfg.Fallback != "" && f.Transport == TransportWasm && (f.Kind == EngineMemoryLimit || f.Kind == EngineTrap) {
+		fb := l.cfg
+		fb.Transport = l.cfg.Fallback
+		s.stats.FallbackFrom = l.cfg.Transport
+		err = s.attach(ctx, fb, l.fallbackKey, buildDir)
+	}
+	if err != nil {
+		s.finish(err)
+		return nil, err
+	}
+	return s, nil
+}
+
+// attach snapshots buildDir under the cache key's directory, opens cfg's engine on it and
+// brings its index up to date. An engine failure while indexing is recorded for the scan, and
+// a failure already recorded for this tree, build and options is returned without opening the
+// engine, so a scan pays for a failing index once rather than once per operation.
+func (s *session) attach(ctx context.Context, cfg Config, key, buildDir string) error {
+	s.stats.Transport = cfg.Transport
+	start := time.Now()
+	dir := filepath.Join(cfg.CacheDir, key)
+	repo, tree, err := snapshot(ctx, dir, buildDir)
+	s.stats.SnapshotMS += time.Since(start).Milliseconds()
 	s.stats.Tree = tree
 	if err != nil {
-		s.finish(err)
-		return nil, err
+		return err
 	}
-	openStart := time.Now()
-	g, err := l.open(ctx, repo, l.cfg)
-	s.stats.OpenMS = time.Since(openStart).Milliseconds()
+	memo := failureMemoPath(dir, tree, cfg)
+	if f := readFailureMemo(memo, s.l.scan); f != nil {
+		s.stats.MemoizedFailure = true
+		return f
+	}
+
+	start = time.Now()
+	g, err := s.l.open(ctx, repo, cfg)
+	s.stats.OpenMS += time.Since(start).Milliseconds()
 	if err != nil {
-		err = fmt.Errorf("pythoncgx: open cgx graph: %w", err)
-		s.finish(err)
-		return nil, err
+		return fmt.Errorf("pythoncgx: open cgx graph: %w", err)
 	}
-	s.g = g
-	return s, nil
+	start = time.Now()
+	err = g.Index(ctx)
+	s.stats.IndexMS += time.Since(start).Milliseconds()
+	if err == nil {
+		s.g = g
+		return nil
+	}
+	s.stats.SDK = g.Stats()
+	_ = g.Close()
+	var ef *EngineFailure
+	if !errors.As(err, &ef) || ctx.Err() != nil {
+		return fmt.Errorf("pythoncgx: index: %w", err)
+	}
+	f := &IndexFailure{Transport: cfg.Transport, Tree: tree, Kind: ef.Kind, Detail: ef.Err.Error()}
+	if werr := writeFailureMemo(memo, s.l.scan, f); werr != nil {
+		fmt.Fprintf(s.l.stderr, "pythoncgx: record index failure: %v\n", werr)
+	}
+	return f
 }
 
 // finish closes the graph and emits the stats record. A stats write failure is reported on

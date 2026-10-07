@@ -142,6 +142,7 @@ scanned checkout is only read and an unchanged tree is indexed once. It needs gi
 | `ASSAY_PYTHON_CGX_POOL_SIZE` | the SDK's | Parallel extractors for the wasm transport. |
 | `ASSAY_PYTHON_CGX_MIN_CONFIDENCE` | `probable` | Lowest cgx edge confidence kept in the call graph: `certain`, `probable` or `possible`. |
 | `ASSAY_PYTHON_CGX_STATS` | unset | A file to append one JSON timing record per analyzer call to. |
+| `ASSAY_PYTHON_CGX_FALLBACK` | unset | `native`: when the wasm engine traps while indexing (its memory limit included), retry once on the native transport with `ASSAY_PYTHON_CGX_BIN`. |
 
 The call graph keeps only edges at or above the confidence floor, because cgx's `possible` tier
 holds over-approximated candidate sets that run to millions of edges on large Python trees. The
@@ -149,6 +150,14 @@ floor is declared in the call graph's partiality. HTTP entry points still come f
 lexical scanner's Flask/FastAPI decorator detection; a route handler cgx cannot match to a node is
 declared, and an advisory with no path is then reported `undetermined` rather than
 `not_exploitable`.
+
+If the cgx engine fails while indexing a tree (the wasm engine reaching its memory limit, or the
+native process exiting), the analyzer call fails with an error that starts
+`tool_failure:cgx_index_failed` and names the setting to change. The failure is recorded under the
+cache directory for the rest of that scan, so the scan's later calls on the same tree fail at once
+with the same error instead of indexing again; the next scan tries again. With
+`ASSAY_PYTHON_CGX_FALLBACK=native`, a wasm trap is retried once on the native transport instead, and
+the scan's later calls go to the native transport directly.
 
 ## State and run modes
 

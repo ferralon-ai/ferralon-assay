@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -68,6 +69,8 @@ type harness struct {
 	lane     *Lane
 	fake     *fakeGraph
 	opens    int
+	opensBy  map[Transport]int
+	indexErr map[Transport]error // Index fails with this on graphs opened for the transport
 	buildDir string
 	stats    string
 	stderr   *bytes.Buffer
@@ -75,19 +78,24 @@ type harness struct {
 
 func newHarness(t *testing.T, minConfidence string) *harness {
 	t.Helper()
-	h := &harness{fake: newFake(), buildDir: t.TempDir(), stderr: &bytes.Buffer{}}
+	h := &harness{fake: newFake(), opensBy: map[Transport]int{}, indexErr: map[Transport]error{}, buildDir: t.TempDir(), stderr: &bytes.Buffer{}}
 	if err := os.WriteFile(filepath.Join(h.buildDir, "app.py"), []byte(flaskApp), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	h.stats = filepath.Join(t.TempDir(), "stats.jsonl")
 	cfg := Config{Transport: TransportNative, CacheDir: t.TempDir(), MinConfidence: minConfidence, StatsFile: h.stats}
-	h.lane = New(cfg, func(_ context.Context, repo string, _ Config) (Graph, error) {
+	h.lane = New(cfg, func(_ context.Context, repo string, cfg Config) (Graph, error) {
 		if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
 			t.Errorf("opener got %q, not a git repository: %v", repo, err)
 		}
 		h.opens++
+		h.opensBy[cfg.Transport]++
+		if err := h.indexErr[cfg.Transport]; err != nil {
+			return failingIndex{h.fake, err}, nil
+		}
 		return h.fake, nil
-	}, "test")
+	}, "test", "test-fallback")
+	h.lane.scan = "scan-1"
 	h.lane.stderr = h.stderr
 	return h
 }
@@ -360,6 +368,172 @@ func TestReadableSourcesStayComplete(t *testing.T) {
 	if err != nil || !res.Partiality.Complete {
 		t.Fatalf("ResolveDependencySymbols = %+v, %v; want complete", res.Partiality, err)
 	}
+}
+
+func statsRecords(t *testing.T, path string) []opStats {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []opStats
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var rec opStats
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func memLimit() error {
+	return &EngineFailure{Kind: EngineMemoryLimit, Err: errors.New("linear-memory limit (4 GiB) reached at peak 3857 MiB")}
+}
+
+// After an engine failure while indexing, the scan's later operations on the same tree fail at
+// once with the same error and never open the engine again.
+func TestIndexFailureIsMemoizedForTheScan(t *testing.T) {
+	h := newHarness(t, "")
+	h.lane.cfg.Transport = TransportWasm
+	h.indexErr[TransportWasm] = memLimit()
+	ctx := context.Background()
+
+	_, first := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir})
+	var f *IndexFailure
+	if !errors.As(first, &f) || f.Kind != EngineMemoryLimit || f.Transport != TransportWasm || f.Tree == "" {
+		t.Fatalf("CallGraph err = %v, want an IndexFailure (wasm, memory_limit)", first)
+	}
+	if !strings.HasPrefix(first.Error(), reasonIndexFailed+": ") {
+		t.Errorf("error %q does not lead with %s", first, reasonIndexFailed)
+	}
+
+	for _, op := range []func() error{
+		func() error {
+			_, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+			return err
+		},
+		func() error {
+			_, err := h.lane.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: h.buildDir, AdvisorySymbols: []string{"app.fetch_url"}})
+			return err
+		},
+		func() error {
+			_, err := h.lane.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: h.buildDir, Sinks: []string{"app::fetch_url"}})
+			return err
+		},
+	} {
+		if err := op(); err == nil || err.Error() != first.Error() {
+			t.Errorf("later op err = %v, want the memoized %v", err, first)
+		}
+	}
+	if h.opens != 1 {
+		t.Errorf("engine opened %d times, want 1", h.opens)
+	}
+	recs := statsRecords(t, h.stats)
+	if len(recs) != 4 || recs[0].MemoizedFailure || !recs[1].MemoizedFailure || !recs[3].MemoizedFailure || recs[3].Error != first.Error() {
+		t.Errorf("stats records = %+v; want 4, memoized after the first, same error", recs)
+	}
+
+	// A new scan indexes again.
+	h.lane.scan = "scan-2"
+	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); !errors.As(err, &f) {
+		t.Fatalf("new scan: err = %v, want an IndexFailure", err)
+	}
+	if h.opens != 2 {
+		t.Errorf("new scan: engine opened %d times in all, want 2", h.opens)
+	}
+
+	// The tree changing is a different index.
+	h.indexErr[TransportWasm] = nil
+	if err := os.WriteFile(filepath.Join(h.buildDir, "more.py"), []byte("def more():\n    return 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); err != nil {
+		t.Fatalf("changed tree: %v", err)
+	}
+}
+
+func TestOtherIndexErrorsAreNotMemoized(t *testing.T) {
+	h := newHarness(t, "")
+	h.indexErr[TransportNative] = errors.New("index lock timeout")
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		_, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+		var f *IndexFailure
+		if err == nil || errors.As(err, &f) {
+			t.Fatalf("FindIngresses err = %v, want a plain index error", err)
+		}
+	}
+	if h.opens != 2 {
+		t.Errorf("engine opened %d times, want 2 (no memo)", h.opens)
+	}
+}
+
+func TestNativeFallback(t *testing.T) {
+	ctx := context.Background()
+	t.Run("off by default", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.lane.cfg.Transport = TransportWasm
+		h.indexErr[TransportWasm] = &EngineFailure{Kind: EngineTrap, Err: errors.New("unreachable")}
+		if _, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir}); err == nil {
+			t.Fatal("want the wasm failure")
+		}
+		if h.opensBy[TransportNative] != 0 {
+			t.Errorf("native opened %d times without a fallback configured", h.opensBy[TransportNative])
+		}
+	})
+	t.Run("retries once on native, then goes straight to it", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.lane.cfg.Transport = TransportWasm
+		h.lane.cfg.Fallback = TransportNative
+		h.indexErr[TransportWasm] = memLimit()
+		for i := 0; i < 3; i++ {
+			res, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+			if err != nil || len(res.Ingresses) != 2 {
+				t.Fatalf("FindIngresses #%d = %+v, %v; want the native answer", i, res, err)
+			}
+		}
+		if h.opensBy[TransportWasm] != 1 || h.opensBy[TransportNative] != 3 {
+			t.Errorf("opens = %v, want wasm 1, native 3", h.opensBy)
+		}
+		recs := statsRecords(t, h.stats)
+		if recs[0].Transport != TransportNative || recs[0].FallbackFrom != TransportWasm || recs[0].MemoizedFailure {
+			t.Errorf("first record = %+v; want native, fallback from wasm", recs[0])
+		}
+		if recs[2].Transport != TransportNative || recs[2].FallbackFrom != TransportWasm || !recs[2].MemoizedFailure {
+			t.Errorf("third record = %+v; want native after the memoized wasm failure", recs[2])
+		}
+	})
+	t.Run("a failing fallback is memoized too", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.lane.cfg.Transport = TransportWasm
+		h.lane.cfg.Fallback = TransportNative
+		h.indexErr[TransportWasm] = memLimit()
+		h.indexErr[TransportNative] = &EngineFailure{Kind: EngineExit, Err: errors.New("signal: killed")}
+		var errs []string
+		for i := 0; i < 2; i++ {
+			_, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+			var f *IndexFailure
+			if !errors.As(err, &f) || f.Transport != TransportNative || f.Kind != EngineExit {
+				t.Fatalf("FindIngresses #%d err = %v, want the native IndexFailure", i, err)
+			}
+			errs = append(errs, err.Error())
+		}
+		if errs[0] != errs[1] || h.opens != 2 {
+			t.Errorf("errors %q, opens %d; want one identical error and 2 opens", errs, h.opens)
+		}
+	})
+	t.Run("a native exit is not retried", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.lane.cfg.Fallback = TransportNative
+		h.indexErr[TransportNative] = &EngineFailure{Kind: EngineExit, Err: errors.New("exit status 101")}
+		if _, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir}); err == nil {
+			t.Fatal("want the native failure")
+		}
+		if h.opens != 1 {
+			t.Errorf("opens = %d, want 1", h.opens)
+		}
+	})
 }
 
 func hasReason(p plugin.Partiality, reason string) bool {

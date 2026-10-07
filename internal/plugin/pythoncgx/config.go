@@ -39,6 +39,10 @@ type Config struct {
 	PoolSize      int    // extractor instances; 0 leaves the SDK default
 	MinConfidence string // ConfidencePossible | ConfidenceProbable | ConfidenceCertain
 	StatsFile     string // when set, one JSON line per operation is appended here
+	// Fallback, when set, is the transport an operation retries once on after the wasm engine
+	// traps (the linear-memory limit included) while indexing. Only TransportNative is
+	// accepted (ParseFallback); empty disables the retry.
+	Fallback Transport
 }
 
 // ParseTransport reads a transport name. Empty selects TransportWasm; anything unrecognised
@@ -63,5 +67,18 @@ func ParseMinConfidence(s string) (string, error) {
 		return v, nil
 	default:
 		return "", fmt.Errorf("pythoncgx: unknown confidence %q (want %s, %s or %s)", s, ConfidenceCertain, ConfidenceProbable, ConfidencePossible)
+	}
+}
+
+// ParseFallback reads the fallback transport. Empty disables it; native is the only fallback,
+// since it is the remedy for the wasm engine's memory ceiling.
+func ParseFallback(s string) (Transport, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return "", nil
+	case string(TransportNative):
+		return TransportNative, nil
+	default:
+		return "", fmt.Errorf("pythoncgx: unknown fallback %q (want %q or empty)", s, TransportNative)
 	}
 }

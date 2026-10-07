@@ -25,10 +25,19 @@ type fakeGraph struct {
 
 type fakeEdge struct{ from, to, conf string }
 
+// failingIndex is a graph whose engine fails while indexing.
+type failingIndex struct {
+	*fakeGraph
+	err error
+}
+
+func (f failingIndex) Index(context.Context) error { return f.err }
+
 var confRank = map[string]int{ConfidencePossible: 0, ConfidenceProbable: 1, ConfidenceCertain: 2}
 
-func (f *fakeGraph) Stats() json.RawMessage { return json.RawMessage(`{"fake":true}`) }
-func (f *fakeGraph) Close() error           { f.closed = true; return nil }
+func (f *fakeGraph) Index(context.Context) error { return nil }
+func (f *fakeGraph) Stats() json.RawMessage      { return json.RawMessage(`{"fake":true}`) }
+func (f *fakeGraph) Close() error                { f.closed = true; return nil }
 
 func (f *fakeGraph) Call(_ context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	f.calls = append(f.calls, tool)

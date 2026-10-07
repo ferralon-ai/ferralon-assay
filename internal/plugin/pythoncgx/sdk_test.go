@@ -1,10 +1,14 @@
 package pythoncgx
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/cgx/sdk/go/cgx"
 )
 
 func TestCacheKey_FollowsTheEngineBytes(t *testing.T) {
@@ -51,5 +55,30 @@ func TestCacheKey_Errors(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if _, err := CacheKey(Config{Transport: TransportNative}); err == nil {
 		t.Error("native transport with no cgx on PATH: want error")
+	}
+}
+
+func TestEngineFailure_ClassifiesTheSDKErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want EngineFailureKind
+	}{
+		{&cgx.EngineError{Transport: "wasm", Op: "cgx_index_finish", Kind: cgx.KindTrap, Err: fmt.Errorf("%w: at peak 3857 MiB", cgx.ErrMemoryLimit)}, EngineMemoryLimit},
+		{&cgx.EngineError{Transport: "wasm", Op: "cgx_extract", Kind: cgx.KindTrap, Err: errors.New("unreachable")}, EngineTrap},
+		{&cgx.EngineError{Transport: "native", Op: "index", Kind: cgx.KindExit, Err: errors.New("signal: killed")}, EngineExit},
+		{&cgx.EngineError{Transport: "native", Op: "index", Kind: cgx.KindInternal, Err: errors.New("lock timeout")}, ""},
+		{errors.New("plain"), ""},
+	} {
+		var f *EngineFailure
+		got := engineFailure(tc.err)
+		if ok := errors.As(got, &f); ok != (tc.want != "") || (ok && f.Kind != tc.want) {
+			t.Errorf("engineFailure(%v) = %v, want kind %q", tc.err, got, tc.want)
+		}
+		if !errors.Is(got, tc.err) {
+			t.Errorf("engineFailure(%v) dropped the SDK error from the chain", tc.err)
+		}
+	}
+	if engineFailure(nil) != nil {
+		t.Error("engineFailure(nil) != nil")
 	}
 }

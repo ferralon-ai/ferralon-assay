@@ -48,6 +48,25 @@ func OpenSDK(ctx context.Context, repo string, cfg Config) (Graph, error) {
 
 type sdkGraph struct{ g *cgx.Graph }
 
+func (s sdkGraph) Index(ctx context.Context) error {
+	_, err := s.g.Index(ctx)
+	return engineFailure(err)
+}
+
+// engineFailure wraps an engine trap or exit as an *EngineFailure; other errors pass through.
+func engineFailure(err error) error {
+	var ee *cgx.EngineError
+	switch {
+	case errors.Is(err, cgx.ErrMemoryLimit):
+		return &EngineFailure{Kind: EngineMemoryLimit, Err: err}
+	case errors.As(err, &ee) && ee.Kind == cgx.KindTrap:
+		return &EngineFailure{Kind: EngineTrap, Err: err}
+	case errors.As(err, &ee) && ee.Kind == cgx.KindExit:
+		return &EngineFailure{Kind: EngineExit, Err: err}
+	}
+	return err
+}
+
 func (s sdkGraph) Call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	raw, err := s.g.Call(ctx, tool, args)
 	var te *cgx.ToolError

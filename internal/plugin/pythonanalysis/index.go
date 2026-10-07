@@ -43,19 +43,9 @@ func IndexSymbols(_ context.Context, req plugin.IndexSymbolsRequest) (plugin.Sym
 // missing/empty build dir is a hard error (inv.4); a read failure or a skipped construct
 // is surfaced via the returned flags (declared partiality).
 func loadFiles(buildDir string) (files []parseResult, readFailed, skipped bool, err error) {
-	info, statErr := os.Stat(buildDir)
-	if statErr != nil {
-		return nil, false, false, fmt.Errorf("pythonanalysis: stat build dir %q: %w", buildDir, statErr)
-	}
-	if !info.IsDir() {
-		return nil, false, false, fmt.Errorf("pythonanalysis: build dir %q is not a directory", buildDir)
-	}
-	paths, walkErr := pythonFiles(buildDir)
-	if walkErr != nil {
-		return nil, false, false, fmt.Errorf("pythonanalysis: scan %q: %w", buildDir, walkErr)
-	}
-	if len(paths) == 0 {
-		return nil, false, false, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
+	paths, err := sourcePaths(buildDir)
+	if err != nil {
+		return nil, false, false, err
 	}
 	for _, p := range paths {
 		data, readErr := os.ReadFile(p)
@@ -70,6 +60,43 @@ func loadFiles(buildDir string) (files []parseResult, readFailed, skipped bool, 
 		files = append(files, pr)
 	}
 	return files, readFailed, skipped, nil
+}
+
+// sourcePaths lists the Python sources IndexSymbols parses. A missing build dir, or one with no
+// Python sources, is a hard error (inv.4).
+func sourcePaths(buildDir string) ([]string, error) {
+	info, err := os.Stat(buildDir)
+	if err != nil {
+		return nil, fmt.Errorf("pythonanalysis: stat build dir %q: %w", buildDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("pythonanalysis: build dir %q is not a directory", buildDir)
+	}
+	paths, err := pythonFiles(buildDir)
+	if err != nil {
+		return nil, fmt.Errorf("pythonanalysis: scan %q: %w", buildDir, err)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("pythonanalysis: no .py sources under %q", buildDir)
+	}
+	return paths, nil
+}
+
+// SourceReadFailure reports whether a Python source IndexSymbols would parse cannot be read —
+// the condition IndexSymbols and ResolveDependencySymbols declare as tool_failure — with the
+// same hard errors as IndexSymbols. It lets an analyzer that indexes the tree some other way
+// declare the same partiality.
+func SourceReadFailure(buildDir string) (bool, error) {
+	paths, err := sourcePaths(buildDir)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range paths {
+		if _, err := os.ReadFile(p); err != nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // indexPartiality builds the declared partiality for the index: a clean parse of all

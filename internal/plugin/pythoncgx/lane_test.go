@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -307,4 +308,65 @@ func TestParseConfig(t *testing.T) {
 	if _, err := ParseMinConfidence("likely"); err == nil {
 		t.Error("ParseMinConfidence(unknown): want error")
 	}
+}
+
+// An unreadable Python source is declared exactly as the incumbent lane declares it.
+func TestUnreadableSourceIsToolFailure(t *testing.T) {
+	h := newHarness(t, "")
+	if err := os.Symlink(filepath.Join(h.buildDir, "absent.py"), filepath.Join(h.buildDir, "dangling.py")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	want := plugin.Partial(plugin.PartialReasonToolFailure)
+
+	inc, err := pythonanalysis.IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: h.buildDir})
+	if err != nil || !reflect.DeepEqual(inc.Partiality, want) {
+		t.Fatalf("incumbent IndexSymbols partiality = %+v, %v; the fixture must reproduce its tool_failure", inc.Partiality, err)
+	}
+	idx, err := h.lane.IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: h.buildDir})
+	if err != nil {
+		t.Fatalf("IndexSymbols: %v", err)
+	}
+	if !reflect.DeepEqual(idx.Partiality, want) || len(idx.Symbols) != 6 {
+		t.Errorf("IndexSymbols = %d symbols, %+v; want 6, %+v", len(idx.Symbols), idx.Partiality, want)
+	}
+
+	for _, tc := range []struct {
+		symbols []string
+		reasons []string
+	}{
+		{[]string{"app.fetch_url"}, []string{plugin.PartialReasonToolFailure}},
+		{[]string{"requests.get"}, []string{plugin.PartialReasonToolFailure}},
+		{[]string{"svc.app.fetch_url"}, []string{reasonSuffixMatch, plugin.PartialReasonToolFailure}},
+	} {
+		req := plugin.ResolveSymbolsRequest{BuildDir: h.buildDir, AdvisorySymbols: tc.symbols}
+		res, err := h.lane.ResolveDependencySymbols(ctx, req)
+		if err != nil {
+			t.Fatalf("ResolveDependencySymbols(%v): %v", tc.symbols, err)
+		}
+		if !reflect.DeepEqual(res.Partiality, plugin.Partial(tc.reasons...)) {
+			t.Errorf("ResolveDependencySymbols(%v) partiality = %+v, want reasons %v", tc.symbols, res.Partiality, tc.reasons)
+		}
+		inc, err := pythonanalysis.ResolveDependencySymbols(ctx, req)
+		if err != nil || !hasReason(inc.Partiality, plugin.PartialReasonToolFailure) {
+			t.Errorf("incumbent ResolveDependencySymbols(%v) partiality = %+v, %v; want tool_failure", tc.symbols, inc.Partiality, err)
+		}
+	}
+}
+
+func TestReadableSourcesStayComplete(t *testing.T) {
+	h := newHarness(t, "")
+	res, err := h.lane.ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{BuildDir: h.buildDir, AdvisorySymbols: []string{"app.fetch_url"}})
+	if err != nil || !res.Partiality.Complete {
+		t.Fatalf("ResolveDependencySymbols = %+v, %v; want complete", res.Partiality, err)
+	}
+}
+
+func hasReason(p plugin.Partiality, reason string) bool {
+	for _, r := range p.Reasons {
+		if r == reason {
+			return true
+		}
+	}
+	return false
 }

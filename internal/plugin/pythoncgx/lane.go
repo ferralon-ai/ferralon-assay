@@ -50,7 +50,9 @@ type Lane struct {
 	// routes finds decorator-registered route handlers; cgx's Python adapter has no web
 	// framework entrypoints, so ingress detection stays the lexical scanner's.
 	routes func(context.Context, string) ([]pythonanalysis.RouteHandler, plugin.Partiality, error)
-	stderr io.Writer
+	// readFailure reports an unreadable Python source, which the incumbent lane declares.
+	readFailure func(string) (bool, error)
+	stderr      io.Writer
 }
 
 // New returns a Lane. cacheKey identifies the cgx build behind open (see Lane.cacheKey).
@@ -58,7 +60,12 @@ func New(cfg Config, open Opener, cacheKey string) *Lane {
 	if cfg.MinConfidence == "" {
 		cfg.MinConfidence = DefaultMinConfidence
 	}
-	return &Lane{cfg: cfg, open: open, cacheKey: cacheKey, routes: pythonanalysis.RouteHandlers, stderr: os.Stderr}
+	return &Lane{
+		cfg: cfg, open: open, cacheKey: cacheKey,
+		routes:      pythonanalysis.RouteHandlers,
+		readFailure: pythonanalysis.SourceReadFailure,
+		stderr:      os.Stderr,
+	}
 }
 
 // session is one operation's open graph plus its measurements.
@@ -146,7 +153,8 @@ func (s *session) finish(opErr error) {
 // node's Symbol is byte-identical wherever it appears (plugin.Symbol compares all fields).
 func sym(fqn string) plugin.Symbol { return plugin.Symbol{SCIP: fqn, DisplayName: fqn} }
 
-// IndexSymbols lists cgx's function, method and type nodes.
+// IndexSymbols lists cgx's function, method and type nodes. Like the incumbent lane it declares
+// tool_failure when a Python source in the build dir cannot be read.
 func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest) (res plugin.SymbolIndexResult, err error) {
 	s, err := l.begin(ctx, plugin.OpIndexSymbols, req.BuildDir)
 	if err != nil {
@@ -154,6 +162,10 @@ func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest)
 	}
 	defer func() { s.finish(err) }()
 
+	readFailed, err := l.readFailure(req.BuildDir)
+	if err != nil {
+		return res, err
+	}
 	var fqns []string
 	for _, kind := range []string{"function", "method", "type"} {
 		err := s.paged(ctx, "search", map[string]any{"all": true, "kind": kind}, func(raw json.RawMessage) error {
@@ -176,6 +188,9 @@ func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest)
 	}
 	fqns = sortedUnique(fqns)
 	res = plugin.SymbolIndexResult{Partiality: plugin.Complete(), Symbols: make([]plugin.Symbol, 0, len(fqns))}
+	if readFailed {
+		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure)
+	}
 	for _, f := range fqns {
 		res.Symbols = append(res.Symbols, sym(f))
 	}
@@ -185,7 +200,8 @@ func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest)
 
 // ResolveDependencySymbols resolves each advisory symbol — a name in Python's dotted syntax —
 // through cgx's node selector, in one batch. An unresolved symbol is an empty result, as on
-// the incumbent lane; a suffix-only, rejected or truncated lookup is declared.
+// the incumbent lane; a suffix-only, rejected or truncated lookup is declared, and so is an
+// unreadable Python source (tool_failure, as the incumbent declares it).
 func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (res plugin.SymbolResolutionResult, err error) {
 	s, err := l.begin(ctx, plugin.OpResolveSymbols, req.BuildDir)
 	if err != nil {
@@ -193,6 +209,10 @@ func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveS
 	}
 	defer func() { s.finish(err) }()
 
+	readFailed, err := l.readFailure(req.BuildDir)
+	if err != nil {
+		return res, err
+	}
 	var names []string
 	seen := map[string]bool{}
 	for _, raw := range req.AdvisorySymbols {
@@ -206,6 +226,9 @@ func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveS
 		return res, err
 	}
 	reasons := map[string]bool{}
+	if readFailed {
+		reasons[plugin.PartialReasonToolFailure] = true
+	}
 	var fqns []string
 	for _, r := range resolved {
 		noteResolution(reasons, r)

@@ -24,7 +24,8 @@ const sdkModule = "github.com/ferralon-ai/cgx/sdk/go"
 //
 // An engine file the configuration names is checked against its pinned SHA-256 here, before
 // the SDK runs it: the native binary is hashed again on every open, and the wasm module is
-// hashed in the same bytes the SDK is handed.
+// hashed in the same bytes the SDK is handed. The native process gets the SDK's minimal
+// environment (PATH, TMPDIR and git's no-fetch settings) and nothing else of this process's.
 func OpenSDK(ctx context.Context, repo string, cfg Config) (Graph, error) {
 	opts := []cgx.Option{cgx.WithCacheDir(filepath.Join(cfg.CacheDir, "wazero"))}
 	switch cfg.Transport {

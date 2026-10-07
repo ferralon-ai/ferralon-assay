@@ -155,6 +155,12 @@ call with an error that starts `tool_failure:cgx_engine_unverified`. The analyze
 when it starts and again just before it runs the file. The embedded module needs no pin: it is
 part of the SDK version the analyzer was built against, which `go.sum` pins.
 
+The native `cgx` process does not inherit the analyzer's environment. It gets `PATH`, `TMPDIR`
+and git's no-fetch settings (`GIT_NO_LAZY_FETCH=1`, `GIT_TERMINAL_PROMPT=0`), so tokens in the
+scan step's environment, `IN_STATE_TOKEN` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` among them, stay
+out of the process that parses the scanned code. The analyzer process itself still receives the
+scanner's environment. Narrowing that is the scanner's job, not the analyzer's.
+
 The call graph keeps only edges at or above the confidence floor, because cgx's `possible` tier
 holds over-approximated candidate sets that run to millions of edges on large Python trees. The
 floor is declared in the call graph's partiality. HTTP entry points still come from the

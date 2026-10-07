@@ -34,7 +34,9 @@
 //
 // An engine file named here runs only if its sha256 matches the pin, from the environment or
 // baked in at build time (bakedCgxBinSHA256, bakedCgxWasmSHA256). With no pin, or a different
-// digest, the call fails with an error that starts tool_failure:cgx_engine_unverified.
+// digest, the call fails with an error that starts tool_failure:cgx_engine_unverified. The native
+// cgx process gets PATH, TMPDIR and git's no-fetch settings; nothing else of this process's
+// environment reaches it.
 //
 // A configuration error, a failed open or a failed query is a hard error (inv.4): Response.Error
 // is set and the process exits non-zero. Declared partiality is a success payload. An engine

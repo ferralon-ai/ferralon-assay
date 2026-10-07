@@ -143,6 +143,7 @@ scanned checkout is only read and an unchanged tree is indexed once. It needs gi
 | `ASSAY_PYTHON_CGX_MIN_CONFIDENCE` | `probable` | Lowest cgx edge confidence kept in the call graph: `certain`, `probable` or `possible`. |
 | `ASSAY_PYTHON_CGX_STATS` | unset | A file to append one JSON timing record per analyzer call to. |
 | `ASSAY_PYTHON_CGX_FALLBACK` | unset | `native`: when the wasm engine traps while indexing (its memory limit included), retry once on the native transport with `ASSAY_PYTHON_CGX_BIN`. |
+| `ASSAY_PYTHON_CGX_FAILURE_TTL` | `30m` | How long a recorded index failure that may not recur (the native process exiting or killed, a deadline) is replayed, as a Go duration; `0` never replays one. |
 
 The call graph keeps only edges at or above the confidence floor, because cgx's `possible` tier
 holds over-approximated candidate sets that run to millions of edges on large Python trees. The
@@ -151,13 +152,28 @@ lexical scanner's Flask/FastAPI decorator detection; a route handler cgx cannot 
 declared, and an advisory with no path is then reported `undetermined` rather than
 `not_exploitable`.
 
-If the cgx engine fails while indexing a tree (the wasm engine reaching its memory limit, or the
-native process exiting), the analyzer call fails with an error that starts
-`tool_failure:cgx_index_failed` and names the setting to change. The failure is recorded under the
-cache directory for the rest of that scan, so the scan's later calls on the same tree fail at once
-with the same error instead of indexing again; the next scan tries again. With
-`ASSAY_PYTHON_CGX_FALLBACK=native`, a wasm trap is retried once on the native transport instead, and
-the scan's later calls go to the native transport directly.
+If the cgx engine fails while indexing a tree (the wasm engine trapping or reaching its memory
+limit, the native process exiting, or the call's deadline ending mid-index), the analyzer call
+fails with an error that starts `tool_failure:cgx_index_failed` and names the setting to change.
+The failure is recorded under the cache directory, keyed by the tree's git object id, the cgx
+engine build, the transport, the pool size and the wasm memory limit — not by the scan or the
+process that asked — so later calls on the same tree fail at once with the same error instead of
+indexing again, in this scan and in later ones. A trap or memory-limit failure is replayed for as
+long as that key holds: changing the tree, the engine or those options indexes again. A failure
+that may not recur (an exited or killed process, a deadline) is replayed only for
+`ASSAY_PYTHON_CGX_FAILURE_TTL`. With `ASSAY_PYTHON_CGX_FALLBACK=native`, a wasm trap is retried
+once on the native transport instead, and later calls go to the native transport directly.
+
+To clear recorded failures — say, after giving the machine more memory — delete the
+`index-failures` directories one level under the cache directory (`ASSAY_PYTHON_CGX_CACHE_DIR`, or
+`ferralon-assay/python-cgx` under the user cache directory when unset: `~/Library/Caches` on macOS,
+`$XDG_CACHE_HOME` or `~/.cache` on Linux):
+
+```
+rm -rf "${ASSAY_PYTHON_CGX_CACHE_DIR:?set it to the cache directory}"/*/index-failures
+```
+
+Indexes stored alongside are kept.
 
 ## State and run modes
 

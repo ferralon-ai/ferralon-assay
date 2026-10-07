@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,9 +50,10 @@ type Lane struct {
 	// not keyed by extractor version, so an index from another build must not be reused.
 	// fallbackKey is the same for the Config.Fallback transport's build.
 	cacheKey, fallbackKey string
-	// scan identifies the scan this process serves, scoping memoized index failures. The
-	// scanner runs every operation of a scan as a child of one process.
-	scan string
+	// memoryLimit names the wasm linear-memory ceiling the engine runs under, part of the key
+	// of a recorded index failure.
+	memoryLimit string
+	now         func() time.Time
 	// routes finds decorator-registered route handlers; cgx's Python adapter has no web
 	// framework entrypoints, so ingress detection stays the lexical scanner's.
 	routes func(context.Context, string) ([]pythonanalysis.RouteHandler, plugin.Partiality, error)
@@ -70,7 +70,8 @@ func New(cfg Config, open Opener, cacheKey, fallbackKey string) *Lane {
 	}
 	return &Lane{
 		cfg: cfg, open: open, cacheKey: cacheKey, fallbackKey: fallbackKey,
-		scan:        strconv.Itoa(os.Getppid()),
+		memoryLimit: memoryLimitKey(),
+		now:         time.Now,
 		routes:      pythonanalysis.RouteHandlers,
 		readFailure: pythonanalysis.SourceReadFailure,
 		stderr:      os.Stderr,
@@ -100,8 +101,8 @@ type opStats struct {
 	// FallbackFrom names the configured transport when its index failed and the fallback
 	// transport answered (or failed) instead.
 	FallbackFrom Transport `json:"fallback_from,omitempty"`
-	// MemoizedFailure: an index failure recorded earlier in the scan was replayed, without
-	// opening the engine.
+	// MemoizedFailure: an index failure recorded earlier for the same tree, engine build and
+	// options was replayed, without opening the engine.
 	MemoizedFailure bool            `json:"memoized_failure,omitempty"`
 	ToolCalls       int             `json:"tool_calls"`
 	Pages           int             `json:"pages"`
@@ -129,9 +130,10 @@ func (l *Lane) begin(ctx context.Context, op, buildDir string) (*session, error)
 }
 
 // attach snapshots buildDir under the cache key's directory, opens cfg's engine on it and
-// brings its index up to date. An engine failure while indexing is recorded for the scan, and
-// a failure already recorded for this tree, build and options is returned without opening the
-// engine, so a scan pays for a failing index once rather than once per operation.
+// brings its index up to date. An engine failure while indexing is recorded under the cache
+// directory, and a failure already recorded for this tree, engine build and options is
+// returned without opening the engine (one that may not recur only within Config.FailureTTL),
+// so a failing index is paid for once rather than once per operation.
 func (s *session) attach(ctx context.Context, cfg Config, key, buildDir string) error {
 	s.stats.Transport = cfg.Transport
 	start := time.Now()
@@ -142,8 +144,9 @@ func (s *session) attach(ctx context.Context, cfg Config, key, buildDir string) 
 	if err != nil {
 		return err
 	}
-	memo := failureMemoPath(dir, tree, cfg)
-	if f := readFailureMemo(memo, s.l.scan); f != nil {
+	mk := memoKey{Tree: tree, Engine: key, Transport: cfg.Transport, PoolSize: cfg.PoolSize, MemoryLimit: s.l.memoryLimit}
+	memo := failureMemoPath(dir, mk)
+	if f := readFailureMemo(memo, mk, s.l.now(), cfg.FailureTTL); f != nil {
 		s.stats.MemoizedFailure = true
 		return f
 	}
@@ -163,12 +166,17 @@ func (s *session) attach(ctx context.Context, cfg Config, key, buildDir string) 
 	}
 	s.stats.SDK = g.Stats()
 	_ = g.Close()
+	var f *IndexFailure
 	var ef *EngineFailure
-	if !errors.As(err, &ef) || ctx.Err() != nil {
+	switch {
+	case ctx.Err() != nil:
+		f = &IndexFailure{Transport: cfg.Transport, Tree: tree, Kind: EngineContext, Detail: err.Error()}
+	case errors.As(err, &ef):
+		f = &IndexFailure{Transport: cfg.Transport, Tree: tree, Kind: ef.Kind, Detail: ef.Err.Error()}
+	default:
 		return fmt.Errorf("pythoncgx: index: %w", err)
 	}
-	f := &IndexFailure{Transport: cfg.Transport, Tree: tree, Kind: ef.Kind, Detail: ef.Err.Error()}
-	if werr := writeFailureMemo(memo, s.l.scan, f); werr != nil {
+	if werr := writeFailureMemo(memo, failureMemo{Key: mk, RecordedAt: s.l.now().UTC(), Failure: f}); werr != nil {
 		fmt.Fprintf(s.l.stderr, "pythoncgx: record index failure: %v\n", werr)
 	}
 	return f

@@ -20,6 +20,8 @@ func TestNewLane_RejectsBadConfiguration(t *testing.T) {
 		{envPoolSize, "0", envPoolSize},
 		{envPoolSize, "many", envPoolSize},
 		{envFallback, "wasm", envFallback},
+		{envFailureTTL, "soon", envFailureTTL},
+		{envFailureTTL, "-1m", envFailureTTL},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			t.Setenv(envCacheDir, t.TempDir())

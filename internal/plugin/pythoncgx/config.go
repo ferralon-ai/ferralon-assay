@@ -3,6 +3,7 @@ package pythoncgx
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Transport selects how the SDK runs cgx.
@@ -43,6 +44,11 @@ type Config struct {
 	// traps (the linear-memory limit included) while indexing. Only TransportNative is
 	// accepted (ParseFallback); empty disables the retry.
 	Fallback Transport
+	// FailureTTL is how long an index failure that may not recur (EngineExit, EngineContext)
+	// is replayed before the index is attempted again; 0 never replays one. Deterministic
+	// failures (EngineMemoryLimit, EngineTrap) are replayed for as long as the tree, engine
+	// build and options are unchanged. ParseFailureTTL gives the default.
+	FailureTTL time.Duration
 }
 
 // ParseTransport reads a transport name. Empty selects TransportWasm; anything unrecognised
@@ -81,4 +87,21 @@ func ParseFallback(s string) (Transport, error) {
 	default:
 		return "", fmt.Errorf("pythoncgx: unknown fallback %q (want %q or empty)", s, TransportNative)
 	}
+}
+
+// ParseFailureTTL reads FailureTTL as a Go duration ("30m", "0s"). Empty selects
+// DefaultFailureTTL; a negative duration is an error.
+func ParseFailureTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return DefaultFailureTTL, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("pythoncgx: failure TTL %q: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("pythoncgx: failure TTL %q is negative", s)
+	}
+	return d, nil
 }

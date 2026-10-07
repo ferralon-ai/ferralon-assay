@@ -5,11 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -71,6 +75,8 @@ type harness struct {
 	opens    int
 	opensBy  map[Transport]int
 	indexErr map[Transport]error // Index fails with this on graphs opened for the transport
+	beforeFn func()              // run by a failing Index before it fails
+	clock    time.Time
 	buildDir string
 	stats    string
 	stderr   *bytes.Buffer
@@ -83,7 +89,7 @@ func newHarness(t *testing.T, minConfidence string) *harness {
 		t.Fatal(err)
 	}
 	h.stats = filepath.Join(t.TempDir(), "stats.jsonl")
-	cfg := Config{Transport: TransportNative, CacheDir: t.TempDir(), MinConfidence: minConfidence, StatsFile: h.stats}
+	cfg := Config{Transport: TransportNative, CacheDir: t.TempDir(), MinConfidence: minConfidence, StatsFile: h.stats, FailureTTL: DefaultFailureTTL}
 	h.lane = New(cfg, func(_ context.Context, repo string, cfg Config) (Graph, error) {
 		if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
 			t.Errorf("opener got %q, not a git repository: %v", repo, err)
@@ -91,11 +97,12 @@ func newHarness(t *testing.T, minConfidence string) *harness {
 		h.opens++
 		h.opensBy[cfg.Transport]++
 		if err := h.indexErr[cfg.Transport]; err != nil {
-			return failingIndex{h.fake, err}, nil
+			return failingIndex{h.fake, err, h.beforeFn}, nil
 		}
 		return h.fake, nil
 	}, "test", "test-fallback")
-	h.lane.scan = "scan-1"
+	h.clock = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	h.lane.now = func() time.Time { return h.clock }
 	h.lane.stderr = h.stderr
 	return h
 }
@@ -391,9 +398,9 @@ func memLimit() error {
 	return &EngineFailure{Kind: EngineMemoryLimit, Err: errors.New("linear-memory limit (4 GiB) reached at peak 3857 MiB")}
 }
 
-// After an engine failure while indexing, the scan's later operations on the same tree fail at
-// once with the same error and never open the engine again.
-func TestIndexFailureIsMemoizedForTheScan(t *testing.T) {
+// After an engine failure while indexing, later operations on the same tree fail at once with
+// the same error and never open the engine again; a deterministic failure does not expire.
+func TestIndexFailureIsMemoized(t *testing.T) {
 	h := newHarness(t, "")
 	h.lane.cfg.Transport = TransportWasm
 	h.indexErr[TransportWasm] = memLimit()
@@ -434,13 +441,20 @@ func TestIndexFailureIsMemoizedForTheScan(t *testing.T) {
 		t.Errorf("stats records = %+v; want 4, memoized after the first, same error", recs)
 	}
 
-	// A new scan indexes again.
-	h.lane.scan = "scan-2"
-	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); !errors.As(err, &f) {
-		t.Fatalf("new scan: err = %v, want an IndexFailure", err)
+	// Deterministic: still replayed long after any TTL.
+	h.clock = h.clock.Add(1000 * time.Hour)
+	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); err == nil || err.Error() != first.Error() || h.opens != 1 {
+		t.Fatalf("1000h later: err = %v, opens %d; want the memoized failure, 1 open", err, h.opens)
 	}
-	if h.opens != 2 {
-		t.Errorf("new scan: engine opened %d times in all, want 2", h.opens)
+
+	// Another engine build, or another pool size, is another key: it indexes again.
+	h.lane.cacheKey = "test-other-build"
+	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); !errors.As(err, &f) || h.opens != 2 {
+		t.Fatalf("other engine build: err = %v, opens %d; want a fresh IndexFailure, 2 opens", err, h.opens)
+	}
+	h.lane.cfg.PoolSize = 3
+	if _, err := h.lane.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: h.buildDir}); !errors.As(err, &f) || h.opens != 3 {
+		t.Fatalf("other pool size: err = %v, opens %d; want a fresh IndexFailure, 3 opens", err, h.opens)
 	}
 
 	// The tree changing is a different index.
@@ -543,4 +557,147 @@ func hasReason(p plugin.Partiality, reason string) bool {
 		}
 	}
 	return false
+}
+
+// A failure that may not recur (the process killed, a deadline) is replayed only within the TTL.
+func TestTransientIndexFailureExpires(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, "")
+	h.indexErr[TransportNative] = &EngineFailure{Kind: EngineExit, Err: errors.New("signal: killed")}
+	find := func() error {
+		_, err := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+		return err
+	}
+	for _, step := range []struct {
+		advance   time.Duration
+		wantOpens int
+	}{
+		{0, 1},
+		{0, 1},
+		{DefaultFailureTTL - time.Second, 1},
+		{time.Second, 2},
+		{0, 2},
+	} {
+		h.clock = h.clock.Add(step.advance)
+		var f *IndexFailure
+		if err := find(); !errors.As(err, &f) || f.Kind != EngineExit {
+			t.Fatalf("err = %v, want the exit IndexFailure", err)
+		}
+		if h.opens != step.wantOpens {
+			t.Fatalf("after +%v: engine opened %d times, want %d", step.advance, h.opens, step.wantOpens)
+		}
+	}
+
+	h.lane.cfg.FailureTTL = 0
+	_ = find()
+	_ = find()
+	if h.opens != 4 {
+		t.Errorf("TTL 0: engine opened %d times in all, want 4 (never replayed)", h.opens)
+	}
+}
+
+// The operation's context ending mid-index is recorded as a transient failure.
+func TestContextEndingMidIndexIsTransient(t *testing.T) {
+	h := newHarness(t, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.beforeFn = cancel
+	h.indexErr[TransportNative] = context.Canceled
+	_, first := h.lane.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: h.buildDir})
+	var f *IndexFailure
+	if !errors.As(first, &f) || f.Kind != EngineContext {
+		t.Fatalf("err = %v, want a context IndexFailure", first)
+	}
+	h.beforeFn = nil
+	h.indexErr[TransportNative] = nil
+	if _, err := h.lane.FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: h.buildDir}); err == nil || err.Error() != first.Error() || h.opens != 1 {
+		t.Fatalf("within TTL: err = %v, opens %d; want the recorded failure, 1 open", err, h.opens)
+	}
+	h.clock = h.clock.Add(DefaultFailureTTL)
+	if _, err := h.lane.FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: h.buildDir}); err != nil || h.opens != 2 {
+		t.Fatalf("after TTL: err = %v, opens %d; want an answer, 2 opens", err, h.opens)
+	}
+}
+
+const memoHelperEnv = "PYTHONCGX_MEMO_HELPER_DIR"
+
+// TestMemoHelperProcess is not a test of its own: it is one analyzer invocation, run as a child
+// process by TestIndexFailureMemoHoldsAcrossParentProcesses. Its engine always traps at the
+// memory limit and logs every open.
+func TestMemoHelperProcess(t *testing.T) {
+	dir := os.Getenv(memoHelperEnv)
+	if dir == "" {
+		t.Skip("run only as a child process")
+	}
+	cfg := Config{Transport: TransportWasm, CacheDir: filepath.Join(dir, "cache"), FailureTTL: DefaultFailureTTL}
+	l := New(cfg, func(context.Context, string, Config) (Graph, error) {
+		f, err := os.OpenFile(filepath.Join(dir, "opens"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = f.WriteString("open\n")
+		_ = f.Close()
+		return failingIndex{fakeGraph: newFake(), err: memLimit()}, nil
+	}, "engine-a", "")
+	l.stderr = io.Discard
+	_, err := l.FindIngresses(context.Background(), plugin.FindIngressesRequest{BuildDir: filepath.Join(dir, "tree")})
+	fmt.Printf("\nhelper-ppid=%d\nhelper-err=%v\n", os.Getppid(), err)
+}
+
+// The failure record holds across invocations whose parent processes differ — here the test
+// itself, then a shell in between — as a wrapper between the scanner and the analyzer makes them.
+func TestIndexFailureMemoHoldsAcrossParentProcesses(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tree"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tree", "app.py"), []byte(flaskApp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(viaShell bool) (ppid, errText string) {
+		t.Helper()
+		args := []string{"-test.run=^TestMemoHelperProcess$"}
+		cmd := exec.Command(os.Args[0], args...)
+		if viaShell {
+			// Not the last command, so the shell forks rather than execs: it is the parent.
+			cmd = exec.Command(sh, append([]string{"-c", `"$0" "$@"; exit $?`, os.Args[0]}, args...)...)
+		}
+		cmd.Env = append(os.Environ(), memoHelperEnv+"="+dir)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("helper: %v\n%s", err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if v, ok := strings.CutPrefix(line, "helper-ppid="); ok {
+				ppid = v
+			}
+			if v, ok := strings.CutPrefix(line, "helper-err="); ok {
+				errText = v
+			}
+		}
+		if ppid == "" || errText == "" {
+			t.Fatalf("helper printed no result:\n%s", out)
+		}
+		return ppid, errText
+	}
+
+	ppid1, err1 := run(false)
+	ppid2, err2 := run(true)
+	if ppid1 == ppid2 {
+		t.Fatalf("both invocations had parent %s; the test needs different parents", ppid1)
+	}
+	if !strings.HasPrefix(err1, reasonIndexFailed+": ") || err2 != err1 {
+		t.Errorf("errors %q / %q; want the same index failure twice", err1, err2)
+	}
+	opens, err := os.ReadFile(filepath.Join(dir, "opens"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(opens), "open"); n != 1 {
+		t.Errorf("engine opened %d times across the two invocations, want 1", n)
+	}
 }

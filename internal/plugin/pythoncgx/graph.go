@@ -53,12 +53,13 @@ const (
 	EngineMemoryLimit EngineFailureKind = "memory_limit"
 	// EngineTrap: the wasm engine trapped for another reason.
 	EngineTrap EngineFailureKind = "trap"
-	// EngineExit: the native engine process exited.
+	// EngineExit: the native engine process exited (or was killed).
 	EngineExit EngineFailureKind = "exit"
+	// EngineContext: the operation's context ended while the engine was indexing.
+	EngineContext EngineFailureKind = "context"
 )
 
-// EngineFailure is a failure of the cgx engine itself rather than an answer from it. Indexing the
-// same tree with the same engine build and options is expected to fail the same way.
+// EngineFailure is a failure of the cgx engine itself rather than an answer from it.
 type EngineFailure struct {
 	Kind EngineFailureKind
 	Err  error

@@ -24,11 +24,15 @@
 //	ASSAY_PYTHON_CGX_FALLBACK        native: after the wasm engine traps while indexing (its
 //	                                 memory limit included), retry once on the native transport
 //	                                 with ASSAY_PYTHON_CGX_BIN (default: off)
+//	ASSAY_PYTHON_CGX_FAILURE_TTL     how long an index failure that may not recur (the native
+//	                                 process killed, a deadline) is replayed: a Go duration
+//	                                 (default 30m; 0 never replays one)
 //
 // A configuration error, a failed open or a failed query is a hard error (inv.4): Response.Error
 // is set and the process exits non-zero. Declared partiality is a success payload. An engine
-// failure while indexing is recorded under the cache directory for the scan, so the scan's
-// later operations on the same tree fail at once with the same error instead of indexing again.
+// failure while indexing is recorded under the cache directory, keyed by the staged tree, the
+// engine build and the indexing options, so later operations on the same tree fail at once
+// with the same error instead of indexing again.
 package main
 
 import (
@@ -58,6 +62,7 @@ const (
 	envMinConfidence = brand.EnvPrefix + "_PYTHON_CGX_MIN_CONFIDENCE"
 	envStats         = brand.EnvPrefix + "_PYTHON_CGX_STATS"
 	envFallback      = brand.EnvPrefix + "_PYTHON_CGX_FALLBACK"
+	envFailureTTL    = brand.EnvPrefix + "_PYTHON_CGX_FAILURE_TTL"
 )
 
 func main() {
@@ -110,6 +115,10 @@ func newLane() (*pythoncgx.Lane, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", envFallback, err)
 	}
+	failureTTL, err := pythoncgx.ParseFailureTTL(os.Getenv(envFailureTTL))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", envFailureTTL, err)
+	}
 	cfg := pythoncgx.Config{
 		Transport:     transport,
 		CgxBin:        strings.TrimSpace(os.Getenv(envBin)),
@@ -118,6 +127,7 @@ func newLane() (*pythoncgx.Lane, error) {
 		MinConfidence: minConf,
 		StatsFile:     strings.TrimSpace(os.Getenv(envStats)),
 		Fallback:      fallback,
+		FailureTTL:    failureTTL,
 	}
 	if v := strings.TrimSpace(os.Getenv(envPoolSize)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -156,10 +166,12 @@ func withRemedy(err error) error {
 		return err
 	}
 	switch {
+	case f.Kind == pythoncgx.EngineContext:
+		return fmt.Errorf("%w; remedy: indexing outlived the call's deadline; it is attempted again once %s has passed", err, envFailureTTL)
 	case f.Transport == pythoncgx.TransportWasm:
 		return fmt.Errorf("%w; remedy: set %s=native (cgx binary via %s), or %s=native to retry on it", err, envTransport, envBin, envFallback)
 	default:
-		return fmt.Errorf("%w; remedy: the native cgx process exited; check its diagnostics and the memory available to it", err)
+		return fmt.Errorf("%w; remedy: the native cgx process exited; check its diagnostics and the memory available to it (attempted again once %s has passed)", err, envFailureTTL)
 	}
 }
 

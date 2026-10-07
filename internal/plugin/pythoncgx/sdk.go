@@ -140,3 +140,16 @@ func embeddedKey() (string, error) {
 	}
 	return "", errors.New("pythoncgx: cgx SDK not in build info")
 }
+
+// memoryLimitKey names the wasm linear-memory ceiling. The lane leaves it at the SDK's default,
+// so the SDK version that sets the default identifies it.
+func memoryLimitKey() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, dep := range info.Deps {
+			if dep.Path == sdkModule {
+				return "sdk-default@" + dep.Version
+			}
+		}
+	}
+	return "sdk-default"
+}

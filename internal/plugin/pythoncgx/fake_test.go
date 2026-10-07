@@ -25,13 +25,19 @@ type fakeGraph struct {
 
 type fakeEdge struct{ from, to, conf string }
 
-// failingIndex is a graph whose engine fails while indexing.
+// failingIndex is a graph whose engine fails while indexing, after running before (if set).
 type failingIndex struct {
 	*fakeGraph
-	err error
+	err    error
+	before func()
 }
 
-func (f failingIndex) Index(context.Context) error { return f.err }
+func (f failingIndex) Index(context.Context) error {
+	if f.before != nil {
+		f.before()
+	}
+	return f.err
+}
 
 var confRank = map[string]int{ConfidencePossible: 0, ConfidenceProbable: 1, ConfidenceCertain: 2}
 

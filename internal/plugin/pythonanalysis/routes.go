@@ -9,8 +9,9 @@ import (
 )
 
 // RouteHandler is one decorator-registered route handler found by FindIngresses' scan, named
-// in Python's own dotted qualified-name syntax (module import path, enclosing classes, def
-// name: "pkg.views.Api.get") rather than this package's SCIP id. It exists so an analyzer
+// in Python's own dotted qualified-name syntax (module import path, every enclosing class and
+// function, def name: "pkg.views.Api.get", "pkg.app.create_app.serve") rather than this
+// package's SCIP id. It exists so an analyzer
 // with a different symbol space can resolve the same handler with its own resolver instead
 // of parsing a SCIP string.
 type RouteHandler struct {
@@ -32,7 +33,7 @@ func RouteHandlers(_ context.Context, buildDir string) ([]RouteHandler, plugin.P
 	var out []RouteHandler
 	for _, f := range prog.files {
 		for _, in := range f.ingresses {
-			h := RouteHandler{Kind: in.kind, Selector: in.selector, QualifiedName: dottedName(f.module, in.enclosing, in.name)}
+			h := RouteHandler{Kind: in.kind, Selector: in.selector, QualifiedName: dottedName(f.module, in.scope, in.name)}
 			if seen[h] {
 				continue
 			}
@@ -52,7 +53,7 @@ func RouteHandlers(_ context.Context, buildDir string) ([]RouteHandler, plugin.P
 	return out, ingressPartiality(prog), nil
 }
 
-// dottedName joins a '/'-separated module path, its enclosing class chain and a name into the
+// dottedName joins a '/'-separated module path, its enclosing scope chain and a name into the
 // dotted form Python imports use — the same conversion pySymbolForms applies to Package.
 func dottedName(module string, enclosing []string, name string) string {
 	parts := make([]string, 0, len(enclosing)+2)

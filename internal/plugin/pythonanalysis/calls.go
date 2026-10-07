@@ -61,8 +61,11 @@ type callSite struct {
 // coincides with the handler function's declaration (and thus its call-graph node). kind
 // is the plugin Ingress kind ("http_route"); selector is the decorator method leaf
 // ("route", "get", …) — the path string is not recoverable after literal-stripping.
+// scope is the full lexical chain enclosing the def, functions included (outer→inner); the
+// SCIP id ignores enclosing functions, but a Python qualified name does not (RouteHandlers).
 type ingressMarker struct {
 	enclosing []string
+	scope     []string
 	name      string
 	arity     int
 	kind      string
@@ -98,6 +101,17 @@ func parseCallsAndIngresses(lines []logicalLine) ([]callSite, []ingressMarker) {
 		for _, s := range stack {
 			if s.className != "" {
 				out = append(out, s.className)
+			}
+		}
+		return out
+	}
+	scopeChain := func() []string {
+		var out []string
+		for _, s := range stack {
+			if s.className != "" {
+				out = append(out, s.className)
+			} else if s.funcName != "" {
+				out = append(out, s.funcName)
 			}
 		}
 		return out
@@ -152,6 +166,7 @@ func parseCallsAndIngresses(lines []logicalLine) ([]callSite, []ingressMarker) {
 			if pendingRoute {
 				ingresses = append(ingresses, ingressMarker{
 					enclosing: append([]string(nil), enc...),
+					scope:     scopeChain(),
 					name:      name,
 					arity:     arity,
 					kind:      "http_route",

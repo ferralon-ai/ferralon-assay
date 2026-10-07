@@ -36,6 +36,9 @@ const (
 	reasonResolveTruncated = plugin.PartialReasonToolFailure + ":cgx_resolve_truncated"
 	// The cgx engine itself failed while indexing the tree (IndexFailure).
 	reasonIndexFailed = plugin.PartialReasonToolFailure + ":cgx_index_failed"
+	// An engine file the configuration names is unpinned or does not match its pin
+	// (ErrEngineUnverified), so it was not run.
+	reasonEngineUnverified = plugin.PartialReasonToolFailure + ":cgx_engine_unverified"
 )
 
 // taintPrecisionNote states what ComputeTaint's paths are.

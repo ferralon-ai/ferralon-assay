@@ -40,6 +40,14 @@
 #   endpoint-inert) release: the OSS/dogfood build.
 #   ASSAY_REVOKE_PUBKEY / ASSAY_REVOKE_KEY_ID   self-cleanup revoke-signing public key + key id.
 #   ASSAY_INGEST_URL / ASSAY_RUNS_URL           the two Ferralon endpoints.
+#   ASSAY_CGX_BIN_SHA256 / ASSAY_CGX_WASM_SHA256
+#                                 sha256 pins for the cgx engine files assay-plugin-python-cgx
+#                                 may be pointed at (ASSAY_PYTHON_CGX_BIN / ASSAY_PYTHON_CGX_WASM);
+#                                 the plugin refuses an engine file whose digest is unpinned or
+#                                 differs. A HOOK ONLY: this tarball ships no cgx engine file today,
+#                                 so the release sets neither and an operator pins at run time
+#                                 (ASSAY_PYTHON_CGX_BIN_SHA256 / ASSAY_PYTHON_CGX_WASM_SHA256). Set
+#                                 them here once a cut carries the engine file the digest names.
 #
 # REPRODUCIBILITY — the whole point. Same version + same bake inputs + same source + same Go
 # toolchain -> byte-identical tarball, on any host. Everything that could vary is pinned:
@@ -76,6 +84,8 @@ ASSAY_REVOKE_PUBKEY="${ASSAY_REVOKE_PUBKEY:-}"
 ASSAY_REVOKE_KEY_ID="${ASSAY_REVOKE_KEY_ID:-}"
 ASSAY_INGEST_URL="${ASSAY_INGEST_URL:-}"
 ASSAY_RUNS_URL="${ASSAY_RUNS_URL:-}"
+ASSAY_CGX_BIN_SHA256="${ASSAY_CGX_BIN_SHA256:-}"
+ASSAY_CGX_WASM_SHA256="${ASSAY_CGX_WASM_SHA256:-}"
 
 # ---- the target table -------------------------------------------------------
 # <baked asset name>=<cmd package>. The CLI plus the per-language analyzer plugins. The ASSET names
@@ -148,6 +158,14 @@ ldflags_for() {
   fi
   if [[ -n "${ASSAY_RUNS_URL}" ]]; then
     f+=" -X main.bakedRunsURL=${ASSAY_RUNS_URL}"
+  fi
+  # main.bakedCgx* exist only in cmd/assay-plugin-python-cgx; the linker ignores -X for a symbol
+  # a binary does not define, as it does for main.baked*URL outside the CLI.
+  if [[ -n "${ASSAY_CGX_BIN_SHA256}" ]]; then
+    f+=" -X main.bakedCgxBinSHA256=${ASSAY_CGX_BIN_SHA256}"
+  fi
+  if [[ -n "${ASSAY_CGX_WASM_SHA256}" ]]; then
+    f+=" -X main.bakedCgxWasmSHA256=${ASSAY_CGX_WASM_SHA256}"
   fi
   printf '%s' "${f}"
 }

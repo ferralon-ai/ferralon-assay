@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 
 	"github.com/ferralon-ai/cgx/sdk/go/cgx"
 )
@@ -21,10 +21,17 @@ const sdkModule = "github.com/ferralon-ai/cgx/sdk/go"
 
 // OpenSDK is the Opener backed by the cgx Go SDK. The SDK's compile cache lives under
 // cfg.CacheDir so the plugin writes nowhere else.
+//
+// An engine file the configuration names is checked against its pinned SHA-256 here, before
+// the SDK runs it: the native binary is hashed again on every open, and the wasm module is
+// hashed in the same bytes the SDK is handed.
 func OpenSDK(ctx context.Context, repo string, cfg Config) (Graph, error) {
 	opts := []cgx.Option{cgx.WithCacheDir(filepath.Join(cfg.CacheDir, "wazero"))}
 	switch cfg.Transport {
 	case TransportNative:
+		if _, err := nativeSum(cfg); err != nil {
+			return nil, err
+		}
 		opts = append(opts, cgx.WithTransport(cgx.Native(cfg.CgxBin)))
 	default:
 		opts = append(opts, cgx.WithTransport(cgx.Wasm()))
@@ -32,6 +39,10 @@ func OpenSDK(ctx context.Context, repo string, cfg Config) (Graph, error) {
 			mod, err := os.ReadFile(cfg.WasmModule)
 			if err != nil {
 				return nil, fmt.Errorf("pythoncgx: read wasm module: %w", err)
+			}
+			sum := sha256.Sum256(mod)
+			if err := checkPin("wasm module", cfg.WasmModule, hex.EncodeToString(sum[:]), cfg.WasmModuleSHA256); err != nil {
+				return nil, err
 			}
 			opts = append(opts, cgx.WithModule(mod))
 		}
@@ -91,26 +102,50 @@ func (s sdkGraph) Stats() json.RawMessage {
 
 func (s sdkGraph) Close() error { return s.g.Close() }
 
+// ErrEngineUnverified is returned for an engine file the configuration names whose SHA-256 is
+// not pinned or does not match the pin. Its text is the tool_failure reason code.
+var ErrEngineUnverified = errors.New(reasonEngineUnverified)
+
+// ErrNativeBinPath is returned when the native transport's cgx binary is not an absolute path.
+var ErrNativeBinPath = errors.New("pythoncgx: native transport: the cgx binary must be given by absolute path (it is never looked up on PATH)")
+
 // CacheKey names the cgx build cfg selects: the SHA-256 of the native binary or of the wasm
 // module file, or the SDK module version whose embedded engine is used. Indexes are kept per
 // key because cgx reuses cached extraction results without checking which build wrote them.
+// A named engine file must match its pinned SHA-256 (ErrEngineUnverified otherwise), and the
+// native binary must be named by an absolute path: there is no PATH lookup.
 func CacheKey(cfg Config) (string, error) {
-	var path string
+	var sum string
+	var err error
 	switch {
 	case cfg.Transport == TransportNative:
-		path = cfg.CgxBin
-		if path == "" {
-			p, err := exec.LookPath("cgx")
-			if err != nil {
-				return "", fmt.Errorf("pythoncgx: native transport: %w", err)
-			}
-			path = p
-		}
+		sum, err = nativeSum(cfg)
 	case cfg.WasmModule != "":
-		path = cfg.WasmModule
+		if sum, err = fileSum(cfg.WasmModule); err == nil {
+			err = checkPin("wasm module", cfg.WasmModule, sum, cfg.WasmModuleSHA256)
+		}
 	default:
 		return embeddedKey()
 	}
+	if err != nil {
+		return "", err
+	}
+	return string(cfg.Transport) + "-" + sum[:16], nil
+}
+
+// nativeSum returns the SHA-256 of the native cgx binary, checked against its pin.
+func nativeSum(cfg Config) (string, error) {
+	if !filepath.IsAbs(cfg.CgxBin) {
+		return "", fmt.Errorf("%w, got %q", ErrNativeBinPath, cfg.CgxBin)
+	}
+	sum, err := fileSum(cfg.CgxBin)
+	if err != nil {
+		return "", err
+	}
+	return sum, checkPin("native binary", cfg.CgxBin, sum, cfg.CgxBinSHA256)
+}
+
+func fileSum(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("pythoncgx: identify cgx build: %w", err)
@@ -120,7 +155,19 @@ func CacheKey(cfg Config) (string, error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return "", fmt.Errorf("pythoncgx: identify cgx build: %w", err)
 	}
-	return string(cfg.Transport) + "-" + hex.EncodeToString(h.Sum(nil))[:16], nil
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// checkPin fails closed: an engine file with no pinned digest is not run.
+func checkPin(what, path, got, want string) error {
+	want = strings.ToLower(strings.TrimSpace(want))
+	switch {
+	case want == "":
+		return fmt.Errorf("%w: cgx %s %s has no pinned sha256", ErrEngineUnverified, what, path)
+	case got != want:
+		return fmt.Errorf("%w: cgx %s %s has sha256 %s, pinned %s", ErrEngineUnverified, what, path, got, want)
+	}
+	return nil
 }
 
 func embeddedKey() (string, error) {

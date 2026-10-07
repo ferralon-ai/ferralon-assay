@@ -34,12 +34,16 @@ const DefaultMinConfidence = ConfidenceProbable
 // environment; this package never reads the environment itself.
 type Config struct {
 	Transport     Transport
-	CgxBin        string // native transport: cgx binary; empty means PATH lookup
+	CgxBin        string // native transport: absolute path of the cgx binary
 	WasmModule    string // wasm transport: module file overriding the SDK's embedded module
 	CacheDir      string // root for index snapshots and the SDK's compile cache
 	PoolSize      int    // extractor instances; 0 leaves the SDK default
 	MinConfidence string // ConfidencePossible | ConfidenceProbable | ConfidenceCertain
 	StatsFile     string // when set, one JSON line per operation is appended here
+	// CgxBinSHA256 and WasmModuleSHA256 pin CgxBin and WasmModule (hex SHA-256). A file the
+	// configuration names is run only when its digest matches; with no pin it is not run.
+	CgxBinSHA256     string
+	WasmModuleSHA256 string
 	// Fallback, when set, is the transport an operation retries once on after the wasm engine
 	// traps (the linear-memory limit included) while indexing. Only TransportNative is
 	// accepted (ParseFallback); empty disables the retry.

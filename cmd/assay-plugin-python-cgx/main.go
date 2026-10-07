@@ -15,8 +15,12 @@
 // scanned tree is only read. Configuration, all optional:
 //
 //	ASSAY_PYTHON_CGX_TRANSPORT       wasm (default) | native
-//	ASSAY_PYTHON_CGX_BIN             native: cgx binary (default: cgx on PATH)
+//	ASSAY_PYTHON_CGX_BIN             native: absolute path of the cgx binary (required; never
+//	                                 looked up on PATH)
+//	ASSAY_PYTHON_CGX_BIN_SHA256      native: the binary's pinned sha256 (default: the digest
+//	                                 baked into this build, if any)
 //	ASSAY_PYTHON_CGX_WASM            wasm: engine module file, for SDK builds that embed none
+//	ASSAY_PYTHON_CGX_WASM_SHA256     wasm: that file's pinned sha256 (default: the baked digest)
 //	ASSAY_PYTHON_CGX_CACHE_DIR       index snapshots and compile cache (default: user cache dir)
 //	ASSAY_PYTHON_CGX_POOL_SIZE       wasm extractor instances (default: the SDK's)
 //	ASSAY_PYTHON_CGX_MIN_CONFIDENCE  call-graph edge floor: certain | probable (default) | possible
@@ -27,6 +31,10 @@
 //	ASSAY_PYTHON_CGX_FAILURE_TTL     how long an index failure that may not recur (the native
 //	                                 process killed, a deadline) is replayed: a Go duration
 //	                                 (default 30m; 0 never replays one)
+//
+// An engine file named here runs only if its sha256 matches the pin, from the environment or
+// baked in at build time (bakedCgxBinSHA256, bakedCgxWasmSHA256). With no pin, or a different
+// digest, the call fails with an error that starts tool_failure:cgx_engine_unverified.
 //
 // A configuration error, a failed open or a failed query is a hard error (inv.4): Response.Error
 // is set and the process exits non-zero. Declared partiality is a success payload. An engine
@@ -63,6 +71,19 @@ const (
 	envStats         = brand.EnvPrefix + "_PYTHON_CGX_STATS"
 	envFallback      = brand.EnvPrefix + "_PYTHON_CGX_FALLBACK"
 	envFailureTTL    = brand.EnvPrefix + "_PYTHON_CGX_FAILURE_TTL"
+	envBinSHA256     = brand.EnvPrefix + "_PYTHON_CGX_BIN_SHA256"
+	envWasmSHA256    = brand.EnvPrefix + "_PYTHON_CGX_WASM_SHA256"
+)
+
+// Build-time pins for the cgx engine files, substituted by scripts/build-release.sh:
+//
+//	go build -ldflags "-X main.bakedCgxBinSHA256=<hex> -X main.bakedCgxWasmSHA256=<hex>"
+//
+// A plain build leaves both empty, so a named engine file then runs only with its digest given
+// in the environment.
+var (
+	bakedCgxBinSHA256  string
+	bakedCgxWasmSHA256 string
 )
 
 func main() {
@@ -129,6 +150,8 @@ func newLane() (*pythoncgx.Lane, error) {
 		Fallback:      fallback,
 		FailureTTL:    failureTTL,
 	}
+	cfg.CgxBinSHA256 = pin(os.Getenv(envBinSHA256), bakedCgxBinSHA256)
+	cfg.WasmModuleSHA256 = pin(os.Getenv(envWasmSHA256), bakedCgxWasmSHA256)
 	if v := strings.TrimSpace(os.Getenv(envPoolSize)); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 {
@@ -145,17 +168,37 @@ func newLane() (*pythoncgx.Lane, error) {
 	}
 	key, err := pythoncgx.CacheKey(cfg)
 	if err != nil {
-		return nil, err
+		return nil, withPinRemedy(err)
 	}
 	var fallbackKey string
 	if cfg.Fallback != "" && cfg.Fallback != cfg.Transport {
 		fb := cfg
 		fb.Transport = cfg.Fallback
 		if fallbackKey, err = pythoncgx.CacheKey(fb); err != nil {
-			return nil, fmt.Errorf("%s: %w", envFallback, err)
+			return nil, fmt.Errorf("%s: %w", envFallback, withPinRemedy(err))
 		}
 	}
 	return pythoncgx.New(cfg, pythoncgx.OpenSDK, key, fallbackKey), nil
+}
+
+// pin is the engine file digest from the environment, or the one baked into this build.
+func pin(env, baked string) string {
+	if v := strings.TrimSpace(env); v != "" {
+		return v
+	}
+	return baked
+}
+
+// withPinRemedy names the settings behind an unverified engine file and the native binary's
+// path.
+func withPinRemedy(err error) error {
+	if errors.Is(err, pythoncgx.ErrEngineUnverified) {
+		return fmt.Errorf("%w; remedy: set %s (native) or %s (wasm) to the engine file's sha256", err, envBinSHA256, envWasmSHA256)
+	}
+	if errors.Is(err, pythoncgx.ErrNativeBinPath) {
+		return fmt.Errorf("%w; remedy: set %s", err, envBin)
+	}
+	return err
 }
 
 // withRemedy appends what an operator can change to an engine failure while indexing, in terms

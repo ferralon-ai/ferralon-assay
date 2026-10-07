@@ -136,14 +136,24 @@ scanned checkout is only read and an unchanged tree is indexed once. It needs gi
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ASSAY_PYTHON_CGX_TRANSPORT` | `wasm` | `wasm` runs cgx in-process; `native` drives a `cgx session` subprocess. |
-| `ASSAY_PYTHON_CGX_BIN` | `cgx` on `PATH` | The `cgx` binary for the native transport. |
+| `ASSAY_PYTHON_CGX_BIN` | unset | The absolute path of the `cgx` binary. Required for the native transport and for the native fallback; `cgx` is never looked up on `PATH`. |
+| `ASSAY_PYTHON_CGX_BIN_SHA256` | the digest baked into the release, if any | The sha256 the `cgx` binary must have. |
 | `ASSAY_PYTHON_CGX_WASM` | the module embedded in the SDK | A cgx engine module file, for builds that embed none. |
+| `ASSAY_PYTHON_CGX_WASM_SHA256` | the digest baked into the release, if any | The sha256 the module file must have. |
 | `ASSAY_PYTHON_CGX_CACHE_DIR` | the user cache directory | Where indexes and compiled modules are kept. |
 | `ASSAY_PYTHON_CGX_POOL_SIZE` | the SDK's | Parallel extractors for the wasm transport. |
 | `ASSAY_PYTHON_CGX_MIN_CONFIDENCE` | `probable` | Lowest cgx edge confidence kept in the call graph: `certain`, `probable` or `possible`. |
 | `ASSAY_PYTHON_CGX_STATS` | unset | A file to append one JSON timing record per analyzer call to. |
 | `ASSAY_PYTHON_CGX_FALLBACK` | unset | `native`: when the wasm engine traps while indexing (its memory limit included), retry once on the native transport with `ASSAY_PYTHON_CGX_BIN`. |
 | `ASSAY_PYTHON_CGX_FAILURE_TTL` | `30m` | How long a recorded index failure that may not recur (the native process exiting or killed, a deadline) is replayed, as a Go duration; `0` never replays one. |
+
+An engine file you name with `ASSAY_PYTHON_CGX_BIN` or `ASSAY_PYTHON_CGX_WASM` runs only if its
+sha256 matches its pin. The pin comes from the matching `_SHA256` variable or, when that is unset,
+from the digest baked into the analyzer at build time. Releases bake none today, because they
+ship no cgx engine file, so set the variable. A missing pin or a different digest fails the analyzer
+call with an error that starts `tool_failure:cgx_engine_unverified`. The analyzer checks the digest
+when it starts and again just before it runs the file. The embedded module needs no pin: it is
+part of the SDK version the analyzer was built against, which `go.sum` pins.
 
 The call graph keeps only edges at or above the confidence floor, because cgx's `possible` tier
 holds over-approximated candidate sets that run to millions of edges on large Python trees. The

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -25,6 +24,10 @@ def handle_fetch():
 @app.route('/other')
 def other():
     return 1
+
+@app.route('/ghost')
+def ghost():
+    return 2
 
 def handle(target):
     return fetch_url(target)
@@ -52,10 +55,11 @@ func newFake() *fakeGraph {
 			"app.handle_fetch":     {"app::handle_fetch"},
 			"app.fetch_url":        {"app::fetch_url"},
 			"**.svc.app.fetch_url": {"app::fetch_url"},
-			"app.other":            {"app::other"}, // no call edges: not selectable
+			"app.other":            {"app::other"}, // a node with no call edges
 			"app.open_conn":        {"app::open_conn"},
 		},
-		rejected: map[string]bool{"bad(": true},
+		rejected:  map[string]bool{"bad(": true},
+		truncated: map[string]bool{"app.open_conn": true},
 	}
 }
 
@@ -101,8 +105,8 @@ func TestCallGraph_FloorRootsAndPaging(t *testing.T) {
 	if !reflect.DeepEqual(res.Edges, wantEdges) {
 		t.Errorf("edges = %+v, want %+v (possible-tier edge dropped, duplicate folded, sorted)", res.Edges, wantEdges)
 	}
-	if !reflect.DeepEqual(res.Roots, []plugin.Symbol{sym("app::handle_fetch")}) {
-		t.Errorf("roots = %+v, want the resolved route handler", res.Roots)
+	if !reflect.DeepEqual(res.Roots, []plugin.Symbol{sym("app::handle_fetch"), sym("app::other")}) {
+		t.Errorf("roots = %+v, want the resolved route handlers", res.Roots)
 	}
 	if res.Algorithm != "cgx(min_confidence=probable)" {
 		t.Errorf("algorithm = %q", res.Algorithm)
@@ -133,13 +137,19 @@ func TestFindIngresses_ResolvesHandlersAndDeclaresMisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindIngresses: %v", err)
 	}
-	want := []plugin.Ingress{{Kind: "http_route", Symbol: sym("app::handle_fetch"), Selector: "route"}}
-	if !reflect.DeepEqual(res.Ingresses, want) {
-		t.Errorf("ingresses = %+v, want %+v", res.Ingresses, want)
+	want := []plugin.Ingress{
+		{Kind: "http_route", Symbol: sym("app::handle_fetch"), Selector: "route"},
+		{Kind: "http_route", Symbol: sym("app::other"), Selector: "route"},
 	}
-	// app.other calls nothing, so cgx has no call edge to select it by: declared, not dropped silently.
+	if !reflect.DeepEqual(res.Ingresses, want) {
+		t.Errorf("ingresses = %+v, want %+v (an edge-less handler is still an ingress)", res.Ingresses, want)
+	}
+	// app.ghost has no cgx node: declared, not dropped silently.
 	if res.Partiality.Complete || !reflect.DeepEqual(res.Partiality.Reasons, []string{reasonIngressUnresolved}) {
 		t.Errorf("partiality = %+v, want %s", res.Partiality, reasonIngressUnresolved)
+	}
+	if h.fake.resolveBatches != 2 {
+		t.Errorf("three handlers took %d resolve calls, want 2 (one exact batch, one suffix batch)", h.fake.resolveBatches)
 	}
 }
 
@@ -154,6 +164,8 @@ func TestResolveDependencySymbols(t *testing.T) {
 		{"suffix match is declared", []string{"svc.app.fetch_url"}, []plugin.Symbol{sym("app::fetch_url")}, []string{reasonSuffixMatch}},
 		{"rejected selector is declared", []string{"bad("}, []plugin.Symbol{}, []string{reasonSelectorRejected}},
 		{"absent symbol is an empty complete answer", []string{"requests.get"}, []plugin.Symbol{}, nil},
+		{"edge-less node resolves", []string{"app.other"}, []plugin.Symbol{sym("app::other")}, nil},
+		{"truncated match is declared", []string{"app.open_conn"}, []plugin.Symbol{sym("app::open_conn")}, []string{reasonResolveTruncated}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,6 +265,18 @@ func TestStatsRecordPerOperation(t *testing.T) {
 	if rec.Op != plugin.OpCallGraph || rec.Items != 2 || rec.Tree == "" || rec.ToolCalls == 0 || string(rec.SDK) != `{"fake":true}` {
 		t.Errorf("stats record = %+v", rec)
 	}
+	var ing opStats
+	if err := json.Unmarshal([]byte(lines[0]), &ing); err != nil {
+		t.Fatal(err)
+	}
+	paths := map[string]string{}
+	for _, r := range ing.Resolutions {
+		paths[r.Name] = r.Role + "/" + r.Path
+	}
+	wantPaths := map[string]string{"app.handle_fetch": "ingress/exact", "app.other": "ingress/exact", "app.ghost": "ingress/unresolved"}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Errorf("find_ingresses resolutions = %v, want %v", paths, wantPaths)
+	}
 	if !strings.Contains(h.stderr.String(), `"op":"call_graph"`) {
 		t.Errorf("stderr lacks the stats record: %q", h.stderr.String())
 	}
@@ -263,15 +287,6 @@ func TestOpenFailureIsHardError(t *testing.T) {
 	h.lane.open = func(context.Context, string, Config) (Graph, error) { return nil, os.ErrNotExist }
 	if _, err := h.lane.CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: h.buildDir}); err == nil {
 		t.Fatal("CallGraph with a failing opener: want error")
-	}
-}
-
-func TestCQLString(t *testing.T) {
-	for _, s := range []string{`a.b`, `x"y`, `back\slash`, "tab\tnew\nline"} {
-		got, err := strconv.Unquote(cqlString(s))
-		if err != nil || got != s {
-			t.Errorf("cqlString(%q) = %s, does not round-trip (%v)", s, cqlString(s), err)
-		}
 	}
 }
 

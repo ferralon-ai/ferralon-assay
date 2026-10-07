@@ -23,8 +23,8 @@ import (
 const (
 	// The call graph omits edges below the configured confidence floor; the suffix names it.
 	reasonConfidenceFloor = plugin.PartialReasonDynamicDispatch + ":cgx_min_confidence_"
-	// A route handler found by the decorator scan matched no cgx call-edge source, so paths
-	// from it may be missing.
+	// A route handler found by the decorator scan matched no cgx node, so paths from it may
+	// be missing.
 	reasonIngressUnresolved = plugin.PartialReasonRelationshipUnexpressed + ":cgx_ingress_unresolved"
 	// A name resolved only as a suffix of a cgx FQN; the match is weaker than an exact one.
 	reasonSuffixMatch = plugin.PartialReasonRelationshipUnexpressed + ":cgx_suffix_match"
@@ -32,6 +32,8 @@ const (
 	reasonSelectorRejected = plugin.PartialReasonToolFailure + ":cgx_selector_rejected"
 	// cgx could not resolve a requested sink id.
 	reasonSinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
+	// cgx's selector engine hit its state cap, so a match may be incomplete.
+	reasonResolveTruncated = plugin.PartialReasonToolFailure + ":cgx_resolve_truncated"
 )
 
 // taintPrecisionNote states what ComputeTaint's paths are.
@@ -81,6 +83,7 @@ type opStats struct {
 	ToolCalls     int             `json:"tool_calls"`
 	Pages         int             `json:"pages"`
 	Items         int             `json:"items"`
+	Resolutions   []resolution    `json:"resolutions,omitempty"`
 	Error         string          `json:"error,omitempty"`
 	SDK           json.RawMessage `json:"sdk,omitempty"`
 }
@@ -181,8 +184,8 @@ func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest)
 }
 
 // ResolveDependencySymbols resolves each advisory symbol — a name in Python's dotted syntax —
-// through cgx's node selector. An unresolved symbol is an empty result, as on the incumbent
-// lane; a suffix-only or rejected lookup is declared.
+// through cgx's node selector, in one batch. An unresolved symbol is an empty result, as on
+// the incumbent lane; a suffix-only, rejected or truncated lookup is declared.
 func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (res plugin.SymbolResolutionResult, err error) {
 	s, err := l.begin(ctx, plugin.OpResolveSymbols, req.BuildDir)
 	if err != nil {
@@ -190,26 +193,23 @@ func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveS
 	}
 	defer func() { s.finish(err) }()
 
-	reasons := map[string]bool{}
-	var fqns []string
+	var names []string
 	seen := map[string]bool{}
 	for _, raw := range req.AdvisorySymbols {
-		name := strings.TrimSpace(raw)
-		if name == "" || seen[name] {
-			continue
+		if name := strings.TrimSpace(raw); name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
 		}
-		seen[name] = true
-		found, viaSuffix, rejected, err := s.lookup(ctx, name, sideCallee)
-		if err != nil {
-			return res, err
-		}
-		if rejected {
-			reasons[reasonSelectorRejected] = true
-		}
-		if viaSuffix {
-			reasons[reasonSuffixMatch] = true
-		}
-		fqns = append(fqns, found...)
+	}
+	resolved, err := s.resolveNames(ctx, "advisory", names)
+	if err != nil {
+		return res, err
+	}
+	reasons := map[string]bool{}
+	var fqns []string
+	for _, r := range resolved {
+		noteResolution(reasons, r)
+		fqns = append(fqns, r.FQNs...)
 	}
 	fqns = sortedUnique(fqns)
 	res = plugin.SymbolResolutionResult{Partiality: partiality(reasons), Resolved: make([]plugin.Symbol, 0, len(fqns))}
@@ -229,16 +229,13 @@ func (l *Lane) CallGraph(ctx context.Context, req plugin.CallGraphRequest) (res 
 	}
 	defer func() { s.finish(err) }()
 
-	rows, err := s.queryStrings(ctx, edgesQuery(l.cfg.MinConfidence))
+	pairs, err := s.exportEdges(ctx, l.cfg.MinConfidence)
 	if err != nil {
 		return res, err
 	}
-	edges := make([]plugin.CallEdge, 0, len(rows))
-	for _, r := range rows {
-		if len(r) != 2 {
-			return res, fmt.Errorf("pythoncgx: call edge row has %d columns, want 2", len(r))
-		}
-		edges = append(edges, plugin.CallEdge{Caller: sym(r[0]), Callee: sym(r[1])})
+	edges := make([]plugin.CallEdge, 0, len(pairs))
+	for _, p := range pairs {
+		edges = append(edges, plugin.CallEdge{Caller: sym(p[0]), Callee: sym(p[1])})
 	}
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].Caller.SCIP != edges[j].Caller.SCIP {
@@ -409,8 +406,8 @@ func (s *session) pathTo(ctx context.Context, sink string, handlers, reasons map
 }
 
 // ingresses resolves every route handler the decorator scan finds to the cgx node(s) its
-// dotted name selects among call-edge sources. A handler that matches nothing is declared,
-// because a missing match and a handler that calls nothing cannot be told apart here.
+// dotted name selects, in one batch. A handler cgx has no node for is declared; one whose node
+// has no edges is kept and costs nothing (no path starts there).
 func (s *session) ingresses(ctx context.Context, buildDir string) (plugin.IngressResult, error) {
 	handlers, part, err := s.l.routes(ctx, buildDir)
 	if err != nil {
@@ -420,22 +417,23 @@ func (s *session) ingresses(ctx context.Context, buildDir string) (plugin.Ingres
 	for _, r := range part.Reasons {
 		reasons[r] = true
 	}
+	names := make([]string, len(handlers))
+	for i, h := range handlers {
+		names[i] = h.QualifiedName
+	}
+	resolved, err := s.resolveNames(ctx, "ingress", names)
+	if err != nil {
+		return plugin.IngressResult{}, err
+	}
 	seen := map[plugin.Ingress]bool{}
 	out := []plugin.Ingress{}
-	for _, h := range handlers {
-		found, viaSuffix, rejected, err := s.lookup(ctx, h.QualifiedName, sideCaller)
-		if err != nil {
-			return plugin.IngressResult{}, err
-		}
-		switch {
-		case rejected:
-			reasons[reasonSelectorRejected] = true
-		case len(found) == 0:
+	for i, h := range handlers {
+		r := resolved[i]
+		noteResolution(reasons, r)
+		if r.Path == pathUnresolved {
 			reasons[reasonIngressUnresolved] = true
-		case viaSuffix:
-			reasons[reasonSuffixMatch] = true
 		}
-		for _, f := range found {
+		for _, f := range r.FQNs {
 			in := plugin.Ingress{Kind: h.Kind, Symbol: sym(f), Selector: h.Selector}
 			if !seen[in] {
 				seen[in] = true
@@ -456,6 +454,19 @@ func (s *session) ingresses(ctx context.Context, buildDir string) (plugin.Ingres
 		return plugin.IngressResult{Partiality: plugin.Complete(), Ingresses: out}, nil
 	}
 	return plugin.IngressResult{Partiality: partiality(reasons), Ingresses: out}, nil
+}
+
+// noteResolution adds the partiality reasons a name's resolution path carries.
+func noteResolution(reasons map[string]bool, r resolution) {
+	switch r.Path {
+	case pathSuffix:
+		reasons[reasonSuffixMatch] = true
+	case pathRejected:
+		reasons[reasonSelectorRejected] = true
+	}
+	if r.Truncated {
+		reasons[reasonResolveTruncated] = true
+	}
 }
 
 // partiality is Complete for no reasons, else Partial with the reasons sorted.

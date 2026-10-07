@@ -53,9 +53,9 @@ func (s sdkGraph) Call(ctx context.Context, tool string, args map[string]any) (j
 	var te *cgx.ToolError
 	if errors.As(err, &te) {
 		switch te.Kind {
-		case cgx.Resolve:
+		case cgx.KindResolve:
 			return nil, fmt.Errorf("%w: %v", ErrUnresolved, err)
-		case cgx.InvalidParams:
+		case cgx.KindInvalidParams:
 			return nil, fmt.Errorf("%w: %v", ErrRejected, err)
 		}
 	}

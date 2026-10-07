@@ -130,11 +130,12 @@ takes precedence over the variable.
 
 The cgx analyzer copies the files of the scanned directory, minus those its `.gitignore` files
 exclude, into a git repository under its cache directory and keeps the index there, so the
-scanned checkout is only read and an unchanged tree is indexed once. Its settings:
+scanned checkout is only read and an unchanged tree is indexed once. It needs git 2.25 or later on
+`PATH` whichever transport it uses. Its settings:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ASSAY_PYTHON_CGX_TRANSPORT` | `wasm` | `wasm` runs cgx in-process; `native` drives a `cgx` binary. |
+| `ASSAY_PYTHON_CGX_TRANSPORT` | `wasm` | `wasm` runs cgx in-process; `native` drives a `cgx session` subprocess. |
 | `ASSAY_PYTHON_CGX_BIN` | `cgx` on `PATH` | The `cgx` binary for the native transport. |
 | `ASSAY_PYTHON_CGX_WASM` | the module embedded in the SDK | A cgx engine module file, for builds that embed none. |
 | `ASSAY_PYTHON_CGX_CACHE_DIR` | the user cache directory | Where indexes and compiled modules are kept. |

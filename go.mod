@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/ferralon-ai/cgx/sdk/go v0.0.0-20261007010812-d7d39e395e7a
+	github.com/ferralon-ai/cgx/sdk/go v0.0.0-20261007014415-6c0a5cb130b1
 	github.com/google/uuid v1.6.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0

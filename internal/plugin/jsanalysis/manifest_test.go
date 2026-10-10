@@ -22,11 +22,11 @@ func TestBuildManifest_CleanPackageIsComplete(t *testing.T) {
 	if res.ProjectRoot != "tegron-fixture-pkg" {
 		t.Errorf("ProjectRoot = %q, want tegron-fixture-pkg", res.ProjectRoot)
 	}
-	if res.Runtime.Name != "node" || res.Runtime.Version != ">=18" {
-		t.Errorf("Runtime = %+v, want {Name:node Version:>=18}", res.Runtime)
+	if runtimeOf(res).Name != "node" || runtimeOf(res).Version != ">=18" {
+		t.Errorf("Runtime = %+v, want {Name:node Version:>=18}", runtimeOf(res))
 	}
-	if res.Resolver.Command != "npm ci && npm run build" {
-		t.Errorf("Resolver.Command = %q, want 'npm ci && npm run build'", res.Resolver.Command)
+	if resolverOf(res).Command != "npm ci && npm run build" {
+		t.Errorf("Resolver.Command = %q, want 'npm ci && npm run build'", resolverOf(res).Command)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a clean single-package package.json must be Complete; got %+v", res.Partiality)
@@ -42,8 +42,8 @@ func TestBuildManifest_NoLockfileUsesInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Resolver.Command != "npm install" {
-		t.Errorf("Resolver.Command = %q, want 'npm install'", res.Resolver.Command)
+	if resolverOf(res).Command != "npm install" {
+		t.Errorf("Resolver.Command = %q, want 'npm install'", resolverOf(res).Command)
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a clean package with no build script must still be Complete; got %+v", res.Partiality)
@@ -61,8 +61,8 @@ func TestBuildManifest_NoPackageJSONIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a dir with no package.json must declare Partial")
 	}
-	if res.Resolver.Command != "" {
-		t.Errorf("must not fabricate a build command without a package.json; got %q", res.Resolver.Command)
+	if resolverOf(res).Command != "" {
+		t.Errorf("must not fabricate a build command without a package.json; got %q", resolverOf(res).Command)
 	}
 	if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
 		t.Errorf("no package.json must carry tool_failure; got %+v", res.Partiality)
@@ -86,8 +86,8 @@ func TestBuildManifest_WorkspacesNoLongerDeclines(t *testing.T) {
 	if res.ProjectRoot != "monorepo-root" {
 		t.Errorf("ProjectRoot = %q, want monorepo-root", res.ProjectRoot)
 	}
-	if res.Resolver.Command != "npm install" {
-		t.Errorf("Resolver.Command = %q, want 'npm install' (no lockfile in temp dir)", res.Resolver.Command)
+	if resolverOf(res).Command != "npm install" {
+		t.Errorf("Resolver.Command = %q, want 'npm install' (no lockfile in temp dir)", resolverOf(res).Command)
 	}
 }
 
@@ -103,8 +103,8 @@ func TestBuildManifest_MissingNameIsPartial(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a package.json with no name must declare Partial")
 	}
-	if res.Resolver.Command != "" {
-		t.Errorf("must not fabricate a build command without a name; got %q", res.Resolver.Command)
+	if resolverOf(res).Command != "" {
+		t.Errorf("must not fabricate a build command without a name; got %q", resolverOf(res).Command)
 	}
 }
 
@@ -155,19 +155,19 @@ func TestBuildManifest_C1_NeutralFieldsPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Runtime.Name != "node" || res.Runtime.Version != ">=18" {
-		t.Errorf("runtime group unpopulated: Runtime = %+v", res.Runtime)
+	if runtimeOf(res).Name != "node" || runtimeOf(res).Version != ">=18" {
+		t.Errorf("runtime group unpopulated: Runtime = %+v", runtimeOf(res))
 	}
 	// Target is sorted+comma-joined per side for determinism: os -> "darwin,linux",
 	// cpu -> "arm64,x64".
-	if res.Target != "darwin,linux/arm64,x64" {
-		t.Errorf("target group: Target = %q, want %q", res.Target, "darwin,linux/arm64,x64")
+	if runtimeOf(res).Target != "darwin,linux/arm64,x64" {
+		t.Errorf("target group: Target = %q, want %q", runtimeOf(res).Target, "darwin,linux/arm64,x64")
 	}
 	if res.ProjectRoot != "targeted" {
 		t.Errorf("project-root group: ProjectRoot = %q, want targeted", res.ProjectRoot)
 	}
-	if res.Resolver.Name != "npm" || res.Resolver.Command != "npm ci && npm run build" {
-		t.Errorf("resolver group: Resolver = %+v", res.Resolver)
+	if resolverOf(res).Name != "npm" || resolverOf(res).Command != "npm ci && npm run build" {
+		t.Errorf("resolver group: Resolver = %+v", resolverOf(res))
 	}
 	if !res.Partiality.Complete {
 		t.Errorf("a fully-populated package must be Complete; got %+v", res.Partiality)
@@ -184,8 +184,8 @@ func TestBuildManifest_TargetDeduplicatesRepeatedPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Target != "darwin,linux/x64" {
-		t.Errorf("repeated platform values must collapse; Target = %q, want %q", res.Target, "darwin,linux/x64")
+	if runtimeOf(res).Target != "darwin,linux/x64" {
+		t.Errorf("repeated platform values must collapse; Target = %q, want %q", runtimeOf(res).Target, "darwin,linux/x64")
 	}
 }
 
@@ -198,8 +198,8 @@ func TestBuildManifest_C1_TargetAbsentWhenNoPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
-	if res.Target != "" {
-		t.Errorf("Target must stay zero with no os/cpu; got %q", res.Target)
+	if runtimeOf(res).Target != "" {
+		t.Errorf("Target must stay zero with no os/cpu; got %q", runtimeOf(res).Target)
 	}
 }
 
@@ -218,8 +218,8 @@ func TestBuildManifest_C2_MultiMemberWorkspaceIsComplete(t *testing.T) {
 	if res.ProjectRoot != "ws-root" {
 		t.Errorf("ProjectRoot = %q, want ws-root", res.ProjectRoot)
 	}
-	if res.Resolver.Command != "npm ci" {
-		t.Errorf("Resolver.Command = %q, want 'npm ci' (lockfile present, no root build script)", res.Resolver.Command)
+	if resolverOf(res).Command != "npm ci" {
+		t.Errorf("Resolver.Command = %q, want 'npm ci' (lockfile present, no root build script)", resolverOf(res).Command)
 	}
 }
 
@@ -228,4 +228,16 @@ func writePkg(t *testing.T, dir, body string) {
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// runtimeOf and resolverOf return the manifest's sole runtime/resolver, or the zero value when
+// there is not exactly one.
+func runtimeOf(res plugin.BuildManifestResult) plugin.RuntimeSpec {
+	rt, _ := res.PrimaryRuntime()
+	return rt
+}
+
+func resolverOf(res plugin.BuildManifestResult) plugin.ResolverSpec {
+	rs, _ := res.PrimaryResolver()
+	return rs
 }

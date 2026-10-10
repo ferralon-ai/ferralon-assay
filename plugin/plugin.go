@@ -526,15 +526,34 @@ type ResolverSpec struct {
 	Source  RuntimeSource `json:"source,omitempty"`  // provenance of this resolver
 }
 
-// BuildManifestResult carries ecosystem-neutral build context (§4.6). Breaking change from the
-// Go-named prior shape; four+ plugins still return Unsupported().
+// BuildManifestResult carries ecosystem-neutral build context (§4.6). A build may use several
+// toolchains, so Runtimes and Resolvers are sets; an empty Resolvers means no resolver was
+// identified, not an error.
 type BuildManifestResult struct {
-	Partiality    Partiality   `json:"partiality"`
-	Runtime       RuntimeSpec  `json:"runtime"`                 // §4.6 runtime
-	Target        string       `json:"target,omitempty"`        // §4.6 target platform/architecture ("linux/amd64")
-	Configuration string       `json:"configuration,omitempty"` // §4.6 build configuration/profile ("release", "Debug")
-	ProjectRoot   string       `json:"project_root,omitempty"`  // §4.6 project root: module/package root identity (replaces Module)
-	Resolver      ResolverSpec `json:"resolver"`                // §4.6 resolver
+	Partiality    Partiality     `json:"partiality"`
+	Runtimes      []RuntimeSpec  `json:"runtimes"`                // §4.6 runtimes, one per distinct toolchain
+	Configuration string         `json:"configuration,omitempty"` // §4.6 build configuration/profile ("release", "Debug")
+	ProjectRoot   string         `json:"project_root,omitempty"`  // §4.6 project root: module/package root identity
+	Resolvers     []ResolverSpec `json:"resolvers"`               // §4.6 resolvers
+}
+
+// PrimaryRuntime returns the build's runtime when it has exactly one. With zero runtimes, or
+// several with none privileged, it returns false: a reader that needs "the" runtime must not
+// take an arbitrary element as the subject's identity.
+func (r BuildManifestResult) PrimaryRuntime() (RuntimeSpec, bool) {
+	if len(r.Runtimes) != 1 {
+		return RuntimeSpec{}, false
+	}
+	return r.Runtimes[0], true
+}
+
+// PrimaryResolver returns the build's resolver when it has exactly one, with the same
+// zero-or-many rule as PrimaryRuntime.
+func (r BuildManifestResult) PrimaryResolver() (ResolverSpec, bool) {
+	if len(r.Resolvers) != 1 {
+		return ResolverSpec{}, false
+	}
+	return r.Resolvers[0], true
 }
 
 // StubPlugin implements LanguagePlugin with canned, in-memory results — the analog of

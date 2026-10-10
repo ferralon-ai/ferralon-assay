@@ -70,16 +70,16 @@ func TestBuildManifest_FullDeclarationIsComplete(t *testing.T) {
 		t.Fatalf("want Complete manifest, got partial: %v", res.Partiality.Reasons)
 	}
 	// Every ecosystem-neutral field populated from declared metadata.
-	if got, want := res.Runtime.Name, "python"; got != want {
+	if got, want := runtimeOf(res).Name, "python"; got != want {
 		t.Errorf("Runtime.Name = %q, want %q", got, want)
 	}
-	if got, want := res.Runtime.Version, "==3.11.4"; got != want {
+	if got, want := runtimeOf(res).Version, "==3.11.4"; got != want {
 		t.Errorf("Runtime.Version = %q, want %q", got, want)
 	}
-	if got, want := res.Runtime.Toolchain, "3.11.4"; got != want {
+	if got, want := runtimeOf(res).Toolchain, "3.11.4"; got != want {
 		t.Errorf("Runtime.Toolchain = %q, want %q", got, want)
 	}
-	if got, want := res.Target, "linux/x86_64"; got != want {
+	if got, want := runtimeOf(res).Target, "linux/x86_64"; got != want {
 		t.Errorf("Target = %q, want %q", got, want)
 	}
 	if !strings.Contains(res.Configuration, "extras=[dev,test]") {
@@ -91,10 +91,10 @@ func TestBuildManifest_FullDeclarationIsComplete(t *testing.T) {
 	if got, want := res.ProjectRoot, dir; got != want {
 		t.Errorf("ProjectRoot = %q, want %q", got, want)
 	}
-	if got, want := res.Resolver.Name, "uv"; got != want {
+	if got, want := resolverOf(res).Name, "uv"; got != want {
 		t.Errorf("Resolver.Name = %q, want %q", got, want)
 	}
-	if got, want := res.Resolver.Command, "uv lock"; got != want {
+	if got, want := resolverOf(res).Command, "uv lock"; got != want {
 		t.Errorf("Resolver.Command = %q, want %q", got, want)
 	}
 }
@@ -133,12 +133,12 @@ source = { registry = "https://pypi.org/simple" }
 		t.Errorf("partial reason %v is not rooted in the shared env_condition_unresolved code", res.Partiality.Reasons)
 	}
 	// Never a guessed interpreter version.
-	if res.Runtime.Version != "" {
-		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", res.Runtime.Version)
+	if runtimeOf(res).Version != "" {
+		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", runtimeOf(res).Version)
 	}
 	// A partial manifest still carries what IS declared (the resolver was detected).
-	if res.Resolver.Name != "uv" {
-		t.Errorf("Resolver.Name = %q, want uv", res.Resolver.Name)
+	if resolverOf(res).Name != "uv" {
+		t.Errorf("Resolver.Name = %q, want uv", resolverOf(res).Name)
 	}
 }
 
@@ -165,15 +165,15 @@ func TestBuildManifest_ControlRemovingRequiresPythonMovesToPartial(t *testing.T)
 	if !hasReasonContaining(res.Partiality.Reasons, "requires_python") {
 		t.Errorf("control: partial reason %v does not name requires_python", res.Partiality.Reasons)
 	}
-	if res.Runtime.Version != "" {
-		t.Errorf("control: Runtime.Version = %q, want empty (no silent default)", res.Runtime.Version)
+	if runtimeOf(res).Version != "" {
+		t.Errorf("control: Runtime.Version = %q, want empty (no silent default)", runtimeOf(res).Version)
 	}
 	// The other declared fields remain populated — only the interpreter version dropped.
-	if res.Target != "linux/x86_64" {
-		t.Errorf("control: Target = %q, want linux/x86_64 (unrelated field must survive)", res.Target)
+	if runtimeOf(res).Target != "linux/x86_64" {
+		t.Errorf("control: Target = %q, want linux/x86_64 (unrelated field must survive)", runtimeOf(res).Target)
 	}
-	if res.Resolver.Name != "uv" {
-		t.Errorf("control: Resolver.Name = %q, want uv", res.Resolver.Name)
+	if resolverOf(res).Name != "uv" {
+		t.Errorf("control: Resolver.Name = %q, want uv", resolverOf(res).Name)
 	}
 }
 
@@ -204,12 +204,12 @@ source = { registry = "https://pypi.org/simple" }
 	if !res.Partiality.Complete {
 		t.Fatalf("want complete via lockfile requires-python fallback, got partial: %v", res.Partiality.Reasons)
 	}
-	if got, want := res.Runtime.Version, ">=3.9"; got != want {
+	if got, want := runtimeOf(res).Version, ">=3.9"; got != want {
 		t.Errorf("Runtime.Version = %q, want %q (from uv.lock)", got, want)
 	}
 	// A range requires-python is not a toolchain pin.
-	if res.Runtime.Toolchain != "" {
-		t.Errorf("Runtime.Toolchain = %q, want empty (range, not an exact pin)", res.Runtime.Toolchain)
+	if runtimeOf(res).Toolchain != "" {
+		t.Errorf("Runtime.Toolchain = %q, want empty (range, not an exact pin)", runtimeOf(res).Toolchain)
 	}
 }
 
@@ -252,4 +252,16 @@ func hasReasonContaining(reasons []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+// runtimeOf and resolverOf return the manifest's sole runtime/resolver, or the zero value when
+// there is not exactly one.
+func runtimeOf(res plugin.BuildManifestResult) plugin.RuntimeSpec {
+	rt, _ := res.PrimaryRuntime()
+	return rt
+}
+
+func resolverOf(res plugin.BuildManifestResult) plugin.ResolverSpec {
+	rs, _ := res.PrimaryResolver()
+	return rs
 }

@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -24,8 +25,8 @@ func assertHonestResidue(t *testing.T, res plugin.BuildManifestResult, wantToolc
 	if res.Partiality.Complete {
 		t.Errorf("JVM manifest must never be Complete (portable Target + no static Configuration): %+v", res.Partiality)
 	}
-	if res.Target != "" {
-		t.Errorf("Target must be empty (portable bytecode), got %q", res.Target)
+	if runtimeOf(res).Target != "" {
+		t.Errorf("Target must be empty (portable bytecode), got %q", runtimeOf(res).Target)
 	}
 	if res.Configuration != "" {
 		t.Errorf("Configuration must be empty (no static profile), got %q", res.Configuration)
@@ -68,14 +69,14 @@ func TestBuildManifest_MavenEmitBar(t *testing.T) {
 	if res.ProjectRoot != "com.example:app" {
 		t.Errorf("ProjectRoot = %q, want com.example:app", res.ProjectRoot)
 	}
-	if res.Runtime.Name != "java" {
-		t.Errorf("Runtime.Name = %q, want java", res.Runtime.Name)
+	if runtimeOf(res).Name != "java" {
+		t.Errorf("Runtime.Name = %q, want java", runtimeOf(res).Name)
 	}
-	if res.Runtime.Version != "17" { // release ⊐ source
-		t.Errorf("Runtime.Version = %q, want 17", res.Runtime.Version)
+	if runtimeOf(res).Version != "17" { // release ⊐ source
+		t.Errorf("Runtime.Version = %q, want 17", runtimeOf(res).Version)
 	}
-	if res.Resolver.Name != "maven" || res.Resolver.Command != "mvn -o -DskipTests package" {
-		t.Errorf("Resolver = %+v, want maven / offline package", res.Resolver)
+	if resolverOf(res).Name != "maven" || resolverOf(res).Command != "mvn -o -DskipTests package" {
+		t.Errorf("Resolver = %+v, want maven / offline package", resolverOf(res))
 	}
 	assertHonestResidue(t, res, true)
 	if hasReason(res.Partiality, reasonNoRuntimeVersion) {
@@ -86,16 +87,16 @@ func TestBuildManifest_MavenEmitBar(t *testing.T) {
 func TestBuildManifest_MavenPropertyInterpolation(t *testing.T) {
 	dir := writeTree(t, map[string]string{"pom.xml": pomJavaVersionProp})
 	res := buildManifest(t, dir, "java")
-	if res.Runtime.Version != "1.8" {
-		t.Errorf("Runtime.Version = %q, want 1.8 (resolved ${java.ver})", res.Runtime.Version)
+	if runtimeOf(res).Version != "1.8" {
+		t.Errorf("Runtime.Version = %q, want 1.8 (resolved ${java.ver})", runtimeOf(res).Version)
 	}
 }
 
 func TestBuildManifest_MavenNoRuntimeVersion(t *testing.T) {
 	dir := writeTree(t, map[string]string{"pom.xml": pomNoVersion})
 	res := buildManifest(t, dir, "java")
-	if res.Runtime.Version != "" {
-		t.Errorf("Runtime.Version = %q, want empty (never guessed)", res.Runtime.Version)
+	if runtimeOf(res).Version != "" {
+		t.Errorf("Runtime.Version = %q, want empty (never guessed)", runtimeOf(res).Version)
 	}
 	if !hasReason(res.Partiality, reasonNoRuntimeVersion) {
 		t.Errorf("missing no_runtime_version reason: %v", res.Partiality.Reasons)
@@ -123,11 +124,11 @@ func TestBuildManifest_GradleEmitBar(t *testing.T) {
 	if res.ProjectRoot != "my-service" {
 		t.Errorf("ProjectRoot = %q, want my-service", res.ProjectRoot)
 	}
-	if res.Runtime.Version != "21" { // languageVersion floor wins over sourceCompatibility
-		t.Errorf("Runtime.Version = %q, want 21", res.Runtime.Version)
+	if runtimeOf(res).Version != "21" { // languageVersion floor wins over sourceCompatibility
+		t.Errorf("Runtime.Version = %q, want 21", runtimeOf(res).Version)
 	}
-	if res.Resolver.Name != "gradle" || res.Resolver.Command != "gradle --offline assemble" {
-		t.Errorf("Resolver = %+v, want gradle / offline assemble", res.Resolver)
+	if resolverOf(res).Name != "gradle" || resolverOf(res).Command != "gradle --offline assemble" {
+		t.Errorf("Resolver = %+v, want gradle / offline assemble", resolverOf(res))
 	}
 	assertHonestResidue(t, res, true)
 }
@@ -137,8 +138,8 @@ func TestBuildManifest_GradleKotlinDSLJvmTarget(t *testing.T) {
 		"build.gradle.kts": "kotlin { }\ntasks.compileKotlin { kotlinOptions.jvmTarget = \"11\" }\n",
 	})
 	res := buildManifest(t, dir, "kotlin")
-	if res.Runtime.Version != "11" {
-		t.Errorf("Runtime.Version = %q, want 11 (jvmTarget)", res.Runtime.Version)
+	if runtimeOf(res).Version != "11" {
+		t.Errorf("Runtime.Version = %q, want 11 (jvmTarget)", runtimeOf(res).Version)
 	}
 }
 
@@ -148,8 +149,8 @@ func TestBuildManifest_ToolchainPinFromFile(t *testing.T) {
 		".tool-versions": "java temurin-17.0.9\nnodejs 20.0.0\n",
 	})
 	res := buildManifest(t, dir, "java")
-	if res.Runtime.Toolchain != "temurin-17.0.9" {
-		t.Errorf("Runtime.Toolchain = %q, want temurin-17.0.9", res.Runtime.Toolchain)
+	if runtimeOf(res).Toolchain != "temurin-17.0.9" {
+		t.Errorf("Runtime.Toolchain = %q, want temurin-17.0.9", runtimeOf(res).Toolchain)
 	}
 	assertHonestResidue(t, res, false) // an exact pin exists ⇒ no toolchain_unpinned reason
 }
@@ -199,11 +200,11 @@ func TestBuildManifest_KotlinDelegationParity(t *testing.T) {
 	jres := buildManifest(t, javaDir, "java")
 	kres := buildManifest(t, kotlinDir, "kotlin")
 
-	if jres.Runtime.Name != "java" || kres.Runtime.Name != "kotlin" {
-		t.Fatalf("Runtime.Name should differ per lane: java=%q kotlin=%q", jres.Runtime.Name, kres.Runtime.Name)
+	if runtimeOf(jres).Name != "java" || runtimeOf(kres).Name != "kotlin" {
+		t.Fatalf("Runtime.Name should differ per lane: java=%q kotlin=%q", runtimeOf(jres).Name, runtimeOf(kres).Name)
 	}
 	// Everything except Runtime.Name must be identical.
-	jres.Runtime.Name, kres.Runtime.Name = "", ""
+	jres.Runtimes[0].Name, kres.Runtimes[0].Name = "", ""
 	if !equalManifest(jres, kres) {
 		t.Errorf("kotlin delegation must equal java (Runtime.Name aside):\n java   = %+v\n kotlin = %+v", jres, kres)
 	}
@@ -218,8 +219,8 @@ func cloneFiles(in map[string]string) map[string]string {
 }
 
 func equalManifest(a, b plugin.BuildManifestResult) bool {
-	if a.Runtime != b.Runtime || a.Target != b.Target || a.Configuration != b.Configuration ||
-		a.ProjectRoot != b.ProjectRoot || a.Resolver != b.Resolver ||
+	if !slices.Equal(a.Runtimes, b.Runtimes) || a.Configuration != b.Configuration ||
+		a.ProjectRoot != b.ProjectRoot || !slices.Equal(a.Resolvers, b.Resolvers) ||
 		a.Partiality.Complete != b.Partiality.Complete || len(a.Partiality.Reasons) != len(b.Partiality.Reasons) {
 		return false
 	}
@@ -229,4 +230,16 @@ func equalManifest(a, b plugin.BuildManifestResult) bool {
 		}
 	}
 	return true
+}
+
+// runtimeOf and resolverOf return the manifest's sole runtime/resolver, or the zero value when
+// there is not exactly one.
+func runtimeOf(res plugin.BuildManifestResult) plugin.RuntimeSpec {
+	rt, _ := res.PrimaryRuntime()
+	return rt
+}
+
+func resolverOf(res plugin.BuildManifestResult) plugin.ResolverSpec {
+	rs, _ := res.PrimaryResolver()
+	return rs
 }

@@ -20,7 +20,7 @@ type WorkspacePlan struct {
 // KNOWS: the project root and its own language. Membership, build target, configuration, and
 // runtime are downstream concerns (BuildManifestResult, computed per project by the plugin —
 // PLAN-400) and are deliberately NOT on this type, which keeps `checkout` free of a `plugin`
-// import and sidesteps the DependencyMembership.Target vs BuildManifestResult.Target overload.
+// import and sidesteps the DependencyMembership.Target vs RuntimeSpec.Target overload.
 type Project struct {
 	Root     string `json:"root"`     // absolute project/module root (a go.mod dir, or a source tree)
 	Language string `json:"language"` // one of checkout.Lang* — this project's language, not a whole-tree collapse

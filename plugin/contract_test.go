@@ -191,12 +191,14 @@ func TestEncodingIsByteIdenticalAcrossRuns(t *testing.T) {
 		"DependencyInventory": fullInventory(),
 		"Symbol":              Symbol{Kind: SymbolKindMethod, Package: "github.com/x/y", Enclosing: "Outer.Inner", Name: "M", Descriptor: "(int)", Generated: true, DisplayName: "github.com/x/y.(*Outer.Inner).M", SCIP: "scip:x#M"},
 		"BuildManifestResult": BuildManifestResult{
-			Partiality:    Partial(PartialReasonNoManifest),
-			Runtime:       RuntimeSpec{Name: "go", Version: "1.21", Toolchain: "go1.21.3"},
-			Target:        "linux/amd64",
+			Partiality: Partial(PartialReasonNoManifest),
+			Runtimes: []RuntimeSpec{
+				{Name: "c", Version: "13.2.0", Toolchain: "gcc-13", Source: RuntimeSourceCompileDB, Target: "x86_64-linux-gnu", Lang: "c", StdLevel: "c17"},
+				{Name: "go", Version: "1.21", Toolchain: "go1.21.3", Source: RuntimeSourceDeclared, Target: "linux/amd64"},
+			},
 			Configuration: "release",
 			ProjectRoot:   "github.com/x/y",
-			Resolver:      ResolverSpec{Name: "go", Command: "go build ./..."},
+			Resolvers:     []ResolverSpec{{Name: "go", Command: "go build ./...", Source: RuntimeSourceDeclared}},
 		},
 		"capability.Manifest": fullManifest(),
 	}

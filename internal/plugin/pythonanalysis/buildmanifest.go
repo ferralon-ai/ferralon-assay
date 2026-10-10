@@ -64,14 +64,22 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	}
 
 	res := plugin.BuildManifestResult{
-		Runtime:       plugin.RuntimeSpec{Name: "python", Version: version, Toolchain: toolchain},
-		Target:        meta.target,
+		Runtimes: []plugin.RuntimeSpec{{
+			Name:      "python",
+			Version:   version,
+			Toolchain: toolchain,
+			Target:    meta.target,
+			Source:    plugin.RuntimeSourceDeclared,
+		}},
 		Configuration: buildConfiguration(meta.extras, constraintFiles(req.BuildDir)),
 		// The WorkspacePlan project root the pipeline resolves and passes in as BuildDir
 		// (checkout.WorkspacePlan.Primary().Root); the inventory path likewise carries it as
 		// DependencyMembership.Project. Multi-root enumeration is PLAN-400.
 		ProjectRoot: req.BuildDir,
-		Resolver:    detectResolver(req.BuildDir),
+	}
+	if r := detectResolver(req.BuildDir); r.Name != "" {
+		r.Source = plugin.RuntimeSourceDeclared
+		res.Resolvers = []plugin.ResolverSpec{r}
 	}
 
 	// PartialReasonEnvConditionUnresolved is the closest existing shared code (the runtime

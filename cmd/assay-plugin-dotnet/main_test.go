@@ -155,11 +155,11 @@ func TestDispatch_BuildManifestIsLive(t *testing.T) {
 	if hasReason(resp.BuildManifest.Partiality.Reasons, plugin.PartialReasonUnsupported) {
 		t.Errorf("build_manifest must be LIVE, not Unsupported; got %v", resp.BuildManifest.Partiality.Reasons)
 	}
-	if resp.BuildManifest.Resolver.Name != "dotnet" {
-		t.Errorf("build_manifest must stamp the dotnet resolver; got Resolver.Name=%q", resp.BuildManifest.Resolver.Name)
+	if rs, ok := resp.BuildManifest.PrimaryResolver(); !ok || rs.Name != "dotnet" || rs.Source != plugin.RuntimeSourceDeclared {
+		t.Errorf("build_manifest must stamp one declared dotnet resolver; got Resolvers=%+v", resp.BuildManifest.Resolvers)
 	}
-	if resp.BuildManifest.Runtime.Name != "dotnet" {
-		t.Errorf("build_manifest must return a populated result (Runtime.Name=dotnet); got %q", resp.BuildManifest.Runtime.Name)
+	if rt, ok := resp.BuildManifest.PrimaryRuntime(); !ok || rt.Name != "dotnet" || rt.Source != plugin.RuntimeSourceDeclared {
+		t.Errorf("build_manifest must return one declared dotnet runtime; got Runtimes=%+v", resp.BuildManifest.Runtimes)
 	}
 }
 

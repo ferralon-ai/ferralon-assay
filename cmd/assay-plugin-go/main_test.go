@@ -155,11 +155,12 @@ func TestDispatch_BuildManifestRoundTrip(t *testing.T) {
 		t.Fatal("missing build_manifest payload")
 	}
 	m := resp.BuildManifest
-	if m.ProjectRoot != "tegron.test/fixturemod" || m.Resolver.Command != "go build ./..." || !m.Partiality.Complete {
+	rs, _ := m.PrimaryResolver()
+	if m.ProjectRoot != "tegron.test/fixturemod" || rs.Command != "go build ./..." || !m.Partiality.Complete {
 		t.Errorf("expected a complete single-module manifest through the subprocess; got %+v", m)
 	}
-	if m.Runtime.Name != "go" {
-		t.Errorf("Runtime.Name = %q, want \"go\"", m.Runtime.Name)
+	if rt, ok := m.PrimaryRuntime(); !ok || rt.Name != "go" || rt.Source != plugin.RuntimeSourceDeclared {
+		t.Errorf("Runtimes = %+v, want one declared \"go\" runtime", m.Runtimes)
 	}
 	if hasReason(m.Partiality.Reasons, plugin.PartialReasonUnsupported) {
 		t.Error("manifest must no longer be Unsupported through the subprocess")

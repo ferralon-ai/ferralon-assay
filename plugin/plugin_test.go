@@ -220,3 +220,36 @@ func TestResponseJSONRoundTrip(t *testing.T) {
 		t.Errorf("Response round-trip mismatch:\n orig = %+v\n back = %+v", orig, back)
 	}
 }
+
+func TestBuildManifestResult_Primary(t *testing.T) {
+	goRT := RuntimeSpec{Name: "go", Version: "1.21", Source: RuntimeSourceDeclared}
+	cRT := RuntimeSpec{Name: "c", Source: RuntimeSourceCompileDB, Target: "x86_64-linux-gnu", Lang: "c"}
+	goRS := ResolverSpec{Name: "go", Command: "go build ./...", Source: RuntimeSourceDeclared}
+	makeRS := ResolverSpec{Name: "make", Source: RuntimeSourceAmbient}
+
+	tests := []struct {
+		name     string
+		res      BuildManifestResult
+		wantRT   RuntimeSpec
+		wantRTOK bool
+		wantRS   ResolverSpec
+		wantRSOK bool
+	}{
+		{name: "empty", res: BuildManifestResult{}},
+		{name: "one each", res: BuildManifestResult{Runtimes: []RuntimeSpec{goRT}, Resolvers: []ResolverSpec{goRS}},
+			wantRT: goRT, wantRTOK: true, wantRS: goRS, wantRSOK: true},
+		{name: "several have no primary", res: BuildManifestResult{Runtimes: []RuntimeSpec{goRT, cRT}, Resolvers: []ResolverSpec{goRS, makeRS}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt, ok := tt.res.PrimaryRuntime()
+			if rt != tt.wantRT || ok != tt.wantRTOK {
+				t.Errorf("PrimaryRuntime() = %+v, %v; want %+v, %v", rt, ok, tt.wantRT, tt.wantRTOK)
+			}
+			rs, ok := tt.res.PrimaryResolver()
+			if rs != tt.wantRS || ok != tt.wantRSOK {
+				t.Errorf("PrimaryResolver() = %+v, %v; want %+v, %v", rs, ok, tt.wantRS, tt.wantRSOK)
+			}
+		})
+	}
+}

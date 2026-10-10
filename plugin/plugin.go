@@ -496,17 +496,34 @@ type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
 }
 
-// RuntimeSpec is the ecosystem-neutral runtime descriptor (replaces GoVersion + ToolchainVersion).
+// RuntimeSource records where a resolved toolchain identity came from.
+type RuntimeSource string
+
+const (
+	// RuntimeSourceDeclared: parsed from a committed manifest (go.mod, package.json, .csproj, pyproject).
+	RuntimeSourceDeclared RuntimeSource = "declared"
+	// RuntimeSourceAmbient: CI/host state that is not committed (a compiler on PATH, the environment).
+	RuntimeSourceAmbient RuntimeSource = "ambient"
+	// RuntimeSourceCompileDB: reconstructed from compile_commands.json invocations.
+	RuntimeSourceCompileDB RuntimeSource = "compile_db"
+)
+
+// RuntimeSpec is the ecosystem-neutral descriptor of one toolchain the build uses.
 type RuntimeSpec struct {
-	Name      string `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
-	Version   string `json:"version,omitempty"`   // declared/minimum runtime version (replaces GoVersion; JS: node engine range — no longer overloaded onto a "go_version" field)
-	Toolchain string `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one (replaces ToolchainVersion); a stronger floor than Version
+	Name      string        `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
+	Version   string        `json:"version,omitempty"`   // declared/minimum runtime version (JS: node engine range)
+	Toolchain string        `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one; a stronger floor than Version
+	Source    RuntimeSource `json:"source,omitempty"`    // provenance of this identity
+	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
+	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")
+	StdLevel  string        `json:"std_level,omitempty"` // language standard level ("c17", "c++20")
 }
 
-// ResolverSpec is the ecosystem-neutral resolver/build descriptor (replaces BuildCommand).
+// ResolverSpec is the ecosystem-neutral resolver/build descriptor.
 type ResolverSpec struct {
-	Name    string `json:"name,omitempty"`    // resolver/build tool ("go", "npm", "maven", "gradle")
-	Command string `json:"command,omitempty"` // neutral build invocation (replaces BuildCommand, e.g. "go build ./...")
+	Name    string        `json:"name,omitempty"`    // resolver/build tool ("go", "npm", "maven", "gradle")
+	Command string        `json:"command,omitempty"` // neutral build invocation (e.g. "go build ./...")
+	Source  RuntimeSource `json:"source,omitempty"`  // provenance of this resolver
 }
 
 // BuildManifestResult carries ecosystem-neutral build context (§4.6). Breaking change from the

@@ -16,6 +16,11 @@ func TestClassifyPartialityReason(t *testing.T) {
 	for reason, want := range map[string]report.PartialityClass{
 		plugin.PartialReasonReflection:      report.PartialityInherentLimit,
 		plugin.PartialReasonDynamicDispatch: report.PartialityInherentLimit,
+		// The C/C++ dispatch suffixes are method limits (parity-map §5). Other dynamic_dispatch
+		// suffixes keep their own class: the JVM lanes' bean_ambiguous stays loud.
+		plugin.PartialReasonDynamicDispatch + ":fn_ptr": report.PartialityInherentLimit,
+		plugin.PartialReasonDynamicDispatch + ":vtable": report.PartialityInherentLimit,
+		plugin.PartialReasonBeanAmbiguous:               report.PartialityDidNotRun,
 		// A limit of the corpus data, true of every scan of the policy.
 		plugin.PartialReasonPolicyAdvisoryNoCoordinates: report.PartialityInherentLimit,
 		// Limits of the C/C++ lane's own method: true of every scan that crosses them.

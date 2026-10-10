@@ -12,7 +12,11 @@
 // normally does."*
 package report
 
-import "github.com/ferralon-ai/ferralon-assay/plugin"
+import (
+	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
 
 // PartialityClass is the arm a coverage limit is disclosed in. It governs volume only —
 // no verdict, count or finding depends on it, and both arms are always present and
@@ -50,11 +54,18 @@ const (
 // tells a reader something specific about THIS codebase's coverage.
 func ClassifyPartialityReason(reason string) PartialityClass {
 	switch reason {
-	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch, plugin.PartialReasonPolicyAdvisoryNoCoordinates:
+	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch, plugin.PartialReasonPolicyAdvisoryNoCoordinates,
+		plugin.PartialReasonMacroExpansion:
 		return PartialityInherentLimit
-	default:
-		return PartialityDidNotRun
 	}
+	// native_link_boundary is always localised (§4 base+":"+suffix: ":dlopen", ":inline_asm"), so
+	// the bare base never appears on the wire — match the prefix rather than adding one case per
+	// suffix, the same localiser shape the suffixed bases above (dynamic_dispatch, source_unpinned,
+	// relationship_unexpressed) use at mint time.
+	if reason == plugin.PartialReasonNativeLinkBoundary || strings.HasPrefix(reason, plugin.PartialReasonNativeLinkBoundary+":") {
+		return PartialityInherentLimit
+	}
+	return PartialityDidNotRun
 }
 
 // EffectiveClass returns the arm a reader must render this note in.

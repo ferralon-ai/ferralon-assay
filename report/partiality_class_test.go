@@ -18,6 +18,11 @@ func TestClassifyPartialityReason(t *testing.T) {
 		plugin.PartialReasonDynamicDispatch: report.PartialityInherentLimit,
 		// A limit of the corpus data, true of every scan of the policy.
 		plugin.PartialReasonPolicyAdvisoryNoCoordinates: report.PartialityInherentLimit,
+		// Limits of the C/C++ lane's own method: true of every scan that crosses them.
+		plugin.PartialReasonMacroExpansion:                     report.PartialityInherentLimit,
+		plugin.PartialReasonNativeLinkBoundary:                 report.PartialityInherentLimit,
+		plugin.PartialReasonNativeLinkBoundary + ":dlopen":     report.PartialityInherentLimit,
+		plugin.PartialReasonNativeLinkBoundary + ":inline_asm": report.PartialityInherentLimit,
 
 		plugin.PartialReasonCgo:                      report.PartialityDidNotRun,
 		plugin.PartialReasonUnsupported:              report.PartialityDidNotRun,
@@ -26,6 +31,10 @@ func TestClassifyPartialityReason(t *testing.T) {
 		plugin.PartialReasonNoManifest:               report.PartialityDidNotRun,
 		plugin.PartialReasonNoPlugin:                 report.PartialityDidNotRun,
 		plugin.PartialReasonReachabilityUndetermined: report.PartialityDidNotRun,
+		// Run-specific (loud): each says a step of THIS run did not happen, not a property
+		// of the method true on every scan.
+		plugin.PartialReasonAdvisorySymbolAbsent: report.PartialityDidNotRun,
+		plugin.PartialReasonIfdefConfigVariance:  report.PartialityDidNotRun,
 	} {
 		if got := report.ClassifyPartialityReason(reason); got != want {
 			t.Errorf("ClassifyPartialityReason(%q) = %q, want %q", reason, got, want)

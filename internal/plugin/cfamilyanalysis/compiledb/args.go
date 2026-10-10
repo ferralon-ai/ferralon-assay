@@ -107,8 +107,9 @@ func readInvocation(argv []string, rawFile, absFile, dir string) invocation {
 
 	var args []string
 	if len(argv) > 0 && !unhandled[UnhandledWrapper] {
-		inv.compiler.Driver = argv[0]
-		inv.compiler.Family = driverFamily(argv[0])
+		wrapper := inv.compiler.Wrapper
+		inv.compiler = CompilerFromDriver(argv[0])
+		inv.compiler.Wrapper = wrapper
 		args = argv[1:]
 	}
 	msvc := inv.compiler.Family == "msvc"
@@ -119,6 +120,7 @@ func readInvocation(argv []string, rawFile, absFile, dir string) invocation {
 	// -x applies to the inputs that follow it, so the mode in force where the source argument
 	// appears is the one that counts. If the source never appears in argv, the last -x seen wins.
 	xAtFile, xLast, sawFile := "", "", false
+	var arches []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "@") && len(a) > 1 {
@@ -151,6 +153,11 @@ func readInvocation(argv []string, rawFile, absFile, dir string) invocation {
 			inv.target = a[len("--target="):]
 		case strings.HasPrefix(a, "-target="):
 			inv.target = a[len("-target="):]
+		case a == "-arch" && i+1 < len(args):
+			i++
+			if !contains(arches, args[i]) {
+				arches = append(arches, args[i])
+			}
 		case !sawFile && isSourceArg(a, rawFile, absFile, dir):
 			sawFile = true
 			xAtFile = xLast
@@ -163,7 +170,15 @@ func readInvocation(argv []string, rawFile, absFile, dir string) invocation {
 	if x == "none" {
 		x = ""
 	}
-	if inv.target == "" && !msvc {
+	// -arch is Apple's driver flag; clang turns a single -arch into an <arch>-apple-darwin target.
+	// An explicit --target still wins, as it does in the driver.
+	if inv.target == "" && len(arches) == 1 {
+		inv.target = arches[0] + "-apple-darwin"
+	}
+	if inv.target == "" && len(arches) > 1 {
+		unhandled[UnhandledMultiArch] = true
+	}
+	if inv.target == "" && len(arches) == 0 && !msvc {
 		inv.target = driverTriple(inv.compiler.Driver)
 	}
 
@@ -245,6 +260,11 @@ func compilerTail(stem string) (tail, prefix string) {
 	return "", ""
 }
 
+// CompilerFromDriver identifies a compiler from its driver path alone.
+func CompilerFromDriver(driver string) Compiler {
+	return Compiler{Driver: driver, Family: driverFamily(driver)}
+}
+
 func driverFamily(driver string) string {
 	tail, _ := compilerTail(driverStem(driver))
 	switch tail {
@@ -299,4 +319,13 @@ func driverTriple(driver string) string {
 		return ""
 	}
 	return prefix
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
 }

@@ -50,7 +50,17 @@ func TestParseEntry(t *testing.T) {
 		{
 			name:  "command form, cmake shape",
 			entry: `{"directory":"/w/build","command":"/usr/bin/cc   -std=gnu17 -arch arm64 -o a.o -c /w/a.c","file":"/w/a.c"}`,
-			want:  TU{File: "/w/a.c", Directory: "/w/build", Lang: LangC, Std: "gnu17", Compiler: Compiler{Driver: "/usr/bin/cc"}},
+			want:  TU{File: "/w/a.c", Directory: "/w/build", Lang: LangC, Std: "gnu17", Target: "arm64-apple-darwin", Compiler: Compiler{Driver: "/usr/bin/cc"}},
+		},
+		{
+			name:  "universal build is declared, not one target",
+			entry: `{"directory":"/w","arguments":["clang","-arch","arm64","-arch","x86_64","-c","a.c"],"file":"a.c"}`,
+			want:  TU{File: "/w/a.c", Directory: "/w", Lang: LangC, Compiler: Compiler{Driver: "clang", Family: "clang"}, Unhandled: []string{UnhandledMultiArch}},
+		},
+		{
+			name:  "explicit target beats -arch",
+			entry: `{"directory":"/w","arguments":["clang","-arch","arm64","--target=arm64-apple-macos14","-c","a.c"],"file":"a.c"}`,
+			want:  TU{File: "/w/a.c", Directory: "/w", Lang: LangC, Target: "arm64-apple-macos14", Compiler: Compiler{Driver: "clang", Family: "clang"}},
 		},
 		{
 			name:  "arguments form",

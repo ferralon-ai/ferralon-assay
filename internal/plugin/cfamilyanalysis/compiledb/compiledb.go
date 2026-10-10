@@ -39,6 +39,7 @@ const (
 	UnhandledResponseFile = "response_file"    // an @file argument; its flags were not expanded
 	UnhandledMSVC         = "msvc_driver"      // cl/clang-cl flag syntax; std and target not parsed
 	UnhandledWrapper      = "compiler_wrapper" // a ccache-style wrapper with no compiler argument after it
+	UnhandledMultiArch    = "multi_arch"       // several Darwin -arch values: one TU, several targets
 )
 
 // Skip reasons: why a database entry is not a C/C++ translation unit.
@@ -55,13 +56,25 @@ type Compiler struct {
 	Wrapper string `json:"wrapper,omitempty"` // the stripped wrapper (ccache, sccache, distcc, ...), if any
 }
 
+// Identity is the compiler's family when known, else its driver name without path, version or
+// .exe ("cc" for /usr/bin/cc). It is empty only when no compiler could be identified.
+func (c Compiler) Identity() string {
+	if c.Family != "" {
+		return c.Family
+	}
+	if c.Driver == "" {
+		return ""
+	}
+	return driverStem(c.Driver)
+}
+
 // TU is one translation unit: one compile_commands.json entry that compiles C or C++.
 type TU struct {
 	File      string   `json:"file"`      // absolute, cleaned
 	Directory string   `json:"directory"` // absolute, cleaned
 	Lang      Lang     `json:"lang"`
 	Std       string   `json:"std,omitempty"`    // as written (-std=gnu17 -> "gnu17"); empty = compiler default
-	Target    string   `json:"target,omitempty"` // --target triple, or a cross-compiler driver's triple prefix; empty = host default
+	Target    string   `json:"target,omitempty"` // --target triple, a Darwin -arch as <arch>-apple-darwin, or a cross-compiler driver's triple prefix; empty = host default
 	Compiler  Compiler `json:"compiler"`
 	Unhandled []string `json:"unhandled,omitempty"` // sorted Unhandled* reasons
 }
@@ -109,10 +122,14 @@ var ErrMalformed = errors.New("compiledb: malformed compilation database")
 // Discover returns the compilation databases under root, best candidate first: root itself, then
 // root/build, then any other directory up to two levels down, each level in lexical order. Hidden
 // directories and dependency trees are not searched. An empty result means none was found.
-func Discover(root string) []string {
+func Discover(root string) []string { return Find(root, FileName) }
+
+// Find returns the regular files called name under root, in Discover's search order. Other build
+// state a generator writes beside the database (CMakeCache.txt) is found the same way.
+func Find(root, name string) []string {
 	var out []string
 	add := func(dir string) {
-		p := filepath.Join(dir, FileName)
+		p := filepath.Join(dir, name)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			for _, seen := range out {
 				if seen == p {

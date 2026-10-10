@@ -30,13 +30,6 @@ func ResolveDependencySymbols(_ context.Context, _ plugin.ResolveSymbolsRequest)
 	return plugin.SymbolResolutionResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// ResolveDependencyVersions is contract-present but unimplemented at Phase 0 (Phase 1:
-// conanfile/vcpkg parse where present). Honest absence — the disqualification predicate fails
-// OPEN on an unresolved version, never guesses one.
-func ResolveDependencyVersions(_ context.Context, _ plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return plugin.DependencyVersionResult{Partiality: plugin.Unsupported()}, nil
-}
-
 // CallGraph is contract-present but unimplemented at Phase 0 (Phase 1: clang/scip-clang direct-call
 // graph). Honest absence, never a fabricated graph.
 func CallGraph(_ context.Context, _ plugin.CallGraphRequest) (plugin.CallGraphResult, error) {

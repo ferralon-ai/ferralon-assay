@@ -260,6 +260,34 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		flags.scopedCopy[reason] = true
 	}
 
+	// boundaryLimit records the uninspectable_package limit of a call into the boundary node
+	// target, whose package module from loaded. The limit is attributed the way loading the
+	// specifier is (outOfTreeLoad), under either load's conditions, so a self-reference or
+	// anything else no single package accounts for stays run-wide. A call that cannot be tied
+	// to one load (from == "") stays attributed but unbounded.
+	boundaryLimit := func(target, from string, f fileParse) {
+		reason := plugin.PartialReasonUninspectablePackage
+		at := from
+		if at == "" {
+			at = f.module
+		}
+		spec := boundarySpec(target)
+		pkg, out := rs.outOfTreeLoad(at, spec, true)
+		if esm, outESM := rs.outOfTreeLoad(at, spec, false); !out || !outESM || esm != pkg {
+			pkg = ""
+		}
+		switch {
+		case pkg == "":
+			accumulateReason(&flags, reason)
+		case from == "":
+			scoped.addUnbounded(reason, pkg, f.file)
+			flags.scopedCopy[reason] = true
+		default:
+			scoped.addPackageLoad(reason, pkg, from, f.file)
+			flags.scopedCopy[reason] = true
+		}
+	}
+
 	for _, f := range prog.files {
 		// Module-level runtime-computed specifiers (import(expr) / require(var)) with no
 		// static prefix are declared limits even though they emit no call site (§6).
@@ -342,16 +370,18 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
-			if target, prov, ok := br.callee(f.module, cs); ok {
+			if target, from, prov, ok := br.callee(f.module, cs); ok {
 				// An edge into a package-boundary node names the dependency member the call
 				// enters; it is not an inspection of the package, which stays uninspectable.
+				// The limit belongs to that package, bounded by its resolution reach from the
+				// module that loaded it.
 				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
 				if !seen[e] {
 					seen[e] = true
 					edges = append(edges, e)
 					provByEdge[e] = prov
 				}
-				flags.uninspectable = true
+				boundaryLimit(target, from, f)
 			}
 			switch r.Kind {
 			case resolvePackage:

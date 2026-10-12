@@ -37,6 +37,10 @@ import (
 //   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure); the
 //     coordinate it would have carried becomes UNRESOLVED, not absent.
 //
+// Exhaustive is set only when the lockfiles cover every package.json under the build dir
+// (exhaustive.go), so a coordinate absent from All is provably not installed; with no lockfile
+// (the declared-seed path) or any doubt it stays false and absence proves nothing.
+//
 // "plugin resolves, pipeline ranges" symmetry (matching Java): this op resolves only the
 // concrete installed literal version. Advisory RANGE matching (^ ~ || x-ranges, npm
 // ordering) is applied by the pipeline disqualification predicate (pipeline/npm_version.go),
@@ -76,7 +80,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
+	res := plugin.DependencyVersionResult{
+		Partiality: part,
+		All:        all,
+		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, locks, all, parseFailed),
+	}
 	want := normalizeNPMCoordinate(req.Coordinate)
 	if want != "" {
 		for _, d := range all {

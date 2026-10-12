@@ -319,3 +319,29 @@ func TestWithInventoryLimits(t *testing.T) {
 		}
 	}
 }
+
+// TestFinding_AliasedDependencyCallIsNotGrounds pins the shape #79 briefly let through on main:
+// `const p = require('json5'); function load(s){ return p.parse(s) }`. The JS lane drew one edge,
+// declared only the inherent dynamic_dispatch, and resolved json5.parse to a boundary node whose
+// code it never loaded. That defeats analysisDidNotRun's zero-edge arm, so the gate alone must
+// refuse not_exploitable: the sink is not Searched and no lane refuted json5.
+func TestFinding_AliasedDependencyCallIsNotGrounds(t *testing.T) {
+	const boundary = "npm:json5#parse"
+	fx := groundsFixture{
+		pkg:             &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"},
+		advisoryPURL:    "pkg:npm/json5",
+		advisorySymbols: []string{"json5.parse"},
+		resolution: plugin.SymbolResolutionResult{
+			Partiality: plugin.Complete(),
+			Resolved:   []plugin.Symbol{{SCIP: boundary}},
+			Origins:    map[string]string{boundary: "pkg:npm/json5"},
+			Matched:    map[string][]string{"json5.parse": {boundary}},
+		},
+		reach:     plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)},
+		footprint: []string{plugin.PartialReasonDynamicDispatch},
+	}
+	f := fx.finding(t)
+	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonVulnerableSymbolUnresolved {
+		t.Fatalf("got %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonVulnerableSymbolUnresolved)
+	}
+}

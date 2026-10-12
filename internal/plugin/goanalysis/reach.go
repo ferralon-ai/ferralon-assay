@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -73,11 +75,11 @@ func stacksToReachPaths(stacks []CallStack) []plugin.ReachPath {
 //     PartialReasonReachabilityUndetermined — never silently accepted.
 //   - A ReachPath with no Ingress (reachable sink, no known entry) declares
 //     PartialReasonNoIngress — never "not exploitable" (inv.5).
-//   - The asymmetry rule (notReachable=true): when govulncheck reported the vuln
-//     present but found NO reachable symbol-level trace, we do NOT conclude
-//     "safe"/"unreachable". govulncheck's miss is UNKNOWN, so we declare
-//     PartialReasonReachabilityUndetermined — the static analysis could not see
-//     a path, not that none exists (inv.5, §5.3/§6).
+//   - The asymmetry rule (notReachable=true): when govulncheck reported a
+//     symbol-level finding but no trace could be derived into a path, we do NOT
+//     conclude "safe"/"unreachable". The gap is UNKNOWN, so we declare
+//     PartialReasonReachabilityUndetermined (inv.5, §5.3/§6). A module-level-only
+//     result is not this case: evidenceResult states it as a refutation.
 //
 // INVARIANT: reconcile mints no inherent-limit reason of its own. Every reason it
 // adds here names something this run could not DETERMINE, and each one is a
@@ -162,21 +164,103 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 
-	stacks := findingsToStacks(findings)
-	paths := stacksToReachPaths(stacks)
-
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
+	res := evidenceResult(findings, cg, env)
+	res.ScanToolchain = scanToolchain
+	return res, nil
+}
 
-	// notReachable: govulncheck applied the advisory to this module but produced
-	// no symbol-level trace we could turn into a path. Asymmetry rule: unknown,
-	// never "safe".
-	notReachable := len(findings) > 0 && len(paths) == 0
+// evidenceResult turns one advisory's govulncheck findings into the reachability result.
+//
+// govulncheck's findings for one advisory are cumulative: a module finding when the build
+// requires an affected version, a package finding when it imports a vulnerable package, a symbol
+// finding (with a trace) when a vulnerable function is reachable. So the finding levels say how
+// far it got:
+//
+//   - no finding at all: govulncheck has nothing to say about this advisory here (it does not know
+//     the advisory, or disagrees that the version is affected). Its silence is not a search, so
+//     the result declares advisory_unknown_to_analyzer.
+//   - module/package findings and no symbol finding: it matched the advisory to the build and
+//     traced no call to the vulnerable functions — a refutation of that module, valid for the
+//     platform and build tags it ran under, which the Detail names.
+//   - symbol findings it could not turn into a path: unknown, never "safe".
+func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []string) plugin.ReachabilityResult {
+	stacks := findingsToStacks(findings)
+	paths := stacksToReachPaths(stacks)
+	symbolLevel := len(stacks) > 0
 
-	part := reconcile(paths, cg, notReachable)
-	return plugin.ReachabilityResult{Partiality: part, Paths: paths, ScanToolchain: scanToolchain}, nil
+	res := plugin.ReachabilityResult{
+		Partiality: reconcile(paths, cg, symbolLevel && len(paths) == 0),
+		Paths:      paths,
+	}
+	switch {
+	case len(findings) == 0:
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonAdvisoryUnknownToAnalyzer)
+	case !symbolLevel:
+		res.Refutation = moduleRefutation(findings, env)
+	}
+	return res
+}
+
+// moduleRefutation states govulncheck's module-level evidence as a refutation of the module it
+// matched. An advisory spanning several modules refutes the first in path order; the gate
+// matches it against the admitted package and ignores a refutation of any other.
+func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
+	var module, version string
+	imported := false
+	for _, f := range findings {
+		if len(f.Trace) == 0 {
+			continue
+		}
+		fr := f.Trace[0]
+		if fr.Module == "" {
+			continue
+		}
+		if module == "" || fr.Module < module {
+			module, version = fr.Module, fr.Version
+		}
+		if fr.Package != "" {
+			imported = true
+		}
+	}
+	if module == "" {
+		return nil
+	}
+	use := "a vulnerable package is not imported"
+	if imported {
+		use = "a vulnerable package is imported"
+	}
+	return &plugin.Refutation{
+		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
+		Package: "pkg:golang/" + module,
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, default build tags, tests excluded)",
+			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH)),
+	}
+}
+
+// withReason adds reason to p, which then is no longer complete.
+func withReason(p plugin.Partiality, reason string) plugin.Partiality {
+	for _, r := range p.Reasons {
+		if r == reason {
+			return p
+		}
+	}
+	reasons := append(append([]string(nil), p.Reasons...), reason)
+	slices.Sort(reasons)
+	return plugin.Partial(reasons...)
+}
+
+// envOr returns the last value env assigns to key, else def.
+func envOr(env []string, key, def string) string {
+	for i := len(env) - 1; i >= 0; i-- {
+		if v, ok := strings.CutPrefix(env[i], key+"="); ok && v != "" {
+			return v
+		}
+	}
+	return def
 }
 
 // reachBaseEnv is the child environment every govulncheck run starts from.
@@ -385,7 +469,8 @@ type vulnMessage struct {
 }
 
 type vulnOSV struct {
-	ID string `json:"id,omitempty"`
+	ID      string   `json:"id,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 type vulnFinding struct {
@@ -404,25 +489,31 @@ type vulnFrame struct {
 	Receiver string `json:"receiver,omitempty"`
 }
 
-// parseFindings decodes the newline-delimited JSON message stream, keeping only
-// symbol-level findings (a Trace whose first/innermost frame carries a function)
-// for the requested vulnID. An empty vulnID keeps all findings.
+// parseFindings decodes the newline-delimited JSON message stream and returns the findings, at
+// every level (module, package, symbol), for the requested vulnID. A finding is keyed by its GO-
+// id; when vulnID is another id (CVE/GHSA), the stream's osv entries map it to the GO- ids that
+// list it as an alias. An empty vulnID keeps all findings.
 func parseFindings(out []byte, vulnID string) ([]vulnFinding, error) {
 	dec := json.NewDecoder(bufio.NewReader(bytes.NewReader(out)))
-	var findings []vulnFinding
+	ids := map[string]bool{vulnID: true}
+	var all []vulnFinding
 	for dec.More() {
 		var msg vulnMessage
 		if err := dec.Decode(&msg); err != nil {
 			return nil, err
 		}
-		f := msg.Finding
-		if f == nil {
-			continue
+		if o := msg.OSV; o != nil && slices.Contains(o.Aliases, vulnID) {
+			ids[o.ID] = true
 		}
-		if vulnID != "" && f.OSV != vulnID {
-			continue
+		if msg.Finding != nil {
+			all = append(all, *msg.Finding)
 		}
-		findings = append(findings, *f)
+	}
+	var findings []vulnFinding
+	for _, f := range all {
+		if vulnID == "" || ids[f.OSV] {
+			findings = append(findings, f)
+		}
 	}
 	return findings, nil
 }

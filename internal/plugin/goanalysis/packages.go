@@ -13,8 +13,12 @@ package goanalysis
 import (
 	"context"
 	"fmt"
+	"go/build"
+	"go/parser"
+	"go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -97,11 +101,64 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 				buildDir, p.PkgPath, strings.Join(loadErrs, "; "))
 		}
 	}
+	var reasons []string
 	if len(loadErrs) > 0 {
-		part = plugin.Partial(plugin.PartialReasonToolFailure)
+		reasons = append(reasons, plugin.PartialReasonToolFailure)
+	}
+	if droppedCgo(pkgs) {
+		reasons = append(reasons, plugin.PartialReasonCgo)
+	}
+	if len(reasons) > 0 {
+		part = plugin.Partial(reasons...)
 	}
 
 	return &LoadResult{Packages: pkgs, Partiality: part}, nil
+}
+
+// droppedCgo reports whether the build left out a cgo file of a non-standard-library package
+// because cgo is disabled (CGO_ENABLED=0, or no C compiler). Such a file is in no package's
+// syntax, so neither the call graph nor govulncheck sees the calls it makes, and runtime/cgo never
+// enters the program to trip the cgo detector. A file the build would leave out with cgo enabled
+// too (another GOOS, a build tag) is not counted.
+//
+// The standard library's own cgo variants (net, os/user) are not checked: their pure-Go
+// fallbacks are what the build compiles, and the analysis reads those.
+func droppedCgo(pkgs []*packages.Package) bool {
+	ctx := build.Default
+	ctx.CgoEnabled = true
+	found := false
+	packages.Visit(pkgs, func(p *packages.Package) bool {
+		if found || p.Module == nil {
+			return !found
+		}
+		for _, path := range p.IgnoredFiles {
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				continue
+			}
+			if importsC(path) {
+				if ok, err := ctx.MatchFile(filepath.Dir(path), filepath.Base(path)); err == nil && ok {
+					found = true
+					return false
+				}
+			}
+		}
+		return true
+	}, nil)
+	return found
+}
+
+// importsC reports whether the Go file at path imports "C". An unreadable file counts: it may.
+func importsC(path string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+	if err != nil {
+		return true
+	}
+	for _, imp := range f.Imports {
+		if imp.Path.Value == `"C"` {
+			return true
+		}
+	}
+	return false
 }
 
 // SCIPString emits a stable, version-qualified SCIP symbol string for obj in

@@ -301,7 +301,7 @@ func scanCalls(text string) []callExpr {
 		}
 		p := skipSpaceRunes(r, pos)
 		if last != "" && !pyCallKeywords[last] && p < n && r[p] == '(' {
-			out = append(out, callExpr{name: last, arity: paramArity(string(r[p:])), chain: segs})
+			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), chain: segs})
 			if c := matchingClose(r, p); c >= 0 {
 				closeChain[c] = segs
 			}

@@ -333,13 +333,16 @@ func parseDefSignature(rest string) (name string, arity int, ok bool) {
 
 // paramArity counts the top-level comma-separated parameters of a "(...)" list, given a
 // string that begins with '('. An empty "()" is arity 0.
-func paramArity(s string) int {
-	r := []rune(s)
+func paramArity(s string) int { return paramArityAt([]rune(s), 0) }
+
+// paramArityAt is paramArity over r starting at the opening bracket r[start], so a caller
+// already holding runes doesn't copy the rest of the line once per call site.
+func paramArityAt(r []rune, start int) int {
 	n := len(r)
 	depth := 0
 	count := 0
 	seenToken := false
-	for i := 0; i < n; i++ {
+	for i := start; i < n; i++ {
 		switch r[i] {
 		case '(', '[', '{':
 			depth++

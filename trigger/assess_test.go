@@ -274,3 +274,48 @@ func TestPurlKey(t *testing.T) {
 		}
 	}
 }
+
+// TestWithInventoryLimits: a scan-wide inventory limit of the did_not_run class (stethoscope's
+// tool_failure:lockfile_ambiguous) blocks not_exploitable for findings of its ecosystem.
+func TestWithInventoryLimits(t *testing.T) {
+	ne := report.AdvisoryFinding{
+		Package:  &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.5.2"},
+		Verdict:  report.VerdictNotExploitable,
+		Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: "grounds"},
+	}
+	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		blocked bool
+	}{
+		{"lockfile ambiguous blocks NE of its ecosystem", ne, ambiguous, true},
+		{"no inventory limit", ne, nil, false},
+		{"limit of another ecosystem", ne, inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"inherent inventory limit", ne, inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
+		{"read back from a prior report's notes", ne, inventoryLimits(append(ambiguous, report.PartialityNote{Reason: plugin.PartialReasonNoIngress, Ecosystem: "npm"})), true},
+		{"other scan notes are not inventory limits", ne, inventoryLimits([]report.PartialityNote{{Reason: plugin.PartialReasonNoIngress, Ecosystem: "npm"}}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits)
+			if !tc.blocked {
+				if got.Verdict != report.VerdictNotExploitable {
+					t.Fatalf("verdict = %s/%q, want not_exploitable", got.Verdict, got.UndeterminedReason)
+				}
+				return
+			}
+			if got.Verdict != report.VerdictUndetermined || got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" {
+				t.Fatalf("got %s/%q basis %q, want undetermined/%s with no basis", got.Verdict, got.UndeterminedReason, got.Evidence.Basis, report.ReasonAnalysisDidNotRun)
+			}
+		})
+	}
+	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictDisqualified, report.VerdictUndetermined} {
+		f := ne
+		f.Verdict = v
+		if got := withInventoryLimits(f, ambiguous); got.Verdict != v {
+			t.Errorf("%s changed to %s", v, got.Verdict)
+		}
+	}
+}

@@ -237,13 +237,6 @@ const (
 	// default arm) because it says a step of THIS run did not happen, not a property of the
 	// method true on every run.
 	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
-	// PartialReasonVulnerableSymbolUnresolved (loud): the advisory names vulnerable symbols, but
-	// not every one resolved to code inside the admitted package that a lane then searched, and no
-	// lane refutation covers the package.
-	PartialReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
-	// PartialReasonPackageVersionUnresolved (loud): the advisory was not admitted on a package with
-	// a resolved, pinned version, so nothing establishes which code the build carries.
-	PartialReasonPackageVersionUnresolved = "package_version_unresolved"
 	// PartialReasonAdvisoryUnknownToAnalyzer (loud): the analyzer that would search for the
 	// advisory's symbols emitted no evidence about the advisory at all, so its silence is not a
 	// search that came back empty.
@@ -395,6 +388,11 @@ type SymbolResolutionResult struct {
 	// import-binding → lockfile resolution, never from the request PURL. An origin alone grounds
 	// nothing: only a sink in ReachabilityResult.Searched does, and that requires loaded code.
 	Origins map[string]string `json:"origins,omitempty"`
+	// Matched maps each request advisory symbol, verbatim, to the SCIPs of the Resolved symbols it
+	// resolved to. A lane that fills Origins fills this too: the not_exploitable gate needs every
+	// advisory symbol accounted for, and only the lane's own matcher knows which resolved symbol
+	// answered which advisory symbol.
+	Matched map[string][]string `json:"matched,omitempty"`
 }
 
 // CallEdge is one directed call-graph edge between canonical symbols.

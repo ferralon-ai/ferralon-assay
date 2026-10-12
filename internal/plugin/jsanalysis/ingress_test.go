@@ -35,9 +35,9 @@ func TestFindIngresses_ExpressRouteDetected(t *testing.T) {
 	}
 }
 
-func TestFindIngresses_InlineArrowHandlerIsNotIngress(t *testing.T) {
-	// An anonymous inline-arrow handler is NOT a named call-graph node, so it must not
-	// be recorded as an ingress (honest absence, never a fabricated entry).
+func TestFindIngresses_InlineArrowHandlerIsIngress(t *testing.T) {
+	// An inline-arrow handler gets its own synthetic frame, named by its position, and
+	// that frame is the ingress — the same id the call graph gives the handler body.
 	src := `
 const express = require('express');
 const app = express();
@@ -48,8 +48,9 @@ app.get('/x', (req, res) => { res.send('ok'); });
 	if err != nil {
 		t.Fatalf("FindIngresses: %v", err)
 	}
-	if len(res.Ingresses) != 0 {
-		t.Errorf("inline-arrow handler must not be an ingress; got %+v", res.Ingresses)
+	want := funcSCIP("app", nil, anonHandlerFunc(4, 15), 2)
+	if len(res.Ingresses) != 1 || res.Ingresses[0].Symbol.SCIP != want || res.Ingresses[0].Kind != "http_route" {
+		t.Errorf("want one http_route ingress %s; got %+v", want, res.Ingresses)
 	}
 }
 

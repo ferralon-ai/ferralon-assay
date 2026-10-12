@@ -127,13 +127,42 @@ func (rs *resolver) ResolveRef(fromModule, name string) resolution {
 // to an enclosing-class method, `recv.m()` to a method of recv's instantiated class,
 // and a bare `m()` to a binding or a same-module declaration.
 func (rs *resolver) resolveCallSite(fromModule string, cs callSite) resolution {
-	if cs.receiverThis {
-		return rs.resolveThisMethod(fromModule, cs.callerEnclosing, cs.calleeName, cs.calleeArity)
+	var r resolution
+	switch {
+	case cs.receiverThis:
+		r = rs.resolveThisMethod(fromModule, cs.callerEnclosing, cs.calleeName, cs.calleeArity)
+	case cs.receiver != "":
+		r = rs.resolveReceiverMethod(fromModule, cs.receiver, cs.calleeName, cs.calleeArity)
+	default:
+		r = rs.resolveName(fromModule, cs.calleeName, cs.calleeArity)
 	}
-	if cs.receiver != "" {
-		return rs.resolveReceiverMethod(fromModule, cs.receiver, cs.calleeName, cs.calleeArity)
+	if r.Kind == resolveUnresolved && cs.head != "" {
+		if pkg, ok := rs.packageHead(fromModule, cs.head); ok {
+			return pkg
+		}
 	}
-	return rs.resolveName(fromModule, cs.calleeName, cs.calleeArity)
+	return r
+}
+
+// packageHead reports whether head (the first segment of a member-call chain such as
+// JSON5.parse) is an import binding to a package outside the tree. Such a call enters
+// code this lane does not open, so it is attributed as an uninspectable package rather
+// than an unresolved name: the call runs dependency code even though no edge is drawn.
+func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
+	mi := rs.prog.modules[fromModule]
+	if mi == nil || mi.bindings.ambiguous[head] {
+		return resolution{}, false
+	}
+	b, ok := mi.bindings.imports[head]
+	if !ok || strings.HasPrefix(b.Specifier, "#") || isRelativeSpecifier(b.Specifier) {
+		return resolution{}, false
+	}
+	algo := algoESM
+	if b.Kind == bindRequire {
+		algo = algoCJS
+	}
+	r := rs.resolveBareSpecifier(fromModule, b.Specifier, b.Imported, -1, algo)
+	return r, r.Kind == resolvePackage
 }
 
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's

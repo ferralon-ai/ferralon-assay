@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -251,6 +252,125 @@ function run() {
 	}
 	if len(res.Edges) != 0 {
 		t.Errorf("unknown callee must not fabricate any edge; got %+v", res.Edges)
+	}
+}
+
+// handlerAt is the synthetic frame name of the inline handler whose first rune is the
+// first occurrence of marker in src (1-based line and column, as the scanner mints it).
+func handlerAt(t *testing.T, src, marker string) string {
+	t.Helper()
+	off := strings.Index(src, marker)
+	if off < 0 {
+		t.Fatalf("marker %q not in source", marker)
+	}
+	before := []rune(src[:off])
+	line, col := 1, 1
+	for _, c := range before {
+		if c == '\n' {
+			line, col = line+1, 1
+		} else {
+			col++
+		}
+	}
+	return anonHandlerFunc(line, col)
+}
+
+// TestCallGraph_ModuleInitFrame covers top-level code: it runs on load, so its calls
+// attribute to the module's synthetic frame (a root), and an inline function passed
+// to a route method is a handler frame of its own, reached from the frame that
+// registers it.
+func TestCallGraph_ModuleInitFrame(t *testing.T) {
+	mi := funcSCIP("app", nil, moduleInitFunc, 0)
+	cases := []struct {
+		name string
+		src  string
+		// edges lists caller -> callee; a "@marker" endpoint is the inline handler
+		// starting at that marker, and a plain name is a module-level function of app.
+		edges  [][2]string
+		reason string // a partiality reason the graph must declare, if any
+	}{
+		{
+			name: "route arrow handler body",
+			src: `
+const express = require('express');
+class Svc { y() { return 1; } }
+const x = new Svc();
+const app = express();
+app.get('/', (req, res) => { x.y(); });
+`,
+			edges: [][2]string{{"<mi>", "@(req, res) => { x"}, {"@(req, res) => { x", "Svc#y"}},
+		},
+		{
+			name: "expression-bodied route arrow",
+			src: `
+const app = require('express')();
+function helper(r) { return r; }
+app.post('/', (req, res) => helper(req));
+`,
+			edges: [][2]string{{"<mi>", "@(req, res) => helper"}, {"@(req, res) => helper", "helper(1)"}},
+		},
+		{
+			name: "plain top-level call",
+			src: `
+function setup() { return 1; }
+setup();
+`,
+			edges: [][2]string{{"<mi>", "setup()"}},
+		},
+		{
+			name: "callback argument attributes to enclosing function",
+			src: `
+function helper(v) { return v; }
+function run(list) { list.forEach(item => helper(item)); }
+`,
+			edges: [][2]string{{"run(1)", "helper(1)"}},
+		},
+		{
+			name: "member call on a package binding is uninspectable",
+			src: `
+const JSON5 = require('json5');
+function load(s) { return JSON5.parse(s); }
+load(process.argv);
+`,
+			edges:  [][2]string{{"<mi>", "load(1)"}},
+			reason: plugin.PartialReasonUninspectablePackage,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeProgram(t, map[string]string{"app.js": tc.src})
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			id := func(end string) string {
+				switch {
+				case end == "<mi>":
+					return mi
+				case strings.HasPrefix(end, "@"):
+					return funcSCIP("app", nil, handlerAt(t, tc.src, end[1:]), 2)
+				case strings.Contains(end, "#"):
+					cls, m, _ := strings.Cut(end, "#")
+					return funcSCIP("app", []string{cls}, m, 0)
+				}
+				return scipSymbol("app", nil, end+".")
+			}
+			for _, e := range tc.edges {
+				if !hasEdge(res.Edges, id(e[0]), id(e[1])) {
+					t.Errorf("missing edge %s -> %s\nedges: %+v", id(e[0]), id(e[1]), res.Edges)
+				}
+			}
+			roots := map[string]bool{}
+			for _, r := range res.Roots {
+				roots[r.SCIP] = true
+			}
+			if !roots[mi] {
+				t.Errorf("module-init %s missing from roots %+v", mi, res.Roots)
+			}
+			if tc.reason != "" && !hasReason(res.Partiality, tc.reason) {
+				t.Errorf("want partiality reason %s; got %v", tc.reason, res.Partiality.Reasons)
+			}
+		})
 	}
 }
 

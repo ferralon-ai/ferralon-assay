@@ -159,3 +159,26 @@ func TestResolveVersions_Absent(t *testing.T) {
 		t.Fatalf("absent coordinate must be Found=false; got %+v", r)
 	}
 }
+
+// Matches lists every declaration of the package across the tree, so a service pinned at another
+// version is visible. A pyproject.toml beside a lockfile is not a declaration of its own: the
+// lockfile pins it, and its range would otherwise read as an unresolved second version.
+func TestResolveVersions_MatchesEveryDeclaration(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt":        "flask==2.3.2\n",
+		"worker/requirements.txt": "flask==2.3.1\n",
+		"api/pyproject.toml":      "[project]\nname = \"api\"\ndependencies = [\"flask>=2.0\"]\n",
+		"api/poetry.lock":         "[[package]]\nname = \"flask\"\nversion = \"2.3.3\"\n",
+	})
+	r := resolveVersion(t, dir, "Flask")
+	got := map[string]bool{}
+	for _, m := range r.Matches {
+		if !m.Resolved {
+			t.Fatalf("an unresolved match survived: %+v (the pyproject range beside poetry.lock)", m)
+		}
+		got[m.Version] = true
+	}
+	if len(r.Matches) != 3 || !got["2.3.1"] || !got["2.3.2"] || !got["2.3.3"] {
+		t.Fatalf("Matches = %+v, want flask 2.3.1, 2.3.2 and 2.3.3", r.Matches)
+	}
+}

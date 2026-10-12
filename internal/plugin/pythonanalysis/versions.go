@@ -50,9 +50,12 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	manifests := manifestFiles(req.BuildDir)
+	want := normalizePyCoordinate(req.Coordinate)
+	locked := lockedDirs(manifests)
 
 	var (
 		all         []plugin.ResolvedDependency
+		matches     []plugin.ResolvedDependency
 		parseFailed bool
 	)
 	for _, m := range manifests {
@@ -61,6 +64,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		if filepath.Base(m) == "pyproject.toml" && locked[filepath.Dir(m)] {
+			continue // the lockfile beside it pins what this declares
+		}
+		for _, d := range deps {
+			if want != "" && normalizePyCoordinate(d.Coordinate) == want {
+				matches = append(matches, d)
+			}
+		}
 	}
 
 	part := plugin.Complete()
@@ -71,8 +82,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizePyCoordinate(req.Coordinate)
+	res := plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}
 	if want != "" {
 		for _, d := range all {
 			if normalizePyCoordinate(d.Coordinate) == want {
@@ -86,6 +96,18 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		}
 	}
 	return res, nil
+}
+
+// lockedDirs returns the directories holding a lockfile that pins the pyproject.toml beside it.
+func lockedDirs(manifests []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, m := range manifests {
+		switch filepath.Base(m) {
+		case "poetry.lock", "pdm.lock", "uv.lock":
+			out[filepath.Dir(m)] = true
+		}
+	}
+	return out
 }
 
 // manifestFiles returns every recognized Python manifest under root, skipping

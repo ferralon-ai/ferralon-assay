@@ -53,9 +53,17 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	manifests := manifestFiles(req.BuildDir)
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	locked := make(map[string]bool)
+	for _, m := range manifests {
+		if filepath.Base(m) == "packages.lock.json" {
+			locked[filepath.Dir(m)] = true
+		}
+	}
 
 	var (
 		all         []plugin.ResolvedDependency
+		matches     []plugin.ResolvedDependency
 		parseFailed bool
 	)
 	for _, m := range manifests {
@@ -64,6 +72,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		if isProjectFile(filepath.Base(m)) && locked[filepath.Dir(m)] {
+			continue // the packages.lock.json beside it pins what this references
+		}
+		for _, d := range deps {
+			if want != "" && normalizeNuGetCoordinate(d.Coordinate) == want {
+				matches = append(matches, d)
+			}
+		}
 	}
 
 	part := plugin.Complete()
@@ -74,8 +90,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizeNuGetCoordinate(req.Coordinate)
+	res := plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}
 	if want != "" {
 		for _, d := range all {
 			if normalizeNuGetCoordinate(d.Coordinate) == want {
@@ -116,9 +131,11 @@ func manifestFiles(root string) []string {
 
 // isManifest reports whether name is a recognized .NET dependency manifest.
 func isManifest(name string) bool {
-	if name == "packages.lock.json" || name == "packages.config" {
-		return true
-	}
+	return name == "packages.lock.json" || name == "packages.config" || isProjectFile(name)
+}
+
+// isProjectFile reports whether name is an SDK-style project file.
+func isProjectFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".csproj" || ext == ".fsproj" || ext == ".vbproj"
 }
@@ -171,9 +188,11 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 			if strings.EqualFold(e.Type, "Project") {
 				continue
 			}
-			key := normalizeNuGetCoordinate(name)
+			// The same package across target frameworks needs one entry per distinct version:
+			// each framework can restore its own.
+			key := normalizeNuGetCoordinate(name) + "@" + e.Resolved
 			if seen[key] {
-				continue // the same package across target frameworks — one entry suffices.
+				continue
 			}
 			seen[key] = true
 			out = append(out, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))

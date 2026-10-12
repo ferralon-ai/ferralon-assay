@@ -82,10 +82,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		for _, d := range all {
 			if normalizeNPMCoordinate(d.Coordinate) == want {
 				res.Found = true
-				res.Match = d
+				res.Matches = append(res.Matches, d)
 				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if d.Resolved {
-					break
+				if !res.Match.Resolved {
+					res.Match = d
 				}
 			}
 		}

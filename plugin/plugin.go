@@ -344,6 +344,11 @@ type DependencyVersionResult struct {
 	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
 	Match      ResolvedDependency   `json:"match"`
 	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Matches is every declaration of the request coordinate the plugin read, Match among them,
+	// less any declaration a lockfile beside it resolves. A plugin that fills it asserts it is
+	// complete: a package declared at several versions (one per module, a nested install) lists
+	// each. Empty from a plugin that does not enumerate them, so other versions cannot be ruled out.
+	Matches []ResolvedDependency `json:"matches,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.

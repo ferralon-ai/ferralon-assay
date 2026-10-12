@@ -181,3 +181,28 @@ func TestVersions_UnknownCoordinate_NotFound(t *testing.T) {
 		t.Errorf("an undeclared coordinate must not be Found; got %+v", r)
 	}
 }
+
+// Matches lists every project's reference, so a project pinned at another version is visible. A
+// project file beside packages.lock.json is superseded by the lock, and each target framework the
+// lock restores at its own version is listed.
+func TestVersions_MatchesEveryProject(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>`,
+		"Worker/Worker.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0,14.0)" /></ItemGroup></Project>`,
+		"Worker/packages.lock.json": `{"version": 1, "dependencies": {
+  "net6.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.0"}},
+  "net8.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.3"}}
+}}`,
+	})
+	r := versionsOf(t, dir, "newtonsoft.json")
+	got := map[string]bool{}
+	for _, m := range r.Matches {
+		if !m.Resolved {
+			t.Fatalf("an unresolved match survived: %+v (the Worker range beside its lock)", m)
+		}
+		got[m.Version] = true
+	}
+	if len(r.Matches) != 3 || !got["13.0.0"] || !got["13.0.1"] || !got["13.0.3"] {
+		t.Fatalf("Matches = %+v, want Newtonsoft.Json 13.0.0, 13.0.1 and 13.0.3", r.Matches)
+	}
+}

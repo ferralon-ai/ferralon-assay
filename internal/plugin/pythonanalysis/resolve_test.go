@@ -81,6 +81,7 @@ func TestResolveDependencySymbols_DependencyBoundary(t *testing.T) {
 		purl     string
 		advisory string
 		want     []string // resolved SCIPs, in order
+		matched  map[string][]string
 	}{
 		{
 			name:     "boundary node resolves with origin",
@@ -88,6 +89,7 @@ func TestResolveDependencySymbols_DependencyBoundary(t *testing.T) {
 			purl:     "pkg:pypi/pyjwt@2.8.0",
 			advisory: "jwt.encode",
 			want:     []string{"pypi:pyjwt#jwt.encode"},
+			matched:  map[string][]string{"jwt.encode": {"pypi:pyjwt#jwt.encode"}},
 		},
 		{
 			name: "first-party def encode never resolves as jwt.encode",
@@ -107,6 +109,7 @@ func TestResolveDependencySymbols_DependencyBoundary(t *testing.T) {
 			purl:     "pkg:pypi/pyjwt",
 			advisory: "jwt.encode",
 			want:     []string{"pypi:pyjwt#jwt.encode"},
+			matched:  map[string][]string{"jwt.encode": {"pypi:pyjwt#jwt.encode"}},
 		},
 		{
 			name:     "re-export form is not equated with the internal path",
@@ -144,6 +147,11 @@ func TestResolveDependencySymbols_DependencyBoundary(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("resolved = %v, want %v", got, c.want)
+			}
+			if len(res.Matched) != 0 || len(c.matched) != 0 {
+				if !reflect.DeepEqual(res.Matched, c.matched) {
+					t.Errorf("matched = %v, want %v", res.Matched, c.matched)
+				}
 			}
 			for _, id := range got {
 				if _, _, boundary := parseBoundarySCIP(id); boundary {

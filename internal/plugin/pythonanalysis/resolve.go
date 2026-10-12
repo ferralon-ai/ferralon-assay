@@ -2,6 +2,7 @@ package pythonanalysis
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -64,7 +65,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 // ("jwt.encode" for "jwt.api_jwt.encode") is not matched: the distribution's import map
 // names only its top-level packages, so nothing here justifies equating two paths. The
 // package identity of every resolved node is its import binding's distribution, recorded
-// in Origins.
+// in Origins; Matched records which advisory symbol (verbatim) each node answers.
 func resolveBoundary(cg plugin.CallGraphResult, dist string, advisory []string) plugin.SymbolResolutionResult {
 	type node struct{ id, dist string }
 	nodes := map[string]node{} // dotted path → boundary node of dist
@@ -81,10 +82,14 @@ func resolveBoundary(cg plugin.CallGraphResult, dist string, advisory []string) 
 		}
 		if res.Origins == nil {
 			res.Origins = map[string]string{}
+			res.Matched = map[string][]string{}
 		}
 		if _, dup := res.Origins[n.id]; !dup {
 			res.Resolved = append(res.Resolved, sym(n.id))
 			res.Origins[n.id] = pypiPURL(n.dist)
+		}
+		if !slices.Contains(res.Matched[a], n.id) {
+			res.Matched[a] = append(res.Matched[a], n.id)
 		}
 	}
 	return res

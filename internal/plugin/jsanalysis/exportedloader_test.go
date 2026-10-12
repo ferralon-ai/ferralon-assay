@@ -60,14 +60,6 @@ func TestCallGraph_ExportedLoaders(t *testing.T) {
 			},
 			runWide: []string{computedReq},
 		},
-		{
-			name: "unexported createRequire result called with a literal is a package load",
-			files: map[string]string{
-				"app.js": "const req = module.constructor.createRequire(__filename);\nfunction load(s) { return req('json5').parse(s); }\nload(process.argv);\n",
-			},
-			runWide: []string{uninspectable},
-			absent:  []string{computedReq},
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

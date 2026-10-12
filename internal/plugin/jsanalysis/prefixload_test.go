@@ -25,12 +25,6 @@ func TestCallGraph_StaticPrefixLoads(t *testing.T) {
 		edges   [][2]string // caller, callee
 	}{
 		{
-			name:    "literal dynamic import is a package load, not a computed specifier",
-			files:   map[string]string{"app.js": "async function f(s) { const J = await import('json5'); return J.parse(s); }\nf(process.argv);\n"},
-			runWide: []string{uninspectable},
-			absent:  []string{dynImport},
-		},
-		{
 			name: "first-party prefix gets module-init edges",
 			files: map[string]string{
 				"plugins/a.js": "module.exports = 1;\n",

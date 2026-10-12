@@ -46,9 +46,6 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	for _, r := range cg.Partiality.Reasons {
 		reasons[r] = true
 	}
-	if !cg.Partiality.Complete && len(cg.Partiality.Reasons) == 0 {
-		reasons[plugin.PartialReasonDynamicDispatch] = true
-	}
 
 	var paths []plugin.ReachPath
 	for _, s := range req.Sinks {
@@ -71,8 +68,10 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	// read as precise variable-level taint.
 	reasons[plugin.PartialReasonDynamicDispatch] = true
 
+	partiality := plugin.Partial(sortedReasons(reasons)...)
+	partiality.Scoped = cg.Partiality.Scoped
 	return plugin.TaintResult{
-		Partiality:    plugin.Partial(sortedReasons(reasons)...),
+		Partiality:    partiality,
 		Paths:         paths,
 		PrecisionNote: taintPrecisionNote,
 	}, nil

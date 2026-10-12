@@ -266,11 +266,11 @@ load(process.argv);
 			if len(res.Edges) == 0 {
 				t.Fatalf("fixture must have edges, so the gate's zero-edge arm cannot be what holds it undetermined")
 			}
-			if !hasDidNotRun(res.Partiality) {
-				t.Errorf("unread code declared only %v; want a did_not_run reason", res.Partiality.Reasons)
+			if !didNotRunCounts(res.Partiality, "json5") {
+				t.Errorf("unread code declared only %v / %+v; want a did_not_run reason that counts for json5", res.Partiality.Reasons, res.Partiality.Scoped)
 			}
-			if tc.want != "" && !slices.Contains(res.Partiality.Reasons, tc.want) {
-				t.Errorf("reasons = %v; want %s among them", res.Partiality.Reasons, tc.want)
+			if tc.want != "" && !slices.Contains(res.Partiality.Reasons, tc.want) && !hasScopedReason(res.Partiality, tc.want) {
+				t.Errorf("reasons = %v / %+v; want %s among them", res.Partiality.Reasons, res.Partiality.Scoped, tc.want)
 			}
 		})
 	}
@@ -307,15 +307,32 @@ load(process.argv);
 	if len(res.Edges) == 0 {
 		t.Fatalf("control must have edges; got none")
 	}
-	if hasDidNotRun(res.Partiality) {
-		t.Errorf("in-tree only program declared %v; want inherent reasons only", res.Partiality.Reasons)
+	if didNotRunCounts(res.Partiality, "") {
+		t.Errorf("in-tree only program declared %v / %+v; want inherent reasons only", res.Partiality.Reasons, res.Partiality.Scoped)
 	}
 }
 
-func hasDidNotRun(p plugin.Partiality) bool {
+// didNotRunCounts reports whether p carries a did_not_run reason that counts against an
+// advisory on npm package pkg under the NE gate's scoped rule: a run-wide reason, or a
+// scoped one that is unbounded or names pkg in its Package or Targets. pkg "" asks whether
+// any did_not_run reason is present at all.
+func didNotRunCounts(p plugin.Partiality, pkg string) bool {
 	for _, r := range p.Reasons {
 		if report.ClassifyPartialityReason(r) == report.PartialityDidNotRun {
 			return true
+		}
+	}
+	for _, sr := range p.Scoped {
+		if report.ClassifyPartialityReason(sr.Reason) != report.PartialityDidNotRun {
+			continue
+		}
+		if pkg == "" || sr.Targets == nil || sr.Package == npmPURL(pkg) {
+			return true
+		}
+		for _, t := range sr.Targets {
+			if t == npmPURL(pkg) {
+				return true
+			}
 		}
 	}
 	return false

@@ -19,6 +19,7 @@ const (
 	resolveFirstParty resolutionKind = iota + 1 // specifier resolved to an in-tree module + a unique in-module symbol
 	resolvePackage                              // bare specifier resolved to a dependency (file NOT opened)
 	resolveUnresolved                           // could not resolve; carries a partiality reason, no edge
+	resolveBuiltin                              // a Node builtin that loads no code; its callbacks are call-graph roots
 )
 
 // resolveAlgo names the algorithm that selected a resolved target (C5 provenance).
@@ -63,7 +64,10 @@ type resolution struct {
 	InstanceID string // PLAN-160 DependencyNode.ID a bare specifier resolves TO ("" when unknown)
 	Subpath    string // selected subpath within a package ("." | "./client" | …)
 	Reason     string // a PartialReason* code; non-empty for resolvePackage and resolveUnresolved
-	Prov       provenance
+	// Package is the npm name a resolvePackage resolution loads, or "" when the load cannot
+	// be scoped to one package (a code-loading builtin, an unmappable self-reference).
+	Package string
+	Prov    provenance
 }
 
 // edge reports whether this resolution emits a call-graph edge and to which target.
@@ -164,55 +168,77 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 		algo = algoCJS
 	}
 	r := rs.resolveBareSpecifier(fromModule, b.Specifier, b.Imported, -1, algo)
-	return r, r.Kind == resolvePackage
+	return r, r.Kind == resolvePackage || r.Kind == resolveBuiltin
 }
 
-// loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
-// outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
-// or a `#…` subpath import or workspace member whose selectable targets are not all in-tree
-// modules. viaRequire marks a require() load (see loadConditions). Loading a module runs its
-// top-level code, so the run executes code this lane does not open however the binding, if
-// any, is used afterwards.
-func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) bool {
+// outOfTreeLoad classifies a literal specifier written in fromModule by whether loading it
+// runs code from outside the tree: a bare specifier that no tsconfig paths alias, workspace
+// member, or package self-reference claims, or a `#…` subpath import, workspace member, or
+// self-reference whose selectable targets are not all in-tree modules. viaRequire marks a
+// require() load (see loadConditions). Loading a module runs its top-level code, so the run
+// executes code this lane does not open however the binding, if any, is used afterwards.
+// pkg names the npm package loaded, or is "" when the load cannot be scoped to one package.
+// A Node builtin that loads no code is not out of tree.
+func (rs *resolver) outOfTreeLoad(fromModule, spec string, viaRequire bool) (pkg string, outOfTree bool) {
 	conds := loadConditions(viaRequire)
 	switch {
 	case isRelativeSpecifier(spec):
-		return false
+		return "", false
 	case strings.HasPrefix(spec, "#"):
-		pkg, pkgDir := rs.governingPackageJSON(fromModule)
-		if pkg == nil || pkg.imports == nil {
-			return true
+		m, mDir := rs.governingPackageJSON(fromModule)
+		if m == nil || m.imports == nil {
+			return "", true
 		}
-		targets := exportsTargets(pkg.imports, spec, conds)
+		targets := exportsTargets(m.imports, spec, conds)
 		for _, t := range targets {
 			if strings.HasPrefix(t, "#") {
-				return true
+				return "", true
 			}
 			if !isRelativeSpecifier(t) { // an imports entry may map to a package
-				if rs.loadsOutOfTree(fromModule, t, viaRequire) {
-					return true
+				if _, out := rs.outOfTreeLoad(fromModule, t, viaRequire); out {
+					return "", true
 				}
 				continue
 			}
-			if rs.moduleFromDirRelative(pkgDir, t) == "" {
-				return true
+			if rs.moduleFromDirRelative(mDir, t) == "" {
+				return "", true
 			}
 		}
-		return len(targets) == 0
+		return "", len(targets) == 0
 	}
 	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
-		return false
+		return "", false
 	}
-	dir, mm, sub, ok := rs.workspaceMember(spec)
-	if !ok {
-		return true
+	if dir, mm, sub, ok := rs.workspaceMember(spec); ok {
+		return "", !rs.allTargetsInTree(dir, mm, sub, conds)
 	}
+	pkgName, sub := splitBareSpecifier(spec)
+	if self, selfDir := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == pkgName && self.exports != nil {
+		// Node resolves a package's own name through its exports from inside the package. A
+		// self-reference that can select a target outside the tree is first-party code this
+		// lane cannot place, so it stays unscoped.
+		return "", !rs.allTargetsInTree(selfDir, self, sub, conds)
+	}
+	if builtin, loadsCode := nodeBuiltin(spec); builtin && !rs.installedPackage(fromModule, pkgName, spec) {
+		// An inert builtin's callbacks are escape roots; a code-loading one (module, vm,
+		// worker_threads, ...) runs code no package accounts for.
+		return "", loadsCode
+	}
+	if validNPMName(pkgName) {
+		return pkgName, true
+	}
+	return "", true
+}
+
+// allTargetsInTree reports whether every target the manifest mm in dir can select for sub
+// under conds is an in-tree module. A manifest without exports exposes only its main.
+func (rs *resolver) allTargetsInTree(dir string, mm *pkgManifest, sub string, conds map[string]bool) bool {
 	var targets []string
 	switch {
 	case mm.exports != nil:
 		targets = exportsTargets(mm.exports, sub, conds)
 	case sub != ".":
-		return true
+		return false
 	case mm.main != "":
 		targets = []string{mm.main}
 	default:
@@ -220,10 +246,10 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 	}
 	for _, t := range targets {
 		if rs.moduleFromDirRelative(dir, t) == "" {
-			return true
+			return false
 		}
 	}
-	return len(targets) == 0
+	return len(targets) > 0
 }
 
 // loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an
@@ -538,8 +564,9 @@ func (rs *resolver) resolveBinding(fromModule string, b binding, arity int) reso
 }
 
 // resolveBareSpecifier resolves a bare (package) specifier: first a governing tsconfig
-// paths alias (first-party), then a workspace member's exports (first-party), else a
-// declined-but-attributed uninspectable package (never an edge).
+// paths alias (first-party), then a workspace member's exports (first-party), then the
+// governing package's own name through its exports (self-reference, first-party), then a
+// Node builtin, else a declined-but-attributed uninspectable package (never an edge).
 func (rs *resolver) resolveBareSpecifier(fromModule, spec, imported string, arity int, algo resolveAlgo) resolution {
 	if target, tsPath, ok := rs.resolveTsPaths(fromModule, spec); ok {
 		return rs.lookupImportedName(target, imported, arity, provenance{Algo: algoPathsAlias, Tsconfig: tsPath})
@@ -547,12 +574,37 @@ func (rs *resolver) resolveBareSpecifier(fromModule, spec, imported string, arit
 	if target, conds, ok := rs.resolveWorkspaceMember(fromModule, spec); ok {
 		return rs.lookupImportedName(target, imported, arity, provenance{Algo: algoExports, Conditions: conds})
 	}
-	return resolution{
+	declined := resolution{
 		Kind:    resolvePackage,
 		Subpath: bareSubpath(spec),
 		Reason:  plugin.PartialReasonUninspectablePackage,
 		Prov:    provenance{Algo: algo},
 	}
+	pkgName, sub := splitBareSpecifier(spec)
+	if self, selfDir := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == pkgName && self.exports != nil {
+		// Node resolves a package's own name through its exports from inside the package.
+		// An unexported subpath or a target outside the tree is first-party code this lane
+		// cannot place, so it stays unscoped.
+		rel, conds, ok := resolveExportsField(self.exports, sub, rs.conditions())
+		if !ok {
+			return declined
+		}
+		target := rs.moduleFromDirRelative(selfDir, rel)
+		if target == "" {
+			return declined
+		}
+		return rs.lookupImportedName(target, imported, arity, provenance{Algo: algoExports, Conditions: conds})
+	}
+	if builtin, loadsCode := nodeBuiltin(spec); builtin && !rs.installedPackage(fromModule, pkgName, spec) {
+		if loadsCode {
+			return declined
+		}
+		return resolution{Kind: resolveBuiltin, Subpath: bareSubpath(spec), Prov: provenance{Algo: algo}}
+	}
+	if validNPMName(pkgName) {
+		declined.Package = pkgName
+	}
+	return declined
 }
 
 // resolveImportsSubpath resolves a `#…` specifier against the governing package.json
@@ -794,11 +846,8 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 		dir = ""
 	}
 	for {
-		full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "package.json")
-		if data, err := os.ReadFile(full); err == nil {
-			if m := parsePkgManifest(data); m != nil {
-				return m, dir
-			}
+		if m := rs.prog.manifestAt(dir); m != nil {
+			return m, dir
 		}
 		if dir == "" {
 			return nil, ""
@@ -808,6 +857,22 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 			dir = ""
 		}
 	}
+}
+
+// manifestAt returns the parsed package.json in the build-relative dir, or nil.
+func (p *program) manifestAt(dir string) *pkgManifest {
+	if m, ok := p.pkgJSONs[dir]; ok {
+		return m
+	}
+	var m *pkgManifest
+	if data, err := os.ReadFile(filepath.Join(p.root, filepath.FromSlash(dir), "package.json")); err == nil {
+		m = parsePkgManifest(data)
+	}
+	if p.pkgJSONs == nil {
+		p.pkgJSONs = map[string]*pkgManifest{}
+	}
+	p.pkgJSONs[dir] = m
+	return m
 }
 
 // resolveWorkspaceMember resolves a bare specifier that names another workspace member

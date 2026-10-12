@@ -165,6 +165,139 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 	return r, r.Kind == resolvePackage
 }
 
+// loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
+// outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
+// or a `#…` subpath import or workspace member whose selectable targets are not all in-tree
+// modules. viaRequire marks a require() load (see loadConditions). Loading a module runs its
+// top-level code, so the run executes code this lane does not open however the binding, if
+// any, is used afterwards.
+func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) bool {
+	conds := loadConditions(viaRequire)
+	switch {
+	case isRelativeSpecifier(spec):
+		return false
+	case strings.HasPrefix(spec, "#"):
+		pkg, pkgDir := rs.governingPackageJSON(fromModule)
+		if pkg == nil || pkg.imports == nil {
+			return true
+		}
+		targets := exportsTargets(pkg.imports, spec, conds)
+		for _, t := range targets {
+			if strings.HasPrefix(t, "#") {
+				return true
+			}
+			if !isRelativeSpecifier(t) { // an imports entry may map to a package
+				if rs.loadsOutOfTree(fromModule, t, viaRequire) {
+					return true
+				}
+				continue
+			}
+			if rs.moduleFromDirRelative(pkgDir, t) == "" {
+				return true
+			}
+		}
+		return len(targets) == 0
+	}
+	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
+		return false
+	}
+	dir, mm, sub, ok := rs.workspaceMember(spec)
+	if !ok {
+		return true
+	}
+	var targets []string
+	switch {
+	case mm.exports != nil:
+		targets = exportsTargets(mm.exports, sub, conds)
+	case sub != ".":
+		return true
+	case mm.main != "":
+		targets = []string{mm.main}
+	default:
+		targets = []string{"index"}
+	}
+	for _, t := range targets {
+		if rs.moduleFromDirRelative(dir, t) == "" {
+			return true
+		}
+	}
+	return len(targets) == 0
+}
+
+// loadConditions is the set of exports/imports conditions a load can match under Node's
+// defaults. A require() load matches "require"; any other form may match "require" or
+// "import", because a transpiler can emit ESM syntax as require().
+func loadConditions(viaRequire bool) map[string]bool {
+	conds := map[string]bool{"node": true, "node-addons": true, "module-sync": true, "default": true, "require": true}
+	if !viaRequire {
+		conds["import"] = true
+	}
+	return conds
+}
+
+// exportsTargets returns every target an exports/imports field can select for subpath under
+// conds. Node takes the first matching key in the JSON object's order, which parsing loses,
+// so every branch whose condition is in conds counts, as does each matching pattern and each
+// fallback-array entry. A subpath the field does not expose yields no target.
+func exportsTargets(field interface{}, subpath string, conds map[string]bool) []string {
+	m, isMap := field.(map[string]interface{})
+	if !isMap || isConditionsMap(m) {
+		if subpath != "." {
+			return nil
+		}
+		return conditionTargets(field, conds, nil)
+	}
+	if node, ok := m[subpath]; ok {
+		return conditionTargets(node, conds, nil)
+	}
+	var out []string
+	for key, node := range m {
+		prefix, suffix, ok := strings.Cut(key, "*")
+		if !ok || len(subpath) < len(prefix)+len(suffix) || !strings.HasPrefix(subpath, prefix) || !strings.HasSuffix(subpath, suffix) {
+			continue
+		}
+		star := subpath[len(prefix) : len(subpath)-len(suffix)]
+		for _, t := range conditionTargets(node, conds, nil) {
+			out = append(out, strings.ReplaceAll(t, "*", star))
+		}
+	}
+	return out
+}
+
+func conditionTargets(node interface{}, conds map[string]bool, out []string) []string {
+	switch v := node.(type) {
+	case string:
+		out = append(out, v)
+	case []interface{}:
+		for _, e := range v {
+			out = conditionTargets(e, conds, out)
+		}
+	case map[string]interface{}:
+		for k, sub := range v {
+			if conds[k] {
+				out = conditionTargets(sub, conds, out)
+			}
+		}
+	}
+	return out
+}
+
+// loadsUnreadModule reports whether a relative specifier names no in-tree source module: a
+// native addon, a file generated at build time, anything outside the parsed source set. Its
+// code runs on load and can itself load packages, yet this lane never reads it. A JSON file
+// is data and runs nothing.
+func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
+	if !isRelativeSpecifier(spec) || rs.resolveRelative(fromModule, spec) != "" {
+		return false
+	}
+	ext := path.Ext(spec)
+	if ext == ".json" {
+		return false
+	}
+	// TS sources import siblings by their emitted name ("./util.js" for util.ts).
+	return !jsExtensions[ext] || rs.resolveRelative(fromModule, strings.TrimSuffix(spec, ext)) == ""
+}
+
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's
 // import bindings, then its local module-level declarations.
 func (rs *resolver) resolveName(fromModule, name string, arity int) resolution {
@@ -463,6 +596,7 @@ func stripJSExt(p string) string {
 type pkgManifest struct {
 	name       string
 	typ        string
+	main       string
 	workspaces []string
 	exports    interface{}
 	imports    interface{}
@@ -471,6 +605,7 @@ type pkgManifest struct {
 type rawPkg struct {
 	Name       string          `json:"name"`
 	Type       string          `json:"type"`
+	Main       string          `json:"main"`
 	Workspaces json.RawMessage `json:"workspaces"`
 	Exports    json.RawMessage `json:"exports"`
 	Imports    json.RawMessage `json:"imports"`
@@ -481,7 +616,7 @@ func parsePkgManifest(data []byte) *pkgManifest {
 	if err := json.Unmarshal(data, &rp); err != nil {
 		return nil
 	}
-	m := &pkgManifest{name: rp.Name, typ: rp.Type}
+	m := &pkgManifest{name: rp.Name, typ: rp.Type, main: rp.Main}
 	if len(rp.Exports) > 0 {
 		_ = json.Unmarshal(rp.Exports, &m.exports)
 	}
@@ -562,6 +697,22 @@ func (rs *resolver) resolveWorkspaceMember(fromModule, spec string) (string, []s
 		return "", nil, false
 	}
 	return "", nil, false
+}
+
+// workspaceMember finds the workspace member a bare specifier names, returning its directory,
+// manifest, and the subpath within it.
+func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, bool) {
+	root, ok := rs.rootManifest()
+	if !ok || len(root.workspaces) == 0 {
+		return "", nil, "", false
+	}
+	pkgName, sub := splitBareSpecifier(spec)
+	for _, member := range rs.workspaceMemberDirs(root.workspaces) {
+		if mm := rs.memberManifest(member); mm != nil && mm.name == pkgName {
+			return member, mm, sub, true
+		}
+	}
+	return "", nil, "", false
 }
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {

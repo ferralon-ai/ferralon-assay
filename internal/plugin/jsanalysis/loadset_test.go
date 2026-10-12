@@ -457,6 +457,59 @@ func TestLoadSet(t *testing.T) {
 			complete: true,
 			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: true}},
 		},
+		{
+			name: "every installed copy counts: a runtime copy at another version withholds the dev-only copy",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","dependencies":{"b":"*"},"devDependencies":{"tool":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/b":                   {Version: "2.0.0"},
+						"node_modules/tool":                {Version: "1.0.0", Dev: true, Deps: dep("b")},
+						"node_modules/tool/node_modules/b": {Version: "1.0.0", Dev: true},
+					}),
+					"index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			unloaded: []string{"node_modules/b", "node_modules/tool/node_modules/b"},
+			checks: []check{
+				{pkg: "b", version: "1.0.0", refuted: false}, // b@2.0.0 is in the runtime install closure
+				{pkg: "tool", version: "1.0.0", refuted: true},
+			},
+		},
+		{
+			name: "the project's own package name never refutes",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"prettier","version":"3.1.0","devDependencies":{"prettier":"3.0.0","tool":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/prettier": {Version: "3.0.0", Dev: true},
+						"node_modules/tool":     {Version: "1.0.0", Dev: true, Deps: dep("prettier")},
+					}),
+					"index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks: []check{
+				{pkg: "prettier", version: "3.0.0", refuted: false},
+				{pkg: "tool", version: "1.0.0", refuted: true},
+			},
+		},
+		{
+			name: "a dev install link leaving the build dir withholds every refutation",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"ext":"*","tool":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/ext":  {Link: true, Resolved: "../ext", Dev: true},
+						"node_modules/tool": {Version: "1.0.0", Dev: true},
+					}),
+					"index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: false}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -500,37 +553,89 @@ func TestLoadSet(t *testing.T) {
 	}
 }
 
-func TestReachabilityEmitsPackageNotLoaded(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"package.json": `{"name":"app","scripts":{"dev":"nodemon index.js"}}`,
+// reachabilityTree has a dev-only semver behind nodemon and a runtime-installed left-pad that no
+// code requires. index.js names no package, so the call graph declares no load limit.
+func reachabilityTree(t *testing.T, index string) string {
+	return writeTree(t, map[string]string{
+		"package.json": `{"name":"app","dependencies":{"left-pad":"*","tinyloader":"*"},"scripts":{"dev":"nodemon index.js"}}`,
 		"package-lock.json": npmLockJSON(t, map[string]lockPkg{
-			"node_modules/nodemon":  {Version: "2.0.0", Dev: true, Deps: dep("semver"), Bin: map[string]string{"nodemon": "bin/nodemon.js"}},
-			"node_modules/semver":   {Version: "5.7.1", Dev: true},
-			"node_modules/left-pad": {Version: "1.3.0"},
+			"node_modules/nodemon":    {Version: "2.0.0", Dev: true, Deps: dep("semver"), Bin: map[string]string{"nodemon": "bin/nodemon.js"}},
+			"node_modules/semver":     {Version: "5.7.1", Dev: true},
+			"node_modules/left-pad":   {Version: "1.3.0"},
+			"node_modules/tinyloader": {Version: "1.0.0"},
 		}),
-		"index.js": "const pad = require('left-pad');\nmodule.exports = () => pad('x', 2);\n",
+		"index.js": index,
 	})
-	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:npm/semver@5.7.1"})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestReachabilityPackageNotLoaded(t *testing.T) {
+	plain := "module.exports = () => 1;\n"
+	// tinyloader is not in the enumerating-loader table; the name it loads is computed.
+	unlistedLoader := "const load = require('tinyloader');\nmodule.exports = load(process.env.PLUGIN);\n"
+	cases := []struct {
+		name, index, pkg string
+		refuted          bool
+		detail           string
+		reason           string // a reason the result must declare
+	}{
+		{name: "dev-only package refutes", index: plain, pkg: "pkg:npm/semver@5.7.1", refuted: true,
+			detail: "only reachable from dev tooling: nodemon (scripts.dev)"},
+		{name: "no installed copy at the admitted version", index: plain, pkg: "pkg:npm/semver@9.9.9"},
+		{name: "runtime-installed package that never loads", index: plain, pkg: "pkg:npm/left-pad@1.3.0"},
+		{name: "no requested package", index: plain, pkg: ""},
+		{name: "unlisted loader call: the uninspectable declaration withholds", index: unlistedLoader,
+			pkg: "pkg:npm/semver@5.7.1", reason: plugin.PartialReasonUninspectablePackage},
 	}
-	if res.Refutation == nil || res.Refutation.Package != "pkg:npm/semver" ||
-		!strings.Contains(res.Refutation.Detail, "only reachable from dev tooling: nodemon (scripts.dev)") {
-		t.Fatalf("refutation = %+v", res.Refutation)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: reachabilityTree(t, tc.index), Package: tc.pkg})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.reason != "" && !containsReason(res.Partiality.Reasons, tc.reason) {
+				t.Fatalf("reasons = %v, want %s", res.Partiality.Reasons, tc.reason)
+			}
+			if (res.Refutation != nil) != tc.refuted {
+				t.Fatalf("refutation = %+v, want refuted=%v (partiality %+v)", res.Refutation, tc.refuted, res.Partiality)
+			}
+			if tc.refuted && (res.Refutation.Package != "pkg:npm/semver" || !strings.Contains(res.Refutation.Detail, tc.detail)) {
+				t.Fatalf("refutation = %+v", res.Refutation)
+			}
+		})
 	}
-	res, err = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:npm/left-pad@1.3.0"})
-	if err != nil {
-		t.Fatal(err)
+}
+
+// Package names compare in canonical form on both sides: npm's is exact, after the PURL's
+// percent-encoding is decoded.
+func TestRefuteCanonicalNames(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"package.json": `{"name":"app","devDependencies":{"@scope/tool":"*","JSONStream":"*"}}`,
+		"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+			"node_modules/@scope/tool": {Version: "1.0.0", Dev: true, Deps: dep("JSONStream")},
+			"node_modules/JSONStream":  {Version: "1.3.5", Dev: true},
+		}),
+		"index.js": "module.exports = 1;\n",
+	})
+	ls := computeLoadSet(dir)
+	cases := []struct {
+		purl, want string // want = refuted Package, "" = no refutation
+	}{
+		{"pkg:npm/%40scope/tool@1.0.0", "pkg:npm/@scope/tool"},
+		{"pkg:npm/JSONStream@1.3.5", "pkg:npm/JSONStream"},
+		{"pkg:npm/jsonstream@1.3.5", ""}, // a different npm package; none installed
 	}
-	if res.Refutation != nil {
-		t.Fatalf("loaded package refuted: %+v", res.Refutation)
-	}
-	res, err = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Refutation != nil {
-		t.Fatalf("refutation without a requested package: %+v", res.Refutation)
+	for _, c := range cases {
+		name, version, ok := npmPackageRef(c.purl)
+		if !ok {
+			t.Fatalf("npmPackageRef(%q) failed", c.purl)
+		}
+		got := ""
+		if ref := ls.refute(name, version); ref != nil {
+			got = ref.Package
+		}
+		if got != c.want {
+			t.Errorf("refute(%s) = %q, want %q", c.purl, got, c.want)
+		}
 	}
 }
 

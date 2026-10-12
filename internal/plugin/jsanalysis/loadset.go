@@ -85,6 +85,7 @@ type installModel struct {
 	sorted    []string
 	devMarks  map[string]string // install path -> version, for lockfile entries marked dev-only
 	seeds     []installSeed     // runtime-dependency edges of lockfile root/workspace entries
+	ownNames  []string          // names of lockfile root/workspace entries (first-party packages)
 }
 
 type resolveKind int
@@ -109,6 +110,7 @@ type loadSet struct {
 	devFrom   map[string]string // install path -> dev-tooling root label that reaches it
 	scoped    []plugin.ScopedReason
 	installed map[string]bool // install paths in the runtime install closure
+	ownNames  map[string]bool // canonical names of the project's own packages (root and workspaces)
 	// noDevOnly says why no package counts as outside the runtime install closure ("" = class
 	// (i) is decidable for this build).
 	noDevOnly string
@@ -157,6 +159,10 @@ func computeLoadSet(buildDir string) *loadSet {
 	}
 	dc.drain()
 
+	ls.ownNames = map[string]bool{}
+	for _, n := range append(m.ownNames, fp.names...) {
+		ls.ownNames[canonicalNpmName(n)] = true
+	}
 	ls.installed, ls.noDevOnly = m.installClosure(append(m.seeds, fp.install...))
 	if ls.noDevOnly == "" {
 		ls.noDevOnly = prodInstallKeepsDev(m.buildReal)
@@ -291,7 +297,8 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 func (m *installModel) add(in *pkgInstance) {
 	m.inst[in.path] = in
 	m.byDir[in.dirName] = append(m.byDir[in.dirName], in)
-	m.byName[in.name] = append(m.byName[in.name], in)
+	key := canonicalNpmName(in.name)
+	m.byName[key] = append(m.byName[key], in)
 	for _, b := range in.bins {
 		m.byBin[b] = append(m.byBin[b], in)
 	}
@@ -382,6 +389,9 @@ func (m *installModel) loadNpmLock(lockPath, root string, ls *loadSet) bool {
 			edges += len(p.Dependencies) + len(p.OptionalDependencies) + len(p.PeerDependencies)
 			if !p.Link {
 				m.seeds = append(m.seeds, runtimeSeeds(p, joinRel(root, key))...)
+			}
+			if p.Name != "" {
+				m.ownNames = append(m.ownNames, p.Name)
 			}
 			continue
 		}
@@ -995,6 +1005,7 @@ type firstPartyRoots struct {
 	selfOnly []rootRef
 	dev      []rootRef
 	install  []installSeed // production-install edges of every first-party manifest
+	names    []string      // `name` of every first-party manifest
 }
 
 var (
@@ -1354,6 +1365,9 @@ func (out *firstPartyRoots) manifestRoots(m *installModel, rel string) {
 	}
 	dir := dirOf(rel)
 	out.install = append(out.install, runtimeSeeds(man.npmLoadPkg, dir)...)
+	if man.Name != "" {
+		out.names = append(out.names, man.Name)
+	}
 	for _, raw := range []json.RawMessage{man.Imports, man.Browser} {
 		if len(raw) > 0 {
 			out.runtime = append(out.runtime, jsonStringRoots(m, raw, dir, rel)...)
@@ -1617,15 +1631,27 @@ func npmPackageRef(purl string) (name, version string, ok bool) {
 	if err1 != nil || err2 != nil || n == "" {
 		return "", "", false
 	}
-	return n, v, true
+	return canonicalNpmName(n), v, true
 }
 
+// canonicalNpmName is npm's case of the arm B name rule (pipeline.CanonicalName): npm names
+// compare exactly, `name` or `@scope/name`, after a PURL's percent-encoding is decoded. Both
+// sides of every comparison go through it: the requested Package and each installed name.
+func canonicalNpmName(name string) string { return name }
+
 // refute returns the package_not_loaded refutation for name@version, or nil when any
-// condition fails: no installed instance at that version, any instance of the package loaded,
-// an instance at that version inside the runtime install closure, an incomplete load set, or a
-// counted scoped reason that can reach the package.
+// condition fails. The gate matches a refutation on type and name only, never version, so the
+// condition covers every installed copy of the canonical name, at any version: no copy is
+// loaded, every copy sits outside the runtime install closure, and at least one copy is at the
+// admitted version. It also fails when the load set is incomplete, a counted scoped reason can
+// reach the package, the name is one of the project's own packages, or an install link leaves
+// the build dir (copies there cannot be enumerated).
 func (ls *loadSet) refute(name, version string) *plugin.Refutation {
 	if !ls.complete || ls.model == nil {
+		return nil
+	}
+	name = canonicalNpmName(name)
+	if ls.ownNames[name] {
 		return nil
 	}
 	purl := "pkg:npm/" + name
@@ -1634,17 +1660,23 @@ func (ls *loadSet) refute(name, version string) *plugin.Refutation {
 			return nil
 		}
 	}
+	for _, ip := range sortedKeysOf(ls.model.links) {
+		t := ls.model.links[ip]
+		if t == linkExternal {
+			return nil
+		}
+		if isInstallPath(t) && ls.model.indexDiskPackage(t) == nil {
+			return nil
+		}
+	}
 	instances := append([]*pkgInstance(nil), ls.model.byName[name]...)
 	sort.Slice(instances, func(i, j int) bool { return instances[i].path < instances[j].path })
 	atVersion := 0
 	for _, in := range instances {
-		if ls.loaded[in.path] {
+		if ls.loaded[in.path] || !ls.devOnly(in) {
 			return nil
 		}
 		if in.version == version {
-			if !ls.devOnly(in) {
-				return nil
-			}
 			atVersion++
 		}
 	}
@@ -1660,7 +1692,7 @@ func (ls *loadSet) refute(name, version string) *plugin.Refutation {
 
 func (ls *loadSet) detail(name string, instances []*pkgInstance, atVersion int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d of %d installed instances of %s at this version, none in the runtime load set", atVersion, len(instances), name)
+	fmt.Fprintf(&b, "%d installed copies of %s (%d at this version), none in the runtime load set", len(instances), name, atVersion)
 	rootNames := sortedKeysOfAny(ls.roots)
 	fmt.Fprintf(&b, " (%d of %d instances loaded from %d first-party roots", len(ls.loaded), len(ls.model.inst), len(rootNames))
 	if len(rootNames) > 0 {

@@ -26,7 +26,4 @@ dependency code is the direction the `LanguagePlugin` contract is built to grow.
 
 Every advisory lands as one of three values: `reachable_candidate` (symbols reachable from an entry
 point), `disqualified` (your version provably excludes it), or `undetermined` (reachability could not
-be soundly established). For the four non-Go languages, a dependency advisory that survives version
-disqualification is reported `undetermined` (`analysis_did_not_run`) — "we could not establish this" is
-a deliberately different claim from "not exploitable," and Assay never makes the second when nothing
-searched it. OpenVEX carries the same finding as `under_investigation`.
+be soundly established). OpenVEX carries an `undetermined` finding as `under_investigation`.

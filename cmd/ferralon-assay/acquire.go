@@ -154,7 +154,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 	return &acquired{
 		buildDir:   buildDir,
 		language:   language,
-		plugin:     lp,
+		plugin:     plugin.Memoize(lp),
 		repo:       repo,
 		advisories: advisoryCorpus(language, includeHouseCanaries),
 		cleanup:    cleanup,

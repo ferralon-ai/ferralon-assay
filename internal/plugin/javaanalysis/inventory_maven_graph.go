@@ -106,7 +106,6 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			// longer say which bytes the build uses.
 			if i, ok := nodeAt[winID]; ok && it.dep.variant() && !slices.Contains(nodes[i].Partiality.Reasons, reasonMavenArtifactVariant) {
 				nodes[i].Partiality = nodePartiality(append(append([]string{}, nodes[i].Partiality.Reasons...), reasonMavenArtifactVariant))
-				reasons = mergeReasons(reasons, reasonMavenArtifactVariant)
 			}
 			continue
 		}
@@ -123,9 +122,11 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			nodeReasons = append(nodeReasons, reasonPropertyUnresolved)
 			reasons = mergeReasons(reasons, reasonPropertyUnresolved)
 		}
+		// Node-level only: the package is still in the inventory, so this is not a graph limit
+		// (which would block every not_exploitable of the ecosystem); it tells whatever binds
+		// the node to bytes that the main JAR may not be the file the build uses.
 		if it.dep.variant() {
 			nodeReasons = append(nodeReasons, reasonMavenArtifactVariant)
-			reasons = mergeReasons(reasons, reasonMavenArtifactVariant)
 		}
 
 		node := plugin.DependencyNode{

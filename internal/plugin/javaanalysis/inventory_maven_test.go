@@ -304,7 +304,9 @@ func TestMaven_LosingTransitiveVariantMarksWinner(t *testing.T) {
 	if n == nil || !slices.Contains(n.Partiality.Reasons, reasonMavenArtifactVariant) {
 		t.Errorf("winner not marked: %+v", n)
 	}
-	if !slices.Contains(inv.Partiality.Reasons, reasonMavenArtifactVariant) {
-		t.Errorf("graph reasons miss the variant: %v", inv.Partiality.Reasons)
+	// The package is in the inventory either way; a graph-level reason would block every
+	// not_exploitable of the ecosystem for what is a byte-binding concern.
+	if slices.Contains(inv.Partiality.Reasons, reasonMavenArtifactVariant) {
+		t.Errorf("variant raised to a graph limit: %v", inv.Partiality.Reasons)
 	}
 }

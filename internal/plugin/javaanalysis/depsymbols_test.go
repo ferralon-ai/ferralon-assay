@@ -88,12 +88,7 @@ func TestResolveDependencySymbols_ResolvesInsideDependencyJar(t *testing.T) {
 			if res.Origins[want] != netkitPURL {
 				t.Errorf("origin of %s = %q, want %q", want, res.Origins[want], netkitPURL)
 			}
-
-			dep, err := resolveDependencyJarSymbols(context.Background(), build, "com.evil:netkit", "", []string{advisory})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := dep.matched[advisory]; !reflect.DeepEqual(got, []string{want}) {
+			if got := res.Matched[advisory]; !reflect.DeepEqual(got, []string{want}) {
 				t.Errorf("matched[%q] = %v, want [%s]", advisory, got, want)
 			}
 		})

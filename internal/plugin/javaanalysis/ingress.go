@@ -124,7 +124,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		if err != nil {
 			return plugin.SymbolResolutionResult{}, err
 		}
-		return plugin.SymbolResolutionResult{Partiality: dep.part, Resolved: dep.resolved, Origins: dep.origins}, nil
+		return plugin.SymbolResolutionResult{Partiality: dep.part, Resolved: dep.resolved, Origins: dep.origins, Matched: dep.matched}, nil
 	}
 	return resolveFirstPartySymbols(ctx, req)
 }

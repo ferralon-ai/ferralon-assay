@@ -17,9 +17,12 @@ func moduleInitSCIP(module string) string {
 	return funcSCIP(module, nil, moduleInitFunc, 0)
 }
 
-// anonHandlerFunc names the synthetic frame for an anonymous function expression passed
-// to a route method or server factory. Its line:column (1-based, in runes of the
-// stripped source, which is length-preserving) keeps the id stable and unique per file.
+// anonHandlerFunc names the synthetic frame for a function expression passed to a route
+// method or server factory. A named function expression's name binds only inside its own
+// body, so the frame is keyed by position even then: the name would share an id with a
+// same-named module-level function and merge the two bodies. Its line:column (1-based, in
+// runes of the stripped source, which is length-preserving) keeps the id stable and unique
+// per file.
 func anonHandlerFunc(line, col int) string {
 	return fmt.Sprintf("`<handler@%d:%d>`", line, col)
 }
@@ -58,7 +61,6 @@ type bodyFrame struct {
 // handlerExpr is an inline function expression found as a top-level argument of a
 // route-method / server-factory call, waiting for the scan to reach it.
 type handlerExpr struct {
-	name  string // declared name of a named function expression; "" when anonymous
 	kind  string // ingress kind: "http_route" | "http_server"
 	arity int
 	open  int // index of the body-opening '{'; -1 for an expression body
@@ -119,10 +121,7 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 	// records its ingress plus the edge from the frame that registered it.
 	enterHandler := func(at int, h handlerExpr) int {
 		enc := enclosingChain()
-		name := h.name
-		if name == "" {
-			name = anonHandlerFunc(lineCol(at))
-		}
+		name := anonHandlerFunc(lineCol(at))
 		ingresses = append(ingresses, ingressMarker{
 			enclosing: append([]string(nil), enc...),
 			name:      name, kind: h.kind, arity: h.arity, frame: true,
@@ -420,9 +419,8 @@ func funcExprAt(r []rune, start, end int) (handlerExpr, bool) {
 		if pos < end && r[pos] == '*' {
 			pos = skipSpace(r, pos+1)
 		}
-		name := ""
 		if pos < end && isIdentStart(r[pos]) {
-			name, pos = readWord(r, pos)
+			_, pos = readWord(r, pos)
 			pos = skipSpace(r, pos)
 		}
 		if pos >= end || r[pos] != '(' {
@@ -433,7 +431,7 @@ func funcExprAt(r []rune, start, end int) (handlerExpr, bool) {
 		if open < 0 || open >= end {
 			return handlerExpr{}, false
 		}
-		return handlerExpr{name: name, arity: arity, open: open}, true
+		return handlerExpr{arity: arity, open: open}, true
 	}
 	var arity, after int
 	parens := false

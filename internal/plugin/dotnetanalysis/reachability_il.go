@@ -15,7 +15,6 @@ package dotnetanalysis
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -37,14 +36,28 @@ const tblMemberRefTable = 0x0A
 // IL, or a reader parse-hazard): the caller falls back to the lexical tier + tool_failure and
 // NEVER an empty IL graph, NEVER a false not_exploitable.
 func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, bool) {
-	fp, deps, locator, graph, ok := loadFirstPartyIL(req.BuildDir)
-	if !ok {
+	build := locateFirstPartyBuild(req.BuildDir)
+	if build.fp == nil {
 		return plugin.ReachabilityResult{}, false // degrade to lexical + tool_failure
+	}
+	fp := build.fp
+	var (
+		deps    []assembly.DepRef
+		locator *assembly.AssetsLocator
+		graph   *assetsGraph
+	)
+	if build.assets != nil {
+		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
+			locator = loc
+		}
+		deps = depRefsFrom(build.assets, build.target)
+		graph = parseAssetsGraph(build.assets)
 	}
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
 	// a completeness hazard on any call into it ⇒ undetermined, never a silent leaf. It is
-	// also disclosed as a scoped limit bounded by what the missing code could reach.
+	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
+	// run-wide reason too, so a consumer that reads only Reasons still sees it.
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
@@ -58,6 +71,12 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	runtimeRoots := idx.runtimeRootKeys(set.Assemblies)
 
 	reasons := map[string]bool{}
+	for _, r := range build.reasons {
+		reasons[r] = true
+	}
+	for _, m := range set.Misses {
+		reasons[missReason(m.Reason)] = true
+	}
 	var paths []plugin.ReachPath
 	var searched []string
 	for _, scip := range req.Symbols {
@@ -133,6 +152,11 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = append(searched, scip)
 	}
 
+	if len(build.reasons) > 0 {
+		// Another project or entry assembly went untraced, or the dependency bytes may not
+		// be the ones this build runs against: nothing was searched for the whole program.
+		searched = nil
+	}
 	return plugin.ReachabilityResult{
 		Partiality: ilPartiality(reasons, missScopes(set.Misses, graph)),
 		Paths:      paths,
@@ -171,41 +195,12 @@ func missReason(miss string) string {
 	return partialReasonNoDependencyArtifact
 }
 
-// loadFirstPartyIL locates+reads the first-party assembly from the build output and gathers
-// the dependency spanning-set inputs. ok is false — the DEGRADE signal — when there is no
-// project file, no located first-party dll, or the dll is unreadable / a reader parse-hazard
-// (Failed): none of these may fabricate an empty IL graph.
-func loadFirstPartyIL(buildDir string) (fp *assembly.Assembly, deps []assembly.DepRef, locator *assembly.AssetsLocator, graph *assetsGraph, ok bool) {
-	projPath, found := findProjectFile(buildDir)
-	if !found {
-		return nil, nil, nil, nil, false
-	}
-	name := strings.TrimSuffix(filepath.Base(projPath), filepath.Ext(projPath))
-	dllPath, located := assembly.LocateBuildOutput(buildDir, name)
-	if !located {
-		return nil, nil, nil, nil, false
-	}
-	a, read := assembly.ReadAssembly(dllPath)
-	if !read || a == nil || a.Failed {
-		// A first-party assembly present but unreadable/parse-hazard is a DEGRADE, not a
-		// crash and not an empty graph.
-		return nil, nil, nil, nil, false
-	}
-	if data, has := readAssetsFile(buildDir); has {
-		if loc, parsed := assembly.ParseAssetsLocator(data); parsed {
-			locator = loc
-		}
-		deps = depRefsFrom(data)
-		graph = parseAssetsGraph(data)
-	}
-	return a, deps, locator, graph, true
-}
-
 // depRefsFrom extracts the dependency coordinates to load from a project.assets.json's
-// per-target package rows (project references are skipped — they are first-party siblings,
-// not NuGet deps). A dep that later fails to locate/read is a declared miss inside
+// package rows for target, or every target when target is "" (an unbound build, which is
+// never searched). Project references are skipped — they are first-party siblings, not
+// NuGet deps. A dep that later fails to locate/read is a declared miss inside
 // LoadSpanningSet, never fabricated. Sorted for a deterministic loaded-set order.
-func depRefsFrom(data []byte) []assembly.DepRef {
+func depRefsFrom(data []byte, target string) []assembly.DepRef {
 	var af struct {
 		Targets map[string]map[string]struct {
 			Type string `json:"type"`
@@ -216,6 +211,9 @@ func depRefsFrom(data []byte) []assembly.DepRef {
 	}
 	var out []assembly.DepRef
 	for tfm, pkgs := range af.Targets {
+		if target != "" && tfm != target {
+			continue
+		}
 		for pkgKey, meta := range pkgs {
 			if strings.EqualFold(meta.Type, "project") {
 				continue

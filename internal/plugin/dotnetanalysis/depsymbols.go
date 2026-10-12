@@ -32,70 +32,90 @@ const partialReasonNoDependencyArtifact = plugin.PartialReasonToolFailure + ":no
 // symbol named no method in them. Absence never refutes.
 const partialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
 
+// partialReasonAdvisorySymbolAmbiguous: a shortened advisory symbol named methods of more
+// than one qualified type in the package, so which one is vulnerable is unknown.
+const partialReasonAdvisorySymbolAmbiguous = "advisory_symbol_ambiguous"
+
 // methodAttrSpecialName marks property/event accessors (get_X, set_X, add_X, remove_X).
 const methodAttrSpecialName = 0x0800
 
 // resolveInDependency resolves wanted (verbatim advisory symbols) against the restored
-// assemblies of NuGet package id (at version, when non-empty).
+// assemblies of NuGet package id (at version, when non-empty), in the restore target the
+// first-party build binds to. Every limit is disclosed twice: as a scoped reason bounded by
+// the package's restore closure, and as a run-wide reason for consumers that read only
+// Reasons.
 func resolveInDependency(buildDir, id, version string, wanted []string) plugin.SymbolResolutionResult {
 	purl := nugetPackageURL(id)
-	data, ok := readAssetsFile(buildDir)
-	if !ok {
-		// No restore output: neither the package's code nor its dependency closure is known.
-		return plugin.SymbolResolutionResult{Partiality: plugin.Partiality{Scoped: []plugin.ScopedReason{{
-			Reason: partialReasonNoDependencyArtifact, Package: purl, Path: "project.assets.json",
-		}}}}
+	build := locateFirstPartyBuild(buildDir)
+	reasons := map[string]bool{}
+	for _, r := range build.reasons {
+		reasons[r] = true
 	}
-	locator, _ := assembly.ParseAssetsLocator(data)
-	graph := parseAssetsGraph(data)
-	occurrences := graph.occurrences(id, version)
+	var scoped []plugin.ScopedReason
+	miss := func(reason, pkg, path string, targets []string) {
+		reasons[reason] = true
+		scoped = append(scoped, plugin.ScopedReason{Reason: reason, Package: pkg, Path: path, Targets: targets})
+	}
+	finish := func(res plugin.SymbolResolutionResult) plugin.SymbolResolutionResult {
+		if len(reasons) == 0 && len(scoped) == 0 {
+			res.Partiality = plugin.Complete()
+			return res
+		}
+		res.Partiality = plugin.Partiality{Reasons: sortedKeys(reasons), Scoped: scoped}
+		return res
+	}
+
+	if build.assets == nil {
+		// No restore output: neither the package's code nor its dependency closure is known.
+		miss(partialReasonNoDependencyArtifact, purl, "project.assets.json", nil)
+		return finish(plugin.SymbolResolutionResult{})
+	}
+	locator, _ := assembly.ParseAssetsLocator(build.assets)
+	graph := parseAssetsGraph(build.assets)
+	var occurrences []assembly.DepRef
+	for _, d := range graph.occurrences(id, version) {
+		if build.target == "" || d.Target == build.target {
+			occurrences = append(occurrences, d)
+		}
+	}
 	if len(occurrences) == 0 {
 		coord := id
 		if version != "" {
 			coord += "@" + version
 		}
-		return plugin.SymbolResolutionResult{Partiality: plugin.Partiality{Scoped: []plugin.ScopedReason{{
-			Reason: partialReasonNoDependencyArtifact, Package: purl, Path: coord + " not in project.assets.json",
-		}}}}
+		where := "project.assets.json"
+		if build.target != "" {
+			where += " target " + build.target
+		}
+		miss(partialReasonNoDependencyArtifact, purl, coord+" not in "+where, nil)
+		return finish(plugin.SymbolResolutionResult{})
 	}
 
-	var scoped []plugin.ScopedReason
 	var loaded []loadedPackage
 	readAny := false
 	for _, d := range occurrences {
 		pkgID, _ := splitPkgKey(d.PkgKey)
-		asms, miss := assembly.ReadDependency(buildDir, d, locator)
-		if miss == assembly.MissNotLocated && locator.HasNoAssemblies(d.Target, d.PkgKey) {
+		asms, why := assembly.ReadDependency(buildDir, d, locator)
+		if why == assembly.MissNotLocated && locator.HasNoAssemblies(d.Target, d.PkgKey) {
 			readAny = true // restore recorded no assembly and none is on disk: nothing to match
 			continue
 		}
-		if miss != "" {
-			scoped = append(scoped, plugin.ScopedReason{
-				Reason:  missReason(miss),
-				Package: nugetPackageURL(pkgID),
-				Path:    d.PkgKey + " (" + d.Target + "): " + miss,
-				Targets: graph.closure(d.Target, d.PkgKey),
-			})
+		if why != "" {
+			miss(missReason(why), nugetPackageURL(pkgID), d.PkgKey+" ("+d.Target+"): "+why, graph.closure(d.Target, d.PkgKey))
 			continue
 		}
 		readAny = true
 		loaded = append(loaded, loadedPackage{id: pkgID, asms: asms})
 	}
 
-	res := matchDependencySymbols(loaded, wanted)
-	reasons := map[string]bool{}
+	res, ambiguous := matchDependencySymbols(loaded, wanted)
+	if ambiguous {
+		reasons[partialReasonAdvisorySymbolAmbiguous] = true
+	}
 	if readAny && len(res.Matched) < len(wanted) {
 		reasons[partialReasonAdvisorySymbolUnresolved] = true
 	}
-	if len(reasons) > 0 || len(scoped) > 0 {
-		res.Partiality = plugin.Partiality{Scoped: scoped}
-		if len(reasons) > 0 {
-			res.Partiality.Reasons = sortedKeys(reasons)
-		}
-	} else {
-		res.Partiality = plugin.Complete()
-	}
-	return res
+	return finish(res)
 }
 
 // loadedPackage is one package's read assemblies, under the NuGet id restore recorded.
@@ -106,15 +126,23 @@ type loadedPackage struct {
 
 // matchDependencySymbols matches each wanted advisory symbol against every method of the
 // loaded packages and fills Resolved, Origins and Matched. Matched is keyed by the advisory
-// symbol verbatim; an advisory symbol that matched nothing is absent from it.
-func matchDependencySymbols(pkgs []loadedPackage, wanted []string) plugin.SymbolResolutionResult {
+// symbol verbatim. A fully qualified advisory symbol matches its own name only. A shortened
+// one ("JsonConvert.DeserializeObject") matches only when every method it names shares one
+// qualified name: a lookalike type in another namespace makes it ambiguous, so it is left
+// out of Matched (its candidates stay in Resolved, where they can only add paths) and
+// ambiguous is true.
+func matchDependencySymbols(pkgs []loadedPackage, wanted []string) (res plugin.SymbolResolutionResult, ambiguous bool) {
 	norm := make([]string, len(wanted))
 	for i, w := range wanted {
 		norm[i] = normalizeAdvisorySymbol(w)
 	}
-	res := plugin.SymbolResolutionResult{}
-	seenSym := map[string]bool{}
-	matched := map[string]map[string]bool{}
+	type hit struct {
+		sym    plugin.Symbol
+		origin string
+	}
+	syms := map[string]hit{}
+	exact := make([]map[string]bool, len(wanted))
+	suffix := make([]map[string]map[string]bool, len(wanted)) // qualified form -> SCIPs
 	for _, pkg := range pkgs {
 		for _, a := range pkg.asms {
 			for i := range a.Types {
@@ -125,41 +153,76 @@ func matchDependencySymbols(pkgs []loadedPackage, wanted []string) plugin.Symbol
 						continue
 					}
 					forms := methodForms(ns, chain, m)
-					var hits []string
-					for i, w := range norm {
-						if matchesAnyForm(w, forms) {
-							hits = append(hits, wanted[i])
+					var scip string
+					for wi, w := range norm {
+						form, full, ok := matchForm(w, forms)
+						if !ok {
+							continue
 						}
-					}
-					if len(hits) == 0 {
-						continue
-					}
-					_, scip := methodIdentity(a, td, m)
-					if !seenSym[scip] {
-						seenSym[scip] = true
-						res.Resolved = append(res.Resolved, dependencySymbol(a, td, m, pkg.id, ns, chain, scip))
-						if res.Origins == nil {
-							res.Origins = map[string]string{}
+						if scip == "" {
+							_, scip = methodIdentity(a, td, m)
+							if _, seen := syms[scip]; !seen {
+								syms[scip] = hit{dependencySymbol(a, td, m, pkg.id, ns, chain, scip), nugetPackageURL(pkg.id)}
+							}
 						}
-						res.Origins[scip] = nugetPackageURL(pkg.id)
-					}
-					for _, w := range hits {
-						if matched[w] == nil {
-							matched[w] = map[string]bool{}
+						if full {
+							if exact[wi] == nil {
+								exact[wi] = map[string]bool{}
+							}
+							exact[wi][scip] = true
+							continue
 						}
-						matched[w][scip] = true
+						if suffix[wi] == nil {
+							suffix[wi] = map[string]map[string]bool{}
+						}
+						if suffix[wi][form] == nil {
+							suffix[wi][form] = map[string]bool{}
+						}
+						suffix[wi][form][scip] = true
 					}
 				}
 			}
 		}
 	}
-	if len(matched) > 0 {
-		res.Matched = make(map[string][]string, len(matched))
-		for w, set := range matched {
-			res.Matched[w] = sortedKeys(set)
+
+	resolved := map[string]bool{}
+	for wi, w := range wanted {
+		var accepted map[string]bool
+		switch {
+		case len(exact[wi]) > 0:
+			accepted = exact[wi]
+		case len(suffix[wi]) == 1:
+			for _, set := range suffix[wi] {
+				accepted = set
+			}
+		case len(suffix[wi]) > 1:
+			ambiguous = true
+			for _, set := range suffix[wi] {
+				for scip := range set {
+					resolved[scip] = true
+				}
+			}
+			continue
+		default:
+			continue
+		}
+		if res.Matched == nil {
+			res.Matched = map[string][]string{}
+		}
+		res.Matched[w] = sortedKeys(accepted)
+		for scip := range accepted {
+			resolved[scip] = true
 		}
 	}
-	return res
+	for _, scip := range sortedKeys(resolved) {
+		h := syms[scip]
+		res.Resolved = append(res.Resolved, h.sym)
+		if res.Origins == nil {
+			res.Origins = map[string]string{}
+		}
+		res.Origins[scip] = h.origin
+	}
+	return res, ambiguous
 }
 
 // dependencySymbol is the resolved plugin.Symbol for a dependency method: Package is the
@@ -200,20 +263,26 @@ func methodForms(ns string, chain []string, m *assembly.MethodDef) []string {
 	return forms
 }
 
-// matchesAnyForm reports whether the normalized advisory symbol w names one of forms: the
-// whole qualified name, or a trailing run of it that still carries at least a type and a
-// member ("JsonConvert.DeserializeObject", "Json.JsonConvert.DeserializeObject"). A bare
-// member name never matches: it does not say which type's code is vulnerable.
-func matchesAnyForm(w string, forms []string) bool {
+// matchForm reports whether the normalized advisory symbol w names one of forms, and
+// which: the whole qualified name (full), or a trailing run of it that still carries at
+// least a type and a member ("JsonConvert.DeserializeObject",
+// "Json.JsonConvert.DeserializeObject"). A bare member name never matches: it does not say
+// which type's code is vulnerable.
+func matchForm(w string, forms []string) (form string, full, ok bool) {
 	if w == "" || !strings.Contains(strings.TrimPrefix(w, "."), ".") {
-		return false
+		return "", false, false
 	}
 	for _, f := range forms {
-		if f == w || strings.HasSuffix(f, "."+w) {
-			return true
+		if f == w {
+			return f, true, true
 		}
 	}
-	return false
+	for _, f := range forms {
+		if strings.HasSuffix(f, "."+w) {
+			return f, false, true
+		}
+	}
+	return "", false, false
 }
 
 // normalizeAdvisorySymbol lower-cases an advisory symbol and strips what metadata names do

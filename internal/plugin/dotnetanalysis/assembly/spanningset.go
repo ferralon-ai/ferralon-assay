@@ -79,12 +79,16 @@ const (
 	MissNotLocated        = "not located"
 	MissUnreadable        = "unreadable"
 	MissReferenceAssembly = "reference assembly"
+	MissFrameworkSupplied = "framework-supplied"
 )
 
 // ReadDependency locates and reads every dll of one dependency. reason is "" on
 // success, else the declared miss (Miss*). A package is all-or-nothing: one bad dll
 // makes the whole package a miss.
 func ReadDependency(buildDir string, d DepRef, locator *AssetsLocator) ([]*Assembly, string) {
+	if locator.FrameworkSupplied(d.Target, d.PkgKey) {
+		return nil, MissFrameworkSupplied
+	}
 	paths, ok := ResolveDependencyDlls(buildDir, d.Target, d.PkgKey, locator)
 	if !ok {
 		return nil, MissNotLocated

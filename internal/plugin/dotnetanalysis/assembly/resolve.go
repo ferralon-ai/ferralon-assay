@@ -37,14 +37,17 @@ import (
 //     package-folder-relative .dll paths (e.g. "lib/net8.0/Foo.dll",
 //     "ref/net8.0/Foo.dll"). runtime is preferred: it names the implementation
 //     the app runs, while compile may name a reference assembly whose bodies are
-//     stubs. compile is the fallback when a package declares no runtime block.
-//     The "_._" placeholder key means "no assembly".
+//     stubs. compile is the fallback only when a package declares no runtime block.
+//     The "_._" placeholder key means "no assembly here": a runtime block holding
+//     only "_._" over a compile dll says the framework supplies the implementation,
+//     so the package's lib bytes are not what runs (FrameworkSupplied).
 //
 // The authoritative resolved path is: packageFolder / library.path / <dll-key>.
 type AssetsLocator struct {
 	packageFolders []string                       // ordered restore cache roots
 	libPath        map[string]string              // "<id>/<ver>" -> "<id-lower>/<ver>"
 	dlls           map[string]map[string][]string // target -> "<id>/<ver>" -> rel dlls (runtime, else compile); nil => only _._/none
+	framework      map[string]map[string]bool     // target -> "<id>/<ver>" whose runtime is "_._" over a compile dll
 }
 
 // assetsLocatorFile is the minimal unmarshal target. runtime/compile stay
@@ -75,6 +78,7 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 		packageFolders: orderedObjectKeys(af.PackageFolders),
 		libPath:        make(map[string]string, len(af.Libraries)),
 		dlls:           make(map[string]map[string][]string, len(af.Targets)),
+		framework:      make(map[string]map[string]bool),
 	}
 	for key, lib := range af.Libraries {
 		if p := strings.TrimSpace(lib.Path); p != "" {
@@ -86,7 +90,15 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 		for pkgKey, tl := range pkgs {
 			dlls := dllKeys(tl.Runtime)
 			if len(dlls) == 0 {
-				dlls = dllKeys(tl.Compile)
+				compile := dllKeys(tl.Compile)
+				if len(orderedObjectKeys(tl.Runtime)) == 0 {
+					dlls = compile
+				} else if len(compile) > 0 {
+					if a.framework[target] == nil {
+						a.framework[target] = map[string]bool{}
+					}
+					a.framework[target][pkgKey] = true
+				}
 			}
 			m[pkgKey] = dlls
 		}
@@ -108,6 +120,14 @@ func dllKeys(raw json.RawMessage) []string {
 	return out
 }
 
+// FrameworkSupplied reports whether restore recorded this package in target with a
+// runtime block of only "_._" over a compile dll: the shared framework supplies the
+// implementation at run time, so neither the package's ref nor lib bytes are the code
+// that runs.
+func (a *AssetsLocator) FrameworkSupplied(target, pkgKey string) bool {
+	return a != nil && a.framework[target][pkgKey]
+}
+
 // HasNoAssemblies reports whether restore recorded this package in target as
 // carrying no assembly at all (no runtime or compile dll, only "_._" or nothing): a
 // metapackage or a content/analyzer/build-only package. When no locator finds a dll
@@ -122,7 +142,7 @@ func (a *AssetsLocator) HasNoAssemblies(target, pkgKey string) bool {
 		return false
 	}
 	dlls, ok := tgt[pkgKey]
-	return ok && len(dlls) == 0
+	return ok && len(dlls) == 0 && !a.framework[target][pkgKey]
 }
 
 // NugetPackageRoots returns the package-cache roots to search, in priority order:
@@ -173,15 +193,6 @@ func (a *AssetsLocator) LocateDlls(roots []string, target, pkgKey string) ([]str
 		out = append(out, path)
 	}
 	return out, true
-}
-
-// LocateDll is LocateDlls narrowed to the package's first dll.
-func (a *AssetsLocator) LocateDll(roots []string, target, pkgKey string) (string, bool) {
-	paths, ok := a.LocateDlls(roots, target, pkgKey)
-	if !ok {
-		return "", false
-	}
-	return paths[0], true
 }
 
 // locateUnderRoots returns the first root under which libRel/rel is a regular file.
@@ -268,6 +279,9 @@ func LocateBuildOutput(buildDir, name string) (string, bool) {
 // used as the cache tfm hint); pkgKey is "<id>/<version>". ok is false when no
 // locator finds the files.
 func ResolveDependencyDlls(buildDir, target, pkgKey string, a *AssetsLocator) ([]string, bool) {
+	if a.FrameworkSupplied(target, pkgKey) {
+		return nil, false
+	}
 	roots := NugetPackageRoots(buildDir, a)
 	if paths, ok := a.LocateDlls(roots, target, pkgKey); ok {
 		return paths, true
@@ -283,15 +297,6 @@ func ResolveDependencyDlls(buildDir, target, pkgKey string, a *AssetsLocator) ([
 		}
 	}
 	return nil, false
-}
-
-// ResolveDependencyDll is ResolveDependencyDlls narrowed to the first dll.
-func ResolveDependencyDll(buildDir, target, pkgKey string, a *AssetsLocator) (string, bool) {
-	paths, ok := ResolveDependencyDlls(buildDir, target, pkgKey, a)
-	if !ok {
-		return "", false
-	}
-	return paths[0], true
 }
 
 // ReadAssembly reads a located dll's bytes and parses them into the typed model.

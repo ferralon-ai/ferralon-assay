@@ -120,6 +120,10 @@ func TestReachability_DependencyMissIsScoped(t *testing.T) {
 	if res.Partiality.Complete || !reflect.DeepEqual(res.Partiality.Scoped, want) {
 		t.Fatalf("partiality = %+v, want scoped %+v", res.Partiality, want)
 	}
+	// Until the gate reads Scoped, the miss is also run-wide.
+	if !hasILReason(res.Partiality, partialReasonNoDependencyArtifact) {
+		t.Fatalf("Reasons = %v, want %s", res.Partiality.Reasons, partialReasonNoDependencyArtifact)
+	}
 	// The miss is not on any traced path (nothing calls Gone), so the sink is still searched;
 	// whether the scoped limit blocks an advisory is the gate's call (Targets names Dep).
 	if !slices.Contains(res.Searched, boomSCIP) {

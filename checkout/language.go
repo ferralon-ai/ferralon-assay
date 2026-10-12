@@ -14,12 +14,12 @@ import (
 // what makes checkout language-aware: a Go module and a Java source tree are both
 // valid checkouts, but a Go-shaped guard (go.mod-required) wrongly rejects the latter.
 const (
-	LangGo      = "go"     // a Go module root: contains go.mod
-	LangJava    = "java"   // a Java source tree: contains .java sources (optionally pom.xml/build.gradle)
-	LangKotlin  = "kotlin" // a Kotlin source tree: contains .kt/.kts sources (optionally build.gradle.kts)
-	LangJS      = "js"     // a JS/TS source tree: contains .js/.ts/.jsx/.tsx (optionally package.json)
-	LangPython  = "python" // a Python source tree: contains .py sources (optionally requirements.txt/pyproject.toml)
-	LangDotNet  = "dotnet" // a .NET source tree: contains .cs sources or a .csproj/.sln project marker
+	LangGo      = "go"      // a Go module root: contains go.mod
+	LangJava    = "java"    // a Java source tree: contains .java sources (optionally pom.xml/build.gradle)
+	LangKotlin  = "kotlin"  // a Kotlin source tree: contains .kt/.kts sources (optionally build.gradle.kts)
+	LangJS      = "js"      // a JS/TS source tree: contains .js/.ts/.jsx/.tsx (optionally package.json)
+	LangPython  = "python"  // a Python source tree: contains .py sources (optionally requirements.txt/pyproject.toml)
+	LangDotNet  = "dotnet"  // a .NET source tree: contains .cs sources or a .csproj/.sln project marker
 	LangCFamily = "cfamily" // a C/C++ source tree: contains .c/.cc/.cpp/.cxx/.c++ sources or .h/.hpp/.hh/.hxx headers
 	LangUnknown = ""        // no recognized source markers under the dir
 )

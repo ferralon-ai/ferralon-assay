@@ -49,21 +49,22 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		}, nil
 	}
 
-	res := plugin.BuildManifestResult{Runtime: plugin.RuntimeSpec{Name: "go"}}
-	if mf.Module != nil {
-		res.ProjectRoot = mf.Module.Mod.Path
-	}
+	rt := plugin.RuntimeSpec{Name: "go", Source: plugin.RuntimeSourceDeclared}
 	if mf.Go != nil {
-		res.Runtime.Version = mf.Go.Version
+		rt.Version = mf.Go.Version
 	}
 	if mf.Toolchain != nil {
-		res.Runtime.Toolchain = mf.Toolchain.Name
+		rt.Toolchain = mf.Toolchain.Name
+	}
+	res := plugin.BuildManifestResult{Runtimes: []plugin.RuntimeSpec{rt}}
+	if mf.Module != nil {
+		res.ProjectRoot = mf.Module.Mod.Path
 	}
 
 	// replace/exclude directives mean the on-disk module is not buildable with a
 	// plain `go build ./...` in isolation — declare the gap rather than overclaim.
 	complicated := len(mf.Replace) > 0 || len(mf.Exclude) > 0
-	if res.ProjectRoot == "" || res.Runtime.Version == "" {
+	if res.ProjectRoot == "" || rt.Version == "" {
 		complicated = true
 	}
 
@@ -72,7 +73,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		return res, nil
 	}
 
-	res.Resolver = plugin.ResolverSpec{Name: "go", Command: "go build ./..."}
+	res.Resolvers = []plugin.ResolverSpec{{Name: "go", Command: "go build ./...", Source: plugin.RuntimeSourceDeclared}}
 	res.Partiality = plugin.Complete()
 	return res, nil
 }

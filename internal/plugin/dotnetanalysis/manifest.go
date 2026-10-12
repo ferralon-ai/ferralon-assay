@@ -63,9 +63,9 @@ type propGroup struct {
 func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
 	buildDir := req.BuildDir
 	res := plugin.BuildManifestResult{
-		Runtime:  plugin.RuntimeSpec{Name: "dotnet"},
-		Resolver: plugin.ResolverSpec{Name: "dotnet", Command: "dotnet restore"},
+		Resolvers: []plugin.ResolverSpec{{Name: "dotnet", Command: "dotnet restore", Source: plugin.RuntimeSourceDeclared}},
 	}
+	rt := plugin.RuntimeSpec{Name: "dotnet", Source: plugin.RuntimeSourceDeclared}
 	var reasons []string
 
 	// --- project / solution root identity (item 2) ---
@@ -117,7 +117,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	dbGroups := loadDirectoryBuildProps(buildDir, projDir)
 	groups := append(projGroups, dbGroups...) // project (nearest/highest) first, then walk-up.
 
-	// --- TFM → Runtime.Version | multi-TFM partiality (item 4) ---
+	// --- TFM → runtime Version | multi-TFM partiality (item 4) ---
 	tfms := projectTFMs(px)
 	if len(tfms) == 0 {
 		tfms = unconditionalValues(dbGroups,
@@ -129,7 +129,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	switch {
 	case len(tfms) == 1:
 		selTFM = tfms[0]
-		res.Runtime.Version = tfms[0]
+		rt.Version = tfms[0]
 	case len(tfms) > 1:
 		reasons = mergeReasons(reasons, reasonMultiTargetFramework)
 	}
@@ -143,7 +143,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	}
 	switch {
 	case len(rids) == 1:
-		res.Target = rids[0] // a RID (e.g. linux-x64) IS the platform/architecture Target documents.
+		rt.Target = rids[0] // a RID (e.g. linux-x64) IS the platform/architecture Target documents.
 	case len(rids) > 1:
 		reasons = mergeReasons(reasons, reasonNoRuntimeTarget)
 	}
@@ -163,7 +163,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 
 	// --- SDK toolchain pin from global.json (item 1) ---
 	if v, ok := readGlobalJSONSDK(buildDir); ok && v != "" {
-		res.Runtime.Toolchain = v // absent ⇒ empty via omitempty: an honest "no pin," not partiality.
+		rt.Toolchain = v // absent ⇒ empty via omitempty: an honest "no pin," not partiality.
 	}
 
 	// --- restore-artifact presence (item 6) ---
@@ -198,6 +198,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	} else {
 		res.Partiality = plugin.Partial(reasons...)
 	}
+	res.Runtimes = []plugin.RuntimeSpec{rt}
 	return res, nil
 }
 

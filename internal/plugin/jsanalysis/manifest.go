@@ -61,13 +61,10 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	}
 
 	// ProjectRoot carries the package identity (pkg.Name); the declared Node engine
-	// constraint (engines.node) goes to the ecosystem-neutral Runtime{Name:"node"}
-	// descriptor — no longer overloaded onto the retired Go-named "go_version" field.
+	// constraint (engines.node) goes to the ecosystem-neutral RuntimeSpec{Name:"node"}
+	// descriptor.
 	res := plugin.BuildManifestResult{ProjectRoot: pkg.Name}
-	if v := pkg.Engines["node"]; v != "" {
-		res.Runtime = plugin.RuntimeSpec{Name: "node", Version: v}
-	}
-	// §4.6 target: the ecosystem-neutral target platform/architecture, sourced from
+	// §4.6 target: the node runtime's target platform/architecture, sourced from
 	// package.json's npm `os`/`cpu` platform-restriction arrays (the only declared,
 	// statically readable target information a package.json carries). Left zero when
 	// neither is present — never guessed from the analyzer's own host.
@@ -75,7 +72,10 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	// §4.6 configuration is deliberately left zero: package.json has no build-profile /
 	// configuration field, and reading the analyzer's own NODE_ENV would fabricate the
 	// customer's build configuration with wrong provenance and defeat determinism.
-	res.Target = platformTarget(pkg.OS, pkg.CPU)
+	version, target := pkg.Engines["node"], platformTarget(pkg.OS, pkg.CPU)
+	if version != "" || target != "" {
+		res.Runtimes = []plugin.RuntimeSpec{{Name: "node", Version: version, Target: target, Source: plugin.RuntimeSourceDeclared}}
+	}
 
 	// A missing name means we cannot identify the package — declare the gap rather
 	// than overclaim. A workspaces/monorepo layout NO LONGER declines here (PLAN-160
@@ -92,7 +92,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	if pkg.Scripts["build"] != "" {
 		command += " && npm run build"
 	}
-	res.Resolver = plugin.ResolverSpec{Name: "npm", Command: command}
+	res.Resolvers = []plugin.ResolverSpec{{Name: "npm", Command: command, Source: plugin.RuntimeSourceDeclared}}
 	res.Partiality = plugin.Complete()
 	return res, nil
 }

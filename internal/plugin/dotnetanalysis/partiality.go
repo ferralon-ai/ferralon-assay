@@ -41,7 +41,7 @@ const (
 	// (a portable, RID-agnostic resolution). Per-node, never a guessed platform.
 	reasonNoRuntimeTarget = "no_runtime_target"
 
-	// reasonMultiTargetFramework: >1 TFM declared; the single Runtime.Version scalar can't carry the set.
+	// reasonMultiTargetFramework: >1 TFM declared; the single RuntimeSpec.Version scalar can't carry the set.
 	reasonMultiTargetFramework = "multi_target_framework"
 
 	// reasonMultiProjectSolution: >1 member project; the flat BuildManifestResult can't enumerate them (PLAN-400).

@@ -48,7 +48,7 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 // BuildManifest DELEGATES to javaanalysis.BuildManifest (lang "kotlin"): the build manifest is
 // derived from JVM-generic build files (Maven POM <properties>, Gradle version/toolchain
 // lines, .tool-versions/.sdkmanrc pins), not Java-source-specific state — the same delegation
-// shape as ResolveDependencyVersions / ResolveInventory. The "kotlin" lang keeps Runtime.Name
+// shape as ResolveDependencyVersions / ResolveInventory. The "kotlin" lang keeps RuntimeSpec.Name
 // honest per lane; the honest-absent residue (Target/Configuration/exact-Toolchain/multi-module)
 // and determinism ride the shared impl.
 func BuildManifest(ctx context.Context, req plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {

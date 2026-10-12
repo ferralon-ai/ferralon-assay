@@ -61,8 +61,8 @@ func TestManifest_C1_DeliverableSevenCoverage(t *testing.T) {
 				"global.json": `{"sdk":{"version":"8.0.100"}}`,
 			},
 			check: func(t *testing.T, res plugin.BuildManifestResult) {
-				if res.Runtime.Toolchain != "8.0.100" {
-					t.Errorf("SDK item: want Runtime.Toolchain=8.0.100; got %q", res.Runtime.Toolchain)
+				if runtimeOf(res).Toolchain != "8.0.100" {
+					t.Errorf("SDK item: want Runtime.Toolchain=8.0.100; got %q", runtimeOf(res).Toolchain)
 				}
 			},
 		},
@@ -94,8 +94,8 @@ func TestManifest_C1_DeliverableSevenCoverage(t *testing.T) {
 			name: "item4_target_framework",
 			tree: map[string]string{"App.csproj": singleTFMCsproj("net8.0")},
 			check: func(t *testing.T, res plugin.BuildManifestResult) {
-				if res.Runtime.Version != "net8.0" {
-					t.Errorf("TFM item: want Runtime.Version=net8.0; got %q", res.Runtime.Version)
+				if runtimeOf(res).Version != "net8.0" {
+					t.Errorf("TFM item: want Runtime.Version=net8.0; got %q", runtimeOf(res).Version)
 				}
 			},
 		},
@@ -105,8 +105,8 @@ func TestManifest_C1_DeliverableSevenCoverage(t *testing.T) {
 				"App.csproj": `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework><RuntimeIdentifier>linux-x64</RuntimeIdentifier></PropertyGroup></Project>`,
 			},
 			check: func(t *testing.T, res plugin.BuildManifestResult) {
-				if res.Target != "linux-x64" {
-					t.Errorf("RID item: want Target=linux-x64; got %q", res.Target)
+				if runtimeOf(res).Target != "linux-x64" {
+					t.Errorf("RID item: want Target=linux-x64; got %q", runtimeOf(res).Target)
 				}
 			},
 		},
@@ -122,8 +122,8 @@ func TestManifest_C1_DeliverableSevenCoverage(t *testing.T) {
 				if hasReason(res.Partiality, reasonNoLockfile) {
 					t.Errorf("restore-provenance item: present assets must not carry %q; got %v", reasonNoLockfile, res.Partiality.Reasons)
 				}
-				if res.Resolver.Name != "dotnet" {
-					t.Errorf("restore-provenance item: want Resolver.Name=dotnet; got %q", res.Resolver.Name)
+				if resolverOf(res).Name != "dotnet" {
+					t.Errorf("restore-provenance item: want Resolver.Name=dotnet; got %q", resolverOf(res).Name)
 				}
 			},
 		},
@@ -302,7 +302,19 @@ func TestManifest_C4_ConditionGatedTFM(t *testing.T) {
 		t.Errorf("condition-gated dual TFM must carry %q or %q; got %v",
 			reasonMultiTargetFramework, reasonUnevaluatedCondition, res.Partiality.Reasons)
 	}
-	if res.Runtime.Version != "" && res.Partiality.Complete {
-		t.Errorf("must not collapse to a single TFM (%q) with Complete() partiality", res.Runtime.Version)
+	if runtimeOf(res).Version != "" && res.Partiality.Complete {
+		t.Errorf("must not collapse to a single TFM (%q) with Complete() partiality", runtimeOf(res).Version)
 	}
+}
+
+// runtimeOf and resolverOf return the manifest's sole runtime/resolver, or the zero value when
+// there is not exactly one.
+func runtimeOf(res plugin.BuildManifestResult) plugin.RuntimeSpec {
+	rt, _ := res.PrimaryRuntime()
+	return rt
+}
+
+func resolverOf(res plugin.BuildManifestResult) plugin.ResolverSpec {
+	rs, _ := res.PrimaryResolver()
+	return rs
 }

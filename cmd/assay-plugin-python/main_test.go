@@ -194,11 +194,15 @@ func TestDispatch_BuildManifest_LivePartial(t *testing.T) {
 	if !hasReason(reasons(resp.BuildManifest), plugin.PartialReasonEnvConditionUnresolved+":requires_python") {
 		t.Errorf("partial reason must name the missing requires_python input; got %v", reasons(resp.BuildManifest))
 	}
-	if resp.BuildManifest.Runtime.Version != "" {
-		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", resp.BuildManifest.Runtime.Version)
+	rt, ok := resp.BuildManifest.PrimaryRuntime()
+	if !ok || rt.Name != "python" {
+		t.Errorf("Runtimes = %+v, want one python runtime", resp.BuildManifest.Runtimes)
 	}
-	if resp.BuildManifest.Resolver.Name != "pip" {
-		t.Errorf("Resolver.Name = %q, want pip (requirements.txt detected)", resp.BuildManifest.Resolver.Name)
+	if rt.Version != "" {
+		t.Errorf("Runtime.Version = %q, want empty (undeterminable, never guessed)", rt.Version)
+	}
+	if rs, _ := resp.BuildManifest.PrimaryResolver(); rs.Name != "pip" {
+		t.Errorf("Resolvers = %+v, want one pip resolver (requirements.txt detected)", resp.BuildManifest.Resolvers)
 	}
 	if resp.BuildManifest.ProjectRoot != dir {
 		t.Errorf("ProjectRoot = %q, want %q", resp.BuildManifest.ProjectRoot, dir)

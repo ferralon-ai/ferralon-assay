@@ -8,7 +8,7 @@ package javaanalysis
 // runs mvn/gradle/javac or touches the network (§3.3 zero-egress). Build-file parsing is
 // JVM-generic, not Java-source-specific, so the impl lives here and Kotlin delegates — the
 // same precedent as ResolveDependencyVersions / ResolveInventory. The `lang` param keeps
-// Runtime.Name honest per lane ("java" | "kotlin"); it is otherwise cosmetic downstream.
+// RuntimeSpec.Name honest per lane ("java" | "kotlin"); it is otherwise cosmetic downstream.
 //
 // Honest partiality (inv.5): where the flat shape cannot carry a fact, or the fact does not
 // exist statically, the result names it via a declared partiality reason — never a guessed
@@ -48,7 +48,7 @@ const (
 
 	// reasonToolchainUnpinned: the exact toolchain pin is not resolvable without executing the
 	// build. Emitted UNLESS a pin file (.tool-versions / .sdkmanrc) records an exact version; a
-	// Gradle JavaLanguageVersion.of(N) is a major FLOOR (→ Runtime.Version), not an exact pin.
+	// Gradle JavaLanguageVersion.of(N) is a major FLOOR (→ RuntimeSpec.Version), not an exact pin.
 	reasonToolchainUnpinned = "toolchain_unpinned"
 
 	// reasonNoRuntimeVersion: no declared JVM target/source version could be read from the
@@ -62,7 +62,7 @@ const (
 )
 
 // BuildManifest derives the flat, ecosystem-neutral build manifest for one JVM BuildDir from
-// DECLARED on-disk state only. lang selects Runtime.Name ("java" | "kotlin"). A missing or
+// DECLARED on-disk state only. lang selects the runtime Name ("java" | "kotlin"). A missing or
 // unreadable build dir is a hard error (inv.4); every unrepresentable or non-existent fact
 // becomes a declared partiality reason.
 func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang string) (plugin.BuildManifestResult, error) {
@@ -75,7 +75,8 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	}
 
 	buildDir := req.BuildDir
-	res := plugin.BuildManifestResult{Runtime: plugin.RuntimeSpec{Name: lang}}
+	res := plugin.BuildManifestResult{}
+	rt := plugin.RuntimeSpec{Name: lang, Source: plugin.RuntimeSourceDeclared}
 	var reasons []string
 
 	poms, gradles := buildFiles(buildDir)
@@ -92,7 +93,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	case len(poms) > 0:
 		// Maven wins when a POM is present (the more explicit, primary declaration).
 		root := shortestPath(poms)
-		res.Resolver = plugin.ResolverSpec{Name: "maven", Command: "mvn -o -DskipTests package"}
+		res.Resolvers = []plugin.ResolverSpec{{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceDeclared}}
 		proj, ok := parsePOMProject(root)
 		if ok {
 			res.ProjectRoot = mavenProjectRoot(buildDir, root, proj)
@@ -103,7 +104,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		members = moduleMembers(buildDir, poms)
 	case len(gradles) > 0:
 		root := shortestPath(gradles)
-		res.Resolver = plugin.ResolverSpec{Name: "gradle", Command: "gradle --offline assemble"}
+		res.Resolvers = []plugin.ResolverSpec{{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceDeclared}}
 		res.ProjectRoot = gradleProjectRoot(buildDir)
 		version = parseGradleManifest(root)
 		members = moduleMembers(buildDir, gradles)
@@ -114,7 +115,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		reasons = mergeManifestReasons(reasons, plugin.PartialReasonNoManifest)
 	}
 
-	res.Runtime.Version = version
+	rt.Version = version
 	if version == "" && (len(poms) > 0 || len(gradles) > 0) {
 		reasons = mergeManifestReasons(reasons, reasonNoRuntimeVersion)
 	}
@@ -122,7 +123,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	// Exact toolchain pin: only from a real pin file; a Gradle languageVersion is a floor, not
 	// an exact pin. Absent ⇒ declared unpinned, never guessed.
 	if pin := toolchainPin(buildDir); pin != "" {
-		res.Runtime.Toolchain = pin
+		rt.Toolchain = pin
 	} else {
 		reasons = mergeManifestReasons(reasons, reasonToolchainUnpinned)
 	}
@@ -134,6 +135,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		reasons = mergeManifestReasons(reasons, reasonMultiModule, detail)
 	}
 
+	res.Runtimes = []plugin.RuntimeSpec{rt}
 	res.Partiality = plugin.Partial(reasons...)
 	return res, nil
 }

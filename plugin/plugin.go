@@ -496,28 +496,64 @@ type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
 }
 
-// RuntimeSpec is the ecosystem-neutral runtime descriptor (replaces GoVersion + ToolchainVersion).
+// RuntimeSource records where a resolved toolchain identity came from.
+type RuntimeSource string
+
+const (
+	// RuntimeSourceDeclared: parsed from a committed manifest (go.mod, package.json, .csproj, pyproject).
+	RuntimeSourceDeclared RuntimeSource = "declared"
+	// RuntimeSourceAmbient: CI/host state that is not committed (a compiler on PATH, the environment).
+	RuntimeSourceAmbient RuntimeSource = "ambient"
+	// RuntimeSourceCompileDB: reconstructed from compile_commands.json invocations.
+	RuntimeSourceCompileDB RuntimeSource = "compile_db"
+)
+
+// RuntimeSpec is the ecosystem-neutral descriptor of one toolchain the build uses.
 type RuntimeSpec struct {
-	Name      string `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
-	Version   string `json:"version,omitempty"`   // declared/minimum runtime version (replaces GoVersion; JS: node engine range — no longer overloaded onto a "go_version" field)
-	Toolchain string `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one (replaces ToolchainVersion); a stronger floor than Version
+	Name      string        `json:"name,omitempty"`      // runtime/language identity ("go", "node", "python", "dotnet")
+	Version   string        `json:"version,omitempty"`   // declared/minimum runtime version (JS: node engine range)
+	Toolchain string        `json:"toolchain,omitempty"` // exact toolchain pin when the manifest declares one; a stronger floor than Version
+	Source    RuntimeSource `json:"source,omitempty"`    // provenance of this identity
+	Target    string        `json:"target,omitempty"`    // this toolchain's target platform/architecture ("linux/amd64", "x86_64-linux-gnu")
+	Lang      string        `json:"lang,omitempty"`      // language mode this toolchain compiles ("c", "c++")
+	StdLevel  string        `json:"std_level,omitempty"` // language standard level ("c17", "c++20")
 }
 
-// ResolverSpec is the ecosystem-neutral resolver/build descriptor (replaces BuildCommand).
+// ResolverSpec is the ecosystem-neutral resolver/build descriptor.
 type ResolverSpec struct {
-	Name    string `json:"name,omitempty"`    // resolver/build tool ("go", "npm", "maven", "gradle")
-	Command string `json:"command,omitempty"` // neutral build invocation (replaces BuildCommand, e.g. "go build ./...")
+	Name    string        `json:"name,omitempty"`    // resolver/build tool ("go", "npm", "maven", "gradle")
+	Command string        `json:"command,omitempty"` // neutral build invocation (e.g. "go build ./...")
+	Source  RuntimeSource `json:"source,omitempty"`  // provenance of this resolver
 }
 
-// BuildManifestResult carries ecosystem-neutral build context (§4.6). Breaking change from the
-// Go-named prior shape; four+ plugins still return Unsupported().
+// BuildManifestResult carries ecosystem-neutral build context (§4.6). A build may use several
+// toolchains, so Runtimes and Resolvers are sets; an empty Resolvers means no resolver was
+// identified, not an error.
 type BuildManifestResult struct {
-	Partiality    Partiality   `json:"partiality"`
-	Runtime       RuntimeSpec  `json:"runtime"`                 // §4.6 runtime
-	Target        string       `json:"target,omitempty"`        // §4.6 target platform/architecture ("linux/amd64")
-	Configuration string       `json:"configuration,omitempty"` // §4.6 build configuration/profile ("release", "Debug")
-	ProjectRoot   string       `json:"project_root,omitempty"`  // §4.6 project root: module/package root identity (replaces Module)
-	Resolver      ResolverSpec `json:"resolver"`                // §4.6 resolver
+	Partiality    Partiality     `json:"partiality"`
+	Runtimes      []RuntimeSpec  `json:"runtimes"`                // §4.6 runtimes, one per distinct toolchain
+	Configuration string         `json:"configuration,omitempty"` // §4.6 build configuration/profile ("release", "Debug")
+	ProjectRoot   string         `json:"project_root,omitempty"`  // §4.6 project root: module/package root identity
+	Resolvers     []ResolverSpec `json:"resolvers"`               // §4.6 resolvers
+}
+
+// PrimaryRuntime returns the build's runtime when it has exactly one. With zero runtimes, or
+// several with none privileged, it returns false: a reader that needs "the" runtime must not
+// take an arbitrary element as the subject's identity.
+func (r BuildManifestResult) PrimaryRuntime() (RuntimeSpec, bool) {
+	if len(r.Runtimes) != 1 {
+		return RuntimeSpec{}, false
+	}
+	return r.Runtimes[0], true
+}
+
+// PrimaryResolver returns the build's resolver when it has exactly one, with the same
+// zero-or-many rule as PrimaryRuntime.
+func (r BuildManifestResult) PrimaryResolver() (ResolverSpec, bool) {
+	if len(r.Resolvers) != 1 {
+		return ResolverSpec{}, false
+	}
+	return r.Resolvers[0], true
 }
 
 // StubPlugin implements LanguagePlugin with canned, in-memory results — the analog of

@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -238,7 +239,18 @@ func parseFile(module, src string) parseResult {
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
 	res.bindings = extractModuleBindings(r, raw)
-	res.calls, res.ingresses = parseCallsAndIngresses(r)
+	sort.SliceStable(res.bindings.prefixLoads, func(a, b int) bool {
+		return res.bindings.prefixLoads[a].pos < res.bindings.prefixLoads[b].pos
+	})
+	probes := make([]int, len(res.bindings.prefixLoads))
+	for k, pl := range res.bindings.prefixLoads {
+		probes[k] = pl.pos
+	}
+	var frames []frameRef
+	res.calls, res.ingresses, frames = parseCallsAndIngressesProbing(r, probes)
+	for k := range res.bindings.prefixLoads {
+		res.bindings.prefixLoads[k].caller = frames[k]
+	}
 	res.escapes = scanEscapes(r, raw, res.decls)
 	return res
 }

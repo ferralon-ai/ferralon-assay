@@ -40,8 +40,9 @@ type moduleBindings struct {
 	reExportStars []string           // specifiers from `export * from 'spec'`
 	ambiguous     map[string]bool    // local names bound more than once → resolve as unresolved
 	specifiers    []loadSpec         // every literal specifier the module loads (import, export-from, require, import()), at any scope
-	dynImport     bool               // saw a runtime-computed ESM target `import(expr)`
-	computedReq   bool               // saw a runtime-computed CJS target `require(var)`
+	prefixLoads   []prefixLoad       // require/import() whose specifier is a literal prefix plus a runtime value
+	dynImport     bool               // saw a runtime-computed ESM target `import(expr)` with no static prefix
+	computedReq   bool               // saw a runtime-computed CJS target `require(var)` with no static prefix
 	nativeLoad    bool               // saw process.dlopen, which loads a native addon this lane never reads
 	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
 }
@@ -52,6 +53,16 @@ type moduleBindings struct {
 type loadSpec struct {
 	spec       string
 	viaRequire bool
+}
+
+// prefixLoad is a require(...) or import(...) whose specifier starts with a literal and
+// continues with a runtime value: './locales/' + lang, or a template literal such as
+// `./plugins/${name}`.
+type prefixLoad struct {
+	prefix string   // the literal text before the runtime part
+	dyn    bool     // import(...) rather than require(...)
+	pos    int      // rune index of the require/import keyword
+	caller frameRef // the frame the load runs in (set by parseFile from the call scan)
 }
 
 func newModuleBindings() moduleBindings {
@@ -144,8 +155,7 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 		return pos
 	}
 	if clean[p] == '(' { // dynamic import(expr)
-		mb.dynImport = true
-		mb.loaderCall(clean, src, p, false)
+		mb.loaderCall(clean, src, pos-len("import"), p, true)
 		return pos
 	}
 	if clean[p] == '.' { // import.meta
@@ -279,16 +289,12 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '(' {
 				a := skipSpace(clean, p+1)
-				if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-					specifier := specifierAt(src, a)
+				if specifier, ok := literalLoadArg(clean, src, a); ok {
 					mb.specifiers = append(mb.specifiers, loadSpec{spec: specifier, viaRequire: true})
 					for _, pr := range pairs {
 						add(binding{Local: pr.local, Specifier: specifier, Kind: bindRequire, Imported: pr.imported})
 					}
 					return a + 1
-				}
-				if a < n && clean[a] != ')' {
-					mb.computedReq = true
 				}
 			}
 		}
@@ -317,19 +323,11 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 		p = skipSpace(clean, wq)
 		if p < n && clean[p] == '(' {
 			a := skipSpace(clean, p+1)
-			if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-				mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, a), viaRequire: true})
-				add(binding{Local: name, Specifier: specifierAt(src, a), Kind: bindRequire, Imported: "*"})
+			if specifier, ok := literalLoadArg(clean, src, a); ok {
+				mb.specifiers = append(mb.specifiers, loadSpec{spec: specifier, viaRequire: true})
+				add(binding{Local: name, Specifier: specifier, Kind: bindRequire, Imported: "*"})
 				return a + 1
 			}
-			if a < n && clean[a] != ')' {
-				mb.computedReq = true
-			}
-		}
-	case "import":
-		p = skipSpace(clean, wq)
-		if p < n && clean[p] == '(' {
-			mb.dynImport = true
 		}
 	case "new":
 		p = skipSpace(clean, wq)
@@ -418,4 +416,70 @@ func specifierAt(src []rune, pos int) string {
 		b.WriteRune(src[i])
 	}
 	return b.String()
+}
+
+// loadArgKind classifies the argument of a require(...) or import(...) call.
+type loadArgKind int
+
+const (
+	loadArgNone     loadArgKind = iota // no argument: `require()`
+	loadArgLiteral                     // a whole literal: `'json5'`, `` `./util` ``
+	loadArgPrefix                      // a literal prefix then a runtime value: `'./x/' + n`, `` `./x/${n}` ``
+	loadArgComputed                    // anything else: `n`, `cond ? 'a' : 'b'`, `'a'.concat(n)`
+)
+
+// classifyLoadArg reads the argument starting at clean index a (the first rune after the
+// call's '('). A literal counts as whole only when the argument ends right after it; a
+// literal followed by `+`, or a template with an interpolation, is a prefix, and its text
+// up to the runtime part is returned.
+func classifyLoadArg(clean, src []rune, a int) (loadArgKind, string) {
+	n := len(clean)
+	if a >= n || clean[a] == ')' {
+		return loadArgNone, ""
+	}
+	if clean[a] != '_' || a >= len(src) || (src[a] != '\'' && src[a] != '"' && src[a] != '`') {
+		return loadArgComputed, ""
+	}
+	text := specifierAt(src, a)
+	if src[a] == '`' {
+		if k := strings.Index(text, "${"); k >= 0 {
+			if k == 0 {
+				return loadArgComputed, ""
+			}
+			return loadArgPrefix, text[:k]
+		}
+	}
+	after := skipSpace(clean, a+1)
+	switch {
+	case after < n && (clean[after] == ')' || clean[after] == ','):
+		return loadArgLiteral, text
+	case after < n && clean[after] == '+' && text != "":
+		return loadArgPrefix, text
+	}
+	return loadArgComputed, ""
+}
+
+// literalLoadArg returns the specifier when the argument at a is a whole literal.
+func literalLoadArg(clean, src []rune, a int) (string, bool) {
+	kind, text := classifyLoadArg(clean, src, a)
+	return text, kind == loadArgLiteral
+}
+
+// recordLoad files one require(...) / import(...) argument under the module's literal
+// specifiers, its static-prefix loads, or its runtime-computed flags. at is the rune
+// index of the keyword, kept so the call graph can find the frame the load runs in.
+func recordLoad(clean, src []rune, at, a int, dyn bool, mb *moduleBindings) {
+	kind, text := classifyLoadArg(clean, src, a)
+	switch kind {
+	case loadArgLiteral:
+		mb.specifiers = append(mb.specifiers, loadSpec{spec: text, viaRequire: !dyn})
+	case loadArgPrefix:
+		mb.prefixLoads = append(mb.prefixLoads, prefixLoad{prefix: text, dyn: dyn, pos: at})
+	case loadArgComputed:
+		if dyn {
+			mb.dynImport = true
+		} else {
+			mb.computedReq = true
+		}
+	}
 }

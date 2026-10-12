@@ -70,7 +70,7 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	}
 	switch {
 	case call:
-		mb.loaderCall(clean, src, p, true)
+		mb.loaderCall(clean, src, i, p, false)
 	case p < len(clean) && clean[p] == '.':
 		if w, _ := peekWord(clean, skipSpace(clean, p+1)); w != "resolve" {
 			mb.computedReq = true
@@ -96,7 +96,7 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 	}
 	_, end := parseParamArity(clean, p)
 	if q := skipSpace(clean, end); q < len(clean) && clean[q] == '(' {
-		mb.loaderCall(clean, src, q, true)
+		mb.loaderCall(clean, src, i, q, false)
 		return
 	}
 	if _, ok := declBoundName(clean, i); !ok {
@@ -197,36 +197,12 @@ func (mb *moduleBindings) moduleIndexUse(clean []rune, i, next int) {
 	mb.computedReq = true
 }
 
-// loaderCall records the argument of a require() (viaRequire) or import() call whose '(' is
-// at open: a string literal that is the whole argument is a specifier the module loads;
-// anything else, including a literal concatenated with a value or a template with an
-// interpolation, is a target computed at run time.
-func (mb *moduleBindings) loaderCall(clean, src []rune, open int, viaRequire bool) {
-	n := len(clean)
-	a := skipSpace(clean, open+1)
-	if a >= n || clean[a] == ')' {
-		return
-	}
-	if clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, a), viaRequire: viaRequire})
-		return
-	}
-	if viaRequire {
-		mb.computedReq = true
-	} else {
-		mb.dynImport = true
-	}
-}
-
-// wholeLiteralArg reports whether the string literal at a (clean marks it '_') is the entire
-// call argument: the next token closes the call or starts another argument, and a template
-// literal carries no interpolation.
-func wholeLiteralArg(clean, src []rune, a int) bool {
-	e := skipSpace(clean, a+1)
-	if e >= len(clean) || (clean[e] != ')' && clean[e] != ',') {
-		return false
-	}
-	return src[a] != '`' || !strings.Contains(specifierAt(src, a), "${")
+// loaderCall records the argument of a loader call whose '(' is at open; at is the index
+// of the loader name, kept to find the frame the load runs in. A whole string literal is a
+// specifier the module loads, a literal prefix followed by a runtime value is a static-prefix
+// load, and anything else is a target computed at run time (recordLoad).
+func (mb *moduleBindings) loaderCall(clean, src []rune, at, open int, dyn bool) {
+	recordLoad(clean, src, at, skipSpace(clean, open+1), dyn, mb)
 }
 
 // declBoundName returns NAME when the call starting at the identifier at i is the

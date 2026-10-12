@@ -231,8 +231,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	}
 
 	for _, f := range prog.files {
-		// Module-level runtime-computed specifiers (import(expr) / require(var)) are
-		// declared limits even though they emit no call site (§6).
+		// Module-level runtime-computed specifiers (import(expr) / require(var)) with no
+		// static prefix are declared limits even though they emit no call site (§6).
 		if f.bindings.dynImport {
 			flags.dynImport = true
 		}
@@ -254,6 +254,26 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
 				flags.unreadModule = true
 			}
+		}
+		// A static-prefix load whose files are all in-tree modules gets an edge to each.
+		// Its suffix may still traverse out of the prefix (prefixSuffixMayTraverse), so the
+		// computed limit stays run-wide beside the edges.
+		for _, pl := range f.bindings.prefixLoads {
+			reason, algo := plugin.PartialReasonComputedRequireSpecifier, algoCJS
+			if pl.dyn {
+				reason, algo = plugin.PartialReasonDynamicImportSpecifier, algoESM
+			}
+			kind, mods := rs.classifyPrefixLoad(f.module, pl)
+			if kind == prefixFirstParty {
+				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
+				for _, m := range mods {
+					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
+				}
+				if !prefixSuffixMayTraverse {
+					continue
+				}
+			}
+			accumulateReason(&flags, reason)
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.

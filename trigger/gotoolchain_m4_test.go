@@ -50,7 +50,16 @@ func (p toolchainReachPlugin) Reachability(_ context.Context, req plugin.Reachab
 	if p.seen != nil {
 		*p.seen = req
 	}
-	res := plugin.ReachabilityResult{Partiality: plugin.Complete()}
+	// Every arm carries the analyzer's refutation of the stdlib, so the matrix tests that the
+	// toolchain axis alone withholds or licenses it: a refutation never lifts an undetermined row.
+	res := plugin.ReachabilityResult{
+		Partiality: plugin.Complete(),
+		Refutation: &plugin.Refutation{
+			Basis:   plugin.RefutationAnalyzerSymbolNotReached,
+			Package: "pkg:golang/stdlib",
+			Detail:  "govulncheck found no call path to the advisory's vulnerable functions",
+		},
+	}
 	if req.GoToolchain != "" {
 		if p.honored {
 			res.ScanToolchain = req.GoToolchain

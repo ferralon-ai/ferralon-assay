@@ -76,8 +76,8 @@ func TestBoundary_ExpressRedirectPath(t *testing.T) {
 			t.Errorf("missing edge %s -> %s; edges %+v", e[0], e[1], cg.Edges)
 		}
 	}
-	if !hasReason(cg.Partiality, plugin.PartialReasonUninspectablePackage) {
-		t.Errorf("an edge into a package must keep uninspectable_package declared; got %+v", cg.Partiality)
+	if sr := scopedFor(cg.Partiality, plugin.PartialReasonUninspectablePackage, "express"); sr == nil || !slices.Contains(sr.Targets, "pkg:npm/express") {
+		t.Errorf("an edge into a package must keep that package's uninspectable_package declared; got %+v", cg.Partiality)
 	}
 
 	res := resolveFor(t, dir, "pkg:npm/express@4.18.2", expressAdvisory)

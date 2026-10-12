@@ -210,9 +210,6 @@ type partialFlags struct {
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
-	// scopedCopy marks the run-wide reasons that also have a scoped copy: until the trigger
-	// reads Scoped, every scoped limit is mirrored into Reasons.
-	scopedCopy map[string]bool
 }
 
 // mustRel is filepath.Rel for a path known to lie under root.
@@ -240,7 +237,7 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	var edges []plugin.CallEdge
 	provByEdge := map[plugin.CallEdge]provenance{}
 	rootsSet := map[string]bool{}
-	flags := partialFlags{scopedCopy: map[string]bool{}}
+	var flags partialFlags
 	scoped := newScopedLimits(prog.lockClosures())
 	addEdge := func(e plugin.CallEdge, prov provenance) {
 		if !seen[e] {
@@ -257,7 +254,6 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			return
 		}
 		scoped.addPackageLoad(reason, pkg, f.module, f.file)
-		flags.scopedCopy[reason] = true
 	}
 
 	// boundaryLimit records the uninspectable_package limit of a call into the boundary node
@@ -281,10 +277,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			accumulateReason(&flags, reason)
 		case from == "":
 			scoped.addUnbounded(reason, pkg, f.file)
-			flags.scopedCopy[reason] = true
 		default:
 			scoped.addPackageLoad(reason, pkg, from, f.file)
-			flags.scopedCopy[reason] = true
 		}
 	}
 
@@ -340,7 +334,6 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			case prefixPackage:
 				if prefixSuffixMayTraverse {
 					scoped.addUnbounded(reason, pkg, f.file)
-					flags.scopedCopy[reason] = true
 				} else {
 					packageLimit(reason, pkg, f)
 				}
@@ -448,12 +441,8 @@ func accumulateReason(flags *partialFlags, reason string) {
 // is the honest norm for non-trivial JS/TS. The three module-resolution codes (PLAN-162
 // C5) split the former blanket dynamic_dispatch into reviewer-legible conditions.
 //
-// A limit inside one npm package is scoped to it (scoped, Partiality.Scoped) and, until the
-// trigger reads Scoped, mirrored into the run-wide reasons.
+// A limit inside one npm package is scoped to it (Partiality.Scoped) rather than run-wide.
 func callGraphPartiality(prog *program, flags partialFlags, scoped []plugin.ScopedReason) plugin.Partiality {
-	for reason := range flags.scopedCopy {
-		accumulateReason(&flags, reason)
-	}
 	var reasons []string
 	if flags.unresolved {
 		reasons = append(reasons, plugin.PartialReasonDynamicDispatch)

@@ -97,7 +97,8 @@ function register(name) { return name; }
 // TestC5_ThreeDistinctPartialityReasons builds a module with one dynamic import(), one
 // computed require(var), and one bare specifier into an uninspectable package that is
 // then CALLED. The result must declare THREE DISTINCT reasons — not one blanket
-// dynamic_dispatch — so a reviewer can tell which limit applies to which construct.
+// dynamic_dispatch — so a reviewer can tell which limit applies to which construct. The
+// package load is scoped to lodash; the computed specifiers stay run-wide.
 func TestC5_ThreeDistinctPartialityReasons(t *testing.T) {
 	dir := writeProgram(t, map[string]string{
 		"c5.js": `
@@ -125,10 +126,16 @@ function run() {
 		plugin.PartialReasonUninspectablePackage,
 	}
 	got := append([]string(nil), res.Partiality.Reasons...)
+	for _, sr := range res.Partiality.Scoped {
+		got = append(got, sr.Reason)
+	}
 	sort.Strings(got)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("C5 reasons = %v, want three distinct %v", res.Partiality.Reasons, want)
+		t.Errorf("C5 reasons = %v / %+v, want three distinct %v", res.Partiality.Reasons, res.Partiality.Scoped, want)
+	}
+	if scopedFor(res.Partiality, plugin.PartialReasonUninspectablePackage, "lodash") == nil {
+		t.Errorf("the lodash load must be scoped to lodash; got %+v", res.Partiality.Scoped)
 	}
 }
 

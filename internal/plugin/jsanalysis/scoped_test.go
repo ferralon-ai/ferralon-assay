@@ -219,6 +219,9 @@ function load(n) {
 				if !reflect.DeepEqual(sr.Targets, w.targets) {
 					t.Errorf("%s/%s Targets = %#v, want %#v", w.reason, w.pkg, sr.Targets, w.targets)
 				}
+				if hasReason(p, w.reason) {
+					t.Errorf("scoped %s must not also be run-wide; got reasons %v", w.reason, p.Reasons)
+				}
 			}
 			for _, r := range tc.runWide {
 				if !hasReason(p, r) {

@@ -385,8 +385,8 @@ app.get('/', function handle(req, res) { a(); });
 			if !roots[mi] {
 				t.Errorf("module-init %s missing from roots %+v", mi, res.Roots)
 			}
-			if tc.reason != "" && !hasReason(res.Partiality, tc.reason) {
-				t.Errorf("want partiality reason %s; got %v", tc.reason, res.Partiality.Reasons)
+			if tc.reason != "" && !hasReason(res.Partiality, tc.reason) && !hasScopedReason(res.Partiality, tc.reason) {
+				t.Errorf("want partiality reason %s; got %v / %+v", tc.reason, res.Partiality.Reasons, res.Partiality.Scoped)
 			}
 		})
 	}

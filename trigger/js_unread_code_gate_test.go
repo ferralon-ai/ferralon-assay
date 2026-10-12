@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -192,6 +193,269 @@ load(process.argv[2]);
 	}
 }
 
+// TestUndeterminedReason_JSScopedLimits runs programs whose package limits are scoped
+// through the gate. A scoped limit holds every advisory for a package in its Targets (the
+// package's resolution reach) and lets an advisory for a package outside them refute; a
+// limit no package accounts for, or one the lock cannot bound, holds every advisory.
+func TestUndeterminedReason_JSScopedLimits(t *testing.T) {
+	// express and qs are declared; json5 is hoisted and declared by neither package. zed is
+	// not installed, so nothing this lock installs can reach it.
+	const lock = `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"express":"4.18.2","qs":"6.0.0","json5":"2.2.1"}},
+"node_modules/express":{"version":"4.18.2","dependencies":{"qs":"6.0.0"}},
+"node_modules/qs":{"version":"6.0.0"},
+"node_modules/json5":{"version":"2.2.1"}}}`
+	const brokenLock = `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"qs":"6.0.0"}},
+"node_modules/qs":{"version":"6.0.0","dependencies":{"missing":"1.0.0"}}}}`
+	const peerLock = `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"qs":"6.0.0"}},
+"node_modules/qs":{"version":"6.0.0","peerDependencies":{"missing":"1.0.0"}}}}`
+	// cfg's development export is the only file that loads json5, which cfg does not declare.
+	const cfgLock = `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"cfg":"1.0.0","json5":"2.2.1"}},
+"node_modules/cfg":{"version":"1.0.0"},
+"node_modules/json5":{"version":"2.2.1"}}}`
+	var (
+		express = &report.Package{Ecosystem: "npm", Name: "express", Version: "4.18.2", PURL: "pkg:npm/express@4.18.2"}
+		qs      = &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.0.0", PURL: "pkg:npm/qs@6.0.0"}
+		zed     = &report.Package{Ecosystem: "npm", Name: "zed", Version: "1.0.0", PURL: "pkg:npm/zed@1.0.0"}
+	)
+	cases := []struct {
+		name      string
+		src       string
+		lock      string
+		files     map[string]string // further files beside index.js
+		edge      string            // a boundary node the program must have an edge into
+		held      []*report.Package
+		refutable []*report.Package
+	}{
+		{
+			name: "a boundary edge into X holds X and lets a package outside X's reach refute",
+			src: `const express = require('express');
+const app = express();
+app.get('/go', route);
+function route(req, res) { res.redirect(req.query.u); }
+`,
+			lock:      lock,
+			edge:      "npm:express#response.redirect",
+			held:      []*report.Package{express, qs, json5Package},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a boundary edge into X through a function-local require and a derived value",
+			src: `function serve() { const express = require('express'); const app = express(); app.listen(3000); }
+serve();
+`,
+			lock:      lock,
+			edge:      "npm:express#<call>.listen",
+			held:      []*report.Package{express},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a boundary edge into X through a function-local require binding",
+			src: `function go(u) { const q = require('qs'); return q.parse(u); }
+go(process.argv[2]);
+`,
+			lock:      lock,
+			edge:      "npm:qs#parse",
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			// The one boundary edge the loads do not already account for: routers in two modules
+			// register the handler, so no single load bounds the express it runs under.
+			name: "a handler routers in two modules register holds every advisory",
+			src: `const express = require('express');
+const app = express();
+const { route } = require('./route');
+app.get('/a', route);
+require('./admin');
+`,
+			lock: lock,
+			files: map[string]string{
+				"route.js": "function route(req, res) { res.redirect(req.query.u); }\nmodule.exports = { route };\n",
+				"admin.js": "const express = require('express');\nconst r = express.Router();\nconst { route } = require('./route');\nr.get('/b', route);\nmodule.exports = r;\n",
+			},
+			edge: "npm:express#response.redirect",
+			held: []*report.Package{express, zed},
+		},
+		// Every binding the boundary resolver traces a package value through is recorded as a
+		// load of its specifier first, and that load alone holds the package: these rows pin it
+		// for each binding form, with no call into the binding.
+		{
+			name: "an ESM import binding of X with no call holds X",
+			src: `import q from 'qs';
+function main() {}
+main();
+`,
+			lock:      lock,
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a destructured require binding of X with no call holds X",
+			src: `const { parse } = require('qs');
+function main() {}
+main();
+`,
+			lock:      lock,
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a require binding of X with no call holds X",
+			src: `const q = require('qs');
+function main() {}
+main();
+`,
+			lock:      lock,
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a function-local require binding of X with no call holds X",
+			src: `function main() { const q = require('qs'); return q; }
+main();
+`,
+			lock:      lock,
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "X's limit holds an undeclared hoisted package X can require",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:      lock,
+			held:      []*report.Package{qs, json5Package},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a reach the lock cannot bound holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock: brokenLock,
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "no lockfile holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "a required peer the lock does not install holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock: peerLock,
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "a node_modules on disk holding a package the lock does not list holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"node_modules/zed/package.json": `{"name":"zed","version":"1.0.0"}`},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "NODE_PATH set in the Dockerfile holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"Dockerfile": "FROM node:20\nENV NODE_PATH=/srv/lib\nCMD [\"node\", \"index.js\"]\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			// Held twice over: by cfg's limit, whose reach includes the hoisted json5, and by the
+			// dynamic_import_specifier a literal import() keeps for an unmodeled condition.
+			name: "a literal import() of X whose development export loads a hoisted package X does not declare",
+			src: `async function load(s) { const m = await import('cfg'); return m.parse(s); }
+load(process.argv[2]);
+`,
+			lock: cfgLock,
+			files: map[string]string{
+				"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
+				"node_modules/cfg/dev.js":       "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+				"node_modules/cfg/prod.js":      "exports.parse = (s) => s;\n",
+			},
+			held: []*report.Package{json5Package},
+		},
+		{
+			name: "a load no package accounts for stays run-wide",
+			src: `const vm = require('vm');
+function go(s) { return vm.runInNewContext(s); }
+go(process.argv[2]);
+`,
+			lock: lock,
+			held: []*report.Package{zed},
+		},
+		{
+			name: "a computed first-party specifier stays run-wide",
+			src: `function load(n) { return require(n); }
+load(process.argv[2]);
+`,
+			lock: lock,
+			held: []*report.Package{zed},
+		},
+		{
+			name: "a first-party prefix load stays run-wide",
+			src: `function load(n) { return require('./plugins/' + n); }
+load(process.argv[2]);
+`,
+			lock: lock,
+			held: []*report.Package{zed},
+		},
+		{
+			name: "an unknown loader stays run-wide",
+			src: `const j = module.constructor._load('json5', module);
+function go(s) { return j.parse(s); }
+go(process.argv[2]);
+`,
+			lock: lock,
+			held: []*report.Package{zed},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{}
+			if tc.lock != "" {
+				files["package-lock.json"] = tc.lock
+			}
+			maps.Copy(files, tc.files)
+			store, cg := gateFromJS(t, tc.src, files)
+			if len(cg.Edges) == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			if tc.edge != "" && !slices.ContainsFunc(cg.Edges, func(e plugin.CallEdge) bool { return e.Callee.SCIP == tc.edge }) {
+				t.Fatalf("program must have an edge into %s; got %+v", tc.edge, cg.Edges)
+			}
+			for _, pkg := range tc.held {
+				if reason, ok := undeterminedReason(store, "a1", pkg); !ok || reason != report.ReasonAnalysisDidNotRun {
+					t.Errorf("%s: undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", pkg.Name, reason, ok, report.ReasonAnalysisDidNotRun)
+				}
+			}
+			for _, pkg := range tc.refutable {
+				if reason, ok := undeterminedReason(store, "a1", pkg); ok {
+					t.Errorf("%s: undeterminedReason = (%q, true); want refutable (scoped %+v)", pkg.Name, reason, cg.Partiality.Scoped)
+				}
+			}
+		})
+	}
+}
+
 // json5Package is the package the gate assesses: the dependency every program loads or could.
 var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"}
 
@@ -199,6 +463,13 @@ var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.
 // entries), runs the JS producer over it, and stores the call graph and reachability
 // partiality, run-wide and scoped, as the reachability and exposure-footprint artifacts.
 func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, int) {
+	t.Helper()
+	store, cg := gateFromJS(t, src, files)
+	return store, len(cg.Edges)
+}
+
+// gateFromJS is gateStoreFromJS returning the call graph itself.
+func gateFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, plugin.CallGraphResult) {
 	t.Helper()
 	dir := t.TempDir()
 	tree := map[string]string{
@@ -253,5 +524,5 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 	if _, err := store.Put(&artifact.Artifact{AssessmentID: "a1", Type: artifact.TypeExposureFootprint, ProducedBy: "test", Payload: fpPayload}); err != nil {
 		t.Fatal(err)
 	}
-	return store, len(cg.Edges)
+	return store, cg
 }

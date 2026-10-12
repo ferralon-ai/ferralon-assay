@@ -3,6 +3,7 @@ package goanalysis
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -167,13 +169,34 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	load, err := LoadProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := evidenceResult(findings, cg, env)
+	cg, err := callGraphOf(load, "vta")
+	if err != nil {
+		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
+	}
+	res := withholdForLeftOutFiles(ctx, evidenceResult(findings, cg, env), load.Packages, req.BuildDir, env)
 	res.ScanToolchain = scanToolchain
 	return res, nil
+}
+
+// withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
+// for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
+// never traced, so the refutation holds only for builds that leave it out. The result then
+// declares excluded_files instead.
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || leftOutCallers(ctx, pkgs, module, buildDir, env) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+	}
+	return res
 }
 
 // evidenceResult turns one advisory's govulncheck findings into the reachability result.
@@ -183,12 +206,14 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // finding (with a trace) when a vulnerable function is reachable. So the finding levels say how
 // far it got:
 //
-//   - no finding at all: govulncheck has nothing to say about this advisory here (it does not know
-//     the advisory, or disagrees that the version is affected). Its silence is not a search, so
-//     the result declares advisory_unknown_to_analyzer.
+//   - no finding at all: govulncheck has nothing to say about this advisory here. It may not know
+//     the advisory, may disagree that the version is affected, or may never have analyzed the
+//     module (a test-only or tool dependency is outside the graph it loads). Its silence is not a
+//     search, so the result declares advisory_unknown_to_analyzer.
 //   - module/package findings and no symbol finding: it matched the advisory to the build and
 //     traced no call to the vulnerable functions — a refutation of that module, valid for the
-//     platform and build tags it ran under, which the Detail names.
+//     platform and build tags it ran under, which the Detail names. Reachability withholds it
+//     when files the build left out may call into the module.
 //   - symbol findings it could not turn into a path: unknown, never "safe".
 func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []string) plugin.ReachabilityResult {
 	stacks := findingsToStacks(findings)
@@ -239,9 +264,17 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 		Package: "pkg:golang/" + module,
-		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, default build tags, tests excluded)",
-			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH)),
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, %s, tests excluded)",
+			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env))),
 	}
+}
+
+// tagsDetail names the build tags a run used.
+func tagsDetail(tags []string) string {
+	if len(tags) == 0 {
+		return "default build tags"
+	}
+	return "build tags from GOFLAGS: " + strings.Join(tags, ",")
 }
 
 // withReason adds reason to p, which then is no longer complete.
@@ -526,6 +559,10 @@ func parseFindings(out []byte, vulnID string) ([]vulnFinding, error) {
 // findingsToStacks converts symbol-level findings to ingress->sink CallStacks.
 // A finding's Trace is sink-first, so we reverse it. Module/package-level
 // findings (no Function in any frame) carry no symbol trace and are dropped.
+//
+// The stacks come back in compareStacks order, not stream order: govulncheck emits findings in a
+// different order from run to run, and the report cites the first path, so stream order would make
+// identical scans produce different reports.
 func findingsToStacks(findings []vulnFinding) []CallStack {
 	var stacks []CallStack
 	for _, f := range findings {
@@ -549,7 +586,30 @@ func findingsToStacks(findings []vulnFinding) []CallStack {
 		}
 		stacks = append(stacks, CallStack{Frames: frames})
 	}
+	slices.SortFunc(stacks, compareStacks)
 	return stacks
+}
+
+// compareStacks orders call stacks shortest first, then frame by frame on every field of the frame,
+// a recognized entry before the same frame unrecognized. It compares the whole CallStack value, so
+// stacks it calls equal are identical and their relative order cannot show in any output.
+func compareStacks(a, b CallStack) int {
+	if c := cmp.Compare(len(a.Frames), len(b.Frames)); c != 0 {
+		return c
+	}
+	for i := range a.Frames {
+		fa, fb := a.Frames[i], b.Frames[i]
+		if c := strings.Compare(fa.SCIP, fb.SCIP); c != 0 {
+			return c
+		}
+		if fa.IsEntry != fb.IsEntry {
+			if fa.IsEntry {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 // frameSCIP emits a SCIP id for a govulncheck frame using the SAME grammar as

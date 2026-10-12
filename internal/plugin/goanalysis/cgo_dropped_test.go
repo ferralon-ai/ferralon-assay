@@ -64,20 +64,25 @@ func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 	const cgoStdlib = "//go:build cgo\n\npackage m\n\n// void run(void) {}\nimport \"C\"\nimport \"encoding/json\"\n\nfunc Run() { C.run(); json.Valid(nil) }\n"
 	const cgoUnloaded = "//go:build cgo\n\npackage m\n\n// void run(void) {}\nimport \"C\"\nimport \"example.org/absent\"\n\nfunc Run() { C.run(); absent.Do() }\n"
 	const ignored = "//go:build ignore\n\npackage m\n\nimport \"C\"\n"
+	const prodCgo = "//go:build cgo && prod\n\npackage m\n\n// void run2(void) {}\nimport \"C\"\n\nfunc Run2() { C.run2() }\n"
 	cases := []struct {
 		name        string
 		files       map[string]string
+		goflags     string
 		wantRunWide bool
 		wantTargets []string
 	}{
-		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, false, []string{""}},
-		{"dropped variant imports an unloaded standard-library package", map[string]string{"run.go": pure, "run_cgo.go": cgoStdlib}, false, []string{"", stdlibPURL}},
-		{"dropped variant imports a package the build never loaded", map[string]string{"run.go": pure, "run_cgo.go": cgoUnloaded}, true, nil},
-		{"cgo file excluded by a tag, not by cgo", map[string]string{"run.go": pure, "gen.go": ignored}, false, nil},
-		{"no cgo at all", map[string]string{"run.go": pure}, false, nil},
+		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, "", false, []string{""}},
+		{"dropped variant imports an unloaded standard-library package", map[string]string{"run.go": pure, "run_cgo.go": cgoStdlib}, "", false, []string{"", stdlibPURL}},
+		{"dropped variant imports a package the build never loaded", map[string]string{"run.go": pure, "run_cgo.go": cgoUnloaded}, "", true, nil},
+		{"cgo file excluded by a tag, not by cgo", map[string]string{"run.go": pure, "gen.go": ignored}, "", false, nil},
+		{"no cgo at all", map[string]string{"run.go": pure}, "", false, nil},
+		{"tagged cgo file, tag not set", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "", false, nil},
+		{"tagged cgo file, tag set in GOFLAGS", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "-tags=prod", false, []string{""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOFLAGS", tc.goflags)
 			res, err := LoadProgram(context.Background(), writeModule(t, tc.files))
 			if err != nil {
 				t.Fatal(err)

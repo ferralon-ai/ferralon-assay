@@ -755,8 +755,8 @@ const (
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
-	// reported nothing about the advisory at all, so its silence is not a search that came back
-	// empty.
+	// reported nothing about the advisory at all. It may not know the advisory, or may never have
+	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
 	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
 	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's

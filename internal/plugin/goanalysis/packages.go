@@ -14,11 +14,14 @@ import (
 	"context"
 	"fmt"
 	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -110,7 +113,7 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	if len(loadErrs) > 0 {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	cgo, dropped, bounded := cgoLimits(pkgs)
+	cgo, dropped, bounded := cgoLimits(pkgs, cfg.Env)
 	if dropped && !bounded {
 		reasons = append(reasons, plugin.PartialReasonCgo)
 	}
@@ -148,7 +151,8 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 // never saw, which may call anything.
 //
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
-func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped, bounded bool) {
+func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {
+	tags := goflagsTags(env)
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
 	callbacks, unreadable, pluginLoad := false, false, false
@@ -160,7 +164,7 @@ func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped,
 		}
 		_, compiled := p.Imports["runtime/cgo"]
 		pluginLoad = pluginLoad || (compiled && p.Module == nil && p.PkgPath == "plugin")
-		files := cgoFilesDropped(p)
+		files := cgoFilesDropped(p, tags)
 		if !compiled && len(files) == 0 {
 			return
 		}
@@ -170,8 +174,8 @@ func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped,
 		if len(files) > 0 {
 			dropped, callbacks = true, true
 			for _, f := range files {
-				imps, ok := fileImports(f)
-				unreadable = unreadable || !ok
+				imps, _, err := fileImports(f)
+				unreadable = unreadable || err != nil
 				droppedImports = append(droppedImports, imps...)
 			}
 		}
@@ -199,7 +203,7 @@ func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped,
 		for _, imp := range droppedImports {
 			switch {
 			case imp == "C" || loaded[imp]:
-			case isStdlibPath(imp):
+			case isStdlibPath(imp, nil):
 				targets[stdlibPURL] = true
 			default:
 				return nil, dropped, false
@@ -232,27 +236,22 @@ func modulePURL(p *packages.Package) string {
 	return "pkg:golang/" + p.Module.Path
 }
 
-// isStdlibPath reports whether an import path names a standard-library package: its first element
-// has no dot.
-func isStdlibPath(path string) bool {
-	first, _, _ := strings.Cut(path, "/")
-	return !strings.Contains(first, ".")
-}
-
 // cgoFilesDropped lists the cgo files of a non-standard-library package that the build left out
 // because cgo is disabled (CGO_ENABLED=0, or no C compiler). Such a file is in no package's syntax,
 // so neither the call graph nor govulncheck sees the calls it makes, and runtime/cgo never enters
 // the program to trip the cgo detector. A file the build would leave out with cgo enabled too
 // (another GOOS, a build tag) is not counted; a file that cannot be read is, since it may be neither.
+// The files are matched under tags, the build tags GOFLAGS sets for the load.
 //
 // The standard library's own cgo variants (net, os/user) are not checked: their pure-Go
 // fallbacks are what the build compiles, and the analysis reads those.
-func cgoFilesDropped(p *packages.Package) []string {
+func cgoFilesDropped(p *packages.Package, tags []string) []string {
 	if p.Module == nil {
 		return nil
 	}
 	ctx := build.Default
 	ctx.CgoEnabled = true
+	ctx.BuildTags = tags
 	var files []string
 	for _, path := range p.IgnoredFiles {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
@@ -298,21 +297,6 @@ func hasForeignObjects(files []string) bool {
 	return false
 }
 
-// fileImports lists the import paths of the Go file at path; ok is false when it cannot be read.
-func fileImports(path string) (imports []string, ok bool) {
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
-	if err != nil {
-		return nil, false
-	}
-	out := make([]string, 0, len(f.Imports))
-	for _, imp := range f.Imports {
-		if v, err := strconv.Unquote(imp.Path.Value); err == nil {
-			out = append(out, v)
-		}
-	}
-	return out, true
-}
-
 func mapKeys(m map[string]string) map[string]bool {
 	out := make(map[string]bool, len(m))
 	for k := range m {
@@ -330,6 +314,267 @@ func importsC(path string) bool {
 	for _, imp := range f.Imports {
 		if imp.Path.Value == `"C"` {
 			return true
+		}
+	}
+	return false
+}
+
+// goflagsTags returns the build tags the last -tags flag in env's GOFLAGS sets. Every go command
+// the analysis spawns inherits GOFLAGS, so these are the tags it builds with.
+func goflagsTags(env []string) []string {
+	var tags []string
+	for _, f := range strings.Fields(envOr(env, "GOFLAGS", "")) {
+		f = strings.TrimPrefix(strings.TrimPrefix(f, "-"), "-")
+		if v, ok := strings.CutPrefix(f, "tags="); ok {
+			tags = strings.FieldsFunc(v, func(r rune) bool { return r == ',' })
+		}
+	}
+	return tags
+}
+
+// leftOutCallers reports whether a non-test Go file the build left out of a non-standard-library
+// package (one for another GOOS or GOARCH, or behind a build tag) may call into module. No
+// package's syntax holds such a file, so govulncheck traced no call from it, yet a build for that
+// platform or with that tag compiles it.
+//
+// A file may call into module when it imports a package of module, a loaded package that imports
+// one, or a package the build did not load whose module is module, holds it, or requires it in the
+// module graph. A file that cannot be read counts, as does an unloaded import when the module graph
+// cannot be read or holds no module for it. A file constrained by the ignore tag is never built and does
+// not count.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, buildDir string, env []string) bool {
+	loaded := map[string]*packages.Package{}
+	modules := map[string]bool{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		loaded[p.PkgPath] = p
+		if p.Module != nil {
+			modules[p.Module.Path] = true
+		}
+	})
+	reaches := map[*packages.Package]bool{}
+	var reachesModule func(p *packages.Package) bool
+	reachesModule = func(p *packages.Package) bool {
+		if v, ok := reaches[p]; ok {
+			return v
+		}
+		reaches[p] = false
+		v := underModule(p.PkgPath, module) || (p.Module != nil && p.Module.Path == module)
+		for _, imp := range p.Imports {
+			if v {
+				break
+			}
+			v = reachesModule(imp)
+		}
+		reaches[p] = v
+		return v
+	}
+	var graph modGraph
+	var graphErr error
+	graphRead := false
+	mayCall := func(imp string) bool {
+		if underModule(imp, module) {
+			return true
+		}
+		if p, ok := loaded[imp]; ok {
+			return reachesModule(p)
+		}
+		if imp == "C" || isStdlibPath(imp, modules) {
+			return false
+		}
+		if !graphRead {
+			graph, graphErr = readModGraph(ctx, buildDir, env)
+			graphRead = true
+		}
+		if graphErr != nil {
+			return true
+		}
+		owner := graph.owner(imp, modules)
+		return owner == "" || underModule(module, owner) || graph.requires(owner, module)
+	}
+
+	// leftOut reports whether the non-test Go file at path may call into module.
+	leftOut := func(path string) bool {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return false
+		}
+		imports, never, err := fileImports(path)
+		if err != nil {
+			return true
+		}
+		return !never && slices.ContainsFunc(imports, mayCall)
+	}
+
+	found := false
+	loadedDirs := map[string]bool{}
+	mainDir := ""
+	packages.Visit(pkgs, func(p *packages.Package) bool {
+		if found || p.Module == nil {
+			return !found
+		}
+		if p.Module.Main && mainDir == "" {
+			mainDir = p.Module.Dir
+		}
+		for _, files := range [][]string{p.GoFiles, p.OtherFiles, p.IgnoredFiles} {
+			for _, f := range files {
+				loadedDirs[filepath.Dir(f)] = true
+			}
+		}
+		found = slices.ContainsFunc(p.IgnoredFiles, leftOut)
+		return !found
+	}, nil)
+	if found {
+		return true
+	}
+	if mainDir == "" {
+		mainDir = buildDir
+	}
+	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+}
+
+// firstPartyLeftOut walks the main module's source tree for a package directory the load never
+// listed, which is one whose every file the build left out (a tool behind a tag, a package for
+// another platform), and reports whether one of its files is leftOut. It skips what the go command
+// skips (testdata, vendor, and directories whose names begin with "." or "_") and nested modules.
+// A directory that cannot be read counts.
+func firstPartyLeftOut(root string, loadedDirs map[string]bool, leftOut func(string) bool) bool {
+	found := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			found = true
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != root && (name == "testdata" || name == "vendor" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+				return filepath.SkipDir
+			}
+			if path != root {
+				if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if !loadedDirs[filepath.Dir(path)] && leftOut(path) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// fileImports returns the import paths of the Go file at path, and whether the ignore tag
+// constrains it so that no build compiles it.
+func fileImports(path string) (imports []string, never bool, err error) {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly|parser.ParseComments)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, g := range f.Comments {
+		if g.Pos() >= f.Package {
+			break
+		}
+		for _, c := range g.List {
+			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
+				continue
+			}
+			if x, err := constraint.Parse(c.Text); err == nil {
+				if tag, ok := x.(*constraint.TagExpr); ok && tag.Tag == "ignore" {
+					never = true
+				}
+			}
+		}
+	}
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			return nil, false, err
+		}
+		imports = append(imports, p)
+	}
+	return imports, never, nil
+}
+
+// underModule reports whether the import path is module's own path or a package inside it.
+func underModule(path, module string) bool {
+	return path == module || strings.HasPrefix(path, module+"/")
+}
+
+// isStdlibPath reports whether an import path no loaded module holds belongs to the standard
+// library: its first element has no dot.
+func isStdlibPath(path string, modules map[string]bool) bool {
+	for m := range modules {
+		if underModule(path, m) {
+			return false
+		}
+	}
+	first, _, _ := strings.Cut(path, "/")
+	return !strings.Contains(first, ".")
+}
+
+// modGraph is the module requirement graph `go mod graph` prints, versions dropped: every
+// requirement of any version of a module is an edge from it.
+type modGraph map[string][]string
+
+// readModGraph runs `go mod graph` for the module at buildDir.
+func readModGraph(ctx context.Context, buildDir string, env []string) (modGraph, error) {
+	cmd := exec.CommandContext(ctx, "go", "mod", "graph")
+	cmd.Dir = buildDir
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go mod graph: %w", err)
+	}
+	g := modGraph{}
+	for _, line := range strings.Split(string(out), "\n") {
+		from, to, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		from, _, _ = strings.Cut(from, "@")
+		to, _, _ = strings.Cut(to, "@")
+		g[from] = append(g[from], to)
+		if _, ok := g[to]; !ok {
+			g[to] = nil
+		}
+	}
+	return g, nil
+}
+
+// owner returns the longest module path in the graph or among the loaded modules that holds the
+// import path, or "" if none does.
+func (g modGraph) owner(path string, modules map[string]bool) string {
+	best := ""
+	consider := func(m string) {
+		if len(m) > len(best) && underModule(path, m) {
+			best = m
+		}
+	}
+	for m := range g {
+		consider(m)
+	}
+	for m := range modules {
+		consider(m)
+	}
+	return best
+}
+
+// requires reports whether module from requires module to, directly or through other modules.
+func (g modGraph) requires(from, to string) bool {
+	seen := map[string]bool{from: true}
+	queue := []string{from}
+	for len(queue) > 0 {
+		m := queue[0]
+		queue = queue[1:]
+		for _, next := range g[m] {
+			if next == to {
+				return true
+			}
+			if !seen[next] {
+				seen[next] = true
+				queue = append(queue, next)
+			}
 		}
 	}
 	return false

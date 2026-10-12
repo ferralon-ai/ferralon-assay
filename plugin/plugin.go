@@ -206,6 +206,41 @@ const (
 	// path whose effect (sanitize/authorize) is undeterminable — the tri-state UNKNOWN arm,
 	// NOT a positive "guarded" signal. Raised by the guard overlay (#5).
 	PartialReasonGuardUnknown = "guard_unknown"
+
+	// --- Phase-1 C/C++ partiality codes (c-cpp-parity-map-2026-09-28.md §5) ---
+	//
+	// New bases for the C/C++ lane's own limits — distinct from the Go-caller-into-native
+	// cgo boundary above, which names a Go program crossing OUT to native code, not a C/C++
+	// program's own analysis limits.
+
+	// PartialReasonAdvisorySymbolAbsent (new base, run-specific/loud): the advisory carries
+	// a version range but declares no vulnerable symbol, so symbol-level reachability was
+	// never ATTEMPTED for it — there is nothing to search for. Distinct from a symbol lookup
+	// that ran and found nothing: a lane declares it from ResolveDependencySymbols when the
+	// request names no symbol to resolve. It is loud by default (ClassifyPartialityReason's
+	// default arm) because it says a step of THIS run did not happen, not a property of the
+	// method true on every run.
+	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
+	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
+	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
+	// actual macro definitions, so the compiled configuration is undetermined. Every
+	// existing lane assumes one checkout approximates one program; a C/C++ build's
+	// conditional-compilation axis has no analog there, so this is genuinely new, not a
+	// reuse of an existing code.
+	PartialReasonIfdefConfigVariance = "ifdef_config_variance"
+	// PartialReasonNativeLinkBoundary (new base, quiet/inherent; localise with ":suffix",
+	// e.g. ":dlopen", ":inline_asm"): a native-code construct opaque to the C/C++ lane's own
+	// static analysis — a runtime-resolved symbol (dlopen) or inline assembly the analyzer
+	// does not disassemble. A limit of the METHOD, true on every scan that crosses it, so it
+	// is classified inherent in ClassifyPartialityReason rather than defaulting loud. Minted
+	// fresh rather than reusing cgo: cgo names the Go-caller-into-native boundary
+	// specifically, not a C/C++ lane's own limit.
+	PartialReasonNativeLinkBoundary = "native_link_boundary"
+	// PartialReasonMacroExpansion (new base, quiet/inherent): a macro whose expansion the
+	// analyzer did not evaluate, so code introduced or altered by it is invisible to the
+	// call graph. A limit of the method's source-level reading, not a per-run failure, so it
+	// is classified inherent alongside native_link_boundary.
+	PartialReasonMacroExpansion = "macro_expansion"
 )
 
 // Complete is the constructor for a fully-resolved result.

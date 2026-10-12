@@ -12,11 +12,17 @@
 // normally does."*
 package report
 
-import "github.com/ferralon-ai/ferralon-assay/plugin"
+import (
+	"strings"
 
-// PartialityClass is the arm a coverage limit is disclosed in. It governs volume only —
-// no verdict, count or finding depends on it, and both arms are always present and
-// readable in the Report and in every sink.
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+// PartialityClass is the arm a coverage limit is disclosed in. It governs disclosure volume
+// AND gates refutation: trigger.analysisDidNotRun treats any PartialityDidNotRun reason as
+// blocking a not_exploitable verdict, so a run whose only partiality reasons are
+// PartialityInherentLimit can still refute. Both arms are always present and readable in the
+// Report and in every sink.
 type PartialityClass string
 
 const (
@@ -50,11 +56,23 @@ const (
 // tells a reader something specific about THIS codebase's coverage.
 func ClassifyPartialityReason(reason string) PartialityClass {
 	switch reason {
-	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch, plugin.PartialReasonPolicyAdvisoryNoCoordinates:
+	case plugin.PartialReasonReflection, plugin.PartialReasonDynamicDispatch, plugin.PartialReasonPolicyAdvisoryNoCoordinates,
+		plugin.PartialReasonMacroExpansion:
 		return PartialityInherentLimit
-	default:
-		return PartialityDidNotRun
 	}
+	// The C/C++ lane's dispatch suffixes (§5) name method limits. Only these two are listed:
+	// other localised dynamic_dispatch codes, such as the JVM lanes' bean_ambiguous, keep their
+	// did-not-run class.
+	switch reason {
+	case plugin.PartialReasonDynamicDispatch + ":fn_ptr", plugin.PartialReasonDynamicDispatch + ":vtable":
+		return PartialityInherentLimit
+	}
+	// native_link_boundary is always localised (§4 base+":"+suffix: ":dlopen", ":inline_asm"), so
+	// the bare base never appears on the wire. Match the prefix rather than adding one case per suffix.
+	if reason == plugin.PartialReasonNativeLinkBoundary || strings.HasPrefix(reason, plugin.PartialReasonNativeLinkBoundary+":") {
+		return PartialityInherentLimit
+	}
+	return PartialityDidNotRun
 }
 
 // EffectiveClass returns the arm a reader must render this note in.

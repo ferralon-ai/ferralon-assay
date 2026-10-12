@@ -37,15 +37,17 @@ func (s jsVersionStub) ResolveDependencyVersions(_ context.Context, req plugin.R
 	if !s.resolved {
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
+	match := plugin.ResolvedDependency{
+		Coordinate: req.Coordinate,
+		Version:    s.version,
+		Resolved:   s.resolved,
+		Source:     "npm",
+	}
 	return plugin.DependencyVersionResult{
 		Partiality: part,
 		Found:      true,
-		Match: plugin.ResolvedDependency{
-			Coordinate: req.Coordinate,
-			Version:    s.version,
-			Resolved:   s.resolved,
-			Source:     "npm",
-		},
+		Match:      match,
+		Matches:    []plugin.ResolvedDependency{match},
 	}, nil
 }
 
@@ -124,7 +126,9 @@ func TestJSDisqual_NumericOrdering_NotLexical(t *testing.T) {
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"resolved_version": "1.10.0",
+		"resolved_version":  "1.10.0",
+		"resolved_versions": []string{"1.10.0"},
+		"versions_complete": true,
 	})
 	res := runDisqual(t, store, caseID)
 	if !res.Disqualified {

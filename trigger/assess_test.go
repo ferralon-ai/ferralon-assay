@@ -778,6 +778,14 @@ func TestFinding_RootPackage(t *testing.T) {
 			wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
+			name: "package_not_loaded naming the project itself is not grounds",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Searched = nil
+				fx.reach.Refutation = refutation("pkg:pypi/apache-airflow")
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
 			name:       "no version",
 			mutate:     func(fx *groundsFixture) { fx.pkg.Version = "" },
 			wantReason: report.ReasonPackageVersionUnresolved,

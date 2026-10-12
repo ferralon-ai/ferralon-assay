@@ -51,8 +51,9 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
-	// every package it affects.
-	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded || pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
+	// every package it affects, and never the scanned project, whose own code always loads.
+	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
+		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", true

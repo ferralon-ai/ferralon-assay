@@ -3,6 +3,7 @@ package trigger
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,45 +21,92 @@ import (
 // so the gate's zero-edge arm cannot be what holds it.
 func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 	cases := []struct {
-		name string
-		src  string
+		name  string
+		src   string
+		files map[string]string // added to or replacing the default tree
 	}{
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }
 load(process.argv[2]);
-`},
+`, nil},
 		{"inline require", `
 function load(s) { return require('json5').parse(s); }
 load(process.argv[2]);
-`},
+`, nil},
 		{"aliased require", `
 const r = require;
 function load(s) { return r('json5').parse(s); }
 load(process.argv[2]);
-`},
+`, nil},
 		{"concatenated require", `
 function load(s, n) { return require('./plugins/' + n).parse(s); }
 load(process.argv[2], 'json5');
-`},
+`, nil},
 		{"interpolated template require", `
 function load(s, n) { return require(` + "`./${n}`" + `).parse(s); }
 load(process.argv[2], 'json5');
-`},
+`, nil},
 		{"native addon", `
 const addon = require('./build/Release/x.node');
 function load(s) { return addon.parse(s); }
 load(process.argv[2]);
-`},
+`, nil},
 		{"generated module absent from the tree", `
 const gen = require('./dist/gen');
 function load(s) { return gen.parse(s); }
 load(process.argv[2]);
-`},
+`, nil},
+		{"require inside a typeof test", `
+function load(s) { if (typeof require('json5').parse === 'function') return s; return s; }
+load(process.argv[2]);
+`, nil},
+		{"imports entry whose require branch is a package", `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"import":"./esm.js","require":"json5"}},"dependencies":{"json5":"2.2.1"}}`,
+			"esm.js":       "export function parse(s) { return s; }\n",
+		}},
+		{"workspace member whose require branch is not in the tree", `
+const m = require('m');
+function load(s) { return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":            `{"name":"fixture","workspaces":["packages/*"]}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"import":"./src/index.js","require":"./lib/index.cjs"}}}`,
+			"packages/m/src/index.js": "export function parse(s) { return s; }\n",
+		}},
+		{"require reached by a string key", `
+const j = module['require']('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module._load", `
+const j = module.constructor._load('json5', module);
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process.dlopen", `
+const m = { exports: {} };
+process.dlopen(m, './x.node');
+function load(s) { return m.exports.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"eval", `
+function load(s) { return eval('require')('json5').parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"new Function", `
+const f = new Function('m', 'return require(m)');
+function load(s) { return f('json5').parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store, edges := gateStoreFromJS(t, tc.src)
+			store, edges := gateStoreFromJS(t, tc.src, tc.files)
 			if edges == 0 {
 				t.Fatalf("program must have call edges")
 			}
@@ -76,24 +124,27 @@ func TestUndeterminedReason_JSFirstPartyOnlyCanRefute(t *testing.T) {
 function parse(s) { return s.trim(); }
 function load(s) { return parse(s); }
 load(process.argv[2]);
-`)
+`, nil)
 	if reason, ok := undeterminedReason(store, "a1"); ok {
 		t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
 	}
 }
 
-// gateStoreFromJS writes src as index.js, runs the JS producer over it, and stores the call
-// graph and reachability partiality as the reachability and exposure-footprint artifacts.
-func gateStoreFromJS(t *testing.T, src string) (*artifact.MemStore, int) {
+// gateStoreFromJS writes src as index.js over a default tree (with files added or replacing
+// entries), runs the JS producer over it, and stores the call graph and reachability
+// partiality as the reachability and exposure-footprint artifacts.
+func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, int) {
 	t.Helper()
 	dir := t.TempDir()
-	for name, body := range map[string]string{
+	tree := map[string]string{
 		"package.json":        `{"name":"fixture","version":"1.0.0","dependencies":{"json5":"2.2.1"}}`,
 		"index.js":            src,
 		"plugins/index.js":    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 		"node_modules/.keep":  "",
 		"build/Release/.keep": "",
-	} {
+	}
+	maps.Copy(tree, files)
+	for name, body := range tree {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)

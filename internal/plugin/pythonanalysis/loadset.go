@@ -154,7 +154,7 @@ func computeLoadSet(buildDir string, prog *program) *loadSet {
 	}
 	ls.prodKeepsDev = productionKeepsDev(buildDir)
 	ls.runtimeManifestNames(buildDir)
-	ls.scopeLoaders()
+	ls.expandLoaders()
 	return ls
 }
 
@@ -626,8 +626,7 @@ func (ls *loadSet) close() {
 
 // enumeratingLoaders load distributions by entry-point group, URL scheme or settings
 // string rather than by import. When one is loaded, marks join the load set; an unbounded
-// loader emits a scoped limit whose Targets are every distribution it could load
-// (scopeLoaders). Names are PEP 503.
+// loader marks every distribution it could load (expandLoaders). Names are PEP 503.
 var enumeratingLoaders = []struct {
 	dist      string
 	marks     []string
@@ -691,41 +690,49 @@ func urlSchemeDrivers(dialect, driver string) []string {
 	return byDialect[dialect]
 }
 
-// scopeLoaders emits one scoped limit per unbounded loader in the load set. Its Targets are
-// every distribution of the runtime install (an entry-point scan finds only installed
-// distributions); when the lockfile cannot tell runtime from dev, or the production install
-// keeps dev dependencies, every locked distribution; with no lockfile, unbounded (nil).
-func (ls *loadSet) scopeLoaders() {
-	names := sortedKeys(ls.loaders)
-	for _, d := range names {
-		var what string
-		unbounded := false
+// expandLoaders applies every unbounded loader in the load set. An entry-point or settings
+// scan finds only installed distributions, so each one marks the whole runtime install loaded
+// (installDists: every locked distribution when the lockfile cannot tell runtime from dev or
+// the production install keeps dev dependencies) and the closure is re-run over their edges.
+// Loaded is never refuted, so no scoped limit is needed. With no lockfile nothing is marked:
+// the load set is already incomplete and refutes nothing, and an unbounded scoped limit would
+// only pre-empt every row's own undetermined reason.
+func (ls *loadSet) expandLoaders() {
+	triggered := sortedKeys(ls.loaders)
+	unbounded := false
+	for _, d := range triggered {
 		for _, l := range enumeratingLoaders {
-			if l.dist == d {
-				what, unbounded = l.what, l.unbounded
-			}
+			unbounded = unbounded || (l.dist == d && l.unbounded)
 		}
-		if !unbounded {
-			continue
+	}
+	install := ls.installDists()
+	if !unbounded || install == nil {
+		return
+	}
+	for _, d := range install {
+		if !ls.locks.members[d] {
+			ls.loaded[d] = true
 		}
-		ls.scoped = append(ls.scoped, plugin.ScopedReason{
-			Reason:  plugin.PartialReasonDynamicImportSpecifier,
-			Package: pypiPURL(d),
-			Path:    what,
-			Targets: ls.installTargets(),
-		})
+	}
+	// Re-closing can flag more loaders among the marked distributions; the Detail names only
+	// the loaders first-party roots reached.
+	ls.close()
+	ls.loaders = map[string]bool{}
+	for _, d := range triggered {
+		ls.loaders[d] = true
 	}
 }
 
-// installTargets over-approximates the distributions an installed-metadata scan could find.
-func (ls *loadSet) installTargets() []string {
+// installDists over-approximates the distributions an installed-metadata scan could find;
+// nil with no lockfile.
+func (ls *loadSet) installDists() []string {
 	if len(ls.locks.versions) == 0 {
 		return nil
 	}
 	var out []string
 	for d := range ls.locks.versions {
 		if !ls.locks.distinguishes || ls.prodKeepsDev != "" || ls.locks.runtime[d] || ls.loaded[d] || ls.reqRuntime[d] {
-			out = append(out, pypiPURL(d))
+			out = append(out, d)
 		}
 	}
 	sort.Strings(out)
@@ -750,14 +757,9 @@ func (ls *loadSet) scopeSite(file string, s dynSite) {
 	case mk == mapStdlib && len(dists) == 0:
 		return // a stdlib module cannot load a distribution by name
 	case mk == mapFirstParty:
-		targets := []string{""}
-		if s.kind != dynGetattr {
-			// First-party code reached this way loads only what first-party code loads.
-			for _, d := range sortedKeys(ls.loaded) {
-				targets = append(targets, pypiPURL(d))
-			}
-		}
-		ls.scoped = append(ls.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonDynamicImportSpecifier, Path: path, Targets: targets})
+		// Every first-party runtime module is already a root, so a load into first-party
+		// code hides no distribution load.
+		ls.scoped = append(ls.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonDynamicImportSpecifier, Path: path, Targets: []string{""}})
 		return
 	case len(dists) == 0 || len(ls.locks.versions) == 0:
 		ls.unscoped = append(ls.unscoped, path)

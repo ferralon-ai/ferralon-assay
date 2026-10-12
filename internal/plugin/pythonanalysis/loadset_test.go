@@ -212,6 +212,7 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 		reason  bool     // the run-wide dynamic_import reason must be present
 		scoped  string   // a scoped reason with this Package must be present
 		noScope bool     // the scoped reason above must not target pkg
+		fpOnly  bool     // every scoped reason must target first-party code only
 	}{
 		{
 			name:  "dev-group distribution no runtime root loads refutes",
@@ -261,15 +262,15 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 			pkg: "pkg:pypi/pytest-cov@5.0.0", refute: true, purl: "pkg:pypi/pytest-cov",
 		},
 		{
-			name:  "enumerating loader marks its drivers loaded and emits a bounded scoped limit",
+			name:  "enumerating loader marks its drivers loaded, with no scoped limit",
 			files: withLock(map[string]string{"app/db.py": "import sqlalchemy\n"}), pkg: "pkg:pypi/asyncpg@0.29.0",
-			scoped: "pkg:pypi/sqlalchemy",
+			fpOnly: true,
 		},
 		{
-			name:  "unbounded loader's Targets exclude dev groups, so a dev distribution still refutes",
+			name:  "unbounded loader marks the runtime install loaded, so a dev distribution still refutes",
 			files: withLock(map[string]string{"app/llm.py": "import litellm\n"}), pkg: "pkg:pypi/black@24.4.2",
-			refute: true, purl: "pkg:pypi/black", scoped: "pkg:pypi/litellm", noScope: true,
-			detail: []string{"loaders expanded: litellm"},
+			refute: true, purl: "pkg:pypi/black", fpOnly: true,
+			detail: []string{"loaders expanded: litellm;"},
 		},
 		{
 			name:  "SQLAlchemy URL driver in a config is a root",
@@ -292,7 +293,7 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 				"app/plugins/__init__.py": "",
 				"app/plug.py":             "import importlib\n\ndef load(name):\n    return importlib.import_module(\"app.plugins.\" + name)\n",
 			}),
-			pkg: "pkg:pypi/black@24.4.2", refute: true, purl: "pkg:pypi/black",
+			pkg: "pkg:pypi/black@24.4.2", refute: true, purl: "pkg:pypi/black", fpOnly: true,
 		},
 		{
 			name:  "prefix into a distribution loads it",
@@ -541,6 +542,13 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 					t.Errorf("scoped Targets %v must not include %s", s.Targets, name)
 				}
 			}
+			if tc.fpOnly {
+				for _, s := range res.Partiality.Scoped {
+					if s.Package != "" || len(s.Targets) != 1 || s.Targets[0] != "" {
+						t.Errorf("scoped reason %+v must target first-party code only", s)
+					}
+				}
+			}
 		})
 	}
 }
@@ -560,10 +568,23 @@ func TestLoadSet_RuntimeUnloadedSwitch(t *testing.T) {
 	if strings.Contains(res.Refutation.Detail, devAssumption) {
 		t.Errorf("a class (ii) detail must not claim the dev-group assumption: %q", res.Refutation.Detail)
 	}
-	// An unbounded loader in the load set targets the whole runtime install: B refutes nothing.
+	// An unbounded loader in the load set marks the whole runtime install loaded: B refutes nothing.
 	res = reachFor(t, withLock(map[string]string{"app/llm.py": "import litellm\n"}), "pkg:pypi/click@8.1.7")
 	if res.Refutation != nil {
 		t.Fatalf("an unbounded loader must block B; got %+v", res.Refutation)
+	}
+}
+
+// TestLoadSet_LoaderWithoutLockfile pins that with no lockfile an unbounded loader adds no
+// scoped limit: the incomplete load set already refutes nothing, and an unbounded limit would
+// pre-empt every row's own reason.
+func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
+	res := reachFor(t, map[string]string{"requirements.txt": "litellm==1.0.0\nblack==24.4.2\n", "app.py": "import litellm\n"}, "pkg:pypi/black@24.4.2")
+	if len(res.Partiality.Scoped) != 0 || hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier) {
+		t.Fatalf("a loader with no lockfile must add no dynamic_import limit; got %+v", res.Partiality)
+	}
+	if res.Refutation != nil {
+		t.Fatalf("no lockfile must not refute; got %+v", res.Refutation)
 	}
 }
 

@@ -121,7 +121,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 
 	edges := sp.collectEdges(graph)
 	roots := sp.collectRoots()
-	part := sp.partiality(res.Partiality)
+	part := sp.partiality(res)
 
 	return plugin.CallGraphResult{
 		Partiality: part,
@@ -212,9 +212,11 @@ func (s *ssaProgram) collectEdges(graph *callgraph.Graph) []plugin.CallEdge {
 // partiality folds in the load partiality and inspects every built function for
 // reflection, cgo, and unresolved interface dispatch, declaring the matching
 // reason codes. Reaching past static resolution is declared, never hidden (inv.5).
-func (s *ssaProgram) partiality(load plugin.Partiality) plugin.Partiality {
+// A cgo boundary the load could bound (cgoLimits) is declared as its scoped limits
+// instead of a run-wide reason.
+func (s *ssaProgram) partiality(load *LoadResult) plugin.Partiality {
 	reasons := map[string]bool{}
-	for _, r := range load.Reasons {
+	for _, r := range load.Partiality.Reasons {
 		reasons[r] = true
 	}
 
@@ -222,10 +224,17 @@ func (s *ssaProgram) partiality(load plugin.Partiality) plugin.Partiality {
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	if len(reasons) == 0 {
+	scoped := load.Partiality.Scoped
+	if reasons[plugin.PartialReasonCgo] && load.cgo != nil {
+		delete(reasons, plugin.PartialReasonCgo)
+		scoped = load.cgo
+	}
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = scoped
+	return part
 }
 
 // classifyFuncPartiality inspects a single SSA function for the same partiality

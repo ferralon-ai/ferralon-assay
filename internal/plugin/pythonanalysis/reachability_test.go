@@ -196,6 +196,8 @@ func TestReachability_TestCodeIsNotARoot(t *testing.T) {
 		{"test_tok.py", false},
 		{"pkg/tok_test.py", false},
 		{"conftest.py", false},
+		{"tests.py", false},
+		{"pkg/test.py", false},
 		{"pkg/tok.py", true},
 		{"pkg/testing.py", true},
 	}

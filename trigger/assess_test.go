@@ -303,8 +303,25 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 	}{
 		{name: "module matched, no symbol reached: not exploitable", mutate: func(*groundsFixture) {}},
 		{
-			name:   "an inherent limit does not block the refutation",
+			name:   "reflection without a reflective call does not block the refutation",
 			mutate: func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonReflection} },
+		},
+		{
+			name: "a reflective call blocks the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "a plugin load blocks the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonPluginLoad} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "files the build left out block the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonExcludedFiles} },
+			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
 			name:       "cgo blind spot keeps undetermined",

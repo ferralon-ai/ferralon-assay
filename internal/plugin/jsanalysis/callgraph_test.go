@@ -286,8 +286,9 @@ func TestCallGraph_ModuleInitFrame(t *testing.T) {
 		src  string
 		// edges lists caller -> callee; a "@marker" endpoint is the inline handler
 		// starting at that marker, and a plain name is a module-level function of app.
-		edges  [][2]string
-		reason string // a partiality reason the graph must declare, if any
+		edges   [][2]string
+		noEdges [][2]string // caller -> callee pairs that must be absent
+		reason  string      // a partiality reason the graph must declare, if any
 	}{
 		{
 			name: "route arrow handler body",
@@ -335,6 +336,18 @@ load(process.argv);
 			edges:  [][2]string{{"<mi>", "load(1)"}},
 			reason: plugin.PartialReasonUninspectablePackage,
 		},
+		{
+			name: "named inline handler does not merge with a same-named function",
+			src: `
+const app = require('express')();
+function a() { return 1; }
+function b() { return 2; }
+function handle(req, res) { b(); }
+app.get('/', function handle(req, res) { a(); });
+`,
+			edges:   [][2]string{{"<mi>", "@function handle(req, res) { a"}, {"@function handle(req, res) { a", "a()"}, {"handle(2)", "b()"}},
+			noEdges: [][2]string{{"handle(2)", "a()"}, {"@function handle(req, res) { a", "b()"}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,6 +371,11 @@ load(process.argv);
 			for _, e := range tc.edges {
 				if !hasEdge(res.Edges, id(e[0]), id(e[1])) {
 					t.Errorf("missing edge %s -> %s\nedges: %+v", id(e[0]), id(e[1]), res.Edges)
+				}
+			}
+			for _, e := range tc.noEdges {
+				if hasEdge(res.Edges, id(e[0]), id(e[1])) {
+					t.Errorf("unexpected edge %s -> %s", id(e[0]), id(e[1]))
 				}
 			}
 			roots := map[string]bool{}

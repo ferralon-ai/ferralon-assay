@@ -61,13 +61,6 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 	return plugin.HarnessResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// BuildManifest is contract-present but unimplemented at Phase 0. C/C++ has no single canonical
-// manifest to parse; the Phase-1 build context comes from compile_commands.json. The RuntimeSpec
-// and ResolverSpec are left as their honest zero values — no fabricated toolchain (inv.5).
-func BuildManifest(_ context.Context, _ plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
-	return plugin.BuildManifestResult{Partiality: plugin.Unsupported()}, nil
-}
-
 // ResolveInventory is contract-present but unimplemented at Phase 0. It returns an honestly-partial
 // inventory (Unsupported), NOT an empty-but-successful one — a zero-node Complete() inventory would
 // read downstream as "this build has no dependencies".

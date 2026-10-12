@@ -16,6 +16,8 @@ type groundsFixture struct {
 	pkg             *report.Package
 	advisoryPURL    string
 	advisorySymbols []string
+	affected        []string // affected_packages[] PURLs
+	dropped         []string // dropped_affected_packages: elements that failed validation
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
@@ -25,8 +27,13 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	t.Helper()
 	store := artifact.NewMemStore()
 	const aid = "grounds"
+	affected := make([]map[string]string, 0, len(fx.affected))
+	for _, p := range fx.affected {
+		affected = append(affected, map[string]string{"purl": p})
+	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
-		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols,
+		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
+		"dropped_affected_packages": fx.dropped,
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
@@ -178,7 +185,50 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 				fx.reach.Searched = nil
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 			},
-			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it",
+			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it (package_not_loaded)",
+		},
+		{
+			name: "multi-package: the admitted package listed again grounds as before",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/PyYAML"}
+			},
+			wantDetail: "yaml.load in PyYAML@5.3",
+		},
+		{
+			// Tracker's probe: symbols in two packages, only the admitted one's were searched.
+			name: "multi-package: arm A on the admitted package alone does not ground",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", "pkg:pypi/ruamel.yaml"}
+				fx.advisorySymbols = []string{"yaml.load", "ruamel.yaml.load"}
+				fx.resolution.Matched["ruamel.yaml.load"] = nil
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "multi-package: a refutation of the admitted package does not ground",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", "pkg:pypi/ruamel.yaml"}
+				fx.reach.Searched = nil
+				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "multi-package: an element without a package URL is another package",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", ""}
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			// CVE-2023-39325's shape: the second element failed validation and left the
+			// multi-package set, but the advisory still names it.
+			name: "multi-package: an element dropped at decode is another package",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml"}
+				fx.dropped = []string{"pkg:pypi/ruamel.yaml"}
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
 			name: "arm B: refutation of another package",

@@ -344,6 +344,12 @@ type AdvisoryFacts struct {
 	// Empty ⇒ v2/single-package behavior (fail-open, inv.5). Advisory-only framing.
 	AffectedPackages []AffectedPackage
 
+	// DroppedPackages holds the package URL of each affected_packages element that failed
+	// validation and is absent from AffectedPackages ("" when the element had none). The
+	// not_exploitable gate counts each as another package, so a malformed element cannot narrow
+	// the advisory to the one package that was searched.
+	DroppedPackages []string `json:"-"`
+
 	// --- ferralon.normalized_advisory.v4 additions -----------------------------
 	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol
 	// identity, coexisting with the bare Symbols []string above. DECLARED-AWAITING-EMIT
@@ -1365,6 +1371,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages,omitempty"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages,omitempty"`
 		MaliciousPackage *advisoryMaliciousPackage `json:"malicious_package,omitempty"` // MAL presence-verdict marker
 		GuardSufficiency []advisoryGuardVariant    `json:"guard_sufficiency,omitempty"` // B-guardsuff: advisory-DECLARED guard sufficiency, read as a candidate-only descriptive annotation on on-path guards (never admission/refute)
 	}{
@@ -1386,6 +1393,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TriggerCondition: facts.TriggerCondition,
 		Prerequisite:     facts.Prerequisite,
 		AffectedPackages: affectedPackages,
+		DroppedPackages:  facts.DroppedPackages,
 		MaliciousPackage: advMalicious,
 		GuardSufficiency: advGuardSuff,
 	}
@@ -3029,6 +3037,32 @@ func AdvisoryPackage(store artifact.Store, caseID string) (name, purl string) {
 		return "", ""
 	}
 	return cmp.Or(adv.Module, adv.Coordinate), adv.PURL
+}
+
+// AdvisoryPackagePURLs returns the package URL of every package the advisory names: its primary's
+// when it has one, then each affected_packages[] element's, in declaration order. An element without
+// one yields "".
+func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		PURL             string                    `json:"purl"`
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	var purls []string
+	if adv.PURL != "" {
+		purls = append(purls, adv.PURL)
+	}
+	for _, p := range adv.AffectedPackages {
+		purls = append(purls, p.PURL)
+	}
+	return append(purls, adv.DroppedPackages...)
 }
 
 // AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's

@@ -39,7 +39,7 @@
     },
     "CVE-2024-21907": {
       "file": "CVE-2024-21907.json",
-      "digest": "sha256:007127a12bfa22e5ec23b0586aefef0fdb65d47ff11ac405bbd82f06734fc573"
+      "digest": "sha256:aaf3447da5f589dd3e6de263892b81b667d58b3ee5309ab47b63af074f56c3ac"
     },
     "CVE-2024-22195": {
       "file": "CVE-2024-22195.json",
@@ -166,5 +166,5 @@
       "digest": "sha256:f653515b083786f0d3c84969a2c158b3a2899950f445fc61f25983aa7bedf3e1"
     }
   },
-  "corpus_digest": "sha256:c87c19a40fca54695cfcb1b9f85a124bac2a79dec0248754e17e358cadb6b656"
+  "corpus_digest": "sha256:41dba215fd1ed63adf73f1f2b040c5a8c926ee33f72d8c5dc0bdc8e9a1817cfc"
 }

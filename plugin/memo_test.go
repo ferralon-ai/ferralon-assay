@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 // countingPlugin counts every call per op and can be told to fail an op.
@@ -157,6 +158,8 @@ func mustJSON(t *testing.T, v any) string {
 
 // TestMemoize pins which ops collapse to one inner call per distinct request, that a memoized answer
 // encodes byte-identically to the unwrapped one, and that a different request is a different entry.
+// The repeated requests are identical, advisory included, so a pass-through op that started caching
+// would collapse them and fail here.
 func TestMemoize(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range memoOps {
@@ -168,7 +171,7 @@ func TestMemoize(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i := 0; i < 3; i++ {
-				got, err := tt.call(ctx, lp, "/src", "GO-2099-000"+string(rune('1'+i)))
+				got, err := tt.call(ctx, lp, "/src", "GO-2099-0001")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -190,6 +193,90 @@ func TestMemoize(t *testing.T) {
 				t.Errorf("a different build dir must reach the inner plugin: calls = %d, want %d", n, wantCalls+1)
 			}
 		})
+	}
+}
+
+// TestMemoizeKeysOnWholeRequest pins that two requests for the same build dir that differ in any
+// other field are separate entries, so a key narrowed to op and build dir fails here.
+func TestMemoizeKeysOnWholeRequest(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		op   string
+		call func(lp LanguagePlugin, variant int) error
+	}{
+		{"call graph algorithm", OpCallGraph, func(lp LanguagePlugin, v int) error {
+			_, err := lp.CallGraph(ctx, CallGraphRequest{BuildDir: "/src", Algorithm: []string{"vta", "rta"}[v]})
+			return err
+		}},
+		{"version coordinate", OpResolveVersions, func(lp LanguagePlugin, v int) error {
+			_, err := lp.ResolveDependencyVersions(ctx, ResolveVersionsRequest{BuildDir: "/src", Coordinate: []string{"a:b", "a:c"}[v]})
+			return err
+		}},
+		{"inventory selection", OpResolveInventory, func(lp LanguagePlugin, v int) error {
+			_, err := lp.ResolveInventory(ctx, ResolveInventoryRequest{BuildDir: "/src", Selection: [][]string{{"a"}, {"b"}}[v]})
+			return err
+		}},
+		{"inventory target env", OpResolveInventory, func(lp LanguagePlugin, v int) error {
+			_, err := lp.ResolveInventory(ctx, ResolveInventoryRequest{BuildDir: "/src", TargetEnv: []map[string]string{{"GOOS": "linux"}, {"GOOS": "windows"}}[v]})
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inner := newCountingPlugin()
+			lp := Memoize(inner)
+			for _, v := range []int{0, 1, 0, 1} {
+				if err := tt.call(lp, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := inner.count(tt.op); n != 2 {
+				t.Errorf("inner calls = %d, want 2 (one per distinct request)", n)
+			}
+		})
+	}
+}
+
+// panickingPlugin panics on its first CallGraph call and succeeds after.
+type panickingPlugin struct {
+	StubPlugin
+	panicked bool
+}
+
+func (p *panickingPlugin) CallGraph(ctx context.Context, req CallGraphRequest) (CallGraphResult, error) {
+	if !p.panicked {
+		p.panicked = true
+		panic("plugin call panicked")
+	}
+	return p.StubPlugin.CallGraph(ctx, req)
+}
+
+// TestMemoizeReleasesAfterPanic pins that a panicking inner call leaves no entry behind for the next
+// caller to wait on forever.
+func TestMemoizeReleasesAfterPanic(t *testing.T) {
+	ctx := context.Background()
+	lp := Memoize(&panickingPlugin{})
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("want the inner panic")
+			}
+		}()
+		_, _ = lp.CallGraph(ctx, CallGraphRequest{BuildDir: "/src"})
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := lp.CallGraph(ctx, CallGraphRequest{BuildDir: "/src"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("retry after a panic: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call after a panic is still waiting on the panicked entry")
 	}
 }
 

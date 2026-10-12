@@ -58,18 +58,21 @@ func memoized[Req, Res any](ctx context.Context, m *memoPlugin, op string, req R
 			m.calls[key] = c
 			m.mu.Unlock()
 
+			// Deferred so a panicking plugin call still releases its waiters, which then retry.
+			defer func() {
+				if !c.ok {
+					m.mu.Lock()
+					delete(m.calls, key)
+					m.mu.Unlock()
+				}
+				close(c.done)
+			}()
 			res, err := run(ctx, req)
 			if err == nil {
 				if payload, mErr := json.Marshal(res); mErr == nil {
 					c.payload, c.ok = payload, true
 				}
 			}
-			if !c.ok {
-				m.mu.Lock()
-				delete(m.calls, key)
-				m.mu.Unlock()
-			}
-			close(c.done)
 			return res, err
 		}
 		m.mu.Unlock()

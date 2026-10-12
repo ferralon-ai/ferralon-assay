@@ -240,9 +240,22 @@ const (
 	// method true on every run.
 	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
 	// PartialReasonAdvisoryUnknownToAnalyzer (loud): the analyzer that would search for the
-	// advisory's symbols emitted no evidence about the advisory at all, so its silence is not a
-	// search that came back empty.
+	// advisory's symbols emitted no evidence about the advisory at all. It may not know the
+	// advisory, or may never have analyzed the affected module (a test-only or tool dependency
+	// outside the graph it loads). Either way its silence is not a search that came back empty.
 	PartialReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// PartialReasonExcludedFiles (loud): files the build left out (another GOOS or GOARCH, a build
+	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
+	// them, so its refutation does not cover the builds that compile them.
+	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
+	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
+	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this
+	// says the program does it, so it is loud.
+	PartialReasonReflectiveCall = PartialReasonReflection + ":call"
+	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
+	// (plugin.Open), so none of that code's calls were read.
+	PartialReasonPluginLoad = "plugin_load"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every

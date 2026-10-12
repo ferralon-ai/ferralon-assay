@@ -30,17 +30,22 @@ func TestLoadProgram_CgoDisabledBuildDeclaresDroppedCgo(t *testing.T) {
 	const pure = "//go:build !cgo\n\npackage m\n\nfunc Run() {}\n"
 	const cgo = "//go:build cgo\n\npackage m\n\n// void run(void) {}\nimport \"C\"\n\nfunc Run() { C.run() }\n"
 	const ignored = "//go:build ignore\n\npackage m\n\nimport \"C\"\n"
+	const prodCgo = "//go:build cgo && prod\n\npackage m\n\n// void run2(void) {}\nimport \"C\"\n\nfunc Run2() { C.run2() }\n"
 	cases := []struct {
-		name  string
-		files map[string]string
-		want  bool
+		name    string
+		files   map[string]string
+		goflags string
+		want    bool
 	}{
-		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, true},
-		{"cgo file excluded by a tag, not by cgo", map[string]string{"run.go": pure, "gen.go": ignored}, false},
-		{"no cgo at all", map[string]string{"run.go": pure}, false},
+		{"cgo variant dropped", map[string]string{"run.go": pure, "run_cgo.go": cgo}, "", true},
+		{"cgo file excluded by a tag, not by cgo", map[string]string{"run.go": pure, "gen.go": ignored}, "", false},
+		{"no cgo at all", map[string]string{"run.go": pure}, "", false},
+		{"tagged cgo file, tag not set", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "", false},
+		{"tagged cgo file, tag set in GOFLAGS", map[string]string{"run.go": pure, "prod_cgo.go": prodCgo}, "-tags=prod", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GOFLAGS", tc.goflags)
 			res, err := LoadProgram(context.Background(), writeModule(t, tc.files))
 			if err != nil {
 				t.Fatal(err)

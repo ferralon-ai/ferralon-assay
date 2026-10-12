@@ -298,6 +298,10 @@ type ResolvedDependency struct {
 	Version    string `json:"version,omitempty"` // declared version; empty when Resolved=false
 	Resolved   bool   `json:"resolved"`          // true ONLY when a concrete version was determined
 	Source     string `json:"source,omitempty"`  // "pom" | "gradle" (provenance, informational)
+	// Constraint is the declared version specifier (e.g. ">=2.0,<3") when the manifest states a
+	// range rather than an exact pin. It is evidence only: a range never becomes Version, and a
+	// consumer must not derive a resolved version from it. Empty for exact pins and bare names.
+	Constraint string `json:"constraint,omitempty"`
 }
 
 // DependencyVersionResult reports the resolved declared version for the requested
@@ -309,6 +313,11 @@ type DependencyVersionResult struct {
 	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
 	Match      ResolvedDependency   `json:"match"`
 	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
+	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
+	// from All is provably not a dependency. False (the default, and every plugin that does not
+	// set it) means absence from All proves nothing and a consumer must fail open.
+	Exhaustive bool `json:"exhaustive,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.

@@ -10,8 +10,10 @@ import (
 
 // Engine is a class-hierarchy (CHA) call graph over a set of parsed classes: the
 // application code plus every dependency JAR whose bytecode was loaded. Classes
-// outside this set (the JDK, unloaded dependencies) are out-of-classpath leaves,
-// handled soundly by the hazard rules in resolveTargets.
+// outside this set split two ways (isPlatformClass): JDK platform classes are
+// out-of-classpath leaves guarded by the re-entry rule, and every other unloaded
+// class — a dependency whose bytecode was never opened — is a completeness hazard,
+// because its body could reach the sink. Both are handled in resolveTargets.
 //
 // CHA is sound but over-approximate: a virtual call resolves to every concrete
 // override in the receiver's subtype closure, even ones the program never
@@ -123,17 +125,95 @@ func (e *Engine) hasAppSubtype(typ string) bool {
 // lookupInherited resolves (owner,name,desc) walking up the superclass chain — for
 // static/special edges whose exact target may be declared on an ancestor.
 func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
-	for cur := ref.Owner; cur != ""; {
-		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: ref.Name, Descriptor: ref.Descriptor}).String()]; ok {
-			return m
+	m, _ := e.resolveMethod(ref.Owner, ref.Name, ref.Descriptor)
+	return m
+}
+
+// resolveMethod performs JVM method resolution (JVMS §5.4.3.3) of name+desc starting
+// at class owner over the loaded classes: the superclass chain first, then the
+// transitive superinterfaces for a default method. When nothing loaded declares it,
+// unloaded lists the out-of-classpath ancestors (owner itself, if unloaded) where the
+// real body may live, so the caller can decide leaf vs hazard by who owns them. A
+// declaration found on the superclass chain wins over any interface, as at runtime.
+func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, unloaded []string) {
+	var ifaces []string
+	for cur := owner; cur != ""; {
+		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok {
+			return m, nil
 		}
 		c := e.classes[cur]
 		if c == nil {
+			unloaded = append(unloaded, cur)
 			break
 		}
+		ifaces = append(ifaces, c.Interfaces...)
 		cur = c.Super
 	}
-	return nil
+	seen := map[string]bool{}
+	for len(ifaces) > 0 {
+		cur := ifaces[0]
+		ifaces = ifaces[1:]
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !m.Abstract {
+			return m, nil
+		}
+		c := e.classes[cur]
+		if c == nil {
+			unloaded = append(unloaded, cur)
+			continue
+		}
+		ifaces = append(ifaces, c.Interfaces...)
+	}
+	return nil, unloaded
+}
+
+// unloadedDependency returns the first of names that is neither loaded nor a JDK
+// platform class — an opened-never dependency whose bytecode could hide the sink.
+func (e *Engine) unloadedDependency(names []string) (string, bool) {
+	for _, n := range names {
+		if _, loaded := e.classes[n]; !loaded && !isPlatformClass(n) {
+			return n, true
+		}
+	}
+	return "", false
+}
+
+// isPlatformClass reports whether an internal class name belongs to the Java
+// platform (the JDK's own modules), whose bodies the engine treats as leaves under
+// the re-entry rule rather than as unseen dependency code. The list is deliberately
+// exact: javax/ and com/sun/ also host widely used Maven artifacts (javax/servlet,
+// javax/persistence, com/sun/jna, com/sun/mail), so only the subpackages the JDK
+// itself ships are named. Misfiling a dependency here would turn its unseen body
+// into a silent leaf, so anything not listed is a dependency.
+func isPlatformClass(name string) bool {
+	if strings.HasPrefix(name, "[") { // array pseudo-class (clone, length)
+		return true
+	}
+	for _, p := range platformPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+var platformPrefixes = []string{
+	"java/", "jdk/", "sun/",
+	"javax/accessibility/", "javax/annotation/processing/", "javax/crypto/", "javax/imageio/",
+	"javax/lang/model/", "javax/management/", "javax/naming/", "javax/net/", "javax/print/",
+	"javax/rmi/ssl/", "javax/script/", "javax/security/auth/", "javax/security/cert/",
+	"javax/security/sasl/", "javax/smartcardio/", "javax/sound/", "javax/sql/", "javax/swing/",
+	"javax/tools/", "javax/transaction/xa/",
+	"javax/xml/catalog/", "javax/xml/crypto/", "javax/xml/datatype/", "javax/xml/namespace/",
+	"javax/xml/parsers/", "javax/xml/stream/", "javax/xml/transform/", "javax/xml/validation/",
+	"javax/xml/xpath/", "javax/xml/XMLConstants",
+	"com/sun/crypto/provider/", "com/sun/java/", "com/sun/jdi/", "com/sun/jndi/",
+	"com/sun/management/", "com/sun/net/httpserver/", "com/sun/nio/", "com/sun/org/apache/",
+	"com/sun/security/", "com/sun/source/", "com/sun/tools/",
+	"org/ietf/jgss/", "org/w3c/dom/", "org/xml/sax/",
 }
 
 // resolveTargets returns the concrete in-classpath callees of an edge under CHA,
@@ -146,8 +226,12 @@ func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
 //     metafactory, Class.forName) and is invisible to a static graph.
 //   - a virtual/interface call whose receiver type is out of classpath: real
 //     dispatch could land on anything, including the sink.
-//   - a static/special call INTO an out-of-classpath method that takes a callback
-//     an application class implements: higher-order re-entry (a Comparator handed to
+//   - a call whose body lives in an UNLOADED DEPENDENCY (not loaded, not platform):
+//     the dependency's bytecode was never opened, so the sink could be anywhere
+//     beneath it. Covers a direct static/special call, a method inherited from such
+//     an ancestor, and (in Reach) a static initializer that ancestor would run.
+//   - a call INTO an out-of-classpath platform method that takes a callback an
+//     application class implements: higher-order re-entry (a Comparator handed to
 //     Collections.sort, a Runnable to an executor). The callback is invoked inside
 //     the out-of-classpath method the graph does not traverse, so it is caught here,
 //     caller-side, rather than silently dropped at the leaf.
@@ -160,12 +244,15 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 	}
 	switch edge.Kind {
 	case classfile.EdgeStatic, classfile.EdgeSpecial:
-		if m := e.lookupInherited(edge.To); m != nil {
+		m, unloaded := e.resolveMethod(edge.To.Owner, edge.To.Name, edge.To.Descriptor)
+		if m != nil {
 			return []*classfile.Method{m}, false, ""
 		}
-		// Target outside the analyzed classpath (JDK / unloaded dependency). A direct
-		// call there is a leaf UNLESS it can re-enter application code through a
-		// callback argument — the C8 re-entry seam.
+		if dep, ok := e.unloadedDependency(unloaded); ok {
+			return nil, true, "unloaded_dependency: " + edge.To.String() + " resolves into unopened " + dep
+		}
+		// Target in the JDK platform. A direct call there is a leaf UNLESS it can
+		// re-enter application code through a callback argument — the C8 re-entry seam.
 		if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
 			return nil, true, "higher-order re-entry: out-of-classpath call takes app-implemented " + cb
 		}
@@ -174,19 +261,31 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 		if _, known := e.classes[edge.To.Owner]; !known {
 			return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
 		}
+		// CHA: every class in the receiver's subtype closure dispatches to the method
+		// it RESOLVES to — its own declaration or an inherited one — not only to
+		// declarations in the closure. A class that inherits the body from outside the
+		// loaded set dispatches into code the graph cannot see.
+		seen := map[*classfile.Method]bool{}
+		var outside []string
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
-			key := (classfile.MethodRef{Owner: c, Name: edge.To.Name, Descriptor: edge.To.Descriptor}).String()
-			if m, ok := e.declared[key]; ok && !m.Abstract {
+			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
+			if m == nil {
+				outside = append(outside, unloaded...)
+				continue
+			}
+			if !m.Abstract && !seen[m] {
+				seen[m] = true
 				targets = append(targets, m)
 			}
 		}
-		if len(targets) == 0 {
-			// The receiver type is in classpath but the method is declared nowhere in
-			// its subtype closure: it is inherited from an out-of-classpath supertype
-			// (e.g. MyList extends ArrayList; forEach(...)). The real body is out of
-			// classpath, so — exactly as the static/special leaf — a callback argument
-			// can re-enter application code. Without this check the virtual branch is a
-			// silent leaf where the static branch declares a hazard (C8 re-entry seam).
+		if dep, ok := e.unloadedDependency(outside); ok {
+			return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+		}
+		if len(outside) > 0 {
+			// Some receiver inherits the body from an out-of-classpath platform
+			// supertype (e.g. MyList extends ArrayList; forEach(...)). Exactly as the
+			// static/special leaf, a callback argument can re-enter application code
+			// (C8 re-entry seam).
 			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
 				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes app-implemented " + cb
 			}
@@ -263,9 +362,17 @@ type Result struct {
 //
 // Verdict: a path ⇒ reachable_candidate (ordered path returned); no path and NO
 // hazard on the searched frontier ⇒ not_exploitable (a real empty search); no path
-// but a hazard could have hidden one ⇒ undetermined (sound abstention).
+// but a hazard could have hidden one ⇒ undetermined (sound abstention). A sink that
+// trace 1 did not find is undetermined outright: the search cannot reach a method it
+// never loaded, so its empty result says nothing about the program.
 func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	res := Result{SinkPresent: e.declared[sink.String()] != nil}
+	if !res.SinkPresent {
+		res.Verdict = Undetermined
+		res.HazardOnFrontier = true
+		res.HazardWhy = "sink_not_loaded: " + sink.String()
+		return res
+	}
 
 	start := e.lookupInherited(ingress)
 	if start == nil {
@@ -332,9 +439,17 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		// initializes the SUPERCLASS (and default-method superinterfaces) before the
 		// class itself, so walk the whole init closure — a base class's <clinit>
 		// reaching the sink is a real runtime path even when the subclass has none.
-		// An out-of-classpath class in the closure has no parsed <clinit> (nil -> leaf).
+		// A platform class in the closure has no parsed <clinit> (nil -> leaf); an
+		// unloaded dependency's <clinit> is unseen code and a hazard.
 		for _, owner := range m.InitTriggers {
 			for _, cls := range e.initClosure(owner) {
+				if dep, ok := e.unloadedDependency([]string{cls}); ok {
+					res.HazardOnFrontier = true
+					if res.HazardWhy == "" {
+						res.HazardWhy = "unloaded_dependency: static initializer of unopened " + dep
+					}
+					continue
+				}
 				clinit := classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}
 				enqueue(cur, e.declared[clinit.String()])
 			}

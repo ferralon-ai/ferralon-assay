@@ -2,6 +2,7 @@ package depreach
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
@@ -295,6 +296,151 @@ func TestReach_ExpandedDynamicResolutionChannels(t *testing.T) {
 		eng := NewEngine([]classfile.Class{app, urlFetcherDep()})
 		if v := eng.Reach(mref("com/acme/App", "trigger", "()V"), sink).Verdict; v != Undetermined {
 			t.Errorf("%s on the frontier must be undetermined, got %s", ch.name, v)
+		}
+	}
+}
+
+// The unloaded-dependency soundness rows: an app that reaches a dependency whose
+// bytecode was never opened must not read as not_exploitable, whether the sink itself
+// is unloaded (trace 1 found nothing) or the call into the unopened jar could lead to
+// a loaded sink. Platform calls keep the leaf rule, and a loaded sink with no path
+// stays a provable not_exploitable.
+func TestReach_UnloadedDependencyIsNeverNotExploitable(t *testing.T) {
+	const (
+		depOwner = "com/fasterxml/jackson/databind/ObjectMapper"
+		readDesc = "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"
+	)
+	unloadedSink := mref(depOwner, "readValue", readDesc)
+	loadedSink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	app := classfile.Class{Name: "com/acme/App", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/App", "static", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeStatic, "com/fasterxml/jackson/databind/util/Helpers", "parse", "(Ljava/lang/String;)V"),
+		}},
+		{Ref: mref("com/acme/App", "ctor", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, depOwner, "<init>", "()V"),
+		}},
+		{Ref: mref("com/acme/App", "servlet", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeStatic, "javax/servlet/http/HttpUtils", "parseQueryString", "(Ljava/lang/String;)Ljava/util/Hashtable;"),
+		}},
+		{Ref: mref("com/acme/App", "platform", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeStatic, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;"),
+			edge(classfile.EdgeStatic, "javax/xml/parsers/DocumentBuilderFactory", "newInstance", "()Ljavax/xml/parsers/DocumentBuilderFactory;"),
+		}},
+		{Ref: mref("com/acme/App", "statics", "()V"), InitTriggers: []string{"com/fasterxml/jackson/databind/cfg/Defaults"}},
+		{Ref: mref("com/acme/App", "inherited", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, "com/acme/MyMapper", "<init>", "()V"),
+			edge(classfile.EdgeVirtual, "com/acme/MyMapper", "readTree", "(Ljava/lang/String;)V"),
+		}},
+	}}
+	// MyMapper extends the unloaded ObjectMapper: readTree's body is in the unopened jar.
+	myMapper := classfile.Class{Name: "com/acme/MyMapper", Super: depOwner, Methods: []classfile.Method{
+		{Ref: mref("com/acme/MyMapper", "<init>", "()V")},
+	}}
+	eng := NewEngine([]classfile.Class{app, myMapper, urlFetcherDep()})
+
+	cases := []struct {
+		name    string
+		ingress string
+		sink    classfile.MethodRef
+		want    Verdict
+		why     string
+	}{
+		{"static call, sink not loaded", "static", unloadedSink, Undetermined, "sink_not_loaded"},
+		{"ctor call, sink not loaded", "ctor", unloadedSink, Undetermined, "sink_not_loaded"},
+		{"static call into unopened jar, sink loaded", "static", loadedSink, Undetermined, "unloaded_dependency"},
+		{"ctor call into unopened jar, sink loaded", "ctor", loadedSink, Undetermined, "unloaded_dependency"},
+		{"javax/servlet is a dependency, not the platform", "servlet", loadedSink, Undetermined, "unloaded_dependency"},
+		{"static initializer of an unopened class", "statics", loadedSink, Undetermined, "unloaded_dependency"},
+		{"virtual call inherited from an unopened superclass", "inherited", loadedSink, Undetermined, "unloaded_dependency"},
+		{"platform calls stay leaves; loaded sink, no path", "platform", loadedSink, NotExploitable, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := eng.Reach(mref("com/acme/App", tc.ingress, "()V"), tc.sink)
+			if r.Verdict != tc.want {
+				t.Fatalf("verdict = %s, want %s (hazard=%q)", r.Verdict, tc.want, r.HazardWhy)
+			}
+			if tc.why != "" && !strings.HasPrefix(r.HazardWhy, tc.why+":") {
+				t.Errorf("HazardWhy = %q, want prefix %q", r.HazardWhy, tc.why)
+			}
+		})
+	}
+}
+
+// CHA must dispatch a receiver to the method it RESOLVES to, including a body it
+// inherits from a loaded superclass. Sub declares no run(); Base.run reaches the sink;
+// a subclass override must not crowd Base.run out of the target set.
+func TestReach_VirtualDispatchIncludesInheritedLoadedBody(t *testing.T) {
+	sink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	app := classfile.Class{Name: "com/acme/App", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/App", "trigger", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, "com/acme/Sub", "<init>", "()V"),
+			edge(classfile.EdgeVirtual, "com/acme/Sub", "run", "()V"),
+		}},
+	}}
+	base := classfile.Class{Name: "com/acme/Base", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/Base", "run", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, "com/evil/netkit/UrlFetcher", "<init>", "()V"),
+			edge(classfile.EdgeVirtual, "com/evil/netkit/UrlFetcher", "fetch", sinkDesc),
+		}},
+	}}
+	sub := classfile.Class{Name: "com/acme/Sub", Super: "com/acme/Base", Methods: []classfile.Method{
+		{Ref: mref("com/acme/Sub", "<init>", "()V")},
+	}}
+	leaf := classfile.Class{Name: "com/acme/Leaf", Super: "com/acme/Sub", Methods: []classfile.Method{
+		{Ref: mref("com/acme/Leaf", "run", "()V")}, // override: harmless
+	}}
+	eng := NewEngine([]classfile.Class{app, base, sub, leaf, urlFetcherDep()})
+	if r := eng.Reach(mref("com/acme/App", "trigger", "()V"), sink); r.Verdict != ReachableCandidate {
+		t.Fatalf("inherited loaded body must be dispatched; want reachable_candidate, got %s (hazard=%q)", r.Verdict, r.HazardWhy)
+	}
+}
+
+// A default method on a loaded interface is the resolved body for an implementor
+// that does not override it.
+func TestReach_VirtualDispatchIncludesInterfaceDefault(t *testing.T) {
+	sink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	app := classfile.Class{Name: "com/acme/App", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/App", "trigger", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, "com/acme/Impl", "<init>", "()V"),
+			edge(classfile.EdgeVirtual, "com/acme/Impl", "go", "()V"),
+		}},
+	}}
+	iface := classfile.Class{Name: "com/acme/Goer", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/Goer", "go", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeSpecial, "com/evil/netkit/UrlFetcher", "<init>", "()V"),
+			edge(classfile.EdgeVirtual, "com/evil/netkit/UrlFetcher", "fetch", sinkDesc),
+		}},
+	}}
+	impl := classfile.Class{Name: "com/acme/Impl", Super: "java/lang/Object", Interfaces: []string{"com/acme/Goer"}, Methods: []classfile.Method{
+		{Ref: mref("com/acme/Impl", "<init>", "()V")},
+	}}
+	eng := NewEngine([]classfile.Class{app, iface, impl, urlFetcherDep()})
+	if r := eng.Reach(mref("com/acme/App", "trigger", "()V"), sink); r.Verdict != ReachableCandidate {
+		t.Fatalf("interface default body must be dispatched; want reachable_candidate, got %s (hazard=%q)", r.Verdict, r.HazardWhy)
+	}
+}
+
+func TestIsPlatformClass(t *testing.T) {
+	cases := map[string]bool{
+		"java/lang/String":                           true,
+		"javax/crypto/Cipher":                        true,
+		"javax/xml/parsers/SAXParser":                true,
+		"javax/xml/XMLConstants":                     true,
+		"com/sun/net/httpserver/HttpServer":          true,
+		"org/w3c/dom/Node":                           true,
+		"[Ljava/lang/Object;":                        true,
+		"javax/servlet/http/HttpServlet":             false,
+		"javax/persistence/EntityManager":            false,
+		"javax/xml/bind/JAXBContext":                 false,
+		"com/sun/jna/Native":                         false,
+		"com/sun/mail/smtp/SMTPTransport":            false,
+		"kotlin/jvm/internal/Intrinsics":             false,
+		"org/springframework/boot/SpringApplication": false,
+	}
+	for name, want := range cases {
+		if got := isPlatformClass(name); got != want {
+			t.Errorf("isPlatformClass(%q) = %v, want %v", name, got, want)
 		}
 	}
 }

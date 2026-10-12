@@ -110,12 +110,13 @@ func (e *Engine) initClosure(owner string) []string {
 // hasAppSubtype reports whether some in-classpath class other than typ is a subtype
 // of typ — i.e. an application object of the (possibly JDK) type could exist and be
 // passed as a callback. Used by the re-entry hazard rule.
+//
+// Every name in e.subtypes is a loaded class, so a direct subtype other than typ itself
+// is exactly the witness; walking the whole closure (all loaded classes, for
+// java/lang/Object) on every call edge made large classpaths quadratic.
 func (e *Engine) hasAppSubtype(typ string) bool {
-	for _, c := range e.subtypeClosure(typ) {
-		if c == typ {
-			continue
-		}
-		if _, inClasspath := e.classes[c]; inClasspath {
+	for _, c := range e.subtypes[typ] {
+		if c != typ {
 			return true
 		}
 	}

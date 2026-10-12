@@ -54,9 +54,10 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate.
 //   - neither, and the empty path set is not evidence about the subject (see
-//     undeterminedReason)                      → VerdictUndetermined, no basis.
-//   - otherwise (no disqualification, no reach) → VerdictNotExploitable, basis
-//     symbol-absent (the vulnerable symbol/path was not found).
+//     undeterminedReason) or has no positive grounds (see
+//     notExploitableGrounds)                    → VerdictUndetermined, no basis.
+//   - otherwise (no disqualification, no reach, grounds named) → VerdictNotExploitable,
+//     basis symbol-absent (the vulnerable symbol/path was not found).
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
@@ -135,6 +136,13 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID)
+		detail, groundsReason, grounded := "", "", false
+		if !undetermined {
+			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg)
+			if !grounded {
+				reason, undetermined = groundsReason, true
+			}
+		}
 		if undetermined {
 			f = report.AdvisoryFinding{
 				Advisory:           adv,
@@ -151,7 +159,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 			Verdict:  report.VerdictNotExploitable,
 			Evidence: report.EvidenceSummary{
 				Basis:  verdict.BasisSymbolAbsent,
-				Detail: "no reachable path to the advisory symbol was found",
+				Detail: detail,
 			},
 		}
 	}
@@ -735,8 +743,6 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		return adv, nil
 	}
 	var raw struct {
-		Module  string   `json:"module"`
-		PURL    string   `json:"purl"`
 		Aliases []string `json:"aliases"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &raw); err != nil {
@@ -744,12 +750,13 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 	}
 	adv.Aliases = raw.Aliases
 
+	name, purl := pipeline.AdvisoryPackage(store, assessmentID)
 	inv, ok := inventory(store, assessmentID)
-	if !ok || raw.Module == "" || inv.ResolvedVersion == "" {
+	if !ok || name == "" || inv.ResolvedVersion == "" {
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
-	// toolchain, resolved_version is a go1.x.y toolchain release (M3) while raw.Module is the
+	// toolchain, resolved_version is a go1.x.y toolchain release (M3) while the package name is the
 	// advisory's top-level MODULE — pairing them would emit an SBOM entry like
 	// golang.org/x/net@go1.21.0, a coordinate that does not exist.
 	if pipeline.ToolchainSubject(store, assessmentID) {
@@ -757,9 +764,9 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 	}
 	return adv, &report.Package{
 		Ecosystem: ecosystemFor(inv.Language),
-		Name:      raw.Module,
+		Name:      name,
 		Version:   inv.ResolvedVersion,
-		PURL:      raw.PURL,
+		PURL:      purl,
 	}
 }
 
@@ -917,9 +924,20 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // already publishes at scan scope, each named precisely (unsupported_phase1, no_manifest, …) and
 // each scoped to the ecosystem the run actually detected. Synthesizing a second note here would
 // disclose one fact twice and scope the copy to Go.
+//
+// The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
+// ecosystem: they are about that package's admission and symbols, not the Go toolchain.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason == report.ReasonAnalysisDidNotRun {
 		return report.PartialityNote{}, false
+	}
+	switch f.UndeterminedReason {
+	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved:
+		note := report.PartialityNote{Reason: f.UndeterminedReason}
+		if f.Package != nil {
+			note.Ecosystem = f.Package.Ecosystem
+		}
+		return note, true
 	}
 	return toolchainLimitNote(f.UndeterminedReason), true
 }

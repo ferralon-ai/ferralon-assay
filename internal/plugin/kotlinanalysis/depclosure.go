@@ -24,6 +24,11 @@ import (
 // not fully known — the node or a descendant carries a relationship_unexpressed reason, so its
 // out-edges were never read.
 //
+// When the build has Gradle start scripts (runtimeclasspath.go), their classpath replaces the
+// inventory: it lists every JAR the JVM is launched with, transitive ones included, in launch
+// order. A classpath JAR that cannot be found or read has no known closure, so its scoped
+// reason is unbounded.
+//
 // A dependency the inventory does not list at all is never silently trusted: depreach treats
 // any call into a class that is neither loaded nor platform as an unloaded_dependency hazard,
 // so reaching it makes the search undetermined.
@@ -42,8 +47,12 @@ const partialReasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed 
 type depClosure struct {
 	classes []classfile.Class
 	scoped  []plugin.ScopedReason
-	// loaded maps "group:artifact:version" to the JAR path that was opened, for evidence.
+	// loaded maps "group:artifact:version" (or the classpath JAR name) to the JAR path that
+	// was opened, for evidence.
 	loaded map[string]string
+	// mainClasses are the launch main classes the start scripts name; empty when the
+	// closure came from the inventory.
+	mainClasses []string
 }
 
 // depNode is one distinct (group, artifact, version) from the inventory, with the inventory
@@ -61,6 +70,9 @@ func (n depNode) gav() string        { return n.coordinate() + ":" + n.version }
 // locate. firstParty names classes already loaded from the build output; a dependency class
 // with the same binary name is skipped (the build output is what the build packaged).
 func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[string]bool) (*depClosure, error) {
+	if rc, ok := findRuntimeClasspath(buildDir); ok {
+		return loadRuntimeClasspath(buildDir, rc, firstParty), nil
+	}
 	inv, err := javaanalysis.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
 	if err != nil {
 		return nil, err
@@ -128,6 +140,62 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 		}
 	}
 	return dc, nil
+}
+
+// loadRuntimeClasspath loads the start-script classpath. On an ordered classpath a class
+// already defined by an earlier JAR (or by first-party output) is skipped silently: the JVM
+// loads the first definition, so the later copy never runs. On an unordered union of
+// differing classpaths that is unknown, and the duplicate is a scoped reason.
+func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[string]bool) *depClosure {
+	index := gradleCacheIndex(buildDir)
+	dc := &depClosure{loaded: map[string]string{}, mainClasses: rc.mainClasses}
+	definedBy := map[string]string{}
+	shadowed := map[string]bool{}
+	for _, name := range rc.entries {
+		jar, ok := locateClasspathJar(buildDir, rc, index, name)
+		if !ok {
+			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: partialReasonMissingJar, Package: cacheOnlyPackage(index[name]), Path: "classpath: " + name})
+			continue
+		}
+		pkg := jar.packageURL()
+		jr, err := classfile.LoadJar(jar.path)
+		if err != nil {
+			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonToolFailure, Package: pkg, Path: "classpath: " + name})
+			continue
+		}
+		if len(jr.Failed) > 0 {
+			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonToolFailure, Package: pkg, Path: "classpath: " + name + ": " + jr.Failed[0]})
+		}
+		dc.loaded[name] = jar.path
+		for _, c := range jr.Classes {
+			if firstParty[c.Name] {
+				continue
+			}
+			if prev, dup := definedBy[c.Name]; dup {
+				if !rc.ordered && !shadowed[prev+"|"+name] {
+					shadowed[prev+"|"+name] = true
+					dc.scoped = append(dc.scoped, plugin.ScopedReason{
+						Reason:  partialReasonDuplicateClass,
+						Package: pkg,
+						Path:    fmt.Sprintf("classpath: %s shadowed by %s: %s", name, prev, c.Name),
+					})
+				}
+				continue
+			}
+			definedBy[c.Name] = name
+			dc.classes = append(dc.classes, c)
+		}
+	}
+	return dc
+}
+
+// cacheOnlyPackage names the package of a classpath JAR that could not be used, when the
+// cache paths agree on one ("" otherwise).
+func cacheOnlyPackage(paths []string) string {
+	if g, a, _ := cacheCoordinate(paths); g != "" {
+		return "pkg:maven/" + g + "/" + a
+	}
+	return ""
 }
 
 // inventoryGraph indexes a DependencyInventory for closure queries.

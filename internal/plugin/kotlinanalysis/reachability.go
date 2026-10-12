@@ -20,22 +20,30 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 // trace follows calls into the exact dependency bytecode the build resolved.
 //
 // Roots and what each may license:
-//   - `main` (mainMethodRefs) is the whole-program root and the ONLY root that licenses a
-//     cleared sink. A sink is listed in Searched only when at least one main exists, the sink
-//     is a concrete method in loaded bytecode, and every root's search (main and framework)
-//     was a hazard-free empty search.
+//   - `main` (every mainMethodRefs entry, plus the launch main a Gradle start script names) is
+//     the whole-program root and the ONLY root that licenses a cleared sink. A sink is listed
+//     in Searched only when at least one main exists, the sink is a concrete method in loaded
+//     bytecode, and every root's search (main and framework) was a hazard-free empty search.
 //   - framework ingress roots (frameworkIngressRefs) add a candidate path or undetermined,
 //     never a cleared sink on their own.
 //   - no main → no_whole_program_root + reachability_undetermined for any sink not found;
 //     a candidate path from a framework root is still reported.
 //
+// Only the build root is traced. A build with further projects (modules.go) declares
+// multiple_projects_unsupported and clears no sink: an untraced project could call it.
+//
 // Every hazard met is declared: reachability_undetermined (did_not_run) always, plus
-// `reflection` / `dynamic_dispatch` when those were the kinds met. A dependency JAR the
-// inventory lists but that could not be opened is a Scoped reason bounded by its closure.
+// `reflection` / `dynamic_dispatch` when those were the kinds met. A dependency JAR that could
+// not be opened is a Scoped reason bounded by its closure, and its reason is also declared
+// run-wide in Reasons.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
+	}
+	multiProject := len(otherProjects(req.BuildDir)) > 0
+	if multiProject {
+		prog.reasons[partialReasonMultipleProjects] = true
 	}
 
 	var sinks []string
@@ -56,15 +64,24 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
+	for _, sr := range deps.scoped {
+		prog.reasons[sr.Reason] = true
+	}
 	all := make([]classfile.Class, 0, len(prog.classes)+len(deps.classes))
 	all = append(all, prog.classes...)
 	all = append(all, deps.classes...)
 	engine := depreach.NewEngine(all)
 	concrete := concreteMethods(all)
 
-	// Roots come from first-party code only: a `main` inside a dependency JAR is not this
-	// program's entry point.
+	// Roots are first-party mains plus the launch main class a start script names. Any other
+	// `main` inside a dependency JAR is not this program's entry point. A launch main that is
+	// not in loaded code makes every search abstain (the engine cannot find the ingress).
 	mains := mainMethodRefs(prog.classes)
+	for _, cls := range deps.mainClasses {
+		if !firstParty[cls] {
+			mains = append(mains, classfile.MethodRef{Owner: cls, Name: "main", Descriptor: "([Ljava/lang/String;)V"})
+		}
+	}
 	frameworks := frameworkIngressRefs(prog.classes)
 
 	var paths []plugin.ReachPath
@@ -89,7 +106,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		case len(mains) == 0:
 			prog.reasons[partialReasonNoWholeProgramRoot] = true
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
-		case out.undetermined || !concrete[sink.String()]:
+		case out.undetermined || !concrete[sink.String()] || multiProject:
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true

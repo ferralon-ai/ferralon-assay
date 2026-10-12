@@ -171,7 +171,9 @@ func vulnClass() []byte {
 // build declares the vulnerable dependency's version, its JAR sits in the local Gradle
 // cache, and the advisory names the sink by its package-qualified form. The op locates the
 // JAR, indexes it through the real parser, and resolves the advisory symbol to a concrete
-// bytecode-canonical plugin.Symbol — Complete, no partiality.
+// bytecode-canonical plugin.Symbol — Complete, no partiality. A name without its full package
+// stays unresolved: a lookalike class elsewhere in the JAR could satisfy it while the real sink
+// goes unchecked.
 func TestResolveDependencySymbols_ResolvesAgainstDependencyJar(t *testing.T) {
 	build := writeGradleJarFixture(t, "com.example", "vuln", "1.2.3", map[string][]byte{
 		"com/example/net/UrlFetcher": vulnClass(),
@@ -182,29 +184,94 @@ dependencies {
 }
 `)
 
-	for _, advisory := range []string{
-		"com.example.net.UrlFetcher.fetch",
-		"UrlFetcher.fetch",
-		"fetch",
-	} {
-		res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
-			BuildDir:        build,
-			PURL:            "pkg:maven/com.example/vuln",
-			AdvisorySymbols: []string{advisory},
+	tests := []struct {
+		advisory string
+		resolved bool
+	}{
+		{"com.example.net.UrlFetcher.fetch", true},
+		{"com.example.net.UrlFetcher.fetch(Ljava/lang/String;)V", true},
+		{"UrlFetcher.fetch", false},
+		{"fetch", false},
+		{"net.UrlFetcher.fetch", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.advisory, func(t *testing.T) {
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir:        build,
+				PURL:            "pkg:maven/com.example/vuln",
+				AdvisorySymbols: []string{tc.advisory},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.resolved {
+				if len(res.Resolved) != 0 || len(res.Matched) != 0 || !hasReason(res.Partiality, partialReasonAdvisorySymbolUnresolved) {
+					t.Fatalf("want unresolved, got resolved=%+v matched=%v partiality=%+v", res.Resolved, res.Matched, res.Partiality)
+				}
+				return
+			}
+			if !res.Partiality.Complete {
+				t.Errorf("partiality not Complete: %+v", res.Partiality)
+			}
+			if len(res.Resolved) != 1 {
+				t.Fatalf("got %d resolved, want 1: %+v", len(res.Resolved), res.Resolved)
+			}
+			got := res.Resolved[0]
+			if got.Name != "fetch" || got.Enclosing != "UrlFetcher" || got.Package != "com.example.net" {
+				t.Errorf("resolved symbol = %+v, want fetch on com.example.net.UrlFetcher", got)
+			}
 		})
-		if err != nil {
-			t.Fatalf("advisory %q: %v", advisory, err)
-		}
-		if !res.Partiality.Complete {
-			t.Errorf("advisory %q: partiality not Complete: %+v", advisory, res.Partiality)
-		}
-		if len(res.Resolved) != 1 {
-			t.Fatalf("advisory %q: got %d resolved, want 1: %+v", advisory, len(res.Resolved), res.Resolved)
-		}
-		got := res.Resolved[0]
-		if got.Name != "fetch" || got.Enclosing != "UrlFetcher" || got.Package != "com.example.net" {
-			t.Errorf("advisory %q: resolved symbol = %+v, want fetch on com.example.net.UrlFetcher", advisory, got)
-		}
+	}
+}
+
+// TestResolveDependencySymbols_LookalikeClassIsNotTheSink: the JAR holds the real sink and a
+// same-named class in another package. Only the advisory's full package selects; the lookalike
+// never satisfies it, and a lookalike alone leaves the symbol unresolved.
+func TestResolveDependencySymbols_LookalikeClassIsNotTheSink(t *testing.T) {
+	lookalike := func() []byte {
+		b := newKClassBuilder()
+		b.addMethod("fetch", "(Ljava/lang/String;)V", []byte{opReturn})
+		return b.build("com/example/shaded/UrlFetcher", "java/lang/Object")
+	}
+	tests := []struct {
+		name        string
+		classes     map[string][]byte
+		wantMatched map[string][]string
+	}{
+		{
+			name: "real sink and lookalike: only the real sink",
+			classes: map[string][]byte{
+				"com/example/net/UrlFetcher":    vulnClass(),
+				"com/example/shaded/UrlFetcher": lookalike(),
+			},
+			wantMatched: map[string][]string{
+				"com.example.net.UrlFetcher.fetch": {"com/example/net/UrlFetcher.fetch(Ljava/lang/String;)V"},
+			},
+		},
+		{
+			name:        "lookalike only: unresolved",
+			classes:     map[string][]byte{"com/example/shaded/UrlFetcher": lookalike()},
+			wantMatched: map[string][]string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			build := writeGradleJarFixture(t, "com.example", "vuln", "1.2.3", tc.classes)
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir:        build,
+				PURL:            "pkg:maven/com.example/vuln@1.2.3",
+				AdvisorySymbols: []string{"com.example.net.UrlFetcher.fetch"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(res.Matched, tc.wantMatched) {
+				t.Errorf("Matched = %v, want %v", res.Matched, tc.wantMatched)
+			}
+			if wantUnresolved := len(tc.wantMatched) == 0; hasReason(res.Partiality, partialReasonAdvisorySymbolUnresolved) != wantUnresolved {
+				t.Errorf("advisory_symbol_unresolved = %v, want %v (%+v)", !wantUnresolved, wantUnresolved, res.Partiality)
+			}
+		})
 	}
 }
 
@@ -334,7 +401,7 @@ func TestResolveDependencySymbols_Deterministic(t *testing.T) {
 	req := plugin.ResolveSymbolsRequest{
 		BuildDir:        build,
 		PURL:            "pkg:maven/com.example/vuln@1.2.3",
-		AdvisorySymbols: []string{"UrlFetcher.fetch", "UrlFetcher.open", "UrlFetcher.read"},
+		AdvisorySymbols: []string{"com.example.net.UrlFetcher.fetch", "com.example.net.UrlFetcher.open", "com.example.net.UrlFetcher.read"},
 	}
 	first, err := ResolveDependencySymbols(context.Background(), req)
 	if err != nil {

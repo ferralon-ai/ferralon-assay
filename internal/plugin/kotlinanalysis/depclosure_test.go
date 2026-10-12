@@ -408,6 +408,9 @@ func TestReachability_MissingJarIsScopedToItsClosure(t *testing.T) {
 	if res.Partiality.Complete {
 		t.Error("a result carrying scoped reasons must not be Complete")
 	}
+	if !hasReason(res.Partiality, partialReasonMissingJar) {
+		t.Errorf("a scoped miss must also be declared run-wide, got %v", res.Partiality.Reasons)
+	}
 	// b was loaded, main never calls it: the sink is still searched. The scoped reasons are
 	// the gate's to apply per advisory.
 	if !reflect.DeepEqual(res.Searched, []string{"org/b/B.sink()V"}) {
@@ -437,6 +440,9 @@ dependencies {
 	res := reach(t, dir, "org/shared/Dup.run()V")
 	if len(res.Partiality.Scoped) != 1 {
 		t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
+	}
+	if !hasReason(res.Partiality, partialReasonDuplicateClass) {
+		t.Errorf("a scoped blind spot must also be declared run-wide, got %v", res.Partiality.Reasons)
 	}
 	got := res.Partiality.Scoped[0]
 	if got.Reason != partialReasonDuplicateClass || got.Package != "pkg:maven/org.two/two" {

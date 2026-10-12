@@ -59,32 +59,30 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return plugin.SymbolResolutionResult{Partiality: plugin.Complete()}, nil
 	}
 
-	coordinate, version, ok := coordinateAndVersion(ctx, req)
+	jarPaths, reasons, ok := dependencyJars(ctx, req)
 	if !ok {
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(partialReasonNoDependencyArtifact)}, nil
 	}
-	jarPath, ok := LocateDependencyJar(req.BuildDir, coordinate, version)
-	if !ok {
-		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(partialReasonNoDependencyArtifact)}, nil
+	var classes []classfile.Class
+	for _, jarPath := range jarPaths {
+		jr, err := classfile.LoadJar(jarPath)
+		if err != nil {
+			// A located-but-unreadable artifact is a declared tool_failure partiality (V2's
+			// "artifact unreadable" mode), NOT a hard error — a corrupt cached JAR must not
+			// crash the scan.
+			return plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, nil
+		}
+		if len(jr.Failed) > 0 {
+			reasons[plugin.PartialReasonToolFailure] = true
+		}
+		classes = append(classes, jr.Classes...)
 	}
 
-	jr, err := classfile.LoadJar(jarPath)
-	if err != nil {
-		// A located-but-unreadable artifact is a declared tool_failure partiality (V2's
-		// "artifact unreadable" mode), NOT a hard error — a corrupt cached JAR must not
-		// crash the scan.
-		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, nil
-	}
-
-	reasons := map[string]bool{}
-	if len(jr.Failed) > 0 {
-		reasons[plugin.PartialReasonToolFailure] = true
-	}
-
-	resolved, matched := matchAdvisorySymbols(jr.Classes, wanted)
+	resolved, matched := matchAdvisorySymbols(classes, wanted)
 	if len(matched) < len(wanted) {
 		reasons[partialReasonAdvisorySymbolUnresolved] = true
 	}
+	coordinate, _, _ := parseMavenPURL(req.PURL)
 
 	var origins map[string]string
 	if len(resolved) > 0 {
@@ -101,6 +99,58 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		part = plugin.Partial(sortedKeys(reasons)...)
 	}
 	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved, Origins: origins, Matched: matched}, nil
+}
+
+// dependencyJars returns the JAR(s) holding the bytes the build runs for the advisory's
+// package. When the build's start scripts name the coordinate on a runtime classpath, those
+// JARs are it (Gradle conflict resolution may have picked a version other than the declared
+// one); a version the PURL pins that differs from them is declared. Otherwise the version
+// comes from the PURL or the build files and the JAR from the local caches. ok is false when
+// no JAR can be located.
+func dependencyJars(ctx context.Context, req plugin.ResolveSymbolsRequest) (paths []string, reasons map[string]bool, ok bool) {
+	reasons = map[string]bool{}
+	coordinate, pinned, ok := parseMavenPURL(req.PURL)
+	if !ok {
+		return nil, nil, false
+	}
+	if jars := runtimeClasspathJars(req.BuildDir, coordinate); len(jars) > 0 {
+		for _, j := range jars {
+			paths = append(paths, j.path)
+			if pinned != "" && j.version != pinned {
+				reasons[partialReasonNoDependencyArtifact] = true
+			}
+		}
+		return paths, reasons, true
+	}
+	coordinate, version, ok := coordinateAndVersion(ctx, req)
+	if !ok {
+		return nil, nil, false
+	}
+	jarPath, ok := LocateDependencyJar(req.BuildDir, coordinate, version)
+	if !ok {
+		return nil, nil, false
+	}
+	return []string{jarPath}, reasons, true
+}
+
+// runtimeClasspathJars returns the distinct JARs for coordinate ("group:artifact") on the
+// build's start-script classpath.
+func runtimeClasspathJars(buildDir, coordinate string) []classpathJar {
+	rc, ok := findRuntimeClasspath(buildDir)
+	if !ok {
+		return nil
+	}
+	index := gradleCacheIndex(buildDir)
+	seen := map[string]bool{}
+	var out []classpathJar
+	for _, name := range rc.entries {
+		j, ok := locateClasspathJar(buildDir, rc, index, name)
+		if ok && j.group+":"+j.artifact == coordinate && !seen[j.path] {
+			seen[j.path] = true
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // coordinateAndVersion derives the dependency coordinate ("group:artifact") and a concrete
@@ -163,7 +213,12 @@ func parseMavenPURL(purl string) (coordinate, version string, ok bool) {
 func matchAdvisorySymbols(classes []classfile.Class, wanted []string) ([]plugin.Symbol, map[string][]string) {
 	var resolved []plugin.Symbol
 	matched := map[string][]string{}
+	seen := map[string]bool{}
 	consider := func(sym plugin.Symbol) {
+		if seen[sym.SCIP] {
+			return
+		}
+		seen[sym.SCIP] = true
 		hit := false
 		for _, w := range wanted {
 			if advisorySymbolMatches(sym, strings.TrimSpace(w)) {
@@ -192,33 +247,22 @@ func matchAdvisorySymbols(classes []classfile.Class, wanted []string) ([]plugin.
 }
 
 // advisorySymbolMatches reports whether sym corresponds to the wanted advisory identifier.
-// A JVM advisory names the sink by a package-qualified dotted form
-// ("com.example.net.UrlFetcher.fetch"), a type-qualified method ("UrlFetcher.fetch"), or a
-// bare leaf ("fetch"); each is matched against the symbol's display forms, tolerant of a
-// trailing JVM descriptor/arity marker.
+// A JVM advisory names the sink by its package-qualified dotted form
+// ("com.example.net.UrlFetcher.fetch"), tolerant of a trailing JVM descriptor/arity marker.
+// Only the full package-qualified form matches: a type-qualified ("UrlFetcher.fetch") or bare
+// ("fetch") name could be satisfied by a lookalike class elsewhere in the JAR while the real
+// sink goes unchecked, so such a name stays unresolved.
 func advisorySymbolMatches(sym plugin.Symbol, wanted string) bool {
-	for _, cand := range advisorySymbolForms(sym) {
-		if eqIgnoringDescriptor(wanted, cand) {
-			return true
-		}
-	}
-	return false
+	return eqIgnoringDescriptor(wanted, qualifiedSymbolName(sym))
 }
 
-// advisorySymbolForms returns the dotted variants an advisory might name a symbol by: the
-// bare display name ("UrlFetcher.fetch(...)V"), the package-qualified form
-// ("com.example.net.UrlFetcher.fetch(...)V"), and the last-dot leaf of the class-qualified
-// display ("fetch(...)V").
-func advisorySymbolForms(sym plugin.Symbol) []string {
-	disp := sym.DisplayName
-	forms := []string{disp}
-	if sym.Package != "" {
-		forms = append(forms, sym.Package+"."+disp)
+// qualifiedSymbolName is the package-qualified dotted form of sym
+// ("com.example.net.UrlFetcher.fetch(...)V"); a class in the unnamed package has no prefix.
+func qualifiedSymbolName(sym plugin.Symbol) string {
+	if sym.Package == "" {
+		return sym.DisplayName
 	}
-	if i := strings.LastIndexByte(disp, '.'); i >= 0 {
-		forms = append(forms, disp[i+1:])
-	}
-	return forms
+	return sym.Package + "." + sym.DisplayName
 }
 
 // eqIgnoringDescriptor compares two symbol identifiers, ignoring a trailing "(...)"

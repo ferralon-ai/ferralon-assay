@@ -707,8 +707,95 @@ func TestScopedLimitCounts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := scopedLimitCounts(tc.flag, tc.admitted, true); got != tc.want {
+			if got := scopedLimitCounts(tc.flag, tc.admitted, true, false); got != tc.want {
 				t.Errorf("scopedLimitCounts(%+v, %v) = %v, want %v", tc.flag, tc.admitted, got, tc.want)
+			}
+		})
+	}
+}
+
+const rootSink = "scip-python python apache-airflow 2.9.0 airflow/api/client/trigger_dag()."
+
+// rootSearched is arm A for an advisory against the scanned project itself: the lane resolved the
+// advisory symbol to first-party code and searched it without reaching it.
+func rootSearched() groundsFixture {
+	return groundsFixture{
+		pkg:             &report.Package{Ecosystem: "PyPI", Name: "apache-airflow", Version: "2.9.0", PURL: "pkg:pypi/apache-airflow@2.9.0", Root: true},
+		advisoryPURL:    "pkg:pypi/apache-airflow",
+		advisorySymbols: []string{"airflow.api.client.trigger_dag"},
+		resolution: plugin.SymbolResolutionResult{
+			Partiality: plugin.Complete(),
+			Resolved:   []plugin.Symbol{{SCIP: rootSink}},
+			Matched:    map[string][]string{"airflow.api.client.trigger_dag": {rootSink}},
+		},
+		reach: plugin.ReachabilityResult{Partiality: plugin.Complete(), Searched: []string{rootSink}},
+	}
+}
+
+// TestFinding_RootPackage: when the advisory's package is the scanned project, first-party code is
+// that package, for arm A and for scoped limits alike; for any other package it never is.
+func TestFinding_RootPackage(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(*groundsFixture)
+		wantReason string // "" = not_exploitable
+	}{
+		{name: "first-party sink searched", mutate: func(*groundsFixture) {}},
+		{
+			name:       "the same sink when the package is a dependency",
+			mutate:     func(fx *groundsFixture) { fx.pkg.Root = false },
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name:       "first-party sink not searched",
+			mutate:     func(fx *groundsFixture) { fx.reach.Searched = nil },
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name:       "the match lives in a dependency",
+			mutate:     func(fx *groundsFixture) { fx.resolution.Origins = map[string]string{rootSink: "pkg:pypi/flask"} },
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "a first-party scoped limit counts",
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonCgo, Path: "airflow/native", Targets: []string{""}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a limit bounded to a dependency does not",
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonCgo, Package: "pkg:pypi/flask", Targets: []string{"pkg:pypi/flask"}}}
+			},
+		},
+		{
+			name: "a refutation naming no package is not grounds",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Searched = nil
+				fx.reach.Refutation = refutation("")
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name:       "no version",
+			mutate:     func(fx *groundsFixture) { fx.pkg.Version = "" },
+			wantReason: report.ReasonPackageVersionUnresolved,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := rootSearched()
+			tc.mutate(&fx)
+			f := fx.finding(t)
+			if tc.wantReason != "" {
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.wantReason {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tc.wantReason)
+				}
+				return
+			}
+			if f.Verdict != report.VerdictNotExploitable {
+				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
 			}
 		})
 	}

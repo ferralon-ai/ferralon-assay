@@ -33,6 +33,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	if !ok {
 		return "", report.ReasonPackageVersionUnresolved, false
 	}
+	root := pkg != nil && pkg.Root
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
 	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted) {
@@ -44,7 +45,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
-		if err == nil && searchedInPackage(symbols, res, reach.Searched, admitted) {
+		if err == nil && searchedInPackage(symbols, res, reach.Searched, admitted, root) {
 			return fmt.Sprintf("no path from any entry point reaches %s in %s",
 				strings.Join(symbols, ", "), label), "", true
 		}
@@ -52,7 +53,7 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
 	// every package it affects.
 	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded || pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
-		if key, ok := purlKey(r.Package); ok && key == admitted {
+		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", true
 			}
@@ -77,8 +78,9 @@ func namesOtherPackage(purls []string, admitted pkgKey) bool {
 }
 
 // searchedInPackage is arm A: every advisory symbol has at least one resolved symbol whose origin
-// is the admitted package, and every such in-package symbol was searched.
-func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey) bool {
+// is the admitted package, and every such in-package symbol was searched. First-party code is the
+// admitted package only when that package is the root.
+func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey, root bool) bool {
 	done := make(map[string]bool, len(searched))
 	for _, s := range searched {
 		done[s] = true
@@ -86,11 +88,7 @@ func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, sear
 	for _, sym := range symbols {
 		inPackage := 0
 		for _, scip := range res.Matched[sym] {
-			origin, ok := res.Origins[scip]
-			if !ok {
-				continue // first-party: matches only a root package (not admitted here yet)
-			}
-			if key, ok := purlKey(origin); !ok || key != admitted {
+			if !inAdmitted(res.Origins[scip], admitted, root) {
 				continue
 			}
 			if !done[scip] {
@@ -127,6 +125,17 @@ func admittedPackage(store artifact.Store, assessmentID string, pkg *report.Pack
 		return pkgKey{typ: typ, name: normalizePackageName(typ, pkg.Name)}, pkg.Name + "@" + pkg.Version, true
 	}
 	return pkgKey{}, "", false
+}
+
+// inAdmitted reports whether a package named the plugin way (a versionless PURL, "" for
+// first-party) is the admitted package. First-party matches only when the admitted package is the
+// scanned project itself.
+func inAdmitted(p string, admitted pkgKey, root bool) bool {
+	if p == "" {
+		return root
+	}
+	key, ok := purlKey(p)
+	return ok && key == admitted
 }
 
 // pkgKey identifies a package across versions: PURL type plus the ecosystem-normalized name.

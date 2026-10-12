@@ -154,8 +154,10 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// SBOM would silently flatten to packages-only, and the next PR diff against it
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
+	// The head's inventory limits apply to the inherited rows as to fresh ones: a package the head
+	// could not inventory may be installed where the baseline's analysis never looked.
 	for i := range baseline.Advisories {
-		b.AddFinding(baseline.Advisories[i])
+		b.AddFinding(withInventoryLimits(baseline.Advisories[i], req.DiffLimits))
 	}
 	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
 	// resolve — so a diff that inherited because a lane's inventory was unavailable is
@@ -256,7 +258,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			delete(reFindings, key)
 			continue
 		}
-		b.AddFinding(f)
+		b.AddFinding(withInventoryLimits(f, req.DiffLimits))
 	}
 	for _, re := range reFindings {
 		b.AddFinding(re)

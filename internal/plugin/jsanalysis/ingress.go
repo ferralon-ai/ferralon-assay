@@ -10,13 +10,13 @@ import (
 
 // FindIngresses identifies framework-idiomatic entry points in the JS/TS module at
 // req.BuildDir: Express/Koa route registrations (app.get/post/use, router.get/...)
-// and Node http.createServer handlers whose handler argument is a NAMED function
-// reference, and Next.js-style default-export request handlers. Each ingress symbol
-// is the HANDLER function's SCIP id — the SAME id the call graph and symbol resolver
-// emit for that function, so the pipeline's firstPartyReachPaths BFS can connect an
-// ingress to a reachable sink. An anonymous (inline-arrow) handler records no
-// ingress (honest absence, never a fabricated entry). A missing build dir is a hard
-// error (inv.4).
+// and Node http.createServer handlers (a named function reference or an inline
+// function expression), and Next.js-style default-export request handlers. Each
+// ingress symbol is the HANDLER function's SCIP id — the SAME id the call graph and
+// symbol resolver emit for that function, so the pipeline's firstPartyReachPaths BFS
+// can connect an ingress to a reachable sink. An inline handler's id is its synthetic
+// frame (anonHandlerFunc, from its position in the file). A missing build dir is a
+// hard error (inv.4).
 func FindIngresses(_ context.Context, req plugin.FindIngressesRequest) (plugin.IngressResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {

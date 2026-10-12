@@ -41,12 +41,21 @@ const partialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
 
 // ResolveDependencySymbols resolves the advisory's vulnerable symbol(s) to concrete symbols
 // in the named dependency's JAR. The advisory identifiers (PURL + symbols) are GIVEN
-// (inv.7); this only resolves them, never originates them.
+// (inv.7); this only resolves them, never originates them. Every resolved symbol was read
+// from the dependency JAR, so each carries an Origin: the dependency's PURL without version.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	res, _ := resolveDependencySymbols(ctx, req)
+	return res, nil
+}
+
+// resolveDependencySymbols does the work of ResolveDependencySymbols and also returns, for
+// each advisory symbol verbatim as the request carried it, the SCIPs it resolved to. An
+// advisory symbol that resolved to nothing is absent from the map.
+func resolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, map[string][]string) {
 	wanted := make([]string, 0, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
-		if t := strings.TrimSpace(s); t != "" {
-			wanted = append(wanted, t)
+		if strings.TrimSpace(s) != "" {
+			wanted = append(wanted, s)
 		}
 	}
 	// No symbols named: nothing to resolve. A sound complete no-op, not a failure.
@@ -63,7 +72,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(partialReasonNoDependencyArtifact)}, nil
 	}
 
-	res, err := classfile.LoadJar(jarPath)
+	jr, err := classfile.LoadJar(jarPath)
 	if err != nil {
 		// A located-but-unreadable artifact is a declared tool_failure partiality (V2's
 		// "artifact unreadable" mode), NOT a hard error — a corrupt cached JAR must not
@@ -72,20 +81,30 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	}
 
 	reasons := map[string]bool{}
-	if len(res.Failed) > 0 {
+	if len(jr.Failed) > 0 {
 		reasons[plugin.PartialReasonToolFailure] = true
 	}
 
-	resolved := matchAdvisorySymbols(res.Classes, wanted)
-	if len(resolved) == 0 {
+	resolved, matched := matchAdvisorySymbols(jr.Classes, wanted)
+	if len(matched) < len(wanted) {
 		reasons[partialReasonAdvisorySymbolUnresolved] = true
+	}
+
+	var origins map[string]string
+	if len(resolved) > 0 {
+		group, artifact, _ := splitCoordinate(coordinate)
+		origin := "pkg:maven/" + group + "/" + artifact
+		origins = make(map[string]string, len(resolved))
+		for _, sym := range resolved {
+			origins[sym.SCIP] = origin
+		}
 	}
 
 	part := plugin.Complete()
 	if len(reasons) > 0 {
 		part = plugin.Partial(sortedKeys(reasons)...)
 	}
-	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved}, nil
+	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved, Origins: origins}, matched
 }
 
 // coordinateAndVersion derives the dependency coordinate ("group:artifact") and a concrete
@@ -141,40 +160,50 @@ func parseMavenPURL(purl string) (coordinate, version string, ok bool) {
 }
 
 // matchAdvisorySymbols indexes the dependency classes into canonical plugin.Symbols and
-// returns those matching any wanted advisory identifier, sorted by SCIP for determinism (no
-// map is an iteration source on this path). Symbols are derived from the SAME bytecode a Java
-// caller observes, so a match is a bytecode-canonical identity, not a heuristic.
-func matchAdvisorySymbols(classes []classfile.Class, wanted []string) []plugin.Symbol {
+// returns those matching any wanted advisory identifier, sorted by SCIP for determinism, plus
+// the map from each wanted identifier (verbatim) to the sorted SCIPs it matched. Symbols are
+// derived from the SAME bytecode a Java caller observes, so a match is a bytecode-canonical
+// identity, not a heuristic.
+func matchAdvisorySymbols(classes []classfile.Class, wanted []string) ([]plugin.Symbol, map[string][]string) {
 	var resolved []plugin.Symbol
-	for _, c := range classes {
-		if sym := SymbolFromClass(c); advisorySymbolMatches(sym, wanted) {
+	matched := map[string][]string{}
+	consider := func(sym plugin.Symbol) {
+		hit := false
+		for _, w := range wanted {
+			if advisorySymbolMatches(sym, strings.TrimSpace(w)) {
+				matched[w] = append(matched[w], sym.SCIP)
+				hit = true
+			}
+		}
+		if hit {
 			resolved = append(resolved, sym)
 		}
+	}
+	for _, c := range classes {
+		consider(SymbolFromClass(c))
 		for _, m := range c.Methods {
 			if m.Ref.Name == "<clinit>" {
 				continue
 			}
-			if sym := SymbolFromMethodRef(m.Ref); advisorySymbolMatches(sym, wanted) {
-				resolved = append(resolved, sym)
-			}
+			consider(SymbolFromMethodRef(m.Ref))
 		}
 	}
 	sort.Slice(resolved, func(i, j int) bool { return resolved[i].SCIP < resolved[j].SCIP })
-	return resolved
+	for w := range matched {
+		sort.Strings(matched[w])
+	}
+	return resolved, matched
 }
 
-// advisorySymbolMatches reports whether sym corresponds to any wanted advisory identifier.
+// advisorySymbolMatches reports whether sym corresponds to the wanted advisory identifier.
 // A JVM advisory names the sink by a package-qualified dotted form
 // ("com.example.net.UrlFetcher.fetch"), a type-qualified method ("UrlFetcher.fetch"), or a
 // bare leaf ("fetch"); each is matched against the symbol's display forms, tolerant of a
 // trailing JVM descriptor/arity marker.
-func advisorySymbolMatches(sym plugin.Symbol, wanted []string) bool {
-	forms := advisorySymbolForms(sym)
-	for _, w := range wanted {
-		for _, cand := range forms {
-			if eqIgnoringDescriptor(w, cand) {
-				return true
-			}
+func advisorySymbolMatches(sym plugin.Symbol, wanted string) bool {
+	for _, cand := range advisorySymbolForms(sym) {
+		if eqIgnoringDescriptor(wanted, cand) {
+			return true
 		}
 	}
 	return false

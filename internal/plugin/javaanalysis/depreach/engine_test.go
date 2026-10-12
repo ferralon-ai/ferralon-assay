@@ -472,3 +472,70 @@ func TestParseParamRefTypes(t *testing.T) {
 		}
 	}
 }
+
+// HazardKinds records every distinct hazard rule the frontier met, sorted, while
+// HazardWhy keeps only the first. A caller maps kinds to partiality reasons, so a kind
+// dropped after the first hazard would hide a reflection or invokedynamic reason.
+func TestReach_HazardKindsCollectsEveryRule(t *testing.T) {
+	sink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	app := classfile.Class{Name: "com/acme/App", Super: "java/lang/Object", Methods: []classfile.Method{
+		{Ref: mref("com/acme/App", "all", "()V"), Edges: []classfile.Edge{
+			edge(classfile.EdgeStatic, "com/fasterxml/jackson/databind/util/Helpers", "parse", "(Ljava/lang/String;)V"),
+			edge(classfile.EdgeStatic, "java/lang/Class", "forName", "(Ljava/lang/String;)Ljava/lang/Class;"),
+			edge(classfile.EdgeDynamic, "java/lang/invoke/LambdaMetafactory", "run", "()Ljava/lang/Runnable;"),
+			edge(classfile.EdgeStatic, "java/lang/Class", "forName", "(Ljava/lang/String;)Ljava/lang/Class;"),
+		}},
+		{Ref: mref("com/acme/App", "clean", "()V")},
+	}}
+	eng := NewEngine([]classfile.Class{app, urlFetcherDep()})
+
+	cases := []struct {
+		name      string
+		ingress   string
+		sink      classfile.MethodRef
+		wantKinds []string
+		wantWhy   string
+	}{
+		{"every rule met, sorted and distinct", "all", sink,
+			[]string{HazardKindInvokedynamic, HazardKindReflection, HazardKindUnloadedDependency}, "unloaded_dependency:"},
+		{"no hazard", "clean", sink, nil, ""},
+		{"sink not loaded", "clean", mref("org/x/Y", "z", "()V"), []string{HazardKindSinkNotLoaded}, "sink_not_loaded:"},
+		{"ingress not found", "missing", sink, []string{HazardKindIngressNotFound}, "ingress method not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := eng.Reach(mref("com/acme/App", tc.ingress, "()V"), tc.sink)
+			if !reflect.DeepEqual(r.HazardKinds, tc.wantKinds) {
+				t.Errorf("HazardKinds = %v, want %v", r.HazardKinds, tc.wantKinds)
+			}
+			if !strings.HasPrefix(r.HazardWhy, tc.wantWhy) {
+				t.Errorf("HazardWhy = %q, want prefix %q", r.HazardWhy, tc.wantWhy)
+			}
+			if r.HazardOnFrontier != (tc.wantKinds != nil) {
+				t.Errorf("HazardOnFrontier = %v with kinds %v", r.HazardOnFrontier, r.HazardKinds)
+			}
+		})
+	}
+}
+
+// Every reason string a hazard rule writes classifies to its own kind; a rule whose
+// prefix drifts would fall to HazardKindOther and lose its partiality mapping.
+func TestHazardKind(t *testing.T) {
+	cases := []struct{ why, want string }{
+		{"sink_not_loaded: a.b()V", HazardKindSinkNotLoaded},
+		{"ingress method not found in classpath: a.b()V", HazardKindIngressNotFound},
+		{"native method on frontier: a.b()V", HazardKindNative},
+		{"invokedynamic (runtime-bound target): run()V", HazardKindInvokedynamic},
+		{"reflection: java/lang/Class.forName", HazardKindReflection},
+		{"unloaded_dependency: x resolves into unopened y", HazardKindUnloadedDependency},
+		{"higher-order re-entry: out-of-classpath call takes app-implemented z", HazardKindReentry},
+		{"higher-order re-entry via inherited out-of-classpath method: takes app-implemented z", HazardKindReentry},
+		{"virtual/interface call on out-of-classpath receiver java/lang/Thread", HazardKindUnknownReceiver},
+		{"something new", HazardKindOther},
+	}
+	for _, tc := range cases {
+		if got := hazardKind(tc.why); got != tc.want {
+			t.Errorf("hazardKind(%q) = %q, want %q", tc.why, got, tc.want)
+		}
+	}
+}

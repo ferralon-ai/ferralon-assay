@@ -350,6 +350,7 @@ type Result struct {
 	SinkPresent      bool                  // trace 1: the sink method exists in the classpath (by descriptor)
 	HazardOnFrontier bool                  // a completeness hazard lay on the searched frontier
 	HazardWhy        string                // the first such hazard, for the soundness reviewer
+	HazardKinds      []string              // every distinct hazard kind met on the frontier (HazardKind*), sorted
 	Reached          int                   // methods visited (search size, for diagnostics)
 }
 
@@ -369,8 +370,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	res := Result{SinkPresent: e.declared[sink.String()] != nil}
 	if !res.SinkPresent {
 		res.Verdict = Undetermined
-		res.HazardOnFrontier = true
-		res.HazardWhy = "sink_not_loaded: " + sink.String()
+		res.hazard("sink_not_loaded: " + sink.String())
 		return res
 	}
 
@@ -379,8 +379,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		// The ingress itself is not in the analyzed classpath: the search never
 		// began, so absence proves nothing.
 		res.Verdict = Undetermined
-		res.HazardOnFrontier = true
-		res.HazardWhy = "ingress method not found in classpath: " + ingress.String()
+		res.hazard("ingress method not found in classpath: " + ingress.String())
 		return res
 	}
 
@@ -415,18 +414,12 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		}
 		if m.Native {
 			// A native method body is invisible bytecode: it could reach anything.
-			res.HazardOnFrontier = true
-			if res.HazardWhy == "" {
-				res.HazardWhy = "native method on frontier: " + cur.String()
-			}
+			res.hazard("native method on frontier: " + cur.String())
 		}
 		for _, edge := range m.Edges {
 			targets, hazard, why := e.resolveTargets(edge)
 			if hazard {
-				res.HazardOnFrontier = true
-				if res.HazardWhy == "" {
-					res.HazardWhy = why
-				}
+				res.hazard(why)
 			}
 			for _, t := range targets {
 				enqueue(cur, t)
@@ -444,10 +437,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		for _, owner := range m.InitTriggers {
 			for _, cls := range e.initClosure(owner) {
 				if dep, ok := e.unloadedDependency([]string{cls}); ok {
-					res.HazardOnFrontier = true
-					if res.HazardWhy == "" {
-						res.HazardWhy = "unloaded_dependency: static initializer of unopened " + dep
-					}
+					res.hazard("unloaded_dependency: static initializer of unopened " + dep)
 					continue
 				}
 				clinit := classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}
@@ -467,6 +457,61 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		res.Verdict = NotExploitable
 	}
 	return res
+}
+
+// Hazard kinds, one per resolveTargets/Reach hazard rule, so a caller can map what the
+// frontier actually met to partiality reasons without parsing HazardWhy.
+const (
+	HazardKindSinkNotLoaded      = "sink_not_loaded"
+	HazardKindIngressNotFound    = "ingress_not_found"
+	HazardKindNative             = "native"
+	HazardKindInvokedynamic      = "invokedynamic"
+	HazardKindReflection         = "reflection"
+	HazardKindUnloadedDependency = "unloaded_dependency"
+	HazardKindReentry            = "reentry"
+	HazardKindUnknownReceiver    = "unknown_receiver"
+	HazardKindOther              = "other"
+)
+
+// hazardKind classifies a hazard reason string by the prefix its rule writes.
+func hazardKind(why string) string {
+	switch {
+	case strings.HasPrefix(why, "sink_not_loaded"):
+		return HazardKindSinkNotLoaded
+	case strings.HasPrefix(why, "ingress method not found"):
+		return HazardKindIngressNotFound
+	case strings.HasPrefix(why, "native method"):
+		return HazardKindNative
+	case strings.HasPrefix(why, "invokedynamic"):
+		return HazardKindInvokedynamic
+	case strings.HasPrefix(why, "reflection"):
+		return HazardKindReflection
+	case strings.HasPrefix(why, "unloaded_dependency"):
+		return HazardKindUnloadedDependency
+	case strings.HasPrefix(why, "higher-order re-entry"):
+		return HazardKindReentry
+	case strings.HasPrefix(why, "virtual/interface call on out-of-classpath receiver"):
+		return HazardKindUnknownReceiver
+	default:
+		return HazardKindOther
+	}
+}
+
+// hazard records a completeness hazard met on the frontier: the first reason verbatim, and
+// its kind in the sorted, de-duplicated HazardKinds.
+func (r *Result) hazard(why string) {
+	r.HazardOnFrontier = true
+	if r.HazardWhy == "" {
+		r.HazardWhy = why
+	}
+	k := hazardKind(why)
+	i := sort.SearchStrings(r.HazardKinds, k)
+	if i < len(r.HazardKinds) && r.HazardKinds[i] == k {
+		return
+	}
+	r.HazardKinds = append(r.HazardKinds, "")
+	copy(r.HazardKinds[i+1:], r.HazardKinds[i:])
+	r.HazardKinds[i] = k
 }
 
 // reconstruct walks the predecessor map from sink back to ingress and returns the

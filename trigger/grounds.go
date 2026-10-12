@@ -23,6 +23,10 @@ import (
 //     every such sink from its entry points.
 //   - G2 arm B: the lane refuted that package on positive evidence (ReachabilityResult.Refutation).
 //
+// Both arms speak for the admitted package only, so neither grounds an advisory that also names
+// another package: that package's symbols were never resolved or searched, and it may be installed
+// beside the admitted one.
+//
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
 func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package) (detail, reason string, ok bool) {
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
@@ -31,6 +35,12 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	}
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
+	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted) {
+		if len(symbols) == 0 {
+			return "", report.ReasonAdvisorySymbolAbsent, false
+		}
+		return "", report.ReasonVulnerableSymbolUnresolved, false
+	}
 
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
@@ -41,17 +51,27 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	}
 	if r := reach.Refutation; r != nil {
 		if key, ok := purlKey(r.Package); ok && key == admitted {
-			grounds := r.Detail
-			if grounds == "" {
-				grounds = r.Basis
+			if r.Detail == "" {
+				return fmt.Sprintf("%s: %s", label, r.Basis), "", true
 			}
-			return fmt.Sprintf("%s: %s", label, grounds), "", true
+			return fmt.Sprintf("%s: %s (%s)", label, r.Detail, r.Basis), "", true
 		}
 	}
 	if len(symbols) == 0 {
 		return "", report.ReasonAdvisorySymbolAbsent, false
 	}
 	return "", report.ReasonVulnerableSymbolUnresolved, false
+}
+
+// namesOtherPackage reports whether the advisory names a package other than the admitted one. A
+// package URL that does not parse cannot be shown to be the admitted package, so it counts as other.
+func namesOtherPackage(purls []string, admitted pkgKey) bool {
+	for _, p := range purls {
+		if key, ok := purlKey(p); !ok || key != admitted {
+			return true
+		}
+	}
+	return false
 }
 
 // searchedInPackage is arm A: every advisory symbol has at least one resolved symbol whose origin

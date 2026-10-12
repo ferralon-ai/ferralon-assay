@@ -34,17 +34,23 @@ type callSite struct {
 	calleeArity     int      // argument count at the call site
 	receiver        string   // immediate receiver identifier of a `recv.name(...)` method call ("" for a bare call)
 	receiverThis    bool     // true when the call is `this.name(...)`
+	head            string   // first segment of a dotted chain ("JSON5" in JSON5.parse); "" for a bare call
+	calleeFrame     bool     // callee is a synthetic frame minted by the scanner (an inline handler), not a name to resolve
+	calleeEnclosing []string // enclosing class chain of a calleeFrame callee
 }
 
 // ingressMarker is one entry-point signal found lexically: an Express/Koa route
-// registration whose handler is a named function, a Node http.createServer handler,
-// or a Next.js default-export handler. The marker names the HANDLER function (the
-// call-graph node), so an ingress symbol coincides with a call-graph node.
+// registration or Node http.createServer call and its handler (a named function or an
+// inline function expression), or a Next.js default-export handler. The marker names
+// the HANDLER function (the call-graph node), so an ingress symbol coincides with a
+// call-graph node.
 type ingressMarker struct {
-	enclosing []string // enclosing class chain of the handler function (reserved; refs resolve by name)
-	name      string   // handler function simple name (resolved to a declaration by ResolveRef)
+	enclosing []string // enclosing class chain of the handler function
+	name      string   // handler function simple name (resolved to a declaration by ResolveRef unless frame)
 	kind      string   // plugin.Ingress Kind: "http_route" | "http_server" | "handler"
 	selector  string   // route selector ("" — string literals are blanked by the lexer)
+	arity     int      // handler arity; read only when frame is set
+	frame     bool     // the handler is an inline function frame whose SCIP id is minted directly
 }
 
 // parseResult holds the module-relative path and declarations parsed from one

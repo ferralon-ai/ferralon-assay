@@ -39,6 +39,7 @@ type moduleBindings struct {
 	reExports     map[string]binding // exported name → re-export binding (for `export { x } from 'spec'`)
 	reExportStars []string           // specifiers from `export * from 'spec'`
 	ambiguous     map[string]bool    // local names bound more than once → resolve as unresolved
+	specifiers    []string           // every literal specifier the module loads (import, export-from, require, import()), at any scope
 	dynImport     bool               // saw a runtime-computed ESM target `import(expr)`
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)`
 }
@@ -53,7 +54,7 @@ func newModuleBindings() moduleBindings {
 }
 
 // extractModuleBindings scans one module for its import/require/export-from bindings,
-// class instantiations, and runtime-computed specifiers. It walks the COMMENT/STRING-
+// class instantiations, the literal specifiers it loads, and runtime-computed specifiers. It walks the COMMENT/STRING-
 // STRIPPED runes (clean) for structure — so no keyword inside a comment or string
 // literal can be mistaken for a binding — and reads the actual specifier text from the
 // position-identical RAW source (src) wherever clean marks a former string literal with
@@ -86,11 +87,13 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			i = parseExportForm(clean, src, next, &mb)
 		case "require":
 			// A require() NOT anchored to a const/let/var binding (e.g. `return require(f)`):
-			// flag a computed specifier when the sole argument is non-literal.
+			// record a literal specifier, or flag a computed one.
 			p := skipSpace(clean, next)
 			if p < n && clean[p] == '(' {
 				a := skipSpace(clean, p+1)
-				if a < n && clean[a] != '_' && clean[a] != ')' {
+				if a < n && clean[a] == '_' {
+					mb.specifiers = append(mb.specifiers, specifierAt(src, a))
+				} else if a < n && clean[a] != ')' {
 					mb.computedReq = true
 				}
 			}
@@ -124,12 +127,16 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	}
 	if clean[p] == '(' { // dynamic import(expr)
 		mb.dynImport = true
+		if a := skipSpace(clean, p+1); a < n && clean[a] == '_' {
+			mb.specifiers = append(mb.specifiers, specifierAt(src, a))
+		}
 		return pos
 	}
 	if clean[p] == '.' { // import.meta
 		return pos
 	}
 	if clean[p] == '_' { // side-effect import 'x'
+		mb.specifiers = append(mb.specifiers, specifierAt(src, p))
 		return p + 1
 	}
 	typeOnly := false
@@ -174,6 +181,7 @@ spec:
 	if p < n && clean[p] == '_' {
 		specifier := specifierAt(src, p)
 		if !typeOnly {
+			mb.specifiers = append(mb.specifiers, specifier)
 			for _, pr := range pairs {
 				add(binding{Local: pr.local, Specifier: specifier, Kind: bindImport, Imported: pr.imported})
 			}
@@ -203,6 +211,7 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '_' {
 				mb.reExportStars = append(mb.reExportStars, specifierAt(src, p))
+				mb.specifiers = append(mb.specifiers, specifierAt(src, p))
 				return p + 1
 			}
 		}
@@ -219,6 +228,7 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '_' {
 				specifier := specifierAt(src, p)
+				mb.specifiers = append(mb.specifiers, specifier)
 				for _, pr := range pairs {
 					mb.reExports[pr.local] = binding{Local: pr.local, Specifier: specifier, Kind: bindReExport, Imported: pr.imported}
 				}
@@ -255,6 +265,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 				a := skipSpace(clean, p+1)
 				if a < n && clean[a] == '_' {
 					specifier := specifierAt(src, a)
+					mb.specifiers = append(mb.specifiers, specifier)
 					for _, pr := range pairs {
 						add(binding{Local: pr.local, Specifier: specifier, Kind: bindRequire, Imported: pr.imported})
 					}
@@ -291,6 +302,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 		if p < n && clean[p] == '(' {
 			a := skipSpace(clean, p+1)
 			if a < n && clean[a] == '_' {
+				mb.specifiers = append(mb.specifiers, specifierAt(src, a))
 				add(binding{Local: name, Specifier: specifierAt(src, a), Kind: bindRequire, Imported: "*"})
 				return a + 1
 			}

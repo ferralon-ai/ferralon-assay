@@ -266,8 +266,9 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 						recv = ""
 						recvThis = true
 					}
-					// A module-level require(...) is the loader, modelled by the module's
-					// bindings (extractModuleBindings), not a callee to resolve.
+					// A module-level require(...) is the loader, not a callee to resolve: its
+					// specifier is recorded by extractModuleBindings, and callGraphInternal
+					// declares an out-of-tree one uninspectable.
 					moduleRequire := m == &moduleInit && ce.name == "require" && ce.head == ""
 					if !moduleRequire {
 						calls = append(calls, callSite{

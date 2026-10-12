@@ -229,6 +229,13 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		if f.bindings.computedReq {
 			flags.computedReq = true
 		}
+		// A module that loads an out-of-tree package runs that package's code, whatever it
+		// later does with the binding, so the run executed code this lane did not open.
+		for _, spec := range f.bindings.specifiers {
+			if !flags.uninspectable && rs.loadsOutOfTree(f.module, spec) {
+				flags.uninspectable = true
+			}
+		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.
 		rootsSet[moduleInitSCIP(f.module)] = true

@@ -165,6 +165,26 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 	return r, r.Kind == resolvePackage
 }
 
+// loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
+// outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
+// or a `#…` subpath import that does not resolve to an in-tree module. Loading a module runs
+// its top-level code, so the run executes code this lane does not open however the binding,
+// if any, is used afterwards.
+func (rs *resolver) loadsOutOfTree(fromModule, spec string) bool {
+	switch {
+	case isRelativeSpecifier(spec):
+		return false
+	case strings.HasPrefix(spec, "#"):
+		pkg, pkgDir := rs.governingPackageJSON(fromModule)
+		if pkg == nil || pkg.imports == nil {
+			return true
+		}
+		rel, _, ok := resolveExportsField(pkg.imports, spec, rs.conditions())
+		return !ok || rs.moduleFromDirRelative(pkgDir, rel) == ""
+	}
+	return rs.resolveBareSpecifier(fromModule, spec, "", -1, algoESM).Kind == resolvePackage
+}
+
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's
 // import bindings, then its local module-level declarations.
 func (rs *resolver) resolveName(fromModule, name string, arity int) resolution {

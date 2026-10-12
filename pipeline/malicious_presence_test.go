@@ -208,6 +208,23 @@ func TestMaliciousPresence_EmptySet_EmitsNothing(t *testing.T) {
 	}
 }
 
+// A listed version anywhere in the tree is present, even when the representative resolved_version
+// is a clean one: a nested install of the malicious release is the same compromise.
+func TestMaliciousPresence_AnyResolvedVersionMatches(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "a1"}
+	adv, _ := json.Marshal(map[string]any{"vuln_id": "MAL-2024-1", "malicious_package": map[string]any{"affected_versions": []string{"1.0.1"}}})
+	putRaw(t, store, c.ID, artifact.TypeNormalizedAdvisory, string(adv))
+	putRaw(t, store, c.ID, artifact.TypeInventory, `{"resolved_version":"1.0.0","resolved_versions":["1.0.0","1.0.1"]}`)
+	if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("malicious_presence: %v", err)
+	}
+	res, ok := queryMaliciousPresence(t, store, c.ID)
+	if !ok || !res.Present || res.MatchedVersion != "1.0.1" {
+		t.Fatalf("presence = %+v (emitted=%v), want present at 1.0.1", res, ok)
+	}
+}
+
 // --- helpers --------------------------------------------------------------------------------
 
 // fakeMaliciousSource is a minimal AdvisorySource returning a MAL-declared fact when versions is

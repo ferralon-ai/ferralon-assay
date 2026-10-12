@@ -1989,12 +1989,14 @@ func (s maliciousPresence) Run(_ context.Context, c *assessment.Assessment, stor
 	if !declared {
 		return nil // not a malicious-package advisory → no presence path (inv.5)
 	}
-	resolved, ok := extractResolvedVersion(store, c.ID)
+	axis, ok := extractVersionAxis(store, c.ID)
 	if !ok {
 		return nil // resolved_version == "" (unresolvable/absent) → no match → OPEN
 	}
-	for _, v := range versions {
-		if v == resolved { // exact string membership — no semver comparator
+	// Any version the codebase carries at a listed version is present; the set need not be complete
+	// to affirm one.
+	for _, resolved := range axis.Versions {
+		if slices.Contains(versions, resolved) { // exact string membership — no semver comparator
 			res := MaliciousPresenceResult{Present: true, MatchedVersion: resolved}
 			_, err := PutArtifact(store, c, s.Name(), artifact.TypeMaliciousPresence, "malicious package present at listed version", res)
 			return err

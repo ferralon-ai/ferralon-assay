@@ -351,6 +351,14 @@ type ReachabilityRequest struct {
 	// empty when either the PURL or the resolved version is unknown, and a lane MUST NOT emit a
 	// package_not_loaded Refutation then: with no admitted version there is nothing to refute, so
 	// the advisory stays undetermined, never not_exploitable.
+	//
+	// Package carries the name as the advisory spells it (pkg:pypi/pyjwt while the lockfile pins
+	// PyJWT). A lane compares it with installed and loaded names only after canonicalizing both
+	// sides: PyPI by PEP 503 (lowercase, every run of "-", "_" and "." becomes "-"), NuGet by
+	// lowercasing, every other ecosystem exactly (npm `name` or `@scope/name`, Maven
+	// `group:artifact`, Go module path). The gate matches a Refutation's Package on type and name,
+	// never on version, so a lane refutes only when no installed copy of that canonical name loads,
+	// at any version, and refutes nothing when it cannot enumerate the copies.
 	Package string `json:"package,omitempty"`
 }
 

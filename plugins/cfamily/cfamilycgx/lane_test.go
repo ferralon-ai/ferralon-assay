@@ -587,3 +587,94 @@ func TestStatic(t *testing.T) {
 		}
 	}
 }
+
+// A function the tree defines but the graph lacks (cgx's parse lost it) is a loud declared
+// failure on every op, is not mistaken for a native link boundary where it is called, and an
+// advisory naming it is declared by that failure rather than as an unresolved sink.
+func TestLane_UnparsedDefinition(t *testing.T) {
+	ctx := context.Background()
+	dir := copyFixture(t, "c")
+	if err := os.WriteFile(filepath.Join(dir, "lost.c"), []byte("#include \"parse.h\"\n\nint ZEXPORT lost_fn(const char *buf,\n            size_t n)\n{\n\treturn parse(buf, n, 0);\n}\n\nint caller(void) { return lost_fn(\"\", 0); }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := cGraph()
+	g.nodes = append(g.nodes, node{FQN: "caller", Kind: "function", File: "lost.c", Line: 9})
+	l := newTestLane(t, Config{}, (&fakeOpener{g: g}).open)
+
+	cg, err := l.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReason(cg.Partiality, reasonUnparsed) || hasReason(cg.Partiality, reasonLinkPrefix+"lost_fn") {
+		t.Errorf("call_graph partiality %v: want %s and no boundary for lost_fn", cg.Partiality.Reasons, reasonUnparsed)
+	}
+	res, err := l.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, AdvisorySymbols: []string{"lost_fn"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Resolved) != 0 || !hasReason(res.Partiality, reasonUnparsed) || hasReason(res.Partiality, reasonSinkUnresolved) {
+		t.Errorf("resolve lost_fn: %+v", res)
+	}
+
+	// The fixture alone has every definition in the graph: nothing is declared lost.
+	clean := newTestLane(t, Config{}, (&fakeOpener{g: cGraph()}).open)
+	cg, err = clean.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: copyFixture(t, "c")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasReason(cg.Partiality, reasonUnparsed) {
+		t.Errorf("clean fixture declares %s", reasonUnparsed)
+	}
+}
+
+func TestDefinitions(t *testing.T) {
+	src := stripCommentsAndLiterals(`
+#define CHECK(x) do { if (!(x)) return -1; } while (0)
+int proto(int a);
+static int
+split_line(int a,
+           int b)
+{
+	return inner(a);
+}
+int Inflate::window() const
+{
+	return 15;
+}
+int ZEXPORT inflate(z_streamp strm, int flush) {
+	if (x) { y(); }
+}
+TEST(Suite, Case) {
+}
+    int indented(void) { return 0; }
+int (*fp)(int) = 0;
+`)
+	if got, want := definitions(src), []string{"split_line", "Inflate::window", "inflate"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("definitions = %v, want %v", got, want)
+	}
+}
+
+// More external names than the cap are declared with a sentinel no identifier can collide with.
+func TestResidue_BoundaryCap(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("int main(void)\n{\n")
+	for i := 0; i < maxLinkBoundaries+2; i++ {
+		b.WriteString("\text_" + string(rune('a'+i)) + "();\n")
+	}
+	b.WriteString("\treturn 0;\n}\n")
+	dir := writeTree(t, map[string]string{"main.c": b.String()})
+	gv := &graphView{nodes: map[string][]node{"main": {{FQN: "main", Kind: "function", File: "main.c", Line: 1}}}, kinds: map[string]bool{}}
+	reasons, unparsed := residue(dir, []string{"main.c"}, gv)
+	if !reasons[reasonLinkMore] || len(unparsed) != 0 || reasons[reasonUnparsed] {
+		t.Errorf("reasons = %v, unparsed = %v", reasons, unparsed)
+	}
+	n := 0
+	for r := range reasons {
+		if strings.HasPrefix(r, reasonLinkPrefix) && r != reasonLinkMore {
+			n++
+		}
+	}
+	if n != maxLinkBoundaries {
+		t.Errorf("%d named boundaries, want %d", n, maxLinkBoundaries)
+	}
+}

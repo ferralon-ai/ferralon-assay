@@ -124,6 +124,8 @@ type session struct {
 	sel      selection
 	srcs     cfamilyanalysis.GraphSources
 	gv       *graphView
+	// unparsed are the short names of functions the tree defines and the graph lacks.
+	unparsed map[string]bool
 	stats    opStats
 	start    time.Time
 }
@@ -331,9 +333,11 @@ func (s *session) analyze(ctx context.Context) (map[string]bool, error) {
 			break
 		}
 	}
-	for r := range residue(s.work, s.sel.files, gv) {
+	res, unparsed := residue(s.work, s.sel.files, gv)
+	for r := range res {
 		reasons[r] = true
 	}
+	s.unparsed = unparsed
 	if confidenceRank(s.l.cfg.MinConfidence) > confidenceRank(ConfidencePossible) {
 		reasons[reasonConfidenceFloor+s.l.cfg.MinConfidence] = true
 	}
@@ -447,6 +451,10 @@ func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveS
 		if len(suffix) > 0 {
 			reasons[reasonSuffixMatch] = true
 			hits = append(hits, suffix...)
+			continue
+		}
+		if s.unparsed[shortName(name)] {
+			// defined in the tree but lost by the parse: already declared loud by analyze
 			continue
 		}
 		reasons[reasonSinkUnresolved] = true

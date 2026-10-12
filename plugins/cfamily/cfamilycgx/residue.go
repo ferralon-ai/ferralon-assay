@@ -10,15 +10,21 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// Residue reasons: what the cgx call graph cannot show, named per kind. All are quiet
+// Residue reasons: what the cgx call graph cannot show, named per kind. All but one are quiet
 // (inherent to reading C/C++ source without compiling it), so they disclose without gating.
 const (
-	reasonFnPtr       = plugin.PartialReasonDynamicDispatch + ":fn_ptr"
-	reasonVtable      = plugin.PartialReasonDynamicDispatch + ":vtable"
-	reasonMacro       = plugin.PartialReasonMacroExpansion
-	reasonLinkPrefix  = plugin.PartialReasonNativeLinkBoundary + ":"
-	reasonLinkTrunc   = reasonLinkPrefix + "cgx_list_truncated"
+	reasonFnPtr      = plugin.PartialReasonDynamicDispatch + ":fn_ptr"
+	reasonVtable     = plugin.PartialReasonDynamicDispatch + ":vtable"
+	reasonMacro      = plugin.PartialReasonMacroExpansion
+	reasonLinkPrefix = plugin.PartialReasonNativeLinkBoundary + ":"
+	// More external names than are listed; "+" cannot begin an identifier, so this never
+	// collides with a named boundary.
+	reasonLinkMore    = reasonLinkPrefix + "+more"
 	maxLinkBoundaries = 16
+	// The tree defines a function cgx has no node for: the parse lost it (zlib's inflate.c
+	// loses inflate() and every function after it), so its edges, in and out, are missing.
+	// Loud: an absent path is not evidence of an absent call.
+	reasonUnparsed = plugin.PartialReasonToolFailure + ":cgx_unparsed_definition"
 )
 
 var (
@@ -56,11 +62,13 @@ func init() {
 }
 
 // residue scans the staged sources for what the graph cannot show: calls through function
-// pointers and virtual slots, function-like macros, and calls to functions the tree does not
-// define (a native link boundary, named per symbol). cgx's own edge kinds add the dispatch
-// reasons they evidence.
-func residue(work string, files []string, gv *graphView) map[string]bool {
-	reasons := map[string]bool{}
+// pointers and virtual slots, function-like macros, calls to functions the tree does not
+// define (a native link boundary, named per symbol), and functions the tree defines that the
+// graph lacks (returned by short name, and declared loud). cgx's own edge kinds add the
+// dispatch reasons they evidence.
+func residue(work string, files []string, gv *graphView) (reasons, unparsed map[string]bool) {
+	reasons = map[string]bool{}
+	unparsed = map[string]bool{}
 	if gv.kinds[edgeCallback] || gv.kinds[edgeIndirect] {
 		reasons[reasonFnPtr] = true
 	}
@@ -69,11 +77,22 @@ func residue(work string, files []string, gv *graphView) map[string]bool {
 	}
 
 	known := map[string]bool{}
+	// callableIn holds each function by (file, short name), so a definition lost in one file is
+	// not hidden by a same-named one parsed in another (file-static helpers routinely share
+	// names). notFunction holds names that open a body without being a function: a type (its
+	// constructor), a constant or a macro.
+	callableIn := map[[2]string]bool{}
+	notFunction := map[string]bool{}
 	for fqn, ns := range gv.nodes {
 		for _, n := range ns {
 			if n.Kind == "function" || n.Kind == "method" || n.Kind == "type" || n.Kind == "constant" || n.Kind == "macro" {
 				known[fqn] = true
 				known[shortName(fqn)] = true
+			}
+			if n.Kind == "function" || n.Kind == "method" {
+				callableIn[[2]string{n.File, shortName(fqn)}] = true
+			} else if n.Kind == "type" || n.Kind == "constant" || n.Kind == "macro" {
+				notFunction[shortName(fqn)] = true
 			}
 		}
 	}
@@ -87,7 +106,18 @@ func residue(work string, files []string, gv *graphView) map[string]bool {
 		texts[i] = stripCommentsAndLiterals(string(b))
 		for _, m := range macroNameRE.FindAllStringSubmatch(texts[i], -1) {
 			known[m[1]] = true
+			notFunction[m[1]] = true
 		}
+	}
+	for i, t := range texts {
+		for _, name := range definitions(t) {
+			if short := shortName(name); !callableIn[[2]string{files[i], short}] && !notFunction[short] {
+				unparsed[short] = true
+			}
+		}
+	}
+	if len(unparsed) > 0 {
+		reasons[reasonUnparsed] = true
 	}
 
 	// A name used anywhere other than as a callee is a variable or a function used as a value;
@@ -122,7 +152,7 @@ func residue(work string, files []string, gv *graphView) map[string]bool {
 			lead, name := m[1], strings.Join(strings.Fields(m[2]), "")
 			short := shortName(name)
 			switch {
-			case notCallees[short] || known[name] || known[short]:
+			case notCallees[short] || known[name] || known[short] || unparsed[short]:
 			case l.cSyntax() && (lead == "->" || lead == "."):
 				// a struct member call in C: a function pointer, declared above
 			case valueUse[short] && !strings.Contains(name, "::"):
@@ -140,13 +170,64 @@ func residue(work string, files []string, gv *graphView) map[string]bool {
 	sort.Strings(names)
 	if len(names) > maxLinkBoundaries {
 		names = names[:maxLinkBoundaries]
-		reasons[reasonLinkTrunc] = true
+		reasons[reasonLinkMore] = true
 	}
 	for _, n := range names {
 		reasons[reasonLinkPrefix+n] = true
 	}
-	return reasons
+	return reasons, unparsed
 }
+
+// defStartRE is a column-0 line that may open a function definition: declaration specifiers
+// and a declarator name (optionally qualified, as in Inflate::window) followed by "(".
+var defStartRE = regexp.MustCompile(`(?m)^(?:[A-Za-z_][\w \t*&:<>,]*?[ \t*&])?((?:[A-Za-z_]\w*::)*~?[A-Za-z_]\w*)[ \t]*\(`)
+
+// definitions lists the functions a stripped source defines at column 0: a declarator, its
+// balanced parameter list, optional trailing qualifiers, then "{". It is lexical and misses
+// indented definitions (inside a namespace or extern "C" block that indents), so it only ever
+// adds declarations; it never removes an edge.
+func definitions(t string) []string {
+	var out []string
+	for _, m := range defStartRE.FindAllStringSubmatchIndex(t, -1) {
+		name := t[m[2]:m[3]]
+		if short := shortName(name); notCallees[short] || allCaps.MatchString(short) {
+			// an upper-case name opening a body is by convention a macro (TEST(a, b) {...})
+			continue
+		}
+		depth, i := 0, m[1]-1
+		for ; i < len(t); i++ {
+			if t[i] == '(' {
+				depth++
+			} else if t[i] == ')' {
+				if depth--; depth == 0 {
+					break
+				}
+			} else if t[i] == ';' || t[i] == '{' || t[i] == '}' {
+				i = len(t)
+			}
+		}
+		if i >= len(t) {
+			continue
+		}
+		rest := strings.TrimLeft(t[i+1:], " \t\r\n")
+		for {
+			w := identRE.FindString(rest)
+			if w == "" || !strings.HasPrefix(rest, w) || !trailingQualifiers[w] {
+				break
+			}
+			rest = strings.TrimLeft(rest[len(w):], " \t\r\n")
+		}
+		if strings.HasPrefix(rest, "{") {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+var allCaps = regexp.MustCompile(`^[A-Z0-9_]+$`)
+
+// trailingQualifiers may sit between a parameter list and a function body.
+var trailingQualifiers = map[string]bool{"const": true, "noexcept": true, "override": true, "final": true, "volatile": true}
 
 // shortName is an FQN's last component: "util::checksum" -> "checksum".
 func shortName(fqn string) string {

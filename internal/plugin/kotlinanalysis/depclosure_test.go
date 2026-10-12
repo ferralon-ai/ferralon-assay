@@ -458,19 +458,22 @@ func TestResolveDependencySymbols_OriginsAndMatched(t *testing.T) {
 		hit  = "com.fasterxml.jackson.databind.ObjectMapper.readValue"
 		miss = "com.fasterxml.jackson.databind.ObjectMapper.enableDefaultTyping"
 	)
-	res, matched := resolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+	res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 		BuildDir:        dir,
 		PURL:            jacksonPURL,
 		AdvisorySymbols: []string{hit, " " + miss},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(res.Resolved) != 1 || res.Resolved[0].SCIP != readValueSink {
 		t.Fatalf("Resolved = %+v, want only %s", res.Resolved, readValueSink)
 	}
 	if !reflect.DeepEqual(res.Origins, map[string]string{readValueSink: jacksonPURL}) {
 		t.Errorf("Origins = %v", res.Origins)
 	}
-	if !reflect.DeepEqual(matched, map[string][]string{hit: {readValueSink}}) {
-		t.Errorf("matched = %v", matched)
+	if !reflect.DeepEqual(res.Matched, map[string][]string{hit: {readValueSink}}) {
+		t.Errorf("Matched = %v", res.Matched)
 	}
 	if !hasReason(res.Partiality, partialReasonAdvisorySymbolUnresolved) {
 		t.Errorf("an unresolved advisory symbol must be declared, got %+v", res.Partiality)

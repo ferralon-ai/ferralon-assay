@@ -43,18 +43,14 @@ const partialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
 // in the named dependency's JAR. The advisory identifiers (PURL + symbols) are GIVEN
 // (inv.7); this only resolves them, never originates them. Every resolved symbol was read
 // from the dependency JAR, so each carries an Origin: the dependency's PURL without version.
+// Matched maps each advisory symbol, verbatim as the request carried it, to the SCIPs it
+// resolved to; an advisory symbol that resolved to nothing is absent from it.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	res, _ := resolveDependencySymbols(ctx, req)
-	return res, nil
-}
-
-// resolveDependencySymbols does the work of ResolveDependencySymbols and also returns, for
-// each advisory symbol verbatim as the request carried it, the SCIPs it resolved to. An
-// advisory symbol that resolved to nothing is absent from the map.
-func resolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, map[string][]string) {
+	seen := map[string]bool{}
 	wanted := make([]string, 0, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
-		if strings.TrimSpace(s) != "" {
+		if strings.TrimSpace(s) != "" && !seen[s] {
+			seen[s] = true
 			wanted = append(wanted, s)
 		}
 	}
@@ -104,7 +100,7 @@ func resolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	if len(reasons) > 0 {
 		part = plugin.Partial(sortedKeys(reasons)...)
 	}
-	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved, Origins: origins}, matched
+	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved, Origins: origins, Matched: matched}, nil
 }
 
 // coordinateAndVersion derives the dependency coordinate ("group:artifact") and a concrete

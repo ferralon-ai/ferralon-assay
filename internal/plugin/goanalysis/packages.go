@@ -144,11 +144,14 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 //     the only thing such a limit can exclude. A dropped file importing a package the build did not
 //     load leaves its module unknown, and no bound holds.
 //
+// A compiled standard-library plugin package bounds nothing: plugin.Open loads Go code the build
+// never saw, which may call anything.
+//
 // runtime/cgo itself is not a cgo package here: every cgo package imports it.
 func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped, bounded bool) {
 	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
 	every := map[string]bool{"": true}
-	callbacks, unreadable := false, false
+	callbacks, unreadable, pluginLoad := false, false, false
 	var droppedImports []string
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		every[modulePURL(p)] = true
@@ -156,6 +159,7 @@ func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped,
 			return
 		}
 		_, compiled := p.Imports["runtime/cgo"]
+		pluginLoad = pluginLoad || (compiled && p.Module == nil && p.PkgPath == "plugin")
 		files := cgoFilesDropped(p)
 		if !compiled && len(files) == 0 {
 			return
@@ -178,7 +182,7 @@ func cgoLimits(pkgs []*packages.Package) (scoped []plugin.ScopedReason, dropped,
 	if len(cgoMods) == 0 {
 		return nil, false, true
 	}
-	if unreadable {
+	if unreadable || pluginLoad {
 		return nil, dropped, false
 	}
 
@@ -239,7 +243,7 @@ func isStdlibPath(path string) bool {
 // because cgo is disabled (CGO_ENABLED=0, or no C compiler). Such a file is in no package's syntax,
 // so neither the call graph nor govulncheck sees the calls it makes, and runtime/cgo never enters
 // the program to trip the cgo detector. A file the build would leave out with cgo enabled too
-// (another GOOS, a build tag) is not counted.
+// (another GOOS, a build tag) is not counted; a file that cannot be read is, since it may be neither.
 //
 // The standard library's own cgo variants (net, os/user) are not checked: their pure-Go
 // fallbacks are what the build compiles, and the analysis reads those.
@@ -255,7 +259,7 @@ func cgoFilesDropped(p *packages.Package) []string {
 			continue
 		}
 		if importsC(path) {
-			if ok, err := ctx.MatchFile(filepath.Dir(path), filepath.Base(path)); err == nil && ok {
+			if ok, err := ctx.MatchFile(filepath.Dir(path), filepath.Base(path)); err != nil || ok {
 				files = append(files, path)
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -224,10 +225,16 @@ func (s *ssaProgram) partiality(load *LoadResult) plugin.Partiality {
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	scoped := load.Partiality.Scoped
+	scoped := slices.Clone(load.Partiality.Scoped)
 	if reasons[plugin.PartialReasonCgo] && load.cgo != nil {
 		delete(reasons, plugin.PartialReasonCgo)
-		scoped = load.cgo
+		for _, r := range load.cgo {
+			if !slices.ContainsFunc(scoped, func(s plugin.ScopedReason) bool {
+				return s.Reason == r.Reason && s.Package == r.Package && s.Path == r.Path
+			}) {
+				scoped = append(scoped, r)
+			}
+		}
 	}
 	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()

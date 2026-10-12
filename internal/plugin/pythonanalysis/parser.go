@@ -58,10 +58,27 @@ func parseFile(module, src string) parseResult {
 // (a valid identifier char) so a literal argument still counts toward call-site arity.
 // This is the lexical pre-pass the scanner relies on.
 func stripPython(src string) string {
+	clean, _ := stripPythonLiterals(src)
+	return clean
+}
+
+// strLiteral is one string literal blanked by stripPythonLiterals: the rune index just past
+// it in the cleaned text and its raw body between the quotes (escapes left unprocessed).
+type strLiteral struct {
+	end  int
+	body string
+}
+
+// stripPythonLiterals is stripPython that also returns every blanked string literal keyed
+// by the rune index of its '_' token in the cleaned text. Blanking is rune-length
+// preserving, so that index is also the opening quote's index in src; callers that need a
+// literal's value at a known code position (a dynamic import's module name) read it here.
+func stripPythonLiterals(src string) (string, map[int]strLiteral) {
 	var b strings.Builder
 	b.Grow(len(src))
 	r := []rune(src)
 	n := len(r)
+	lits := map[int]strLiteral{}
 	for i := 0; i < n; {
 		c := r[i]
 		switch {
@@ -72,13 +89,34 @@ func stripPython(src string) string {
 				i++
 			}
 		case c == '"' || c == '\'':
+			start := i
 			i = stripStringLiteral(&b, r, i)
+			lits[start] = strLiteral{end: i, body: literalBody(r, start, i)}
 		default:
 			b.WriteRune(c)
 			i++
 		}
 	}
-	return b.String()
+	return b.String(), lits
+}
+
+// literalBody returns the runes between a literal's opening and closing quotes, given the
+// opening quote index and the index just past the literal. An unterminated literal yields
+// everything after the opening quote(s).
+func literalBody(r []rune, start, end int) string {
+	q := 1
+	if start+2 < len(r) && r[start+1] == r[start] && r[start+2] == r[start] {
+		q = 3
+	}
+	from := start + q
+	to := end
+	if to-q >= from && to <= len(r) && to-1 >= 0 && r[to-1] == r[start] {
+		to -= q
+	}
+	if from > to {
+		return ""
+	}
+	return string(r[from:to])
 }
 
 // stripStringLiteral blanks a Python string literal starting at the quote rune r[i]

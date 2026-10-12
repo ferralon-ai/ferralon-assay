@@ -1,11 +1,15 @@
 package javaanalysis
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
@@ -71,7 +75,7 @@ func TestResolveDependencySymbols_ResolvesInsideDependencyJar(t *testing.T) {
 	build := buildNetkitFixture(t, false)
 	writeNetkitOwnPom(t, build)
 
-	for _, advisory := range []string{"com.evil.netkit.UrlFetcher.fetch", "UrlFetcher.fetch", "fetch", "UrlFetcher.fetch(1)"} {
+	for _, advisory := range []string{"com.evil.netkit.UrlFetcher.fetch", "com.evil.netkit.UrlFetcher#fetch", "com.evil.netkit.UrlFetcher.fetch(1)"} {
 		t.Run(advisory, func(t *testing.T) {
 			res := resolveNetkit(t, build, advisory)
 			if !res.Partiality.Complete {
@@ -107,7 +111,7 @@ public class Client {
 }
 `)
 
-	res := resolveNetkit(t, build, "fetch")
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
 	for _, s := range res.Resolved {
 		if s.Package != "com.evil:netkit" {
 			t.Errorf("first-party symbol resolved for a dependency advisory: %+v", s)
@@ -169,8 +173,9 @@ func TestResolveDependencySymbols_MissingJarIsScopedToItsClosure(t *testing.T) {
 	if len(res.Resolved) != 0 || res.Partiality.Complete {
 		t.Fatalf("want unresolved and partial, got %+v", res)
 	}
-	if len(res.Partiality.Reasons) != 0 {
-		t.Errorf("a missing JAR is a scoped limit, not run-wide: %v", res.Partiality.Reasons)
+	// Until the gate reads Scoped, the miss is carried run-wide too, or the gate never sees it.
+	if !reflect.DeepEqual(res.Partiality.Reasons, []string{reasonNoDependencyArtifact}) {
+		t.Errorf("run-wide reasons = %v, want [%s]", res.Partiality.Reasons, reasonNoDependencyArtifact)
 	}
 	if len(res.Partiality.Scoped) != 1 {
 		t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
@@ -246,21 +251,105 @@ func TestLocateArtifactJar_GradleCache(t *testing.T) {
 	}
 }
 
-func TestDottedSuffixMatch(t *testing.T) {
-	full := "com.fasterxml.jackson.databind.ObjectMapper.readValue"
-	for _, tc := range []struct {
-		want string
-		ok   bool
-	}{
-		{full, true},
-		{"ObjectMapper.readValue", true},
-		{"readValue", true},
-		{"Mapper.readValue", false},
-		{"Value", false},
-		{"", false},
+// A symbol short of the full binary name resolves nothing, even when the JAR holds exactly
+// one method it could mean: the JAR can also hold a lookalike, and a partial form cannot tell
+// the two apart. The miss is reported, so the advisory is never cleared on it.
+func TestResolveDependencySymbols_PartialNameStaysUnresolved(t *testing.T) {
+	build := t.TempDir()
+	if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(netkitPom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeNetkitOwnPom(t, build)
+	b := &cpb{}
+	real := emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}})
+	b2 := &cpb{}
+	lookalike := emitClass(b2, "com/evil/netkit/shaded/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}})
+	writeJarEntries(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"), map[string][]byte{
+		"com/evil/netkit/UrlFetcher.class":        real,
+		"com/evil/netkit/shaded/UrlFetcher.class": lookalike,
+	})
+
+	for _, advisory := range []string{"UrlFetcher.fetch", "fetch", "netkit.UrlFetcher.fetch", "UrlFetcher"} {
+		t.Run(advisory, func(t *testing.T) {
+			res := resolveNetkit(t, build, advisory)
+			if len(res.Resolved) != 0 || len(res.Matched) != 0 {
+				t.Errorf("partial form resolved: %v", scips(res.Resolved))
+			}
+			if !reflect.DeepEqual(res.Partiality.Reasons, []string{reasonAdvisorySymbolUnresolved}) {
+				t.Errorf("want %s, got %+v", reasonAdvisorySymbolUnresolved, res.Partiality)
+			}
+		})
+	}
+
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+	if got := scips(res.Resolved); !reflect.DeepEqual(got, []string{depEdgeSymbol(netkitFetch)}) {
+		t.Errorf("full name resolved %v, want only the unshaded fetch", got)
+	}
+}
+
+// Only the version the build resolved is read. A different version in the cache is not the
+// code the build runs: it neither resolves the advisory nor stands in for the missing JAR,
+// even when the advisory PURL names that version.
+func TestResolveDependencySymbols_ReadsOnlyTheResolvedVersion(t *testing.T) {
+	build := buildNetkitFixture(t, true) // the pom resolves netkit 1.0.0, whose JAR is absent
+	writeNetkitOwnPom(t, build)
+	b := &cpb{}
+	other := emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}})
+	writeJar(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "2.0.0", "netkit-2.0.0.jar"), "com/evil/netkit/UrlFetcher.class", other)
+
+	for _, purl := range []string{netkitPURL, netkitPURL + "@2.0.0"} {
+		t.Run(purl, func(t *testing.T) {
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir: build, PURL: purl, AdvisorySymbols: []string{"com.evil.netkit.UrlFetcher.fetch"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Resolved) != 0 {
+				t.Errorf("resolved from a version the build does not use: %v", scips(res.Resolved))
+			}
+			if len(res.Partiality.Scoped) != 1 || res.Partiality.Scoped[0].Reason != reasonNoDependencyArtifact || res.Partiality.Scoped[0].Path != "com.evil:netkit:1.0.0" {
+				t.Errorf("want the resolved version's JAR reported missing, got %+v", res.Partiality)
+			}
+		})
+	}
+}
+
+// A dependency declared with a classifier (or a non-jar type) uses a different file than the
+// main JAR, so the main JAR is not read in its place: the advisory stays unresolved, scoped.
+func TestResolveDependencySymbols_ClassifierVariantIsNotBound(t *testing.T) {
+	build := buildNetkitFixture(t, false)
+	writeNetkitOwnPom(t, build)
+	pom := strings.Replace(netkitPom, "<version>1.0.0</version>\n    </dependency>", "<version>1.0.0</version><classifier>jdk8</classifier>\n    </dependency>", 1)
+	if pom == netkitPom {
+		t.Fatal("fixture: classifier not inserted")
+	}
+	if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(pom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+	if len(res.Resolved) != 0 {
+		t.Errorf("main JAR read for a classifier dependency: %v", scips(res.Resolved))
+	}
+	if len(res.Partiality.Scoped) != 1 || res.Partiality.Scoped[0].Reason != reasonNoDependencyArtifact || res.Partiality.Scoped[0].Package != netkitPURL {
+		t.Errorf("want scoped no_dependency_artifact for netkit, got %+v", res.Partiality)
+	}
+	if !slices.Contains(res.Partiality.Reasons, reasonNoDependencyArtifact) {
+		t.Errorf("run-wide reasons miss the variant: %v", res.Partiality.Reasons)
+	}
+}
+
+func TestNormalizeAdvisorySymbol(t *testing.T) {
+	for in, want := range map[string]string{
+		"com.fasterxml.jackson.databind.ObjectMapper.readValue":      "com.fasterxml.jackson.databind.ObjectMapper.readValue",
+		"com.fasterxml.jackson.databind.ObjectMapper#readValue":      "com.fasterxml.jackson.databind.ObjectMapper.readValue",
+		"org.apache.logging.log4j.core.lookup.JndiLookup$Inner.m(2)": "org.apache.logging.log4j.core.lookup.JndiLookup.Inner.m",
+		" com.a.B.c ": "com.a.B.c",
+		"":            "",
 	} {
-		if got := dottedSuffixMatch(full, tc.want); got != tc.ok {
-			t.Errorf("dottedSuffixMatch(%q) = %v, want %v", tc.want, got, tc.ok)
+		if got := normalizeAdvisorySymbol(in); got != want {
+			t.Errorf("normalizeAdvisorySymbol(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -281,5 +370,35 @@ func TestCoordinateOfPURL(t *testing.T) {
 		if c != tc.coord || v != tc.version || ok != tc.ok {
 			t.Errorf("coordinateOfPURL(%q) = %q, %q, %v", tc.purl, c, v, ok)
 		}
+	}
+}
+
+// writeJarEntries writes a JAR holding each named entry, in name order.
+func writeJarEntries(t *testing.T, path string, entries map[string][]byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		w, err := zw.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(entries[n]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

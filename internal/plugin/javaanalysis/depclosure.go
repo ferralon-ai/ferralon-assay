@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -98,6 +99,17 @@ func (ix inventoryIndex) versionsOf(coordinate string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// variantAt reports whether any inventory node for coordinate at version carries the
+// maven_artifact_variant reason: the build declares a classifier or non-jar type for it.
+func (ix inventoryIndex) variantAt(coordinate, version string) bool {
+	for _, n := range ix.byCoordinate[coordinate] {
+		if n.Version == version && slices.Contains(n.Partiality.Reasons, reasonMavenArtifactVariant) {
+			return true
+		}
+	}
+	return false
 }
 
 // dependencyTargets returns the versionless PURLs of coordinate and every package its code

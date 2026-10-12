@@ -69,7 +69,7 @@ func (r RootPackage) Matches(buildDir, module, coordinate, purl string) bool {
 	if r.PURLType == "golang" {
 		return goPathInModule(buildDir, r.Name, module)
 	}
-	return coordinate != "" && normalizeRootName(r.PURLType, coordinate) == normalizeRootName(r.PURLType, r.Name)
+	return coordinate != "" && CanonicalName(r.PURLType, coordinate) == CanonicalName(r.PURLType, r.Name)
 }
 
 var goMajorSuffix = regexp.MustCompile(`^v[0-9]+$`)
@@ -99,7 +99,11 @@ func goPathInModule(buildDir, mod, p string) bool {
 
 var pep503Separators = regexp.MustCompile(`[-_.]+`)
 
-func normalizeRootName(purlType, name string) string {
+// CanonicalName returns the form under which two names of a package of PURL type purlType name the
+// same package: a PyPI name normalized per PEP 503 (lowercase, each run of '-', '_' and '.' as one
+// '-'), a NuGet id lowercased, and any other name as given. The PyPI and NuGet version resolvers
+// compare names the same way.
+func CanonicalName(purlType, name string) string {
 	switch purlType {
 	case "pypi":
 		return pep503Separators.ReplaceAllString(strings.ToLower(name), "-")

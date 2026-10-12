@@ -191,3 +191,122 @@ func TestCanonicalTFM(t *testing.T) {
 		t.Errorf("bindTarget = %q, %v; a runtime-specific key is not a second target", got, ok)
 	}
 }
+
+// newtonsoftStub is a lib/ dll a runtime-specific package ships beside its real
+// implementation: the same assembly name, without the JObject API.
+func newtonsoftStub() []byte {
+	b := scaffold()
+	obj := cTypeDefOrRef(xTypeRef, b.extTypeRef("System", "Object"))
+	b.addType(0, "<Module>", "", 0, nil)
+	b.addType(0x1, "JsonConvert", "Newtonsoft.Json", obj, []mspec{
+		{name: "DeserializeObject", flags: 0x16, sig: sigStaticStringToObject, il: body()},
+	})
+	return b.bytesNamed("Newtonsoft.Json")
+}
+
+// depsJSON is the <name>.deps.json the SDK writes beside a build; rid "" is a portable build.
+func depsJSON(rid string) []byte {
+	name := ".NETCoreApp,Version=v8.0"
+	if rid != "" {
+		name += "/" + rid
+	}
+	return []byte(`{"runtimeTarget":{"name":"` + name + `","signature":""},"targets":{}}`)
+}
+
+// TestReachability_RuntimeSpecificAssets: Newtonsoft.Json is restored with a lib/ stub and a
+// runtimes/win/ implementation. The build's deps.json names the runtime it was built for; the
+// dependency is read from that runtime's restore target, or is a named miss when the runtime is
+// unknown or ambiguous. The stub is never read: it lacks JObject.Parse, so reading it would
+// leave the sink out of the loaded set rather than named.
+func TestReachability_RuntimeSpecificAssets(t *testing.T) {
+	cases := []struct {
+		name       string
+		files      map[string][]byte
+		wantSearch bool
+		wantReason string // "" = Complete
+	}{
+		{"RID resolved", map[string][]byte{
+			"bin/Release/net8.0/win-x64/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/win-x64/App.deps.json": depsJSON("win-x64"),
+			"publish/App.dll":                          appMain(".NETCoreApp,Version=v8.0"),
+			"publish/App.deps.json":                    depsJSON("win-x64"),
+		}, true, ""},
+		{"RID unknown: portable build", map[string][]byte{
+			"bin/Release/net8.0/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/App.deps.json": depsJSON(""),
+		}, false, partialReasonRIDUnknown},
+		{"RID unknown: no deps.json", map[string][]byte{
+			"bin/Release/net8.0/win-x64/App.dll": appMain(".NETCoreApp,Version=v8.0"),
+		}, false, partialReasonRIDUnknown},
+		{"RID unknown: restore did not resolve the build's runtime", map[string][]byte{
+			"bin/Release/net8.0/osx-arm64/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/osx-arm64/App.deps.json": depsJSON("osx-arm64"),
+		}, false, partialReasonRIDUnknown},
+		{"RID ambiguous: two runtime builds", map[string][]byte{
+			"bin/Release/net8.0/win-x64/App.dll":         appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/win-x64/App.deps.json":   depsJSON("win-x64"),
+			"bin/Release/net8.0/linux-x64/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/linux-x64/App.deps.json": depsJSON("linux-x64"),
+		}, false, partialReasonRIDAmbiguous},
+		{"RID ambiguous: a portable and a runtime build", map[string][]byte{
+			"bin/Debug/net8.0/App.dll":                 appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Debug/net8.0/App.deps.json":           depsJSON(""),
+			"bin/Release/net8.0/win-x64/App.dll":       appMain(".NETCoreApp,Version=v8.0"),
+			"bin/Release/net8.0/win-x64/App.deps.json": depsJSON("win-x64"),
+		}, false, partialReasonRIDAmbiguous},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("NUGET_PACKAGES", t.TempDir())
+			pkgRoot := t.TempDir()
+			assets := `{"version":3,"targets":{` +
+				`"net8.0":{"Newtonsoft.Json/12.0.3":{"type":"package","compile":{"lib/net8.0/Newtonsoft.Json.dll":{}},` +
+				`"runtime":{"lib/net8.0/Newtonsoft.Json.dll":{}},` +
+				`"runtimeTargets":{"runtimes/win/lib/net8.0/Newtonsoft.Json.dll":{"assetType":"runtime","rid":"win"}}}},` +
+				`"net8.0/win-x64":{"Newtonsoft.Json/12.0.3":{"type":"package","compile":{"lib/net8.0/Newtonsoft.Json.dll":{}},` +
+				`"runtime":{"runtimes/win/lib/net8.0/Newtonsoft.Json.dll":{}}}},` +
+				`"net8.0/linux-x64":{"Newtonsoft.Json/12.0.3":{"type":"package","compile":{"lib/net8.0/Newtonsoft.Json.dll":{}},` +
+				`"runtime":{"lib/net8.0/Newtonsoft.Json.dll":{}}}}},` +
+				`"libraries":{` + newtonsoftLib + `},"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
+			files := map[string][]byte{
+				"App.csproj":              []byte("<Project></Project>"),
+				"obj/project.assets.json": []byte(assets),
+			}
+			for k, v := range c.files {
+				files[k] = v
+			}
+			dir := composeILBuildDir(t, files)
+			f := depFixture{buildDir: dir, pkgRoot: pkgRoot}
+			f.writePkgFile(t, "newtonsoft.json/12.0.3/lib/net8.0/Newtonsoft.Json.dll", newtonsoftStub())
+			f.writePkgFile(t, "newtonsoft.json/12.0.3/runtimes/win/lib/net8.0/Newtonsoft.Json.dll", newtonsoftLike(false))
+
+			res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{scipParse}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slices.Contains(res.Searched, scipParse); got != c.wantSearch {
+				t.Fatalf("searched = %v, want %v (partiality %+v)", got, c.wantSearch, res.Partiality)
+			}
+			sym := resolveNewtonsoft(t, f, "Newtonsoft.Json.Linq.JObject.Parse")
+			if c.wantReason == "" {
+				if !res.Partiality.Complete {
+					t.Fatalf("partiality = %+v, want Complete", res.Partiality)
+				}
+				if len(sym.Matched) != 1 || !sym.Partiality.Complete {
+					t.Fatalf("symbol resolution = %+v, want JObject.Parse matched from the runtime's implementation", sym)
+				}
+				return
+			}
+			if !hasILReason(res.Partiality, c.wantReason) || len(res.Partiality.Scoped) != 1 ||
+				res.Partiality.Scoped[0].Reason != c.wantReason {
+				t.Fatalf("partiality = %+v, want %s scoped and run-wide", res.Partiality, c.wantReason)
+			}
+			if report.ClassifyPartialityReason(c.wantReason) != report.PartialityDidNotRun {
+				t.Fatalf("%s must classify did_not_run", c.wantReason)
+			}
+			if len(sym.Matched) != 0 || !hasILReason(sym.Partiality, c.wantReason) {
+				t.Fatalf("symbol resolution = %+v, want no match and %s", sym, c.wantReason)
+			}
+		})
+	}
+}

@@ -33,8 +33,9 @@ type TypeRef struct {
 	Namespace string
 	Name      string
 	Token     Token
-	IsSpec    bool   // came from a TypeSpec (generic instantiation)
-	SpecBlob  []byte // TypeSpec signature blob when IsSpec
+	IsSpec    bool     // came from a TypeSpec (generic instantiation)
+	SpecBlob  []byte   // TypeSpec signature blob when IsSpec
+	Def       *TypeRef // for a GENERICINST TypeSpec, the generic type it instantiates
 }
 
 // MethodDef is a method defined in this assembly. RVA points at the IL body in the
@@ -168,9 +169,33 @@ func (a *Assembly) TypeRefFor(tok Token) TypeRef {
 		scope := decodeCoded(ciResolutionScope, a.rowVal(tTypeRef, rid, 0))
 		return TypeRef{Scope: a.scopeName(scope), Namespace: a.rowStr(tTypeRef, rid, 2), Name: a.rowStr(tTypeRef, rid, 1), Token: tok}
 	case tTypeSpec:
-		return TypeRef{IsSpec: true, SpecBlob: a.md.blob(a.rowVal(tTypeSpec, rid, 0)), Token: tok}
+		tr := TypeRef{IsSpec: true, SpecBlob: a.md.blob(a.rowVal(tTypeSpec, rid, 0)), Token: tok}
+		if def, ok := a.genericDefinition(tr.SpecBlob); ok {
+			tr.Def = &def
+		}
+		return tr
 	}
 	return TypeRef{Token: tok}
+}
+
+// genericDefinition decodes a GENERICINST TypeSpec blob's generic type: the open
+// TypeDef or TypeRef the specification instantiates. Any other spec shape (array,
+// pointer, generic parameter) has none.
+func (a *Assembly) genericDefinition(blob []byte) (TypeRef, bool) {
+	r := &reader{b: blob}
+	if r.u1() != etGenericInst {
+		return TypeRef{}, false
+	}
+	r.u1() // CLASS or VALUETYPE
+	coded, ok := r.compressedUint()
+	if !ok || r.err != nil {
+		return TypeRef{}, false
+	}
+	tok := decodeCoded(ciTypeDefOrRef, coded)
+	if tok.IsNull() || (tok.Table() != tTypeDef && tok.Table() != tTypeRef) {
+		return TypeRef{}, false
+	}
+	return a.TypeRefFor(tok), true
 }
 
 // Read parses a managed assembly's bytes into the typed model. It never loads the

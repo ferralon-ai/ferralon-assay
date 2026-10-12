@@ -7,7 +7,7 @@ package assembly
 // is another assembly resolving against the CHA's global type index) is already the
 // design. This file's only job is to ASSEMBLE that set from a build: the first-party
 // assembly, then each dependency whose compiled .dll can be LOCATED (barrier-3a's
-// ResolveDependencyDll) and READ (ReadAssembly).
+// ResolveDependencyDlls) and READ (ReadAssembly).
 //
 // It is pure locate+read+assemble: no restore, no fetch, no execution, no system
 // assembly, and — critically — NO VERDICT LOGIC. The engine/trigger classifies; the
@@ -21,11 +21,20 @@ package assembly
 
 // DepRef names one dependency to load, in project.assets.json coordinates: Target is
 // the assets targets key ("net8.0" or "net8.0/linux-x64") and PkgKey is "<id>/<version>".
-// These are exactly the keys ResolveDependencyDll consumes, derivable from the same
-// project.assets.json barrier-3a parses (or supplied by the caller).
+// These are exactly the keys ResolveDependencyDlls consumes, derivable from the same
+// project.assets.json barrier-3a parses (or supplied by the caller). Runtime is the
+// runtime the first-party build was produced for; it picks the implementation of a
+// package that ships one per runtime.
 type DepRef struct {
-	Target string
-	PkgKey string
+	Target  string
+	PkgKey  string
+	Runtime Runtime
+}
+
+// Runtime is the runtime identifier a build was produced for, as its outputs record it.
+type Runtime struct {
+	RID       string // e.g. "linux-x64"; "" when no output records one (a portable build)
+	Ambiguous bool   // the build's outputs record more than one runtime
 }
 
 // DepMiss is one dependency that could not be added to the spanning set — either its
@@ -80,18 +89,21 @@ const (
 	MissUnreadable        = "unreadable"
 	MissReferenceAssembly = "reference assembly"
 	MissFrameworkSupplied = "framework-supplied"
+	// MissRIDUnknown: the package ships per-runtime implementations and the build records
+	// no runtime that restore resolved, so which bytes run is not known.
+	MissRIDUnknown = "runtime identifier unknown"
+	// MissRIDAmbiguous: the package ships per-runtime implementations and the build's
+	// outputs record more than one runtime.
+	MissRIDAmbiguous = "runtime identifier ambiguous"
 )
 
 // ReadDependency locates and reads every dll of one dependency. reason is "" on
 // success, else the declared miss (Miss*). A package is all-or-nothing: one bad dll
 // makes the whole package a miss.
 func ReadDependency(buildDir string, d DepRef, locator *AssetsLocator) ([]*Assembly, string) {
-	if locator.FrameworkSupplied(d.Target, d.PkgKey) {
-		return nil, MissFrameworkSupplied
-	}
-	paths, ok := ResolveDependencyDlls(buildDir, d.Target, d.PkgKey, locator)
-	if !ok {
-		return nil, MissNotLocated
+	paths, reason := dependencyDlls(buildDir, d, locator)
+	if reason != "" {
+		return nil, reason
 	}
 	asms := make([]*Assembly, 0, len(paths))
 	for _, p := range paths {
@@ -105,4 +117,37 @@ func ReadDependency(buildDir string, d DepRef, locator *AssetsLocator) ([]*Assem
 		asms = append(asms, a)
 	}
 	return asms, ""
+}
+
+// dependencyDlls locates the dlls that run for one dependency. A package that ships
+// per-runtime implementations is read only from the "<tfm>/<rid>" target restore
+// resolved for the build's runtime, and only through the assets path: its lib/ dll,
+// which the path-convention fallbacks would find, is often a stub the runtime replaces.
+func dependencyDlls(buildDir string, d DepRef, locator *AssetsLocator) ([]string, string) {
+	target := d.Target
+	ridSpecific := locator.RIDSpecific(d.Target, d.PkgKey)
+	if ridSpecific {
+		switch {
+		case d.Runtime.Ambiguous:
+			return nil, MissRIDAmbiguous
+		case d.Runtime.RID == "" || !locator.HasPackage(d.Target+"/"+d.Runtime.RID, d.PkgKey):
+			return nil, MissRIDUnknown
+		}
+		target = d.Target + "/" + d.Runtime.RID
+	}
+	if locator.FrameworkSupplied(target, d.PkgKey) {
+		return nil, MissFrameworkSupplied
+	}
+	if ridSpecific {
+		paths, ok := locator.LocateDlls(NugetPackageRoots(buildDir, locator), target, d.PkgKey)
+		if !ok {
+			return nil, MissNotLocated
+		}
+		return paths, ""
+	}
+	paths, ok := ResolveDependencyDlls(buildDir, target, d.PkgKey, locator)
+	if !ok {
+		return nil, MissNotLocated
+	}
+	return paths, ""
 }

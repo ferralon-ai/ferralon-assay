@@ -145,11 +145,18 @@ func NewCHA(asms ...*Assembly) *CHA {
 	return c
 }
 
-// lookup resolves a TypeRef to an in-set node, or nil if the type is out-of-set
-// (a different, unloaded assembly) or a TypeSpec (generic instantiation — CHA runs
-// over the open type, so a raw spec at a call owner is a boundary here).
+// lookup resolves a TypeRef to an in-set node, or nil if the type is out-of-set (a
+// different, unloaded assembly). A generic instantiation resolves to its generic type:
+// CHA runs over open types, so a subclass of B<Foo> derives from B and a call on
+// B<Foo>::M binds within B. Any other TypeSpec (array, pointer, generic parameter) is nil.
 func (c *CHA) lookup(tr TypeRef) *typeNode {
-	if tr.Token.IsNull() || tr.IsSpec {
+	if tr.IsSpec {
+		if tr.Def == nil {
+			return nil
+		}
+		tr = *tr.Def
+	}
+	if tr.Token.IsNull() {
 		return nil
 	}
 	nodes := c.byKey[typeKey(tr.Namespace, tr.Name)]
@@ -419,13 +426,13 @@ func (c *CHA) matchMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte
 	return out
 }
 
-// declaredMethod returns t's methods named name whose signature sig can name, regardless
-// of abstractness (used for an exact direct-call bind, where an abstract target is still
-// the name).
+// declaredMethod returns t's methods named name whose signature sig names, return type
+// included, regardless of abstractness (used for an exact direct-call bind, where an
+// abstract target is still the name).
 func (c *CHA) declaredMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte) []*MethodDef {
 	var out []*MethodDef
 	for _, m := range t.def.Methods {
-		if m.Name == name && sigCompatible(sigAsm, sig, t.asm, m.SigBlob) {
+		if m.Name == name && sigExact(sigAsm, sig, t.asm, m.SigBlob) {
 			out = append(out, m)
 		}
 	}

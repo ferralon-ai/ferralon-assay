@@ -390,9 +390,10 @@ type SymbolIndexResult struct {
 type SymbolResolutionResult struct {
 	Partiality Partiality `json:"partiality"`
 	Resolved   []Symbol   `json:"resolved"` // advisory symbol → concrete codebase symbols
-	// Origins maps a Resolved symbol's SCIP to the package its code belongs to, as a PURL without a
-	// version. Absent means first-party. A lane sets it only for code it actually read (dependency
-	// source or bytecode), never from the request PURL.
+	// Origins maps a Resolved symbol's SCIP to the package the symbol belongs to, as a PURL without a
+	// version. Absent means first-party. The lane derives it from code it read or from its own
+	// import-binding → lockfile resolution, never from the request PURL. An origin alone grounds
+	// nothing: only a sink in ReachabilityResult.Searched does, and that requires loaded code.
 	Origins map[string]string `json:"origins,omitempty"`
 }
 
@@ -442,9 +443,10 @@ type ReachabilityResult struct {
 	// and the caller must treat the empty path set as evidence about the analyzer's toolchain
 	// rather than the subject's. It is a measurement, never a promise: the caller compares.
 	ScanToolchain string `json:"scan_toolchain,omitempty"`
-	// Searched lists the request sinks the lane stands behind as searched: the sink is a node of the
-	// graph it traced, it traced from every ingress it found (at least one), and no path reached the
-	// sink. A lane that lists a sink here must not declare no_known_ingress on its account.
+	// Searched lists the request sinks the lane stands behind as searched: the sink is a node built
+	// from code the lane loaded (never a boundary node), it traced from every ingress it found (at
+	// least one), and no path reached the sink. A lane that lists a sink here must not declare
+	// no_known_ingress on its account.
 	Searched []string `json:"searched,omitempty"`
 	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
 	Refutation *Refutation `json:"refutation,omitempty"`

@@ -39,9 +39,19 @@ type moduleBindings struct {
 	reExports     map[string]binding // exported name → re-export binding (for `export { x } from 'spec'`)
 	reExportStars []string           // specifiers from `export * from 'spec'`
 	ambiguous     map[string]bool    // local names bound more than once → resolve as unresolved
-	specifiers    []string           // every literal specifier the module loads (import, export-from, require, import()), at any scope
+	specifiers    []loadSpec         // every literal specifier the module loads (import, export-from, require, import()), at any scope
 	dynImport     bool               // saw a runtime-computed ESM target `import(expr)`
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)`
+	nativeLoad    bool               // saw process.dlopen, which loads a native addon this lane never reads
+	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
+}
+
+// loadSpec is one literal specifier a module loads. viaRequire marks a require() load,
+// which Node resolves under the "require" condition; any other form may resolve under
+// either, because a transpiler can emit ESM syntax as require().
+type loadSpec struct {
+	spec       string
+	viaRequire bool
 }
 
 func newModuleBindings() moduleBindings {
@@ -96,6 +106,18 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case crNames[word]:
 			mb.createRequireUse(clean, src, i, next)
 			i = next
+		case word == "_load", word == "dlopen", word == "eval":
+			mb.memberUse(clean, i, word)
+			i = next
+		case word == "Function":
+			mb.functionUse(clean, i, next)
+			i = next
+		case word == "module":
+			mb.moduleIndexUse(clean, i, next)
+			i = next
+		case word == "_" && src[i] != '_': // a string literal; see keyedUse
+			mb.keyedUse(clean, src, i)
+			i = next
 		default:
 			i = next
 		}
@@ -123,14 +145,14 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	}
 	if clean[p] == '(' { // dynamic import(expr)
 		mb.dynImport = true
-		mb.loaderCall(clean, src, p, &mb.dynImport)
+		mb.loaderCall(clean, src, p, false)
 		return pos
 	}
 	if clean[p] == '.' { // import.meta
 		return pos
 	}
 	if clean[p] == '_' { // side-effect import 'x'
-		mb.specifiers = append(mb.specifiers, specifierAt(src, p))
+		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, p)})
 		return p + 1
 	}
 	typeOnly := false
@@ -175,7 +197,7 @@ spec:
 	if p < n && clean[p] == '_' {
 		specifier := specifierAt(src, p)
 		if !typeOnly {
-			mb.specifiers = append(mb.specifiers, specifier)
+			mb.specifiers = append(mb.specifiers, loadSpec{spec: specifier})
 			for _, pr := range pairs {
 				add(binding{Local: pr.local, Specifier: specifier, Kind: bindImport, Imported: pr.imported})
 			}
@@ -205,7 +227,7 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '_' {
 				mb.reExportStars = append(mb.reExportStars, specifierAt(src, p))
-				mb.specifiers = append(mb.specifiers, specifierAt(src, p))
+				mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, p)})
 				return p + 1
 			}
 		}
@@ -222,7 +244,7 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '_' {
 				specifier := specifierAt(src, p)
-				mb.specifiers = append(mb.specifiers, specifier)
+				mb.specifiers = append(mb.specifiers, loadSpec{spec: specifier})
 				for _, pr := range pairs {
 					mb.reExports[pr.local] = binding{Local: pr.local, Specifier: specifier, Kind: bindReExport, Imported: pr.imported}
 				}
@@ -259,7 +281,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 				a := skipSpace(clean, p+1)
 				if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
 					specifier := specifierAt(src, a)
-					mb.specifiers = append(mb.specifiers, specifier)
+					mb.specifiers = append(mb.specifiers, loadSpec{spec: specifier, viaRequire: true})
 					for _, pr := range pairs {
 						add(binding{Local: pr.local, Specifier: specifier, Kind: bindRequire, Imported: pr.imported})
 					}
@@ -296,7 +318,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 		if p < n && clean[p] == '(' {
 			a := skipSpace(clean, p+1)
 			if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-				mb.specifiers = append(mb.specifiers, specifierAt(src, a))
+				mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, a), viaRequire: true})
 				add(binding{Local: name, Specifier: specifierAt(src, a), Kind: bindRequire, Imported: "*"})
 				return a + 1
 			}

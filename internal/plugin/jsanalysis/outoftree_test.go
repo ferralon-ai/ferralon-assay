@@ -171,6 +171,84 @@ const gen = require('/opt/gen/x.js');
 function load(s) { return gen.parse(s); }
 load(process.argv);
 `}, ""},
+		{"require inside a typeof test", map[string]string{"app.js": `
+function load(s) { if (typeof require('json5').parse === 'function') return s; return s; }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"imports entry whose require branch is a package", map[string]string{
+			"package.json": `{"name":"app","imports":{"#j":{"import":"./esm.js","require":"json5"}}}`,
+			"esm.js":       "export function parse(s) { return s; }\n",
+			"app.js": `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"imports entry whose node branch precedes import", map[string]string{
+			"package.json": `{"name":"app","imports":{"#j":{"node":"json5","import":"./esm.js"}}}`,
+			"esm.js":       "export function parse(s) { return s; }\n",
+			"app.js": `
+import { parse } from '#j';
+function load(s) { return parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"workspace member whose require branch is not in the tree", map[string]string{
+			"package.json":            `{"name":"root","workspaces":["packages/*"]}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"import":"./src/index.js","require":"./lib/index.cjs"}}}`,
+			"packages/m/src/index.js": "export function parse(s) { return s; }\n",
+			"app.js": `
+const m = require('m');
+function load(s) { return m.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"workspace member whose main is not in the tree", map[string]string{
+			"package.json":            `{"name":"root","workspaces":["packages/*"]}`,
+			"packages/m/package.json": `{"name":"m","main":"./lib/index.cjs"}`,
+			"packages/m/index.js":     "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js": `
+const m = require('m');
+function load(s) { return m.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"require reached by a string key", map[string]string{"app.js": `
+const j = module['require']('json5');
+function load(s) { return j.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module indexed by a computed key", map[string]string{"app.js": `
+const k = 'require';
+function load(s) { return module[k]('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"Module._load", map[string]string{"app.js": `
+const j = module.constructor._load('json5', module);
+function load(s) { return j.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"process.dlopen", map[string]string{"app.js": `
+const m = { exports: {} };
+process.dlopen(m, './x.node');
+function load(s) { return m.exports.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUnresolvedModule},
+		{"eval", map[string]string{"app.js": `
+function load(s) { return eval('require')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"eval through globalThis", map[string]string{"app.js": `
+const run = globalThis.eval;
+function load(s) { return run('require')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"new Function", map[string]string{"app.js": `
+const f = new Function('m', 'return require(m)');
+function load(s) { return f('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function aliased", map[string]string{"app.js": `
+const F = Function;
+function load(s) { return F('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,22 +270,25 @@ load(process.argv);
 }
 
 // TestCallGraph_InTreeOnlyDeclaresNoDidNotRun is the control: in-tree loads (including a
-// TS sibling imported by its emitted .js name), a JSON file, require.resolve, a typeof test
-// and an unresolved local call leave the graph with inherent reasons only, so the invariant
+// TS sibling imported by its emitted .js name and an imports entry whose runtime branches
+// all stay in the tree), a JSON file, require.resolve, a typeof test, a Function type
+// annotation, a property named eval and an unresolved local call leave the graph with inherent reasons only, so the invariant
 // above is not met by declaring did_not_run on every module.
 func TestCallGraph_InTreeOnlyDeclaresNoDidNotRun(t *testing.T) {
 	dir := writeProgram(t, map[string]string{
 		"util.js":      "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
-		"fmt.ts":       "export function fmt(s: string) { return s; }\n",
+		"fmt.ts":       "export function fmt(s: string, cb?: Function) { return s; }\nconst bind = Function.prototype.bind;\n",
 		"config.json":  `{"a": 1}`,
-		"package.json": `{"name": "app"}`,
+		"package.json": `{"name": "app", "imports": {"#u": {"import": "./util.js", "require": "./util.js", "types": "./util.d.ts"}}}`,
 		"app.js": `
 const { trim } = require('./util');
 import './util';
 import { fmt } from './fmt.js';
+const u = require('#u');
 const cfg = require('./config.json');
 const where = require.resolve('./util');
-if (typeof require === 'function') { load(where); }
+if (typeof require === 'function' && cfg.eval) { load(where); }
+module.exports = { load };
 function load(s) { return fmt(trim(s)); }
 load(process.argv);
 `,

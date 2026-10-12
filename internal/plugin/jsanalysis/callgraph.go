@@ -201,7 +201,8 @@ type partialFlags struct {
 	uninspectable bool // a bare specifier into a package this cycle cannot open (uninspectable_package)
 	dynImport     bool // a runtime-computed ESM target import(expr) (dynamic_import_specifier)
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
-	unreadModule  bool // a relative specifier naming no in-tree source module (unresolved_module)
+	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
+	evaluated     bool // eval or the Function constructor (evaluated_code)
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -230,13 +231,19 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		if f.bindings.computedReq {
 			flags.computedReq = true
 		}
+		if f.bindings.nativeLoad {
+			flags.unreadModule = true
+		}
+		if f.bindings.evaluated {
+			flags.evaluated = true
+		}
 		// A module that loads an out-of-tree package runs that package's code, whatever it
 		// later does with the binding, so the run executed code this lane did not open.
-		for _, spec := range f.bindings.specifiers {
-			if !flags.uninspectable && rs.loadsOutOfTree(f.module, spec) {
+		for _, ls := range f.bindings.specifiers {
+			if !flags.uninspectable && rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
 				flags.uninspectable = true
 			}
-			if !flags.unreadModule && rs.loadsUnreadModule(f.module, spec) {
+			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
 				flags.unreadModule = true
 			}
 		}
@@ -350,6 +357,9 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	}
 	if flags.unreadModule {
 		reasons = append(reasons, plugin.PartialReasonUnresolvedModule)
+	}
+	if flags.evaluated {
+		reasons = append(reasons, plugin.PartialReasonEvaluatedCode)
 	}
 	if len(reasons) == 0 {
 		return plugin.Complete()

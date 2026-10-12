@@ -60,14 +60,17 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 // A call loads its argument; `.resolve` only computes a path. Any other use hands the
 // loader on, so the module can load targets this lane never sees.
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
-	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w {
-	case "typeof", "const", "let", "var": // a type test, or the declaration of a createRequire result
+	p := skipSpace(clean, next)
+	call := p < len(clean) && clean[p] == '('
+	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); {
+	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
+		return
+	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
 		return
 	}
-	p := skipSpace(clean, next)
 	switch {
-	case p < len(clean) && clean[p] == '(':
-		mb.loaderCall(clean, src, p, &mb.computedReq)
+	case call:
+		mb.loaderCall(clean, src, p, true)
 	case p < len(clean) && clean[p] == '.':
 		if w, _ := peekWord(clean, skipSpace(clean, p+1)); w != "resolve" {
 			mb.computedReq = true
@@ -82,17 +85,18 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 // require-like (loaderNames). Anything else lets a require function escape where this lane
 // cannot follow its calls.
 func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
-	if w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w == "typeof" {
+	p := skipSpace(clean, next)
+	call := p < len(clean) && clean[p] == '('
+	if w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w == "typeof" && !call {
 		return
 	}
-	p := skipSpace(clean, next)
-	if p >= len(clean) || clean[p] != '(' {
+	if !call {
 		mb.computedReq = true
 		return
 	}
 	_, end := parseParamArity(clean, p)
 	if q := skipSpace(clean, end); q < len(clean) && clean[q] == '(' {
-		mb.loaderCall(clean, src, q, &mb.computedReq)
+		mb.loaderCall(clean, src, q, true)
 		return
 	}
 	if _, ok := declBoundName(clean, i); !ok {
@@ -100,21 +104,118 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 	}
 }
 
-// loaderCall records the argument of a loader call whose '(' is at open: a string literal
-// that is the whole argument is a specifier the module loads; anything else, including a
-// literal concatenated with a value or a template with an interpolation, is a target
-// computed at run time, and sets computed.
-func (mb *moduleBindings) loaderCall(clean, src []rune, open int, computed *bool) {
+// Code also runs unread through entry points that never spell require: Module._load, which
+// require wraps; process.dlopen, which loads a native addon; eval and the Function
+// constructor, which run source built at run time; and any of these reached by a string
+// key (`module['require']`). Each sets a flag rather than a specifier, because what it
+// loads is never statically known.
+
+// memberUse records an identifier at i that is a loader entry point when reached as a
+// member: `._load` loads a module as require does, `.dlopen` loads a native addon, and
+// `.eval` on the global object is eval.
+func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
+	p := skipSpaceBack(clean, i-1)
+	if p < 0 || clean[p] != '.' {
+		if word == "eval" {
+			mb.evaluated = true
+		}
+		return
+	}
+	switch word {
+	case "_load":
+		mb.computedReq = true
+	case "dlopen":
+		mb.nativeLoad = true
+	case "eval":
+		switch recv, _ := wordBefore(clean, skipSpaceBack(clean, p-1)); recv {
+		case "globalThis", "global", "window", "self":
+			mb.evaluated = true
+		}
+	}
+}
+
+// functionUse records a use of the Function constructor at i: a call, `new Function`, a
+// `.call`/`.apply`/`.bind` on it, or an assignment that aliases it. A TypeScript type
+// annotation (`cb: Function`) and `Function.prototype` are not uses.
+func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
+	b := skipSpaceBack(clean, i-1)
+	if b >= 0 && clean[b] == '.' {
+		return
+	}
+	p := skipSpace(clean, next)
+	switch {
+	case p < len(clean) && clean[p] == '(':
+	case p < len(clean) && clean[p] == '.':
+		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); w {
+		case "call", "apply", "bind":
+		default:
+			return
+		}
+	default:
+		w, _ := wordBefore(clean, b)
+		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
+		if w != "new" && !assigned {
+			return
+		}
+	}
+	mb.evaluated = true
+}
+
+// keyedUse records the string literal at a (clean marks it '_') when it is the whole key of
+// a bracket access, `x['require']`, naming a loader entry point; module itself indexed by a
+// computed key is treated the same way, since the key can name any of them.
+func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
+	if b := skipSpaceBack(clean, a-1); b < 0 || clean[b] != '[' {
+		return
+	}
+	if e := skipSpace(clean, a+1); e >= len(clean) || clean[e] != ']' {
+		return
+	}
+	switch specifierAt(src, a) {
+	case "require", "createRequire", "_load":
+		mb.computedReq = true
+	case "dlopen":
+		mb.nativeLoad = true
+	case "eval", "Function":
+		mb.evaluated = true
+	}
+}
+
+// moduleIndexUse records `module[expr]` with a key that is not a literal: the key can name
+// require or the Module constructor's loaders.
+func (mb *moduleBindings) moduleIndexUse(clean []rune, i, next int) {
+	if b := skipSpaceBack(clean, i-1); b >= 0 && clean[b] == '.' {
+		return
+	}
+	p := skipSpace(clean, next)
+	if p >= len(clean) || clean[p] != '[' {
+		return
+	}
+	if a := skipSpace(clean, p+1); a < len(clean) && clean[a] == '_' {
+		return // a literal key; keyedUse judges it
+	}
+	mb.computedReq = true
+}
+
+// loaderCall records the argument of a require() (viaRequire) or import() call whose '(' is
+// at open: a string literal that is the whole argument is a specifier the module loads;
+// anything else, including a literal concatenated with a value or a template with an
+// interpolation, is a target computed at run time.
+func (mb *moduleBindings) loaderCall(clean, src []rune, open int, viaRequire bool) {
 	n := len(clean)
 	a := skipSpace(clean, open+1)
 	if a >= n || clean[a] == ')' {
 		return
 	}
 	if clean[a] == '_' && wholeLiteralArg(clean, src, a) {
-		mb.specifiers = append(mb.specifiers, specifierAt(src, a))
+		mb.specifiers = append(mb.specifiers, loadSpec{spec: specifierAt(src, a), viaRequire: viaRequire})
 		return
 	}
-	*computed = true
+	if viaRequire {
+		mb.computedReq = true
+	} else {
+		mb.dynImport = true
+	}
 }
 
 // wholeLiteralArg reports whether the string literal at a (clean marks it '_') is the entire

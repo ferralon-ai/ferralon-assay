@@ -82,3 +82,61 @@ func mavenRepoRoots(buildDir string) []string {
 	}
 	return roots
 }
+
+// locateArtifactJar finds a dependency JAR in the build's local caches: the Maven
+// repositories first (the Java common case), then the Gradle module cache. ok is false
+// when no cache holds it.
+func locateArtifactJar(buildDir, coordinate, version string) (string, bool) {
+	if path, ok := LocateDependencyJar(mavenRepoRoots(buildDir), coordinate, version); ok {
+		return path, true
+	}
+	group, artifact, ok := splitCoordinate(coordinate)
+	if !ok || version == "" {
+		return "", false
+	}
+	return locateGradleJar(gradleCacheRoots(buildDir), group, artifact, version)
+}
+
+// locateGradleJar resolves the Gradle module cache layout:
+//
+//	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.jar
+//
+// Gradle keeps the group dotted and interposes a content-hash directory, so the version
+// directory's immediate children are scanned for the expected JAR.
+func locateGradleJar(roots []string, group, artifact, version string) (string, bool) {
+	jar := artifact + "-" + version + ".jar"
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		versionDir := filepath.Join(root, group, artifact, version)
+		hashDirs, err := os.ReadDir(versionDir)
+		if err != nil {
+			continue
+		}
+		for _, hd := range hashDirs {
+			if !hd.IsDir() {
+				continue
+			}
+			candidate := filepath.Join(versionDir, hd.Name(), jar)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return candidate, true
+			}
+		}
+	}
+	return "", false
+}
+
+// gradleCacheRoots returns the Gradle module-cache roots to search, in priority order: a
+// project-local .gradle cache, a project-local GRADLE_USER_HOME ("caches" under the build),
+// then the user ~/.gradle.
+func gradleCacheRoots(buildDir string) []string {
+	roots := []string{
+		filepath.Join(buildDir, ".gradle", "caches", "modules-2", "files-2.1"),
+		filepath.Join(buildDir, "caches", "modules-2", "files-2.1"),
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		roots = append(roots, filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1"))
+	}
+	return roots
+}

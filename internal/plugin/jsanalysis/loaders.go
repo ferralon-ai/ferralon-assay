@@ -62,10 +62,15 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	p := skipSpace(clean, next)
 	call := p < len(clean) && clean[p] == '('
-	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); {
+	switch w, s := wordBefore(clean, skipSpaceBack(clean, i-1)); {
 	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
+		// Exported, the loader escapes to every importer, which can load anything through
+		// it without a loader name of its own: an unbounded load.
+		if ew, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); ew == "export" {
+			mb.computedReq = true
+		}
 		return
 	}
 	switch {
@@ -77,6 +82,23 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 		}
 	default:
 		mb.computedReq = true
+	}
+}
+
+// exportedLoaders flags an `export { ... }` list (pos is just after "export") that names a
+// require-like or createRequire-like binding: the loader escapes to every importer, which
+// can load anything through it.
+func (mb *moduleBindings) exportedLoaders(clean []rune, pos int, req, cr map[string]bool) {
+	p := skipSpace(clean, pos)
+	if p >= len(clean) || clean[p] != '{' {
+		return
+	}
+	pairs, _ := collectBraceList(clean, p, nil, false)
+	for _, pr := range pairs {
+		if req[pr.imported] || cr[pr.imported] {
+			mb.computedReq = true
+			return
+		}
 	}
 }
 

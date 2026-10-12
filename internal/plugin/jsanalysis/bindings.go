@@ -106,6 +106,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "import":
 			i = parseImportForm(clean, src, next, &mb, add)
 		case word == "export":
+			mb.exportedLoaders(clean, next, reqNames, crNames)
 			i = parseExportForm(clean, src, next, &mb)
 		case word == "const", word == "let", word == "var":
 			i = parseDeclForm(clean, src, next, &mb, add)

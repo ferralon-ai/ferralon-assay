@@ -45,6 +45,10 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
+	// SubjectJavaVersion is the Java version the subject builds with, as the caller states it.
+	// It reaches the language plugin's inventory resolution as TargetEnv "java.version". See
+	// WithSubjectJavaVersion.
+	SubjectJavaVersion string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.

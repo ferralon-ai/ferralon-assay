@@ -46,6 +46,8 @@ const (
 	envOSVWorkSet       = brand.EnvPrefix + "_OSV_WORK_SET"
 	envSubjectGoVersion = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
 	envCIGoVersion      = brand.EnvPrefix + "_CI_GO_VERSION"
+	// envSubjectJavaVersion is the env channel for -subject-java-version.
+	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 )
 
 // envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
@@ -397,6 +399,7 @@ type runFlags struct {
 	houseCanaries    *bool
 	osvWorkSet       *bool
 	subjectGo        *string
+	subjectJava      *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -458,6 +461,9 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
+
+		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
+		subjectJava: fs.String("subject-java-version", "", "the Java version the SCANNED repository builds with, e.g. 17.0.12, used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
 	}
 }
 
@@ -771,6 +777,19 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	return pipeline.WithSubjectToolchain(declared, observed, trustObservedGo())
 }
 
+// subjectJavaOption passes the subject's Java version (-subject-java-version, then
+// envSubjectJavaVersion) to inventory resolution, or returns nil when neither is set.
+func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
+	v := strings.TrimSpace(*f.subjectJava)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
+	}
+	if v == "" {
+		return nil
+	}
+	return pipeline.WithSubjectJavaVersion(v)
+}
+
 // trustObservedGo reports whether the observed runner toolchain may be treated as a statement about
 // the subject. Fails closed: any value that is not an explicit true reads as untrusted.
 func trustObservedGo() bool {
@@ -840,6 +859,9 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		assessOptions = append(assessOptions, opt)
 	}
 	if opt := f.subjectToolchainOption(); opt != nil {
+		assessOptions = append(assessOptions, opt)
+	}
+	if opt := f.subjectJavaOption(); opt != nil {
 		assessOptions = append(assessOptions, opt)
 	}
 	if opt := subjectToolchainReachOption(); opt != nil {

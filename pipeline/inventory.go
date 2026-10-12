@@ -8,6 +8,17 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// targetEnvJavaVersion is the TargetEnv key the Java plugin evaluates Maven <jdk> profile
+// activation against.
+const targetEnvJavaVersion = "java.version"
+
+// WithSubjectJavaVersion passes the Java version the SUBJECT builds with to inventory resolution,
+// where Maven profiles conditioned on <jdk> are decided against it. The value is the caller's
+// statement; Assay never looks it up. Without it those profiles stay undecided and disclosed.
+func WithSubjectJavaVersion(v string) AssessOption {
+	return func(c *AssessConfig) { c.SubjectJavaVersion = v }
+}
+
 // ResolveCodebaseInventory resolves the WHOLE dependency inventory of a codebase ONCE (§4.1),
 // independent of any advisory work set. It is the inventory-keyed replacement for the advisory-keyed
 // per-advisory package loop the SBOM producers ran before PLAN-100: a dependency reaches the SBOM
@@ -56,7 +67,11 @@ func ResolveCodebaseInventory(ctx context.Context, codebase assessment.CodebaseR
 		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoPlugin)}, language, buildDir, nil
 	}
 
-	inv, err := cfg.Plugin.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+	req := plugin.ResolveInventoryRequest{BuildDir: buildDir}
+	if cfg.SubjectJavaVersion != "" {
+		req.TargetEnv = map[string]string{targetEnvJavaVersion: cfg.SubjectJavaVersion}
+	}
+	inv, err := cfg.Plugin.ResolveInventory(ctx, req)
 	if err != nil {
 		return plugin.DependencyInventory{}, language, buildDir, err
 	}

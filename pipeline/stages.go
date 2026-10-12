@@ -3031,6 +3031,31 @@ func AdvisoryPackage(store artifact.Store, caseID string) (name, purl string) {
 	return cmp.Or(adv.Module, adv.Coordinate), adv.PURL
 }
 
+// AdvisoryPackagePURLs returns the package URL of every package the advisory names: its primary's
+// when it has one, then each affected_packages[] element's, in declaration order. An element without
+// one yields "".
+func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		PURL             string                    `json:"purl"`
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	var purls []string
+	if adv.PURL != "" {
+		purls = append(purls, adv.PURL)
+	}
+	for _, p := range adv.AffectedPackages {
+		purls = append(purls, p.PURL)
+	}
+	return purls
+}
+
 // AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's
 // when the advisory targets a secondary one, else the advisory's primary.
 func AdvisoryPURL(store artifact.Store, caseID string) string {

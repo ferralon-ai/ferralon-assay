@@ -21,6 +21,7 @@ type groundsFixture struct {
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
+	mods            goModules // the build's Go modules
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -43,7 +44,7 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	if fx.footprint != nil {
 		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{PartialityFlags: fx.footprint})
 	}
-	return finding(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg)
+	return findingInBuild(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg, fx.mods)
 }
 
 const (

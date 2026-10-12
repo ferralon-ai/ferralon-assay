@@ -61,6 +61,13 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
+	return findingInBuild(store, assessmentID, adv, pkg, nil)
+}
+
+// findingInBuild is finding with the scan's Go module list, which lets the not_exploitable gate
+// read a Go package path the advisory names as part of the module that holds it (see
+// samePackage). finding passes none, so every such path counts as another package.
+func findingInBuild(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package, mods goModules) report.AdvisoryFinding {
 	var f report.AdvisoryFinding
 	switch {
 	case maliciousPresent(store, assessmentID):
@@ -138,7 +145,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 		reason, undetermined := undeterminedReason(store, assessmentID)
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
-			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg)
+			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}

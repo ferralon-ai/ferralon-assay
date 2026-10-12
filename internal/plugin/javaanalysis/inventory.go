@@ -34,6 +34,7 @@ const (
 	reasonBOMUncached          = plugin.PartialReasonSourceUnpinned + ":bom_uncached"                    // an imported <scope>import</scope> BOM POM is absent from the cache
 	reasonProfileActivation    = plugin.PartialReasonEnvConditionUnresolved + ":profile_activation"      // profile activation needs live JDK/OS/file/exec state; profile NOT assumed active
 	reasonMavenUncachedSubtree = plugin.PartialReasonRelationshipUnexpressed + ":maven_uncached_subtree" // a transitive child POM is absent from the cache; its subtree is undetermined
+	reasonMavenArtifactVariant = plugin.PartialReasonRelationshipUnexpressed + ":maven_artifact_variant" // a declaration of this GA names a classifier or non-jar type; the node cannot say which file the build uses
 
 	// Gradle residue.
 	reasonGradleTransitive   = plugin.PartialReasonRelationshipUnexpressed + ":gradle_transitive"   // no lockfile for a project: declared-direct only, transitive edges undetermined (irreducible Gradle boundary)

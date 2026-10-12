@@ -118,7 +118,24 @@ type mvnGA struct{ GroupID, ArtifactID string }
 type mvnDep struct {
 	GroupID, ArtifactID, Version string
 	Scope, Type, Optional        string
+	Classifier                   string
 	Exclusions                   []mvnGA
+	// variantSibling is set when the same POM also declares another file of this GA (a
+	// classifier or non-jar type) that GA dedup dropped.
+	variantSibling bool
+}
+
+// variant reports whether the declaration selects an artifact file other than the GA's main
+// JAR: a classifier (sources, tests, jdk15, linux-x86_64, ...) or a non-jar type.
+func (d mvnDep) variant() bool {
+	if d.Classifier != "" || d.variantSibling {
+		return true
+	}
+	switch strings.ToLower(defaultType(d.Type)) {
+	case "jar", "bundle":
+		return false
+	}
+	return true
 }
 
 func (d mvnDep) ga() string { return d.GroupID + ":" + d.ArtifactID }
@@ -162,6 +179,7 @@ type xmlDep struct {
 	Version    string `xml:"version"`
 	Scope      string `xml:"scope"`
 	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
 	Optional   string `xml:"optional"`
 	Exclusions []struct {
 		GroupID    string `xml:"groupId"`
@@ -223,6 +241,7 @@ func convDeps(in []xmlDep) []mvnDep {
 			Version:    strings.TrimSpace(d.Version),
 			Scope:      strings.TrimSpace(d.Scope),
 			Type:       strings.TrimSpace(d.Type),
+			Classifier: strings.TrimSpace(d.Classifier),
 			Optional:   strings.TrimSpace(d.Optional),
 		}
 		for _, e := range d.Exclusions {
@@ -382,13 +401,17 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	}
 
 	// Effective direct deps: interpolate versions, fall back to the managed map, dedup by GA
-	// (first declaration wins).
-	seen := map[string]bool{}
+	// (first declaration wins). A dropped declaration that names another file of the GA marks
+	// the kept one, since both files can reach the classpath.
+	seen := map[string]int{}
 	for _, d := range depSrc {
-		if seen[d.ga()] {
+		if i, dup := seen[d.ga()]; dup {
+			if d.variant() {
+				em.deps[i].variantSibling = true
+			}
 			continue
 		}
-		seen[d.ga()] = true
+		seen[d.ga()] = len(em.deps)
 		ed := d
 		if v, ok := interp(d.Version, em.props); ok {
 			ed.Version = v

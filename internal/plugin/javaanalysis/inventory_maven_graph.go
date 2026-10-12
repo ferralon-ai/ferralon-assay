@@ -6,6 +6,7 @@ package javaanalysis
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -76,6 +77,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 	reasons := append([]string{}, em.residue...)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
+	nodeAt := map[string]int{}      // node ID -> index in nodes
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
 
@@ -99,6 +101,13 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			if it.parentID != "" {
 				edges = append(edges, plugin.DependencyEdge{Parent: it.parentID, Child: winID})
 			}
+			// A losing declaration that names another file of the same GA (a classifier or
+			// non-jar type) may still put that file on the classpath, so the winner can no
+			// longer say which bytes the build uses.
+			if i, ok := nodeAt[winID]; ok && it.dep.variant() && !slices.Contains(nodes[i].Partiality.Reasons, reasonMavenArtifactVariant) {
+				nodes[i].Partiality = nodePartiality(append(append([]string{}, nodes[i].Partiality.Reasons...), reasonMavenArtifactVariant))
+				reasons = mergeReasons(reasons, reasonMavenArtifactVariant)
+			}
 			continue
 		}
 
@@ -113,6 +122,10 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			version = ""
 			nodeReasons = append(nodeReasons, reasonPropertyUnresolved)
 			reasons = mergeReasons(reasons, reasonPropertyUnresolved)
+		}
+		if it.dep.variant() {
+			nodeReasons = append(nodeReasons, reasonMavenArtifactVariant)
+			reasons = mergeReasons(reasons, reasonMavenArtifactVariant)
 		}
 
 		node := plugin.DependencyNode{
@@ -166,6 +179,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		// expanded (non-propagating scopes) — sound, no residue.
 
 		node.Partiality = nodePartiality(nodeReasons)
+		nodeAt[nodeID] = len(nodes)
 		nodes = append(nodes, node)
 	}
 

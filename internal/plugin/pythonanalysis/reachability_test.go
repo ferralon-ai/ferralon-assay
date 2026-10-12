@@ -181,3 +181,34 @@ warm = helper(0)
 		t.Fatalf("want the route-ingress path, got %+v", res.Paths)
 	}
 }
+
+// TestReachability_TestCodeIsNotARoot: module-level code in test files runs under the test
+// runner, never at runtime, so its module-init node is not a root and yields no path.
+func TestReachability_TestCodeIsNotARoot(t *testing.T) {
+	src := "import jwt\n\nTOKEN = jwt.decode('x')\n"
+	cases := []struct {
+		file     string
+		wantPath bool
+	}{
+		{"tests/test_tok.py", false},
+		{"test/tok.py", false},
+		{"pkg/tests/helpers.py", false},
+		{"test_tok.py", false},
+		{"pkg/tok_test.py", false},
+		{"conftest.py", false},
+		{"pkg/tok.py", true},
+		{"pkg/testing.py", true},
+	}
+	for _, c := range cases {
+		t.Run(c.file, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{c.file: src})
+			res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"pypi:pyjwt#jwt.decode"}})
+			if err != nil {
+				t.Fatalf("Reachability: %v", err)
+			}
+			if got := len(res.Paths) > 0; got != c.wantPath {
+				t.Fatalf("path present = %v, want %v; paths %+v", got, c.wantPath, res.Paths)
+			}
+		})
+	}
+}

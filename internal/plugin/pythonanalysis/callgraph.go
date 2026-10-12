@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -216,7 +217,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	for _, f := range prog.files {
 		for _, cs := range f.calls {
 			caller := f.callerSCIP(cs)
-			if cs.callerName == "" {
+			if cs.callerName == "" && !isTestModule(f.module) {
 				initCallers[caller] = true
 			}
 			// A call through an import binding reaches a dependency attribute: emit a
@@ -243,7 +244,7 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 	}
 
 	// Module-level code runs at import time, so a module-init caller with an outgoing edge
-	// is an entry point.
+	// is an entry point. Test modules are excluded: test code is not a runtime root.
 	for _, e := range edges {
 		if initCallers[e.Caller.SCIP] {
 			rootsSet[e.Caller.SCIP] = true
@@ -285,4 +286,17 @@ func callGraphPartiality(prog *program) plugin.Partiality {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
 	return plugin.Partial(reasons...)
+}
+
+// isTestModule reports whether a module path names test code: a test_*.py, *_test.py or
+// conftest.py file, or any module under a tests/ or test/ directory.
+func isTestModule(module string) bool {
+	segs := strings.Split(module, "/")
+	for _, s := range segs {
+		if s == "tests" || s == "test" {
+			return true
+		}
+	}
+	leaf := segs[len(segs)-1]
+	return strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
 }

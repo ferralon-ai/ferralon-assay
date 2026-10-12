@@ -5,11 +5,10 @@
 // into this binary — never into the host binary.
 //
 // This binary deliberately mirrors cmd/assay-plugin-kotlin / cmd/assay-plugin-java: same
-// one-shot protocol, same hard-error-vs-declared-partiality contract. At Phase 0 (row zero)
-// the lane is a skeleton: EVERY op is contract-present and returns its result type carrying
-// declared partiality (Unsupported), never an empty-but-complete result and never a fabricated
-// one (inv.5 fail-open — an unknown is never rendered "safe"). The real analysis lands in
-// Phase 1. Every op keeps the nil-payload hard-error guard (inv.4).
+// one-shot protocol, same hard-error-vs-declared-partiality contract. The build-context and
+// dependency-version ops are live; the graph ops return declared partiality (Unsupported), never
+// an empty-but-complete result and never a fabricated one (inv.5 fail-open — an unknown is never
+// rendered "safe"). Every op keeps the nil-payload hard-error guard (inv.4).
 //
 // The client (internal/plugin.cfamilyPlugin) owns the timeout via exec.CommandContext; this
 // process runs to completion on a single request. A hard failure sets Response.Error and exits
@@ -59,8 +58,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 	return writeResponse(stdout, resp)
 }
 
-// dispatch runs the requested operation. Every op is contract-present and returns declared
-// partiality (Phase 0 skeleton); capability_manifest returns the lane's honest-absent manifest.
+// dispatch runs the requested operation; capability_manifest returns the lane's manifest.
 // An unknown op, or a missing per-op payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {

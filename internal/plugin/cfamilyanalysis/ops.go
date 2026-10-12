@@ -1,13 +1,15 @@
-// Package cfamilyanalysis is the C/C++ (C-family) language lane's analysis surface. At Phase 0
-// (row zero) it is a skeleton: every LanguagePlugin operation is contract-present but
-// unimplemented, returning its result type carrying declared partiality (Unsupported), never
-// an empty-but-complete result and never a fabricated one. This is the inv.5 fail-open posture —
-// an unknown is never rendered "safe"/"not reachable".
+// Package cfamilyanalysis is the C/C++ (C-family) language lane's analysis surface.
 //
-// The real C-family analysis (compile_commands.json ingestion, scip-clang symbol index,
-// direct-call graph, dependency resolution) lands in Phase 1 and links ONLY into the
-// cmd/assay-plugin-cfamily subprocess binary (inv.8), never into the host binary. This package mirrors
-// the shape of kotlinanalysis/goanalysis so that seam is already in place.
+// The front half is live: compiledb parses compile_commands.json into per-TU build context
+// (file, c or c++, std, target, compiler), deriveBuildContext turns that into the lane's
+// toolchains and generators, and ResolveDependencyVersions reads Conan and vcpkg manifests. C++
+// TUs are carried through all of it exactly as C TUs are.
+//
+// The graph operations (IndexSymbols, CallGraph, FindIngresses, Reachability, ComputeTaint,
+// ResolveDependencySymbols, ResolveInventory) are contract-present and return declared
+// partiality (Unsupported), never an empty-but-complete result and never a fabricated one: the
+// inv.5 fail-open posture. Any C/C++ analysis toolchain links ONLY into the
+// cmd/assay-plugin-cfamily subprocess binary (inv.8), never into the host binary.
 package cfamilyanalysis
 
 import (
@@ -28,13 +30,6 @@ func IndexSymbols(_ context.Context, _ plugin.IndexSymbolsRequest) (plugin.Symbo
 // (patch-diff derivation); declared absent here, never a guessed symbol.
 func ResolveDependencySymbols(_ context.Context, _ plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	return plugin.SymbolResolutionResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// ResolveDependencyVersions is contract-present but unimplemented at Phase 0 (Phase 1:
-// conanfile/vcpkg parse where present). Honest absence — the disqualification predicate fails
-// OPEN on an unresolved version, never guesses one.
-func ResolveDependencyVersions(_ context.Context, _ plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return plugin.DependencyVersionResult{Partiality: plugin.Unsupported()}, nil
 }
 
 // CallGraph is contract-present but unimplemented at Phase 0 (Phase 1: clang/scip-clang direct-call
@@ -80,12 +75,39 @@ func ResolveInventory(_ context.Context, _ plugin.ResolveInventoryRequest) (plug
 	return plugin.DependencyInventory{Partiality: plugin.Unsupported()}, nil
 }
 
-// CapabilityManifest returns the C-family lane's honest-absent capability manifest: Supported=false,
-// no axes. The lane is a Phase-0 skeleton and publishes no supported capability yet — never a
-// Supported:true manifest with empty axes. Content is authored in Phase 4 once the engines land.
+// manifestContentVersion is the C-family capability manifest's content version; it bumps when a
+// later increment adds a supported axis.
+const manifestContentVersion = "1.0.0"
+
+// CapabilityManifest returns the C-family lane's capability manifest, C profile. Every listed axis
+// is one the lane does today; all slices are pre-sorted. It is a static fact and takes no input.
+//
+//   - Resolvers: the files the lane reads. compile_commands.json and CMakeCache.txt give the
+//     build context; conan.lock, conanfile.txt and vcpkg.json give dependency versions (exact
+//     pins only, everything else fails open).
+//   - Runtimes: c, the language mode whose toolchains the build context reports for this
+//     profile. C++ TUs are parsed and carried too; the C++ profile is authored with its graph
+//     semantics.
+//   - Analyzers: the lane's own parsers.
+//
+// GraphSemantics and DynamicBoundaries are left empty because they belong to the graph engine,
+// which is not wired yet. Frameworks is empty because C has no dominant ingress framework.
 func CapabilityManifest() capability.Manifest {
 	return capability.Manifest{
+		Version:   manifestContentVersion,
 		Language:  "cfamily",
-		Supported: false,
+		Supported: true,
+		Resolvers: []string{
+			"CMakeCache.txt",
+			"compile_commands.json",
+			"conan.lock",
+			"conanfile.txt",
+			"vcpkg.json",
+		},
+		Runtimes: []string{"c"},
+		Analyzers: []string{
+			"cfamilyanalysis/compiledb",
+			"cfamilyanalysis/versions",
+		},
 	}
 }

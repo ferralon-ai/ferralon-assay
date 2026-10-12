@@ -1,13 +1,14 @@
 package capability
 
-// Manifest is a language analyzer's capability declaration. Content is authored per-lane in
-// Phase-4 (PLAN-4x0); this cycle every producer returns Manifest{Supported:false} (honest absence).
-// All slices are emitted in explicit sorted order (no map is an iteration source on the encoding
-// path) — the determinism rule the codebase already enforces for DependencyInventory.
+// Manifest is a language analyzer's capability declaration. Content is authored per-lane
+// (PLAN-4x0); cfamily publishes Manifest{Supported:true}, and every other producer still returns
+// Manifest{Supported:false} (honest absence) until its own content lands. All slices are emitted
+// in explicit sorted order (no map is an iteration source on the encoding path) — the determinism
+// rule the codebase already enforces for DependencyInventory.
 type Manifest struct {
 	Version           string   `json:"version"`                      // the lane's CONTENT version (what report cites); bumps when a planner adds support
 	Language          string   `json:"language"`                     // lane tag, mirrors LanguagePlugin.Language() ("go","js",...)
-	Supported         bool     `json:"supported"`                    // false = no manifest published yet (honest absence this cycle); NOT a plugin.Partiality
+	Supported         bool     `json:"supported"`                    // false = no manifest published yet (honest absence); NOT a plugin.Partiality
 	Resolvers         []string `json:"resolvers,omitempty"`          // supported resolver/manifest formats (go.mod, package.json, pom.xml, ...)
 	Runtimes          []string `json:"runtimes,omitempty"`           // supported runtime targets (go1.21, node18, ...)
 	GraphSemantics    []string `json:"graph_semantics,omitempty"`    // supported call-graph semantics axes

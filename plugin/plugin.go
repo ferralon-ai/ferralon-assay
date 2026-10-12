@@ -345,6 +345,13 @@ type ReachabilityRequest struct {
 	// here. A plugin that cannot honor the request must fall back and say so via
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
+	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
+	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
+	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is
+	// empty when either the PURL or the resolved version is unknown, and a lane MUST NOT emit a
+	// package_not_loaded Refutation then: with no admitted version there is nothing to refute, so
+	// the advisory stays undetermined, never not_exploitable.
+	Package string `json:"package,omitempty"`
 }
 
 // --- result payloads ---

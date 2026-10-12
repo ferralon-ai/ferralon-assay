@@ -25,8 +25,10 @@ type program struct {
 	// dists maps an imported top-level module to the distribution providing it, so a call
 	// through an import binding names a dependency boundary node.
 	dists distResolver
-	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
-	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
+	// dynamicImportOpaque records a dynamic load in runtime code whose module the scanner
+	// cannot name without the load set (non-literal argument, entry-point group, package
+	// walk, file loader, exec/eval/compile, getattr on a module, star import): run-wide,
+	// fails closed. Reachability narrows it with the load set (loadset.go).
 	dynamicImportOpaque bool
 }
 
@@ -72,12 +74,19 @@ func (d funcDecl) scip() string {
 // bindings (needed to qualify callers/callees and ingress handlers into SCIP ids and to name
 // dependency boundary nodes). loadRoots are the module names the file imports dynamically
 // by literal (importlib.import_module("yaml") → "yaml"); a relative name keeps its dots.
+// The remaining fields feed the load set: every statically imported module, star-import
+// sources, the dynamic loads, and the string literals that could name a module.
 type fileParse struct {
 	module    string
 	calls     []callSite
 	ingresses []ingressMarker
 	bindings  map[string]map[string]scopedBinding
 	loadRoots []string
+	test      bool
+	imports   []string
+	stars     []string
+	dyn       dynScan
+	strs      []string
 }
 
 // funcSCIP builds the SCIP id for a function from its module, enclosing class chain, name,
@@ -127,8 +136,11 @@ func loadProgram(buildDir string) (*program, error) {
 
 		decls := parseDecls(lines)
 		scan := parseCallsAndIngresses(lines)
-		roots, opaque := dynamicImports(clean, lits)
-		if opaque {
+		aliases, modTargets := dynamicLoadAliases(scan.bindings)
+		dyn := scanDynamicLoads(clean, lits, aliases, modTargets)
+		imports, stars := staticImports(lines)
+		test := isTestModule(module)
+		if !test && (len(dyn.opaque) > 0 || len(dyn.sites) > 0 || len(stars) > 0) {
 			prog.dynamicImportOpaque = true
 		}
 
@@ -144,7 +156,12 @@ func loadProgram(buildDir string) (*program, error) {
 			calls:     scan.calls,
 			ingresses: scan.ingresses,
 			bindings:  indexBindings(scan.bindings),
-			loadRoots: roots,
+			loadRoots: dyn.roots,
+			test:      test,
+			imports:   imports,
+			stars:     stars,
+			dyn:       dyn,
+			strs:      moduleLikeLiterals(lits),
 		})
 	}
 

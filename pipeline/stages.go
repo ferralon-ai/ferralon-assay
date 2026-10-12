@@ -2768,10 +2768,15 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	if err != nil {
 		return err
 	}
+	sinks, err := resolvedSinks(store, c.ID)
+	if err != nil {
+		return err
+	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
 		BuildDir:    buildDir,
 		VulnID:      vulnID,
+		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
 	})
 	if err != nil {
@@ -2786,14 +2791,10 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	paths := reach.Paths
 	firstParty := false
 	if len(paths) == 0 {
-		if sink, err := resolvedSinkSCIP(store, c.ID); err != nil {
-			return err
-		} else if sink != "" {
-			if fp := firstPartyReachPaths(cg, ingresses, sink); len(fp) > 0 {
-				paths = fp
-				firstParty = true
-			}
+		for _, sink := range sinks {
+			paths = append(paths, firstPartyReachPaths(cg, ingresses, sink)...)
 		}
+		firstParty = len(paths) > 0
 	}
 
 	// Persist the RESOLVED paths (not the raw govulncheck reach) so the report builder
@@ -2951,6 +2952,65 @@ type taintDiscovery struct {
 	SchemaVersion string             `json:"schema_version"`
 	Sink          string             `json:"sink"`
 	Result        plugin.TaintResult `json:"result"`
+}
+
+// resolvedSinks returns every resolved sink SCIP id from the upstream vulnerable-symbol artifact,
+// deduplicated, or nil when none resolved (inv.7). Sinks the lane placed in a dependency (an
+// Origin) come first, then first-party ones, each in resolution order. Reachability must be asked
+// about all of them: a lane only declares what it could not search for the sinks it was given.
+func resolvedSinks(store artifact.Store, caseID string) ([]string, error) {
+	res, err := VulnerableSymbols(store, caseID)
+	if err != nil {
+		return nil, err
+	}
+	var deps, firstParty []string
+	seen := make(map[string]struct{}, len(res.Resolved))
+	for _, sym := range res.Resolved {
+		if sym.SCIP == "" {
+			continue
+		}
+		if _, dup := seen[sym.SCIP]; dup {
+			continue
+		}
+		seen[sym.SCIP] = struct{}{}
+		if _, ok := res.Origins[sym.SCIP]; ok {
+			deps = append(deps, sym.SCIP)
+		} else {
+			firstParty = append(firstParty, sym.SCIP)
+		}
+	}
+	return append(deps, firstParty...), nil
+}
+
+// VulnerableSymbols reads the symbol-mapping stage's resolution. A missing artifact, or the
+// pluginless stub payload, yields an empty result.
+func VulnerableSymbols(store artifact.Store, caseID string) (plugin.SymbolResolutionResult, error) {
+	arts, err := store.Query(caseID, artifact.TypeVulnerableSymbol)
+	if err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
+	if len(arts) == 0 {
+		return plugin.SymbolResolutionResult{}, nil
+	}
+	var res plugin.SymbolResolutionResult
+	if err := json.Unmarshal(arts[0].Payload, &res); err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
+	return res, nil
+}
+
+// AdvisorySymbols returns the vulnerable symbols the advisory names for the package under
+// assessment (the selected package's when the advisory targets a secondary one).
+func AdvisorySymbols(store artifact.Store, caseID string) []string {
+	_, symbols := advisoryPURLAndSymbols(store, caseID)
+	return symbols
+}
+
+// AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's
+// when the advisory targets a secondary one, else the advisory's primary.
+func AdvisoryPURL(store artifact.Store, caseID string) string {
+	purl, _ := advisoryPURLAndSymbols(store, caseID)
+	return purl
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP

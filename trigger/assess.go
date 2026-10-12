@@ -813,10 +813,7 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 	// the limits the run declared), never from the language and never from a per-language table.
 	// An analyzer that starts resolving versions and symbols stops declaring those limits, and
 	// unlocks its own refutations here with nothing in this file to edit.
-	if analysisDidNotRun(store, assessmentID) {
-		return report.ReasonAnalysisDidNotRun, true
-	}
-	return "", false
+	return analysisDidNotRun(store, assessmentID)
 }
 
 // analysisDidNotRun reports whether a step this refutation would have to rest on did not happen on
@@ -838,24 +835,35 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 //     searched, however incompletely. This is the arm that catches an analyzer which reads a
 //     manifest and resolves a version but never opens the dependency's code, so every axis it did
 //     run can report itself complete while nothing was ever searched for the symbol.
-func analysisDidNotRun(store artifact.Store, assessmentID string) bool {
+//
+// The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
+// declaring it does not know the advisory: that is the more precise statement of the same fact.
+func analysisDidNotRun(store artifact.Store, assessmentID string) (string, bool) {
 	if cg, ok := callGraphResult(store, assessmentID); ok && len(cg.Edges) == 0 && !cg.Partiality.Complete {
-		return true
+		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
 	if len(reasons) == 0 {
 		inv, ok := inventory(store, assessmentID)
 		if !ok {
-			return false
+			return "", false
 		}
 		reasons = inv.PartialityFlags
 	}
+	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
-			return true
+			didNotRun = true
+			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer
 		}
 	}
-	return false
+	switch {
+	case !didNotRun:
+		return "", false
+	case unknownOnly:
+		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	}
+	return report.ReasonAnalysisDidNotRun, true
 }
 
 // toolchainUndetermined is the Go toolchain/stdlib arm of undeterminedReason. Two clauses:
@@ -920,7 +928,7 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // owes one. Keeping it beside the row's construction is what stops the two from drifting: every
 // run mode adds the finding and then asks this, so a surface can never show a row with no limit
 // or a limit with no row.
-// An analysis_did_not_run row owes NO note of its own. That row stands on limits partialityNotes
+// An analysis_did_not_run or advisory_unknown_to_analyzer row owes NO note of its own. That row stands on limits partialityNotes
 // already publishes at scan scope, each named precisely (unsupported_phase1, no_manifest, …) and
 // each scoped to the ecosystem the run actually detected. Synthesizing a second note here would
 // disclose one fact twice and scope the copy to Go.
@@ -928,7 +936,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
-	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason == report.ReasonAnalysisDidNotRun {
+	switch {
+	case f.Verdict != report.VerdictUndetermined,
+		f.UndeterminedReason == report.ReasonAnalysisDidNotRun,
+		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer:
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {

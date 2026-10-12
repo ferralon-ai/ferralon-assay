@@ -274,6 +274,105 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 	}
 }
 
+// netNotReached is the Go 1c shape: govulncheck matched the advisory to golang.org/x/net in the
+// build and traced no call to its vulnerable functions, which goanalysis states as a refutation.
+func netNotReached() groundsFixture {
+	return groundsFixture{
+		pkg:             &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
+		advisoryPURL:    "pkg:golang/golang.org/x/net",
+		advisorySymbols: []string{"html.Parse"},
+		resolution:      plugin.SymbolResolutionResult{Partiality: plugin.Complete()},
+		reach: plugin.ReachabilityResult{
+			Partiality: plugin.Complete(),
+			Refutation: &plugin.Refutation{
+				Basis:   plugin.RefutationAnalyzerSymbolNotReached,
+				Package: "pkg:golang/golang.org/x/net",
+				Detail:  "govulncheck matched the advisory to golang.org/x/net v0.1.0 and found no call path to its vulnerable functions",
+			},
+		},
+	}
+}
+
+// TestFinding_GoGovulncheckEvidence: Go not_exploitable rests on govulncheck's own evidence for
+// the advisory (1c), and govulncheck's silence about it is said as such.
+func TestFinding_GoGovulncheckEvidence(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(*groundsFixture)
+		wantReason string // "" = not_exploitable
+	}{
+		{name: "module matched, no symbol reached: not exploitable", mutate: func(*groundsFixture) {}},
+		{
+			name:   "an inherent limit does not block the refutation",
+			mutate: func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonReflection} },
+		},
+		{
+			name:       "cgo blind spot keeps undetermined",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonCgo} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "refutation of another module",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Package = "pkg:golang/golang.org/x/text"
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "refutation of a package path inside the module does not match the module",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Package = "pkg:golang/golang.org/x/net/html"
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "govulncheck has no finding for the advisory",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+			},
+			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
+		},
+		{
+			name: "no finding plus another did_not_run limit",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonCgo}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := netNotReached()
+			tc.mutate(&fx)
+			f := fx.finding(t)
+			if tc.wantReason != "" {
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.wantReason {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tc.wantReason)
+				}
+				return
+			}
+			if f.Verdict != report.VerdictNotExploitable {
+				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
+			}
+			if want := "golang.org/x/net@v0.1.0: govulncheck matched"; !strings.Contains(f.Evidence.Detail, want) {
+				t.Errorf("detail = %q, want it to name %q", f.Evidence.Detail, want)
+			}
+		})
+	}
+}
+
+// An advisory_unknown_to_analyzer row stands on the lane's own limit, which partialityNotes
+// already publishes at scan scope; the row owes no second note.
+func TestLimitNoteFor_AdvisoryUnknownToAnalyzerOwesNoNote(t *testing.T) {
+	if note, ok := limitNoteFor(report.AdvisoryFinding{
+		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAdvisoryUnknownToAnalyzer,
+	}); ok {
+		t.Errorf("note = %+v, want none", note)
+	}
+}
+
 // TestLimitNoteFor_GroundsReasonsScopeToPackageEcosystem: the gate's reasons are about the
 // finding's package, so their scan-level note is scoped to its ecosystem, not to Go.
 func TestLimitNoteFor_GroundsReasonsScopeToPackageEcosystem(t *testing.T) {

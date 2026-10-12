@@ -19,13 +19,11 @@
 #   the tool name plus the version of the scanner release that ran.
 #
 # READING THE VERDICTS — this matters most on a repository whose analyzer is shallower than Go's.
-# The Report is three-valued, and the third value is the one to look for: a finding whose analysis
-# could not resolve and search the code the advisory names is published as `undetermined` with an
-# `undetermined_reason`, NOT as `not_exploitable`. An undetermined row is an open question, never a
-# clean bill — treat it as unassessed. `not_exploitable` and `disqualified` are the only verdicts
-# that assert a comparison ran against your repository and cleared it, and each carries the basis it
-# stands on. OpenVEX mirrors the split: `under_investigation` for the open rows, `not_affected` only
-# for the two that adjudicated.
+# The Report is three-valued, and the third value is the one to look for: an `undetermined` finding
+# carries an `undetermined_reason`. An undetermined row is an open question, never a clean bill —
+# treat it as unassessed. `not_exploitable` and `disqualified` each carry the basis they stand on.
+# OpenVEX mirrors the split: `under_investigation` for the open rows, `not_affected` for the two
+# that adjudicated.
 #
 # How deep the analysis goes for YOUR ecosystem is a property of the release you pin, not of this
 # file — the per-finding verdicts and the scan-level limits in the Report you get are the answer.

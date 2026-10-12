@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -108,6 +109,11 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
+	return callGraphOf(res, algo)
+}
+
+// callGraphOf builds the call graph of an already-loaded program; algo is "vta", "cha" or "rta".
+func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
 	sp, err := buildSSA(res)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
@@ -117,11 +123,17 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest) (plugin.CallGra
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
+	// Callees outside the loaded syntax (export-data functions such as plugin.Open) are
+	// deleted with the synthetic nodes, so the run-time calls are found first.
+	runTime := sp.runTimeCalls(graph)
 	graph.DeleteSyntheticNodes()
 
 	edges := sp.collectEdges(graph)
 	roots := sp.collectRoots()
 	part := sp.partiality(res.Partiality)
+	for _, r := range runTime {
+		part = withReason(part, r)
+	}
 
 	return plugin.CallGraphResult{
 		Partiality: part,
@@ -267,6 +279,59 @@ func classifyCallee(fn *ssa.Function, reasons map[string]bool) {
 	case strings.HasPrefix(fn.Pkg.Pkg.Path(), "runtime/cgo"):
 		reasons[plugin.PartialReasonCgo] = true
 	}
+}
+
+// runTimeCallees maps each function that calls code chosen at run time to the reason it declares.
+// reflect.Value's Call, CallSlice, Method and MethodByName call a function or method picked by a
+// value or a name, and a template's Execute calls the methods and functions its text names; the
+// call graph follows none of those calls. plugin.Open loads Go code the build never compiled.
+var runTimeCallees = map[string]string{
+	"(reflect.Value).Call":                      plugin.PartialReasonReflectiveCall,
+	"(reflect.Value).CallSlice":                 plugin.PartialReasonReflectiveCall,
+	"(reflect.Value).Method":                    plugin.PartialReasonReflectiveCall,
+	"(reflect.Value).MethodByName":              plugin.PartialReasonReflectiveCall,
+	"(*text/template.Template).Execute":         plugin.PartialReasonReflectiveCall,
+	"(*text/template.Template).ExecuteTemplate": plugin.PartialReasonReflectiveCall,
+	"(*html/template.Template).Execute":         plugin.PartialReasonReflectiveCall,
+	"(*html/template.Template).ExecuteTemplate": plugin.PartialReasonReflectiveCall,
+	"plugin.Open":                               plugin.PartialReasonPluginLoad,
+}
+
+// runTimeCalls returns the reasons runTimeCallees declares for the callees the program reaches.
+// The functions reachable from main and init are searched; a program without a main function has
+// no single entry, so every function is.
+func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
+	var queue []*callgraph.Node
+	if hasMain := slices.ContainsFunc(s.pkgs, func(p *ssa.Package) bool { return p != nil && p.Func("main") != nil }); hasMain {
+		for _, fn := range s.entryFunctions() {
+			if n := graph.Nodes[fn]; n != nil {
+				queue = append(queue, n)
+			}
+		}
+	} else {
+		for _, n := range graph.Nodes {
+			queue = append(queue, n)
+		}
+	}
+	seen := map[*callgraph.Node]bool{}
+	reasons := map[string]bool{}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		if fn, ok := n.Func.Object().(*types.Func); ok && n.Func.Object() != nil {
+			if r, ok := runTimeCallees[fn.FullName()]; ok {
+				reasons[r] = true
+			}
+		}
+		for _, e := range n.Out {
+			queue = append(queue, e.Callee)
+		}
+	}
+	return sortedKeys(reasons)
 }
 
 func sortedKeys(set map[string]bool) []string {

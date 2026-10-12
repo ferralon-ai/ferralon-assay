@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -651,12 +652,56 @@ func TestWithInventoryLimits(t *testing.T) {
 			}
 		})
 	}
-	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictDisqualified, report.VerdictUndetermined} {
+	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictUndetermined} {
 		f := ne
 		f.Verdict = v
 		if got := withInventoryLimits(f, ambiguous); got.Verdict != v {
 			t.Errorf("%s changed to %s", v, got.Verdict)
 		}
+	}
+}
+
+// TestWithInventoryLimits_Disqualified: a disqualification grounded in the inventory (version out
+// of range, package absent from the manifest) does not stand under a did_not_run inventory limit
+// of its ecosystem; one grounded elsewhere (symbol axis, ecosystem mismatch) does.
+func TestWithInventoryLimits_Disqualified(t *testing.T) {
+	disq := func(reason string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{
+			Package:  &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.5.3"},
+			Verdict:  report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: disqualBasis(reason), Detail: disqualDetail(reason)},
+		}
+	}
+	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		blocked bool
+	}{
+		{"version out of range", disq(pipeline.ReasonVersionNotInRange), ambiguous, true},
+		{"absent from the manifest", disq(pipeline.ReasonNoManifestEntry), ambiguous, true},
+		{"version out of range, no limit", disq(pipeline.ReasonVersionNotInRange), nil, false},
+		{"version out of range, limit of another ecosystem", disq(pipeline.ReasonVersionNotInRange),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"version out of range, inherent limit", disq(pipeline.ReasonVersionNotInRange),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
+		{"symbol axis", disq(pipeline.ReasonSymbolAbsent), ambiguous, false},
+		{"ecosystem mismatch", disq(pipeline.ReasonAdvisoryEcosystemMismatch), ambiguous, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits)
+			if !tc.blocked {
+				if got.Verdict != report.VerdictDisqualified {
+					t.Fatalf("verdict = %s/%q, want disqualified", got.Verdict, got.UndeterminedReason)
+				}
+				return
+			}
+			if got.Verdict != report.VerdictUndetermined || got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" {
+				t.Fatalf("got %s/%q basis %q, want undetermined/%s with no basis", got.Verdict, got.UndeterminedReason, got.Evidence.Basis, report.ReasonAnalysisDidNotRun)
+			}
+		})
 	}
 }
 

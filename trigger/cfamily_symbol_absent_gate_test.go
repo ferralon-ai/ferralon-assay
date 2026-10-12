@@ -17,8 +17,16 @@ import (
 // symbol-absent paths are the real cfamilyanalysis ones; the graph ops stand in for the cgx lane
 // (which links only into the plugin subprocess) with the shape it returns for a searched C tree:
 // edges present, quiet residue only, no path to the advisory's code. A named symbol resolves, as
-// the cgx lane resolves one it finds in the graph.
-type cfamilyGatePlugin struct{ plugin.StubPlugin }
+// the cgx lane resolves one it finds in the graph; with unresolved set, none does, and the
+// result carries what the cgx lane declares for a symbol defined only in the dependency.
+type cfamilyGatePlugin struct {
+	plugin.StubPlugin
+	unresolved bool
+}
+
+// cfamilySinkUnresolved is the cgx lane's loud code for an advisory symbol with no definition in
+// the graph (the lane links only into the plugin subprocess, so the code is spelled here).
+const cfamilySinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
 
 func (cfamilyGatePlugin) Language() string { return "cfamily" }
 
@@ -34,9 +42,15 @@ func (cfamilyGatePlugin) ResolveInventory(ctx context.Context, req plugin.Resolv
 	return cfamilyanalysis.ResolveInventory(ctx, req)
 }
 
-func (cfamilyGatePlugin) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+func (p cfamilyGatePlugin) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	if !cfamilyanalysis.NamesSymbol(req) {
 		return cfamilyanalysis.ResolveDependencySymbols(ctx, req)
+	}
+	if p.unresolved {
+		return plugin.SymbolResolutionResult{
+			Partiality: plugin.Partial(cfamilySinkUnresolved, plugin.PartialReasonNativeLinkBoundary+":uncompress"),
+			Resolved:   []plugin.Symbol{},
+		}, nil
 	}
 	res := plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonMacroExpansion)}
 	for _, s := range req.AdvisorySymbols {
@@ -64,12 +78,19 @@ func (cfamilyGatePlugin) FindIngresses(context.Context, plugin.FindIngressesRequ
 	}, nil
 }
 
-func (cfamilyGatePlugin) Reachability(context.Context, plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	return plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonMacroExpansion)}, nil
+func (p cfamilyGatePlugin) Reachability(context.Context, plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	return plugin.ReachabilityResult{Partiality: p.pathPartiality()}, nil
 }
 
-func (cfamilyGatePlugin) ComputeTaint(context.Context, plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	return plugin.TaintResult{Partiality: plugin.Partial(plugin.PartialReasonMacroExpansion)}, nil
+func (p cfamilyGatePlugin) ComputeTaint(context.Context, plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	return plugin.TaintResult{Partiality: p.pathPartiality()}, nil
+}
+
+func (p cfamilyGatePlugin) pathPartiality() plugin.Partiality {
+	if p.unresolved {
+		return plugin.Partial(plugin.PartialReasonMacroExpansion, cfamilySinkUnresolved)
+	}
+	return plugin.Partial(plugin.PartialReasonMacroExpansion)
 }
 
 // cfamilyAdvisories serves one zlib advisory whose affected range contains the tree's pinned
@@ -93,7 +114,7 @@ func (s cfamilyAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 	}, true
 }
 
-func runCFamilyBaseline(t *testing.T, src pipeline.AdvisorySource) *report.Report {
+func runCFamilyBaseline(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource) *report.Report {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
@@ -110,7 +131,7 @@ func runCFamilyBaseline(t *testing.T, src pipeline.AdvisorySource) *report.Repor
 		Advisories: []assessment.VulnRef{{ID: cfamilyAdvisoryID, Source: "corpus"}},
 		AssessOptions: []pipeline.AssessOption{
 			pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "cfamily"}),
-			pipeline.WithPlugin(cfamilyGatePlugin{}),
+			pipeline.WithPlugin(lane),
 			pipeline.WithAdvisorySource(src),
 		},
 	})
@@ -135,14 +156,24 @@ func cfamilyRow(t *testing.T, rep *report.Report) report.AdvisoryFinding {
 // nothing to search the graph for. The lane declares advisory_symbol_absent, and the verdict is
 // undetermined, never not_exploitable, even though the graph has edges and no path was found.
 func TestCFamilyBaseline_SymbolAbsentAdvisoryIsUndetermined(t *testing.T) {
-	assertUndetermined(t, runCFamilyBaseline(t, cfamilyAdvisories{}), cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+	assertUndetermined(t, runCFamilyBaseline(t, cfamilyGatePlugin{}, cfamilyAdvisories{}), cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
 }
 
 // The control: the same advisory naming a symbol the graph resolves and does not reach is
 // refuted, so the test above is detecting the symbol-absent gate and not some other hold.
 func TestCFamilyBaseline_NamedUnreachedSymbolRefutes(t *testing.T) {
-	f := cfamilyRow(t, runCFamilyBaseline(t, cfamilyAdvisories{symbols: []string{"inflateGetHeader"}}))
+	f := cfamilyRow(t, runCFamilyBaseline(t, cfamilyGatePlugin{}, cfamilyAdvisories{symbols: []string{"inflateGetHeader"}}))
 	if f.Verdict != report.VerdictNotExploitable {
 		t.Errorf("verdict = %q (undetermined_reason %q), want %q", f.Verdict, f.UndeterminedReason, report.VerdictNotExploitable)
 	}
+}
+
+// A tree that reaches the vulnerable code only through the dependency (it calls uncompress, which
+// calls inflate inside zlib) while the advisory names inflate_fast and inflate: neither is defined
+// in the tree, so the lane resolves nothing and declares it loud, and the verdict is undetermined,
+// never not_exploitable, though the graph has edges and no path was found. The control is
+// TestCFamilyBaseline_NamedUnreachedSymbolRefutes: a symbol that resolves and is unreached refutes.
+func TestCFamilyBaseline_UnresolvedThroughDependencyIsUndetermined(t *testing.T) {
+	rep := runCFamilyBaseline(t, cfamilyGatePlugin{unresolved: true}, cfamilyAdvisories{symbols: []string{"inflate_fast", "inflate"}})
+	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
 }

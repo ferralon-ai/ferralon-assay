@@ -59,8 +59,10 @@ func TestIntegration_C(t *testing.T) {
 			t.Errorf("partiality %v lacks %s", cg.Partiality.Reasons, r)
 		}
 	}
-	if hasReason(cg.Partiality, reasonEmptyTU) {
-		t.Errorf("partiality %v declares an empty TU", cg.Partiality.Reasons)
+	for _, r := range []string{reasonEmptyTU, reasonUnparsed} {
+		if hasReason(cg.Partiality, r) {
+			t.Errorf("partiality %v declares %s", cg.Partiality.Reasons, r)
+		}
 	}
 
 	in, err := l.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
@@ -98,8 +100,8 @@ func TestIntegration_CXX(t *testing.T) {
 			t.Errorf("edges %v lack %v", edgesOf(cg), e)
 		}
 	}
-	if !hasReason(cg.Partiality, reasonVtable) {
-		t.Errorf("partiality %v lacks %s", cg.Partiality.Reasons, reasonVtable)
+	if !hasReason(cg.Partiality, reasonVtable) || hasReason(cg.Partiality, reasonUnparsed) {
+		t.Errorf("partiality %v: want %s and not %s", cg.Partiality.Reasons, reasonVtable, reasonUnparsed)
 	}
 
 	// codec::checksum has a header prototype; it resolves to one merged symbol and is reached.
@@ -116,5 +118,24 @@ func TestIntegration_CXX(t *testing.T) {
 	}
 	if len(ta.Paths) != 1 {
 		t.Errorf("taint = %+v, want a path to codec::checksum", ta.Paths)
+	}
+}
+
+// The real engine over the unresolved-symbol probes: the vulnerable function is never resolved,
+// and its absence is declared cgx_sink_unresolved rather than read as safe.
+func TestIntegration_UnresolvedProbes(t *testing.T) {
+	l := sdkLane(t)
+	ctx := context.Background()
+	for _, p := range unresolvedProbes {
+		t.Run(p.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"main.c": p.src})
+			res, err := l.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, AdvisorySymbols: p.advisory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Resolved) != 0 || !hasReason(res.Partiality, reasonSinkUnresolved) || hasReason(res.Partiality, reasonUnparsed) {
+				t.Errorf("resolve %v: %+v, want nothing resolved and %s", p.advisory, res, reasonSinkUnresolved)
+			}
+		})
 	}
 }

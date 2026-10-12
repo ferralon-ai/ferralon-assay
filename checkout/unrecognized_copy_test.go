@@ -12,7 +12,7 @@ import (
 // carry: one entry per language DetectLanguage actually classifies (Go / Java / Kotlin / JS /
 // Python / .NET). A copy that lists fewer sends a user of the missing language hunting for a
 // go.mod they never needed.
-var allLanguageMarkers = []string{"go.mod", ".java", ".kt/.kts", ".js/.ts", ".py", ".cs/.csproj"}
+var allLanguageMarkers = []string{"go.mod", ".java", ".kt/.kts", ".js/.ts", ".py", ".cs/.csproj", ".c/.cpp/.h"}
 
 func assertAllMarkers(t *testing.T, msg string) {
 	t.Helper()

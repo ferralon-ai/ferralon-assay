@@ -37,23 +37,56 @@ var pyCallKeywords = map[string]bool{
 	"None": true, "True": true, "False": true,
 }
 
-// callExpr is one recognized call site: the callee's simple (leaf) name and its argument
-// arity. The leaf is the last segment of a dotted call ("a.b.fn(x)" → "fn"); the call
-// graph resolves it against declared functions by (name, arity).
+// callExpr is one recognized call site: the callee's simple (leaf) name, its argument
+// arity, and the full receiver chain. The leaf is the last segment of a dotted call
+// ("a.b.fn(x)" → "fn"); the call graph resolves it against declared functions by (name,
+// arity). chain is every dotted segment ending in the leaf ("a.b.fn(x)" → [a b fn]); when
+// the receiver is itself a call result ("Environment().from_string(x)") the receiver
+// call's chain is prefixed ([Environment from_string]), so an import binding on the first
+// segment can name the dependency attribute the call reaches.
 type callExpr struct {
 	name  string
 	arity int
+	chain []string
 }
 
-// callSite is one call inside a function body: the caller (located by its enclosing class
-// chain + name + arity, so its SCIP id coincides with the caller's declaration) and the
-// callee's simple name + arity (resolved to a concrete declaration by the call graph).
+// callSite is one call site: the caller (located by its enclosing class chain + name +
+// arity, so its SCIP id coincides with the caller's declaration) and the callee's simple
+// name + arity (resolved to a concrete declaration by the call graph). A call outside any
+// def (module or class body, which run at import time) has callerName "" and is
+// attributed to the module-init node. scopes lists the function scopes enclosing the call,
+// outer→inner, so an import binding made inside a function applies to calls in it.
 type callSite struct {
 	callerEnclosing []string
 	callerName      string
 	callerArity     int
 	calleeName      string
 	calleeArity     int
+	calleeChain     []string
+	scopes          []string
+}
+
+// scopedBinding is a name bound by an import (or by instantiating an imported class) in
+// one scope: scope "" is the module, otherwise the scopeKey of the def that holds it.
+// Exactly one of target (a dotted import path) and inst (the chain of the call whose
+// result the name holds, resolved through the import bindings later) is set.
+type scopedBinding struct {
+	scope  string
+	local  string
+	target string
+	inst   []string
+}
+
+// scopeKey identifies a def's body as a binding scope within one file.
+func scopeKey(enclosing []string, name string, arity int) string {
+	return strings.Join(enclosing, "#") + "#" + functionDescriptor(name, arity)
+}
+
+// fileScan is everything the call/ingress scanner reads from one file.
+type fileScan struct {
+	calls     []callSite
+	ingresses []ingressMarker
+	bindings  []scopedBinding
 }
 
 // ingressMarker is one framework entry point discovered lexically: a Flask/FastAPI route
@@ -82,16 +115,18 @@ type pyFrame struct {
 }
 
 // parseCallsAndIngresses scans the logical lines of one cleaned Python source file
-// (already comment/string-stripped, continuations joined) and returns its call sites and
-// framework ingress markers. It is an indentation-scoped, body-aware pass mirroring
-// parseDecls: it tracks the enclosing class chain and the def whose body is currently
-// open, so each call expression attributes to its caller def, and a Flask/FastAPI route
-// decorator immediately above a def records that def as an ingress NAMING the handler
-// (so the ingress symbol coincides with the handler's call-graph node).
-func parseCallsAndIngresses(lines []logicalLine) ([]callSite, []ingressMarker) {
+// (already comment/string-stripped, continuations joined) and returns its call sites,
+// framework ingress markers, and import bindings. It is an indentation-scoped, body-aware
+// pass mirroring parseDecls: it tracks the enclosing class chain and the def whose body is
+// currently open, so each call expression attributes to its caller def (or to module init
+// when no def is open), and a Flask/FastAPI route decorator immediately above a def records
+// that def as an ingress NAMING the handler (so the ingress symbol coincides with the
+// handler's call-graph node).
+func parseCallsAndIngresses(lines []logicalLine) fileScan {
 	var stack []pyFrame
 	var calls []callSite
 	var ingresses []ingressMarker
+	var bindings []scopedBinding
 
 	classChain := func() []string {
 		var out []string
@@ -109,6 +144,15 @@ func parseCallsAndIngresses(lines []logicalLine) ([]callSite, []ingressMarker) {
 			}
 		}
 		return nil
+	}
+	funcScopes := func() []string {
+		var out []string
+		for _, s := range stack {
+			if s.funcName != "" {
+				out = append(out, scopeKey(s.funcEnclosing, s.funcName, s.funcArity))
+			}
+		}
+		return out
 	}
 
 	// pendingRoute marks that a route decorator ("@app.route(...)"/"@app.get(...)") has
@@ -167,22 +211,41 @@ func parseCallsAndIngresses(lines []logicalLine) ([]callSite, []ingressMarker) {
 			})
 		default:
 			pendingRoute = false
-			m := innermostFunc()
-			if m == nil {
+			scopes := funcScopes()
+			bindScope := ""
+			if len(scopes) > 0 {
+				bindScope = scopes[len(scopes)-1]
+			}
+			if kw == "import" || kw == "from" {
+				for _, ib := range parseImportStatement(text) {
+					bindings = append(bindings, scopedBinding{scope: bindScope, local: ib.local, target: ib.target})
+				}
 				continue
 			}
-			for _, ce := range scanCalls(text) {
-				calls = append(calls, callSite{
+			if local, chain, ok := instanceAssignment(text); ok {
+				bindings = append(bindings, scopedBinding{scope: bindScope, local: local, inst: chain})
+			}
+			// A call outside any def runs when the module (or class body) executes at
+			// import time; it is attributed to the module-init caller (callerName "").
+			var site callSite
+			if m := innermostFunc(); m != nil {
+				site = callSite{
 					callerEnclosing: append([]string(nil), m.funcEnclosing...),
 					callerName:      m.funcName,
 					callerArity:     m.funcArity,
-					calleeName:      ce.name,
-					calleeArity:     ce.arity,
-				})
+				}
+			}
+			for _, ce := range scanCalls(text) {
+				cs := site
+				cs.calleeName = ce.name
+				cs.calleeArity = ce.arity
+				cs.calleeChain = ce.chain
+				cs.scopes = scopes
+				calls = append(calls, cs)
 			}
 		}
 	}
-	return calls, ingresses
+	return fileScan{calls: calls, ingresses: ingresses, bindings: bindings}
 }
 
 // routeDecorator reports whether a decorator line is a Flask/FastAPI route registration
@@ -210,10 +273,17 @@ func scanCalls(text string) []callExpr {
 	r := []rune(text)
 	n := len(r)
 	var out []callExpr
+	// closeChain maps the index of a recorded call's closing ')' to that call's chain, so
+	// a call on its result (").attr(") inherits it as the receiver prefix.
+	closeChain := map[int][]string{}
 	for i := 0; i < n; {
 		if !isIdentStartRune(r[i]) {
 			i++
 			continue
+		}
+		var segs []string
+		if recv, ok := closeChain[receiverClose(r, i)]; ok {
+			segs = append(segs, recv...)
 		}
 		last := ""
 		pos := i
@@ -222,6 +292,7 @@ func scanCalls(text string) []callExpr {
 				var w string
 				w, pos = readWordRunes(r, pos)
 				last = w
+				segs = append(segs, w)
 			} else if r[pos] == '.' {
 				pos++
 			} else {
@@ -230,7 +301,10 @@ func scanCalls(text string) []callExpr {
 		}
 		p := skipSpaceRunes(r, pos)
 		if last != "" && !pyCallKeywords[last] && p < n && r[p] == '(' {
-			out = append(out, callExpr{name: last, arity: paramArity(string(r[p:]))})
+			out = append(out, callExpr{name: last, arity: paramArityAt(r, p), chain: segs})
+			if c := matchingClose(r, p); c >= 0 {
+				closeChain[c] = segs
+			}
 		}
 		if pos > i {
 			i = pos
@@ -239,6 +313,45 @@ func scanCalls(text string) []callExpr {
 		}
 	}
 	return out
+}
+
+// receiverClose returns the index of the ')' that closes a call whose result the
+// identifier at r[i] is an attribute of (").name"), or -1 when r[i] is not such an
+// attribute.
+func receiverClose(r []rune, i int) int {
+	j := i - 1
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	if j < 0 || r[j] != '.' {
+		return -1
+	}
+	j--
+	for j >= 0 && unicode.IsSpace(r[j]) {
+		j--
+	}
+	if j < 0 || r[j] != ')' {
+		return -1
+	}
+	return j
+}
+
+// matchingClose returns the index of the bracket closing the '(' at r[open], or -1 when
+// the line ends first.
+func matchingClose(r []rune, open int) int {
+	depth := 0
+	for i := open; i < len(r); i++ {
+		switch r[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // isIdentStartRune reports whether c may start a Python identifier (letter or underscore;

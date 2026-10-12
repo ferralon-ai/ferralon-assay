@@ -135,7 +135,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 		// established nothing POSITIVE: no disqualification and no path. Whether the absent
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
-		reason, undetermined := undeterminedReason(store, assessmentID)
+		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
 			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg)
@@ -799,7 +799,7 @@ type inventoryFacts struct {
 // Either one firing means the same thing — the empty path set is a fact about the analysis, not
 // about the subject — and `undetermined` is what v2 added to say so out loud instead of
 // withholding the row (which v1 had to do, having no cell for it).
-func undeterminedReason(store artifact.Store, assessmentID string) (string, bool) {
+func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if reason, ok := toolchainUndetermined(store, assessmentID); ok {
 		return reason, true
 	}
@@ -813,7 +813,7 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 	// the limits the run declared), never from the language and never from a per-language table.
 	// An analyzer that starts resolving versions and symbols stops declaring those limits, and
 	// unlocks its own refutations here with nothing in this file to edit.
-	return analysisDidNotRun(store, assessmentID)
+	return analysisDidNotRun(store, assessmentID, pkg)
 }
 
 // analysisDidNotRun reports whether a step this refutation would have to rest on did not happen on
@@ -836,19 +836,28 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 //     manifest and resolves a version but never opens the dependency's code, so every axis it did
 //     run can report itself complete while nothing was ever searched for the symbol.
 //
+// A scoped limit (plugin.ScopedReason) joins the run-wide reasons only when it counts for this
+// advisory's package (scopedLimitCounts).
+//
 // The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
 // declaring it does not know the advisory: that is the more precise statement of the same fact.
-func analysisDidNotRun(store artifact.Store, assessmentID string) (string, bool) {
+func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if cg, ok := callGraphResult(store, assessmentID); ok && len(cg.Edges) == 0 && !cg.Partiality.Complete {
 		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
 	if len(reasons) == 0 {
-		inv, ok := inventory(store, assessmentID)
-		if !ok {
-			return "", false
+		if inv, ok := inventory(store, assessmentID); ok {
+			reasons = inv.PartialityFlags
 		}
-		reasons = inv.PartialityFlags
+	}
+	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
+		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+		for _, r := range scoped {
+			if scopedLimitCounts(r, admitted, resolved) {
+				reasons = append(reasons, r.Reason)
+			}
+		}
 	}
 	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
@@ -864,6 +873,24 @@ func analysisDidNotRun(store artifact.Store, assessmentID string) (string, bool)
 		return report.ReasonAdvisoryUnknownToAnalyzer, true
 	}
 	return report.ReasonAnalysisDidNotRun, true
+}
+
+// scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given
+// package: it does unless its Targets are bounded and neither its Package nor any Target is that
+// package. An unbounded limit, or an advisory whose package did not resolve, always counts.
+//
+// A first-party entry ("") matches only a root package, which no advisory is admitted on yet, so it
+// matches nothing here.
+func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved bool) bool {
+	if r.Targets == nil || !resolved {
+		return true
+	}
+	for _, p := range append([]string{r.Package}, r.Targets...) {
+		if key, ok := purlKey(p); ok && key == admitted {
+			return true
+		}
+	}
+	return false
 }
 
 // toolchainUndetermined is the Go toolchain/stdlib arm of undeterminedReason. Two clauses:
@@ -979,28 +1006,36 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		return nil
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
+	scoped := footprintScoped(store, assessmentID)
 	inv, haveInv := inventory(store, assessmentID)
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && haveInv {
 		// No footprint artifact (a run that failed before S4, or a stage set that omits
 		// the footprint) — fall back to the inventory's own flags so the S2 axis is never
 		// lost when the union is unavailable.
-		if !haveInv {
-			return nil
-		}
 		reasons = inv.PartialityFlags
 	}
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return nil
 	}
 	ecosystem := ""
 	if haveInv {
 		ecosystem = ecosystemFor(inv.Language)
 	}
-	notes := make([]report.PartialityNote, 0, len(reasons))
+	notes := make([]report.PartialityNote, 0, len(reasons)+len(scoped))
 	for _, reason := range reasons {
 		notes = append(notes, report.PartialityNote{
 			Reason:    reason,
 			Ecosystem: ecosystem,
+		})
+	}
+	// A scoped limit is disclosed whether or not it counted against any advisory: it is still a
+	// part of the program the analysis could not see.
+	for _, r := range scoped {
+		notes = append(notes, report.PartialityNote{
+			Reason:    r.Reason,
+			Ecosystem: ecosystem,
+			Package:   r.Package,
+			Path:      r.Path,
 		})
 	}
 	return notes
@@ -1010,15 +1045,26 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 // assessment's exposure-footprint artifact. Absent artifact or unreadable payload
 // yields no reasons; the caller falls back to the inventory artifact.
 func footprintPartialityFlags(store artifact.Store, assessmentID string) []string {
+	fp, _ := exposureFootprint(store, assessmentID)
+	return fp.PartialityFlags
+}
+
+// footprintScoped reads the unioned scoped limits off the exposure-footprint artifact.
+func footprintScoped(store artifact.Store, assessmentID string) []artifact.ScopedPartialityFlag {
+	fp, _ := exposureFootprint(store, assessmentID)
+	return fp.ScopedPartiality
+}
+
+func exposureFootprint(store artifact.Store, assessmentID string) (artifact.ExposureFootprintPayload, bool) {
+	var fp artifact.ExposureFootprintPayload
 	arts, err := store.Query(assessmentID, artifact.TypeExposureFootprint)
 	if err != nil || len(arts) == 0 {
-		return nil
+		return fp, false
 	}
-	var fp artifact.ExposureFootprintPayload
 	if err := json.Unmarshal(arts[0].Payload, &fp); err != nil {
-		return nil
+		return artifact.ExposureFootprintPayload{}, false
 	}
-	return fp.PartialityFlags
+	return fp, true
 }
 
 // assessFailureNote turns a failed assessment into a scan-level disclosure. One

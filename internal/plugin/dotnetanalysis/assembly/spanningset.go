@@ -33,7 +33,7 @@ type DepRef struct {
 // a valid assembly. Recorded so the miss is observable, never silently a clean leaf.
 type DepMiss struct {
 	Dep    DepRef
-	Reason string // "not located" | "unreadable"
+	Reason string // MissNotLocated | MissUnreadable | MissReferenceAssembly
 }
 
 // SpanningSet is the assembled whole-program input for depreach.NewEngine: the
@@ -47,28 +47,58 @@ type SpanningSet struct {
 // LoadSpanningSet assembles the []*Assembly spanning set the verdict engine consumes.
 // firstParty is the already-read first-party assembly (its own location/read is the
 // caller's concern — LocateBuildOutput + ReadAssembly — and is not re-done here); it
-// is placed first when non-nil. Each dep is located via ResolveDependencyDll (assets
-// path, then NuGet global cache, then build output — each a declared miss when absent,
-// never a fetch) and read via ReadAssembly. A dep that does not locate or does not
-// parse is recorded in Misses and left OUT of the set (out-of-set ⇒ the engine's
-// completeness hazard), never fabricated into an empty assembly. locator may be nil.
+// is placed first when non-nil. Each dep's dlls are located via ResolveDependencyDlls
+// (assets path, then NuGet global cache, then build output — each a declared miss when
+// absent, never a fetch) and read via ReadAssembly. A dep that does not locate, does not
+// parse, or is a reference assembly (stub bodies) is recorded in Misses and left OUT of
+// the set (out-of-set ⇒ the engine's completeness hazard), never fabricated into an empty
+// assembly. A dep restore recorded as carrying no assembly, with none found on disk by
+// any locator, is neither loaded nor a miss.
+// locator may be nil.
 func LoadSpanningSet(buildDir string, firstParty *Assembly, locator *AssetsLocator, deps []DepRef) SpanningSet {
 	set := SpanningSet{}
 	if firstParty != nil {
 		set.Assemblies = append(set.Assemblies, firstParty)
 	}
 	for _, d := range deps {
-		path, ok := ResolveDependencyDll(buildDir, d.Target, d.PkgKey, locator)
-		if !ok {
-			set.Misses = append(set.Misses, DepMiss{Dep: d, Reason: "not located"})
+		asms, reason := ReadDependency(buildDir, d, locator)
+		if reason == MissNotLocated && locator.HasNoAssemblies(d.Target, d.PkgKey) {
+			continue // restore recorded no assembly and none is on disk: no code to load
+		}
+		if reason != "" {
+			set.Misses = append(set.Misses, DepMiss{Dep: d, Reason: reason})
 			continue
 		}
-		a, ok := ReadAssembly(path)
-		if !ok {
-			set.Misses = append(set.Misses, DepMiss{Dep: d, Reason: "unreadable"})
-			continue
-		}
-		set.Assemblies = append(set.Assemblies, a)
+		set.Assemblies = append(set.Assemblies, asms...)
 	}
 	return set
+}
+
+// Declared-miss reasons.
+const (
+	MissNotLocated        = "not located"
+	MissUnreadable        = "unreadable"
+	MissReferenceAssembly = "reference assembly"
+)
+
+// ReadDependency locates and reads every dll of one dependency. reason is "" on
+// success, else the declared miss (Miss*). A package is all-or-nothing: one bad dll
+// makes the whole package a miss.
+func ReadDependency(buildDir string, d DepRef, locator *AssetsLocator) ([]*Assembly, string) {
+	paths, ok := ResolveDependencyDlls(buildDir, d.Target, d.PkgKey, locator)
+	if !ok {
+		return nil, MissNotLocated
+	}
+	asms := make([]*Assembly, 0, len(paths))
+	for _, p := range paths {
+		a, ok := ReadAssembly(p)
+		if !ok || a == nil || a.Failed {
+			return nil, MissUnreadable
+		}
+		if a.IsReferenceAssembly() {
+			return nil, MissReferenceAssembly
+		}
+		asms = append(asms, a)
+	}
+	return asms, ""
 }

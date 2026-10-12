@@ -23,6 +23,7 @@ const (
 	attrCompilerGenerated = "CompilerGeneratedAttribute"
 	attrGeneratedCode     = "GeneratedCodeAttribute"
 	attrExtension         = "ExtensionAttribute"
+	attrReferenceAssembly = "ReferenceAssemblyAttribute"
 )
 
 // customAttrCtors returns the attribute-ctor tokens (the Type column, a MethodDef or
@@ -123,4 +124,11 @@ func (a *Assembly) IsExtensionMethod(m *MethodDef) bool {
 		return false
 	}
 	return a.hasAttributeSuffix(m.Token, attrExtension)
+}
+
+// IsReferenceAssembly reports whether the assembly carries [ReferenceAssembly]: a
+// compile-time surface whose method bodies are stubs (`throw null`). Its bodies say nothing
+// about what the shipped code calls, so a reader must treat it as code it did not load.
+func (a *Assembly) IsReferenceAssembly() bool {
+	return a.hasAttributeSuffix(makeToken(tAssembly, 1), attrReferenceAssembly)
 }

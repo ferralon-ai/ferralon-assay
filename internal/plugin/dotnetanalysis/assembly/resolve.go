@@ -27,33 +27,36 @@ import (
 // assetsFile type untouched.
 
 // AssetsLocator is resolve.go's local, additive view of project.assets.json —
-// only the fields needed to LOCATE a dependency dll:
+// only the fields needed to LOCATE a dependency's dlls:
 //   - packageFolders: the ordered NuGet cache roots the restore actually used
 //     (zero-egress-aware: a per-build/CI cache relocates the global folder and
 //     this records where it truly landed). Searched first, in order.
 //   - libraries[<id>/<ver>].path: the "<id-lowercased>/<version>" folder relative
 //     to a packageFolder.
-//   - targets[<target>][<id>/<ver>].compile: keys are the package-folder-relative
-//     .dll paths (e.g. "lib/net8.0/Foo.dll", "ref/net8.0/Foo.dll"). The "_._"
-//     placeholder key means "no assembly" — treated as no locatable dll (a miss),
-//     never an error. compile is the reference surface CHA reads.
+//   - targets[<target>][<id>/<ver>].runtime / .compile: keys are the
+//     package-folder-relative .dll paths (e.g. "lib/net8.0/Foo.dll",
+//     "ref/net8.0/Foo.dll"). runtime is preferred: it names the implementation
+//     the app runs, while compile may name a reference assembly whose bodies are
+//     stubs. compile is the fallback when a package declares no runtime block.
+//     The "_._" placeholder key means "no assembly".
 //
-// The authoritative resolved path is: packageFolder / library.path / <compile-key>.
+// The authoritative resolved path is: packageFolder / library.path / <dll-key>.
 type AssetsLocator struct {
-	packageFolders []string                     // ordered restore cache roots
-	libPath        map[string]string            // "<id>/<ver>" -> "<id-lower>/<ver>"
-	compile        map[string]map[string]string // target -> "<id>/<ver>" -> chosen compile rel dll ("" => only _._/none)
+	packageFolders []string                       // ordered restore cache roots
+	libPath        map[string]string              // "<id>/<ver>" -> "<id-lower>/<ver>"
+	dlls           map[string]map[string][]string // target -> "<id>/<ver>" -> rel dlls (runtime, else compile); nil => only _._/none
 }
 
-// assetsLocatorFile is the minimal unmarshal target. compile stays RawMessage so
-// its keys can be read in their original JSON order (Go maps do not preserve it,
-// and packageFolder/compile priority is order-sensitive).
+// assetsLocatorFile is the minimal unmarshal target. runtime/compile stay
+// RawMessage so their keys can be read in their original JSON order (Go maps do
+// not preserve it, and packageFolder/dll priority is order-sensitive).
 type assetsLocatorFile struct {
 	PackageFolders json.RawMessage `json:"packageFolders"`
 	Libraries      map[string]struct {
 		Path string `json:"path"`
 	} `json:"libraries"`
 	Targets map[string]map[string]struct {
+		Runtime json.RawMessage `json:"runtime"`
 		Compile json.RawMessage `json:"compile"`
 	} `json:"targets"`
 }
@@ -71,7 +74,7 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 	a := &AssetsLocator{
 		packageFolders: orderedObjectKeys(af.PackageFolders),
 		libPath:        make(map[string]string, len(af.Libraries)),
-		compile:        make(map[string]map[string]string, len(af.Targets)),
+		dlls:           make(map[string]map[string][]string, len(af.Targets)),
 	}
 	for key, lib := range af.Libraries {
 		if p := strings.TrimSpace(lib.Path); p != "" {
@@ -79,26 +82,47 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 		}
 	}
 	for target, pkgs := range af.Targets {
-		m := make(map[string]string, len(pkgs))
+		m := make(map[string][]string, len(pkgs))
 		for pkgKey, tl := range pkgs {
-			m[pkgKey] = firstCompileDll(tl.Compile)
+			dlls := dllKeys(tl.Runtime)
+			if len(dlls) == 0 {
+				dlls = dllKeys(tl.Compile)
+			}
+			m[pkgKey] = dlls
 		}
-		a.compile[target] = m
+		a.dlls[target] = m
 	}
 	return a, true
 }
 
-// firstCompileDll returns the first non-"_._" compile key in JSON order, or "" when
-// the compile block is absent, empty, or holds only the "_._" placeholder (meaning
-// no locatable assembly for this library in this target).
-func firstCompileDll(raw json.RawMessage) string {
+// dllKeys returns the .dll keys of a runtime/compile block in JSON order, skipping
+// the "_._" placeholder and non-assembly assets (.xml docs, .pdb, native files).
+func dllKeys(raw json.RawMessage) []string {
+	var out []string
 	for _, k := range orderedObjectKeys(raw) {
-		if k == "_._" {
+		if k == "_._" || !strings.EqualFold(filepath.Ext(k), ".dll") {
 			continue
 		}
-		return k
+		out = append(out, k)
 	}
-	return ""
+	return out
+}
+
+// HasNoAssemblies reports whether restore recorded this package in target as
+// carrying no assembly at all (no runtime or compile dll, only "_._" or nothing): a
+// metapackage or a content/analyzer/build-only package. When no locator finds a dll
+// for such a package either, it holds no code a call could land in, so the miss is
+// not one. false when the target or package is not recorded (then nothing is known).
+func (a *AssetsLocator) HasNoAssemblies(target, pkgKey string) bool {
+	if a == nil {
+		return false
+	}
+	tgt, ok := a.dlls[target]
+	if !ok {
+		return false
+	}
+	dlls, ok := tgt[pkgKey]
+	return ok && len(dlls) == 0
 }
 
 // NugetPackageRoots returns the package-cache roots to search, in priority order:
@@ -118,37 +142,57 @@ func NugetPackageRoots(buildDir string, a *AssetsLocator) []string {
 	return roots
 }
 
-// LocateDll resolves a dependency's dll via the AUTHORITATIVE assets path:
-// packageFolder / library.path / <compile-key>, statting each root in order and
-// returning the first existing file. ok is false when the library has no path, its
-// compile is absent or only "_._", or the composed file exists under no root — a
-// declared miss, never a fetch and never a path that escapes a root.
+// LocateDlls resolves every dll a dependency contributes to target via the
+// AUTHORITATIVE assets path: packageFolder / library.path / <dll-key>, statting
+// each root in order. ok is true only when every recorded dll exists under some
+// root; a package with a dll that cannot be found is a declared miss as a whole
+// (a partially loaded package would make its missing half read as absent code).
+// ok is also false when the library has no path or records no dll — never a fetch
+// and never a path that escapes a root.
 //
 // target is the assets targets key ("net8.0" or "net8.0/linux-x64"); pkgKey is
 // "<id>/<version>".
-func (a *AssetsLocator) LocateDll(roots []string, target, pkgKey string) (string, bool) {
+func (a *AssetsLocator) LocateDlls(roots []string, target, pkgKey string) ([]string, bool) {
 	if a == nil {
-		return "", false
+		return nil, false
 	}
 	libRel, ok := a.libPath[pkgKey]
 	if !ok || libRel == "" {
-		return "", false
+		return nil, false
 	}
-	tgt, ok := a.compile[target]
+	rels := a.dlls[target][pkgKey]
+	if len(rels) == 0 {
+		return nil, false
+	}
+	out := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		path, found := locateUnderRoots(roots, libRel, rel)
+		if !found {
+			return nil, false
+		}
+		out = append(out, path)
+	}
+	return out, true
+}
+
+// LocateDll is LocateDlls narrowed to the package's first dll.
+func (a *AssetsLocator) LocateDll(roots []string, target, pkgKey string) (string, bool) {
+	paths, ok := a.LocateDlls(roots, target, pkgKey)
 	if !ok {
 		return "", false
 	}
-	compileRel := tgt[pkgKey]
-	if compileRel == "" { // absent or "_._": no locatable dll for this library.
-		return "", false
-	}
+	return paths[0], true
+}
+
+// locateUnderRoots returns the first root under which libRel/rel is a regular file.
+// libRel and rel come from the (restore-written) assets file; traversal is still
+// guarded so a crafted relpath can never resolve outside a root.
+func locateUnderRoots(roots []string, libRel, rel string) (string, bool) {
 	for _, root := range roots {
 		if root == "" {
 			continue
 		}
-		// libRel and compileRel come from the (restore-written) assets file; still
-		// guard traversal so a crafted relpath can never resolve outside the root.
-		candidate, ok := containedPath(root, libRel, compileRel)
+		candidate, ok := containedPath(root, libRel, rel)
 		if !ok {
 			continue
 		}
@@ -217,27 +261,37 @@ func LocateBuildOutput(buildDir, name string) (string, bool) {
 	return "", false
 }
 
-// ResolveDependencyDll locates one dependency's dll, preferring the authoritative
+// ResolveDependencyDlls locates a dependency's dlls, preferring the authoritative
 // assets path, then the NuGet global cache, then the project build output — each a
-// declared miss when absent, never a fetch. target is the assets targets key (also
+// declared miss when absent, never a fetch. The two path-convention fallbacks can
+// only name the package's eponymous dll. target is the assets targets key (also
 // used as the cache tfm hint); pkgKey is "<id>/<version>". ok is false when no
-// locator finds the file.
-func ResolveDependencyDll(buildDir, target, pkgKey string, a *AssetsLocator) (string, bool) {
+// locator finds the files.
+func ResolveDependencyDlls(buildDir, target, pkgKey string, a *AssetsLocator) ([]string, bool) {
 	roots := NugetPackageRoots(buildDir, a)
-	if path, ok := a.LocateDll(roots, target, pkgKey); ok {
-		return path, true
+	if paths, ok := a.LocateDlls(roots, target, pkgKey); ok {
+		return paths, true
 	}
 	id, version := splitAssetsKey(pkgKey)
 	tfmHint, _ := splitTarget(target)
 	if path, ok := LocateNugetCacheDll(roots, id, version, tfmHint); ok {
-		return path, true
+		return []string{path}, true
 	}
 	if id != "" {
 		if path, ok := LocateBuildOutput(buildDir, id); ok {
-			return path, true
+			return []string{path}, true
 		}
 	}
-	return "", false
+	return nil, false
+}
+
+// ResolveDependencyDll is ResolveDependencyDlls narrowed to the first dll.
+func ResolveDependencyDll(buildDir, target, pkgKey string, a *AssetsLocator) (string, bool) {
+	paths, ok := ResolveDependencyDlls(buildDir, target, pkgKey, a)
+	if !ok {
+		return "", false
+	}
+	return paths[0], true
 }
 
 // ReadAssembly reads a located dll's bytes and parses them into the typed model.

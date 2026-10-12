@@ -1,6 +1,9 @@
 package assembly
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // Token is a metadata token: the high byte is the table id (§II.22) and the low 24
 // bits are the 1-based row index (RID). It is the currency 02b's IL walk resolves —
@@ -128,6 +131,10 @@ type Assembly struct {
 
 	Failed     bool
 	FailReason string
+
+	nestIndexOnce sync.Once
+	nestEnclosing map[Token]Token
+	nestTypeByTok map[Token]*TypeDef
 
 	methodsByRID map[uint32]*MethodDef
 	md           *mdTables

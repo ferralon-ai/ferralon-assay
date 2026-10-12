@@ -24,6 +24,7 @@ func TestParseFile_ClassLiteralsAreExpressions(t *testing.T) {
 		{"chained", "String n = B.class.getName();"},
 		{"line break", "Class<?> c = B\n        .class;"},
 		{"void", "Class<?> c = void.class;"},
+		{"field named record", "if (x.record instanceof B) { foo(1); }"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := "package p;\npublic class Holder {\n  Object field;\n  Object m(Object x) {\n    " + tc.body + "\n    return null;\n  }\n  void after() {}\n}\n"
@@ -84,5 +85,52 @@ public class Registry {
 		if !contains(names, want) {
 			t.Errorf("symbol %q missing: %v", want, names)
 		}
+	}
+}
+
+// The call and bean scanners share the declaration scanner's rule: a type keyword after a
+// '.' is a member, never a header. "record" is a legal field name, and "x.record instanceof
+// T" would otherwise read as a type named "instanceof" whose body is the if-block.
+var memberNamedLikeTypeKeyword = []struct{ name, body string }{
+	{"record field instanceof", "if (this.record instanceof Foo) { handle(1); }"},
+	{"record field pattern", "if (h.record instanceof Foo f) { handle(1); }"},
+	{"record field, nested block", "if (this.record instanceof Foo) { synchronized (h) { handle(1); } }"},
+	{"class literal", "Object o = Foo.class; handle(1);"},
+}
+
+func TestParseCalls_MemberNamedLikeTypeKeyword(t *testing.T) {
+	for _, tc := range memberNamedLikeTypeKeyword {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p;\nclass Holder {\n  void m(Object h) {\n    " + tc.body + "\n  }\n}\n"
+			calls, _ := parseCallsAndIngresses([]rune(stripJava(src)), []rune(src))
+			found := false
+			for _, c := range calls {
+				if c.calleeName == "handle" && c.calleeArity == 1 {
+					found = true
+					if c.callerName != "m" || c.callerArity != 1 || len(c.callerEnclosing) != 1 || c.callerEnclosing[0] != "Holder" {
+						t.Errorf("handle/1 attributed to %v.%s/%d, want Holder.m/1", c.callerEnclosing, c.callerName, c.callerArity)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("call handle/1 missing; calls=%+v", calls)
+			}
+		})
+	}
+}
+
+func TestScanSourceClasses_MemberNamedLikeTypeKeyword(t *testing.T) {
+	for _, tc := range memberNamedLikeTypeKeyword {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package p;\nclass Holder {\n  void m(Object h) {\n    " + tc.body + "\n  }\n}\n"
+			classes := scanSrc("p", src)
+			var names []string
+			for _, c := range classes {
+				names = append(names, c.name)
+			}
+			if len(names) != 1 || names[0] != "Holder" {
+				t.Errorf("classes = %v, want [Holder]", names)
+			}
+		})
 	}
 }

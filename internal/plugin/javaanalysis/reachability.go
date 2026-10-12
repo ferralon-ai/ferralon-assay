@@ -3,6 +3,7 @@ package javaanalysis
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -29,6 +30,10 @@ import (
 // rendered as clean reachability. A path that reaches only a root (not a
 // recognized attacker-facing ingress) also declares no_known_ingress. A load
 // failure in CallGraph/FindIngresses is a hard error (inv.4).
+//
+// Dependency sinks ("jvmref" ids from ResolveDependencySymbols) are searched over the
+// build's compiled classes plus the dependency closure instead (reachability_bytecode.go),
+// which is the only path that can list a sink in Searched.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...Option) (plugin.ReachabilityResult, error) {
 	// TODO(perf): this reparses the tree independently of CallGraph's internal
 	// loadProgram — acceptable for pass 1 (zero-egress, deterministic); CallGraph
@@ -37,21 +42,112 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir}, opts...)
+
+	var depSinks, lexSinks []string
+	for _, s := range req.Symbols {
+		if _, ok := parseDepEdgeSymbol(s); ok {
+			depSinks = append(depSinks, s)
+		} else {
+			lexSinks = append(lexSinks, s)
+		}
+	}
+	if len(depSinks) == 0 {
+		paths, reasons, err := lexicalReachability(ctx, req.BuildDir, prog, req.Symbols, opts...)
+		if err != nil {
+			return plugin.ReachabilityResult{}, err
+		}
+		return plugin.ReachabilityResult{Partiality: reachabilityPartiality(reasons), Paths: paths}, nil
+	}
+
+	// Dependency sinks are searched over the compiled program (reachability_bytecode.go).
+	// A build with several projects, or without class output, keeps the lexical answer and
+	// says why it went no further.
+	fp := loadFirstPartyBytecode(req.BuildDir, prog)
+	multi, why := multipleProjects(req.BuildDir)
+	if dirs := fp.projectDirs(); !multi && len(dirs) > 1 {
+		multi, why = true, "class output in "+strings.Join(relSlashAll(req.BuildDir, dirs), ", ")
+	}
+	if multi || len(fp.roots) == 0 {
+		paths, reasons, err := lexicalReachability(ctx, req.BuildDir, prog, req.Symbols, opts...)
+		if err != nil {
+			return plugin.ReachabilityResult{}, err
+		}
+		part := reachabilityPartiality(reasons)
+		if multi {
+			part = withMultipleProjects(part, why)
+		} else {
+			part = withScoped(part, fp.scoped())
+		}
+		return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
+	}
+
+	var paths []plugin.ReachPath
+	reasons := map[string]bool{}
+	if len(lexSinks) > 0 {
+		lp, lr, err := lexicalReachability(ctx, req.BuildDir, prog, lexSinks, opts...)
+		if err != nil {
+			return plugin.ReachabilityResult{}, err
+		}
+		paths = append(paths, lp...)
+		for r := range lr {
+			reasons[r] = true
+		}
+	}
+	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, prog, fp, depSinks, opts...)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
-	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir}, opts...)
-	if err != nil {
-		return plugin.ReachabilityResult{}, err
+	paths = append(paths, bp...)
+	for r := range br {
+		reasons[r] = true
 	}
-
-	paths, reasons := firstPartyPaths(prog, cg, ing, req.Symbols)
-
 	return plugin.ReachabilityResult{
-		Partiality: reachabilityPartiality(reasons),
+		Partiality: withScoped(reachabilityPartiality(reasons), scoped),
 		Paths:      paths,
+		Searched:   searched,
 	}, nil
+}
+
+// lexicalReachability is the source-level answer: the reverse walk over the lexical call
+// graph from each sink to the nearest ingress or root.
+func lexicalReachability(ctx context.Context, buildDir string, prog *program, sinks []string, opts ...Option) ([]plugin.ReachPath, map[string]bool, error) {
+	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir}, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: buildDir}, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	paths, reasons := firstPartyPaths(prog, cg, ing, sinks)
+	return paths, reasons, nil
+}
+
+// withScoped adds scoped reasons to p, each also listed run-wide in Reasons (the gate reads
+// Reasons today), deduplicated and sorted.
+func withScoped(p plugin.Partiality, scoped []plugin.ScopedReason) plugin.Partiality {
+	if len(scoped) == 0 {
+		return p
+	}
+	set := map[string]bool{}
+	for _, r := range p.Reasons {
+		set[r] = true
+	}
+	for _, s := range scoped {
+		set[s.Reason] = true
+	}
+	p.Complete = false
+	p.Reasons = sortedKeys(set)
+	p.Scoped = append(p.Scoped, scoped...)
+	return p
+}
+
+func relSlashAll(base string, paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = relSlash(base, p)
+	}
+	return out
 }
 
 // sinkClassifiers is the H3 registry (edge-seam.md §5): each overlay (#3 repository

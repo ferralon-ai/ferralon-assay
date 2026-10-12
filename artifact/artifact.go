@@ -65,6 +65,19 @@ type ExposureFootprintPayload struct {
 
 	// Partiality
 	PartialityFlags []string `json:"partiality_flags,omitempty"` // reason codes from any partial plugin ops
+	// ScopedPartiality carries the limits a plugin bounded to the packages the hidden code could
+	// reach (plugin.ScopedReason), unioned over the same axes as PartialityFlags.
+	ScopedPartiality []ScopedPartialityFlag `json:"scoped_partiality,omitempty"`
+}
+
+// ScopedPartialityFlag mirrors plugin.ScopedReason: a reason code, the package holding the blind
+// spot and the location inside it, and the packages an edge it hides could reach (nil = unbounded).
+// Package and Targets are PURLs without a version; "" is first-party.
+type ScopedPartialityFlag struct {
+	Reason  string   `json:"reason"`
+	Package string   `json:"package,omitempty"`
+	Path    string   `json:"path,omitempty"`
+	Targets []string `json:"targets,omitempty"`
 }
 
 // ExposureFootprintSchemaVersion is the schema version stamped on every ExposureFootprintPayload.

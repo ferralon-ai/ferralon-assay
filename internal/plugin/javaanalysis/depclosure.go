@@ -10,9 +10,10 @@ import (
 
 // depclosure.go — the package bound for a blind spot inside a dependency JAR. When a JAR's
 // code cannot be read, any call hidden inside it can reach the JAR itself and everything
-// the JAR's code can call: its dependencies, theirs, and so on. A scoped partiality reason
-// for that JAR names this closure as its Targets, so the limit counts against an advisory
-// on any package in the closure and against nothing else.
+// the JAR's code can call: its dependencies, theirs, and so on. It can also call back into
+// first-party code, which reaches the build's whole dependency closure. A scoped partiality
+// reason for that JAR names all of this as its Targets (unloadedJarTargets), so the limit
+// counts against an advisory on any package in it and against nothing else.
 //
 // The closure must over-approximate. The inventory's edges alone are not enough: Maven
 // drops optional and provided dependencies from the transitive graph, yet the JAR's code
@@ -112,27 +113,64 @@ func (ix inventoryIndex) variantAt(coordinate, version string) bool {
 	return false
 }
 
-// dependencyTargets returns the versionless PURLs of coordinate and every package its code
-// can call, or nil when that set cannot be bounded (see the file comment).
-func dependencyTargets(ix inventoryIndex, cache *mavenCache, coordinate string) []string {
+// unloadedJarTargets bounds a blind spot in the unread code of coordinate's JAR (contract §4,
+// with the callback amendment). The hidden code can call coordinate itself and every package
+// its code can call. It can also call back into first-party code: the build hands it objects
+// that implement its interfaces or platform ones (Runnable, Comparator), or subclass its types,
+// and reflection inside a JAR nobody read cannot be ruled out. An edge into first-party code
+// reaches whatever first-party code reaches. So Targets is "" plus the closure of coordinate
+// and of every direct dependency, as versionless PURLs. It is nil when coordinate is not in
+// the inventory or any package in that closure has declarations that cannot be read: a partial
+// closure is never a bound.
+func unloadedJarTargets(ix inventoryIndex, cache *mavenCache, coordinate string) []string {
 	if _, ok := ix.byCoordinate[coordinate]; !ok {
 		return nil
 	}
-	targets := map[string]bool{}
-	visited := map[string]bool{coordinate: true}
-	queue := []string{coordinate}
+	seeds := []string{coordinate}
+	for coord, nodes := range ix.byCoordinate {
+		for _, n := range nodes {
+			if n.Direct {
+				seeds = append(seeds, coord)
+				break
+			}
+		}
+	}
+	closure, ok := packageClosure(ix, cache, seeds)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(closure)+1)
+	out = append(out, "")
+	for _, c := range closure {
+		out = append(out, mavenPURLNoVersion(c))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// packageClosure returns the seeds and every package their code can call, transitively (see
+// the file comment), sorted. ok is false when some package's declarations cannot be read.
+func packageClosure(ix inventoryIndex, cache *mavenCache, seeds []string) ([]string, bool) {
+	visited := map[string]bool{}
+	var queue []string
+	for _, s := range seeds {
+		if !visited[s] {
+			visited[s] = true
+			queue = append(queue, s)
+		}
+	}
+	var out []string
 	for len(queue) > 0 {
 		coord := queue[0]
 		queue = queue[1:]
-		targets[coord] = true
+		out = append(out, coord)
 
-		nodes := ix.byCoordinate[coord]
 		// A declared dependency absent from the inventory is not on this build's classpath, so
 		// nothing can load it: it is a target, but there is no code of it to expand.
-		for _, n := range nodes {
+		for _, n := range ix.byCoordinate[coord] {
 			declared, ok := declaredDependencies(n, cache)
 			if !ok {
-				return nil
+				return nil, false
 			}
 			for _, childID := range ix.children[n.ID] {
 				if child, ok := ix.byID[childID]; ok {
@@ -149,12 +187,8 @@ func dependencyTargets(ix inventoryIndex, cache *mavenCache, coordinate string) 
 			}
 		}
 	}
-	out := make([]string, 0, len(targets))
-	for c := range targets {
-		out = append(out, mavenPURLNoVersion(c))
-	}
 	sort.Strings(out)
-	return out
+	return out, true
 }
 
 // declaredDependencies returns every coordinate the node's POM chain declares outside test

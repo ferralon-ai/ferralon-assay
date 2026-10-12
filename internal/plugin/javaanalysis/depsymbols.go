@@ -21,7 +21,7 @@ import (
 // Each resolved method carries the same id the dependency call graph uses
 // ("jvmref Owner#NameDesc"), Symbol.Package is the Maven coordinate, and Origins maps it to
 // the coordinate's versionless PURL. Every gap is scoped to the coordinate, bounded by what
-// the JAR's code could call (depclosure.go):
+// the JAR's code could call, callbacks into first-party code included (depclosure.go):
 //   - no version resolved, no cache holds the resolved version's JAR, or the build declares a
 //     classifier or non-jar type for it → tool_failure:no_dependency_artifact;
 //   - the JAR is unreadable, or some classes in it fail to parse → tool_failure.
@@ -72,7 +72,7 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 	}
 	ix := indexInventory(inv)
 	purl := mavenPURLNoVersion(coordinate)
-	targets := dependencyTargets(ix, newMavenCache(buildDir), coordinate)
+	targets := unloadedJarTargets(ix, newMavenCache(buildDir), coordinate)
 	scoped := func(reason, path string) plugin.ScopedReason {
 		return plugin.ScopedReason{Reason: reason, Package: purl, Path: path, Targets: targets}
 	}

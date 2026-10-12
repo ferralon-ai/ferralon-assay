@@ -162,45 +162,53 @@ func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 	}
 }
 
-// A cached POM but no JAR: the gap is scoped to netkit and bounded by everything netkit's
-// code can call, including the optional, provided and profile dependencies Maven leaves
-// out of the transitive graph.
-func TestResolveDependencySymbols_MissingJarIsScopedToItsClosure(t *testing.T) {
-	build := buildNetkitFixture(t, true)
-	writeNetkitOwnPom(t, build)
-
-	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
-	if len(res.Resolved) != 0 || res.Partiality.Complete {
-		t.Fatalf("want unresolved and partial, got %+v", res)
-	}
-	// Until the gate reads Scoped, the miss is carried run-wide too, or the gate never sees it.
-	if !reflect.DeepEqual(res.Partiality.Reasons, []string{reasonNoDependencyArtifact}) {
-		t.Errorf("run-wide reasons = %v, want [%s]", res.Partiality.Reasons, reasonNoDependencyArtifact)
-	}
-	if len(res.Partiality.Scoped) != 1 {
-		t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
-	}
-	sr := res.Partiality.Scoped[0]
-	if sr.Reason != reasonNoDependencyArtifact || sr.Package != netkitPURL {
-		t.Errorf("scoped reason = %+v", sr)
-	}
-	wantTargets := []string{"pkg:maven/com.dep/optdep", "pkg:maven/com.dep/profdep", "pkg:maven/com.dep/provdep", netkitPURL}
-	if !reflect.DeepEqual(sr.Targets, wantTargets) {
-		t.Errorf("targets = %v, want %v", sr.Targets, wantTargets)
-	}
-}
-
-// Without netkit's POM its declared dependencies are unknown, so nothing bounds what its
-// code can call: Targets is nil (unbounded), never a closure guessed from the edges.
-func TestResolveDependencySymbols_UnreadableClosureIsUnbounded(t *testing.T) {
-	build := buildNetkitFixture(t, true)
-
-	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
-	if len(res.Partiality.Scoped) != 1 {
-		t.Fatalf("want one scoped reason, got %+v", res.Partiality)
-	}
-	if sr := res.Partiality.Scoped[0]; sr.Targets != nil || sr.Package != netkitPURL || sr.Reason != reasonNoDependencyArtifact {
-		t.Errorf("want unbounded no_dependency_artifact for netkit, got %+v", sr)
+// netkit's JAR is the advisory package's code. Present, it is read and costs nothing. Missing,
+// it is scoped to netkit and bounded by netkit, everything netkit's code can call (including
+// the optional, provided and profile dependencies Maven leaves out of the transitive graph),
+// and first-party code, which netkit can call back into. Without netkit's POM that closure is
+// unknown, so Targets is nil, never a closure guessed from the edges. Until the gate reads
+// Scoped, every scoped reason is carried run-wide too, or the gate never sees it.
+func TestResolveDependencySymbols_ScopedNoDependencyArtifact(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		jar, ownPom bool
+		wantScoped  bool
+		wantTargets []string
+	}{
+		{name: "jar present", jar: true, ownPom: true},
+		{name: "jar missing, closure known", ownPom: true, wantScoped: true,
+			wantTargets: []string{"", "pkg:maven/com.dep/optdep", "pkg:maven/com.dep/profdep", "pkg:maven/com.dep/provdep", netkitPURL}},
+		{name: "jar missing, metadata missing", wantScoped: true, wantTargets: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := buildNetkitFixture(t, !tc.jar)
+			if tc.ownPom {
+				writeNetkitOwnPom(t, build)
+			}
+			res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+			if !tc.wantScoped {
+				if !res.Partiality.Complete || len(res.Partiality.Scoped) != 0 || len(res.Resolved) != 1 {
+					t.Fatalf("want one resolved symbol and complete partiality, got %+v", res)
+				}
+				return
+			}
+			if len(res.Resolved) != 0 || res.Partiality.Complete {
+				t.Fatalf("want unresolved and partial, got %+v", res)
+			}
+			if !reflect.DeepEqual(res.Partiality.Reasons, []string{reasonNoDependencyArtifact}) {
+				t.Errorf("run-wide mirror = %v, want [%s]", res.Partiality.Reasons, reasonNoDependencyArtifact)
+			}
+			if len(res.Partiality.Scoped) != 1 {
+				t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
+			}
+			sr := res.Partiality.Scoped[0]
+			if sr.Reason != reasonNoDependencyArtifact || sr.Package != netkitPURL || sr.Path != "com.evil:netkit:1.0.0" {
+				t.Errorf("scoped reason = %+v", sr)
+			}
+			if !reflect.DeepEqual(sr.Targets, tc.wantTargets) {
+				t.Errorf("targets = %q, want %q", sr.Targets, tc.wantTargets)
+			}
+		})
 	}
 }
 

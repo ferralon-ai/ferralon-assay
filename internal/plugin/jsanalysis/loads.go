@@ -151,6 +151,17 @@ func (s *scopedLimits) addPackageLoad(reason, pkg, module, file string) {
 	}
 }
 
+// addUnbounded records a limit under reason, attributed to npm package pkg, that no
+// resolution reach bounds: its Targets are nil, so it counts against every advisory.
+func (s *scopedLimits) addUnbounded(reason, pkg, file string) {
+	key := scopedKey{reason: reason, pkg: npmPURL(pkg)}
+	if e := s.entries[key]; e != nil {
+		e.bounded, e.targets = false, nil
+		return
+	}
+	s.entries[key] = &scopedEntry{path: file}
+}
+
 // list returns the accumulated limits in a deterministic order.
 func (s *scopedLimits) list() []plugin.ScopedReason {
 	keys := make([]scopedKey, 0, len(s.entries))

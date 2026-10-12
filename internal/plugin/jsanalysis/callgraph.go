@@ -290,25 +290,35 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				flags.dynImport = true
 			}
 		}
-		// A static-prefix load whose files are all in-tree modules gets an edge to each.
-		// Its suffix may still traverse out of the prefix (prefixSuffixMayTraverse), so the
-		// computed limit stays run-wide beside the edges.
+		// A static-prefix load reaches the files its prefix names: an edge to each when they
+		// are all in-tree modules, a limit attributed to the package a bare prefix names.
+		// Either way the suffix may traverse out of the prefix (prefixSuffixMayTraverse), so
+		// a first-party prefix keeps its run-wide limit beside the edges and a package
+		// prefix's limit has unbounded Targets.
 		for _, pl := range f.bindings.prefixLoads {
 			reason, algo := plugin.PartialReasonComputedRequireSpecifier, algoCJS
 			if pl.dyn {
 				reason, algo = plugin.PartialReasonDynamicImportSpecifier, algoESM
 			}
-			kind, mods := rs.classifyPrefixLoad(f.module, pl)
-			if kind == prefixFirstParty {
+			switch kind, mods, pkg := rs.classifyPrefixLoad(f.module, pl); kind {
+			case prefixFirstParty:
 				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
 				for _, m := range mods {
 					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
 				}
-				if !prefixSuffixMayTraverse {
-					continue
+				if prefixSuffixMayTraverse {
+					accumulateReason(&flags, reason)
 				}
+			case prefixPackage:
+				if prefixSuffixMayTraverse {
+					scoped.addUnbounded(reason, pkg, f.file)
+					flags.scopedCopy[reason] = true
+				} else {
+					packageLimit(reason, pkg, f)
+				}
+			default:
+				accumulateReason(&flags, reason)
 			}
-			accumulateReason(&flags, reason)
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.

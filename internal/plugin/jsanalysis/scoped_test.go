@@ -58,6 +58,7 @@ func TestCallGraph_LoadShapes(t *testing.T) {
 	const (
 		uninspectable = plugin.PartialReasonUninspectablePackage
 		computedReq   = plugin.PartialReasonComputedRequireSpecifier
+		dynImport     = plugin.PartialReasonDynamicImportSpecifier
 	)
 	cases := []struct {
 		name     string
@@ -147,6 +148,26 @@ func TestCallGraph_LoadShapes(t *testing.T) {
 				"app.js":       "const { trim } = require('app/util');\nfunction f(s) { return trim(s); }\nf(process.argv);\n",
 			},
 			runWide: []string{uninspectable},
+		},
+		{
+			// 'lodash/' + '../json5' leaves lodash, so the package attributes the limit but
+			// does not bound it.
+			name:   "package prefix is attributed to the package, unbounded",
+			files:  map[string]string{"app.js": "function load(n) { return require('lodash/' + n); }\nload(process.argv[2]);\n"},
+			scoped: []scopedWant{{computedReq, "lodash", "app.js", nil}},
+		},
+		{
+			name:   "package template prefix is attributed to the package, unbounded",
+			files:  map[string]string{"app.mjs": "async function load(n) { return import(`lodash/${n}`); }\nload(process.argv[2]);\n"},
+			scoped: []scopedWant{{dynImport, "lodash", "app.mjs", nil}},
+		},
+		{
+			name: "package prefix stays unbounded under a lockfile",
+			files: map[string]string{
+				"package-lock.json": qsLock,
+				"app.js":            "function load(n) { return require('qs/' + n); }\nload(process.argv[2]);\n",
+			},
+			scoped: []scopedWant{{computedReq, "qs", "app.js", nil}},
 		},
 		{
 			name: "literal dynamic import is a package load, not a computed specifier",

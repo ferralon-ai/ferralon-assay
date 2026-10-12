@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // ResolveDependencyVersions reads the Python codebase's INSTALLED (pinned) dependency
 // versions from its manifests — requirements.txt (pip freeze / hashed pins), poetry.lock,
-// Pipfile.lock, and PEP 621 pyproject.toml — and returns the resolved version for the
+// pdm.lock, uv.lock, Pipfile.lock, and the declared-specifier build definitions (PEP 621
+// pyproject.toml, setup.cfg, setup.py, hatch_build.py) — and returns the resolved version for the
 // advisory's requested coordinate (the PyPI project name). It is the cheap Assess-tier
 // input to the disqualification predicate, the Python mirror of jsanalysis /
 // javaanalysis ResolveDependencyVersions.
@@ -23,7 +26,10 @@ import (
 // none. Only an EXACT pin (poetry.lock/Pipfile.lock version, a requirements.txt "=="
 // pin, or a PEP 621 "==" pin) yields Resolved=true; a range, a prefix ("==1.4.*"), or an
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
-// never fabricating a not-affected.
+// never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
+//
+// Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go),
+// so a coordinate absent from All is provably not installed; otherwise absence proves nothing.
 //
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
@@ -54,12 +60,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	var (
 		all         []plugin.ResolvedDependency
 		parseFailed bool
+		perFile     = make(map[string][]plugin.ResolvedDependency, len(manifests))
 	)
 	for _, m := range manifests {
 		deps, ok := parseManifest(m)
 		if !ok {
 			parseFailed = true
 		}
+		perFile[m] = deps
 		all = append(all, deps...)
 	}
 
@@ -71,7 +79,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
+	res := plugin.DependencyVersionResult{
+		Partiality: part,
+		All:        all,
+		Exhaustive: exhaustiveManifestSet(req.Coordinate, manifests, perFile, parseFailed),
+	}
 	want := normalizePyCoordinate(req.Coordinate)
 	if want != "" {
 		for _, d := range all {
@@ -111,12 +123,14 @@ func manifestFiles(root string) []string {
 	return out
 }
 
-// isManifest reports whether name is a recognized Python dependency manifest. A
-// requirements*.txt family (requirements.txt, requirements-dev.txt, ...) is accepted so
-// split requirement files still resolve.
+// isManifest reports whether name is a recognized Python dependency manifest: the lockfiles,
+// the declared-specifier build definitions (pyproject.toml, setup.cfg, setup.py,
+// hatch_build.py), and the requirements*.txt family (requirements.txt, requirements-dev.txt,
+// ...), so split requirement files still resolve.
 func isManifest(name string) bool {
 	switch name {
-	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock":
+	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock",
+		"setup.cfg", "setup.py", "hatch_build.py":
 		return true
 	}
 	return strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt")
@@ -142,6 +156,12 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 		return parseUVLockAdvisory(data)
 	case base == "pyproject.toml":
 		return parsePyproject(data)
+	case base == "setup.cfg":
+		return parseSetupCfg(data)
+	case base == "setup.py":
+		return parseSetupPy(data)
+	case base == "hatch_build.py":
+		return parseHatchBuild(data)
 	default: // requirements*.txt
 		return parseRequirementsTxt(data)
 	}
@@ -180,7 +200,11 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		if name == "" {
 			continue
 		}
-		out = append(out, pyResolved(name, version, resolved, "requirements.txt"))
+		d := pyResolved(name, version, resolved, "requirements.txt")
+		if !d.Resolved {
+			d.Constraint = requirementConstraint(line)
+		}
+		out = append(out, d)
 	}
 	return out, true
 }
@@ -378,11 +402,52 @@ func parsePipfileLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 
 // --- pyproject.toml (PEP 621) ------------------------------------------------
 
-// parsePyproject parses a PEP 621 pyproject.toml's "[project] dependencies" array
-// lexically, resolving only exact "==" pins (pyproject usually carries ranges, so most
-// entries are UNRESOLVED — the authoritative pins live in poetry.lock/Pipfile.lock). It
-// reads the "dependencies = [ ... ]" array under a "[project]" table.
+// pyprojectDeps is the PEP 621 subset read here: [project].dependencies and
+// [project].optional-dependencies.
+type pyprojectDeps struct {
+	Project struct {
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+	} `toml:"project"`
+}
+
+// parsePyproject reads a PEP 621 pyproject.toml's [project].dependencies and every
+// [project].optional-dependencies group. Each entry is a declared PEP 508 requirement: an exact
+// "==" pin resolves, a range rides in Constraint with Resolved=false (the authoritative pins
+// live in a lockfile). A file the TOML decoder rejects (a templated pyproject, say) falls back
+// to the lexical [project] dependencies reader, so such a file still contributes the names it
+// visibly declares.
 func parsePyproject(data []byte) ([]plugin.ResolvedDependency, bool) {
+	var pp pyprojectDeps
+	if err := toml.Unmarshal(data, &pp); err != nil {
+		return parsePyprojectLexical(data)
+	}
+	var out []plugin.ResolvedDependency
+	add := func(spec string) {
+		if d, ok := declaredDependency(spec, "pyproject.toml"); ok {
+			out = append(out, d)
+		}
+	}
+	for _, spec := range pp.Project.Dependencies {
+		add(spec)
+	}
+	groups := make([]string, 0, len(pp.Project.OptionalDependencies))
+	for g := range pp.Project.OptionalDependencies {
+		groups = append(groups, g)
+	}
+	sort.Strings(groups)
+	for _, g := range groups {
+		for _, spec := range pp.Project.OptionalDependencies[g] {
+			add(spec)
+		}
+	}
+	return out, true
+}
+
+// parsePyprojectLexical reads the "dependencies = [ ... ]" array under a "[project]" table
+// line by line, resolving only exact "==" pins. It is the fallback for a file the TOML decoder
+// rejects.
+func parsePyprojectLexical(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
 	inProject := false
 	inDeps := false

@@ -159,3 +159,243 @@ func TestResolveVersions_Absent(t *testing.T) {
 		t.Fatalf("absent coordinate must be Found=false; got %+v", r)
 	}
 }
+
+// Declared-specifier readers: a range is carried in Constraint with Resolved=false and never
+// becomes Version; an exact pin keeps resolving; a non-requirement is not read as one.
+func TestResolveVersions_DeclaredConstraint(t *testing.T) {
+	const (
+		setupCfg = `[metadata]
+name = app
+
+[options]
+packages = find:
+install_requires =
+    requests>=2.31,<3
+    click==8.1.7
+    # a comment line
+    importlib-metadata; python_version<"3.8"
+    file: extra.txt
+
+[options.extras_require]
+test = pytest>=7.0; coverage
+`
+		setupPy = `from setuptools import setup
+
+deps = compute()
+
+setup(
+    name="app",
+    install_requires=[
+        "jinja2>=3.0.0",  # templating
+        'markupsafe==2.1.3',
+        "pydantic (>=2.3)",
+    ],
+    tests_require=["nose>=1"],
+)
+`
+		setupPyComputed = `from setuptools import setup
+setup(name="app", install_requires=["aiohttp>=3.9", extra()])
+`
+		pyproject = `[project]
+name = "app"
+dependencies = [
+    "flask>=2.0,<3",
+    "deepdiff==8.0.1",
+    "wheelpkg @ https://example.com/wheelpkg-1.0-py3-none-any.whl",
+]
+
+[project.optional-dependencies]
+dev = ["pytest >= 7.0"]
+`
+		hatchBuild = `"""Custom build hook. Nothing>=here is a requirement."""
+import os
+
+DEPENDENCIES = [
+    "aiohttp>=3.9.2",
+    "jinja2>=3.0.0",
+    "rich-argparse>=1.0.0",
+]
+SETTINGS = {"plain_name": "value", "path": "airflow/www"}
+VERSIONED = f"pendulum>={os.environ.get('V')}"
+python_req = "python_version >= '3.9'"
+`
+		requirements = "flask>=2.0\nrequests==2.31.0\nurllib3 (>=1.26)\n"
+	)
+	tests := []struct {
+		name           string
+		files          map[string]string
+		coord          string
+		wantFound      bool
+		wantResolved   bool
+		wantVersion    string
+		wantConstraint string
+	}{
+		{"setup.cfg dangling range", map[string]string{"setup.cfg": setupCfg}, "requests", true, false, "", ">=2.31,<3"},
+		{"setup.cfg exact pin resolves", map[string]string{"setup.cfg": setupCfg}, "click", true, true, "8.1.7", ""},
+		{"setup.cfg bare name with marker", map[string]string{"setup.cfg": setupCfg}, "importlib-metadata", true, false, "", ""},
+		{"setup.cfg extras_require semicolon list", map[string]string{"setup.cfg": setupCfg}, "pytest", true, false, "", ">=7.0"},
+		{"setup.cfg extras_require second entry", map[string]string{"setup.cfg": setupCfg}, "coverage", true, false, "", ""},
+		{"setup.cfg file: directive not read", map[string]string{"setup.cfg": setupCfg}, "extra.txt", false, false, "", ""},
+		{"setup.py literal range", map[string]string{"setup.py": setupPy}, "jinja2", true, false, "", ">=3.0.0"},
+		{"setup.py literal exact pin", map[string]string{"setup.py": setupPy}, "markupsafe", true, true, "2.1.3", ""},
+		{"setup.py parenthesized specifier", map[string]string{"setup.py": setupPy}, "pydantic", true, false, "", ">=2.3"},
+		{"setup.py other keyword not read", map[string]string{"setup.py": setupPy}, "nose", false, false, "", ""},
+		{"setup.py computed list rejected whole", map[string]string{"setup.py": setupPyComputed}, "aiohttp", false, false, "", ""},
+		{"PEP 621 multi-clause range kept whole", map[string]string{"pyproject.toml": pyproject}, "flask", true, false, "", ">=2.0,<3"},
+		{"PEP 621 exact pin resolves", map[string]string{"pyproject.toml": pyproject}, "deepdiff", true, true, "8.0.1", ""},
+		{"PEP 621 direct reference has no constraint", map[string]string{"pyproject.toml": pyproject}, "wheelpkg", true, false, "", ""},
+		{"PEP 621 optional-dependencies", map[string]string{"pyproject.toml": pyproject}, "pytest", true, false, "", ">=7.0"},
+		{"hatch_build literal requirement", map[string]string{"hatch_build.py": hatchBuild}, "aiohttp", true, false, "", ">=3.9.2"},
+		{"hatch_build second literal", map[string]string{"hatch_build.py": hatchBuild}, "jinja2", true, false, "", ">=3.0.0"},
+		{"hatch_build bare word not a requirement", map[string]string{"hatch_build.py": hatchBuild}, "plain-name", false, false, "", ""},
+		{"hatch_build f-string skipped", map[string]string{"hatch_build.py": hatchBuild}, "pendulum", false, false, "", ""},
+		{"hatch_build marker text not a requirement", map[string]string{"hatch_build.py": hatchBuild}, "python-version", false, false, "", ""},
+		{"hatch_build docstring prose not a requirement", map[string]string{"hatch_build.py": hatchBuild}, "nothing", false, false, "", ""},
+		{"requirements range carries constraint", map[string]string{"requirements.txt": requirements}, "flask", true, false, "", ">=2.0"},
+		{"requirements exact pin has no constraint", map[string]string{"requirements.txt": requirements}, "requests", true, true, "2.31.0", ""},
+		{"requirements parenthesized range", map[string]string{"requirements.txt": requirements}, "urllib3", true, false, "", ">=1.26"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), tt.coord)
+			if r.Found != tt.wantFound {
+				t.Fatalf("Found = %v, want %v (all: %+v)", r.Found, tt.wantFound, r.All)
+			}
+			if !tt.wantFound {
+				return
+			}
+			if r.Match.Resolved != tt.wantResolved || r.Match.Version != tt.wantVersion || r.Match.Constraint != tt.wantConstraint {
+				t.Fatalf("Match = %+v, want resolved=%v version=%q constraint=%q", r.Match, tt.wantResolved, tt.wantVersion, tt.wantConstraint)
+			}
+		})
+	}
+}
+
+// Exhaustive is claimed only against a complete, edge-bearing lockfile (uv/pdm/poetry) that
+// covers every manifest found; every weaker shape fails open.
+func TestResolveVersions_Exhaustive(t *testing.T) {
+	const (
+		uvLock = `version = 1
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "flask" }, { name = "member" }]
+
+[[package]]
+name = "member"
+version = "0.1.0"
+source = { editable = "packages/member" }
+
+[[package]]
+name = "flask"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [{ name = "jinja2" }]
+
+[[package]]
+name = "jinja2"
+version = "3.1.4"
+source = { registry = "https://pypi.org/simple" }
+`
+		pdmLock = `[[package]]
+name = "flask"
+version = "3.0.0"
+dependencies = ["jinja2>=3.1"]
+
+[[package]]
+name = "jinja2"
+version = "3.1.4"
+`
+		poetryLock = `[[package]]
+name = "flask"
+version = "3.0.0"
+
+[package.dependencies]
+jinja2 = ">=3.1.2"
+
+[[package]]
+name = "jinja2"
+version = "3.1.4"
+`
+		pyprojectCovered   = "[project]\nname = \"app\"\ndependencies = [\"flask>=3\", \"member\"]\n"
+		pyprojectUncovered = "[project]\nname = \"app\"\ndependencies = [\"flask>=3\", \"aiohttp>=3.9\"]\n"
+	)
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"uv.lock alone", map[string]string{"uv.lock": uvLock}, true},
+		{"uv.lock covers pyproject incl. workspace member", map[string]string{"uv.lock": uvLock, "pyproject.toml": pyprojectCovered}, true},
+		{"pdm.lock", map[string]string{"pdm.lock": pdmLock}, true},
+		{"poetry.lock", map[string]string{"poetry.lock": poetryLock}, true},
+		{"lock misses a declared name", map[string]string{"uv.lock": uvLock, "pyproject.toml": pyprojectUncovered}, false},
+		{"pinned requirement disagrees with lock", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==2.0.0\n"}, false},
+		{"requirements matching lock", map[string]string{"uv.lock": uvLock, "requirements.txt": "flask==3.0.0\njinja2==3.1.4\n"}, true},
+		{"editable requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "-e .\nflask==3.0.0\n"}, false},
+		{"manifest outside the lock's tree", map[string]string{"svc/uv.lock": uvLock, "requirements.txt": "flask==3.0.0\n"}, false},
+		{"requirements only, fully pinned", map[string]string{"requirements.txt": "flask==3.0.0\njinja2==3.1.4\n"}, false},
+		{"Pipfile.lock only", map[string]string{"Pipfile.lock": `{"default": {"flask": {"version": "==3.0.0"}}}`}, false},
+		{"declared-only pyproject", map[string]string{"pyproject.toml": pyprojectCovered}, false},
+		{"setup.py only", map[string]string{"setup.py": `setup(install_requires=["flask>=3"])`}, false},
+		{"malformed poetry.lock", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n[package.dependencies\n"}, false},
+		{"no manifest", map[string]string{"m.py": "x = 1\n"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "absent-package")
+			if r.Found {
+				t.Fatalf("absent-package unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
+// A lockfile omits the project itself, so an advisory naming a first-party project is never
+// proven absent; a project name that cannot be read fails open for every coordinate.
+func TestResolveVersions_ExhaustiveFirstParty(t *testing.T) {
+	const uvLock = `version = 1
+[[package]]
+name = "my-app"
+version = "0.1.0"
+source = { editable = "." }
+
+[[package]]
+name = "flask"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+`
+	const poetryLock = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		coord string
+		want  bool
+	}{
+		{"uv root is first-party", map[string]string{"uv.lock": uvLock}, "my_app", false},
+		{"uv lock, unrelated absent package", map[string]string{"uv.lock": uvLock}, "aiohttp", true},
+		{"pyproject [project] name", map[string]string{"poetry.lock": poetryLock, "pyproject.toml": "[project]\nname = \"Svc.Core\"\n"}, "svc-core", false},
+		{"pyproject [tool.poetry] name", map[string]string{"poetry.lock": poetryLock, "pyproject.toml": "[tool.poetry]\nname = \"svc\"\n"}, "svc", false},
+		{"setup.cfg metadata name", map[string]string{"poetry.lock": poetryLock, "setup.cfg": "[metadata]\nname = svc\n"}, "svc", false},
+		{"setup.py literal name", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup(name=\"svc\", install_requires=[\"flask==3.0.0\"])\n"}, "svc", false},
+		{"setup.py literal name, other package", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup(name=\"svc\")\n"}, "aiohttp", true},
+		{"setup.py computed name fails open", map[string]string{"poetry.lock": poetryLock, "setup.py": "Extension(name=\"svc._c\")\nsetup(name=NAME)\n"}, "aiohttp", false},
+		{"setup.py shim with setup.cfg name", map[string]string{"poetry.lock": poetryLock, "setup.py": "setup()\n", "setup.cfg": "[metadata]\nname = svc\n"}, "aiohttp", true},
+		{"poetry lexical read disagrees with TOML", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n\n[[package]]\nname=\"jinja2\"\nversion=\"3.1.4\"\n"}, "aiohttp", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), tt.coord)
+			if r.Found {
+				t.Fatalf("%s unexpectedly found", tt.coord)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v", r.Exhaustive, tt.want)
+			}
+		})
+	}
+}

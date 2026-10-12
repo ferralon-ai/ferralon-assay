@@ -3,11 +3,13 @@ package pythonanalysis
 // The lockfile model the load set reads: every locked distribution with its versions, its
 // dependency edges, and whether the lockfile's own markers put it in the runtime install.
 //
-// Runtime is decided mechanically per format and only from what the lockfile records:
+// Runtime is decided mechanically per format and only from what the lockfile records, per
+// locked copy (name and version), since a name can be locked at several versions:
 //   - uv.lock: the closure of every workspace member's main dependencies, following a
 //     member's optional dependencies only for an extra some edge requests, and every optional
-//     dependency of a non-member (over-approximated). Members' dependency groups and
-//     unrequested extras are dev/optional.
+//     dependency of a non-member (over-approximated). An edge that names no version reaches
+//     every copy of its name. Members' dependency groups and unrequested extras are
+//     dev/optional.
 //   - pdm.lock: a package whose groups include "default".
 //   - poetry.lock: a package whose category or groups say "main". A lock-version 2.0 file
 //     records neither, so it cannot tell runtime from dev.
@@ -31,7 +33,8 @@ type lockModel struct {
 	versions      map[string]map[string]bool // PEP 503 name → locked versions
 	edges         map[string]map[string]bool // PEP 503 name → dependency names
 	members       map[string]bool            // uv workspace members: first-party, never refuted
-	runtime       map[string]bool            // in the runtime install per the lockfile markers
+	runtime       map[string]bool            // some copy is in the runtime install per the lockfile markers
+	copyRuntime   map[string]map[string]bool // name → version → that copy is in the runtime install
 	devLabel      map[string]string          // outside runtime: the dev/optional group reaching it
 	distinguishes bool                       // every lockfile read can tell runtime from dev
 }
@@ -46,6 +49,7 @@ func loadLocks(buildDir string, ls *loadSet) *lockModel {
 		edges:         map[string]map[string]bool{},
 		members:       map[string]bool{},
 		runtime:       map[string]bool{},
+		copyRuntime:   map[string]map[string]bool{},
 		devLabel:      map[string]string{},
 		distinguishes: true,
 	}
@@ -91,6 +95,14 @@ func (m *lockModel) addVersion(name, version string) {
 		m.versions[name] = map[string]bool{}
 	}
 	m.versions[name][strings.TrimSpace(version)] = true
+}
+
+func (m *lockModel) markRuntime(name, version string) {
+	m.runtime[name] = true
+	if m.copyRuntime[name] == nil {
+		m.copyRuntime[name] = map[string]bool{}
+	}
+	m.copyRuntime[name][strings.TrimSpace(version)] = true
 }
 
 func (m *lockModel) addEdge(from, to string) {
@@ -143,8 +155,9 @@ type uvLoadPackage struct {
 }
 
 type uvLoadDep struct {
-	Name  string   `toml:"name"`
-	Extra []string `toml:"extra"`
+	Name    string   `toml:"name"`
+	Version string   `toml:"version"` // set when the name is locked at several versions
+	Extra   []string `toml:"extra"`
 }
 
 func (m *lockModel) readUV(data []byte) bool {
@@ -152,7 +165,7 @@ func (m *lockModel) readUV(data []byte) bool {
 	if err := toml.Unmarshal(data, &lock); err != nil {
 		return false
 	}
-	pkgs := map[string]uvLoadPackage{}
+	pkgs := map[string][]uvLoadPackage{} // every locked copy of a name
 	members := map[string]bool{}
 	for _, n := range lock.Manifest.Members {
 		members[normalizePyCoordinate(n)] = true
@@ -162,7 +175,7 @@ func (m *lockModel) readUV(data []byte) bool {
 		if name == "" {
 			continue
 		}
-		pkgs[name] = p
+		pkgs[name] = append(pkgs[name], p)
 		if len(lock.Manifest.Members) == 0 {
 			if _, ok := p.Source["editable"]; ok {
 				members[name] = true
@@ -172,18 +185,20 @@ func (m *lockModel) readUV(data []byte) bool {
 			}
 		}
 	}
-	for name, p := range pkgs {
+	for _, name := range sortedMapKeys(pkgs) {
 		if members[name] {
 			m.members[name] = true
 			continue
 		}
-		m.addVersion(name, p.Version)
-		for _, d := range p.Dependencies {
-			m.addEdge(name, normalizePyCoordinate(d.Name))
-		}
-		for _, deps := range p.OptionalDependencies {
-			for _, d := range deps {
+		for _, p := range pkgs[name] {
+			m.addVersion(name, p.Version)
+			for _, d := range p.Dependencies {
 				m.addEdge(name, normalizePyCoordinate(d.Name))
+			}
+			for _, deps := range p.OptionalDependencies {
+				for _, d := range deps {
+					m.addEdge(name, normalizePyCoordinate(d.Name))
+				}
 			}
 		}
 	}
@@ -192,61 +207,62 @@ func (m *lockModel) readUV(data []byte) bool {
 		return true
 	}
 
-	// Runtime closure from every member's main dependencies.
+	// Runtime closure from every member's main dependencies, per locked copy.
 	type item struct {
-		name   string
-		extras []string
+		name, version string // version "" reaches every copy of name
+		extras        []string
 	}
 	var queue []item
-	for n := range members {
+	for _, n := range sortedKeys(members) {
 		queue = append(queue, item{name: n})
 	}
-	sort.Slice(queue, func(i, j int) bool { return queue[i].name < queue[j].name })
-	seenExtra := map[string]bool{}
+	seen := map[string]bool{}
 	requested := map[string]map[string]bool{}
 	for len(queue) > 0 {
 		it := queue[0]
 		queue = queue[1:]
-		key := it.name + "[" + strings.Join(it.extras, ",") + "]"
-		if seenExtra[key] {
-			continue
-		}
-		seenExtra[key] = true
-		p, ok := pkgs[it.name]
-		if !ok {
-			continue
-		}
-		if !members[it.name] {
-			m.runtime[it.name] = true
-		}
-		deps := append([]uvLoadDep(nil), p.Dependencies...)
-		if members[it.name] {
-			for _, e := range it.extras {
-				if requested[it.name] == nil {
-					requested[it.name] = map[string]bool{}
+		for _, p := range pkgs[it.name] {
+			if it.version != "" && strings.TrimSpace(p.Version) != strings.TrimSpace(it.version) {
+				continue
+			}
+			key := it.name + "@" + p.Version + "[" + strings.Join(it.extras, ",") + "]"
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if !members[it.name] {
+				m.markRuntime(it.name, p.Version)
+			}
+			deps := append([]uvLoadDep(nil), p.Dependencies...)
+			if members[it.name] {
+				for _, e := range it.extras {
+					if requested[it.name] == nil {
+						requested[it.name] = map[string]bool{}
+					}
+					requested[it.name][e] = true
+					deps = append(deps, p.OptionalDependencies[e]...)
 				}
-				requested[it.name][e] = true
-				deps = append(deps, p.OptionalDependencies[e]...)
+			} else {
+				for _, ds := range p.OptionalDependencies {
+					deps = append(deps, ds...)
+				}
 			}
-		} else {
-			for _, ds := range p.OptionalDependencies {
-				deps = append(deps, ds...)
+			for _, d := range deps {
+				queue = append(queue, item{name: normalizePyCoordinate(d.Name), version: d.Version, extras: d.Extra})
 			}
-		}
-		for _, d := range deps {
-			queue = append(queue, item{name: normalizePyCoordinate(d.Name), extras: d.Extra})
 		}
 	}
 
 	// Dev groups and unrequested extras of members label what only they reach.
 	for _, n := range sortedKeys(members) {
-		p := pkgs[n]
-		for _, g := range sortedMapKeys(p.DevDependencies) {
-			m.labelFrom(depNames(p.DevDependencies[g]), n+" dependency group "+g)
-		}
-		for _, e := range sortedMapKeys(p.OptionalDependencies) {
-			if !requested[n][e] {
-				m.labelFrom(depNames(p.OptionalDependencies[e]), n+"["+e+"] extra")
+		for _, p := range pkgs[n] {
+			for _, g := range sortedMapKeys(p.DevDependencies) {
+				m.labelFrom(depNames(p.DevDependencies[g]), n+" dependency group "+g)
+			}
+			for _, e := range sortedMapKeys(p.OptionalDependencies) {
+				if !requested[n][e] {
+					m.labelFrom(depNames(p.OptionalDependencies[e]), n+"["+e+"] extra")
+				}
 			}
 		}
 	}
@@ -305,7 +321,7 @@ func (m *lockModel) readPDM(data []byte) bool {
 		grouped[name] = p.Groups
 		for _, g := range p.Groups {
 			if g == "default" {
-				m.runtime[name] = true
+				m.markRuntime(name, p.Version)
 			}
 		}
 	}
@@ -365,7 +381,7 @@ func (m *lockModel) readPoetry(data []byte) bool {
 			main = main || g == "main"
 		}
 		if main {
-			m.runtime[name] = true
+			m.markRuntime(name, p.Version)
 		} else {
 			labels[name] = "poetry group " + strings.Join(groups, ", ")
 		}
@@ -396,7 +412,7 @@ func (m *lockModel) readPipfile(data []byte) bool {
 			n := normalizePyCoordinate(name)
 			m.addVersion(n, strings.TrimPrefix(v.Version, "=="))
 			if section == "default" {
-				m.runtime[n] = true
+				m.markRuntime(n, strings.TrimPrefix(v.Version, "=="))
 			} else if !m.runtime[n] && m.devLabel[n] == "" {
 				m.devLabel[n] = "Pipfile develop"
 			}

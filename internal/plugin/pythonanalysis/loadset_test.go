@@ -122,6 +122,57 @@ source = { registry = "https://pypi.org/simple" }
 
 const devAssumption = "assumes dev/tooling groups are not installed at runtime"
 
+// withDevDists returns the uv workspace with extra dev-group distributions locked.
+func withDevDists(files map[string]string, dists map[string]string) map[string]string {
+	lock := loadsetLock
+	for _, n := range sortedMapKeys(dists) {
+		lock = strings.Replace(lock, "dev = [\n", "dev = [\n    { name = \""+n+"\" },\n", 1)
+		lock += "\n[[package]]\nname = \"" + n + "\"\nversion = \"" + dists[n] + "\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	}
+	out := withLock(files)
+	out["uv.lock"] = lock
+	return out
+}
+
+// twoCopiesLock locks foo twice: 2.0.0 for app at runtime (pulling in bar) and 1.0.0 for app's
+// dev group. The runtime copy is listed first, so a reader that keeps one copy per name keeps
+// the dev copy and loses bar's edge.
+const twoCopiesLock = `version = 1
+
+[manifest]
+members = ["app"]
+
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "requests" }, { name = "foo", version = "2.0.0" }]
+
+[package.dev-dependencies]
+dev = [{ name = "foo", version = "1.0.0" }]
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "foo"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [{ name = "bar" }]
+
+[[package]]
+name = "foo"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "bar"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+`
+
 // withLock returns a tree of the uv workspace plus files.
 func withLock(files map[string]string) map[string]string {
 	out := map[string]string{"uv.lock": loadsetLock, "app/__init__.py": "", "app/main.py": "import requests\n"}
@@ -335,6 +386,45 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 		{
 			name:  "PEP 503 variant in an import matches the distribution",
 			files: withLock(map[string]string{"app/x.py": "import Django_Debug_Toolbar\n"}), pkg: "pkg:pypi/django-debug-toolbar@4.4.2",
+		},
+		{
+			name:  "advisory spelling PyJWT refutes the dev-only pyjwt under its PEP 503 name",
+			files: withDevDists(nil, map[string]string{"pyjwt": "2.8.0"}), pkg: "pkg:pypi/PyJWT@2.8.0",
+			refute: true, purl: "pkg:pypi/pyjwt",
+		},
+		{
+			name:  "advisory spelling PyJWT does not refute pyjwt a runtime requirements file pins as PyJWT",
+			files: withDevDists(map[string]string{"requirements.txt": "PyJWT==2.8.0\n"}, map[string]string{"pyjwt": "2.8.0"}),
+			pkg:   "pkg:pypi/PyJWT@2.8.0",
+		},
+		{
+			name:  "advisory spelling python_multipart refutes the dev-only python-multipart under its PEP 503 name",
+			files: withDevDists(nil, map[string]string{"python-multipart": "0.0.9"}), pkg: "pkg:pypi/python_multipart@0.0.9",
+			refute: true, purl: "pkg:pypi/python-multipart",
+		},
+		{
+			name:  "advisory spelling python_multipart does not refute python-multipart a runtime import loads",
+			files: withDevDists(map[string]string{"app/upload.py": "import python_multipart\n"}, map[string]string{"python-multipart": "0.0.9"}),
+			pkg:   "pkg:pypi/python_multipart@0.0.9",
+		},
+		{
+			name:  "dev-group copy at the admitted version plus a runtime copy of the same name does not refute",
+			files: map[string]string{"uv.lock": twoCopiesLock, "app/__init__.py": "", "app/main.py": "import requests\n"},
+			pkg:   "pkg:pypi/foo@1.0.0",
+		},
+		{
+			name:  "a dependency only the runtime copy of a twice-locked name pulls in is runtime",
+			files: map[string]string{"uv.lock": twoCopiesLock, "app/__init__.py": "", "app/main.py": "import requests\n"},
+			pkg:   "pkg:pypi/bar@1.0.0",
+		},
+		{
+			name: "the project's own distribution never refutes, even locked in a dev group",
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"My_App\"\nversion = \"0.1.0\"\n",
+				"pdm.lock":       "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\ngroups = [\"default\"]\n\n[[package]]\nname = \"my-app\"\nversion = \"0.1.0\"\ngroups = [\"dev\"]\n",
+				"app.py":         "import requests\n",
+			},
+			pkg: "pkg:pypi/my-app@0.1.0",
 		},
 		{
 			name:  "non-dev requirements file naming a dev distribution puts it in the runtime install",

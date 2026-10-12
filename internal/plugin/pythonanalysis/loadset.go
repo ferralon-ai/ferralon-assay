@@ -57,6 +57,7 @@ type loadSet struct {
 
 	prodKeepsDev string          // where a production install keeps dev deps, "" if nowhere seen
 	reqRuntime   map[string]bool // named by a non-dev requirements file or a [project] table
+	projectNames map[string]bool // the project's own distribution names: root subjects, never refuted
 }
 
 func (ls *loadSet) gap(format string, args ...any) {
@@ -77,6 +78,8 @@ func computeLoadSet(buildDir string, prog *program) *loadSet {
 		rootDists:  map[string][]string{},
 		loaders:    map[string]bool{},
 		reqRuntime: map[string]bool{},
+
+		projectNames: map[string]bool{},
 	}
 	ls.locks = loadLocks(buildDir, ls)
 	for d := range ls.locks.versions {
@@ -392,13 +395,15 @@ type pyprojectEntryPoints struct {
 	Tool struct {
 		Poetry struct {
 			Scripts map[string]any               `toml:"scripts"`
+			Name    string                       `toml:"name"`
 			Plugins map[string]map[string]string `toml:"plugins"`
 		} `toml:"poetry"`
 	} `toml:"tool"`
 }
 
 // projectRoots reads every first-party pyproject.toml's scripts and entry points, and
-// setup.cfg's [options.entry_points], as roots: the installed project loads them.
+// setup.cfg's [options.entry_points], as roots: the installed project loads them. It also
+// records the project's own distribution names from pyproject, setup.cfg and setup.py.
 func (ls *loadSet) projectRoots(buildDir string) {
 	walkProjectFiles(buildDir, func(rel, abs string) {
 		base := filepath.Base(rel)
@@ -415,6 +420,8 @@ func (ls *loadSet) projectRoots(buildDir string) {
 				ls.gap("%s could not be parsed", rel)
 				return
 			}
+			ls.addProjectName(pp.Project.Name)
+			ls.addProjectName(pp.Tool.Poetry.Name)
 			var specs []string
 			for _, v := range pp.Project.Scripts {
 				specs = append(specs, v)
@@ -460,8 +467,34 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			for _, v := range iniSectionValues(string(data), "options.entry_points") {
 				ls.rootString(v, rel)
 			}
+			section := ""
+			for _, line := range strings.Split(string(data), "\n") {
+				t := strings.TrimSpace(line)
+				if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+					section = strings.TrimSpace(t[1 : len(t)-1])
+				} else if k, v, ok := strings.Cut(t, "="); ok && section == "metadata" && strings.TrimSpace(k) == "name" {
+					ls.addProjectName(v)
+				}
+			}
+		case "setup.py":
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				ls.gap("%s could not be read", rel)
+				return
+			}
+			for _, m := range setupPyName.FindAllStringSubmatch(string(data), -1) {
+				ls.addProjectName(m[1])
+			}
 		}
 	})
+}
+
+var setupPyName = regexp.MustCompile(`\bname\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]`)
+
+func (ls *loadSet) addProjectName(name string) {
+	if n := normalizePyCoordinate(name); n != "" {
+		ls.projectNames[n] = true
+	}
 }
 
 // iniSectionValues returns the values (right of '=') of every line in an INI section,
@@ -823,9 +856,13 @@ func pypiPackageRef(purl string) (name, version string, ok bool) {
 
 // refute returns the package_not_loaded refutation for dist at version, or nil when any
 // condition fails: the load set is incomplete; a counted scoped limit targets dist; dist is
-// loaded, not locked at version, or first-party; the lockfile cannot tell runtime from dev;
-// the production install keeps dev dependencies; or dist is in the runtime install (unless
-// refuteRuntimeUnloaded).
+// loaded, not locked at version, or the project's own distribution (a root subject); the
+// lockfile cannot tell runtime from dev; the production install keeps dev dependencies; or
+// any locked copy of dist is in the runtime install (unless refuteRuntimeUnloaded).
+//
+// dist arrives PEP 503 normalized (pypiPackageRef), and every name it is compared against was
+// normalized the same way when recorded, so the advisory's spelling (PyJWT, python_multipart)
+// never decides the answer.
 func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 	if !ls.complete || ls.locks == nil {
 		return nil
@@ -836,10 +873,15 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 			return nil
 		}
 	}
-	if ls.loaded[dist] || ls.locks.members[dist] || !ls.locks.versions[dist][version] {
+	if ls.loaded[dist] || ls.locks.members[dist] || ls.projectNames[dist] || !ls.locks.versions[dist][version] {
 		return nil
 	}
-	runtime := ls.locks.runtime[dist] || ls.reqRuntime[dist]
+	// The gate matches Refutation.Package on name, never version, so every locked copy of
+	// dist must be outside the runtime install, not only the admitted one.
+	runtime := ls.reqRuntime[dist]
+	for v := range ls.locks.versions[dist] {
+		runtime = runtime || ls.locks.copyRuntime[dist][v]
+	}
 	if runtime && refuteRuntimeUnloaded != "1" {
 		return nil
 	}

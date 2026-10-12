@@ -96,8 +96,8 @@ type ScopedReason struct {
 	Package string `json:"package,omitempty"` // package whose code holds the blind spot
 	Path    string `json:"path,omitempty"`    // location inside Package (import path, class, module file); disclosure only
 	// Targets over-approximates every package an edge hidden by this limit could reach, including
-	// callbacks and the hidden code's transitive dependencies. nil = unbounded, which counts against
-	// every advisory.
+	// callbacks and the hidden code's transitive dependencies. Empty (nil or []) = unbounded, which
+	// counts against every advisory; a bounded limit names at least one target.
 	Targets []string `json:"targets,omitempty"`
 }
 

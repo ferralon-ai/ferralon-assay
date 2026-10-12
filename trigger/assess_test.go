@@ -412,6 +412,14 @@ func TestFinding_ScopedLimits(t *testing.T) {
 			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
+			name: "empty targets are unbounded, as a JSON round-trip reads them",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: xtext, Targets: []string{}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
 			name: "first-party target does not match a dependency",
 			base: netNotReached,
 			mutate: func(fx *groundsFixture) {

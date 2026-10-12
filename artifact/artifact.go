@@ -71,7 +71,7 @@ type ExposureFootprintPayload struct {
 }
 
 // ScopedPartialityFlag mirrors plugin.ScopedReason: a reason code, the package holding the blind
-// spot and the location inside it, and the packages an edge it hides could reach (nil = unbounded).
+// spot and the location inside it, and the packages an edge it hides could reach (empty = unbounded).
 // Package and Targets are PURLs without a version; "" is first-party.
 type ScopedPartialityFlag struct {
 	Reason  string   `json:"reason"`

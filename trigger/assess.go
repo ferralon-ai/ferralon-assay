@@ -877,12 +877,13 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 
 // scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given
 // package: it does unless its Targets are bounded and neither its Package nor any Target is that
-// package. An unbounded limit, or an advisory whose package did not resolve, always counts.
+// package. An unbounded limit (no Targets, nil or empty, since JSON drops an empty list), or an
+// advisory whose package did not resolve, always counts.
 //
 // A first-party entry ("") matches only a root package, which no advisory is admitted on yet, so it
 // matches nothing here.
 func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved bool) bool {
-	if r.Targets == nil || !resolved {
+	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
 	for _, p := range append([]string{r.Package}, r.Targets...) {

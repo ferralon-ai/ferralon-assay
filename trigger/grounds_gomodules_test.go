@@ -19,6 +19,7 @@ func TestNamesOtherPackage_GoPackagePaths(t *testing.T) {
 	stdKey := pkgKey{typ: "golang", name: goStdlib}
 	ctrdKey := pkgKey{typ: "golang", name: "github.com/containerd/containerd"}
 	build := goModules{"golang.org/x/net": true, "golang.org/x/text": true}
+	replaced := goModules{"golang.org/x/net": true, "example.com/a": true, "example.com/fork": true}
 	tests := []struct {
 		name     string
 		purls    []string
@@ -48,6 +49,15 @@ func TestNamesOtherPackage_GoPackagePaths(t *testing.T) {
 		{"standard library under a module", []string{xnet, stdlib}, xnetKey, build, true},
 		{"standard library path under a module", []string{xnet, "pkg:golang/net/http"}, xnetKey, build, true},
 		{"another ecosystem's package of the same name", []string{xnet, "pkg:npm/golang.org/x/net"}, xnetKey, build, true},
+		// replace example.com/a => example.com/fork: the build holds fork's code under a's path, so an
+		// advisory naming either is about code in the build.
+		{"replaced module named beside another module", []string{xnet, "pkg:golang/example.com/a"}, xnetKey, replaced, true},
+		{"replacement module named beside another module", []string{xnet, "pkg:golang/example.com/fork"}, xnetKey, replaced, true},
+		{"package path under the replacement module", []string{xnet, "pkg:golang/example.com/fork/sub"}, xnetKey, replaced, true},
+		{"the scanned module named beside a dependency", []string{xnet, "pkg:golang/example.com/app/internal/srv"}, xnetKey,
+			goModules{"example.com/app": true, "golang.org/x/net": true}, true},
+		{"replacement module named beside the replaced module", []string{"pkg:golang/example.com/a", "pkg:golang/example.com/fork"},
+			pkgKey{typ: "golang", name: "example.com/a"}, replaced, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,26 +69,32 @@ func TestNamesOtherPackage_GoPackagePaths(t *testing.T) {
 }
 
 func TestGoModulesOf(t *testing.T) {
-	sbom := report.SBOM{Packages: []report.Package{
+	pkgs := []report.Package{
 		{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0"},
+		{Ecosystem: "Go", Name: "example.com/a", Version: "v1.1.0", Replace: "example.com/fork"},
 		{Ecosystem: "npm", Name: "left-pad", Version: "1.0.0"},
-	}}
+	}
+	buildList := report.SBOM{GoBuildList: plugin.BuildListGoModGraph, GoMainModule: "example.com/app", Packages: pkgs}
 	limit := func(eco string) []report.PartialityNote {
 		return []report.PartialityNote{{Ecosystem: eco, Reason: "tool_failure:lockfile_ambiguous"}}
 	}
+	all := goModules{"example.com/app": true, "golang.org/x/net": true, "example.com/a": true, "example.com/fork": true}
 	tests := []struct {
 		name   string
+		sbom   report.SBOM
 		limits []report.PartialityNote
 		want   goModules
 	}{
-		{"complete inventory", nil, goModules{"golang.org/x/net": true}},
-		{"another ecosystem's limit", limit("npm"), goModules{"golang.org/x/net": true}},
-		{"a Go limit", limit("Go"), nil},
-		{"a scan-wide limit", limit(""), nil},
+		{"complete build list, a replaced module under both paths", buildList, nil, all},
+		{"another ecosystem's limit", buildList, limit("npm"), all},
+		{"a Go limit", buildList, limit("Go"), nil},
+		{"a scan-wide limit", buildList, limit(""), nil},
+		{"no build-list source (go.mod alone, or a report written before it was recorded)", report.SBOM{Packages: pkgs}, nil, nil},
+		{"a build list with no main module", report.SBOM{GoBuildList: plugin.BuildListGoModGraph, Packages: pkgs}, nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := goModulesOf(sbom, tt.limits)
+			got := goModulesOf(tt.sbom, tt.limits)
 			if len(got) != len(tt.want) || (got == nil) != (tt.want == nil) {
 				t.Fatalf("goModulesOf = %v, want %v", got, tt.want)
 			}

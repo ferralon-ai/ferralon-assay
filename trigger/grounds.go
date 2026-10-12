@@ -108,27 +108,40 @@ func outsideBuild(key pkgKey, mods goModules) bool {
 
 const goStdlib = "stdlib"
 
-// goModules is the set of Go module paths a scan's build selects; nil when the inventory is
-// unknown or incomplete.
+// goModules is the set of Go module paths a scan's build selects, replace targets included; nil
+// when the list is unknown or incomplete.
 type goModules map[string]bool
 
-// goModulesOf returns the Go modules of a scan's SBOM, or nil when a Go inventory limit says the
-// SBOM may be missing some.
+// goModulesOf returns the Go modules of a scan's SBOM, or nil unless they are the build's whole
+// module list. Only the module build list `go mod graph` resolves qualifies (a vendored module
+// resolves to the same list); go.mod's require block alone does not, and a go.work workspace is
+// declared unsupported by the inventory, so it carries no build list. The main module counts, and
+// each dependency counts under its own path and under the path of the module a replace directive
+// substitutes for it.
+//
+// The module graph can list more than the build compiles (a module whose packages nothing imports),
+// and that errs only toward "in the build", which keeps an advisory blocking. A narrower source,
+// such as the packages a build actually loads, would err toward collapsing; it qualifies only if
+// it is the build's complete package set.
 func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
+	if sbom.GoBuildList != plugin.BuildListGoModGraph || sbom.GoMainModule == "" {
+		return nil
+	}
 	for _, n := range limits {
 		if n.Ecosystem == "" || n.Ecosystem == "Go" {
 			return nil
 		}
 	}
-	var mods goModules
+	mods := goModules{sbom.GoMainModule: true}
 	for _, p := range sbom.Packages {
-		if p.Ecosystem != "Go" || p.Name == "" {
+		if p.Ecosystem != "Go" {
 			continue
 		}
-		if mods == nil {
-			mods = goModules{}
+		for _, path := range []string{p.Name, p.Replace} {
+			if path != "" {
+				mods[path] = true
+			}
 		}
-		mods[p.Name] = true
 	}
 	return mods
 }

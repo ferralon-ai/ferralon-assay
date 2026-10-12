@@ -73,6 +73,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 		mb.imports[b.Local] = b
 	}
+	reqNames, crNames := loaderNames(clean)
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {
@@ -80,26 +81,21 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			continue
 		}
 		word, next := readWord(clean, i)
-		switch word {
-		case "import":
+		switch {
+		case word == "import":
 			i = parseImportForm(clean, src, next, &mb, add)
-		case "export":
+		case word == "export":
 			i = parseExportForm(clean, src, next, &mb)
-		case "require":
-			// A require() NOT anchored to a const/let/var binding (e.g. `return require(f)`):
-			// record a literal specifier, or flag a computed one.
-			p := skipSpace(clean, next)
-			if p < n && clean[p] == '(' {
-				a := skipSpace(clean, p+1)
-				if a < n && clean[a] == '_' {
-					mb.specifiers = append(mb.specifiers, specifierAt(src, a))
-				} else if a < n && clean[a] != ')' {
-					mb.computedReq = true
-				}
-			}
-			i = next
-		case "const", "let", "var":
+		case word == "const", word == "let", word == "var":
 			i = parseDeclForm(clean, src, next, &mb, add)
+		case reqNames[word]:
+			// A loader use NOT consumed as a const/let/var binding: `return require(f)`,
+			// `const r = require`, a createRequire result called inline.
+			mb.requireUse(clean, src, i, next)
+			i = next
+		case crNames[word]:
+			mb.createRequireUse(clean, src, i, next)
+			i = next
 		default:
 			i = next
 		}
@@ -127,9 +123,7 @@ func parseImportForm(clean, src []rune, pos int, mb *moduleBindings, add func(bi
 	}
 	if clean[p] == '(' { // dynamic import(expr)
 		mb.dynImport = true
-		if a := skipSpace(clean, p+1); a < n && clean[a] == '_' {
-			mb.specifiers = append(mb.specifiers, specifierAt(src, a))
-		}
+		mb.loaderCall(clean, src, p, &mb.dynImport)
 		return pos
 	}
 	if clean[p] == '.' { // import.meta
@@ -263,7 +257,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 			p = skipSpace(clean, nx)
 			if p < n && clean[p] == '(' {
 				a := skipSpace(clean, p+1)
-				if a < n && clean[a] == '_' {
+				if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
 					specifier := specifierAt(src, a)
 					mb.specifiers = append(mb.specifiers, specifier)
 					for _, pr := range pairs {
@@ -301,7 +295,7 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 		p = skipSpace(clean, wq)
 		if p < n && clean[p] == '(' {
 			a := skipSpace(clean, p+1)
-			if a < n && clean[a] == '_' {
+			if a < n && clean[a] == '_' && wholeLiteralArg(clean, src, a) {
 				mb.specifiers = append(mb.specifiers, specifierAt(src, a))
 				add(binding{Local: name, Specifier: specifierAt(src, a), Kind: bindRequire, Imported: "*"})
 				return a + 1

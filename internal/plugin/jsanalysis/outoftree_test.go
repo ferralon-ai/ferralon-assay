@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -10,93 +11,156 @@ import (
 
 // TestCallGraph_OutOfTreePackageNeverOnlyInherent pins the invariant the refutation gate
 // relies on: a graph with edges whose only partiality reasons are inherent can refute, so
-// a module that loads an out-of-tree package, in any form, must declare a did_not_run
-// reason. The package's code runs and this lane never opens it.
+// a module that loads code this lane does not read, in any form, must declare a did_not_run
+// reason: an out-of-tree package, a target computed at run time, or a relative module that is
+// not in the tree. Where want is set, that specific reason must be among them.
 func TestCallGraph_OutOfTreePackageNeverOnlyInherent(t *testing.T) {
 	cases := []struct {
 		name  string
 		files map[string]string
+		want  string
 	}{
 		{"direct member head", map[string]string{"app.js": `
 const JSON5 = require('json5');
 function load(s) { return JSON5.parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"alias of the binding", map[string]string{"app.js": `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"inline require in a function", map[string]string{"app.js": `
 function load(s) { return require('json5').parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"inline require at top level", map[string]string{"app.js": `
 function run() { return 1; }
 require('json5').parse(process.argv);
 run();
-`}},
+`}, ""},
 		{"destructured require", map[string]string{"app.js": `
 const { parse } = require('json5');
 function load(s) { return parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"binding passed as a value", map[string]string{"app.js": `
 const JSON5 = require('json5');
 function apply(f, s) { return f(s); }
 function load(s) { return apply(JSON5.parse, s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"ESM default", map[string]string{"app.js": `
 import JSON5 from 'json5';
 function load(s) { return JSON5.parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"ESM named", map[string]string{"app.js": `
 import { parse } from 'json5';
 function load(s) { return parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"ESM namespace", map[string]string{"app.js": `
 import * as J from 'json5';
 function load(s) { return J.parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"ESM side-effect import", map[string]string{"app.js": `
 import 'json5';
 function load(s) { return s; }
 load(process.argv);
-`}},
+`}, ""},
 		{"dynamic import with a literal", map[string]string{"app.js": `
 async function load(s) { const J = await import('json5'); return J.parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"TS import-equals", map[string]string{"app.ts": `
 import JSON5 = require('json5');
 function load(s: string) { return JSON5.parse(s); }
 load(process.argv[2]);
-`}},
+`}, ""},
 		{"named re-export", map[string]string{
 			"lib.js": "export { parse } from 'json5';\n",
 			"app.js": `
 import { parse } from './lib';
 function load(s) { return parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"star re-export", map[string]string{
 			"lib.js": "export * from 'json5';\n",
 			"app.js": `
 import { parse } from './lib';
 function load(s) { return parse(s); }
 load(process.argv);
-`}},
+`}, ""},
 		{"subpath import mapped to a package", map[string]string{
 			"package.json": `{"name":"app","imports":{"#json":"json5"}}`,
 			"app.js": `
 import { parse } from '#json';
 function load(s) { return parse(s); }
 load(process.argv);
-`}},
+`}, ""},
+		{"require aliased", map[string]string{"app.js": `
+const r = require;
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require passed as an argument", map[string]string{"app.js": `
+function load(s, req) { return req('json5').parse(s); }
+load(process.argv, require);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module.require aliased", map[string]string{"app.js": `
+const r = module.require.bind(module);
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require.main.require", map[string]string{"app.js": `
+function load(s) { return require.main.require('json5').parse(s); }
+load(process.argv);
+`}, ""},
+		{"createRequire result called with a literal", map[string]string{"app.js": `
+const req = module.constructor.createRequire(__filename);
+function load(s) { return req('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"createRequire result called inline", map[string]string{"app.js": `
+function load(s) { return module.constructor.createRequire(__filename)('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUninspectablePackage},
+		{"createRequire result aliased", map[string]string{"app.js": `
+const req = module.constructor.createRequire(__filename); const r = req;
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"createRequire result called with a variable", map[string]string{"app.js": `
+const req = module.constructor.createRequire(__filename);
+function load(s, n) { return req(n).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"createRequire itself aliased", map[string]string{"app.js": `
+const mk = module.constructor.createRequire;
+function load(s) { return mk(__filename)('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require of a concatenated literal", map[string]string{
+			"plugins/index.js": "function run(s) { return s; }\nmodule.exports = { run };\n",
+			"app.js": `
+function load(s, n) { return require('./plugins/' + n).run(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require of an interpolated template", map[string]string{"app.js": `
+function load(s, n) { return require(` + "`./${n}`" + `).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"dynamic import of an interpolated template", map[string]string{"app.js": `
+async function load(s, n) { const J = await import(` + "`./${n}`" + `); return J.parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonDynamicImportSpecifier},
+		{"absolute specifier", map[string]string{"app.js": `
+const gen = require('/opt/gen/x.js');
+function load(s) { return gen.parse(s); }
+load(process.argv);
+`}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,22 +172,33 @@ load(process.argv);
 				t.Fatalf("fixture must have edges, so the gate's zero-edge arm cannot be what holds it undetermined")
 			}
 			if !hasDidNotRun(res.Partiality) {
-				t.Errorf("out-of-tree package use declared only %v; want a did_not_run reason", res.Partiality.Reasons)
+				t.Errorf("unread code declared only %v; want a did_not_run reason", res.Partiality.Reasons)
+			}
+			if tc.want != "" && !slices.Contains(res.Partiality.Reasons, tc.want) {
+				t.Errorf("reasons = %v; want %s among them", res.Partiality.Reasons, tc.want)
 			}
 		})
 	}
 }
 
-// TestCallGraph_InTreeOnlyDeclaresNoDidNotRun is the control: in-tree loads and an
-// unresolved local call leave the graph with inherent reasons only, so the invariant above
-// is not met by declaring did_not_run on every module.
+// TestCallGraph_InTreeOnlyDeclaresNoDidNotRun is the control: in-tree loads (including a
+// TS sibling imported by its emitted .js name), a JSON file, require.resolve, a typeof test
+// and an unresolved local call leave the graph with inherent reasons only, so the invariant
+// above is not met by declaring did_not_run on every module.
 func TestCallGraph_InTreeOnlyDeclaresNoDidNotRun(t *testing.T) {
 	dir := writeProgram(t, map[string]string{
-		"util.js": "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
+		"util.js":      "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
+		"fmt.ts":       "export function fmt(s: string) { return s; }\n",
+		"config.json":  `{"a": 1}`,
+		"package.json": `{"name": "app"}`,
 		"app.js": `
 const { trim } = require('./util');
 import './util';
-function load(s) { return trim(s); }
+import { fmt } from './fmt.js';
+const cfg = require('./config.json');
+const where = require.resolve('./util');
+if (typeof require === 'function') { load(where); }
+function load(s) { return fmt(trim(s)); }
 load(process.argv);
 `,
 	})

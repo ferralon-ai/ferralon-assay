@@ -83,6 +83,22 @@ type LanguagePlugin interface {
 type Partiality struct {
 	Complete bool     `json:"complete"`
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
+	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
+	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
+	// Targets exclude the advisory's package (trigger/assess.go).
+	Scoped []ScopedReason `json:"scoped,omitempty"`
+}
+
+// ScopedReason is a partiality reason bounded by what it could hide. Package and every Targets entry
+// are PURLs without a version; "" means first-party.
+type ScopedReason struct {
+	Reason  string `json:"reason"`            // same vocabulary and classifier as Partiality.Reasons
+	Package string `json:"package,omitempty"` // package whose code holds the blind spot
+	Path    string `json:"path,omitempty"`    // location inside Package (import path, class, module file); disclosure only
+	// Targets over-approximates every package an edge hidden by this limit could reach, including
+	// callbacks and the hidden code's transitive dependencies. nil = unbounded, which counts against
+	// every advisory.
+	Targets []string `json:"targets,omitempty"`
 }
 
 // Canonical partiality reason codes (machine-readable, stable strings).
@@ -221,6 +237,17 @@ const (
 	// default arm) because it says a step of THIS run did not happen, not a property of the
 	// method true on every run.
 	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
+	// PartialReasonVulnerableSymbolUnresolved (loud): the advisory names vulnerable symbols, but
+	// not every one resolved to code inside the admitted package that a lane then searched, and no
+	// lane refutation covers the package.
+	PartialReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
+	// PartialReasonPackageVersionUnresolved (loud): the advisory was not admitted on a package with
+	// a resolved, pinned version, so nothing establishes which code the build carries.
+	PartialReasonPackageVersionUnresolved = "package_version_unresolved"
+	// PartialReasonAdvisoryUnknownToAnalyzer (loud): the analyzer that would search for the
+	// advisory's symbols emitted no evidence about the advisory at all, so its silence is not a
+	// search that came back empty.
+	PartialReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every
@@ -363,6 +390,10 @@ type SymbolIndexResult struct {
 type SymbolResolutionResult struct {
 	Partiality Partiality `json:"partiality"`
 	Resolved   []Symbol   `json:"resolved"` // advisory symbol → concrete codebase symbols
+	// Origins maps a Resolved symbol's SCIP to the package its code belongs to, as a PURL without a
+	// version. Absent means first-party. A lane sets it only for code it actually read (dependency
+	// source or bytecode), never from the request PURL.
+	Origins map[string]string `json:"origins,omitempty"`
 }
 
 // CallEdge is one directed call-graph edge between canonical symbols.
@@ -411,7 +442,32 @@ type ReachabilityResult struct {
 	// and the caller must treat the empty path set as evidence about the analyzer's toolchain
 	// rather than the subject's. It is a measurement, never a promise: the caller compares.
 	ScanToolchain string `json:"scan_toolchain,omitempty"`
+	// Searched lists the request sinks the lane stands behind as searched: the sink is a node of the
+	// graph it traced, it traced from every ingress it found (at least one), and no path reached the
+	// sink. A lane that lists a sink here must not declare no_known_ingress on its account.
+	Searched []string `json:"searched,omitempty"`
+	// Refutation is lane-held positive evidence that the package's vulnerable code cannot run.
+	Refutation *Refutation `json:"refutation,omitempty"`
 }
+
+// Refutation grounds a not_exploitable verdict without a searched sink. Package is a PURL (version
+// optional) and must name the package the advisory was admitted on; Detail is one checkable line
+// saying what was observed.
+type Refutation struct {
+	Basis   string `json:"basis"`
+	Package string `json:"package"`
+	Detail  string `json:"detail"`
+}
+
+// Refutation bases.
+const (
+	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
+	// package in the build and found no call path to any of its vulnerable symbols.
+	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
+	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
+	// runtime-loaded module imports it.
+	RefutationPackageNotLoaded = "package_not_loaded"
+)
 
 // --- whole-graph dependency inventory (§4.1) ---
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -395,18 +396,63 @@ func TestBytecodeReach_AbstractSinkIsNotSearched(t *testing.T) {
 	}
 }
 
-// A dependency whose JAR no cache holds is a scoped reason, also listed run-wide.
-func TestBytecodeReach_MissingJarIsScopedAndRunWide(t *testing.T) {
-	a := newApp(t, `<dependency><groupId>com.dep</groupId><artifactId>gone</artifactId><version>1</version></dependency>`, false)
-	a.source("src/main/java/com/acme/App.java", appSource)
-	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+// A closure JAR no cache holds hides code that can call its own closure and, through objects
+// the build hands it, first-party code and everything that reaches. So the scoped
+// maven_uncached_subtree is bounded by "", the JAR, its closure and the build's direct
+// dependencies' closure, and is nil when the JAR's own POM is not cached either. Each scoped
+// reason is also listed run-wide.
+func TestBytecodeReach_UncachedJarIsScopedAndRunWide(t *testing.T) {
+	const goneDep = `<dependency><groupId>com.dep</groupId><artifactId>gone</artifactId><version>1</version></dependency>`
+	const gonePURL = "pkg:maven/com.dep/gone"
+	for _, tc := range []struct {
+		name        string
+		jar, pom    bool
+		wantScoped  bool
+		wantTargets []string
+	}{
+		{name: "jar present", jar: true, pom: true},
+		{name: "jar missing, closure known", pom: true, wantScoped: true,
+			wantTargets: []string{"", gonePURL, "pkg:maven/com.dep/optdep", "pkg:maven/com.dep/profdep", "pkg:maven/com.dep/provdep", netkitPURL}},
+		{name: "jar missing, metadata missing", wantScoped: true, wantTargets: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newApp(t, goneDep, false)
+			writeNetkitOwnPom(t, a.build)
+			dir := filepath.Join(a.build, ".m2", "repository", "com", "dep", "gone", "1")
+			if tc.pom {
+				writeFileT(t, filepath.Join(dir, "gone-1.pom"), `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.dep</groupId><artifactId>gone</artifactId><version>1</version></project>`)
+			}
+			if tc.jar {
+				b := &cpb{}
+				writeJar(t, filepath.Join(dir, "gone-1.jar"), "com/dep/gone/Gone.class", emitClassX(b, "com/dep/gone/Gone", "java/lang/Object", 0x0021, []xmethod{{"run", "()V", accPublic, ret}}))
+			}
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
 
-	res := a.reach(netkitSinkID)
-	if !hasScoped(res.Partiality, reasonNoDependencyArtifact, "pkg:maven/com.dep/gone") {
-		t.Errorf("missing scoped no_dependency_artifact for gone: %+v", res.Partiality.Scoped)
-	}
-	if !hasReason(res.Partiality, reasonNoDependencyArtifact) || res.Partiality.Complete {
-		t.Errorf("scoped reason not mirrored run-wide: %+v", res.Partiality)
+			res := a.reach(netkitSinkID)
+			var got []plugin.ScopedReason
+			for _, s := range res.Partiality.Scoped {
+				if s.Package == gonePURL {
+					got = append(got, s)
+				}
+			}
+			if !tc.wantScoped {
+				if len(got) != 0 || hasReason(res.Partiality, reasonMavenUncachedSubtree) {
+					t.Fatalf("a cached JAR costs a reason: %+v", res.Partiality)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Reason != reasonMavenUncachedSubtree || got[0].Path != "com.dep:gone:1" {
+				t.Fatalf("want one scoped maven_uncached_subtree for gone, got %+v", res.Partiality.Scoped)
+			}
+			if !reflect.DeepEqual(got[0].Targets, tc.wantTargets) {
+				t.Errorf("targets = %q, want %q", got[0].Targets, tc.wantTargets)
+			}
+			if !hasReason(res.Partiality, reasonMavenUncachedSubtree) || res.Partiality.Complete {
+				t.Errorf("scoped reason not mirrored run-wide: %+v", res.Partiality)
+			}
+		})
 	}
 }
 

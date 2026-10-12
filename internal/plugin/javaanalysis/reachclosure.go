@@ -21,10 +21,12 @@ import (
 // (ResolveInventory: the effective graph, transitive nodes included). JARs are located in
 // the local caches, never fetched.
 //
-// Every blind spot is a ScopedReason bounded by what the unseen code could call
-// (unloadedJarTargets; nil when that closure cannot be bounded):
-//   - a node with no resolved version, whose JAR no cache holds, or that the build declares
-//     with a classifier or non-jar type → tool_failure:no_dependency_artifact;
+// Every blind spot is a ScopedReason bounded by what the unseen code could call, callbacks
+// into first-party code included (unloadedJarTargets; nil when that closure cannot be
+// bounded):
+//   - a node whose resolved version's JAR no cache holds → maven_uncached_subtree;
+//   - a node with no resolved version, or that the build declares with a classifier or
+//     non-jar type → tool_failure:no_dependency_artifact;
 //   - a JAR that cannot be opened, or classes in it that fail to parse → tool_failure;
 //   - a class two JARs define → relationship_unexpressed:duplicate_class (the engine keeps
 //     one body per binary name, so the other body's calls are unseen).
@@ -118,7 +120,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": cached copies differ"))
 			continue
 		case !ok:
-			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()))
+			rc.Scoped = append(rc.Scoped, scoped(reasonMavenUncachedSubtree, n.coordinate, n.String()))
 			continue
 		}
 		key, err := jarKey(jarPath)

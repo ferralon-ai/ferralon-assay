@@ -92,3 +92,92 @@ func TestReachability_MissingBuildDirIsHardError(t *testing.T) {
 		t.Fatal("a load failure in the call graph must be a hard error (inv.4), not partiality")
 	}
 }
+
+// TestReachability_FlaskRouteToBoundaryNode: `import jwt; jwt.decode(t)` inside a Flask
+// route yields a reach path from the route ingress to the pyjwt boundary node once the
+// advisory symbol resolves onto it. The node is never listed as searched, and an unreached
+// boundary node stays UNKNOWN (no_known_ingress).
+func TestReachability_FlaskRouteToBoundaryNode(t *testing.T) {
+	src := `
+import jwt
+from flask import Flask, request
+app = Flask(__name__)
+
+@app.route('/me')
+def me():
+    return load_claims(request.args['t'])
+
+def load_claims(t):
+    return jwt.decode(t)
+
+def unused(t):
+    return jwt.api_jws._verify_signature(t)
+`
+	dir := writeTree(t, map[string]string{"app.py": src})
+	resolved, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+		BuildDir:        dir,
+		PURL:            "pkg:pypi/pyjwt@2.8.0",
+		AdvisorySymbols: []string{"jwt.decode"},
+	})
+	if err != nil {
+		t.Fatalf("ResolveDependencySymbols: %v", err)
+	}
+	if len(resolved.Resolved) != 1 || resolved.Resolved[0].SCIP != "pypi:pyjwt#jwt.decode" {
+		t.Fatalf("resolved = %+v, want the pyjwt boundary node", resolved.Resolved)
+	}
+	sink := resolved.Resolved[0].SCIP
+
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{sink}})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if len(res.Paths) != 1 {
+		t.Fatalf("want one reach path to the boundary node, got %+v", res.Paths)
+	}
+	p := res.Paths[0]
+	if want := funcSCIP("app", nil, "me", 0); p.Ingress.SCIP != want {
+		t.Fatalf("ingress = %q, want the route handler %q", p.Ingress.SCIP, want)
+	}
+	if p.Trace[len(p.Trace)-1].SCIP != sink {
+		t.Fatalf("trace must end at the boundary node; got %v", p.Trace)
+	}
+	if len(res.Searched) != 0 {
+		t.Fatalf("boundary nodes are never searched; got %v", res.Searched)
+	}
+
+	// A boundary node no ingress or root reaches stays UNKNOWN.
+	unreached := "pypi:pyjwt#jwt.api_jws._verify_signature"
+	res, err = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{unreached}})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if len(res.Paths) != 0 || !hasReason(res.Partiality, plugin.PartialReasonNoIngress) || len(res.Searched) != 0 {
+		t.Fatalf("unreached boundary node must be no path + no_known_ingress + not searched; got paths=%v reasons=%v searched=%v", res.Paths, res.Partiality.Reasons, res.Searched)
+	}
+}
+
+// TestReachability_PrefersIngressOverModuleInitRoot: a helper called both by module-level
+// code and by a route handler resolves to the route ingress, not the closer-or-equal
+// module-init root.
+func TestReachability_PrefersIngressOverModuleInitRoot(t *testing.T) {
+	src := `
+import jwt
+
+@app.route('/x')
+def handler():
+    return helper(1)
+
+def helper(t):
+    return jwt.decode(t)
+
+warm = helper(0)
+`
+	dir := writeTree(t, map[string]string{"app.py": src})
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{"pypi:pyjwt#jwt.decode"}})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if len(res.Paths) != 1 || res.Paths[0].Ingress.SCIP != funcSCIP("app", nil, "handler", 0) {
+		t.Fatalf("want the route-ingress path, got %+v", res.Paths)
+	}
+}

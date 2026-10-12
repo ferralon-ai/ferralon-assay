@@ -97,13 +97,15 @@ func samePackage(key, admitted pkgKey, mods goModules) bool {
 
 // outsideBuild reports whether a Go module path the advisory names is held by none of the build's
 // modules, so none of its code is compiled in. Only a module path qualifies: the standard library,
-// the toolchain and other paths without a dotted first element are always counted.
+// the toolchain and other paths without a dotted first element are always counted. Paths are
+// compared ignoring case, so a path an advisory spells in another case than the build's module
+// counts as in the build.
 func outsideBuild(key pkgKey, mods goModules) bool {
 	if key.typ != "golang" || mods == nil {
 		return false
 	}
 	first, _, _ := strings.Cut(key.name, "/")
-	return strings.Contains(first, ".") && mods.holding(key.name) == ""
+	return strings.Contains(first, ".") && !mods.holdsFold(key.name)
 }
 
 const goStdlib = "stdlib"
@@ -159,6 +161,16 @@ func (m goModules) holding(path string) string {
 		}
 		p = p[:i]
 	}
+}
+
+// holdsFold reports whether a module holds an import path, comparing paths ignoring case.
+func (m goModules) holdsFold(path string) bool {
+	for mod := range m {
+		if len(path) >= len(mod) && strings.EqualFold(path[:len(mod)], mod) && (len(path) == len(mod) || path[len(mod)] == '/') {
+			return true
+		}
+	}
+	return false
 }
 
 // stdlibPath reports whether an import path is in the Go standard library: its first element is

@@ -56,6 +56,10 @@ func TestNamesOtherPackage_GoPackagePaths(t *testing.T) {
 		{"package path under the replacement module", []string{xnet, "pkg:golang/example.com/fork/sub"}, xnetKey, replaced, true},
 		{"the scanned module named beside a dependency", []string{xnet, "pkg:golang/example.com/app/internal/srv"}, xnetKey,
 			goModules{"example.com/app": true, "golang.org/x/net": true}, true},
+		{"module path in another case than the build's module", []string{xnet, "pkg:golang/github.com/BurntSushi/toml"}, xnetKey,
+			goModules{"golang.org/x/net": true, "github.com/burntsushi/toml": true}, true},
+		{"package path in another case than the build's module", []string{xnet, "pkg:golang/github.com/BurntSushi/toml/internal"}, xnetKey,
+			goModules{"golang.org/x/net": true, "github.com/burntsushi/toml": true}, true},
 		{"replacement module named beside the replaced module", []string{"pkg:golang/example.com/a", "pkg:golang/example.com/fork"},
 			pkgKey{typ: "golang", name: "example.com/a"}, replaced, true},
 	}
@@ -104,6 +108,32 @@ func TestGoModulesOf(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGoModulesOf_FromInventory carries a replaced module from the Go inventory through the SBOM
+// projection to the gate: the replacement's path is in the module list, so an advisory naming it
+// keeps blocking.
+func TestGoModulesOf_FromInventory(t *testing.T) {
+	inv := plugin.DependencyInventory{
+		Partiality: plugin.Complete(),
+		BuildList:  plugin.BuildListGoModGraph,
+		MainModule: "example.com/app",
+		Nodes: []plugin.DependencyNode{
+			{ID: "a", PURL: "pkg:golang/example.com/a@v1.1.0", Version: "v1.1.0", Partiality: plugin.Complete(), Replace: "example.com/fork"},
+			{ID: "net", PURL: "pkg:golang/golang.org/x/net@v0.15.0", Version: "v0.15.0", Partiality: plugin.Complete()},
+		},
+	}
+	sbom, notes := sbomFromInventory(inv, "Go")
+	mods := goModulesOf(sbom, notes)
+	for _, m := range []string{"example.com/app", "example.com/a", "example.com/fork", "golang.org/x/net"} {
+		if !mods[m] {
+			t.Errorf("goModulesOf = %v, missing %s", mods, m)
+		}
+	}
+	xnetKey := pkgKey{typ: "golang", name: "golang.org/x/net"}
+	if !namesOtherPackage([]string{"pkg:golang/golang.org/x/net", "pkg:golang/example.com/fork"}, xnetKey, mods) {
+		t.Error("an advisory naming the replacement module beside x/net collapsed to x/net; want it blocking")
 	}
 }
 

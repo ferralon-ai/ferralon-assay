@@ -156,6 +156,16 @@ load(process.argv, 'json5');
 async function load(s, n) { const J = await import(` + "`./${n}`" + `); return J.parse(s); }
 load(process.argv, 'json5');
 `}, plugin.PartialReasonDynamicImportSpecifier},
+		{"native addon", map[string]string{"app.js": `
+const addon = require('./build/Release/x.node');
+function load(s) { return addon.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUnresolvedModule},
+		{"generated module absent from the tree", map[string]string{"app.js": `
+import { parse } from './dist/gen';
+function load(s) { return parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUnresolvedModule},
 		{"absolute specifier", map[string]string{"app.js": `
 const gen = require('/opt/gen/x.js');
 function load(s) { return gen.parse(s); }

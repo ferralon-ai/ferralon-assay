@@ -173,6 +173,7 @@ const (
 	PartialReasonUninspectablePackage     = PartialReasonRelationshipUnexpressed + ":uninspectable_package" // static bare specifier into a package whose source is not in-tree (node_modules excluded); declined-but-attributed, never an edge
 	PartialReasonDynamicImportSpecifier   = PartialReasonRelationshipUnexpressed + ":dynamic_import"        // runtime-computed ESM target (import(expr)); never evaluated, never guessed
 	PartialReasonComputedRequireSpecifier = PartialReasonRelationshipUnexpressed + ":computed_require"      // runtime-computed CJS target (require(var)); never evaluated, never guessed
+	PartialReasonUnresolvedModule         = PartialReasonRelationshipUnexpressed + ":unresolved_module"     // static relative specifier naming no in-tree source module (native addon, build-generated file); its code runs on load but is never read
 
 	// --- Spring semantic-decode partiality codes (edge-seam.md §3) ---
 	//

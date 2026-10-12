@@ -185,6 +185,22 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string) bool {
 	return rs.resolveBareSpecifier(fromModule, spec, "", -1, algoESM).Kind == resolvePackage
 }
 
+// loadsUnreadModule reports whether a relative specifier names no in-tree source module: a
+// native addon, a file generated at build time, anything outside the parsed source set. Its
+// code runs on load and can itself load packages, yet this lane never reads it. A JSON file
+// is data and runs nothing.
+func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
+	if !isRelativeSpecifier(spec) || rs.resolveRelative(fromModule, spec) != "" {
+		return false
+	}
+	ext := path.Ext(spec)
+	if ext == ".json" {
+		return false
+	}
+	// TS sources import siblings by their emitted name ("./util.js" for util.ts).
+	return !jsExtensions[ext] || rs.resolveRelative(fromModule, strings.TrimSuffix(spec, ext)) == ""
+}
+
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's
 // import bindings, then its local module-level declarations.
 func (rs *resolver) resolveName(fromModule, name string, arity int) resolution {

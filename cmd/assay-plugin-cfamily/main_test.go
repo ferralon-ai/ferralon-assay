@@ -56,8 +56,9 @@ func roundTrip(t *testing.T, req plugin.Request) plugin.Response {
 
 // TestDispatch_OneRequestOneResponsePerOp round-trips every op through the subprocess protocol
 // exactly once and asserts the matching response field is populated. ResolveDependencyVersions
-// is Phase-0 LIVE; the graph and manifest ops are contract-present and must return the declared
-// Unsupported stub, never a hard error and never a fabricated result (inv.5).
+// and BuildManifest are live; BuildManifest on a tree with no compile DB declares no_manifest.
+// The graph ops are contract-present and must return the declared Unsupported stub, never a hard
+// error and never a fabricated result (inv.5).
 func TestDispatch_OneRequestOneResponsePerOp(t *testing.T) {
 	dir := t.TempDir()
 	for _, c := range []struct {
@@ -97,7 +98,7 @@ func TestDispatch_OneRequestOneResponsePerOp(t *testing.T) {
 			}},
 		{"build_manifest", plugin.Request{Op: plugin.OpBuildManifest, BuildManifest: &plugin.BuildManifestRequest{BuildDir: dir}},
 			func(r plugin.Response) bool {
-				return r.BuildManifest != nil && hasReason(r.BuildManifest.Partiality.Reasons, plugin.PartialReasonUnsupported)
+				return r.BuildManifest != nil && hasReason(r.BuildManifest.Partiality.Reasons, plugin.PartialReasonNoManifest)
 			}},
 		{"resolve_inventory", plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}},
 			func(r plugin.Response) bool {

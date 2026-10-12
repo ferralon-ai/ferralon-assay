@@ -286,6 +286,12 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 			caller: funcSCIP("app", nil, "fetch", 1),
 		},
 		{
+			name:     "import binding beats a later instance binding of the same name",
+			files:    map[string]string{"app.py": "from jinja2 import Environment\nimport jwt\njwt = Environment()\n\ndef check(t):\n    return jwt.decode(t)\n"},
+			caller:   funcSCIP("app", nil, "check", 1),
+			boundary: "pypi:pyjwt#jwt.decode",
+		},
+		{
 			name: "first-party module shadows the distribution",
 			files: map[string]string{
 				"jwt.py": "def decode(t):\n    return t\n",

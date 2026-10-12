@@ -36,19 +36,23 @@ func resolveMaven(buildDir string, pomPaths []string, cache *mavenCache, targetE
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
 	var reasons []string
+	var scoped []plugin.ScopedReason
 	if len(reactorList) != len(pomPaths) {
 		reasons = mergeReasons(reasons, plugin.PartialReasonToolFailure)
 	}
 
 	for _, pom := range reactorList {
 		moduleRel := moduleRelPath(buildDir, pom.path)
-		mn, me, mr := resolveModule(pom, moduleRel, reactor, cache, targetEnv)
+		mn, me, mr, ms := resolveModule(pom, moduleRel, reactor, cache, targetEnv)
 		nodes = append(nodes, mn...)
 		edges = append(edges, me...)
 		reasons = mergeReasons(reasons, mr...)
+		scoped = append(scoped, ms...)
 	}
 
-	return assembleInventory(nodes, edges, graphPartiality(reasons, len(nodes)))
+	part := graphPartiality(reasons, len(nodes))
+	part.Scoped = dedupScoped(scoped)
+	return assembleInventory(nodes, edges, part)
 }
 
 func moduleRelPath(buildDir, pomPath string) string {
@@ -70,10 +74,12 @@ type bfsItem struct {
 
 // resolveModule runs passes 5-8 for a single reactor module: BFS candidate graph, nearest-wins
 // mediation, scope/optional/exclusion pruning, and node emit. One node per GA (mediation is total
-// over the candidate set); losers still receive an edge to the winner.
-func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string) {
+// over the candidate set); losers still receive an edge to the winner. Undecided profiles come
+// back as scoped reasons, each also in the run-wide reasons.
+func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string, []plugin.ScopedReason) {
 	em := buildEffectiveModel(pom, reactor, cache, targetEnv, 0)
 	reasons := append([]string{}, em.residue...)
+	scoped := profileScoped(em, "", reactor, cache, targetEnv)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
 	var nodes []plugin.DependencyNode
@@ -149,6 +155,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			} else {
 				childEM := buildEffectiveModel(child, reactor, cache, targetEnv, 1)
 				reasons = mergeReasons(reasons, childEM.residue...)
+				scoped = append(scoped, profileScoped(childEM, mavenPackage(it.dep.GroupID, it.dep.ArtifactID), reactor, cache, targetEnv)...)
 				childExcl := unionExclusions(it.exclusions, it.dep.Exclusions)
 				for _, cd := range childEM.deps {
 					if strings.EqualFold(cd.Optional, "true") {
@@ -169,7 +176,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		nodes = append(nodes, node)
 	}
 
-	return nodes, edges, reasons
+	return nodes, edges, reasons, withFirstPartyBound(scoped, em, reactor, cache, targetEnv)
 }
 
 func unionExclusions(base map[string]bool, add []mvnGA) map[string]bool {

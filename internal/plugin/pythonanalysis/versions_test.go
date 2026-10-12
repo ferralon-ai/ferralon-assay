@@ -340,6 +340,13 @@ version = "3.1.4"
 		{"declared-only pyproject", map[string]string{"pyproject.toml": pyprojectCovered}, false},
 		{"setup.py only", map[string]string{"setup.py": `setup(install_requires=["flask>=3"])`}, false},
 		{"malformed poetry.lock", map[string]string{"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n[package.dependencies\n"}, false},
+		{"malformed uv.lock", map[string]string{"uv.lock": "version = 1\n[[package]\nname = \"flask\"\n"}, false},
+		{"malformed pyproject beside a lock", map[string]string{"uv.lock": uvLock, "pyproject.toml": "[project\nname = \"app\"\n"}, false},
+		{"vcs requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "git+https://github.com/org/lib.git#egg=lib\nflask==3.0.0\n"}, false},
+		{"url requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "https://example.com/lib-1.0.tar.gz\nflask==3.0.0\n"}, false},
+		{"local sdist requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "./dist/lib-0.1.0.tar.gz\nflask==3.0.0\n"}, false},
+		{"direct-reference requirement", map[string]string{"uv.lock": uvLock, "requirements.txt": "lib @ https://example.com/lib-1.0.tar.gz\nflask==3.0.0\n"}, false},
+		{"pip-compile only, every line annotated", map[string]string{"requirements.txt": "flask==3.0.0\n    # via -r requirements.in\njinja2==3.1.4\n    # via flask\n"}, false},
 		{"no manifest", map[string]string{"m.py": "x = 1\n"}, false},
 	}
 	for _, tt := range tests {
@@ -395,6 +402,41 @@ source = { registry = "https://pypi.org/simple" }
 			}
 			if r.Exhaustive != tt.want {
 				t.Fatalf("Exhaustive = %v, want %v", r.Exhaustive, tt.want)
+			}
+		})
+	}
+}
+
+// A lockfile's dev/optional/group membership is never evidence of absence: a package locked only
+// for development still resolves as present.
+func TestResolveVersions_DevLockedPackagePresent(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"uv dev-dependencies group", map[string]string{"uv.lock": `version = 1
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "." }
+
+[package.dev-dependencies]
+dev = [{ name = "pytest" }]
+
+[[package]]
+name = "pytest"
+version = "8.0.0"
+source = { registry = "https://pypi.org/simple" }
+`}},
+		{"poetry dev category", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ncategory = \"dev\"\noptional = false\n"}},
+		{"pdm dev group", map[string]string{"pdm.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\ngroups = [\"dev\"]\n"}},
+		{"poetry optional extra", map[string]string{"poetry.lock": "[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\noptional = true\n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "pytest")
+			if !r.Found || r.Match.Version != "8.0.0" {
+				t.Fatalf("dev-locked pytest not reported present: found=%v match=%+v", r.Found, r.Match)
 			}
 		})
 	}

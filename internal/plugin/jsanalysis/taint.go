@@ -40,6 +40,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 
 	adj := buildAdjacency(cg.Edges)
 	sources := entrySymbols(ing.Ingresses, cg.Roots)
+	ingressSources := entrySymbols(ing.Ingresses, nil)
 
 	reasons := map[string]bool{}
 	for _, r := range cg.Partiality.Reasons {
@@ -52,7 +53,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	var paths []plugin.ReachPath
 	for _, s := range req.Sinks {
 		sink := sym(s)
-		trace := shortestPath(adj, sources, sink)
+		trace, ingress := ingressFirstPath(adj, ingressSources, sources, sink)
 		if trace == nil {
 			// A sink with no source path is UNKNOWN, never "safe" (inv.5).
 			reasons[plugin.PartialReasonNoIngress] = true
@@ -60,7 +61,7 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 		}
 		paths = append(paths, plugin.ReachPath{
 			Sink:    sink,
-			Ingress: trace[0],
+			Ingress: ingress,
 			Trace:   trace,
 		})
 	}

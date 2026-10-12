@@ -62,6 +62,7 @@ type parseResult struct {
 	calls     []callSite
 	ingresses []ingressMarker
 	bindings  moduleBindings // import/require/export-from bindings + instances (resolve.go input)
+	escapes   fileEscapes    // which declared functions are escape roots (escape.go)
 	skipped   bool
 }
 
@@ -232,11 +233,13 @@ func parseFile(module, src string) parseResult {
 	res := parseResult{module: module}
 	r := []rune(clean)
 
+	raw := []rune(src)
 	res.decls = parseDecls(r)
-	res.calls, res.ingresses = parseCallsAndIngresses(r)
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
-	res.bindings = extractModuleBindings(r, []rune(src))
+	res.bindings = extractModuleBindings(r, raw)
+	res.calls, res.ingresses = parseCallsAndIngresses(r)
+	res.escapes = scanEscapes(r, raw, res.decls)
 	return res
 }
 

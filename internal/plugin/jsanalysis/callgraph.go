@@ -59,6 +59,7 @@ func (d funcDecl) scip() string {
 // resolve import-scoped calls).
 type fileParse struct {
 	module    string
+	escapes   fileEscapes
 	decls     []decl
 	calls     []callSite
 	ingresses []ingressMarker
@@ -125,7 +126,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
-		fp := fileParse{module: pr.module, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
+		fp := fileParse{module: pr.module, escapes: pr.escapes, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
 		prog.files = append(prog.files, fp)
 		prog.moduleSet[pr.module] = true
 		prog.indexModule(fp)
@@ -221,6 +222,13 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	provByEdge := map[plugin.CallEdge]provenance{}
 	rootsSet := map[string]bool{}
 	var flags partialFlags
+	addEdge := func(e plugin.CallEdge, prov provenance) {
+		if !seen[e] {
+			seen[e] = true
+			edges = append(edges, e)
+			provByEdge[e] = prov
+		}
+	}
 
 	for _, f := range prog.files {
 		// Module-level runtime-computed specifiers (import(expr) / require(var)) are
@@ -250,27 +258,23 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.
 		rootsSet[moduleInitSCIP(f.module)] = true
+		// Every function opaque code could call back is a root (escape.go).
+		for _, d := range f.decls {
+			if f.escapes.root(d) {
+				rootsSet[funcSCIP(f.module, d.enclosing, d.name, d.arity)] = true
+			}
+		}
 		for _, cs := range f.calls {
 			caller := sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity))
 			if cs.calleeFrame {
 				// The frame that registers an inline handler reaches it: the scanner minted
 				// both ends in this file, so there is nothing to resolve.
-				e := plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}
-				if !seen[e] {
-					seen[e] = true
-					edges = append(edges, e)
-					provByEdge[e] = provenance{Algo: algoLocal}
-				}
+				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}, provenance{Algo: algoLocal})
 				continue
 			}
 			r := rs.resolveCallSite(f.module, cs)
 			if target, ok := r.edge(); ok {
-				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
-				if !seen[e] {
-					seen[e] = true
-					edges = append(edges, e)
-					provByEdge[e] = r.Prov
-				}
+				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
 			switch r.Kind {

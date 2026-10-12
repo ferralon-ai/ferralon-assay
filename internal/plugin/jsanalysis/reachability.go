@@ -27,6 +27,10 @@ import (
 //     reaches, declares no_known_ingress (NEVER "not reachable"/"safe"): the lexer's miss
 //     is UNKNOWN, never a confident not-affected.
 //
+// When the request names the admitted npm package (req.Package), the result also carries a
+// package_not_loaded Refutation if the runtime load set (loadset.go) is complete and holds no
+// instance of that package although one is installed at the admitted version.
+//
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
@@ -75,10 +79,19 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		})
 	}
 
-	if len(reasons) == 0 {
-		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}, nil
+	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}
+	if len(reasons) > 0 {
+		res.Partiality = plugin.Partial(sortedReasons(reasons)...)
 	}
-	return plugin.ReachabilityResult{Partiality: plugin.Partial(sortedReasons(reasons)...), Paths: paths}, nil
+	if name, version, ok := npmPackageRef(req.Package); ok {
+		ls := computeLoadSet(req.BuildDir)
+		if len(ls.scoped) > 0 {
+			res.Partiality.Complete = false
+			res.Partiality.Scoped = append(res.Partiality.Scoped, ls.scoped...)
+		}
+		res.Refutation = ls.refute(name, version)
+	}
+	return res, nil
 }
 
 // entrySymbols is the set of static-reachability entry points: every discovered ingress

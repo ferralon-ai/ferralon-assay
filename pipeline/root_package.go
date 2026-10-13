@@ -605,8 +605,10 @@ func mavenCoreExtensions(buildDir string) bool {
 // stockMavenWrappers reports whether every .mvn/wrapper/maven-wrapper.properties at or above
 // buildDir fetches a stock distribution, and the wrapper JAR, if it names one, from Maven Central.
 // Every one is checked, not only the first, since mvnw reads the properties beside wherever it
-// sits. The file must hold nothing but plain key=value lines with known keys: the mvnw script and
-// the wrapper JAR parse it differently, and only that form reads the same to both.
+// sits. The file must hold nothing but plain key=value lines with known keys, each printable ASCII
+// ending in \n or \r\n and none ending in a backslash: the mvnw script and the wrapper JAR parse it
+// differently (java.util.Properties also breaks a line at a lone \r, continues one at a trailing
+// backslash, and reads \f as whitespace), and only that form reads the same to both.
 func stockMavenWrappers(buildDir string) bool {
 	dir, err := filepath.Abs(buildDir)
 	if err != nil {
@@ -631,7 +633,14 @@ func stockMavenWrappers(buildDir string) bool {
 
 func stockMavenWrapper(data []byte) bool {
 	seen := map[string]bool{}
-	for line := range strings.Lines(string(data)) {
+	for raw := range strings.Lines(string(data)) {
+		line, ended := strings.CutSuffix(raw, "\n")
+		if ended {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		if !printableASCII(line) || strings.HasSuffix(line, "\\") {
+			return false
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || trimmed[0] == '#' || trimmed[0] == '!' {
 			continue
@@ -654,6 +663,16 @@ func stockMavenWrapper(data []byte) bool {
 		}
 	}
 	return seen["distributionUrl"]
+}
+
+// printableASCII reports whether every byte of s is a printable ASCII character, space included.
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // gradleRootPackage reads group and version from the root build script and the project name from

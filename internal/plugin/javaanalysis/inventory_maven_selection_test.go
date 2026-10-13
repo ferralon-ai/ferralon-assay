@@ -146,13 +146,13 @@ func TestMavenProfile_MavenConfigSelection(t *testing.T) {
 		{"an id holding =", "-P p=1\n", true},
 		{"abbreviated long form", "--activate-profile p\n", true},
 		{"abbreviated long form with =", "--activate-prof=p\n", true},
-		// R3-B1: Maven takes a line as one argument, so these select p. Any shape the reader
+		// Maven takes a line as one argument, so these select p. Any shape the reader
 		// doesn't model withholds, whether or not p is visibly named.
-		{"R3-B1 a list continued after whitespace", "-P a ,p\n", true},
-		{"R3-B1 spaces either side of the comma", "-P a , p\n", true},
-		{"R3-B1 attached, then continued after whitespace", "-Pa ,p\n", true},
-		{"R3-B1 a second token before the list goes on", "-P a b,p\n", true},
-		{"R3-B1 deselection continued after whitespace", "-P a ,!p\n", true},
+		{"a list continued after whitespace", "-P a ,p\n", true},
+		{"spaces either side of the comma", "-P a , p\n", true},
+		{"attached, then continued after whitespace", "-Pa ,p\n", true},
+		{"a second token before the list goes on", "-P a b,p\n", true},
+		{"deselection continued after whitespace", "-P a ,!p\n", true},
 		{"two options on one line", "-Pa -Pother\n", true},
 		{"a selection after another option", "-DskipTests -Pother\n", true},
 		{"a byte-order mark", "\ufeff-Pother\n", true},
@@ -482,7 +482,7 @@ func TestTargetEnvKeys_MatchThePipeline(t *testing.T) {
 	}
 }
 
-// R3-B2: a build started in a nested reactor reads that reactor's .mvn/maven.config, not the
+// A build started in a nested reactor reads that reactor's .mvn/maven.config, not the
 // scan root's. Here it selects p, which moves base to 2.0. That file isn't parsed, so its
 // presence (or a .mvn that can't be searched) withholds; a nested .mvn without one doesn't.
 func TestMavenProfile_NestedReactorMavenConfig(t *testing.T) {

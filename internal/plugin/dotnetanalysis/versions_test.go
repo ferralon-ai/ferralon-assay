@@ -565,6 +565,64 @@ func TestVersions_MultipleCopies(t *testing.T) {
 			},
 		},
 		{
+			name: "a project file Update moves its own pin",
+			files: map[string]string{
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /><PackageReference Update="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`,
+			},
+		},
+		{
+			name: "a project file Remove edits its references",
+			files: map[string]string{
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /><PackageReference Remove="Newtonsoft.Json" /></ItemGroup></Project>`,
+			},
+		},
+		{
+			name: "a project file Update with a VersionOverride makes the lockfile stale",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("13.0.3"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" /><PackageReference Update="Newtonsoft.Json" VersionOverride="12.0.1" /></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a VersionOverride element is the declared version",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("13.0.3"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><VersionOverride>12.0.1</VersionOverride></PackageReference></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a VersionOverride element matching the lockfile is covered",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("12.0.1"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><VersionOverride>13.0.3</VersionOverride></PackageReference></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+			version: "13.0.3",
+		},
+		{
+			name: "a Version element is the project's pin",
+			files: map[string]string{
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><Version>13.0.3</Version></PackageReference></ItemGroup></Project>`,
+			},
+			version: "13.0.3",
+		},
+		{
+			name: "a conditioned Version element is not a pin",
+			files: map[string]string{
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><Version Condition="'$(TargetFramework)' == 'net8.0'">13.0.3</Version></PackageReference></ItemGroup></Project>`,
+			},
+		},
+		{
+			name: "a conditioned VersionOverride element is not covered",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("12.0.1"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><VersionOverride Condition="'$(TargetFramework)' == 'net8.0'">13.0.3</VersionOverride></PackageReference></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
 			name: "every copy agrees",
 			files: map[string]string{
 				"A/A.csproj":             csproj("Newtonsoft.Json", "13.0.3"),

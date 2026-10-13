@@ -358,28 +358,50 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, lockRequests, 
 // --- .csproj / .fsproj / .vbproj (XML) ---------------------------------------
 
 // csprojProject is the subset of an SDK-style project file we read: PackageReference items
-// under any ItemGroup, each with an Include (the package id) and a Version given either as an
-// attribute or a child element.
+// under any ItemGroup, each with an Include (the package id), or an Update or Remove that
+// edits earlier items, and a Version or VersionOverride given either as an attribute or as a
+// child element.
 type csprojProject struct {
 	ItemGroups []struct {
 		PackageRefs []struct {
-			Include         string `xml:"Include,attr"`
-			VersionAttr     string `xml:"Version,attr"`
-			VersionElem     string `xml:"Version"`
-			VersionOverride string `xml:"VersionOverride,attr"`
+			Include         string           `xml:"Include,attr"`
+			VersionAttr     string           `xml:"Version,attr"`
+			VersionOverride string           `xml:"VersionOverride,attr"`
+			Metadata        []csprojMetadata `xml:",any"`
 		} `xml:"PackageReference"`
 	} `xml:"ItemGroup"`
 }
+
+type csprojMetadata struct {
+	XMLName   xml.Name
+	Value     string `xml:",chardata"`
+	Condition string `xml:"Condition,attr"`
+}
+
+// specUnread is the declared version of a reference this reader can't pin down. It never
+// normalizes, so no lockfile covers it.
+const specUnread = "unread"
 
 // parseProjectFile parses a .csproj/.fsproj/.vbproj for PackageReference pins. An exact
 // literal Version (e.g. "1.2.3" or the exact-bracket "[1.2.3]") resolves; a range, a
 // floating version, an empty Version (Central Package Management — the version lives in
 // Directory.Packages.props), or a "Project"/framework reference is UNRESOLVED. Each entry
 // carries the declared version (Version, else VersionOverride) for the lock staleness check.
+// An item without Include (an Update or Remove) can change any reference in the file, and a
+// conditioned Version or VersionOverride element applies only sometimes, so those
+// references stay UNRESOLVED and declare specUnread.
 func parseProjectFile(data []byte) ([]manifestEntry, bool) {
 	var proj csprojProject
 	if err := xml.Unmarshal(data, &proj); err != nil {
 		return nil, false
+	}
+	edited := false
+	for _, ig := range proj.ItemGroups {
+		for _, pr := range ig.PackageRefs {
+			if strings.TrimSpace(pr.Include) == "" {
+				edited = true
+			}
+		}
 	}
 	var out []manifestEntry
 	for _, ig := range proj.ItemGroups {
@@ -389,13 +411,33 @@ func parseProjectFile(data []byte) ([]manifestEntry, bool) {
 				continue
 			}
 			raw := strings.TrimSpace(pr.VersionAttr)
-			if raw == "" {
-				raw = strings.TrimSpace(pr.VersionElem)
+			override := strings.TrimSpace(pr.VersionOverride)
+			unread := edited
+			for _, m := range pr.Metadata {
+				switch m.XMLName.Local {
+				case "Version":
+					if raw == "" {
+						raw = strings.TrimSpace(m.Value)
+					}
+				case "VersionOverride":
+					if override == "" {
+						override = strings.TrimSpace(m.Value)
+					}
+				default:
+					continue
+				}
+				if m.Condition != "" {
+					unread = true
+				}
+			}
+			if unread {
+				out = append(out, manifestEntry{dep: nugetResolved(name, "", false, "csproj"), spec: specUnread})
+				continue
 			}
 			ver, resolved := exactNuGetPin(raw)
 			spec := raw
 			if spec == "" {
-				spec = strings.TrimSpace(pr.VersionOverride)
+				spec = override
 			}
 			out = append(out, manifestEntry{dep: nugetResolved(name, ver, resolved, "csproj"), spec: spec})
 		}

@@ -25,6 +25,7 @@ func TestGradleLockedVersions(t *testing.T) {
 			"build.gradle": gradleLockingOn + gradleWidgetDecl, "gradle.lockfile": gradleWidgetLock,
 		}, []string{"2.5"}, true},
 		{"no lock", map[string]string{"build.gradle": gradleLockingOn + gradleWidgetDecl}, nil, false},
+		{"STRICT, no lock at all", map[string]string{"build.gradle": gradleLockingStrict + gradleWidgetDecl}, nil, false},
 		{"no locking statement", map[string]string{
 			"build.gradle": gradleWidgetDecl, "gradle.lockfile": gradleWidgetLock,
 		}, []string{"2.5"}, false},

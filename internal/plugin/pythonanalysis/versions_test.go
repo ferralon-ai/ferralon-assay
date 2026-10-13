@@ -1186,6 +1186,22 @@ func TestResolveVersions_TestsRequireVetoes(t *testing.T) {
 	}
 }
 
+// setuptools reads a dashed setup.cfg option key (install-requires) as the underscored one, so a
+// pin under a dashed key at another version leaves the root pin unresolved.
+func TestResolveVersions_SetupCfgDashedKeysVeto(t *testing.T) {
+	for _, key := range []string{"install-requires", "tests-require", "setup-requires"} {
+		t.Run(key, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"requirements.txt": "pyjwt==2.8.0\n",
+				"svc/setup.cfg":    "[options]\n" + key + " =\n    pyjwt==2.10.0\n",
+			})
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, dir, "pyjwt"))
+			}
+		})
+	}
+}
+
 // Surfaces the declaration readers read (setup.py/setup.cfg literals, setup_requires
 // included, and [project].optional-dependencies) do not take the parse-failure path, but an
 // unpinned, stale-locked or differently pinned entry in them still leaves another service's

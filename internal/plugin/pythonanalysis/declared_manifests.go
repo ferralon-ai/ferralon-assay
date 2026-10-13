@@ -119,6 +119,11 @@ func scanSetupCfg(path string, data []byte) setupCfgScan {
 			continue
 		}
 		key = strings.ToLower(strings.TrimSpace(trimmed[:k]))
+		if section == "options" {
+			// setuptools accepts install-requires for install_requires (with a deprecation
+			// warning), so a dashed option key names the same option.
+			key = strings.ReplaceAll(key, "-", "_")
+		}
 		switch {
 		case section == "options" && (key == "install_requires" || key == "setup_requires" || key == "tests_require"),
 			section == "options.extras_require":

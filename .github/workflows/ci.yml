@@ -50,6 +50,17 @@ jobs:
       - name: Test
         run: go test ./...
 
+      # The C/C++ lane is its own module (it links the cgx SDK, which the host binary must not):
+      # the root ./... does not reach it.
+      - name: Build, vet and test plugins/cfamily
+        working-directory: plugins/cfamily
+        env:
+          GOWORK: "off"
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
   self-scan:
     runs-on: ubuntu-latest
     # Read-only: the surfaces that need write scopes are switched off below, and no secret is used,

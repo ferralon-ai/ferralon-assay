@@ -739,6 +739,20 @@ const (
 	// they say which fact was missing, and a reader can act on them. This one says only that a
 	// step did not run, and the scan-level PartialityNote list names which step.
 	ReasonAnalysisDidNotRun = "analysis_did_not_run"
+	// ReasonPackageVersionUnresolved: the advisory reached the verdict without a package whose
+	// installed version was resolved, so nothing establishes which code the build carries.
+	ReasonPackageVersionUnresolved = "package_version_unresolved"
+	// ReasonAdvisorySymbolAbsent: the advisory names no vulnerable symbol and no analyzer refuted
+	// the package as a whole, so there was nothing to search for.
+	ReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
+	// ReasonVulnerableSymbolUnresolved: the advisory names vulnerable symbols, but not every one was
+	// located inside the affected package and searched by the reachability analysis, and no
+	// analyzer refuted the package as a whole.
+	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
+	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
+	// reported nothing about the advisory at all, so its silence is not a search that came back
+	// empty.
+	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
 	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
 	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
 	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but

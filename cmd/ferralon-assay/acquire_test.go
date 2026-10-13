@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // TestIsRemoteURL covers the checkout dispatch decision: an existing local directory is
@@ -290,4 +292,72 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %q: %v", path, err)
 	}
+}
+
+// A C/C++ scan hands every cfamily spawn one private per-scan wasm cache dir and removes it at
+// scan end; an operator-set cache dir wins and nothing is created.
+func TestAcquireTarget_CFamilyWasmCacheDir(t *testing.T) {
+	spawn := func(t *testing.T, acq *acquired, out string) string {
+		t.Helper()
+		_, _ = acq.plugin.IndexSymbols(context.Background(), plugin.IndexSymbolsRequest{BuildDir: acq.buildDir})
+		got, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatalf("the fake plugin did not run: %v", err)
+		}
+		return string(got)
+	}
+	setup := func(t *testing.T) (dir, bin, out string) {
+		t.Helper()
+		dir = t.TempDir()
+		writeFile(t, filepath.Join(dir, "main.c"), "int main(void){return 0;}\n")
+		tools := t.TempDir()
+		out = filepath.Join(tools, "env")
+		bin = filepath.Join(tools, "assay-plugin-cfamily")
+		script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$%s\" > %q\n", plugin.CFamilyWasmCacheDirEnv, out)
+		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir, bin, out
+	}
+
+	t.Run("per-scan dir, private, removed at scan end", func(t *testing.T) {
+		t.Setenv(envCFamilyWasmCacheDir, "")
+		dir, bin, out := setup(t)
+		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false)
+		if err != nil {
+			t.Fatalf("acquireTarget: %v", err)
+		}
+		cache := spawn(t, acq, out)
+		if cache == "" || !filepath.IsAbs(cache) {
+			acq.cleanup()
+			t.Fatalf("spawn saw cache dir %q, want an absolute per-scan dir", cache)
+		}
+		fi, err := os.Stat(cache)
+		if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+			acq.cleanup()
+			t.Fatalf("cache dir %q: %v, %v; want a 0700 directory", cache, fi, err)
+		}
+		acq.cleanup()
+		if _, err := os.Stat(cache); !os.IsNotExist(err) {
+			t.Errorf("cache dir %q survives the scan: %v", cache, err)
+		}
+	})
+
+	t.Run("operator-set dir wins", func(t *testing.T) {
+		mine := t.TempDir()
+		t.Setenv(envCFamilyWasmCacheDir, mine)
+		dir, bin, out := setup(t)
+		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false)
+		if err != nil {
+			t.Fatalf("acquireTarget: %v", err)
+		}
+		got := spawn(t, acq, out)
+		acq.cleanup()
+		if got != mine {
+			t.Errorf("spawn saw cache dir %q, want the operator's %q", got, mine)
+		}
+		if _, err := os.Stat(mine); err != nil {
+			t.Errorf("scan end removed the operator's dir: %v", err)
+		}
+	})
 }

@@ -115,6 +115,15 @@ func TestReaders_FIFO(t *testing.T) {
 			files: map[string]string{"a.py": "import requests\n\ndef a():\n    requests.get(1)\n"},
 			fifo:  "requirements.txt", check: callGraphPartial,
 		},
+		{name: "loadProgram declared manifest, every import attributed", files: map[string]string{"a.py": py}, fifo: "requirements.txt", check: callGraphPartial},
+		{
+			name: "buildInterpreter pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, dir, _ string) {
+				if got := buildInterpreter(dir); !slices.Equal(got.releases, anyInterpreter.releases) || got.newer != anyInterpreter.newer {
+					t.Errorf("buildInterpreter = %+v; want anyInterpreter", got)
+				}
+			},
+		},
 		{
 			name: "readRequirementSpecs requirement file", fifo: "reqs.txt",
 			check: func(t *testing.T, dir, _ string) {

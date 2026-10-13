@@ -608,6 +608,60 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 			excluded: true,
 		},
 		{
+			name:   "a Procfile launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Procfile": "web: python setup.py serve\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a Dockerfile variant running the module keeps it",
+			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": runtime, "Dockerfile.prod": "FROM python:3.12\nCMD [\"python\", \"-m\", \"pkg.setup\"]\n"},
+			script: "pkg/setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a Containerfile launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Containerfile": "FROM python:3.12\nENTRYPOINT python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a named .dockerfile launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "deploy/api.dockerfile": "FROM python:3.12\nCMD python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a named .containerfile launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "worker.containerfile": "FROM python:3.12\nCMD python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a compose command launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "docker-compose.yml": "services:\n  web:\n    command: python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a compose.yaml command launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "compose.yaml": "services:\n  web:\n    command: python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "a shell script launching the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "boot.sh": "#!/bin/sh\nexec python setup.py\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:     "launchers that never mention the script leave it out",
+			files:    map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Procfile": "web: gunicorn app:check\n", "Dockerfile": "FROM python:3.12\nRUN pip install .\nCMD [\"python\", \"app.py\"]\n", "setuptools.sh": "pip install -U setuptools\n"},
+			script:   "setup",
+			excluded: true,
+		},
+		{
 			name:   "runtime dynamic import the scanner cannot name keeps it",
 			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"},
 			script: "setup",
@@ -664,6 +718,25 @@ func TestLoadProgram_UnreadableConfigKeepsBuildScripts(t *testing.T) {
 	}
 	if !slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == "setup" }) {
 		t.Fatal("setup.py left out although setup.cfg could not be read")
+	}
+}
+
+// TestLoadProgram_UnreadableLauncherKeepsBuildScripts: a launcher that cannot be read might
+// start the build script, so the script stays in.
+func TestLoadProgram_UnreadableLauncherKeepsBuildScripts(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"setup.py": "from setuptools import setup\nsetup(name='app')\n",
+		"app.py":   "def check(t):\n    return t\n",
+	})
+	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "Procfile")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	prog, err := loadProgram(dir)
+	if err != nil {
+		t.Fatalf("loadProgram: %v", err)
+	}
+	if !slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == "setup" }) {
+		t.Fatal("setup.py left out although the Procfile could not be read")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -158,7 +159,7 @@ func loadProgram(buildDir string) (*program, error) {
 		parsed = append(parsed, pf)
 	}
 
-	build := buildScripts(parsed, entryPointConfigs(buildDir))
+	build := buildScripts(parsed, readLoaders(buildDir))
 	modules := make([]string, 0, len(parsed))
 	for i, pf := range parsed {
 		// A build script is still the project's own code, so its module stays first-party.
@@ -207,11 +208,11 @@ var buildScriptBackends = map[string][]string{
 // Leaving a file out can only make the program look like it loads less, so a script is
 // left out only when nothing at runtime can reach it. It stays in when any other file
 // imports it under any name it could have (absolute, dotted, relative or star import), when
-// any other file imports anything dynamically, or when an entry point in configs or in a
-// build script names it. configs is nil when a config could not be read, which keeps every
-// script.
-func buildScripts(parsed []parsedFile, configs []string) map[int]bool {
-	if configs == nil {
+// any other file imports anything dynamically, when an entry point in a config or in a
+// build script names it, or when a launcher mentions it. ld is nil when a config or launcher
+// could not be read, which keeps every script.
+func buildScripts(parsed []parsedFile, ld *loaders) map[int]bool {
+	if ld == nil {
 		return nil
 	}
 	build := map[int]bool{}
@@ -233,13 +234,13 @@ func buildScripts(parsed []parsedFile, configs []string) map[int]bool {
 	if len(build) == 0 {
 		return nil
 	}
-	texts := slices.Clone(configs)
+	texts := slices.Clone(ld.configs)
 	for i := range build {
 		texts = append(texts, parsed[i].text)
 	}
 	for i := range build {
 		names := moduleNames(parsed[i].parse.module)
-		if namedByEntryPoint(names, texts) {
+		if namedByEntryPoint(names, texts) || mentionedByLauncher(path.Base(parsed[i].parse.module), ld.launchers) {
 			delete(build, i)
 			continue
 		}
@@ -298,34 +299,73 @@ func namedByEntryPoint(names, texts []string) bool {
 	return false
 }
 
-// entryPointConfigs returns the text of every pyproject.toml and setup.cfg under buildDir
-// (skipping the directories the source walk skips), the files that declare entry points. It
-// returns nil when one cannot be read or the walk fails.
-func entryPointConfigs(buildDir string) []string {
-	texts := []string{}
-	err := filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
+// mentionedByLauncher reports whether a launcher's text mentions stem as a whole word, as
+// "python setup.py", "python -m pkg.setup" or a CMD array would. A mention for any other
+// reason (a comment, "setup.py install" at image build time) keeps the script in too.
+func mentionedByLauncher(stem string, launchers []string) bool {
+	re := regexp.MustCompile(`(^|\W)` + regexp.QuoteMeta(stem) + `(\W|$)`)
+	return slices.ContainsFunc(launchers, re.MatchString)
+}
+
+// loaders holds the text of the non-Python files that can load a module at runtime under
+// buildDir: configs declare entry points (pyproject.toml, setup.cfg), and launchers start
+// processes (Procfile, Dockerfile, Containerfile, compose files, shell scripts).
+type loaders struct {
+	configs   []string
+	launchers []string
+}
+
+// readLoaders walks buildDir, skipping the directories the source walk skips. It returns
+// nil when a file cannot be read or the walk fails.
+func readLoaders(buildDir string) *loaders {
+	ld := &loaders{configs: []string{}, launchers: []string{}}
+	err := filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if skipDir(d.Name()) && path != buildDir {
+			if skipDir(d.Name()) && p != buildDir {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if n := d.Name(); n == "pyproject.toml" || n == "setup.cfg" {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			texts = append(texts, string(data))
+		n := d.Name()
+		config := n == "pyproject.toml" || n == "setup.cfg"
+		if !config && !isLauncher(n) {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if config {
+			ld.configs = append(ld.configs, string(data))
+		} else {
+			ld.launchers = append(ld.launchers, string(data))
 		}
 		return nil
 	})
 	if err != nil {
 		return nil
 	}
-	return texts
+	return ld
+}
+
+// isLauncher reports whether a file name is one that starts processes: a Procfile, a
+// Dockerfile or Containerfile (Dockerfile.prod, api.dockerfile), a compose file, or a shell
+// script.
+func isLauncher(name string) bool {
+	n := strings.ToLower(name)
+	switch {
+	case n == "procfile",
+		strings.HasPrefix(n, "dockerfile"), strings.HasPrefix(n, "containerfile"),
+		strings.HasSuffix(n, ".dockerfile"), strings.HasSuffix(n, ".containerfile"),
+		strings.HasPrefix(n, "docker-compose"),
+		strings.HasPrefix(n, "compose.") && (strings.HasSuffix(n, ".yml") || strings.HasSuffix(n, ".yaml")),
+		strings.HasSuffix(n, ".sh"):
+		return true
+	}
+	return false
 }
 
 // importRef is one module an import statement may load, made absolute against the

@@ -3180,6 +3180,7 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if ir.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, ir.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, ir.Partiality.Scoped)
 		}
 	}
 
@@ -3197,6 +3198,9 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
 		if unmarshalled && full.Reachability.Partiality.Reasons != nil {
 			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
+		}
+		if unmarshalled {
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
 		}
 		if unmarshalled && len(full.Reachability.Paths) > 0 {
 			payload.ReachablePathCount = len(full.Reachability.Paths)
@@ -3219,6 +3223,7 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if res.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, res.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, res.Partiality.Scoped)
 		}
 	}
 
@@ -3243,6 +3248,14 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeExposureFootprint, "exposure footprint (deterministic)", payload)
 	return err
+}
+
+// appendScoped copies a plugin's scoped limits into the footprint's form.
+func appendScoped(dst []artifact.ScopedPartialityFlag, scoped []plugin.ScopedReason) []artifact.ScopedPartialityFlag {
+	for _, r := range scoped {
+		dst = append(dst, artifact.ScopedPartialityFlag{Reason: r.Reason, Package: r.Package, Path: r.Path, Targets: r.Targets})
+	}
+	return dst
 }
 
 func exposureFootprintDepCount(store artifact.Store, caseID string) int {

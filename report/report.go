@@ -659,6 +659,11 @@ type PartialityNote struct {
 	// It is part of the note's identity for de-duplication: two failures of different
 	// steps are two disclosures, not one.
 	Detail string `json:"detail,omitempty"`
+	// Package and Path locate a limit the analyzer bounded to one package: the package whose code
+	// holds the blind spot (a PURL without a version; empty for first-party code or a scan-wide
+	// limit) and the location inside it. Disclosure only, and part of the note's identity.
+	Package string `json:"package,omitempty"`
+	Path    string `json:"path,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report

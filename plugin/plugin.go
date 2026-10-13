@@ -85,7 +85,9 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go).
+	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
+	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
 
@@ -96,8 +98,8 @@ type ScopedReason struct {
 	Package string `json:"package,omitempty"` // package whose code holds the blind spot
 	Path    string `json:"path,omitempty"`    // location inside Package (import path, class, module file); disclosure only
 	// Targets over-approximates every package an edge hidden by this limit could reach, including
-	// callbacks and the hidden code's transitive dependencies. nil = unbounded, which counts against
-	// every advisory.
+	// callbacks and the hidden code's transitive dependencies. Empty (nil or []) = unbounded, which
+	// counts against every advisory; a bounded limit names at least one target.
 	Targets []string `json:"targets,omitempty"`
 }
 

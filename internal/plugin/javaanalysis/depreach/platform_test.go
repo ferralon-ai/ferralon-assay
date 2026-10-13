@@ -355,7 +355,8 @@ func TestReach_PlatformBodyRunsOnThis(t *testing.T) {
 		{name: "special method reference into a platform body", want: Undetermined, why: "higher-order re-entry: inherited platform body", ingress: mref("com/acme/EvilList", "describe", "()V"), classes: []classfile.Class{
 			func() classfile.Class {
 				c := evilList
-				c.Methods = append(append([]classfile.Method(nil), c.Methods...), meth("com/acme/EvilList", "describe", "()V", lambda(handleArg(classfile.RefInvokeSpecial, "java/util/AbstractCollection", "toString", toStr))))
+				// Static, so no receiver is built: the hazard comes only from the handle binding this.
+				c.Methods = append(append([]classfile.Method(nil), c.Methods...), staticMeth("com/acme/EvilList", "describe", "()V", lambda(handleArg(classfile.RefInvokeSpecial, "java/util/AbstractCollection", "toString", toStr))))
 				return c
 			}(),
 		}},

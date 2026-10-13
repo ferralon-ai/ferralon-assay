@@ -3106,6 +3106,23 @@ func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
 	return append(purls, adv.DroppedPackages...)
 }
 
+// AdvisoryListsAffectedPackages reports whether the advisory carries an affected_packages[] set. Only
+// that set enumerates every package the advisory affects; a record with only the scalar purl may
+// affect packages it does not name.
+func AdvisoryListsAffectedPackages(store artifact.Store, caseID string) bool {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var adv struct {
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return false
+	}
+	return len(adv.AffectedPackages) > 0
+}
+
 // AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's
 // when the advisory targets a secondary one, else the advisory's primary.
 func AdvisoryPURL(store artifact.Store, caseID string) string {

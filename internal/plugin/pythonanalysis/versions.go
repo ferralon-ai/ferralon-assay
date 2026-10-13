@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,8 +44,21 @@ import (
 //     JS there is nothing left to seed — All is legitimately empty. Soundness rests entirely
 //     on the declared partiality: the result is Complete=false, so a consumer must not read
 //     the empty All as proof the dependency is absent and fabricate a not-affected.
-//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure); the
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure), and
+//     every Found Match is UNRESOLVED: the broken file may hold another copy of any
+//     coordinate, so the readable manifests cannot decide its version. A coordinate no
+//     readable manifest holds stays not found.
+//   - Any other install surface under the build dir, matched by name or content anywhere the
+//     shared walk reaches (everything but node_modules and site-packages), is treated exactly
+//     like an unparseable manifest unless it is read and found to declare nothing; so is a
+//     pyproject.toml table other than [project] dependencies, optional-dependencies and
+//     file-backed dynamic dependencies, and [build-system].requires.
+//     See versions_surfaces.go and versions_declared.go.
+//   - A distribution installed in a site-packages directory under the build dir is another
+//     copy of its project: it takes part in Match like a pin, without joining All.
+//
+// Several pinned versions of one project: Match is chosen by matchCoordinate, which never
+// picks one pin out of several distinct versions. See its doc comment for the rule.
 //
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (PEP 440 specifiers, ordering) is applied by the
@@ -58,20 +72,20 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
-
 	var (
-		all         []plugin.ResolvedDependency
-		parseFailed bool
-		perFile     = make(map[string][]plugin.ResolvedDependency, len(manifests))
+		all     []plugin.ResolvedDependency
+		origins []manifestOrigin
 	)
+	manifests, parseFailed := versionSurfaces(req.BuildDir)
+	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
+	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
-		deps, ok := parseManifest(m)
+		deps, o, ok := parseManifest(m)
 		if !ok {
 			parseFailed = true
 		}
-		perFile[m] = deps
 		all = append(all, deps...)
+		origins = append(origins, o...)
 	}
 
 	part := plugin.Complete()
@@ -85,28 +99,125 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: exhaustiveManifestSet(req.BuildDir, req.Coordinate, manifests, perFile, parseFailed),
+		Exhaustive: coverageExhaustive(req.BuildDir, req.Coordinate, manifests),
 	}
-	want := normalizePyCoordinate(req.Coordinate)
-	if want != "" {
-		for _, d := range all {
-			if normalizePyCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Match = d
-				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if d.Resolved {
-					break
+	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
+		append(origins[:len(origins):len(origins)], copyOrigins...), normalizePyCoordinate(req.Coordinate))
+	if parseFailed && res.Found {
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
+	return res, nil
+}
+
+// manifestOrigin records where an entry of All was read: its manifest's directory, the
+// lock it came from ("" when it is not a lock), and, for a declaration, the locks that
+// resolve it when they sit in the same directory, with the specifier a lock's pin must
+// satisfy (spec) or whether the declaration is a direct reference no lock covers.
+type manifestOrigin struct {
+	dir       string
+	lock      string
+	lockedBy  []string
+	spec      string
+	directRef bool
+}
+
+// projectLocks are the locks that resolve a [project].dependencies declaration.
+var projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
+
+// originsFor repeats one origin for every entry of deps.
+func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOrigin {
+	out := make([]manifestOrigin, len(deps))
+	for i := range out {
+		out[i] = o
+	}
+	return out
+}
+
+// matchCoordinate selects the Match for the PEP 503-normalized coordinate want across every
+// manifest's entries; origins[i] is where all[i] was read. The rule:
+//
+//   - every resolved entry pins the SAME version (one pin repeated across requirements.txt,
+//     poetry.lock, ... counts once) and no entry's version is unknown: Match is that
+//     version, Resolved=true;
+//   - two or more distinct pinned versions (e.g. services in one repo locking different
+//     versions): Match is UNRESOLVED (Resolved=false, Version empty), so the predicate fails
+//     OPEN rather than ruling the advisory on whichever pin was read first;
+//   - any UNRESOLVED entry (a range, an unpinned requirement): Match is UNRESOLVED, because
+//     that install surface may hold any version;
+//   - no resolved entry: Match is the first entry, UNRESOLVED.
+//
+// One exception to the third case: a pyproject.toml [project] range does not veto when
+// poetry.lock, pdm.lock or uv.lock in the SAME directory pins the coordinate at a version
+// that satisfies the range. That lock is the project's own resolution of the declared
+// range, so both describe one environment. A pin outside the range is a stale lock, and a
+// direct reference ("name @ url") is never covered. A range in any other manifest or
+// directory, or beside a lock of another tool, is a separate install surface and still
+// vetoes.
+// Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
+// open.
+func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {
+	if want == "" {
+		return plugin.ResolvedDependency{}, false
+	}
+	lockPins := make(map[[2]string][]string) // {dir, lock basename} → versions pinned
+	for i, d := range all {
+		if d.Resolved && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+			k := [2]string{origins[i].dir, origins[i].lock}
+			lockPins[k] = append(lockPins[k], d.Version)
+		}
+	}
+	lockedHere := func(o manifestOrigin) bool {
+		for _, l := range o.lockedBy {
+			for _, v := range lockPins[[2]string{o.dir, l}] {
+				if lockPinSatisfies(o, v) {
+					return true
 				}
 			}
 		}
+		return false
 	}
-	return res, nil
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		versions = make(map[string]struct{})
+	)
+	for i, d := range all {
+		if normalizePyCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			if !lockedHere(origins[i]) {
+				unknown = true
+			}
+			continue
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	if found && (unknown || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
 }
 
 // manifestFiles returns every recognized Python manifest under root, skipping
 // build-output / virtualenv / VCS trees so a vendored install does not shadow the
 // project's own top-level manifest.
 func manifestFiles(root string) []string {
+	return walkManifests(root, func(path string) bool { return isManifest(filepath.Base(path)) })
+}
+
+// walkManifests returns every file under root whose path satisfies match, skipping the
+// same trees as manifestFiles.
+func walkManifests(root string, match func(string) bool) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -118,7 +229,7 @@ func manifestFiles(root string) []string {
 			}
 			return nil
 		}
-		if isManifest(d.Name()) {
+		if match(path) {
 			out = append(out, path)
 		}
 		return nil
@@ -136,54 +247,75 @@ func isManifest(name string) bool {
 		"setup.cfg", "setup.py", "hatch_build.py":
 		return true
 	}
+	return isRequirementsName(name)
+}
+
+func isRequirementsName(name string) bool {
 	return strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt")
 }
 
-// parseManifest dispatches on the manifest's name to the format-specific parser. The
-// bool is false when the file cannot be read or is structurally unparseable (the caller
-// degrades partiality).
-func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
+// parseManifest dispatches on the manifest's name to the format-specific parser and
+// returns each entry's origin alongside it. The bool is false when the file cannot be
+// read or is structurally unparseable, or holds an install whose project cannot be known
+// (the caller degrades partiality and leaves every Found match unresolved).
+func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	data, err := readRegular(path)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	return parseManifestData(path, data)
 }
 
 // parseManifestData is parseManifest over contents already read from path.
-func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
-	base := filepath.Base(path)
-	switch {
-	case base == "poetry.lock":
-		return parsePoetryLock(data)
-	case base == "Pipfile.lock":
-		return parsePipfileLock(data)
-	case base == "pdm.lock":
-		return parsePDMLockAdvisory(data)
-	case base == "uv.lock":
-		return parseUVLockAdvisory(data)
-	case base == "pyproject.toml":
-		deps, ok := parsePyproject(path, data)
-		return append(deps, buildRequires(path, data)...), ok
-	case base == "setup.cfg":
-		deps, ok := parseSetupCfg(path, data)
-		return append(deps, buildRequires(path, data)...), ok
-	case base == "setup.py":
-		deps, ok := parseSetupPy(data)
-		return append(deps, buildRequires(path, data)...), ok
-	case base == "hatch_build.py":
-		return parseHatchBuild(data)
+func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	var (
+		deps []plugin.ResolvedDependency
+		ok   bool
+	)
+	switch base {
+	case "poetry.lock":
+		deps, ok = parsePoetryLock(data)
+	case "Pipfile.lock":
+		deps, ok = parsePipfileLock(data)
+	case "pdm.lock":
+		deps, ok = parsePDMLockAdvisory(data)
+	case "uv.lock":
+		deps, ok = parseUVLockAdvisory(data)
+	case "pyproject.toml":
+		return parsePyprojectVersions(path, data, dir)
+	case "setup.cfg":
+		// setup.cfg's own reader, file: values included. No lock covers it, so an unpinned
+		// entry vetoes.
+		deps, ok = parseSetupCfg(path, data)
+		deps = append(deps, buildRequires(path, data)...)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
+	case "setup.py":
+		// Only literal declarations are read; anything computed or splatted may install any
+		// project, so it takes the parse-failure path, setup_requires and tests_require included.
+		deps, ok = parseSetupPy(data)
+		deps = append(deps, buildRequires(path, data)...)
+		_, buildComplete := scanSetupPyKeys(string(data), setupPyBuildKeys)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && setupPyComplete(data) && buildComplete
+	case "hatch_build.py":
+		// A build hook can add dependencies at run time: its literals are read, and a hook that
+		// mentions dependencies still takes the parse-failure path.
+		deps, ok = parseHatchBuild(data)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && !bytes.Contains(data, []byte("dependencies"))
 	default: // requirements*.txt
-		return parseRequirementsTxt(data)
+		deps, ok = parseRequirementLines(data, dir)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
 	}
+	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
 
-// buildRequires returns the build-time requirements a build definition declares
-// ([build-system].requires in pyproject.toml, setup_requires in setup.cfg and setup.py) as
-// declared dependencies of the advisory path, so a coordinate a build installs is found rather
-// than read as absent. They are not runtime installs: the inventory does not carry them and no
-// lockfile is expected to cover them (exhaustive.go). Entries that are not well-formed PEP 508
-// requirements, and a setup_requires value that is not literal, are skipped.
+// buildRequires returns the build- and test-time requirements a build definition declares
+// ([build-system].requires in pyproject.toml, setup_requires and tests_require in setup.cfg and
+// setup.py) as declared dependencies of the advisory path, so a coordinate a build installs is
+// found rather than read as absent. They are not runtime installs: the inventory does not carry
+// them and no lockfile is expected to cover them (exhaustive.go). Entries that are not
+// well-formed PEP 508 requirements, and a setup_requires or tests_require value that is not
+// literal, are skipped.
 func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
 	var specs []string
 	source := filepath.Base(path)
@@ -213,24 +345,65 @@ func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
 
 // --- requirements.txt --------------------------------------------------------
 
-// parseRequirementsTxt parses a pip requirements file. Only an EXACT "==" pin yields a
-// resolved version; a range/compatible/prefix spec, an editable/URL/-r include, or an
-// option line is UNRESOLVED (or skipped). Continuation lines ("\") and hashed pins
+// parseRequirementsTxt parses requirements-file content with no file context, so a relative
+// path cannot be placed and makes it report false.
+func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
+	return parseRequirementLines(data, "")
+}
+
+// parseRequirementLines parses a pip requirements file located in dir. Only an EXACT "=="
+// pin yields a resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a
+// URL or VCS requirement that names its project ("pkg @ https://...",
+// "git+https://...#egg=pkg", editable or not), since it installs a version nobody can read
+// here.
+//
+// The file reports false, exactly as an unparseable one does, when it can install a
+// distribution whose name or version cannot be read here: a URL or VCS requirement that
+// names no project, a local path or file: install other than the project's own directory
+// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), or any -r/-c
+// include, which is not followed. The caller then leaves every Found match unresolved; the
+// entries that were read are still returned. Other option lines are skipped. Continuation lines ("\") and hashed pins
 // ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
 // comments ("#...") are stripped.
-func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
+func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
+	readable := true
 	for _, req := range joinContinuations(string(data)) {
 		line := stripReqComment(req)
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "-") { // -r include, -e editable, --option
+		if isInclude(line) {
+			readable = false
 			continue
 		}
-		if strings.Contains(line, "://") || strings.HasPrefix(line, "git+") {
-			continue // URL / VCS requirement — no PyPI-pinned version
+		target, editable := trimEditable(line)
+		if strings.HasPrefix(line, "-") && !editable { // --index-url and other options
+			continue
+		}
+		if loc, isFile := fileURLPath(target); isFile {
+			if !isProjectDir(loc, dir) {
+				readable = false
+			}
+			continue
+		}
+		if isDirectReference(target) {
+			if name := directReferenceName(req); name != "" {
+				out = append(out, pyResolved(name, "", false, "requirements.txt"))
+			} else {
+				readable = false
+			}
+			continue
+		}
+		if loc := localInstallPath(target); editable || loc != "" {
+			if editable && loc == "" {
+				loc = firstField(target)
+			}
+			if !isProjectDir(loc, dir) {
+				readable = false
+			}
+			continue
 		}
 		// Drop an environment marker ("; python_version < '3.8'") and any --hash tokens.
 		if i := strings.IndexByte(line, ';'); i >= 0 {
@@ -250,7 +423,165 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		}
 		out = append(out, d)
 	}
-	return out, true
+	return out, readable
+}
+
+// isInclude reports whether line is a -r/--requirement or -c/--constraint include
+// ("-r base.txt", "-rbase.txt", "--requirement=base.txt").
+func isInclude(line string) bool {
+	for _, flag := range []string{"--requirement", "--constraint"} {
+		if rest, ok := strings.CutPrefix(line, flag); ok && (rest == "" || rest[0] == '=' || rest[0] == ' ' || rest[0] == '\t') {
+			return true
+		}
+	}
+	return strings.HasPrefix(line, "-r") || strings.HasPrefix(line, "-c")
+}
+
+// fileURLPath reports whether a requirement installs from a file: URL, bare or as the
+// target of a PEP 508 "name @ file:..." reference, and returns the local path it names.
+func fileURLPath(target string) (string, bool) {
+	loc := firstField(target)
+	if i := strings.IndexByte(target, '@'); i > 0 {
+		head := strings.TrimSpace(target[:i])
+		if j := strings.IndexByte(head, '['); j >= 0 {
+			head = strings.TrimSpace(head[:j])
+		}
+		if isProjectName(head) {
+			loc = firstField(target[i+1:])
+		}
+	}
+	if len(loc) < 5 || !strings.EqualFold(loc[:5], "file:") {
+		return "", false
+	}
+	loc = loc[5:]
+	if rest, ok := strings.CutPrefix(loc, "//"); ok { // file://host/path; only an empty host is local
+		if !strings.HasPrefix(rest, "/") {
+			return "", true
+		}
+		loc = rest
+	}
+	if i := strings.IndexAny(loc, "#?"); i >= 0 {
+		loc = loc[:i]
+	}
+	return loc, true
+}
+
+// localInstallPath returns the local path a requirement installs from, or "" when it is a
+// project name. pip treats a requirement as a path when it contains a path separator or
+// starts with "." or "~", and installs an archive file by its file name.
+func localInstallPath(target string) string {
+	loc := firstField(target)
+	if loc == "" {
+		return ""
+	}
+	if strings.ContainsAny(loc, "/\\") || loc[0] == '.' || loc[0] == '~' {
+		return loc
+	}
+	lower := strings.ToLower(loc)
+	for _, ext := range []string{".whl", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip"} {
+		if strings.HasSuffix(lower, ext) {
+			return loc
+		}
+	}
+	return ""
+}
+
+// isProjectDir reports whether a local install path names the directory holding the file
+// that installs it: ".", "./", ".[extras]", or a path that resolves there. With no file
+// context only the literal forms qualify.
+func isProjectDir(loc, dir string) bool {
+	if isSelfPath(loc) {
+		return true
+	}
+	if dir == "" || loc == "" {
+		return false
+	}
+	if i := strings.IndexByte(loc, '['); i >= 0 {
+		loc = loc[:i]
+	}
+	if !filepath.IsAbs(loc) {
+		loc = filepath.Join(dir, loc)
+	}
+	return filepath.Clean(loc) == filepath.Clean(dir)
+}
+
+// firstField returns the requirement's location token: the text before any marker (";")
+// and the first whitespace.
+func firstField(target string) string {
+	if i := strings.IndexByte(target, ';'); i >= 0 {
+		target = target[:i]
+	}
+	if f := strings.Fields(target); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
+
+// trimEditable strips a leading "-e"/"--editable" option, reporting whether it was there.
+func trimEditable(line string) (string, bool) {
+	for _, p := range []string{"--editable=", "--editable ", "-e "} {
+		if rest, ok := strings.CutPrefix(line, p); ok {
+			return strings.TrimSpace(rest), true
+		}
+	}
+	return line, false
+}
+
+// isDirectReference reports whether a requirement installs from a URL or VCS checkout.
+func isDirectReference(line string) bool {
+	if strings.Contains(line, "://") {
+		return true
+	}
+	for _, p := range []string{"git+", "hg+", "svn+", "bzr+"} {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// directReferenceName returns the project a URL or VCS requirement installs: the PEP 508
+// "name[extras] @ url" form, else a "#egg=name" fragment. Empty when the line names none.
+func directReferenceName(req string) string {
+	line, _ := trimEditable(strings.TrimSpace(req))
+	if i := strings.IndexByte(line, '@'); i > 0 {
+		head := strings.TrimSpace(line[:i])
+		if j := strings.IndexByte(head, '['); j >= 0 {
+			head = strings.TrimSpace(head[:j])
+		}
+		if isProjectName(head) {
+			return head
+		}
+	}
+	if _, frag, ok := strings.Cut(line, "#egg="); ok {
+		end := len(frag)
+		for i, c := range frag {
+			if !isProjectNameRune(c) {
+				end = i
+				break
+			}
+		}
+		if isProjectName(frag[:end]) {
+			return frag[:end]
+		}
+	}
+	return ""
+}
+
+func isProjectName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !isProjectNameRune(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isProjectNameRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.'
 }
 
 // parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement
@@ -520,8 +851,9 @@ type pyprojectDeps struct {
 // [project].optional-dependencies group, plus every requirement file a dynamic-metadata table
 // names for them (pyprojectDynamicFiles), read relative to the pyproject. Each entry is a
 // declared PEP 508 requirement: an exact "==" pin resolves, a range rides in Constraint with
-// Resolved=false (the authoritative pins live in a lockfile). ok is false when a dynamic table
-// has a shape not read here or a file it names fails readRequirementFiles. A file the TOML
+// Resolved=false (the authoritative pins live in a lockfile). ok is false when an entry ends in
+// a backslash (setuptoolsJoins), or a dynamic table has a shape not read here or a file it names
+// fails readRequirementFiles. A file the TOML
 // decoder rejects (a templated pyproject, say) falls back to the lexical [project] dependencies
 // reader, so such a file still contributes the names it visibly declares.
 func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
@@ -530,7 +862,9 @@ func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool
 		return parsePyprojectLexical(data)
 	}
 	var out []plugin.ResolvedDependency
+	listOK := true
 	add := func(spec string) {
+		listOK = listOK && !setuptoolsJoins(spec)
 		if d, ok := declaredDependency(spec, "pyproject.toml"); ok {
 			out = append(out, d)
 		}
@@ -554,7 +888,7 @@ func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool
 			return out, false
 		}
 	}
-	return out, true
+	return out, listOK
 }
 
 // pyprojectDynamicFiles returns, in a stable order, every requirement file named for
@@ -713,4 +1047,92 @@ func normalizePyCoordinate(c string) string {
 		prevDash = false
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// coverageExhaustive is the no-manifest-entry coverage check (exhaustiveManifestSet) over the
+// manifests' declared names. It reads each manifest with the coverage readers
+// (parseManifestCoverage), not the version-resolution vetoes above: a surface version
+// resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
+// check accounts for itself, through manifestDecls and the install-surface walk, so a version
+// left undecided must not withhold Exhaustive on its own.
+func coverageExhaustive(root, coordinate string, manifests []string) bool {
+	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
+	failed := false
+	for _, m := range manifests {
+		deps, ok := parseManifestCoverage(m)
+		if !ok {
+			failed = true
+		}
+		perFile[m] = deps
+	}
+	return exhaustiveManifestSet(root, coordinate, manifests, perFile, failed)
+}
+
+// parseManifestCoverage reads one manifest's declared entries for the coverage check and the
+// install-surface classifier (ManifestCandidates). The bool is false when the file cannot be
+// read or does not parse.
+func parseManifestCoverage(path string) ([]plugin.ResolvedDependency, bool) {
+	data, err := readRegular(path)
+	if err != nil {
+		return nil, false
+	}
+	switch filepath.Base(path) {
+	case "poetry.lock":
+		return parsePoetryLock(data)
+	case "Pipfile.lock":
+		return parsePipfileLock(data)
+	case "pdm.lock":
+		return parsePDMLockAdvisory(data)
+	case "uv.lock":
+		return parseUVLockAdvisory(data)
+	case "pyproject.toml":
+		deps, ok := parsePyproject(path, data)
+		return append(deps, buildRequires(path, data)...), ok
+	case "setup.cfg":
+		deps, ok := parseSetupCfg(path, data)
+		return append(deps, buildRequires(path, data)...), ok
+	case "setup.py":
+		deps, ok := parseSetupPy(data)
+		return append(deps, buildRequires(path, data)...), ok
+	case "hatch_build.py":
+		return parseHatchBuild(data)
+	}
+	return parseRequirementsCoverage(data)
+}
+
+// parseRequirementsCoverage reads a requirements file's declared entries for the coverage
+// check. Includes, editables and options are skipped here; manifestDecls accounts for them.
+func parseRequirementsCoverage(data []byte) ([]plugin.ResolvedDependency, bool) {
+	var out []plugin.ResolvedDependency
+	for _, req := range joinContinuations(string(data)) {
+		line := stripReqComment(req)
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "-") { // -r include, -e editable, --option
+			continue
+		}
+		if strings.Contains(line, "://") || strings.HasPrefix(line, "git+") {
+			continue // URL / VCS requirement — no PyPI-pinned version
+		}
+		// Drop an environment marker ("; python_version < '3.8'") and any --hash tokens.
+		if i := strings.IndexByte(line, ';'); i >= 0 {
+			line = line[:i]
+		}
+		if i := strings.Index(line, "--hash"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		name, version, resolved, _ := parseRequirementSpec(line) // advisory path ignores extras
+		if name == "" {
+			continue
+		}
+		d := pyResolved(name, version, resolved, "requirements.txt")
+		if !d.Resolved {
+			d.Constraint = requirementConstraint(line)
+		}
+		out = append(out, d)
+	}
+	return out, true
 }

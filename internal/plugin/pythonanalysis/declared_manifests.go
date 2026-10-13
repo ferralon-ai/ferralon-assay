@@ -249,7 +249,9 @@ func universalNewlines(s string) string {
 // when it holds a line break, else on ';', each entry trimmed and empty ones dropped. For
 // install_requires and extras_require (dropComments) setuptools also drops entries that start
 // with '#'. ok is false when an entry is not a well-formed PEP 508 requirement or has a marker
-// that is not strictly well formed (strictMarker): setuptools fails on both.
+// that is not strictly well formed (strictMarker): setuptools fails on both. ok is also false
+// when an entry ends in a backslash: setuptools joins it to the next entry (join_continuation)
+// before parsing, and the joined requirement is not read here.
 func setupCfgList(value string, dropComments bool) (specs []string, ok bool) {
 	sep := ";"
 	if strings.Contains(value, "\n") {
@@ -259,6 +261,10 @@ func setupCfgList(value string, dropComments bool) (specs []string, ok bool) {
 	for _, e := range strings.Split(value, sep) {
 		e = strings.Trim(e, " \t")
 		if e == "" || dropComments && strings.HasPrefix(e, "#") {
+			continue
+		}
+		if strings.HasSuffix(e, `\`) {
+			ok = false
 			continue
 		}
 		r, valid := parsePEP508(e)

@@ -1069,8 +1069,8 @@ func TestResolveVersions_RequirementFileDirectives(t *testing.T) {
 			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
 			"deps.txt":  "# runtime\nflask>=3\npyjwt>=2.8\n",
 		}, true, ">=2.8", false},
-		// setuptools reads file lines verbatim: an inline comment is part of the requirement,
-		// which then fails to parse.
+		// setuptools cuts an inline comment before parsing and reads pyjwt>=2.8; the reader does
+		// not cut inline comments, so it withholds the file rather than read the line differently.
 		{"setup.cfg file: line with an inline comment", map[string]string{
 			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
 			"deps.txt":  "flask>=3\npyjwt>=2.8  # tokens\n",

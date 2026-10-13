@@ -73,9 +73,10 @@ var npmDocExts = map[string]bool{
 // or swap packages at install time.
 var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
 
-// npmInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
-// content head (nil when binary or empty), names or holds a JavaScript install surface, and
-// the rule that matched. Every file ManifestCandidates classifies (jsCandidate) is one too.
+// npmInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
+// empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
+// a JavaScript install surface, and the rule that matched. Every file ManifestCandidates
+// classifies (jsCandidate) is one too.
 func npmInstallSurface(path string, head []byte) (string, bool) {
 	if why, ok := npmSurface(path, head); ok {
 		return why, true
@@ -129,8 +130,11 @@ var (
 // JSON head with a string name and version under .yarn or .pnpm-store is a cached package
 // copy.
 func npmSurfaceContent(path string, head []byte) (string, bool) {
-	if head == nil || npmDocExts[strings.ToLower(filepath.Ext(path))] {
+	if npmDocExts[strings.ToLower(filepath.Ext(path))] {
 		return "", false
+	}
+	if head == nil {
+		return buildtree.NULHeadMatch(path, npmSurfaceContent)
 	}
 	trimmed := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '{' {

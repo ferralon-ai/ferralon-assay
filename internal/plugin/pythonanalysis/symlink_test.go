@@ -97,8 +97,8 @@ func TestInstalledCopies_SymlinkedSitePackages(t *testing.T) {
 
 // TestManifestFiles_SymlinkedDirectories: the manifest walk does not follow a symlinked
 // directory, so one counts as read only when its target is a directory the walk itself reads.
-// A link leaving the build dir, or to a directory the walk skips, leaves the walk unread and
-// the inventory incomplete.
+// A link leaving the build dir, to a directory the walk skips, or to nothing, leaves the walk
+// unread and the inventory incomplete.
 func TestManifestFiles_SymlinkedDirectories(t *testing.T) {
 	const svc = "requirements.txt"
 	cases := []struct {
@@ -114,6 +114,8 @@ func TestManifestFiles_SymlinkedDirectories(t *testing.T) {
 		{name: "a link leaving the build dir", links: map[string]string{"svc": "OUTSIDE"}, listed: 1, read: false},
 		{name: "a link to a directory the walk skips", files: map[string]string{"build/svc/requirements.txt": "flask==3.0.0\n"},
 			links: map[string]string{"svc": "build/svc"}, listed: 1, read: false},
+		{name: "a dangling directory link", links: map[string]string{"svc": "./missing"}, listed: 1, read: false},
+		{name: "a dangling link named as a manifest", links: map[string]string{"svc/requirements.txt": "../missing.txt"}, listed: 2, read: false},
 		{name: "a link to a regular file is a manifest", files: map[string]string{"deps/reqs.txt": "flask==3.0.0\n"},
 			links: map[string]string{"svc/requirements.txt": "../deps/reqs.txt"}, listed: 2, read: true},
 	}

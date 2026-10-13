@@ -12,12 +12,14 @@ package buildtree
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
 )
 
 // Skipped reports whether Walk visits a directory with this name without entering it.
@@ -136,7 +138,8 @@ const HeadSize = 64 << 10
 // link, so whatever the target holds is classified once, at its real path.
 //
 // match sees the path and up to HeadSize bytes of the file's content (nil when the content
-// looks binary or the file is empty). fullyRead is asked only about a regular file match
+// looks binary or the file is empty). A head match rejects that starts with a byte-order mark
+// is judged again as its BOMDecode text, so a mark can only add a candidate. fullyRead is asked only about a regular file match
 // accepted; every other candidate is not fully read. Skipped directories yield nothing, unless
 // they are symlinks leaving root.
 func Candidates(root string, match func(path string, head []byte) (why string, ok bool), fullyRead func(path string) bool) []Candidate {
@@ -198,6 +201,11 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 		}
 		why, ok := match(e.Path, head)
 		if !ok {
+			if text, bom := BOMDecode(head); bom {
+				why, ok = match(e.Path, text)
+			}
+		}
+		if !ok {
 			return nil
 		}
 		add(e.Path, why, !e.Symlink && fullyRead(e.Path))
@@ -238,7 +246,8 @@ func rawHead(path string) ([]byte, error) {
 
 // NULHeadMatch is a content rule's fallback for a file whose Head was nil. A NUL does not stop
 // every installer (pip and yarn v1 read past one in a comment), so it re-reads the head and runs
-// content on it twice: with every NUL removed, and with every NUL turned into a newline. A
+// content on it twice: with every NUL removed, and with every NUL turned into a newline; a head
+// that starts with a byte-order mark is also judged as its BOMDecode text. A
 // re-read that fails matches as "unreadable": the file went unread, which never proves anything
 // absent. An empty file does not match.
 func NULHeadMatch(path string, content func(path string, head []byte) (string, bool)) (string, bool) {
@@ -250,6 +259,9 @@ func NULHeadMatch(path string, content func(path string, head []byte) (string, b
 		bytes.ReplaceAll(raw, []byte{0}, nil),
 		bytes.ReplaceAll(raw, []byte{0}, []byte{'\n'}),
 	}
+	if text, bom := BOMDecode(raw); bom {
+		renderings = append(renderings, text)
+	}
 	for _, head := range renderings {
 		if len(head) == 0 {
 			continue
@@ -259,6 +271,43 @@ func NULHeadMatch(path string, content func(path string, head []byte) (string, b
 		}
 	}
 	return "", false
+}
+
+// BOMDecode returns head as UTF-8 text when it starts with a byte-order mark, and false when it
+// does not. pip decodes a requirements file by its BOM (Windows PowerShell 5 writes `pip freeze >`
+// as UTF-16LE with one), so a content rule judges the decoded text. A UTF-32 BOM is checked
+// before UTF-16, whose little-endian mark it begins with. A trailing partial code unit, where
+// HeadSize cut the file, is dropped.
+func BOMDecode(head []byte) ([]byte, bool) {
+	switch {
+	case bytes.HasPrefix(head, []byte{0xEF, 0xBB, 0xBF}):
+		return head[3:], true
+	case bytes.HasPrefix(head, []byte{0xFF, 0xFE, 0, 0}):
+		return decodeUTF32(head[4:], binary.LittleEndian), true
+	case bytes.HasPrefix(head, []byte{0, 0, 0xFE, 0xFF}):
+		return decodeUTF32(head[4:], binary.BigEndian), true
+	case bytes.HasPrefix(head, []byte{0xFF, 0xFE}):
+		return decodeUTF16(head[2:], binary.LittleEndian), true
+	case bytes.HasPrefix(head, []byte{0xFE, 0xFF}):
+		return decodeUTF16(head[2:], binary.BigEndian), true
+	}
+	return nil, false
+}
+
+func decodeUTF16(b []byte, order binary.ByteOrder) []byte {
+	units := make([]uint16, len(b)/2)
+	for i := range units {
+		units[i] = order.Uint16(b[2*i:])
+	}
+	return []byte(string(utf16.Decode(units)))
+}
+
+func decodeUTF32(b []byte, order binary.ByteOrder) []byte {
+	runes := make([]rune, len(b)/4)
+	for i := range runes {
+		runes[i] = rune(order.Uint32(b[4*i:]))
+	}
+	return []byte(string(runes))
 }
 
 // AllFullyRead reports whether every candidate is fully read.

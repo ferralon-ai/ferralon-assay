@@ -2,9 +2,11 @@ package buildtree
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -319,6 +321,7 @@ func TestNULHeadMatch(t *testing.T) {
 		{name: "empty", content: "", rule: equals("")},
 		{name: "only NULs, removed", content: "\x00\x00", rule: equals("")},
 		{name: "unreadable", missing: true, rule: equals("ab"), wantWhy: "unreadable", wantOK: true},
+		{name: "UTF-16LE BOM decoded", content: "\xff\xfea\x00\n\x00b\x00", rule: equals("a\nb"), wantWhy: "rule (NUL in head)", wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -331,5 +334,62 @@ func TestNULHeadMatch(t *testing.T) {
 				t.Errorf("NULHeadMatch = %q, %v; want %q, %v", why, ok, tc.wantWhy, tc.wantOK)
 			}
 		})
+	}
+}
+
+func TestBOMDecode(t *testing.T) {
+	cases := []struct {
+		name, head, want string
+		wantOK           bool
+	}{
+		{"UTF-8", "\xef\xbb\xbfab", "ab", true},
+		{"UTF-16LE", "\xff\xfea\x00\xe9\x00", "a\u00e9", true},
+		{"UTF-16BE", "\xfe\xff\x00a\x00\xe9", "a\u00e9", true},
+		{"UTF-16LE surrogate pair", "\xff\xfe\x3d\xd8\x00\xde", "\U0001F600", true},
+		{"UTF-16LE cut mid code unit", "\xff\xfea\x00b", "a", true},
+		{"UTF-32LE", "\xff\xfe\x00\x00a\x00\x00\x00", "a", true},
+		{"UTF-32BE", "\x00\x00\xfe\xff\x00\x00\x00a", "a", true},
+		{"no BOM", "ab", "", false},
+		{"empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := BOMDecode([]byte(tc.head))
+			if string(got) != tc.want || ok != tc.wantOK {
+				t.Errorf("BOMDecode(%q) = %q, %v; want %q, %v", tc.head, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// A head the match rejects is judged again without its byte-order mark, and only then: a mark
+// adds candidates, never removes one, and a BOM-free head is matched once.
+func TestCandidates_BOMHead(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "bom"), "\xef\xbb\xbfwant")
+	write(t, filepath.Join(root, "bom-raw"), "\xef\xbb\xbfraw")
+	write(t, filepath.Join(root, "plain"), "want")
+	write(t, filepath.Join(root, "other"), "\xef\xbb\xbfother")
+	calls := map[string]int{}
+	match := func(path string, head []byte) (string, bool) {
+		calls[filepath.Base(path)]++
+		switch string(head) {
+		case "want":
+			return "decoded", true
+		case "\xef\xbb\xbfraw":
+			return "raw", true
+		}
+		return "", false
+	}
+	var got []string
+	for _, c := range Candidates(root, match, func(string) bool { return true }) {
+		got = append(got, filepath.Base(c.Path)+":"+c.Why)
+	}
+	want := []string{"bom:decoded", "bom-raw:raw", "plain:decoded"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates = %v, want %v", got, want)
+	}
+	if want := map[string]int{"bom": 2, "bom-raw": 1, "plain": 1, "other": 2}; !maps.Equal(calls, want) {
+		t.Errorf("match calls = %v, want %v", calls, want)
 	}
 }

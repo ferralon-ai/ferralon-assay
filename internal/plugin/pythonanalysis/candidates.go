@@ -167,7 +167,7 @@ func pyCandidateName(path string) (string, bool) {
 		strings.HasPrefix(lower, "pylock.") && ext == ".toml",
 		strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
 		return "install manifest name", true
-	case condaRecipeName(name):
+	case condaRecipeName(lower):
 		return "conda recipe name", true
 	case (ext == ".yml" || ext == ".yaml") && (strings.HasPrefix(lower, "environment") || strings.HasPrefix(lower, "conda")):
 		return "conda environment name", true
@@ -193,7 +193,9 @@ func pyCandidateName(path string) (string, bool) {
 // condaRecipeName reports whether base is the file name of a conda recipe: conda-build's
 // meta.yaml, rattler-build's recipe.yaml, or conda.yaml, each with either YAML extension. conda
 // installs the run requirements a recipe lists, which no Python lockfile records, and the
-// resolver never reads a recipe, so one is a candidate that is not fully read.
+// resolver never reads a recipe, so one is a candidate that is not fully read. base is
+// lower-cased by the caller: conda-build finds a recipe whatever its case on a case-insensitive
+// filesystem.
 func condaRecipeName(base string) bool {
 	switch base {
 	case "meta.yaml", "meta.yml", "recipe.yaml", "recipe.yml", "conda.yaml", "conda.yml":

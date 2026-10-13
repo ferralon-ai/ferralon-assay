@@ -160,6 +160,36 @@ func TestBytecodeReach_UnresolvedVersionIsScopedAndRunWide(t *testing.T) {
 	}
 }
 
+// indy is an InvokeDynamic constant (bootstrap index 0) for name and desc.
+func (b *cpb) indy(name, desc string) uint16 {
+	return b.add("indy:"+name+desc, append(append([]byte{18}, be2(0)...), be2(b.nt(name, desc))...))
+}
+
+// A lambda hides its body behind invokedynamic: the only route from the ingress to the sink
+// runs through a synthetic method no static edge reaches. The search must find a path or
+// say it could not; an empty, clean answer would be a false negative.
+func TestBytecodeReach_LambdaOnlyIngressPathIsNeverClean(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.source("src/main/java/com/acme/Web.java", servletSource)
+	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+	a.class("target/classes", "com/acme/Web", func(b *cpb) []xmethod {
+		makeRunnable := append([]byte{0xBA}, append(be2(b.indy("run", "()Ljava/lang/Runnable;")), 0, 0, 0x57, 0xB1)...)
+		return []xmethod{
+			{"doGet", "(Ljava/lang/Object;Ljava/lang/Object;)V", accPublic, makeRunnable},
+			{"lambda$doGet$0", "()V", 0x100A, callFetch(b)},
+		}
+	})
+
+	res := a.reach(netkitSinkID)
+	if len(res.Searched) != 0 {
+		t.Fatalf("lambda-only path listed the sink as Searched: %v", res.Searched)
+	}
+	if len(res.Paths) == 0 && !hasReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
+		t.Errorf("lambda-only path came back clean: Paths %v, partiality %+v", res.Paths, res.Partiality)
+	}
+}
+
 // Two caches holding different bytes for one JAR: neither copy is searched, and the miss
 // names the package.
 func TestBytecodeReach_DifferingCachedCopiesAreNotLoaded(t *testing.T) {

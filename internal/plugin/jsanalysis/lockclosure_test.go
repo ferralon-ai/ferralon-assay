@@ -256,6 +256,18 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 		setup   func(t *testing.T, dir string)
 		bounded bool
 	}{
+		// readRegularFile follows symlinks; a package.json linked to a regular file outside the
+		// tree is left to the walk, which vetoes every symlink that leaves it.
+		{name: "a package.json above the lock symlinked to a regular file outside the tree", from: "app", files: map[string]string{
+			"app/package-lock.json": lock, "app/main.js": "require('qs')\n"},
+			setup: func(t *testing.T, dir string) {
+				outside := filepath.Join(t.TempDir(), "package.json")
+				treeWrite(t, outside, `{"name":"root"}`)
+				treeSymlink(t, outside, filepath.Join(dir, "package.json"))
+			}},
+		{name: "the same package.json above the lock as a regular file", from: "app", bounded: true, files: map[string]string{
+			"app/package-lock.json": lock, "app/main.js": "require('qs')\n", "package.json": `{"name":"root"}`}},
+
 		// A node_modules above the governing lock is on every resolution path from it.
 		{name: "a node_modules above the governing lock", from: "app", files: map[string]string{
 			"app/package-lock.json": lock, "app/main.js": "require('qs')\n", "node_modules/zed/package.json": `{"name":"zed"}`}},

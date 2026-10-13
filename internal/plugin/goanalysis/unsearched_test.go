@@ -12,7 +12,7 @@ import (
 // TestScanResult_WithholdsForUnsearchedMethods: an exported method govulncheck never searches (one
 // of a generic type, or one promoted from a type outside its entry points) withholds a refutation
 // when the package declaring it imports the refuted module, directly or through other packages, and
-// leaves it standing otherwise.
+// leaves it standing otherwise. The library packages are internal, so library_escape stays out of it.
 func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
@@ -33,51 +33,51 @@ func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
 		withheld bool
 	}{
 		{"an exported method of a library type, which govulncheck searches", map[string]string{
-			"lib/lib.go": lib + "type S struct{}\n\nfunc (S) Dispatch() { vulnmod.Bad() }\n",
+			"internal/lib/lib.go": lib + "type S struct{}\n\nfunc (S) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, false},
 		{"an exported method of a generic library type", map[string]string{
-			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n",
+			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"an exported pointer method of a generic library type", map[string]string{
-			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (*Box[T]) Dispatch() { vulnmod.Bad() }\n",
+			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (*Box[T]) Dispatch() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"a generic library type whose package reaches the module through another package", map[string]string{
-			"lib/lib.go":     "package lib\n\nimport \"example.com/m/inner\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { inner.Run() }\n",
-			"inner/inner.go": "package inner\n\nimport \"example.com/vulnmod\"\n\nfunc Run() { vulnmod.Bad() }\n",
+			"internal/lib/lib.go":     "package lib\n\nimport \"example.com/m/internal/inner\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { inner.Run() }\n",
+			"internal/inner/inner.go": "package inner\n\nimport \"example.com/vulnmod\"\n\nfunc Run() { vulnmod.Bad() }\n",
 		}, moduleFinding, true},
 		{"a generic library type whose package does not import the module", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
+			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
 		}, moduleFinding, false},
 		{"an unexported method of a generic library type", map[string]string{
-			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) dispatch() { vulnmod.Bad() }\n\nfunc Run() { Box[int]{}.dispatch() }\n\nvar _ = vulnmod.Safe\n",
+			"internal/lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (Box[T]) dispatch() { vulnmod.Bad() }\n\nfunc Run() { Box[int]{}.dispatch() }\n\nvar _ = vulnmod.Safe\n",
 		}, moduleFinding, false},
 		{"a generic type in the main package", map[string]string{
 			"main.go": "package main\n\nimport \"example.com/vulnmod\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() { vulnmod.Bad() }\n\nfunc main() { vulnmod.Safe() }\n",
 		}, moduleFinding, false},
 		{"a method promoted from the module's type", map[string]string{
-			"lib/lib.go": lib + "type S struct{ vulnmod.T }\n",
+			"internal/lib/lib.go": lib + "type S struct{ vulnmod.T }\n",
 		}, moduleFinding, true},
 		{"a method promoted into a type declared in a library function", map[string]string{
-			"lib/lib.go": lib + "func New() any {\n\ttype s struct{ vulnmod.T }\n\treturn s{}\n}\n",
+			"internal/lib/lib.go": lib + "func New() any {\n\ttype s struct{ vulnmod.T }\n\treturn s{}\n}\n",
 		}, moduleFinding, true},
 		{"an alias to an instantiation of the module's generic type", map[string]string{
-			"lib/lib.go": lib + "type A = vulnmod.G[int]\n",
+			"internal/lib/lib.go": lib + "type A = vulnmod.G[int]\n",
 		}, moduleFinding, true},
 		{"a generic alias to the module's generic type", map[string]string{
-			"go.mod":     "module example.com/m\n\ngo 1.24\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
-			"lib/lib.go": lib + "type A[X any] = vulnmod.G[X]\n",
+			"go.mod":              "module example.com/m\n\ngo 1.24\n\nrequire example.com/vulnmod v0.0.0\n\nreplace example.com/vulnmod => ./_vulnmod\n",
+			"internal/lib/lib.go": lib + "type A[X any] = vulnmod.G[X]\n",
 		}, moduleFinding, true},
 		{"an alias to a struct embedding the module's type", map[string]string{
-			"lib/lib.go": lib + "type A = struct{ vulnmod.T }\n",
+			"internal/lib/lib.go": lib + "type A = struct{ vulnmod.T }\n",
 		}, moduleFinding, true},
 		{"an alias to a type from a package that does not import the module", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype A = strings.Builder\n",
+			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype A = strings.Builder\n",
 		}, moduleFinding, false},
 		{"standard-library refutation, a generic type's package imports the vulnerable package", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"net/http\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Serve() error { return http.ListenAndServe(\":0\", nil) }\n",
+			"internal/lib/lib.go": "package lib\n\nimport \"net/http\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Serve() error { return http.ListenAndServe(\":0\", nil) }\n",
 		}, stdlibFinding, true},
 		{"standard-library refutation, a generic type's package imports another standard package", map[string]string{
-			"lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
+			"internal/lib/lib.go": "package lib\n\nimport \"strings\"\n\ntype Box[T any] struct{ v T }\n\nfunc (Box[T]) Dispatch() string { return strings.ToUpper(\"x\") }\n",
 		}, stdlibFinding, false},
 	}
 	for _, tc := range cases {
@@ -104,9 +104,9 @@ func TestScanResult_WithholdsForUnsearchedMethods(t *testing.T) {
 	}
 }
 
-// TestScanResult_WithholdsForLibraryEscape: in a build with no main package, a refutation is
-// withheld whenever one of its packages reaches the refuted module, however the library hands a
-// value of it to its caller, and stands when none does or when a main package is in the build.
+// TestScanResult_WithholdsForLibraryEscape: a refutation is withheld whenever an importable package
+// reaches the refuted module, however it hands a value of it to its importer and whether or not a
+// main package is in the build, and stands when only main or internal packages do.
 func TestScanResult_WithholdsForLibraryEscape(t *testing.T) {
 	base := map[string]string{
 		"go.mod":              "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/neutral v0.0.0\n\texample.com/vulnmod v0.0.0\n)\n\nreplace example.com/vulnmod => ./_vulnmod\n\nreplace example.com/neutral => ./_neutral\n",
@@ -161,9 +161,24 @@ func TestScanResult_WithholdsForLibraryEscape(t *testing.T) {
 		{"a package that does not type-check", map[string]string{
 			"lib/lib.go": "package lib\n\nvar N int = \"x\"\n",
 		}, moduleFinding, true},
-		{"a main package in the build", map[string]string{
-			"lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
-			"main.go":    "package main\n\nimport \"example.com/m/lib\"\n\nfunc main() { _ = lib.Get() }\n",
+		{"a main package beside an importable package that reaches the module", map[string]string{
+			"pkg/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
+			"cmd/x/main.go":  "package main\n\nimport \"example.com/m/pkg/lib\"\n\nfunc main() { _ = lib.Get() }\n",
+		}, moduleFinding, true},
+		{"a main package beside only internal packages that reach the module", map[string]string{
+			"internal/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
+			"cmd/x/main.go":       "package main\n\nimport \"example.com/m/internal/lib\"\n\nfunc main() { _ = lib.Get() }\n",
+		}, moduleFinding, false},
+		{"a main package that reaches the module itself", map[string]string{
+			"cmd/x/main.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { _ = vulnmod.T{} }\n",
+		}, moduleFinding, false},
+		{"a directory holding only a test in package main", map[string]string{
+			"pkg/lib/lib.go":   lib + "func Get() func() { return vulnmod.Bad }\n",
+			"e2e/main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
+		}, moduleFinding, true},
+		{"a directory holding only a test in package main, nothing reaching the module", map[string]string{
+			"lib/lib.go":       "package lib\n\nimport \"strings\"\n\nfunc Upper(s string) string { return strings.ToUpper(s) }\n",
+			"e2e/main_test.go": "package main\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n",
 		}, moduleFinding, false},
 		{"standard-library refutation, a package imports the vulnerable package", map[string]string{
 			"lib/lib.go": "package lib\n\nimport \"net/http\"\n\nfunc Handler() http.Handler { return http.NotFoundHandler() }\n",

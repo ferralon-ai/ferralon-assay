@@ -17,7 +17,7 @@ type program struct {
 	files      []fileParse
 	readFailed bool
 	skipped    bool
-	root       string // build dir (for reading package.json / tsconfig.json; never node_modules)
+	root       string // build dir (for reading package.json / tsconfig.json; never node_modules source)
 	// modules indexes every in-tree module by its path-based id: its bindings, its
 	// module-level functions, and its class methods. It replaces the former global
 	// (name,arity) funcsByKey / funcsByName maps — resolution is now import-scoped.

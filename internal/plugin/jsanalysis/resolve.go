@@ -77,7 +77,8 @@ func unresolvedWith(reason string) resolution {
 
 // Resolver resolves lexical names in a module's scope to concrete in-tree declarations,
 // using that module's bindings + the CJS/ESM/exports/imports/paths algorithm over the
-// whole-program index. It never opens node_modules and never executes source.
+// whole-program index. It never opens node_modules source (it reads an installed
+// package.json for its exports map) and never executes source.
 type Resolver interface {
 	// ResolveCall resolves a bare call `name(arity)` occurring in fromModule.
 	ResolveCall(fromModule string, name string, arity int) resolution
@@ -733,7 +734,8 @@ func stripJSExt(p string) string {
 	return p
 }
 
-// --- package.json / tsconfig loading (metadata only; never node_modules) ---
+// --- package.json / tsconfig loading (metadata only; never node_modules source, which
+// installedManifest reads only for an installed package.json's exports map) ---
 
 // pkgManifest is the resolver's view of a package.json: identity, module type, and the
 // raw exports/imports maps (interpreted by resolveExportsField).

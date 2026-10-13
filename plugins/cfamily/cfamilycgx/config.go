@@ -43,10 +43,14 @@ func confidenceRank(c string) int {
 // Config is the lane's configuration. cmd/assay-plugin-cfamily fills it from the environment;
 // this package never reads the environment itself.
 type Config struct {
-	Transport     Transport
-	CgxBin        string // native transport: absolute path of the cgx binary
-	WasmModule    string // wasm transport: module file; required while the SDK embeds none
-	CacheDir      string // root for index snapshots and the SDK's compile cache
+	Transport  Transport
+	CgxBin     string // native transport: absolute path of the cgx binary
+	WasmModule string // wasm transport: module file; required while the SDK embeds none
+	CacheDir   string // root for index snapshots and the native binary's private copy
+	// WasmCacheDir, when set, is where the SDK persists its wasm compilation cache (an absolute
+	// path, checked against group/other access). Empty (the default) caches in memory only for
+	// the life of this process; the SDK is never left to pick its own on-disk default.
+	WasmCacheDir  string
 	PoolSize      int    // extractor instances; 0 leaves the SDK default
 	MinConfidence string // ConfidencePossible | ConfidenceProbable | ConfidenceCertain
 	StatsFile     string // when set, one JSON line per operation is appended here

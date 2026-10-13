@@ -23,7 +23,11 @@
 //	                                  on PATH)
 //	ASSAY_CFAMILY_CGX_BIN_SHA256      native: the binary's pinned sha256 (default: the digest
 //	                                  baked into this build, if any)
-//	ASSAY_CFAMILY_CGX_CACHE_DIR       index snapshots and compile cache (default: user cache dir)
+//	ASSAY_CFAMILY_CGX_CACHE_DIR       index snapshots and the native binary's private copy
+//	                                  (default: user cache dir)
+//	ASSAY_CFAMILY_CGX_WASM_CACHE_DIR  wasm engine compilation cache: an absolute path, not
+//	                                  writable or readable by group or other (default: unset,
+//	                                  caches in memory only for the life of this process)
 //	ASSAY_CFAMILY_CGX_POOL_SIZE       wasm extractor instances (default: the SDK's)
 //	ASSAY_CFAMILY_CGX_MIN_CONFIDENCE  call-graph edge floor: possible (default) | probable |
 //	                                  certain
@@ -69,6 +73,7 @@ const (
 	envWasm          = brand.EnvPrefix + "_CFAMILY_CGX_WASM"
 	envWasmSHA256    = brand.EnvPrefix + "_CFAMILY_CGX_WASM_SHA256"
 	envCacheDir      = brand.EnvPrefix + "_CFAMILY_CGX_CACHE_DIR"
+	envWasmCacheDir  = brand.EnvPrefix + "_CFAMILY_CGX_WASM_CACHE_DIR"
 	envPoolSize      = brand.EnvPrefix + "_CFAMILY_CGX_POOL_SIZE"
 	envMinConfidence = brand.EnvPrefix + "_CFAMILY_CGX_MIN_CONFIDENCE"
 	envStats         = brand.EnvPrefix + "_CFAMILY_CGX_STATS"
@@ -148,6 +153,7 @@ func readConfig() (cfamilycgx.Config, error) {
 	cfg.CgxBin = strings.TrimSpace(os.Getenv(envBin))
 	cfg.WasmModule = strings.TrimSpace(os.Getenv(envWasm))
 	cfg.CacheDir = strings.TrimSpace(os.Getenv(envCacheDir))
+	cfg.WasmCacheDir = strings.TrimSpace(os.Getenv(envWasmCacheDir))
 	cfg.StatsFile = strings.TrimSpace(os.Getenv(envStats))
 	cfg.CgxBinSHA256 = strings.TrimSpace(os.Getenv(envBinSHA256))
 	if cfg.CgxBinSHA256 == "" {

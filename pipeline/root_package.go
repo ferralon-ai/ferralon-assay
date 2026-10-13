@@ -20,6 +20,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gradlewrapper"
 )
 
 // RootPackage is the identity the scanned project itself publishes under: the package an advisory
@@ -693,7 +694,7 @@ func gradleRootPackage(buildDir string) (RootPackage, bool) {
 		return RootPackage{}, false
 	}
 	version := script.version
-	if !settingsPlain || bothExist(buildDir, "build.gradle.kts", "build.gradle") || bothExist(buildDir, "settings.gradle.kts", "settings.gradle") || !absent(filepath.Join(buildDir, "buildSrc")) || !stockGradleWrapper(buildDir) {
+	if !settingsPlain || bothExist(buildDir, "build.gradle.kts", "build.gradle") || bothExist(buildDir, "settings.gradle.kts", "settings.gradle") || !absent(filepath.Join(buildDir, "buildSrc")) || !gradlewrapper.StockGradleWrapper(buildDir) {
 		version = ""
 	}
 	return RootPackage{PURLType: "maven", Name: script.group + ":" + name, Version: establishedVersion("maven", version)}, true
@@ -716,8 +717,6 @@ var (
 	gradleRootNameStmt  = regexp.MustCompile(`^rootProject\.name\b`)
 	gradleDependency    = regexp.MustCompile(`^(api|implementation|compileOnly|runtimeOnly|annotationProcessor|testImplementation|testCompileOnly|testRuntimeOnly|testAnnotationProcessor)\s*(\(\s*['"]\s*['"]\s*\)|['"]\s*['"])$`)
 	gradleRepository    = regexp.MustCompile(`^(mavenCentral|google|gradlePluginPortal|mavenLocal)\s*\(\s*\)$`)
-	gradleStockDist     = regexp.MustCompile(`^https://services\.gradle\.org/distributions/gradle-[0-9][0-9A-Za-z.-]*-(bin|all)\.zip$`)
-	gradleDistURL       = regexp.MustCompile(`(?m)^[ \t\f]*distributionUrl[ \t\f]*[=:][ \t\f]*(.*?)[ \t\f\r]*$`)
 	mavenWrapperKey     = regexp.MustCompile(`^(distributionUrl|distributionSha256Sum|distributionType|wrapperUrl|wrapperSha256Sum|wrapperVersion)$`)
 	mavenStockDist      = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/apache-maven/[0-9][0-9A-Za-z.-]*/apache-maven-[0-9][0-9A-Za-z.-]*-bin\.(zip|tar\.gz)$`)
 	mavenStockWrapper   = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/wrapper/maven-wrapper/[0-9][0-9A-Za-z.-]*/maven-wrapper-[0-9][0-9A-Za-z.-]*\.jar$`)
@@ -842,21 +841,6 @@ func gradlePlainBlock(src, code string, depth []int, st [2]int, word string) boo
 		}
 	}
 	return true
-}
-
-// stockGradleWrapper reports whether the wrapper, when there is one, fetches a distribution from
-// services.gradle.org; a custom distribution can carry init scripts that set the version.
-func stockGradleWrapper(buildDir string) bool {
-	path := filepath.Join(buildDir, "gradle", "wrapper", "gradle-wrapper.properties")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return absent(path)
-	}
-	urls := gradleDistURL.FindAllStringSubmatch(string(data), -1)
-	if len(urls) != 1 {
-		return false
-	}
-	return gradleStockDist.MatchString(strings.NewReplacer(`\:`, ":", `\=`, "=").Replace(urls[0][1]))
 }
 
 // absent reports whether nothing exists at path; an error other than not-exist counts as present.

@@ -202,3 +202,84 @@ func TestBuildDependencyGraph_UncachedDependencyIsAGap(t *testing.T) {
 		t.Errorf("gap for the uncached netkit JAR not recorded: %v", dg.Gaps)
 	}
 }
+
+// The graph opens a dependency JAR on the same terms as symbol resolution: a version that
+// walks out of the cache, a copy that links out of it, a copy that cannot be read, or copies
+// that disagree each leave a gap saying so, and no other copy is opened in its place.
+func TestBuildDependencyGraph_OpensOnlyTheCachedJar(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file modes do not stop root reading a directory")
+	}
+	const traversal = "../../../../../planted/fake"
+	m2Dir := func(base, version string) string {
+		return filepath.Join(base, ".m2", "repository", "com", "evil", "netkit", version)
+	}
+	for _, tc := range []struct {
+		name    string
+		version string
+		setup   func(t *testing.T, build, home string)
+		gap     string
+	}{
+		{name: "version walks out of the cache", version: traversal, setup: func(t *testing.T, build, home string) {
+			writeNetkitJar(t, filepath.Join(m2Dir(build, traversal), "netkit-"+traversal+".jar"))
+		}, gap: "unreadable"},
+		{name: "cached jar links out of the cache", version: "1.0.0", setup: func(t *testing.T, build, home string) {
+			outside := filepath.Join(t.TempDir(), "elsewhere.jar")
+			writeNetkitJar(t, outside)
+			if err := os.MkdirAll(m2Dir(build, "1.0.0"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(m2Dir(build, "1.0.0"), "netkit-1.0.0.jar")); err != nil {
+				t.Fatal(err)
+			}
+		}, gap: "unreadable"},
+		{name: "user cache copy cannot be read", version: "1.0.0", setup: func(t *testing.T, build, home string) {
+			writeNetkitJar(t, filepath.Join(m2Dir(build, "1.0.0"), "netkit-1.0.0.jar"))
+			dir := m2Dir(home, "1.0.0")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+		}, gap: "unreadable"},
+		{name: "copies differ", version: "1.0.0", setup: func(t *testing.T, build, home string) {
+			writeNetkitJar(t, filepath.Join(m2Dir(build, "1.0.0"), "netkit-1.0.0.jar"))
+			writeJar(t, filepath.Join(m2Dir(home, "1.0.0"), "netkit-1.0.0.jar"), "com/evil/netkit/Other.class", emitClass(&cpb{}, "com/evil/netkit/Other", nil))
+		}, gap: "differ"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			build := filepath.Join(t.TempDir(), "a", "b", "c", "d", "proj")
+			if err := os.MkdirAll(build, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(build, "pom.xml"), strings.Replace(netkitPom, "<artifactId>netkit</artifactId><version>1.0.0</version>",
+				"<artifactId>netkit</artifactId><version>"+tc.version+"</version>", 1))
+			tc.setup(t, build, home)
+			dg, err := buildDependencyGraph(context.Background(), build)
+			if err != nil {
+				t.Fatalf("buildDependencyGraph: %v", err)
+			}
+			if dg.Complete {
+				t.Fatal("opened a JAR the cache does not vouch for and called the closure complete")
+			}
+			var saw bool
+			for _, g := range dg.Gaps {
+				if strings.Contains(g, "com.evil:netkit") && strings.Contains(g, tc.gap) {
+					saw = true
+				}
+			}
+			if !saw {
+				t.Errorf("want a netkit gap saying %q, got %v", tc.gap, dg.Gaps)
+			}
+		})
+	}
+}
+
+// writeNetkitJar writes a netkit JAR holding UrlFetcher at path.
+func writeNetkitJar(t *testing.T, path string) {
+	t.Helper()
+	writeJar(t, path, "com/evil/netkit/UrlFetcher.class", emitClass(&cpb{}, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
+}

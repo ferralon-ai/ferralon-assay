@@ -13,7 +13,7 @@ import (
 
 const airflowVulnSrc = "../../../corpus/testdata/repros/FERRALON-PY-AIRFLOW-EXPAPI-0001-vulnerable/src"
 
-// assembledMap builds the shipped mapping the way production assembly would: the six inline
+// assembledMap builds the shipped mapping the way production assembly would: the inline
 // curated rows + the first-party declared derivation from the AIRFLOW repro + a declared-unknown
 // for the malformed distribution. It is the fixture C2a/C5/C6 assert over.
 func assembledMap(t *testing.T) DistImportMap {

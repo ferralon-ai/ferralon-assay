@@ -16,7 +16,7 @@ import (
 func realPE() []byte { return standardFixture(0x00).data }
 
 // writeRealDll writes a real (parseable) PE at <root>/<parts...>, returning its dir-less
-// path — the on-disk truth ResolveDependencyDll must locate for a dep to enter the set.
+// path — the on-disk truth ResolveDependencyDlls must locate for a dep to enter the set.
 func writeRealDll(t *testing.T, root string, parts ...string) string {
 	t.Helper()
 	p := filepath.Join(append([]string{root}, parts...)...)

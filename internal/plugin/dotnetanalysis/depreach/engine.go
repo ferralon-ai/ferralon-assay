@@ -359,9 +359,25 @@ func (e *Engine) hasInSetSubtype(te typeEntry) bool {
 // not_exploitable is therefore emitted ONLY from a hazard-free searched-and-empty
 // frontier. An unfound ingress or sink is a search that never ran → undetermined.
 func (e *Engine) Reach(ingress, sink MethodKey) Result {
+	return e.ReachAny(ingress, []MethodKey{sink})
+}
+
+// ReachAny is Reach against a sink SET: one search that succeeds on the first sink of
+// the set it reaches. It is how a sink named at overload granularity (every method a
+// SCIP id covers) is searched: not_exploitable means no member of the set is reachable.
+// Every key must be present in the loaded set, else the search is undetermined.
+func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 	res := Result{}
-	sinkNodes := e.byKey[sink]
-	res.SinkPresent = len(sinkNodes) > 0
+	var sinkNodes []*methodNode
+	missing := ""
+	for _, k := range sinks {
+		nodes := e.byKey[k]
+		if len(nodes) == 0 && missing == "" {
+			missing = k.String()
+		}
+		sinkNodes = append(sinkNodes, nodes...)
+	}
+	res.SinkPresent = len(sinks) > 0 && missing == ""
 	startNodes := e.byKey[ingress]
 
 	if len(startNodes) == 0 {
@@ -375,7 +391,7 @@ func (e *Engine) Reach(ingress, sink MethodKey) Result {
 		// trace 1 fails: we cannot even locate the vulnerable method to search for.
 		res.Verdict = Undetermined
 		res.HazardOnFrontier = true
-		res.HazardWhy = "sink not found in loaded set: " + sink.String()
+		res.HazardWhy = "sink not found in loaded set: " + missing
 		return res
 	}
 

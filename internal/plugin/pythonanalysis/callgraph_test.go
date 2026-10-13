@@ -326,13 +326,16 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 }
 
 // TestCallGraph_ManifestReadInPartIsToolFailure: the PEP 503 fallback maps an import to a
-// distribution only when a manifest declares it, so a manifest that fails to parse, or a
-// file declaring dependencies the lane does not read, can drop a boundary node; the call
-// graph then carries tool_failure. A pyproject TOML rejects still lends its lexical
-// [project] names to the fallback.
+// distribution only when a manifest declares it. When a manifest fails to parse, or a file
+// declares dependencies the lane does not read, AND some import resolves to no distribution,
+// the name that would attribute it may be in the part not read, so the call graph carries
+// tool_failure. With every import attributed (declared, curated, standard library or
+// first-party) the unread part changes no boundary node and adds no reason. A pyproject TOML
+// rejects still lends its lexical [project] names to the fallback.
 func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 	const app = "import acmelib\n\ndef fetch(u):\n    return acmelib.get(u)\n"
 	const edge = "pypi:acmelib#acmelib.get"
+	const setupCfg = "[options]\ninstall_requires =\n    acmelib\n"
 	cases := []struct {
 		name        string
 		files       map[string]string
@@ -345,30 +348,72 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 			boundary: true,
 		},
 		{
-			name: "unparseable requirements",
+			name: "unread setup.cfg, import declared nowhere read",
+			files: map[string]string{
+				"setup.cfg": setupCfg,
+				"app.py":    app,
+			},
+			toolFailure: true,
+		},
+		{
+			name: "unparseable requirements, import declared nowhere read",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\nhttps://example.com/pkg.whl\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "complete manifests, import declared nowhere",
+			files: map[string]string{
+				"requirements.txt": "flask==3.0.0\n",
+				"app.py":           app,
+			},
+		},
+		{
+			name: "unparseable requirements, import declared in the part read",
 			files: map[string]string{
 				"requirements.txt": "acmelib==1.0\nhttps://example.com/pkg.whl\n",
 				"app.py":           app,
 			},
-			toolFailure: true,
-			boundary:    true,
+			boundary: true,
 		},
 		{
-			name: "pyproject TOML rejects keeps lexical names",
+			name: "pyproject TOML rejects, import declared lexically",
 			files: map[string]string{
 				"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"acmelib>=1\"]\n\n[tool.broken\n",
 				"app.py":         app,
 			},
-			toolFailure: true,
-			boundary:    true,
+			boundary: true,
 		},
 		{
-			name: "setup.py install_requires is unread",
+			name: "unread setup.cfg, standard library import",
 			files: map[string]string{
-				"setup.py": "from setuptools import setup\nsetup(install_requires=[\"acmelib\"])\n",
-				"app.py":   app,
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"app.py":           app + "\nimport os.path\nfrom collections import OrderedDict\n",
 			},
-			toolFailure: true,
+			boundary: true,
+		},
+		{
+			name: "unread setup.cfg, first-party import",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"helpers.py":       "def h():\n    return 1\n",
+				"app.py":           app + "\nimport helpers\n",
+			},
+			boundary: true,
+		},
+		{
+			name: "unread setup.cfg, curated import",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"app.py":           app + "\nimport jwt\n",
+			},
+			boundary: true,
 		},
 	}
 	for _, c := range cases {

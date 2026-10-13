@@ -171,6 +171,16 @@ func (d distResolver) distFor(top string) (string, bool) {
 	return "", false
 }
 
+// undeclaredTop reports whether top reaches a distribution only through the PEP 503
+// fallback and no manifest name read here matches it: not first-party, not the standard
+// library, and absent from the curated table, which decides on its own either way.
+func (d distResolver) undeclaredTop(top string) bool {
+	if top == "" || d.firstParty[top] || stdlibModules[top] || len(d.curated.Reverse(top)) > 0 {
+		return false
+	}
+	return !d.declared[normalizePyCoordinate(top)]
+}
+
 // importTops returns the top-level import names distribution dist provides: its curated
 // rows, else its own name read as an import name (the PEP 503 fallback distFor applies in
 // reverse).
@@ -226,7 +236,7 @@ func firstPartyTops(modules []string) map[string]bool {
 // declares. complete is false when a manifest fails to parse or a file declares
 // dependencies version resolution does not read (the same surfaces that leave a version
 // unresolved): a name only that file holds is missing, so an import of it reaches no
-// boundary node, and the call graph's partiality has to say so.
+// boundary node.
 func declaredDistributions(buildDir string) (names map[string]bool, complete bool) {
 	names, complete = map[string]bool{}, true
 	add := func(deps []plugin.ResolvedDependency) {

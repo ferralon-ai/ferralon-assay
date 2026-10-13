@@ -69,6 +69,27 @@ func TestCallGraph_LiteralImportUnmodeledConditionKeepsLimit(t *testing.T) {
 			"src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 			"app.js":       fmt.Sprintf(load, "app"),
 		}, true},
+		{"workspace member a tsconfig paths alias shadows", map[string]string{
+			"package.json":            fmt.Sprintf(workspace, ""),
+			"tsconfig.json":           `{"compilerOptions":{"baseUrl":".","paths":{"m":["packages/m/src/index.js"]}}}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dist/dev.js","default":"./src/index.js"}}}`,
+			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":                  fmt.Sprintf(load, "m"),
+		}, true},
+		{"installed package a tsconfig paths alias shadows", map[string]string{
+			"package.json":                  `{"name":"app"}`,
+			"tsconfig.json":                 `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":                    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
+			"app.js":                        fmt.Sprintf(load, "cfg"),
+		}, true},
+		{"control: tsconfig paths alias over a package with default keys only", map[string]string{
+			"package.json":                  `{"name":"app"}`,
+			"tsconfig.json":                 `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":                    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"import":"./i.js","default":"./prod.js"}}}`,
+			"app.js":                        fmt.Sprintf(load, "cfg"),
+		}, false},
 		{"control: installed package with default keys only", map[string]string{
 			"package.json":                    `{"name":"app","dependencies":{"json5":"2.2.1"}}`,
 			"node_modules/json5/package.json": `{"name":"json5","exports":{".":{"import":"./dist/index.mjs","require":"./lib/index.js"}}}`,

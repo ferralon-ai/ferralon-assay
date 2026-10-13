@@ -230,7 +230,9 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 // workspace member, the governing package itself, or the installed package Node's
 // node_modules walk finds). Node can select that branch (`node --conditions=development`),
 // loading a file whose calls the lane did not follow, so the load alone does not bound what
-// runs (tracker#184 item 4). Only the manifest is read; an uninstalled package has none.
+// runs (tracker#184 item 4). A tsconfig `paths` alias does not end the check: tsc does not
+// rewrite the specifier, so at run time Node resolves it itself. Only the manifest is read;
+// an uninstalled package has none.
 func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	conds := loadConditions(false)
 	switch {
@@ -249,9 +251,6 @@ func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 				return true
 			}
 		}
-		return false
-	}
-	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
 		return false
 	}
 	if _, mm, sub, ok := rs.workspaceMember(spec); ok {

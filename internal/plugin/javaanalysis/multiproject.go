@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,24 +24,17 @@ const reasonMultipleProjectsUnsupported = "multiple_projects_unsupported"
 // includes a build, or that cannot be read; a settings script below the root; or more than one
 // build script beside a src directory. The walk enters every directory but VCS metadata,
 // installed-package trees and the local dependency caches, since a project in bin/ or a dot-dir
-// is still a project. why names the evidence, for the partiality path.
+// is still a project; anything it cannot read (see walkProjectTree) counts too. why names the
+// evidence, for the partiality path.
 func multipleProjects(buildDir string) (multi bool, why string) {
 	skip := map[string]bool{}
 	for _, root := range append(mavenRepoRoots(buildDir), gradleCacheRoots(buildDir)...) {
 		skip[filepath.Clean(root)] = true
 	}
+	tree := walkProjectTree(buildDir, skip)
 	var poms, gradle, settings []string
-	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree holds no project we can see
-		}
-		if d.IsDir() {
-			if path != buildDir && (projectWalkSkip(d.Name()) || skip[filepath.Clean(path)]) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		switch d.Name() {
+	for _, path := range tree.files {
+		switch filepath.Base(path) {
 		case "pom.xml":
 			poms = append(poms, path)
 		case "settings.gradle", "settings.gradle.kts":
@@ -50,8 +44,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 				gradle = append(gradle, path)
 			}
 		}
-		return nil
-	})
+	}
 
 	for _, p := range poms {
 		if pomListsModules(p) {
@@ -82,7 +75,99 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		sort.Strings(gradle)
 		return true, relSlash(buildDir, gradle[0]) + ", " + relSlash(buildDir, gradle[1])
 	}
+	if len(tree.unread) > 0 {
+		return true, relSlash(buildDir, tree.unread[0]) + " cannot be read in full"
+	}
 	return false, ""
+}
+
+// projectTree is what walkProjectTree read under a build directory.
+type projectTree struct {
+	files  []string // every file it read, as walked (symlinks to files inside the root included)
+	unread []string // every path whose contents it cannot vouch for, in walk order
+}
+
+// walkProjectTree walks root in lexical order without following a symlink. It enters every
+// directory except one projectWalkSkip names or one whose path is in skip. What it cannot vouch
+// for having read goes in unread: the root or a directory that cannot be read, a symlink that
+// does not resolve or resolves outside root, and a symlinked directory whose target the walk
+// does not itself enter. An in-root symlinked directory whose target it does enter is read at
+// that target's real path, so it costs nothing; a link back to an ancestor is that case, which
+// is what keeps the walk cycle-safe without following links. A symlink at a skip path, or one a
+// projectWalkSkip name labels, is passed over as the directory it stands for would be.
+func walkProjectTree(root string, skip map[string]bool) projectTree {
+	var tree projectTree
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		tree.unread = append(tree.unread, root)
+		return tree
+	}
+	walked := map[string]bool{} // real paths of the directories the walk entered
+	type link struct{ path, target string }
+	var linked []link
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			tree.unread = append(tree.unread, path)
+			if d != nil && d.IsDir() && path != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path != root && skip[filepath.Clean(path)] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, inside := resolveInside(realRoot, path)
+			switch {
+			case !inside:
+				tree.unread = append(tree.unread, path)
+			case isDirPath(target):
+				if !projectWalkSkip(d.Name()) {
+					linked = append(linked, link{path, target})
+				}
+			default:
+				tree.files = append(tree.files, path)
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if path != root && projectWalkSkip(d.Name()) {
+				return filepath.SkipDir
+			}
+			// No component below root is a symlink here, so the real path is a lexical join.
+			if rel, err := filepath.Rel(root, path); err == nil {
+				walked[filepath.Join(realRoot, rel)] = true
+			}
+			return nil
+		}
+		tree.files = append(tree.files, path)
+		return nil
+	})
+	for _, l := range linked {
+		if !walked[l.target] {
+			tree.unread = append(tree.unread, l.path)
+		}
+	}
+	return tree
+}
+
+// resolveInside resolves every symlink in path and reports whether the result lies under
+// realRoot (itself already resolved). A path that does not resolve is not inside.
+func resolveInside(realRoot, path string) (string, bool) {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realRoot, target)
+	return target, err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func isDirPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // projectWalkSkip names the directories the project walk never enters: VCS metadata and

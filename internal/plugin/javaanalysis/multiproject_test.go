@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -74,5 +75,79 @@ func TestMultipleProjects(t *testing.T) {
 				t.Errorf("multipleProjects = %v (%s), want %v", got, why, tc.multi)
 			}
 		})
+	}
+}
+
+// The walk never follows a symlink. An in-root symlinked directory is read when the walk enters
+// its target at its real path; a link that leaves the build, does not resolve, or points into a
+// directory the walk skips cannot be vouched for, and neither can a directory it cannot read, so
+// each of those counts as a possible second project.
+func TestMultipleProjects_SymlinksAndUnreadable(t *testing.T) {
+	single := map[string]string{"pom.xml": "<project><artifactId>a</artifactId></project>", "shared/A.java": "class A {}"}
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		multi bool
+	}{
+		{"in-root symlinked directory is read", func(t *testing.T, dir string) {
+			mustSymlink(t, "shared", filepath.Join(dir, "alias"))
+		}, false},
+		{"link back to the root terminates and is read", func(t *testing.T, dir string) {
+			mustSymlink(t, "..", filepath.Join(dir, "shared", "loop"))
+		}, false},
+		{"link cycle does not resolve", func(t *testing.T, dir string) {
+			mustSymlink(t, "y", filepath.Join(dir, "x"))
+			mustSymlink(t, "x", filepath.Join(dir, "y"))
+		}, true},
+		{"symlinked directory leaving the build", func(t *testing.T, dir string) {
+			outside := t.TempDir()
+			writeFile(t, filepath.Join(outside, "pom.xml"), "<project><artifactId>b</artifactId></project>")
+			mustSymlink(t, outside, filepath.Join(dir, "ext"))
+		}, true},
+		{"file link leaving the build, like a venv interpreter", func(t *testing.T, dir string) {
+			outside := filepath.Join(t.TempDir(), "python3")
+			writeFile(t, outside, "")
+			mustSymlink(t, outside, filepath.Join(dir, ".venv", "bin", "python"))
+		}, true},
+		{"dangling link", func(t *testing.T, dir string) {
+			mustSymlink(t, "gone", filepath.Join(dir, "lib"))
+		}, true},
+		{"symlinked directory into a skipped tree", func(t *testing.T, dir string) {
+			writeFile(t, filepath.Join(dir, "node_modules", "x", "pom.xml"), "<project><artifactId>x</artifactId></project>")
+			mustSymlink(t, filepath.Join("node_modules", "x"), filepath.Join(dir, "x"))
+		}, true},
+		{"symlinked directory onto a skipped directory", func(t *testing.T, dir string) {
+			writeFile(t, filepath.Join(dir, "node_modules", "x", "pom.xml"), "<project><artifactId>x</artifactId></project>")
+			mustSymlink(t, "node_modules", filepath.Join(dir, "deps"))
+		}, true},
+		{"unreadable directory", func(t *testing.T, dir string) {
+			locked := filepath.Join(dir, "locked")
+			writeFile(t, filepath.Join(locked, "pom.xml"), "<project><artifactId>b</artifactId></project>")
+			if err := os.Chmod(locked, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for p, b := range single {
+				writeFile(t, filepath.Join(dir, p), b)
+			}
+			tc.setup(t, dir)
+			if got, why := multipleProjects(dir); got != tc.multi {
+				t.Errorf("multipleProjects = %v (%s), want %v", got, why, tc.multi)
+			}
+		})
+	}
+}
+
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
 	}
 }

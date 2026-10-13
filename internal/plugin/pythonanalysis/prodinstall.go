@@ -154,6 +154,9 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			return nil
 		}
 		sc.files = append(sc.files, rel)
+		if kind != "docker" && dockerInstructionRe.Match(data) {
+			sc.veto(c, "Dockerfile instructions in a file not read as a Dockerfile: which files its install commands read is unknown")
+		}
 		sc.envVetoes(c, data)
 		if kind == "workflow" {
 			workflows = append(workflows, pendingWorkflow{rel, data})
@@ -423,6 +426,9 @@ func installSurface(rel string, data []byte) string {
 	case base == "railway.json":
 		return "json"
 	}
+	if dockerfileContent(data) {
+		return "docker"
+	}
 	if !installCommandRe.Match(data) && !pipEnvRe.Match(data) && !installerEnvRe.Match(data) && !indexEnvRe.Match(data) {
 		return ""
 	}
@@ -439,6 +445,33 @@ func installSurface(rel string, data []byte) string {
 	}
 	return "text"
 }
+
+// dockerfileContent reports a Dockerfile by its content, whatever its name (docker/web.prod,
+// build/app.image): after comments, parser directives and ARG lines, its first instruction
+// is FROM.
+func dockerfileContent(data []byte) bool {
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		word, _, _ := strings.Cut(t, " ")
+		word, _, _ = strings.Cut(word, "\t")
+		switch strings.ToUpper(word) {
+		case "ARG":
+			continue
+		case "FROM":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// dockerInstructionRe matches a line that is a Dockerfile instruction placing or locating
+// files. In a file not read as a Dockerfile, it means the commands beside it may run in an
+// image whose files are not the ones at their repository paths.
+var dockerInstructionRe = regexp.MustCompile(`(?m)^[ \t]*(?:FROM|COPY|ADD|WORKDIR|ONBUILD)[ \t]+\S|(?im)^[ \t]*from[ \t]+\S+(?:[ \t]+as[ \t]+\S+)?[ \t]*\r?$`)
 
 // hasDisallowedEnvOnly reports a file that is a candidate only for its settings: its vetoes
 // come from envVetoes, and it carries no installer token to parse.

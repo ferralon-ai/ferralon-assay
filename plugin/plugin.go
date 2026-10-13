@@ -85,7 +85,9 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go).
+	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
+	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
 
@@ -240,9 +242,32 @@ const (
 	// method true on every run.
 	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
 	// PartialReasonAdvisoryUnknownToAnalyzer (loud): the analyzer that would search for the
-	// advisory's symbols emitted no evidence about the advisory at all, so its silence is not a
-	// search that came back empty.
+	// advisory's symbols emitted no evidence about the advisory at all. It may not know the
+	// advisory, or may never have analyzed the affected module (a test-only or tool dependency
+	// outside the graph it loads). Either way its silence is not a search that came back empty.
 	PartialReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// PartialReasonExcludedFiles (loud): files the build left out (another GOOS or GOARCH, a build
+	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
+	// them, so its refutation does not cover the builds that compile them.
+	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
+	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
+	// type outside the search) may call into the module it found no path to, so its refutation does
+	// not cover them.
+	PartialReasonUnsearchedMethods = "unsearched_methods"
+	// PartialReasonLibraryEscape (loud): a package code outside the build can import reaches the
+	// module an analyzer found no path to. A value the package hands its importer (a function, an
+	// interface value, a struct carrying either) can run the module's code from the importer,
+	// outside the analyzer's search, so its refutation does not cover the package's importers.
+	PartialReasonLibraryEscape = "library_escape"
+	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
+	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
+	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this
+	// says the program does it, so it is loud.
+	PartialReasonReflectiveCall = PartialReasonReflection + ":call"
+	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
+	// (plugin.Open), so none of that code's calls were read.
+	PartialReasonPluginLoad = "plugin_load"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every

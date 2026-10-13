@@ -299,6 +299,12 @@ func reportSARIFPartialityResults(r report.Report) []SARIFResult {
 		if n.Detail != "" {
 			props["detail"] = n.Detail
 		}
+		if n.Package != "" {
+			props["package"] = n.Package
+		}
+		if n.Path != "" {
+			props["path"] = n.Path
+		}
 		// withheld_advisories names the specific advisory ids this limit suppressed a verdict
 		// for. Only a stored v1 document carries them; this analyzer emits an advisory it could
 		// not adjudicate as an undetermined row instead, so the list is empty for every limit it

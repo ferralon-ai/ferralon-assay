@@ -318,8 +318,25 @@ func TestFinding_GoGovulncheckEvidence(t *testing.T) {
 	}{
 		{name: "module matched, no symbol reached: not exploitable", mutate: func(*groundsFixture) {}},
 		{
-			name:   "an inherent limit does not block the refutation",
+			name:   "reflection without a reflective call does not block the refutation",
 			mutate: func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonReflection} },
+		},
+		{
+			name: "a reflective call blocks the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "a plugin load blocks the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonPluginLoad} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "files the build left out block the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonExcludedFiles} },
+			wantReason: report.ReasonAnalysisDidNotRun,
 		},
 		{
 			name:       "cgo blind spot keeps undetermined",
@@ -443,6 +460,38 @@ func TestFinding_ScopedLimits(t *testing.T) {
 			base: netNotReached,
 			mutate: func(fx *groundsFixture) {
 				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{xnet + "@v0.1.0"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a bare module path is not a package URL and counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"golang.org/x/net"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a target that does not parse counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"not a purl"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a package URL with no name counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"pkg:golang/"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a package path inside the module counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{"", xnet + "/http2"}}}
 			},
 			wantReason: report.ReasonAnalysisDidNotRun,
 		},
@@ -634,5 +683,33 @@ func TestFinding_AliasedDependencyCallIsNotGrounds(t *testing.T) {
 	f := fx.finding(t)
 	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonVulnerableSymbolUnresolved {
 		t.Fatalf("got %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonVulnerableSymbolUnresolved)
+	}
+}
+
+// TestScopedLimitCounts pins the failing-wide matches TestFinding_ScopedLimits cannot reach through a
+// dependency fixture: the Go toolchain subject and a Go package-path admission.
+func TestScopedLimitCounts(t *testing.T) {
+	stdlib := pkgKey{typ: "golang", name: "stdlib"}
+	http2 := pkgKey{typ: "golang", name: "golang.org/x/net/http2"}
+	cases := []struct {
+		name     string
+		flag     artifact.ScopedPartialityFlag
+		admitted pkgKey
+		want     bool
+	}{
+		{"stdlib: a Go module target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:golang/golang.org/x/text"}}, stdlib, true},
+		{"stdlib: a first-party target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{""}}, stdlib, true},
+		{"stdlib: a first-party package counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:npm/lodash"}}, stdlib, true},
+		{"stdlib: another ecosystem's targets do not count", artifact.ScopedPartialityFlag{Reason: "tool_failure", Package: "pkg:npm/lodash", Targets: []string{"pkg:npm/lodash"}}, stdlib, false},
+		{"package path admitted, its module targeted", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/net"}}, http2, true},
+		{"module paths sharing a prefix but not a path boundary", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/netx"}}, pkgKey{typ: "golang", name: "golang.org/x/net"}, false},
+		{"a module path in another case", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/github.com/BurntSushi/toml"}}, pkgKey{typ: "golang", name: "github.com/burntsushi/toml"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scopedLimitCounts(tc.flag, tc.admitted, true); got != tc.want {
+				t.Errorf("scopedLimitCounts(%+v, %v) = %v, want %v", tc.flag, tc.admitted, got, tc.want)
+			}
+		})
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/vuln/scan"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -97,8 +98,9 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 	if !cg.Partiality.Complete {
 		// A call graph that is itself partial cannot fully corroborate any trace.
 		// Carry its incompleteness even when it listed no explicit reasons — the
-		// cause is unknown, which is exactly what the undetermined code says.
-		if len(cg.Partiality.Reasons) == 0 {
+		// cause is unknown, which is exactly what the undetermined code says. Scoped
+		// limits are a stated cause, carried below.
+		if len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		}
 	}
@@ -124,10 +126,12 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return part
 }
 
 // Reachability runs govulncheck as a LIBRARY (golang.org/x/vuln/scan) over
@@ -151,7 +155,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	baseEnv := reachBaseEnv()
 	env, scanToolchain, switched := subjectToolchainEnv(ctx, baseEnv, req.BuildDir, req.GoToolchain)
 
-	findings, err := runGovulncheck(ctx, req, env)
+	scanned, err := runGovulncheck(ctx, req, env)
 	if err != nil && switched {
 		// The subject's toolchain materialized but could not complete the scan — its stdlib
 		// cannot build this module, or the older go command rejects the go.mod. Fall back to
@@ -159,19 +163,135 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		// would be a worse failure than a disclosed partial one), and ScanToolchain then
 		// reports the analyzer's toolchain so no caller mistakes this for a subject scan.
 		env, scanToolchain, switched = baseEnv, goEnvVersion(ctx, req.BuildDir, baseEnv), false
-		findings, err = runGovulncheck(ctx, req, env)
+		scanned, err = runGovulncheck(ctx, req, env)
 	}
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
 
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	load, err := LoadProgram(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := evidenceResult(findings, cg, env)
+	res, err := scanResult(ctx, scanned, load, req.BuildDir, env)
+	if err != nil {
+		return plugin.ReachabilityResult{}, err
+	}
 	res.ScanToolchain = scanToolchain
 	return res, nil
+}
+
+// scanResult turns one govulncheck run over the loaded build into the reachability result: it
+// reconciles the findings against the build's call graph and withholds a refutation that files the
+// build left out, exported methods govulncheck never searched, or a library's callers may
+// contradict.
+func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDir string, env []string) (plugin.ReachabilityResult, error) {
+	cg, err := callGraphOf(load, "vta")
+	if err != nil {
+		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
+	}
+	res := withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env)
+	res = withholdForUnsearchedMethods(res, scanned, load.Packages)
+	return withholdForLibraryEscape(res, scanned, load.Packages), nil
+}
+
+// withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
+// (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
+// package that declares it imports the refuted module (for the standard library, a vulnerable
+// package), directly or through other packages, the search that found no path never covered it.
+// Reach is read off the import graph, never the call graph, which is what misses these methods.
+// The result then declares unsearched_methods instead.
+func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || unsearchedCallers(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	}
+	return res
+}
+
+// unsearchedCallers reports whether an unsearched method may call into module. A method whose
+// declaring package the load does not hold counts.
+func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	reach := newModuleReach(pkgs, module, vulnerable)
+	for _, m := range unsearchedMethods(pkgs) {
+		decl := reach.loaded[m.Pkg().Path()]
+		if decl == nil || reach.reachesModule(decl) {
+			return true
+		}
+	}
+	return false
+}
+
+// withholdForLibraryEscape drops a refutation an importer of the build's packages may contradict.
+// govulncheck searches only the calls the build's own packages make. A value an importable package
+// hands its importer (a function, an interface value, a struct carrying either, through a result, an
+// exported var or field, or an embedded type) can still run the module's code once the importer
+// calls it, and that call is outside the search, whether or not the build also has a main package.
+// So when any importable package reaches the refuted module (for the standard library, a
+// vulnerable package), or the load cannot say whether one does, the result declares library_escape
+// instead.
+func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || libraryReaches(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+	}
+	return res
+}
+
+// libraryReaches reports whether one of the build's importable packages reaches module, counting a
+// load in which a package failed to load or type-check, since its imports may be incomplete.
+func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	incomplete := false
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types == nil || len(p.Errors) > 0 {
+			incomplete = true
+		}
+	})
+	if incomplete {
+		return true
+	}
+	reach := newModuleReach(pkgs, module, vulnerable)
+	return slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return importable(p) && reach.reachesModule(p) })
+}
+
+// importable reports whether code outside the build's module can import p: it is not a main
+// package, and no element of its path is internal, which only the module's own packages can
+// import. Those callers are the build's mains, whose calls govulncheck searches.
+func importable(p *packages.Package) bool {
+	return !isMain(p) && !slices.Contains(strings.Split(p.PkgPath, "/"), "internal")
+}
+
+// isMain reports whether p is a main package with files the build compiles; a directory holding
+// only a test in package main is no program.
+func isMain(p *packages.Package) bool {
+	return p.Name == "main" && len(p.GoFiles) > 0
+}
+
+// withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
+// for another GOOS or GOARCH, or behind a build tag, that may call into the refuted module was
+// never traced, so the refutation holds only for builds that leave it out. The result then
+// declares excluded_files instead.
+func withholdForLeftOutFiles(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || leftOutCallers(ctx, pkgs, module, scanned.vulnerablePackages(module), buildDir, env) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonExcludedFiles)
+	}
+	return res
 }
 
 // evidenceResult turns one advisory's govulncheck findings into the reachability result.
@@ -181,12 +301,14 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 // finding (with a trace) when a vulnerable function is reachable. So the finding levels say how
 // far it got:
 //
-//   - no finding at all: govulncheck has nothing to say about this advisory here (it does not know
-//     the advisory, or disagrees that the version is affected). Its silence is not a search, so
-//     the result declares advisory_unknown_to_analyzer.
+//   - no finding at all: govulncheck has nothing to say about this advisory here. It may not know
+//     the advisory, may disagree that the version is affected, or may never have analyzed the
+//     module (a test-only or tool dependency is outside the graph it loads). Its silence is not a
+//     search, so the result declares advisory_unknown_to_analyzer.
 //   - module/package findings and no symbol finding: it matched the advisory to the build and
 //     traced no call to the vulnerable functions — a refutation of that module, valid for the
-//     platform and build tags it ran under, which the Detail names.
+//     platform and build tags it ran under, which the Detail names. Reachability withholds it
+//     when files the build left out may call into the module.
 //   - symbol findings it could not turn into a path: unknown, never "safe".
 func evidenceResult(findings []vulnFinding, cg plugin.CallGraphResult, env []string) plugin.ReachabilityResult {
 	stacks := findingsToStacks(findings)
@@ -237,9 +359,17 @@ func moduleRefutation(findings []vulnFinding, env []string) *plugin.Refutation {
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 		Package: "pkg:golang/" + module,
-		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, default build tags, tests excluded)",
-			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH)),
+		Detail: fmt.Sprintf("govulncheck matched the advisory to %s %s and found no call path to its vulnerable functions; %s (GOOS=%s GOARCH=%s, %s, tests excluded)",
+			module, version, use, envOr(env, "GOOS", runtime.GOOS), envOr(env, "GOARCH", runtime.GOARCH), tagsDetail(goflagsTags(env))),
 	}
+}
+
+// tagsDetail names the build tags a run used.
+func tagsDetail(tags []string) string {
+	if len(tags) == 0 {
+		return "default build tags"
+	}
+	return "build tags from GOFLAGS: " + strings.Join(tags, ",")
 }
 
 // withReason adds reason to p, which then is no longer complete.
@@ -251,7 +381,9 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	}
 	reasons := append(append([]string(nil), p.Reasons...), reason)
 	slices.Sort(reasons)
-	return plugin.Partial(reasons...)
+	out := plugin.Partial(reasons...)
+	out.Scoped = p.Scoped
+	return out
 }
 
 // envOr returns the last value env assigns to key, else def.
@@ -427,18 +559,18 @@ func (r goRelease) toolchain() string {
 	return fmt.Sprintf("go%d.%d.%d", r.major, r.minor, r.patch)
 }
 
-// runGovulncheck performs one govulncheck run under env and returns the findings for req.VulnID.
+// runGovulncheck performs one govulncheck run under env and returns what it says about req.VulnID.
 // A govulncheck FAILURE (build broke, non-zero exit, timeout) is a HARD error (inv.4) — never a
 // silent empty result; only the caller may decide that a failure under a switched toolchain is
 // retryable.
-func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) ([]vulnFinding, error) {
+func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) (vulnScan, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := scan.Command(ctx, "-C", req.BuildDir, "-json", "-mode=source", "-scan=symbol", "./...")
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = env
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("govulncheck start (%q): %w", req.BuildDir, err)
+		return vulnScan{}, fmt.Errorf("govulncheck start (%q): %w", req.BuildDir, err)
 	}
 	if err := cmd.Wait(); err != nil {
 		// govulncheck signals "vulnerabilities found" via an error with
@@ -448,16 +580,16 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 		// (inv.4) — never a silent empty result.
 		var ec interface{ ExitCode() int }
 		if !errors.As(err, &ec) || (ec.ExitCode() != 0 && ec.ExitCode() != 3) {
-			return nil, fmt.Errorf("govulncheck failed (%q): %w: %s",
+			return vulnScan{}, fmt.Errorf("govulncheck failed (%q): %w: %s",
 				req.BuildDir, err, strings.TrimSpace(stderr.String()))
 		}
 	}
 
-	findings, err := parseFindings(stdout.Bytes(), req.VulnID)
+	scanned, err := parseFindings(stdout.Bytes(), req.VulnID)
 	if err != nil {
-		return nil, fmt.Errorf("parse govulncheck json: %w", err)
+		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
 	}
-	return findings, nil
+	return scanned, nil
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---
@@ -470,8 +602,41 @@ type vulnMessage struct {
 }
 
 type vulnOSV struct {
-	ID      string   `json:"id,omitempty"`
-	Aliases []string `json:"aliases,omitempty"`
+	ID       string         `json:"id,omitempty"`
+	Aliases  []string       `json:"aliases,omitempty"`
+	Affected []vulnAffected `json:"affected,omitempty"`
+}
+
+// vulnAffected is one OSV affected entry: a module and the vulnerable packages it lists.
+type vulnAffected struct {
+	Package struct {
+		Name string `json:"name"`
+	} `json:"package"`
+	EcosystemSpecific struct {
+		Imports []struct {
+			Path string `json:"path"`
+		} `json:"imports"`
+	} `json:"ecosystem_specific"`
+}
+
+// vulnScan is what one govulncheck run says about an advisory: its findings at every level, and the
+// vulnerable package paths its OSV entries list for each module.
+type vulnScan struct {
+	findings []vulnFinding
+	imports  map[string][]string
+}
+
+// vulnerablePackages returns the advisory's vulnerable packages in module: those its OSV entries
+// list and those a package-level finding names, sorted. It is empty when neither names one.
+func (s vulnScan) vulnerablePackages(module string) []string {
+	pkgs := slices.Clone(s.imports[module])
+	for _, f := range s.findings {
+		if len(f.Trace) > 0 && f.Trace[0].Module == module && f.Trace[0].Package != "" {
+			pkgs = append(pkgs, f.Trace[0].Package)
+		}
+	}
+	slices.Sort(pkgs)
+	return slices.Compact(pkgs)
 }
 
 type vulnFinding struct {
@@ -491,32 +656,47 @@ type vulnFrame struct {
 }
 
 // parseFindings decodes the newline-delimited JSON message stream and returns the findings, at
-// every level (module, package, symbol), for the requested vulnID. A finding is keyed by its GO-
-// id; when vulnID is another id (CVE/GHSA), the stream's osv entries map it to the GO- ids that
-// list it as an alias. An empty vulnID keeps all findings.
-func parseFindings(out []byte, vulnID string) ([]vulnFinding, error) {
+// every level (module, package, symbol), for the requested vulnID, with the vulnerable packages its
+// osv entries list. A finding is keyed by its GO- id; when vulnID is another id (CVE/GHSA), the
+// stream's osv entries map it to the GO- ids that list it as an alias. An empty vulnID keeps all
+// findings.
+func parseFindings(out []byte, vulnID string) (vulnScan, error) {
 	dec := json.NewDecoder(bufio.NewReader(bytes.NewReader(out)))
 	ids := map[string]bool{vulnID: true}
 	var all []vulnFinding
+	var osvs []*vulnOSV
 	for dec.More() {
 		var msg vulnMessage
 		if err := dec.Decode(&msg); err != nil {
-			return nil, err
+			return vulnScan{}, err
 		}
-		if o := msg.OSV; o != nil && slices.Contains(o.Aliases, vulnID) {
-			ids[o.ID] = true
+		if o := msg.OSV; o != nil {
+			osvs = append(osvs, o)
+			if slices.Contains(o.Aliases, vulnID) {
+				ids[o.ID] = true
+			}
 		}
 		if msg.Finding != nil {
 			all = append(all, *msg.Finding)
 		}
 	}
-	var findings []vulnFinding
+	scanned := vulnScan{imports: map[string][]string{}}
 	for _, f := range all {
 		if vulnID == "" || ids[f.OSV] {
-			findings = append(findings, f)
+			scanned.findings = append(scanned.findings, f)
 		}
 	}
-	return findings, nil
+	for _, o := range osvs {
+		if vulnID != "" && !ids[o.ID] {
+			continue
+		}
+		for _, a := range o.Affected {
+			for _, imp := range a.EcosystemSpecific.Imports {
+				scanned.imports[a.Package.Name] = append(scanned.imports[a.Package.Name], imp.Path)
+			}
+		}
+	}
+	return scanned, nil
 }
 
 // findingsToStacks converts symbol-level findings to ingress->sink CallStacks.

@@ -66,7 +66,9 @@ type ExposureFootprintPayload struct {
 	// Partiality
 	PartialityFlags []string `json:"partiality_flags,omitempty"` // reason codes from any partial plugin ops
 	// ScopedPartiality carries the limits a plugin bounded to the packages the hidden code could
-	// reach (plugin.ScopedReason), unioned over the same axes as PartialityFlags.
+	// reach (plugin.ScopedReason), unioned over the same axes as PartialityFlags. A run whose only
+	// limits are scoped has an empty PartialityFlags, so a reader that ignores this field reads it
+	// as complete.
 	ScopedPartiality []ScopedPartialityFlag `json:"scoped_partiality,omitempty"`
 }
 

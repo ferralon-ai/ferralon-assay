@@ -30,6 +30,7 @@ type dockerStage struct {
 	cwd        string
 	cwdUnknown bool
 	copies     []dockerCopy
+	writes     []fileWrite // RUN commands that may change files, in order
 }
 
 // dockerCopy is one COPY, ADD or bind mount: its sources, relative to the build context or to
@@ -52,6 +53,9 @@ type dockerRunCtx struct {
 	cwd        string
 	cwdUnknown bool
 	mounts     []dockerCopy
+	build      bool        // a RUN: what it writes stays in the stage
+	runStart   int         // the stage's writes before this RUN
+	local      []fileWrite // what a CMD, ENTRYPOINT or HEALTHCHECK writes, while it runs
 }
 
 var dockerInstruction = regexp.MustCompile(`^\s*([A-Za-z]+)(?:\s+(.*))?$`)
@@ -142,17 +146,17 @@ func (df *dockerfile) instruction(c scanCtx, line string, heredocs []string) {
 	case "RUN":
 		df.run(c, args, heredocs)
 	case "CMD", "ENTRYPOINT":
-		df.shell(c, args, nil, heredocs)
+		df.shell(c, args, nil, heredocs, false)
 	case "HEALTHCHECK":
 		if i := strings.Index(strings.ToUpper(args), "CMD"); i >= 0 {
-			df.shell(c, args[i+3:], nil, heredocs)
+			df.shell(c, args[i+3:], nil, heredocs, false)
 		}
 	case "ONBUILD":
 		df.instruction(c, args, heredocs)
 	case "ENV", "ARG", "LABEL", "EXPOSE", "USER", "VOLUME", "STOPSIGNAL", "SHELL", "MAINTAINER":
 		sc.lineCheck(c, line)
 	default:
-		df.shell(c, line, nil, heredocs)
+		df.shell(c, line, nil, heredocs, false)
 	}
 }
 
@@ -194,6 +198,27 @@ func isDigits(s string) bool {
 	_, err := strconv.Atoi(s)
 	return err == nil
 }
+
+// installerConfigDest returns why a COPY or ADD to dest withholds: it places a file where pip
+// or uv reads configuration (pip.conf or pip.ini in /etc, /etc/xdg/pip, ~/.pip, ~/.config/pip
+// or a virtual environment; uv.toml in /etc/uv or ~/.config/uv), or a single source under a
+// file name the scanner cannot read.
+func installerConfigDest(dest string, dirDest bool, srcs []string) string {
+	if dirDest {
+		return ""
+	}
+	base := strings.ToLower(path.Base(dest))
+	switch {
+	case installerConfigNames[base]:
+		return fmt.Sprintf("places %s, an installer configuration file the scanner does not read", dest)
+	case strings.ContainsAny(base, "$`") && len(srcs) == 1 && path.Clean(srcs[0]) != ".":
+		return fmt.Sprintf("copies to %s, a file name the scanner cannot read: it may be an installer configuration file", dest)
+	}
+	return ""
+}
+
+// installerConfigNames are the file names pip and uv read configuration from.
+var installerConfigNames = setOf("pip.conf", "pip.ini", "uv.toml")
 
 var copyFlagsWithValue = setOf("--from", "--chown", "--chmod", "--exclude", "--checksum")
 var copyFlags = setOf("--link", "--parents", "--keep-git-dir")
@@ -250,6 +275,10 @@ func (df *dockerfile) copy(c scanCtx, args string, heredocs []string) {
 		}
 	}
 	cp.dirDest = strings.HasSuffix(dest, "/") || len(words) > 2 || dest == "."
+	if why := installerConfigDest(dest, cp.dirDest, words[:len(words)-1]); why != "" {
+		sc.veto(c, "%s", why)
+		return
+	}
 	switch {
 	case strings.ContainsAny(dest, "$`") || (!path.IsAbs(dest) && st.cwdUnknown):
 		cp.destUnknown = true
@@ -289,7 +318,7 @@ func (df *dockerfile) run(c scanCtx, args string, heredocs []string) {
 		df.sc.veto(c, "RUN option %s is not parsed", flag)
 		return
 	}
-	df.shell(c, rest, mounts, heredocs)
+	df.shell(c, rest, mounts, heredocs, true)
 }
 
 // mount reads a RUN --mount value: a bind mount is a transient copy; cache, tmpfs, secret and
@@ -348,10 +377,11 @@ func (df *dockerfile) mount(c scanCtx, spec string) (*dockerCopy, bool) {
 	return cp, true
 }
 
-// shell scans a command (or its heredoc bodies) as production shell in the image.
-func (df *dockerfile) shell(c scanCtx, cmd string, mounts []dockerCopy, heredocs []string) {
+// shell scans a command (or its heredoc bodies) as production shell in the image; build
+// reports a RUN, which runs while the image is built.
+func (df *dockerfile) shell(c scanCtx, cmd string, mounts []dockerCopy, heredocs []string, build bool) {
 	st := df.current()
-	run := &dockerRunCtx{df: df, stage: st, cwd: st.cwd, cwdUnknown: st.cwdUnknown, mounts: mounts}
+	run := &dockerRunCtx{df: df, stage: st, cwd: st.cwd, cwdUnknown: st.cwdUnknown, mounts: mounts, build: build, runStart: len(st.writes)}
 	c.st = &textState{bases: []string{"."}, docker: run}
 	if len(heredocs) > 0 {
 		cmd = heredocRe.ReplaceAllString(cmd, "")
@@ -377,62 +407,134 @@ func (r *dockerRunCtx) locate(p string) (srcs []string, why string) {
 		}
 		cp = path.Join(r.cwd, cp)
 	}
-	srcs, why, found := r.df.resolve(r.mounts, cp, 0)
-	if why != "" || found {
-		return srcs, why
-	}
-	srcs, why, found = r.df.resolveStage(r.stage, cp, 0)
+	var wins []writeWindow
+	srcs, why, found, _ := r.df.resolve(r.mounts, cp, 0, &wins)
 	if why != "" {
 		return nil, why
 	}
-	if !found {
-		return nil, "is not copied into the image"
+	// A bind mount is placed when this command starts; a copy, when its COPY runs.
+	ws := append(windowWrites(wins), r.local...)
+	if found {
+		ws = append(ws, r.stage.writes[r.runStart:]...)
+	} else {
+		srcs, why, found = r.df.resolveStage(r.stage, cp, 0, &wins)
+		if why != "" {
+			return nil, why
+		}
+		if !found {
+			return nil, "is not copied into the image"
+		}
+		ws = append(windowWrites(wins), r.local...)
+	}
+	if w := changedBy(ws, cp); w != nil {
+		return nil, fmt.Sprintf("may be changed after it is placed: %s runs %s, which is not known to leave it as it is", w.where, w.what)
 	}
 	return srcs, ""
 }
 
-func (df *dockerfile) resolveStage(st *dockerStage, cp string, depth int) ([]string, string, bool) {
+// resolveStage finds the latest copy in st or a stage it builds on that places cp, and adds to
+// wins the writes that run after it: the rest of that stage, and every stage built on it.
+func (df *dockerfile) resolveStage(st *dockerStage, cp string, depth int, wins *[]writeWindow) ([]string, string, bool) {
+	var after []*dockerStage
 	for s := st; s != nil; s = s.base {
-		if srcs, why, found := df.resolve(s.copies, cp, depth); why != "" || found {
-			return srcs, why, found
+		srcs, why, found, idx := df.resolve(s.copies, cp, depth, wins)
+		if why != "" {
+			return nil, why, false
 		}
+		if found {
+			if why := df.placedOnce(s, idx, cp, srcs); why != "" {
+				return nil, why, false
+			}
+			for _, a := range after {
+				*wins = append(*wins, writeWindow{a, -1})
+			}
+			*wins = append(*wins, writeWindow{s, idx})
+			return srcs, "", true
+		}
+		after = append(after, s)
 	}
 	return nil, "", false
 }
 
-// resolve finds the latest copy that places cp: found reports one did.
-func (df *dockerfile) resolve(copies []dockerCopy, cp string, depth int) ([]string, string, bool) {
+// placedOnce returns why cp withholds when a COPY before s.copies[idx], in s or a stage it
+// builds on, also places it from anything other than srcs: which content lands is then
+// unknown (a .dockerignore can leave the later copy without it).
+func (df *dockerfile) placedOnce(s *dockerStage, idx int, cp string, srcs []string) string {
+	for st, n := s, idx; st != nil; st, n = st.base, -1 {
+		if n < 0 {
+			n = len(st.copies)
+		}
+		for i := n - 1; i >= 0; i-- {
+			c := st.copies[i]
+			if c.destUnknown {
+				return "may also be placed by a COPY whose destination the scanner cannot read"
+			}
+			cands := copyCandidates(c, cp)
+			if len(cands) == 0 {
+				continue
+			}
+			if c.inline || c.remote || c.from != nil {
+				return "is placed by more than one COPY, which may differ"
+			}
+			var out []string
+			for _, cand := range cands {
+				if df.sc.contextFile(df.rel, cand) {
+					out = append(out, cand)
+				}
+			}
+			if len(out) > 0 && !sameStrings(out, srcs) {
+				return "is placed by more than one COPY of different files"
+			}
+		}
+	}
+	return ""
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, x := range a {
+		if !containsString(b, x) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolve finds the latest copy that places cp: found reports one did, at copies[idx].
+func (df *dockerfile) resolve(copies []dockerCopy, cp string, depth int, wins *[]writeWindow) ([]string, string, bool, int) {
 	if depth > 8 {
-		return nil, "is copied through stages the scanner does not follow", false
+		return nil, "is copied through stages the scanner does not follow", false, -1
 	}
 	for i := len(copies) - 1; i >= 0; i-- {
 		c := copies[i]
 		if c.destUnknown {
-			return nil, "may be placed by a COPY whose destination the scanner cannot read", false
+			return nil, "may be placed by a COPY whose destination the scanner cannot read", false, -1
 		}
 		cands := copyCandidates(c, cp)
 		if len(cands) == 0 {
 			continue
 		}
 		if c.inline {
-			return nil, "is written inline by the Dockerfile", false
+			return nil, "is written inline by the Dockerfile", false, -1
 		}
 		if c.remote {
-			return nil, "may be fetched from a URL", false
+			return nil, "may be fetched from a URL", false, -1
 		}
 		if c.from != nil {
 			var out []string
 			for _, cand := range cands {
-				srcs, why, found := df.resolveStage(c.from, path.Join("/", cand), depth+1)
+				srcs, why, found := df.resolveStage(c.from, path.Join("/", cand), depth+1, wins)
 				if why != "" {
-					return nil, why, false
+					return nil, why, false, -1
 				}
 				if found {
 					out = append(out, srcs...)
 				}
 			}
 			if len(out) > 0 {
-				return out, "", true
+				return out, "", true, i
 			}
 			continue
 		}
@@ -443,10 +545,10 @@ func (df *dockerfile) resolve(copies []dockerCopy, cp string, depth int) ([]stri
 			}
 		}
 		if len(out) > 0 {
-			return out, "", true
+			return out, "", true, i
 		}
 	}
-	return nil, "", false
+	return nil, "", false, -1
 }
 
 // copyCandidates returns the sources of c that could land at cp: a file copied to the

@@ -779,6 +779,26 @@ func appendFile(files map[string]string, name, extra string) map[string]string {
 	return files
 }
 
+// pinnedDocker is the uv workspace with a requirements.txt pinning its runtime install, copied
+// into an image whose RUN is cmd.
+func pinnedDocker(cmd string) map[string]string {
+	return withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "Dockerfile": "FROM python:3.12\nCOPY . .\nRUN " + cmd + "\n"})
+}
+
+// rewrittenReqs is the uv workspace with a requirements.txt pinning its runtime install and a
+// requirements/docker.txt naming black, and the surface at name with content.
+func rewrittenReqs(name, content string) map[string]string {
+	return withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements/docker.txt": "black==24.4.2\n", name: content})
+}
+
+// pipConfigCopy is pinnedDocker's tree with a pip configuration that adds black at src,
+// copied to dest before the install.
+func pipConfigCopy(src, dest string) map[string]string {
+	return withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\n",
+		src:          "[install]\nrequirement = /src/requirements-dev.txt\n",
+		"Dockerfile": "FROM python:3.12\nCOPY . /src\nCOPY " + src + " " + dest + "\nRUN pip install -r /src/requirements.txt\n"})
+}
+
 func dockerRun(cmd string) map[string]string {
 	return withLock(map[string]string{"Dockerfile": "FROM python:3.12\nRUN " + cmd + "\n"})
 }
@@ -1098,6 +1118,49 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		{name: "pdm --prod without the group leaves it out", files: map[string]string{"pdm.lock": pdmOptLock, "app.py": "import requests\n", "Dockerfile": "RUN pdm install --prod\n"}, pkg: "pkg:pypi/pysocks@1.7.1", refute: true},
 		{name: "an unparsed option cluster vetoes", files: dockerRun("uv sync -Zq"), pkg: "pkg:pypi/pytest@8.2.0", veto: "uv sync option -Zq"},
 		{name: "an installer setting that selects groups", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV UV_NO_DEV=0\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "UV_NO_DEV"},
+
+		// Interpreter arguments, read against CPython's option list.
+		{name: "python -mpip in a Dockerfile", files: dockerRun("python3.12 -mpip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "python -mpip -r in a Dockerfile", files: withLock(map[string]string{"requirements-dev.txt": "black==24.4.2\n", "Dockerfile": "FROM python:3.12\nCOPY . .\nRUN python3 -mpip install -r requirements-dev.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "python -mpip in a production workflow", files: withLock(map[string]string{".github/workflows/deploy.yml": "on: push\njobs:\n  d:\n    environment: production\n    runs-on: ubuntu-latest\n    steps:\n      - run: python -mpip install black==24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "python -mpip in a k8s command vector", files: withLock(map[string]string{"deploy/k8s/job.yaml": "command: [\"sh\",\"-c\",\"python -mpip install black==24.4.2\"]\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "pip.exe in a k8s command vector", files: withLock(map[string]string{"deploy/k8s/job.yaml": "command: [\"sh\",\"-c\",\"pip.exe install black==24.4.2\"]\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "a clustered -Impip", files: dockerRun("python -Impip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "python -m pip internals", files: dockerRun("python -m pip._internal install black==24.4.2"), pkg: "pkg:pypi/pytest@8.2.0", veto: "-m pip._internal runs an installer module"},
+		{name: "an unknown interpreter option", files: pinnedDocker("python3 -Z -m pip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", veto: "python3 -Z is not an interpreter option"},
+		{name: "an unknown long interpreter option", files: pinnedDocker("python --frobnicate -m pip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", veto: "python --frobnicate is not an interpreter option"},
+		{name: "control: an attached -W value and -mpip parse", files: pinnedDocker("python -Wignore -Bmpip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: a py launcher version selector parses", files: pinnedDocker("py -3.12 -m pip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: python -m piptools sync reads its files", files: pinnedDocker("python -m piptools sync requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: python -I -m pip", files: dockerRun("python -I -m pip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+		{name: "control: python3 -u -m pip", files: dockerRun("python3 -u -m pip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
+
+		// A requirement file changed between its placement and the install that reads it.
+		{name: "cp onto the file in the same RUN", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN cp requirements/docker.txt requirements.txt && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs cp, which is not known to leave it as it is"},
+		{name: "mv onto the file in an earlier RUN", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN mv requirements/docker.txt requirements.txt\nRUN pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs mv"},
+		{name: "an append redirect onto the file", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN echo black==24.4.2 >> requirements.txt && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs a redirect to requirements.txt"},
+		{name: "sed -i on the file", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN sed -i '$ a black==24.4.2' requirements.txt && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs sed"},
+		{name: "cp onto the file in a shell script", files: rewrittenReqs("deploy.sh", "cp requirements/docker.txt requirements.txt\npip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "may be changed before it is read"},
+		{name: "cp onto the file in an earlier step of a production job", files: rewrittenReqs(".github/workflows/deploy.yml", "on: push\njobs:\n  d:\n    environment: production\n    runs-on: ubuntu-latest\n    steps:\n      - run: cp requirements/docker.txt requirements.txt\n      - run: pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "may be changed before it is read"},
+		{name: "a command off the allow-list between COPY and install", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN make deps\nRUN pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs make"},
+		{name: "a redirect to a variable", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN echo black==24.4.2 > $REQS && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs a redirect to $REQS"},
+		{name: "an output option onto the file", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN uv pip compile requirements/docker.txt -o requirements.txt && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs -o requirements.txt"},
+		{name: "a CMD that rewrites the file before installing", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nCMD cp requirements/docker.txt requirements.txt && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "runs cp"},
+		{name: "a second COPY of a different file onto it", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY requirements/docker.txt requirements.txt\nCOPY . .\nRUN pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", veto: "placed by more than one COPY of different files"},
+		{name: "control: a second COPY of the same file", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY requirements.txt .\nCOPY . .\nRUN pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: inert commands between COPY and install", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN set -eux && mkdir -p /data && echo ok > /dev/null && chmod 644 requirements.txt && [ -f requirements.txt ]\nRUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*\nRUN python -m venv /venv && . /venv/bin/activate && pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: a file written before the COPY that places it", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nWORKDIR /app\nRUN make deps\nCOPY . .\nRUN pip install -r requirements.txt\n"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: inert commands in a shell script", files: rewrittenReqs("deploy.sh", "#!/bin/sh\nset -eu\necho installing\nif [ -f requirements.txt ]; then\n  pip install -r requirements.txt\nfi\n"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+
+		// Installer configuration placed into the image or named by a command.
+		{name: "a pip config copied to /etc/pip.conf", files: pipConfigCopy("docker/pip.conf.prod", "/etc/pip.conf"), pkg: "pkg:pypi/black@24.4.2", veto: "places /etc/pip.conf"},
+		{name: "a pip config copied to ~/.config/pip", files: pipConfigCopy("docker/pipcfg", "/root/.config/pip/pip.conf"), pkg: "pkg:pypi/black@24.4.2", veto: "places /root/.config/pip/pip.conf"},
+		{name: "a uv config copied to /etc/uv", files: pipConfigCopy("docker/pipcfg", "/etc/uv/uv.toml"), pkg: "pkg:pypi/black@24.4.2", veto: "places /etc/uv/uv.toml"},
+		{name: "a file copied to a variable name", files: pipConfigCopy("docker/pipcfg", "/etc/${CONF}"), pkg: "pkg:pypi/black@24.4.2", veto: "a file name the scanner cannot read"},
+		{name: "a pip config written by RUN", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\n", "docker/pipcfg": "[install]\nrequirement = /src/requirements-dev.txt\n", "Dockerfile": "FROM python:3.12\nCOPY . /src\nRUN cp /src/docker/pipcfg /etc/pip.conf && pip install -r /src/requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "names /etc/pip.conf"},
+		{name: "UV_CONFIG_FILE", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nCOPY . .\nENV UV_CONFIG_FILE=/docker/uvcfg\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "UV_CONFIG_FILE"},
+		{name: "uv --config-file", files: dockerRun("uv --config-file docker/uvcfg sync --frozen --no-dev"), pkg: "pkg:pypi/black@24.4.2", veto: "uv --config-file"},
+		{name: "control: another config copied into /etc", files: pipConfigCopy("docker/pipcfg", "/etc/app.conf"), pkg: "pkg:pypi/black@24.4.2", refute: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -94,6 +94,11 @@ func TestLoadSet_CondaRecipe(t *testing.T) {
 	plain := func(name string) string {
 		return "package:\n  name: " + name + "\n  version: 1.0.0\nrequirements:\n  host:\n    - python\n    - pip\n  run:\n    - python >=3.10\n"
 	}
+	runBlack := "package:\n  name: app\nrequirements:\n  run:\n    - python\n    - black\n"
+	// inert carries every key the reader skips, each naming black where it may.
+	inert := "schema_version: 1\ncontext:\n  v: 1\nsource:\n  path: ..\nbuild:\n  number: 0\n  run_exports:\n    - black\n" +
+		plain("app") + "  run_constrained:\n    - black <25\n  run_exports:\n    - black\n  ignore_run_exports:\n    - black\n" +
+		"cache:\n  source:\n    path: ..\n  requirements:\n    host:\n      - python\ntest:\n  requires:\n    - black\ntests:\n  - script: [pytest]\nabout:\n  summary: black\nextra:\n  maintainers: [black]\n"
 	tests := []struct {
 		name, file, content string
 		refute              bool
@@ -109,6 +114,20 @@ func TestLoadSet_CondaRecipe(t *testing.T) {
 		{"recipe with outputs", "recipe/meta.yaml", plain("app") + "outputs:\n  - name: app-extra\n    requirements:\n      run:\n        - requests\n", false},
 		{"recipe that does not parse", "recipe/meta.yaml", "package: [name\n", false},
 		{"binary recipe", "recipe/meta.yaml", "package:\x00\n", false},
+		{"meta.yml run requirement", "recipe/meta.yml", runBlack, false},
+		{"conda.yml run requirement", "recipe/conda.yml", runBlack, false},
+		{"conda.yaml run requirement", "conda.yaml", runBlack, false},
+		{"recipe.yml run requirement", "recipe/recipe.yml", runBlack, false},
+		{"control: plain meta.yml is read", "recipe/meta.yml", plain("app"), true},
+		{"host requirement exports run requirements", "recipe/meta.yaml", strings.Replace(plain("app"), "    - pip\n", "    - pip\n    - black\n", 1), false},
+		{"build requirement exports run requirements", "recipe/meta.yaml", plain("app") + "  build:\n    - black\n", false},
+		{"rattler-build cache host requirement", "recipe/recipe.yaml", plain("app") + "cache:\n  requirements:\n    host: [black]\n", false},
+		{"requirements-level conditional", "recipe/recipe.yaml", plain("app") + "  if: unix\n  then:\n    run: [black]\n", false},
+		{"unknown top-level key", "recipe/meta.yaml", plain("app") + "app:\n  entry: black\n", false},
+		{"unknown requirements key", "recipe/meta.yaml", plain("app") + "  runtime:\n    - black\n", false},
+		{"unknown cache key", "recipe/recipe.yaml", plain("app") + "cache:\n  extra_deps: [black]\n", false},
+		{"host that is not a list", "recipe/meta.yaml", "package:\n  name: app\nrequirements:\n  host: black\n", false},
+		{"control: every inert key", "recipe/meta.yaml", inert, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

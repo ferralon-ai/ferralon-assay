@@ -46,6 +46,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -84,6 +85,9 @@ type textState struct {
 	bases   []string // repository directories, slash-separated
 	unknown bool     // a cd the scanner could not follow
 	docker  *dockerRunCtx
+	// writes are the earlier commands that may change files, shared by the lines of a shell
+	// script and the steps of a CI job; nil reads each line on its own.
+	writes *[]fileWrite
 }
 
 func newTextState(bases ...string) *textState {
@@ -239,27 +243,29 @@ func underSkipped(root, target string) bool {
 const familyGap = `(?:[\s"',\\]+[-$][^\s"',]*(?:[\s"',\\]+[^\s"',\\-][^\s"',]*)?)*[\s"',\\]+`
 
 // installCommandRe matches an installer token: an install family word (with any directory
-// prefix) followed, past any global options, by a subcommand that installs, or an installer
-// that always installs. In installCommandPattern, ~ stands for familyGap.
+// prefix and an .exe suffix, or attached to an interpreter's -m option) followed, past any
+// global options, by a subcommand that installs, or an installer that always installs. In
+// installCommandPattern, ~ stands for familyGap.
 var installCommandRe = regexp.MustCompile(strings.ReplaceAll(installCommandPattern, "~", familyGap))
 
-const installCommandPattern = `(?:^|[^\w.-])(?:[\w.-]*/)*(?:` +
-	`pip[0-9.]*~(?:install|config)\b|pip-sync\b|` +
-	`uv~(?:pip|sync|add|run|tool|export|lock)\b|uvx\b|` +
-	`pipx~(?:install|run|inject|upgrade|reinstall|install-all|runpip|upgrade-all|reinstall-all)\b|` +
-	`poetry~(?:install|sync|add|update|export|self|lock)\b|` +
-	`pdm~(?:install|sync|add|update|export|self|lock|plugin|import)\b|` +
-	`pipenv~(?:install|sync|update|upgrade|lock)\b|` +
+const installCommandPattern = `(?:(?:^|[^\w.-])(?:[\w.-]*/)*|(?:^|[\s"',])-[A-Za-z]*m)(?:` +
+	`pip[0-9.]*(?:\.exe)?~(?:install|config)\b|pip-sync\b|piptools~sync\b|` +
+	`uv(?:\.exe)?~(?:pip|sync|add|run|tool|export|lock)\b|uvx\b|` +
+	`pipx(?:\.exe)?~(?:install|run|inject|upgrade|reinstall|install-all|runpip|upgrade-all|reinstall-all)\b|` +
+	`poetry(?:\.exe)?~(?:install|sync|add|update|export|self|lock)\b|` +
+	`pdm(?:\.exe)?~(?:install|sync|add|update|export|self|lock|plugin|import)\b|` +
+	`pipenv(?:\.exe)?~(?:install|sync|update|upgrade|lock)\b|` +
 	`micropipenv\b|pex\b|shiv\b|flit~install\b|` +
 	`rye~(?:sync|add|install|tools?)\b|hatch~(?:env|run|shell|test|fmt)\b|` +
 	`pixi~(?:install|add|run|global|shell|exec)\b|` +
-	`(?:conda|mamba|micromamba)~(?:install|create|env|update|upgrade)\b|` +
+	`(?:conda|mamba|micromamba)(?:\.exe)?~(?:install|create|env|update|upgrade)\b|` +
 	`easy_install\b|setup\.py~(?:install|develop)\b)`
 
 // pipEnvRe matches a pip setting by environment variable; installerEnvRe matches an installer
 // setting whose name selects groups or extras.
 var (
 	pipEnvRe       = regexp.MustCompile(`\bPIP_([A-Z][A-Z0-9_]*)`)
+	uvConfigEnvRe  = regexp.MustCompile(`\bUV_CONFIG_FILE\b`)
 	installerEnvRe = regexp.MustCompile(`\b(?:UV|POETRY|PDM|PIPENV)_[A-Z0-9_]*(?:GROUP|DEV|EXTRA|WITH|ONLY|CATEGOR|OPTIONAL)[A-Z0-9_]*`)
 	// indexEnvRe matches an installer setting naming an index or find-links location, with
 	// the value that follows it (=, : or whitespace), if any.
@@ -268,7 +274,8 @@ var (
 
 // installTokens reports whether data carries an installer command or an installer setting.
 func installTokens(data []byte) bool {
-	return installCommandRe.Match(data) || pipEnvRe.Match(data) || installerEnvRe.Match(data) || indexEnvRe.Match(data)
+	return installCommandRe.Match(data) || pipEnvRe.Match(data) || installerEnvRe.Match(data) || indexEnvRe.Match(data) ||
+		uvConfigEnvRe.Match(data)
 }
 
 // pipEnvHarmless are PIP_* settings that change how pip fetches or reports, never which
@@ -288,6 +295,9 @@ func (sc *installScan) envVetoes(c scanCtx, data []byte) {
 		}
 		seen[name] = true
 		sc.veto(c, "sets PIP_%s, which can change what pip installs", name)
+	}
+	if m := uvConfigEnvRe.Find(data); m != nil {
+		sc.veto(c, "sets %s, which points uv at a configuration file the scanner does not read", m)
 	}
 	for _, m := range installerEnvRe.FindAll(data, -1) {
 		if name := string(m); !seen[name] {
@@ -534,7 +544,6 @@ func environmentManifest(base string, data []byte) string {
 	return ""
 }
 
-// condaRecipeName reports a conda-build (meta.yaml) or rattler-build (recipe.yaml) recipe.
 var (
 	// jinjaRe is a Jinja expression, statement or comment; rattler-build's ${{ }} included.
 	jinjaRe = regexp.MustCompile(`\{\{|\{%|\{#`)
@@ -543,15 +552,33 @@ var (
 	condaReqNameRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*`)
 )
 
-// condaFixedRun are the run requirements whose closure is fixed: the interpreter, and the
+// condaFixedRun are the requirements whose closure is fixed: the interpreter, and the
 // installers the install scan already exempts.
 var condaFixedRun = setOf("python", "pip", "setuptools", "wheel", "uv")
 
+var (
+	// condaInertTop are the recipe's top-level keys that install nothing into the package's
+	// environment: its identity, where its source comes from, how it is built (a build script
+	// is read by the install scan), its test environment, metadata, and rattler-build's
+	// variables and schema version. package, requirements and rattler-build's cache are read.
+	condaInertTop = setOf("source", "build", "test", "tests", "about", "extra", "context", "schema_version")
+	// condaInertReq are the requirements keys that add nothing to the package's environment:
+	// constraints, the exports it gives packages built against it, and run_exports it ignores.
+	condaInertReq = setOf("run_constrained", "run_exports", "ignore_run_exports", "ignore_run_exports_from")
+	// condaReadReq are the requirements keys read entry by entry: run installs its entries, and
+	// conda adds each build and host dependency's run_exports to the run requirements.
+	condaReadReq = []string{"build", "host", "run"}
+	// condaInertCache are the keys of rattler-build's cache other than its requirements.
+	condaInertCache = setOf("source", "build")
+)
+
 // condaRecipe reads a conda recipe as a build manifest, like setup.py: it records the
 // package's name as a project name and returns why the recipe withholds every refutation, or
-// "". A recipe conda renders before reading (Jinja, a line selector), one that does not parse
-// into package and requirements, and one with outputs is not read. A run requirement beyond
-// the interpreter installs a closure conda resolves, which no lockfile describes.
+// "". A recipe conda renders before reading (Jinja, a line selector) is not read. Every
+// top-level key, requirements key and cache key is either known to install nothing or read;
+// any other key withholds, as do outputs. A build, host or run requirement beyond the
+// interpreter and the fixed installers installs a closure conda resolves, which no lockfile
+// describes.
 func (ls *loadSet) condaRecipe(data []byte) string {
 	switch {
 	case jinjaRe.Match(data):
@@ -559,30 +586,83 @@ func (ls *loadSet) condaRecipe(data []byte) string {
 	case condaSelectorRe.Match(data):
 		return "line selector: conda renders it before reading what it installs"
 	}
-	var doc struct {
-		Package struct {
-			Name string `yaml:"name"`
-		} `yaml:"package"`
-		Requirements struct {
-			Run []any `yaml:"run"`
-		} `yaml:"requirements"`
-		Outputs []any `yaml:"outputs"`
-	}
+	var doc map[string]any
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return "does not parse: what it installs is unknown"
+		return "does not parse into a mapping: what it installs is unknown"
 	}
-	if len(doc.Outputs) > 0 {
-		return "outputs: the requirements of each output are not read"
-	}
-	ls.addProjectName(doc.Package.Name)
-	for _, r := range doc.Requirements.Run {
-		req, ok := r.(string)
-		name := strings.ToLower(condaReqNameRe.FindString(strings.TrimSpace(req)))
+	for _, k := range sortedMapKeys(doc) {
+		v := doc[k]
 		switch {
-		case !ok || name == "":
-			return "a run requirement that is not a plain spec: what it installs is unknown"
-		case !condaFixedRun[name]:
-			return fmt.Sprintf("run requirement %s: conda installs it and the closure it resolves, which the lockfile does not describe", name)
+		case condaInertTop[k]:
+		case k == "package":
+			pkg, ok := v.(map[string]any)
+			if !ok {
+				return "package is not a mapping: what it builds is unknown"
+			}
+			if name, ok := pkg["name"].(string); ok {
+				ls.addProjectName(name)
+			}
+		case k == "requirements":
+			if why := condaRequirements("requirements", v); why != "" {
+				return why
+			}
+		case k == "cache":
+			cache, ok := v.(map[string]any)
+			if !ok {
+				return "cache is not a mapping: what it installs is unknown"
+			}
+			for _, ck := range sortedMapKeys(cache) {
+				switch {
+				case condaInertCache[ck]:
+				case ck == "requirements":
+					if why := condaRequirements("cache requirements", cache[ck]); why != "" {
+						return why
+					}
+				default:
+					return fmt.Sprintf("cache key %s is not read: what it installs is unknown", ck)
+				}
+			}
+		case k == "outputs":
+			return "outputs: the requirements of each output are not read"
+		default:
+			return fmt.Sprintf("top-level key %s is not read: what it installs is unknown", k)
+		}
+	}
+	return ""
+}
+
+// condaRequirements reads a recipe's requirements mapping (what names it in a reason).
+func condaRequirements(what string, v any) string {
+	if v == nil {
+		return ""
+	}
+	req, ok := v.(map[string]any)
+	if !ok {
+		return what + " is not a mapping: what it installs is unknown"
+	}
+	for _, k := range sortedMapKeys(req) {
+		if !condaInertReq[k] && !slices.Contains(condaReadReq, k) {
+			return fmt.Sprintf("%s key %s is not read: what it installs is unknown", what, k)
+		}
+	}
+	for _, k := range condaReadReq {
+		v, present := req[k]
+		if !present || v == nil {
+			continue
+		}
+		entries, ok := v.([]any)
+		if !ok {
+			return fmt.Sprintf("%s %s is not a list: what it installs is unknown", what, k)
+		}
+		for _, r := range entries {
+			spec, ok := r.(string)
+			name := strings.ToLower(condaReqNameRe.FindString(strings.TrimSpace(spec)))
+			switch {
+			case !ok || name == "":
+				return fmt.Sprintf("a %s %s requirement that is not a plain spec: what it installs is unknown", what, k)
+			case !condaFixedRun[name]:
+				return fmt.Sprintf("%s %s requirement %s: conda installs it, or the run requirements it exports, and the closure it resolves, which the lockfile does not describe", what, k, name)
+			}
 		}
 	}
 	return ""
@@ -715,7 +795,20 @@ func (sc *installScan) scanFile(rel string, data []byte, kind string) {
 	}
 	// A parsed config is also read line by line: a command can sit in any scalar.
 	c.st = newTextState(path.Dir(rel), ".")
+	if kind == "shell" && shellScript(rel, data) {
+		c.st.writes = &[]fileWrite{}
+	}
 	sc.scanText(c, string(data))
+}
+
+// shellScript reports a shell script, whose lines run in one shell in order: by extension or
+// shebang (a Makefile, Procfile or Jenkinsfile runs each line on its own).
+func shellScript(rel string, data []byte) bool {
+	switch path.Ext(strings.ToLower(rel)) {
+	case ".sh", ".bash", ".zsh", ".ksh":
+		return true
+	}
+	return shellShebang.Match(data)
 }
 
 // scanVectors reads every all-string sequence in a parsed config as one command (a container
@@ -776,13 +869,20 @@ func (sc *installScan) scanText(c scanCtx, text string) {
 // scanLine reads one logical command line.
 func (sc *installScan) scanLine(c scanCtx, line string) {
 	handled, vetoes := sc.handled, sc.vetoes
+	if c.st.writes == nil && c.st.docker == nil {
+		var local []fileWrite
+		c.st.writes = &local
+		defer func() { c.st.writes = nil }()
+	}
 	for _, seg := range splitShellCommands(line) {
 		tok := shellTokens(seg)
 		if len(tok) > 0 && (cmdWord(tok[0]) == "cd" || cmdWord(tok[0]) == "pushd" || cmdWord(tok[0]) == "popd") {
 			c.st.cd(tok)
 			continue
 		}
+		before := sc.handled
 		sc.command(c, tok)
+		sc.writes(c, seg, tok, sc.handled != before)
 	}
 	if installCommandRe.MatchString(line) && sc.handled == handled && sc.vetoes == vetoes {
 		sc.veto(c, "an install command the scanner does not parse")
@@ -867,6 +967,70 @@ func cmdWord(tok string) string {
 	return strings.TrimSuffix(w, ".exe")
 }
 
+var (
+	// pythonFlags are the interpreter's short options that take no value; pythonValued take
+	// one, attached (-Wignore) or as the next word. -c and -m end the options.
+	pythonFlags  = "bBdEhiIOPqsSuvVx?"
+	pythonValued = "WX"
+	// pythonLongEnd are the long options that print and exit; --check-hash-based-pycs takes a
+	// value.
+	pythonLongEnd = setOf("--help", "--help-env", "--help-xoptions", "--help-all", "--version")
+	// pyLauncherRe is a py launcher version selector (-3, -3.12, -3.12-64, -V:3.12).
+	pyLauncherRe = regexp.MustCompile(`^-(?:[23](?:\.\d+)?(?:-(?:32|64))?|V:\S+)$`)
+)
+
+// pythonModule reads an interpreter's arguments against CPython's option list: it returns the
+// module -m names (attached, -mpip, or clustered, -Im pip) and the words after it. mod is ""
+// for a script, -c code or no program; bad is the first option the list does not hold.
+func pythonModule(w string, args []string) (mod string, rest []string, bad string) {
+	if w == "py" && len(args) > 0 && pyLauncherRe.MatchString(args[0]) {
+		args = args[1:]
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case shellEnd(a), a == "-", !strings.HasPrefix(a, "-"):
+			return "", nil, ""
+		case a == "--":
+			return "", nil, ""
+		case pythonLongEnd[a]:
+			return "", nil, ""
+		case a == "--check-hash-based-pycs":
+			i++
+			continue
+		case strings.HasPrefix(a, "--check-hash-based-pycs="):
+			continue
+		case strings.HasPrefix(a, "--"):
+			return "", nil, a
+		}
+		for j := 1; j < len(a); j++ {
+			ch := a[j]
+			switch {
+			case strings.IndexByte(pythonFlags, ch) >= 0:
+				continue
+			case strings.IndexByte(pythonValued, ch) >= 0:
+				if j == len(a)-1 {
+					i++
+				}
+			case ch == 'c':
+				return "", nil, ""
+			case ch == 'm':
+				if j < len(a)-1 {
+					return a[j+1:], args[i+1:], ""
+				}
+				if i+1 < len(args) {
+					return args[i+1], args[i+2:], ""
+				}
+				return "", nil, ""
+			default:
+				return "", nil, "-" + string(ch)
+			}
+			break
+		}
+	}
+	return "", nil, ""
+}
+
 // installVerbs follow a command that a variable names (`$PIP install`, `$(PM) add`).
 var installVerbs = map[string]bool{"install": true, "add": true, "sync": true, "inject": true}
 
@@ -888,16 +1052,36 @@ func (sc *installScan) command(c scanCtx, tok []string) {
 			sc.handled++
 			sc.pip(c, rest)
 			return
-		case pythonRe.MatchString(w) && len(rest) >= 2 && rest[0] == "-m":
-			mod := rest[1]
-			if pipWordRe.MatchString(mod) {
+		case pythonRe.MatchString(w):
+			mod, args, bad := pythonModule(w, rest)
+			switch {
+			case bad != "":
 				sc.handled++
-				sc.pip(c, rest[2:])
+				sc.veto(c, "%s %s is not an interpreter option the scanner parses", w, bad)
 				return
-			}
-			if familyWords[mod] {
+			case mod == "":
+				// A script, -c code, or no program: the words that follow are still read.
+			case pipWordRe.MatchString(mod):
 				sc.handled++
-				sc.family(c, mod, rest[2:])
+				sc.pip(c, args)
+				return
+			case familyWords[mod]:
+				sc.handled++
+				sc.family(c, mod, args)
+				return
+			case vetoFamilies[mod]:
+				sc.handled++
+				sc.vetoFamily(c, mod, args)
+				return
+			case mod == "piptools":
+				sc.handled++
+				if len(args) > 0 && args[0] == "sync" {
+					sc.syncFiles(c, args[1:])
+				}
+				return
+			case strings.HasPrefix(mod, "pip.") || mod == "easy_install" || strings.HasPrefix(mod, "piptools."):
+				sc.handled++
+				sc.veto(c, "%s -m %s runs an installer module the scanner does not parse", w, mod)
 				return
 			}
 		case w == "pip-sync":
@@ -1382,7 +1566,14 @@ func (sc *installScan) locate(c scanCtx, p string) (string, bool) {
 		sc.veto(c, "requirement file %s is read after a change of directory the scanner cannot follow", p)
 		return "", false
 	}
-	return sc.pickRepoFile(c, p, []string{p}, st.bases)
+	rel, ok := sc.pickRepoFile(c, p, []string{p}, st.bases)
+	if ok && st.writes != nil {
+		if w := changedBy(*st.writes, rel); w != nil {
+			sc.veto(c, "requirement file %s may be changed before it is read: %s runs %s, which is not known to leave it as it is", p, w.where, w.what)
+			return "", false
+		}
+	}
+	return rel, ok
 }
 
 // pickRepoFile resolves each source path against each base and returns the one existing
@@ -1644,7 +1835,7 @@ func mergeSpec(specs ...optSpec) optSpec {
 // --- other families ------------------------------------------------------------------
 
 var (
-	uvGlobalValues = setOf("--directory", "--project", "--config-file", "--cache-dir", "--color", "--python", "-p",
+	uvGlobalValues = setOf("--directory", "--project", "--cache-dir", "--color", "--python", "-p",
 		"--allow-insecure-host", "--python-preference")
 	uvCommon = optSpec{
 		flags: setOf("--frozen", "--locked", "--no-dev", "--dev", "--only-dev", "--all-groups", "--no-default-groups",
@@ -1654,7 +1845,7 @@ var (
 			"--no-sources", "--upgrade", "-U", "--reinstall", "--no-config", "--no-python-downloads", "--managed-python",
 			"--no-managed-python", "--preview", "--no-index", "--active", "--frozen-lockfile"),
 		values: setOf("--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package", "--python", "-p",
-			"--directory", "--project", "--config-file", "--cache-dir", "--index-url", "--extra-index-url", "--index",
+			"--directory", "--project", "--cache-dir", "--index-url", "--extra-index-url", "--index",
 			"--default-index", "--find-links", "-f", "--link-mode", "--index-strategy", "--keyring-provider", "--resolution",
 			"--prerelease", "--exclude-newer", "--python-platform", "--no-install-package", "--refresh-package",
 			"--upgrade-package", "-P", "--reinstall-package", "--no-binary-package", "--no-build-package",
@@ -1718,6 +1909,10 @@ func (sc *installScan) family(c scanCtx, w string, rest []string) {
 	for i < len(rest) && strings.HasPrefix(rest[i], "-") && !shellEnd(rest[i]) {
 		opt, _, eq := strings.Cut(rest[i], "=")
 		if familyHarmless[familyKey(w)][opt] {
+			return
+		}
+		if w == "uv" && opt == "--config-file" {
+			sc.veto(c, "uv --config-file reads a configuration file the scanner does not read")
 			return
 		}
 		i++
@@ -2371,6 +2566,7 @@ func (sc *installScan) scanWorkflows(files []pendingWorkflow) {
 			if wd == "" {
 				wd = p.wf.Defaults.Run.WorkingDirectory
 			}
+			jobWrites := &[]fileWrite{}
 			for i, st := range job.Steps {
 				if st.Run == "" {
 					continue
@@ -2383,6 +2579,7 @@ func (sc *installScan) scanWorkflows(files []pendingWorkflow) {
 				if dir != "" {
 					ts = workingDirState(dir)
 				}
+				ts.writes = jobWrites
 				sc.scanText(scanCtx{file: p.rel, where: fmt.Sprintf("%s job %s step %d", p.rel, id, i+1), prod: p.prod[id], st: ts}, st.Run)
 			}
 		}
@@ -2511,11 +2708,13 @@ func (sc *installScan) scanAction(rel string, data []byte) {
 		sc.veto(scanCtx{file: rel, where: rel}, "could not be parsed")
 		return
 	}
+	actionWrites := &[]fileWrite{}
 	for i, st := range a.Runs.Steps {
 		ts := &textState{bases: []string{"."}, unknown: true} // the caller's working directory
 		if st.WorkingDirectory != "" {
 			ts = workingDirState(st.WorkingDirectory)
 		}
+		ts.writes = actionWrites
 		sc.scanText(scanCtx{file: rel, where: fmt.Sprintf("%s step %d", rel, i+1), prod: true, st: ts}, st.Run)
 	}
 }
@@ -2589,9 +2788,11 @@ func (sc *installScan) scanGitLab(rel string, data []byte) {
 }
 
 func (sc *installScan) gitlabScripts(c scanCtx, vs ...any) {
+	jobWrites := &[]fileWrite{}
 	for _, v := range vs {
 		for _, s := range flattenStrings(v) {
 			c.st = newTextState(".")
+			c.st.writes = jobWrites
 			sc.scanText(c, s)
 		}
 	}

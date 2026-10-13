@@ -487,6 +487,25 @@ var installerMarkers = map[string]bool{
 	".pnp.cjs": true, ".pnp.js": true, ".pnp.loader.mjs": true,
 }
 
+// npmLockNames are the lockfiles resolutionOverridden parses rather than scans. yarn.lock and
+// pnpm-lock.yaml are installerMarkers, which veto before any scan.
+var npmLockNames = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true}
+
+// npmLockParses reports whether the file at p decodes as an npm lockfile: a lockfileVersion
+// and a packages or dependencies map of entries.
+func npmLockParses(p string) bool {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		LockfileVersion int                 `json:"lockfileVersion"`
+		Packages        map[string]struct{} `json:"packages"`
+		Dependencies    map[string]struct{} `json:"dependencies"`
+	}
+	return json.Unmarshal(data, &raw) == nil && raw.LockfileVersion >= 1 && (raw.Packages != nil || raw.Dependencies != nil)
+}
+
 // installedByOther name entries a node_modules holds when pnpm or yarn installed it.
 var installedByOther = []string{".pnpm", ".modules.yaml", ".yarn-state.yml"}
 
@@ -500,7 +519,11 @@ var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modu
 // closure unbounded, when the walk finds:
 //   - a file anywhere containing a launchToken, or both halves of a nodeCommand/shortFlag,
 //     moduleImport/moduleInternal or bundlerName/bundlerResolve pair.
-//     Over-firing on a mention is the price of not enumerating launch surfaces;
+//     Over-firing on a mention is the price of not enumerating launch surfaces. The one file
+//     not scanned is an npm lockfile that parses as one: it lists what npm installs, not how
+//     Node launches or resolves, and a direct dependency or devDependency on a hook package is
+//     declared in a package.json, which is scanned;
+//   - an npm lockfile that does not parse as one;
 //   - a tsconfig or jsconfig paths setting and a TypeScript runner, anywhere in the tree;
 //   - an installerMarker, a .yarnrc.yml that does not select the node_modules linker, or a
 //     node_modules holding pnpm's or yarn's state;
@@ -568,6 +591,12 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
 			return nil
+		}
+		if npmLockNames[name] {
+			if npmLockParses(e.Path) {
+				return nil
+			}
+			return veto()
 		}
 		// A symlinked file inside the tree is read through the link, since its target may sit
 		// in a directory the walk does not enter.

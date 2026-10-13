@@ -65,6 +65,23 @@ func TestMultipleProjects(t *testing.T) {
 		{"settings includes an interpolated name", map[string]string{"settings.gradle": "def n = 'api'\ninclude \"${n}\"\n", "build.gradle": ""}, true},
 		{"settings applies another script", map[string]string{"settings.gradle": "apply from: 'more.gradle'\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
 		{"settings below the root", map[string]string{"build.gradle": "", "src/main/java/A.java": "", "tools/settings.gradle": "", "tools/build.gradle": ""}, true},
+		// The settings reader is an allow-list: rootProject.name and include over in-tree string
+		// literals, nothing else.
+		{"settings moves a project out of the tree", map[string]string{"settings.gradle": "include 'app'\nproject(':app').projectDir = file('../elsewhere/app')\n", "build.gradle": ""}, true},
+		{"settings.kts moves a project out of the tree", map[string]string{"settings.gradle.kts": "rootProject.name = \"x\"\ninclude(\"app\")\nproject(\":app\").projectDir = file(\"../elsewhere/app\")\n", "build.gradle.kts": ""}, true},
+		{"settings plugins block", map[string]string{"settings.gradle": "plugins {\n  id 'com.example.autoinc' version '1.0'\n}\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings dependencyResolutionManagement block", map[string]string{"settings.gradle": "dependencyResolutionManagement {\n  repositories { mavenCentral() }\n}\nrootProject.name = 'x'\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings includeFlat", map[string]string{"settings.gradle": "includeFlat 'lib'\n", "build.gradle": ""}, true},
+		{"settings includes a path out of the tree", map[string]string{"settings.gradle": "include '../outside'\n", "build.gradle": ""}, true},
+		{"settings chains a call on the name", map[string]string{"settings.gradle": "rootProject.name = 'x'.with { include 'a', 'b' }\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings hides statements in an unterminated comment", map[string]string{"settings.gradle": "rootProject.name = 'x'\n/*\nproject(':app').projectDir = file('../e')\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings triple-quoted string", map[string]string{"settings.gradle": "rootProject.name = 'x'\ndef s = '''\ninclude 'a'\n'''\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings slashy string", map[string]string{"settings.gradle": "rootProject.name = 'x'\ndef p = /a\\/*/\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings name and include share a line unseparated", map[string]string{"settings.gradle": "rootProject.name = 'x' include 'app'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, true},
+		{"settings include and name share a line unseparated", map[string]string{"settings.gradle": "include 'app' rootProject.name = 'x'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, true},
+		{"settings name and one include stay single",map[string]string{"settings.gradle": "rootProject.name = 'x'\ninclude 'app'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, false},
+		{"settings include before the name stays single", map[string]string{"settings.gradle": "include 'app'\nrootProject.name='x'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, false},
+		{"settings statements on one line stay single", map[string]string{"settings.gradle.kts": "rootProject.name = \"x\"; include(\":app\")\n", "app/build.gradle.kts": "", "app/src/main/java/A.java": ""}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

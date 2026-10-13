@@ -208,38 +208,54 @@ func pomListsModules(path string) bool {
 }
 
 var (
-	settingsIncludeWord = regexp.MustCompile(`\binclude\w*`)
-	settingsApplyWord   = regexp.MustCompile(`\bapply\b`)
-	settingsStringArg   = regexp.MustCompile(`^\s*(?:"([^"$\\]*)"|'([^'\\]*)')`)
+	settingsRootName  = regexp.MustCompile(`^rootProject\.name\s*=\s*(?:"[^"$\\\n]*"|'[^'\\\n]*')`)
+	settingsInclude   = regexp.MustCompile(`^include\b`)
+	settingsStringArg = regexp.MustCompile(`^\s*(?:"([^"$\\\n]*)"|'([^'\\\n]*)')`)
 )
 
-// gradleSettingsProjects returns the project paths a settings script includes. ok is false
-// when the script cannot be read, applies another script, includes a build, or names projects
-// in any form other than include/includeFlat over string literals (a loop, a variable, a
-// helper function): those can include any number of projects.
+// gradleSettingsProjects returns the project paths a settings script includes. The reader is
+// an allow-list: ok is true only when every statement is rootProject.name = "<literal>" or
+// include over string literals naming in-tree projects. Anything else (a projectDir
+// assignment, a plugins, pluginManagement or dependencyResolutionManagement block,
+// includeFlat, includeBuild, apply, a loop or variable, an unknown call) can add a project,
+// move one out of the tree or change how the build resolves, so ok is false; so is a script
+// that cannot be read or whose comments cannot be stripped reliably.
 func gradleSettingsProjects(path string) ([]string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
-	src := stripGradleComments(string(data))
-	if settingsApplyWord.MatchString(src) {
+	src, ok := stripGradleCommentsChecked(string(data))
+	if !ok {
 		return nil, false
 	}
 	seen := map[string]bool{}
 	var projects []string
-	for _, loc := range settingsIncludeWord.FindAllStringIndex(src, -1) {
-		word := src[loc[0]:loc[1]]
-		if word != "include" && word != "includeFlat" {
+	rest := src
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n;")
+		if rest == "" {
+			break
+		}
+		if m := settingsRootName.FindString(rest); m != "" {
+			after, ok := statementEnd(rest[len(m):])
+			if !ok {
+				return nil, false
+			}
+			rest = after
+			continue
+		}
+		m := settingsInclude.FindString(rest)
+		if m == "" {
 			return nil, false
 		}
-		args, ok := gradleStringArgs(src[loc[1]:])
+		args, after, ok := gradleStringArgs(rest[len(m):])
 		if !ok {
 			return nil, false
 		}
 		for _, a := range args {
 			a = strings.TrimPrefix(a, ":")
-			if a == "" {
+			if a == "" || strings.ContainsAny(a, "/\\") || strings.Contains(a, "..") {
 				return nil, false
 			}
 			if !seen[a] {
@@ -247,26 +263,27 @@ func gradleSettingsProjects(path string) ([]string, bool) {
 				projects = append(projects, a)
 			}
 		}
+		rest = after
 	}
 	sort.Strings(projects)
 	return projects, true
 }
 
 // gradleStringArgs reads the argument list after an include keyword: one or more string
-// literals separated by commas, optionally in parentheses. ok is false for anything else.
-func gradleStringArgs(rest string) ([]string, bool) {
+// literals separated by commas, optionally in parentheses, ending the statement. It returns
+// the text after the statement. ok is false for anything else.
+func gradleStringArgs(rest string) (args []string, after string, ok bool) {
 	rest = strings.TrimLeft(rest, " \t")
 	paren := strings.HasPrefix(rest, "(")
 	if paren {
 		rest = rest[1:]
 	}
-	var out []string
 	for {
 		m := settingsStringArg.FindStringSubmatch(rest)
 		if m == nil {
-			return nil, false
+			return nil, "", false
 		}
-		out = append(out, m[1]+m[2])
+		args = append(args, m[1]+m[2])
 		rest = rest[len(m[0]):]
 		trimmed := strings.TrimLeft(rest, " \t\r\n")
 		if strings.HasPrefix(trimmed, ",") {
@@ -275,22 +292,38 @@ func gradleStringArgs(rest string) ([]string, bool) {
 		}
 		if paren {
 			if !strings.HasPrefix(trimmed, ")") {
-				return nil, false
+				return nil, "", false
 			}
-			trimmed = trimmed[1:]
+			rest = trimmed[1:]
 		}
-		// The statement must end here: a trailing method call or operator could change what
-		// the literals name.
-		end := strings.TrimLeft(trimmed, " \t")
-		if end != "" && !strings.HasPrefix(end, "\n") && !strings.HasPrefix(end, "\r") && !strings.HasPrefix(end, ";") {
-			return nil, false
+		after, ok := statementEnd(rest)
+		if !ok {
+			return nil, "", false
 		}
-		return out, true
+		return args, after, true
 	}
+}
+
+// statementEnd reports whether a statement ends at the start of rest (after spaces and tabs):
+// at the end of the text, a line break or a semicolon. A trailing method call or operator could
+// change what the literals name.
+func statementEnd(rest string) (string, bool) {
+	end := strings.TrimLeft(rest, " \t")
+	if end == "" || strings.HasPrefix(end, "\n") || strings.HasPrefix(end, "\r") || strings.HasPrefix(end, ";") {
+		return end, true
+	}
+	return "", false
 }
 
 // stripGradleComments removes // line and /* */ block comments outside string literals.
 func stripGradleComments(src string) string {
+	out, _ := stripGradleCommentsChecked(src)
+	return out
+}
+
+// stripGradleCommentsChecked is stripGradleComments that also reports whether the result can be
+// trusted: false for an unterminated block comment, whose rest of the text is dropped.
+func stripGradleCommentsChecked(src string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(src); i++ {
 		c := src[i]
@@ -318,7 +351,7 @@ func stripGradleComments(src string) string {
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			end := strings.Index(src[i+2:], "*/")
 			if end < 0 {
-				return b.String()
+				return b.String(), false
 			}
 			i += end + 3
 			b.WriteByte(' ')
@@ -326,7 +359,7 @@ func stripGradleComments(src string) string {
 			b.WriteByte(c)
 		}
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // withMultipleProjects adds the run-wide multiple_projects_unsupported reason to p, with an

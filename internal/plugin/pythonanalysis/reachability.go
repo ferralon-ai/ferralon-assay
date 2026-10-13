@@ -13,7 +13,7 @@ import (
 // Java/JS plugins — the reachability signal IS the first-party call-graph reverse BFS: it
 // walks the directed CallGraph backward from each sink toward the nearest ingress/root,
 // mirroring the pipeline's firstPartyReachPaths, but computed inside the plugin so the op
-// is real rather than a declared stub. It reuses the EXISTING CallGraph and FindIngresses.
+// is real rather than a declared stub. It reuses the EXISTING call graph and FindIngresses.
 //
 // LOAD-BEARING honesty posture (inv.5): Python static reachability is STRUCTURALLY WEAK
 // (dynamic dispatch, getattr, monkeypatching, decorator rewriting), so this op ALWAYS
@@ -21,22 +21,35 @@ import (
 // NARROWER, not an adjudicator: the effect trial adjudicates. "Not reached" is UNKNOWN
 // (no_known_ingress), NEVER a confident "safe"/not-affected. A load failure in
 // CallGraph/FindIngresses is a hard error (inv.4).
+//
+// The runtime load set (loadset.go) bounds dynamic loads: when every dynamic load in runtime
+// code is scoped to the packages it could reach, the run-wide dynamic_import reason gives way
+// to those scoped limits. When req.Package names a locked distribution the load set proves is
+// never loaded, the result carries a package_not_loaded Refutation.
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
+	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
+	cg := callGraphOf(prog)
 	ing, err := FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}
 
 	paths, reasons := firstPartyPaths(cg, ing, req.Symbols)
+	ls := computeLoadSet(req.BuildDir, prog)
+	if len(ls.unscoped) == 0 {
+		delete(reasons, plugin.PartialReasonDynamicImportSpecifier)
+	}
+	part := reachabilityPartiality(reasons)
+	part.Scoped = append(part.Scoped, ls.scoped...)
 
-	return plugin.ReachabilityResult{
-		Partiality: reachabilityPartiality(reasons),
-		Paths:      paths,
-	}, nil
+	res := plugin.ReachabilityResult{Partiality: part, Paths: paths}
+	if name, version, ok := pypiPackageRef(req.Package); ok {
+		res.Refutation = ls.refute(name, version)
+	}
+	return res, nil
 }
 
 // firstPartyPaths derives one representative ingress→sink ReachPath per requested sink by

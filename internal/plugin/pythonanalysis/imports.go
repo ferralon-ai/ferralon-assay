@@ -351,12 +351,14 @@ func moduleInitSCIP(module string) string {
 }
 
 // dynamicImportLiteralLeafs are callables that import the module their first argument
-// names. A literal argument is a load root; anything else is an import the scanner cannot
-// name.
+// names. A literal argument is a load root; a literal dotted prefix followed by a computed
+// tail is a site the load set scopes to a package; anything else is an import the scanner
+// cannot name.
 var dynamicImportLiteralLeafs = map[string]bool{
 	"import_module": true, // importlib.import_module
 	"__import__":    true,
 	"resolve_name":  true, // pkgutil.resolve_name("pkg.mod:attr")
+	"run_module":    true, // runpy.run_module("pkg.mod")
 }
 
 // dynamicImportOpaqueLeafs load modules named only by installed metadata or the
@@ -368,46 +370,367 @@ var dynamicImportOpaqueLeafs = map[string]bool{
 	"walk_packages":     true, // pkgutil
 }
 
-// dynamicImports scans one file's cleaned source for dynamic imports. It returns the
-// literal module names imported (load roots; a pkgutil "mod:attr" spec keeps the module
-// part) and whether any dynamic import names its module by a non-literal expression.
-// clean and lits come from stripPythonLiterals over the same source, so rune positions in
-// clean index the literal table.
-func dynamicImports(clean string, lits map[int]strLiteral) (roots []string, opaque bool) {
+// dynamicFileLoaderLeafs load a module from a file path or a loader object, so the module
+// (and the package that provides it) is never named by the calling code.
+var dynamicFileLoaderLeafs = map[string]bool{
+	"spec_from_file_location": true, // importlib.util
+	"spec_from_loader":        true, // importlib.util
+	"module_from_spec":        true, // importlib.util
+	"exec_module":             true, // importlib loaders
+	"load_module":             true, // importlib loaders, imp
+	"load_source":             true, // imp
+	"load_compiled":           true, // imp
+	"load_dynamic":            true, // imp
+	"load_package":            true, // imp
+	"run_path":                true, // runpy
+	"SourceFileLoader":        true, // importlib.machinery
+	"SourcelessFileLoader":    true, // importlib.machinery
+	"ExtensionFileLoader":     true, // importlib.machinery
+	"zipimporter":             true, // zipimport
+}
+
+// codeExecLeafs run source text, which can import anything. Only a bare builtin counts:
+// re.compile and friends carry a receiver.
+var codeExecLeafs = map[string]bool{"exec": true, "eval": true, "compile": true, "execfile": true}
+
+// dynSiteKind classifies a dynamic load the scanner can bound only with the load set: by a
+// static dotted prefix, by the module a getattr reads from, or by a star import's source.
+type dynSiteKind int
+
+const (
+	dynPrefix  dynSiteKind = iota // import_module("pkg.plugins." + n): the dotted prefix is static
+	dynGetattr                    // getattr(mod, name) on an import-bound module, name not literal
+	dynStar                       // from mod import *
+)
+
+// dynSite is one boundable dynamic load. module is the dotted prefix, the module getattr
+// reads from, or the star import's source; a leading "." marks a first-party relative name.
+type dynSite struct {
+	kind   dynSiteKind
+	module string
+}
+
+// dynScan is every dynamic load one file's source holds.
+type dynScan struct {
+	roots  []string  // literal module names; a relative name keeps its leading dots
+	sites  []dynSite // loads the load set can scope to a package
+	opaque []string  // loads nothing bounds, by the leaf that made them (sorted, deduped)
+}
+
+// scanDynamicLoads scans one file's cleaned source for dynamic loads. aliases maps a local
+// name bound by an import to the loader leaf it aliases (`from importlib import
+// import_module as im` → im: import_module); modTargets maps an import-bound local to the
+// dotted paths it may name, for getattr. clean and lits come from stripPythonLiterals over
+// the same source, so rune positions in clean index the literal table.
+//
+// A loader referenced without being called (passed or assigned as a value) is opaque: the
+// call that uses it is out of sight. Mentions inside import statements are not uses.
+func scanDynamicLoads(clean string, lits map[int]strLiteral, aliases map[string]string, modTargets map[string][]string) dynScan {
 	r := []rune(clean)
 	n := len(r)
+	inImport := importStatementMask(r)
+	var sc dynScan
 	for i := 0; i < n; {
 		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
 			i++
 			continue
 		}
 		w, end := readWordRunes(r, i)
-		if !dynamicImportLiteralLeafs[w] && !dynamicImportOpaqueLeafs[w] {
+		receiver := prevNonSpaceRune(r, i) == '.'
+		leaf := w
+		if a, ok := aliases[w]; ok && !receiver {
+			leaf = a
+		}
+		literalLeaf := dynamicImportLiteralLeafs[leaf]
+		opaqueLeaf := dynamicImportOpaqueLeafs[leaf] || dynamicFileLoaderLeafs[leaf]
+		execLeaf := codeExecLeafs[leaf] && !receiver
+		getattrLeaf := leaf == "getattr" && !receiver
+		if (!literalLeaf && !opaqueLeaf && !execLeaf && !getattrLeaf) || inImport[i] || precededByDef(r, i) {
 			i = end
 			continue
 		}
 		open := skipAllSpace(r, end)
-		if open >= n || r[open] != '(' || precededByDef(r, i) {
-			i = end
-			continue
-		}
-		if dynamicImportOpaqueLeafs[w] {
-			opaque = true
-			i = end
-			continue
-		}
-		name, ok := literalArg(r, open+1, lits)
-		if !ok {
-			opaque = true
-		} else if name != "" {
-			if w == "resolve_name" {
-				name, _, _ = strings.Cut(name, ":")
+		if open >= n || r[open] != '(' {
+			// A value reference: `loader = importlib.import_module`, `map(eval, xs)`. An
+			// assignment target or keyword argument (`eval = ...`, `f(compile=True)`) is not.
+			if !getattrLeaf && !(open < n && r[open] == '=' && (open+1 >= n || r[open+1] != '=')) {
+				sc.opaque = append(sc.opaque, leaf)
 			}
-			roots = append(roots, name)
+			i = end
+			continue
+		}
+		switch {
+		case opaqueLeaf || execLeaf:
+			sc.opaque = append(sc.opaque, leaf)
+		case getattrLeaf:
+			sc.sites = append(sc.sites, getattrSites(r, open, lits, modTargets)...)
+		default:
+			root, site, ok := literalLoad(r, open, lits, leaf)
+			switch {
+			case !ok:
+				sc.opaque = append(sc.opaque, leaf)
+			case root != "":
+				sc.roots = append(sc.roots, root)
+			case site != "":
+				sc.sites = append(sc.sites, dynSite{kind: dynPrefix, module: site})
+			}
 		}
 		i = end
 	}
-	return sortedDedup(roots), opaque
+	sc.roots = sortedDedup(sc.roots)
+	sc.opaque = sortedDedup(sc.opaque)
+	return sc
+}
+
+// literalLoad reads the module a literal-capable loader call at r[open] names. It returns
+// the literal module (root), or the static dotted prefix of a computed one (site), or ok
+// false when neither is static. A relative import_module(".x", package=...) resolves against
+// a literal package; package=__package__/__name__ (or none) keeps it first-party relative.
+func literalLoad(r []rune, open int, lits map[int]strLiteral, leaf string) (root, site string, ok bool) {
+	if name, isLit := literalArg(r, open+1, lits); isLit {
+		if name == "" {
+			return "", "", true
+		}
+		if leaf == "resolve_name" {
+			name, _, _ = strings.Cut(name, ":")
+		}
+		if strings.HasPrefix(name, ".") {
+			abs, rok := resolveRelativeArg(r, open, lits, name)
+			if !rok {
+				return "", "", false
+			}
+			name = abs
+		}
+		return name, "", true
+	}
+	prefix, pok := staticPrefixArg(r, open+1, lits)
+	if !pok {
+		return "", "", false
+	}
+	if strings.HasPrefix(prefix, ".") {
+		abs, rok := resolveRelativeArg(r, open, lits, prefix+".x")
+		if !rok {
+			return "", "", false
+		}
+		prefix = strings.TrimSuffix(abs, ".x")
+		if prefix == "" {
+			prefix = "."
+		}
+	}
+	return "", prefix, true
+}
+
+// resolveRelativeArg resolves a relative module name against the call's package argument
+// (second positional or package=). A literal package yields an absolute name; none, or
+// __package__/__name__/__spec__.parent, keeps the name first-party relative; any other
+// expression names an unknown package and fails.
+func resolveRelativeArg(r []rune, open int, lits map[int]strLiteral, name string) (string, bool) {
+	args := callArgs(r, open)
+	var pkgArg []int
+	for k, a := range args {
+		if k == 0 {
+			continue
+		}
+		text := strings.TrimSpace(string(r[a[0]:a[1]]))
+		if rest, found := strings.CutPrefix(text, "package"); found && strings.HasPrefix(strings.TrimSpace(rest), "=") {
+			eq := a[0] + strings.Index(string(r[a[0]:a[1]]), "=")
+			pkgArg = []int{eq + 1, a[1]}
+			break
+		}
+		if k == 1 && !strings.Contains(text, "=") {
+			pkgArg = a
+			break
+		}
+	}
+	if pkgArg == nil {
+		return name, true
+	}
+	text := strings.TrimSpace(string(r[pkgArg[0]:pkgArg[1]]))
+	switch text {
+	case "__package__", "__name__", "__spec__.parent":
+		return name, true
+	}
+	pkg, isLit := literalArg(r, pkgArg[0], lits)
+	if !isLit || !isDottedName(pkg) {
+		return "", false
+	}
+	dots := len(name) - len(strings.TrimLeft(name, "."))
+	segs := strings.Split(pkg, ".")
+	if dots-1 >= len(segs) {
+		return "", false
+	}
+	base := strings.Join(segs[:len(segs)-(dots-1)], ".")
+	if rest := name[dots:]; rest != "" {
+		return base + "." + rest, true
+	}
+	return base, true
+}
+
+// staticPrefixArg reads a first call argument that starts with a string literal and
+// continues with a computed tail ("pkg.plugins." + n, f"pkg.plugins.{n}", "pkg.%s" % n,
+// "pkg.{}".format(n)) and returns the dotted module prefix the literal fixes: the text
+// before its last '.'. The prefix must name at least one whole segment (or be relative).
+func staticPrefixArg(r []rune, i int, lits map[int]strLiteral) (string, bool) {
+	i = skipAllSpace(r, i)
+	fstring := false
+	for j := 0; j < 2 && i < len(r) && strings.ContainsRune("rRbBuUfF", r[i]); j++ {
+		if _, isLit := lits[i]; isLit {
+			break
+		}
+		fstring = fstring || r[i] == 'f' || r[i] == 'F'
+		i++
+	}
+	lit, ok := lits[i]
+	if !ok {
+		return "", false
+	}
+	body := lit.body
+	k := skipAllSpace(r, lit.end)
+	switch {
+	case fstring:
+		body, _, _ = strings.Cut(body, "{")
+	case k < len(r) && r[k] == '+':
+	case k < len(r) && r[k] == '%':
+		body, _, _ = strings.Cut(body, "%")
+	case k+7 <= len(r) && string(r[k:k+7]) == ".format":
+		body, _, _ = strings.Cut(body, "{")
+	default:
+		return "", false
+	}
+	dot := strings.LastIndexByte(body, '.')
+	if dot < 0 {
+		return "", false
+	}
+	prefix := body[:dot]
+	if lead := strings.TrimLeft(prefix, "."); lead != prefix {
+		if lead == "" || isDottedName(lead) {
+			return prefix, true
+		}
+		return "", false
+	}
+	if !isDottedName(prefix) {
+		return "", false
+	}
+	return prefix, true
+}
+
+// getattrSites reads getattr(mod, name) at r[open]: when mod is an import-bound name and
+// name is not a literal, every module the binding may name is a site (a module-level
+// __getattr__ can import on attribute access).
+func getattrSites(r []rune, open int, lits map[int]strLiteral, modTargets map[string][]string) []dynSite {
+	args := callArgs(r, open)
+	if len(args) < 2 {
+		return nil
+	}
+	obj := strings.TrimSpace(string(r[args[0][0]:args[0][1]]))
+	if !isDottedName(obj) {
+		return nil
+	}
+	if _, isLit := literalArg(r, args[1][0], lits); isLit {
+		return nil
+	}
+	head, rest, _ := strings.Cut(obj, ".")
+	var out []dynSite
+	for _, t := range modTargets[head] {
+		if rest != "" {
+			t += "." + rest
+		}
+		out = append(out, dynSite{kind: dynGetattr, module: t})
+	}
+	return out
+}
+
+// callArgs splits the call whose '(' is r[open] into its top-level arguments, as
+// [start, end) rune ranges. An unclosed call yields what was read.
+func callArgs(r []rune, open int) [][]int {
+	var out [][]int
+	depth := 0
+	start := open + 1
+	for i := open + 1; i < len(r); i++ {
+		switch r[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				if strings.TrimSpace(string(r[start:i])) != "" {
+					out = append(out, []int{start, i})
+				}
+				return out
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				out = append(out, []int{start, i})
+				start = i + 1
+			}
+		}
+	}
+	return out
+}
+
+// importStatementMask marks every rune of the cleaned source that belongs to an import
+// statement (`import ...` / `from ... import ...`, continuations included).
+func importStatementMask(r []rune) []bool {
+	mask := make([]bool, len(r))
+	inStmt, isImport := false, false
+	depth := 0
+	lineStart := 0
+	for i := 0; i <= len(r); i++ {
+		if i < len(r) && r[i] != '\n' {
+			continue
+		}
+		line := string(r[lineStart:i])
+		if !inStmt {
+			kw, _ := firstWord(strings.TrimSpace(line))
+			isImport = kw == "import" || kw == "from"
+			depth = 0
+		}
+		depth += bracketDelta(line)
+		cont := strings.HasSuffix(strings.TrimRight(line, " \t\r"), "\\")
+		if isImport {
+			for k := lineStart; k < i; k++ {
+				mask[k] = true
+			}
+		}
+		inStmt = depth > 0 || cont
+		lineStart = i + 1
+	}
+	return mask
+}
+
+// prevNonSpaceRune returns the rune before r[i], skipping whitespace, or 0 at the start.
+func prevNonSpaceRune(r []rune, i int) rune {
+	for j := i - 1; j >= 0; j-- {
+		if !unicode.IsSpace(r[j]) {
+			return r[j]
+		}
+	}
+	return 0
+}
+
+// dynamicLoadAliases returns the locals a file's import bindings alias to a loader leaf,
+// and every import-bound local with the dotted paths it may name.
+func dynamicLoadAliases(bs []scopedBinding) (aliases map[string]string, modTargets map[string][]string) {
+	aliases = map[string]string{}
+	modTargets = map[string][]string{}
+	for _, b := range bs {
+		if b.target == "" {
+			continue
+		}
+		modTargets[b.local] = append(modTargets[b.local], b.target)
+		leaf := b.target
+		if i := strings.LastIndexByte(leaf, '.'); i >= 0 {
+			leaf = leaf[i+1:]
+		}
+		if leaf != b.local && (dynamicImportLiteralLeafs[leaf] || dynamicImportOpaqueLeafs[leaf] ||
+			dynamicFileLoaderLeafs[leaf] || codeExecLeafs[leaf] || leaf == "getattr") {
+			aliases[b.local] = leaf
+		}
+	}
+	for k, v := range modTargets {
+		modTargets[k] = sortedDedup(v)
+	}
+	return aliases, modTargets
 }
 
 // precededByDef reports whether the identifier at r[i] is the name in a def statement.

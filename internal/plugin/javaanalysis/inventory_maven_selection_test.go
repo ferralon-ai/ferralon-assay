@@ -489,14 +489,18 @@ func TestMavenProfile_NestedReactorMavenConfig(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		setup    func(t *testing.T, sub string)
+		deep     bool // the module's POM sits one directory below sub
 		withheld bool
 	}{
 		{"a nested maven.config selecting the profile", func(t *testing.T, sub string) {
 			writeFile(t, filepath.Join(sub, ".mvn", "maven.config"), "-Pp\n")
-		}, true},
+		}, false, true},
 		{"a nested maven.config naming no profile", func(t *testing.T, sub string) {
 			writeFile(t, filepath.Join(sub, ".mvn", "maven.config"), "-T 1C\n")
-		}, true},
+		}, false, true},
+		{"a maven.config between the root and a deeper module", func(t *testing.T, sub string) {
+			writeFile(t, filepath.Join(sub, ".mvn", "maven.config"), "-Pp\n")
+		}, true, true},
 		{"a nested .mvn that can't be searched", func(t *testing.T, sub string) {
 			if os.Geteuid() == 0 {
 				t.Skip("root ignores directory permissions")
@@ -509,17 +513,25 @@ func TestMavenProfile_NestedReactorMavenConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Chmod(mvn, 0o755) })
-		}, true},
-		{"control, no nested maven.config", func(t *testing.T, sub string) {}, false},
+		}, false, true},
+		{"control, no nested maven.config", func(t *testing.T, sub string) {}, false, false},
+		{"control, no maven.config above a deeper module", func(t *testing.T, sub string) {}, true, false},
 		{"control, a nested .mvn with only jvm.config", func(t *testing.T, sub string) {
 			writeFile(t, filepath.Join(sub, ".mvn", "jvm.config"), "-Xmx1g\n")
-		}, false},
+		}, false, false},
+		{"control, a nested .mvn that is a file", func(t *testing.T, sub string) {
+			writeFile(t, filepath.Join(sub, ".mvn"), "")
+		}, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, m2 := t.TempDir(), t.TempDir()
 			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1</version></project>`)
 			sub := filepath.Join(dir, "sub")
-			writeFile(t, filepath.Join(sub, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>sub</artifactId><version>1</version>
+			modDir := sub
+			if tt.deep {
+				modDir = filepath.Join(sub, "inner")
+			}
+			writeFile(t, filepath.Join(modDir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>sub</artifactId><version>1</version>
 <dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>
 <profiles><profile><id>p</id>
 <dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>2.0</version></dependency></dependencies>

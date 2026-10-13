@@ -237,12 +237,16 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 // parseRequirementsTxt parses a pip requirements file. Only an EXACT "==" pin yields a
 // resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a URL or VCS
 // requirement that names its project ("pkg @ https://...", "git+https://...#egg=pkg",
-// editable or not), since it installs a version nobody can read here. A -r include, an
-// option line, or a URL that names no project is skipped. Continuation lines ("\") and
-// hashed pins ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...")
-// and inline comments ("#...") are stripped.
+// editable or not), since it installs a version nobody can read here. A URL or VCS
+// requirement that names no project can install any distribution at any version, so the
+// file reports false, exactly as an unparseable one does, and the caller leaves every
+// Found match unresolved; the entries it did read are still returned. A -r include or an
+// option line is skipped. Continuation lines ("\") and hashed pins
+// ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
+// comments ("#...") are stripped.
 func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
+	readable := true
 	for _, req := range joinContinuations(string(data)) {
 		line := stripReqComment(req)
 		line = strings.TrimSpace(line)
@@ -256,6 +260,8 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		if isDirectReference(target) {
 			if name := directReferenceName(req); name != "" {
 				out = append(out, pyResolved(name, "", false, "requirements.txt"))
+			} else {
+				readable = false
 			}
 			continue
 		}
@@ -276,7 +282,7 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		}
 		out = append(out, pyResolved(name, version, resolved, "requirements.txt"))
 	}
-	return out, true
+	return out, readable
 }
 
 // trimEditable strips a leading "-e"/"--editable" option, reporting whether it was there.

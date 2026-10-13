@@ -317,6 +317,33 @@ func TestResolveVersions_URLRequirementVetoesPin(t *testing.T) {
 	}
 }
 
+// A URL or VCS requirement that names no project can install the advisory's package at any
+// version, so it leaves every found coordinate unresolved, like a parse failure.
+func TestResolveVersions_NamelessURLRequirementUnresolved(t *testing.T) {
+	for name, req := range map[string]string{
+		"archive":      "https://example.com/dist/pkg-1.0.tar.gz\n",
+		"vcs":          "git+https://github.com/example/pkg.git@v1.0\n",
+		"editable-vcs": "-e git+https://github.com/example/pkg.git\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/requirements.txt": req,
+			})
+			for i := 0; i < resolveRuns; i++ {
+				res := resolveVersion(t, dir, "flask")
+				mustUnresolvedPy(t, res)
+				if res.Partiality.Complete {
+					t.Fatal("a nameless URL requirement must leave the result partial")
+				}
+			}
+			if resolveVersion(t, dir, "requests").Found {
+				t.Fatal("a coordinate no manifest names must stay not found")
+			}
+		})
+	}
+}
+
 // The same veto holds for a PEP 508 direct reference in pyproject.toml.
 func TestResolveVersions_PyprojectURLDependencyVetoesPin(t *testing.T) {
 	dir := writeTree(t, map[string]string{

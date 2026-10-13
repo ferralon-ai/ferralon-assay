@@ -990,6 +990,7 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 
 		// Files the scan cannot read as text: text in any Unicode encoding is decoded and
 		// read; an archive or executable can bundle distributions and blocks every refutation.
+		{name: "a UTF-8 script with a BOM is read from its first byte", files: withLock(map[string]string{"deploy.ps1": "\xef\xbb\xbfpip install black\r\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
 		{name: "a UTF-16LE PowerShell script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", false, true)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
 		{name: "a UTF-16BE script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", true, true)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
 		{name: "a UTF-16LE script without a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", false, false)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},

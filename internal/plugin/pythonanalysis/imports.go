@@ -158,51 +158,42 @@ type distResolver struct {
 }
 
 // distsFor returns the distributions that may provide the dotted import path. The longest
-// curated package that is the path or a whole-segment prefix of it decides, so
-// azure.identity.X reaches azure-identity even though several distributions share the azure
-// namespace. Every curated distribution shipping exactly that package is returned, declared
-// or not: they install into the same directory, so the code the path names can come from any
-// of them. With no curated package on the path, the top-level name decides: a single curated
-// distribution beneath it, else PEP 503 equality with a declared name. A namespace root
-// several distributions share names none.
+// curated package that is the path or a whole-segment prefix of it names every curated
+// distribution shipping it, declared or not: they install into the same directory, so the
+// code the path names can come from any of them, and azure.identity.X reaches azure-identity
+// even though several distributions share the azure namespace. With no curated package on the
+// path, a top-level name exactly one curated distribution provides names that distribution.
+// A declared distribution whose PEP 503 name is the top-level name is always among the
+// result, so a declared dotenv or the legacy azure monolith keeps its edge beside any curated
+// shipper. A namespace root several distributions share names nothing else.
 func (d distResolver) distsFor(path string) []string {
 	top, _, _ := strings.Cut(path, ".")
 	if top == "" || d.firstParty[top] {
 		return nil
 	}
-	if shippers := d.curatedShippers(path); len(shippers) > 0 {
-		return shippers
-	}
-	if dists := d.curated.Reverse(top); len(dists) > 0 {
-		if len(dists) == 1 {
-			return dists
+	dists := d.curatedShippers(path)
+	if len(dists) == 0 {
+		if r := d.curated.Reverse(top); len(r) == 1 {
+			dists = r
 		}
-		return nil
 	}
 	if n := normalizePyCoordinate(top); d.declared[n] {
-		return []string{n}
+		dists = sortedDedup(append(dists, n))
 	}
-	return nil
+	return dists
 }
 
 // importDeclared reports whether the build's manifests declare a distribution providing the
-// dotted import path. Under a curated package, at least one of the distributions shipping the
-// longest one must be declared; distsFor already counts the others, so the import is covered.
-// A declared distribution shipping a different package (azure-core for azure.identity) never
-// covers it. Otherwise the distribution distsFor names must be declared, and a namespace root
-// several distributions share is never covered. First-party imports count as declared.
+// dotted import path: one of the distributions distsFor names. A declared distribution
+// shipping a different package (azure-core for azure.identity) never covers the path. A
+// top-level name exactly one curated distribution provides decides on its own either way, and
+// first-party imports count as declared.
 func (d distResolver) importDeclared(path string) bool {
 	top, _, _ := strings.Cut(path, ".")
-	if top == "" || d.firstParty[top] {
+	if top == "" || d.firstParty[top] || len(d.curated.Reverse(top)) == 1 {
 		return true
 	}
-	if shippers := d.curatedShippers(path); len(shippers) > 0 {
-		return slices.ContainsFunc(shippers, func(s string) bool { return d.declared[s] })
-	}
-	if dists := d.curated.Reverse(top); len(dists) > 0 {
-		return len(dists) == 1 && d.declared[dists[0]]
-	}
-	return d.declared[normalizePyCoordinate(top)]
+	return slices.ContainsFunc(d.distsFor(path), func(s string) bool { return d.declared[s] })
 }
 
 // curatedShippers returns the curated distributions shipping exactly the longest curated
@@ -221,15 +212,15 @@ func (d distResolver) curatedShippers(path string) []string {
 	return nil
 }
 
-// undeclaredTop reports whether top reaches a distribution only through the PEP 503
-// fallback and no manifest name read here matches it: not first-party, not a standard-library
-// module every interpreter the build may run on ships, and not a curated name exactly one
-// distribution provides, which decides on its own either way.
-func (d distResolver) undeclaredTop(top string) bool {
-	if top == "" || d.firstParty[top] || d.python.ships(top) || len(d.curated.Reverse(top)) == 1 {
+// undeclaredImport reports whether the import binding target names a module no distribution
+// the manifests read here declare provides: not an instance binding (empty target), not a
+// standard-library module every interpreter the build may run on ships, and not importDeclared.
+func (d distResolver) undeclaredImport(target string) bool {
+	top, _, _ := strings.Cut(target, ".")
+	if top == "" || d.python.ships(top) {
 		return false
 	}
-	return !d.declared[normalizePyCoordinate(top)]
+	return !d.importDeclared(target)
 }
 
 // importTops returns the top-level import names distribution dist provides: its curated

@@ -380,6 +380,24 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 			exact:  []string{"pypi:pillow#PIL.Image.open", "pypi:pillow-simd#PIL.Image.open"},
 		},
 		{
+			name: "declared distribution of the import's own name beside the curated shippers",
+			files: map[string]string{
+				"requirements.txt": "dotenv==0.0.5\n",
+				"app.py":           "import dotenv\n\ndef key(p):\n    return dotenv.get_key(p, \"k\")\n",
+			},
+			caller: funcSCIP("app", nil, "key", 1),
+			exact:  []string{"pypi:django-dotenv#dotenv.get_key", "pypi:dotenv#dotenv.get_key", "pypi:python-dotenv#dotenv.get_key", "pypi:python-dotenv-yaml#dotenv.get_key"},
+		},
+		{
+			name: "declared legacy azure monolith under the shared namespace",
+			files: map[string]string{
+				"requirements.txt": "azure==0.11.1\n",
+				"app.py":           "from azure.storage import BlobService\nimport azure.servicebus\n\ndef wire(a):\n    BlobService(a)\n    return azure.servicebus.ServiceBusService(a)\n",
+			},
+			caller: funcSCIP("app", nil, "wire", 1),
+			exact:  []string{"pypi:azure#azure.servicebus.ServiceBusService", "pypi:azure#azure.storage.BlobService"},
+		},
+		{
 			name: "first-party module shadows the distribution",
 			files: map[string]string{
 				"jwt.py": "def decode(t):\n    return t\n",
@@ -602,6 +620,32 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 			files:       interp("import dataclasses\n", requires("3.8 or newer")),
 			toolFailure: true,
 			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, one of two curated shippers declared",
+			files:    interp("import jwt\n", map[string]string{"requirements.txt": "acmelib==1.0\npyjwt==2.8.0\n"}),
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, neither curated shipper declared",
+			files:       interp("import jwt\n", nil),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, sole curated shipper undeclared",
+			files:    interp("import yaml\n", nil),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, distribution of the import's own name declared beside curated shippers",
+			files:    interp("import dotenv\n", map[string]string{"requirements.txt": "acmelib==1.0\ndotenv==0.0.5\n"}),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, instance binding of a curated import",
+			files:    interp("from jinja2 import Environment\n\ndef render(x):\n    env = Environment()\n    return env.from_string(x)\n", nil),
+			boundary: true,
 		},
 		{
 			name:     "unread Pipfile, .python-version pin",

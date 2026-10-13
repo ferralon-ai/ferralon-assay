@@ -521,9 +521,10 @@ func TestCurated_SharedImportPackages(t *testing.T) {
 }
 
 // TestDistResolver_SharedPackages: distsFor (the load set) names every curated distribution
-// shipping the longest curated package on the import path, declared or not; importDeclared
-// (the unattributed-import trigger) holds when at least one of them is declared, and a
-// declared distribution shipping a different package never covers the import.
+// shipping the longest curated package on the import path, declared or not, plus a declared
+// distribution of the import's own name; importDeclared (the unattributed-import trigger)
+// holds when one of them is declared, and a declared distribution shipping a different
+// package never covers the import.
 func TestDistResolver_SharedPackages(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -620,9 +621,31 @@ func TestDistResolver_SharedPackages(t *testing.T) {
 			wantDeclared: true,
 		},
 		{
-			name:      "single curated shipper undeclared",
-			path:      "yaml.safe_load",
-			wantDists: []string{"pyyaml"},
+			name:         "single curated shipper decides on its own",
+			path:         "yaml.safe_load",
+			wantDists:    []string{"pyyaml"},
+			wantDeclared: true,
+		},
+		{
+			name:         "declared distribution of the import's own name beside curated shippers",
+			declared:     []string{"dotenv"},
+			path:         "dotenv.get_key",
+			wantDists:    []string{"django-dotenv", "dotenv", "python-dotenv", "python-dotenv-yaml"},
+			wantDeclared: true,
+		},
+		{
+			name:         "legacy azure monolith declared, uncurated package",
+			declared:     []string{"azure"},
+			path:         "azure.storage.BlobService",
+			wantDists:    []string{"azure"},
+			wantDeclared: true,
+		},
+		{
+			name:         "legacy azure monolith declared, curated package",
+			declared:     []string{"azure"},
+			path:         "azure.identity.DefaultAzureCredential",
+			wantDists:    []string{"azure", "azure-identity"},
+			wantDeclared: true,
 		},
 		{
 			name:         "PEP 503 fallback declared",

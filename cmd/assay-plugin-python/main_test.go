@@ -164,6 +164,36 @@ func TestDispatch_ReachabilitySliceOps_Live(t *testing.T) {
 	}
 }
 
+// TestDispatch_CallGraph_DeclaredCoShipperIsAttributed: with a manifest the lane reads only in
+// part, an import several curated distributions ship (jwt: jwt and pyjwt) counts as attributed
+// when one of them is declared, so call_graph reaches pyjwt and carries no tool_failure.
+func TestDispatch_CallGraph_DeclaredCoShipperIsAttributed(t *testing.T) {
+	root := t.TempDir()
+	for rel, content := range map[string]string{
+		"requirements.txt": "pyjwt==2.8.0\n",
+		"Pipfile":          "[packages]\ngraphlib-backport = \"*\"\n",
+		"app.py":           "import jwt\n\ndef check(t):\n    return jwt.decode(t)\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp := roundTrip(t, plugin.Request{Op: plugin.OpCallGraph, CallGraph: &plugin.CallGraphRequest{BuildDir: root}})
+	if resp.CallGraph == nil {
+		t.Fatal("missing call_graph payload")
+	}
+	if rs := reasons(resp.CallGraph); hasReason(rs, plugin.PartialReasonToolFailure) {
+		t.Errorf("declared pyjwt must attribute import jwt; got reasons %v", rs)
+	}
+	var reached bool
+	for _, e := range resp.CallGraph.Edges {
+		reached = reached || e.Callee.SCIP == "pypi:pyjwt#jwt.decode"
+	}
+	if !reached {
+		t.Errorf("no edge to pypi:pyjwt#jwt.decode; edges %+v", resp.CallGraph.Edges)
+	}
+}
+
 // generate_harness stays CONTRACT-PRESENT Unsupported: the Python effect rides the corpus
 // repro-runtime sandbox, so the plugin never scaffolds a harness. It appears in no §5.4
 // deliverable, so it is out of PLAN-173's scope and unchanged.

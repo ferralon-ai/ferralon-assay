@@ -51,11 +51,61 @@ const vcpkgJSON = `{
   ]
 }`
 
+// vcpkgStatus is the installed-package database shape vcpkg writes: a core paragraph per package
+// and triplet, a paragraph per installed feature, and a removed package left as not-installed.
+const vcpkgStatus = `Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-linux
+Multi-Arch: same
+Abi: 1111
+Status: install ok installed
+
+Package: zlib
+Version: 1.3.1
+Depends: vcpkg-cmake:x64-linux
+Architecture: x64-linux
+Multi-Arch: same
+Abi: 2222
+Description: A compression library
+Type: Port
+Status: install ok installed
+
+Package: libpng
+Version: 1.6.43
+Port-Version: 2
+Depends: vcpkg-cmake:x64-linux, zlib
+Architecture: x64-linux
+Multi-Arch: same
+Abi: 3333
+Description: libpng is a library implementing an interface for reading and writing PNG
+    (Portable Network Graphics) format files
+Status: install ok installed
+
+Package: libpng
+Feature: apng
+Depends: zlib:x64-linux
+Architecture: x64-linux
+Multi-Arch: same
+Description: This is backward compatible with the regular libpng
+Status: install ok installed
+
+Package: curl
+Version: 8.8.0
+Architecture: x64-linux
+Multi-Arch: same
+Abi: 4444
+Status: purge ok not-installed
+`
+
 func writeFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -162,6 +212,62 @@ func TestResolveDependencyVersions(t *testing.T) {
 			files:      map[string]string{vcpkgFile: vcpkgJSON},
 			coordinate: "libpng",
 			wantPart:   plugin.Partial(plugin.PartialReasonNoManifest),
+		},
+		{
+			name:       "vcpkg status pins the installed version",
+			files:      map[string]string{vcpkgStatusFile: vcpkgStatus},
+			coordinate: "zlib",
+			wantFound:  true,
+			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
+			wantPart:   plugin.Complete(),
+		},
+		{
+			name:       "vcpkg status keeps the port-version",
+			files:      map[string]string{vcpkgStatusFile: vcpkgStatus},
+			coordinate: "libpng",
+			wantFound:  true,
+			wantMatch:  pinned("libpng", "1.6.43#2", vcpkgStatusFile),
+			wantPart:   plugin.Complete(),
+		},
+		{
+			name:       "vcpkg status package removed is not installed",
+			files:      map[string]string{vcpkgStatusFile: vcpkgStatus},
+			coordinate: "curl",
+			wantPart:   plugin.Partial(plugin.PartialReasonNoManifest),
+		},
+		{
+			name:       "vcpkg status resolves what vcpkg.json only bounds",
+			files:      map[string]string{vcpkgStatusFile: vcpkgStatus, vcpkgFile: vcpkgJSON},
+			coordinate: "zlib",
+			wantFound:  true,
+			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
+			wantPart:   plugin.Complete(),
+		},
+		{
+			name: "vcpkg updates override status in name order",
+			files: map[string]string{
+				vcpkgStatusFile:                 vcpkgStatus,
+				vcpkgUpdatesDir + "/0000000001": "Package: zlib\nVersion: 1.3.1\nPort-Version: 1\nArchitecture: x64-linux\nStatus: install ok installed\n",
+				vcpkgUpdatesDir + "/0000000002": "Package: zlib\nVersion: 1.3.1\nPort-Version: 3\nArchitecture: x64-linux\nStatus: install ok installed\n",
+			},
+			coordinate: "zlib",
+			wantFound:  true,
+			wantMatch:  pinned("zlib", "1.3.1#3", vcpkgStatusFile),
+			wantPart:   plugin.Complete(),
+		},
+		{
+			name:       "vcpkg status in an unknown state does not parse",
+			files:      map[string]string{vcpkgStatusFile: "Package: zlib\nVersion: 1.3.1\nArchitecture: x64-linux\nStatus: install ok half-installed\n"},
+			coordinate: "zlib",
+			wantPart:   plugin.Partial(plugin.PartialReasonNoManifest, plugin.PartialReasonToolFailure),
+		},
+		{
+			name:       "vcpkg status with a malformed line does not parse",
+			files:      map[string]string{vcpkgStatusFile: "Package: zlib\nnot a field\nVersion: 1.3.1\nArchitecture: x64-linux\nStatus: install ok installed\n"},
+			coordinate: "zlib",
+			wantFound:  true,
+			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
+			wantPart:   plugin.Partial(plugin.PartialReasonToolFailure),
 		},
 		{
 			name:       "no manifest at all",

@@ -15,7 +15,8 @@ import (
 
 // ResolveDependencyVersions reads the Python codebase's INSTALLED (pinned) dependency
 // versions from its manifests — requirements.txt (pip freeze / hashed pins), poetry.lock,
-// Pipfile.lock, and PEP 621 pyproject.toml — and returns the resolved version for the
+// Pipfile.lock, pdm.lock, uv.lock, Pipfile, and pyproject.toml (PEP 621 [project] and
+// [tool.poetry]) — and returns the resolved version for the
 // advisory's requested coordinate (the PyPI project name). It is the cheap Assess-tier
 // input to the disqualification predicate, the Python mirror of jsanalysis /
 // javaanalysis ResolveDependencyVersions.
@@ -56,7 +57,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
+	manifests := walkManifests(req.BuildDir, isVersionManifest)
 
 	var (
 		all         []plugin.ResolvedDependency
@@ -64,15 +65,12 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		parseFailed bool
 	)
 	for _, m := range manifests {
-		deps, ok := parseManifest(m)
+		deps, o, ok := parseManifest(m)
 		if !ok {
 			parseFailed = true
 		}
 		all = append(all, deps...)
-		o := originOf(m)
-		for range deps {
-			origins = append(origins, o)
-		}
+		origins = append(origins, o...)
 	}
 
 	part := plugin.Complete()
@@ -92,24 +90,30 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	return res, nil
 }
 
-// manifestOrigin records where an entry of All was read: its manifest's directory, and
-// whether that manifest is a pyproject.toml declaration or a lock that resolves one.
+// manifestOrigin records where an entry of All was read: its manifest's directory, the
+// lock it came from ("" when it is not a lock), and, for a declaration, the locks that
+// resolve it when they sit in the same directory.
 type manifestOrigin struct {
-	dir           string
-	pyprojectLock bool
-	declaration   bool
+	dir      string
+	lock     string
+	lockedBy []string
 }
 
-// originOf classifies a manifest path. Pipfile.lock is not a pyproject lock: pipenv locks
-// the Pipfile, not [project].dependencies.
-func originOf(path string) manifestOrigin {
-	switch filepath.Base(path) {
-	case "poetry.lock", "pdm.lock", "uv.lock":
-		return manifestOrigin{dir: filepath.Dir(path), pyprojectLock: true}
-	case "pyproject.toml":
-		return manifestOrigin{dir: filepath.Dir(path), declaration: true}
+// The locks that resolve each kind of declaration. Pipfile.lock locks only the Pipfile;
+// poetry.lock locks [tool.poetry] and [project]; pdm.lock and uv.lock lock [project].
+var (
+	projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
+	poetryLocks  = []string{"poetry.lock"}
+	pipfileLocks = []string{"Pipfile.lock"}
+)
+
+// originsFor repeats one origin for every entry of deps.
+func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOrigin {
+	out := make([]manifestOrigin, len(deps))
+	for i := range out {
+		out[i] = o
 	}
-	return manifestOrigin{dir: filepath.Dir(path)}
+	return out
 }
 
 // matchCoordinate selects the Match for the PEP 503-normalized coordinate want across every
@@ -125,22 +129,31 @@ func originOf(path string) manifestOrigin {
 //     that install surface may hold any version;
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
-// One exception to the third case: an UNRESOLVED pyproject.toml declaration does not veto
-// when a lock in the SAME directory (poetry.lock, pdm.lock, uv.lock) pins the coordinate.
-// That lock is the project's own resolution of the declared range, so both describe one
-// environment. A range in any other manifest or directory, or beside a Pipfile.lock, is a
-// separate install surface and still vetoes.
+// One exception to the third case: an UNRESOLVED declaration does not veto when its own
+// lock in the SAME directory pins the coordinate: a pyproject.toml [project] range by
+// poetry.lock, pdm.lock or uv.lock; a [tool.poetry] range by poetry.lock; a Pipfile range
+// by Pipfile.lock. That lock is the project's own resolution of the declared range, so
+// both describe one environment. A range in any other manifest or directory, or beside a
+// lock of another tool, is a separate install surface and still vetoes.
 // Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
 // open.
 func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {
 	if want == "" {
 		return plugin.ResolvedDependency{}, false
 	}
-	lockPinned := make(map[string]bool)
+	lockPinned := make(map[[2]string]bool) // {dir, lock basename}
 	for i, d := range all {
-		if d.Resolved && origins[i].pyprojectLock && normalizePyCoordinate(d.Coordinate) == want {
-			lockPinned[origins[i].dir] = true
+		if d.Resolved && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+			lockPinned[[2]string{origins[i].dir, origins[i].lock}] = true
 		}
+	}
+	lockedHere := func(o manifestOrigin) bool {
+		for _, l := range o.lockedBy {
+			if lockPinned[[2]string{o.dir, l}] {
+				return true
+			}
+		}
+		return false
 	}
 	var (
 		match    plugin.ResolvedDependency
@@ -156,7 +169,7 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 			match, found = d, true
 		}
 		if !d.Resolved {
-			if !origins[i].declaration || !lockPinned[origins[i].dir] {
+			if !lockedHere(origins[i]) {
 				unknown = true
 			}
 			continue
@@ -177,6 +190,18 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 // build-output / virtualenv / VCS trees so a vendored install does not shadow the
 // project's own top-level manifest.
 func manifestFiles(root string) []string {
+	return walkManifests(root, isManifest)
+}
+
+// isVersionManifest is isManifest plus the declarations version resolution also reads: a
+// Pipfile is an install surface even without its lock.
+func isVersionManifest(name string) bool {
+	return isManifest(name) || name == "Pipfile"
+}
+
+// walkManifests returns every file under root whose name satisfies match, skipping the
+// same trees as manifestFiles.
+func walkManifests(root string, match func(string) bool) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -188,7 +213,7 @@ func manifestFiles(root string) []string {
 			}
 			return nil
 		}
-		if isManifest(d.Name()) {
+		if match(d.Name()) {
 			out = append(out, path)
 		}
 		return nil
@@ -207,29 +232,43 @@ func isManifest(name string) bool {
 	return strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt")
 }
 
-// parseManifest dispatches on the manifest's name to the format-specific parser. The
-// bool is false when the file cannot be read or is structurally unparseable (the caller
-// degrades partiality).
-func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
+// parseManifest dispatches on the manifest's name to the format-specific parser and
+// returns each entry's origin alongside it. The bool is false when the file cannot be
+// read or is structurally unparseable, or holds an install whose project cannot be known
+// (the caller degrades partiality and leaves every Found match unresolved).
+func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
-	base := filepath.Base(path)
-	switch {
-	case base == "poetry.lock":
-		return parsePoetryLock(data)
-	case base == "Pipfile.lock":
-		return parsePipfileLock(data)
-	case base == "pdm.lock":
-		return parsePDMLockAdvisory(data)
-	case base == "uv.lock":
-		return parseUVLockAdvisory(data)
-	case base == "pyproject.toml":
-		return parsePyproject(data)
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	var (
+		deps []plugin.ResolvedDependency
+		ok   bool
+	)
+	switch base {
+	case "poetry.lock":
+		deps, ok = parsePoetryLock(data)
+	case "Pipfile.lock":
+		deps, ok = parsePipfileLock(data)
+	case "pdm.lock":
+		deps, ok = parsePDMLockAdvisory(data)
+	case "uv.lock":
+		deps, ok = parseUVLockAdvisory(data)
+	case "Pipfile":
+		deps, ok = parsePipfile(data)
+		return deps, originsFor(deps, manifestOrigin{dir: dir, lockedBy: pipfileLocks}), ok
+	case "pyproject.toml":
+		project, okProject := parsePyproject(data)
+		poetry, okPoetry := parsePoetryDependencies(data)
+		origins := append(originsFor(project, manifestOrigin{dir: dir, lockedBy: projectLocks}),
+			originsFor(poetry, manifestOrigin{dir: dir, lockedBy: poetryLocks})...)
+		return append(project, poetry...), origins, okProject && okPoetry
 	default: // requirements*.txt
-		return parseRequirementsTxt(data)
+		deps, ok = parseRequirementsTxt(data)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
 	}
+	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
 
 // --- requirements.txt --------------------------------------------------------

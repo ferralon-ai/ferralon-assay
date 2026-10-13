@@ -369,6 +369,86 @@ func TestResolveVersions_IndexURLOptionIgnored(t *testing.T) {
 	}
 }
 
+// A Pipfile declaration is an install surface: a range with no lock beside it can install
+// any version, so it vetoes another service's pin.
+func TestResolveVersions_PipfileRangeWithoutLockVetoesPin(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/Pipfile":          "[packages]\nflask = \">=2.0\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
+	}
+}
+
+// A Pipfile range is resolved by the Pipfile.lock in its own directory.
+func TestResolveVersions_PipfileRangeBesideOwnLockResolves(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Pipfile":      "[packages]\nflask = \">=2.0\"\n\n[dev-packages]\npytest = \"*\"\n",
+		"Pipfile.lock": `{"default": {"flask": {"version": "==2.3.0"}}, "develop": {"pytest": {"version": "==8.0.0"}}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
+			t.Fatalf("Pipfile range + own Pipfile.lock want 2.3.0 resolved; got %+v", r.Match)
+		}
+	}
+}
+
+// A [tool.poetry] range is resolved by the poetry.lock in its own directory, including a
+// group dependency.
+func TestResolveVersions_PoetryRangeBesideOwnLockResolves(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[tool.poetry]\nname = \"app\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nflask = \"^2.0\"\n\n[tool.poetry.group.dev.dependencies]\npytest = {version = \">=8\"}\n",
+		"poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		for coord, want := range map[string]string{"flask": "2.3.0", "pytest": "8.0.0"} {
+			if r := resolveVersion(t, dir, coord); !r.Match.Resolved || r.Match.Version != want {
+				t.Fatalf("%s: poetry range + own poetry.lock want %s resolved; got %+v", coord, want, r.Match)
+			}
+		}
+	}
+}
+
+// A [tool.poetry] range with no lock beside it vetoes another service's pin, whether it is
+// a main or a group dependency.
+func TestResolveVersions_PoetryRangeWithoutLockVetoesPin(t *testing.T) {
+	for name, table := range map[string]string{
+		"main":  "[tool.poetry.dependencies]\nflask = \"^2.0\"\n",
+		"group": "[tool.poetry.group.web.dependencies]\nflask = {version = \"^2.0\"}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/pyproject.toml":   "[tool.poetry]\nname = \"b\"\n\n" + table,
+			})
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
+			}
+		})
+	}
+}
+
+// An exact Pipfile or Poetry pin is a pin like any other: it agrees with an equal pin and
+// conflicts with a different one.
+func TestResolveVersions_DeclaredExactPins(t *testing.T) {
+	agree := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/Pipfile":          "[packages]\nflask = \"==2.3.0\"\n",
+		"svc-c/pyproject.toml":   "[tool.poetry.dependencies]\nflask = \"2.3.0\"\n",
+	})
+	if r := resolveVersion(t, agree, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
+		t.Fatalf("equal exact pins want 2.3.0 resolved; got %+v", r.Match)
+	}
+	conflict := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/pyproject.toml":   "[tool.poetry.dependencies]\nflask = {version = \"==2.2.0\"}\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, conflict, "flask"))
+	}
+}
+
 // Pipfile.lock's maps are walked in sorted key order, so All is the same on every run.
 func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
 	dir := writeTree(t, map[string]string{

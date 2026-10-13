@@ -502,23 +502,39 @@ func TestGradle_LockPinsRuntimeClasspath(t *testing.T) {
 	for _, tt := range []struct {
 		name, script, buildFile, lock string
 		resolved                      bool
+		legacy                        map[string]string // files under gradle/dependency-locks
 	}{
-		{"entries for runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", true},
-		{"default mode, no runtimeClasspath entries", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false},
-		{"L1 default mode, compileClasspath entries and a bare empty= line", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=\n", false},
-		{"default mode, empty= names runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false},
+		{"entries for runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", true, nil},
+		{"default mode, no runtimeClasspath entries", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false, nil},
+		{"L1 default mode, compileClasspath entries and a bare empty= line", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=\n", false, nil},
+		{"default mode, empty= names runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false, nil},
 		{"L1b a literal declaration, both locked for compileClasspath only",
 			enforced + "dependencies {\n    implementation 'org.pulls:it:1.0'\n}\n", "build.gradle",
-			"com.evil:netkit:1.0.0=compileClasspath\norg.pulls:it:1.0=compileClasspath\n", false},
-		{"STRICT, no empty= line", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", true},
-		{"STRICT, empty= names runtimeClasspath", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false},
-		{"STRICT, empty= names another configuration", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=testRuntimeClasspath\n", true},
-		{"STRICT set with set(), kts", "dependencyLocking {\n    lockMode.set(LockMode.STRICT)\n    lockAllConfigurations()\n}\ndependencies {\n    implementation(\"com.evil:netkit:1.+\")\n}\n", "build.gradle.kts", "com.evil:netkit:1.0.0=compileClasspath\n", true},
-		{"STRICT beside a second lock mode", "dependencyLocking {\n    lockAllConfigurations()\n    lockMode = LockMode.STRICT\n    lockMode = LockMode.LENIENT\n}\n" + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false},
+			"com.evil:netkit:1.0.0=compileClasspath\norg.pulls:it:1.0=compileClasspath\n", false, nil},
+		{"STRICT, no empty= line", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", true, nil},
+		{"STRICT, empty= names runtimeClasspath", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false, nil},
+		{"STRICT, empty= names another configuration", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=testRuntimeClasspath\n", true, nil},
+		{"STRICT set with set(), kts", "dependencyLocking {\n    lockMode.set(LockMode.STRICT)\n    lockAllConfigurations()\n}\ndependencies {\n    implementation(\"com.evil:netkit:1.+\")\n}\n", "build.gradle.kts", "com.evil:netkit:1.0.0=compileClasspath\n", true, nil},
+		{"STRICT beside a second lock mode", "dependencyLocking {\n    lockAllConfigurations()\n    lockMode = LockMode.STRICT\n    lockMode = LockMode.LENIENT\n}\n" + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false, nil},
+		// R6-B2: for a configuration gradle.lockfile has no state for, Gradle reads the legacy
+		// gradle/dependency-locks/<configuration>.lockfile, so STRICT silence there pins
+		// runtimeClasspath to a version this reader never takes.
+		{"LG STRICT, a legacy runtimeClasspath lock at another version, a range declared",
+			strict + "dependencies {\n    implementation 'com.evil:netkit:[1.0,3.0)'\n}\n", "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false,
+			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
+		{"LA STRICT, a legacy runtimeClasspath lock at another version, 1.+ declared", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false,
+			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
+		{"STRICT, a legacy lock for another configuration only", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false,
+			map[string]string{"testRuntimeClasspath.lockfile": "com.evil:netkit:1.0.0\n"}},
+		{"entries for runtimeClasspath beside a legacy lock", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", true,
+			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, tt.buildFile), tt.script)
+			for name, body := range tt.legacy {
+				writeFile(t, filepath.Join(dir, "gradle", "dependency-locks", name), body)
+			}
 			writeFile(t, filepath.Join(dir, "gradle.lockfile"), tt.lock)
 			inv := toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir())))
 			if got := findNode(t, inv, netkit) != nil; got != tt.resolved {

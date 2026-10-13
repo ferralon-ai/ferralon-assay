@@ -125,12 +125,23 @@ type gradleProjectLock struct {
 // its lock state holds. In the default lock mode a configuration with no lock state, or with
 // empty lock state, is not constrained at all, so it is pinned only when the lock holds an entry
 // for it. STRICT mode fails the build for a configuration with no lock state, so there it is
-// pinned unless an "empty=" line names it.
-func gradleConfigPinned(lock *gradleProjectLock, strict bool, conf string) bool {
+// pinned unless an "empty=" line names it, or the project's legacy lock directory could hold the
+// state Gradle uses instead (gradleLegacyLocks).
+func gradleConfigPinned(dir string, lock *gradleProjectLock, strict bool, conf string) bool {
 	if lock != nil && lock.entries[conf] {
 		return true
 	}
-	return strict && (lock == nil || !lock.empty[conf])
+	return strict && (lock == nil || !lock.empty[conf]) && !gradleLegacyLocks(dir)
+}
+
+// gradleLegacyLocks reports whether project dir's gradle/dependency-locks could hold lock state.
+// For a configuration gradle.lockfile has no state for, Gradle falls back to
+// gradle/dependency-locks/<configuration>.lockfile, whose lines this reader does not take as
+// versions; so a configuration STRICT mode leaves silent there is pinned to versions not read
+// here. The directory present, or not ruled absent (an error other than not-exist), counts.
+func gradleLegacyLocks(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, "gradle", "dependency-locks"))
+	return err == nil || !missing(err)
 }
 
 // readLockfiles parses every lock state Gradle itself reads under root (see gradleLockProject).
@@ -646,7 +657,7 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[str
 			}
 			continue
 		}
-		if !gradleConfigPinned(state[dir], strict, "runtimeClasspath") {
+		if !gradleConfigPinned(dir, state[dir], strict, "runtimeClasspath") {
 			if len(declarations) > 0 {
 				return all() // an unpinned runtimeClasspath resolves whatever it is asked for
 			}

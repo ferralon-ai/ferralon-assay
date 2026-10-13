@@ -4,7 +4,7 @@ package pythonanalysis
 //
 // This is the environment-AWARE requirements parser that feeds the forthcoming
 // ResolveInventory path (E5). It differs in intent from ResolveDependencyVersions'
-// parseRequirementsTxt, which is deliberately environment-BLIND: the advisory-matching path
+// parseRequirementLines, which is deliberately environment-BLIND: the advisory-matching path
 // wants a coordinate's version regardless of the target environment (a sound
 // over-approximation), so it strips markers and ignores extras. That path is retained
 // unchanged. This path instead computes the SELECTED set for a declared descriptor —

@@ -3,9 +3,12 @@ package projection_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 func TestReportVEX_StatementPerFinding(t *testing.T) {
@@ -93,6 +96,38 @@ func TestReportVEX_ProductIDPrefersPURL(t *testing.T) {
 		}
 	}
 	t.Fatal("GO-2021-0001 not found")
+}
+
+func TestReportVEX_ProductIDOmitsUnresolvedPin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pkg  report.Package
+		want string
+	}{
+		{"resolved", report.Package{Ecosystem: "Go", Name: "gopkg.in/yaml.v2", Version: "v2.4.0"}, "gopkg.in/yaml.v2@v2.4.0"},
+		{"observed, not resolved", report.Package{Ecosystem: "cfamily", Name: "zlib", Version: "1.2.11", PartialReason: plugin.PartialReasonSourceUnpinned + ":sole_source_unproven"}, "zlib"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := tc.pkg
+			r := report.NewBuilder(report.Subject{Repo: "github.com/example/widget", ResolvedCommit: "deadbeef"}).
+				AddPackage(pkg).
+				AddFinding(report.AdvisoryFinding{
+					Advisory:           report.Advisory{ID: "CVE-2018-25032", Source: "corpus"},
+					Package:            &pkg,
+					Verdict:            report.VerdictUndetermined,
+					UndeterminedReason: report.ReasonAnalysisDidNotRun,
+				}).
+				WithProvenance(report.Provenance{AnalyzerVersion: "ferralon-assay v0.2.0", Timestamp: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)}).
+				Build()
+			doc, err := projection.ProjectReportVEX(r)
+			if err != nil {
+				t.Fatalf("ProjectReportVEX: %v", err)
+			}
+			if got := doc.Statements[0].Products[0].ID; got != tc.want {
+				t.Errorf("product id = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestReportVEX_DeterministicTimestamp(t *testing.T) {

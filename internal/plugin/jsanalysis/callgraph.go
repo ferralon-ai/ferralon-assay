@@ -111,7 +111,7 @@ func loadProgram(buildDir string) (*program, error) {
 		moduleSet: map[string]bool{},
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := readRegular(f)
 		if err != nil {
 			prog.readFailed = true
 			continue

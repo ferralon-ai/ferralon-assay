@@ -288,14 +288,27 @@ func TestInventory_C1_GradleParity(t *testing.T) {
 	// union) is the oracle for the resolver's coordinate set.
 	//   G1: lockfile + version catalog.
 	//   G2: lockfile records the platform()/constraints{}-selected transitive closure.
+	// Both settings scripts hold a dependencyResolutionManagement block, which the settings reader
+	// does not read in full, so the set of projects is unknown and no lock is confirmed (G1's
+	// catalog accessors and G2's version-less declarations would each unconfirm it too): every
+	// locked group:artifact is present, and none is bound to a version.
 	for _, name := range []string{"G1-gradle-lockfile-catalog", "G2-gradle-platform-constraints"} {
 		t.Run(name, func(t *testing.T) {
 			oracle := parseGradleConfig(readCapture(t, name, "native.deps.txt"), "compileClasspath")
 			if len(oracle) == 0 {
 				t.Fatalf("%s compileClasspath oracle parsed empty", name)
 			}
-			got := invGradleCoords(t, resolveBenchmark(name))
-			assertSetsEqual(t, name+" [compileClasspath]", oracle, got)
+			inv := resolveBenchmark(name)
+			want := map[coord]bool{}
+			for c := range oracle {
+				want[coord{group: c.group, artifact: c.artifact}] = true
+			}
+			assertSetsEqual(t, name+" [compileClasspath]", want, invGradleCoords(t, inv))
+			for _, n := range inv.Nodes {
+				if !hasReason(n.Partiality, reasonGradleLockUnconfirmed) {
+					t.Errorf("%s: %s must carry %s; got %+v", name, n.PURL, reasonGradleLockUnconfirmed, n.Partiality)
+				}
+			}
 		})
 	}
 }
@@ -362,33 +375,30 @@ func TestInventory_C3_MavenUnresolvedTriad(t *testing.T) {
 func TestInventory_C4_GradleConstraintPlatformSelected(t *testing.T) {
 	// G2: two direct dependencies are declared WITHOUT a version — their versions come from the build,
 	// not the manifest: junit-jupiter-api via the junit-bom platform() and commons-lang3 via a
-	// constraints{} block. The resolver must emit the build-SELECTED versions (the ones that drive an
-	// advisory verdict), and — with a lockfile now present — the graph must be Complete with no
-	// gradle_transitive residue. This is the selected≠declared story for Gradle, the analogue of M1.
+	// constraints{} block. A version-less declaration never confirms a lock, so neither is bound to the
+	// locked version: both are present, unresolved, and the graph is partial.
 	inv := resolveBenchmark("G2-gradle-platform-constraints")
-	if !inv.Partiality.Complete {
-		t.Errorf("C4: G2 is fully locked — inventory must be Complete; got reasons %v", inv.Partiality.Reasons)
+	if inv.Partiality.Complete || !hasReason(inv.Partiality, reasonGradleLockUnconfirmed) {
+		t.Errorf("C4: G2 must be partial with %s; got reasons %v", reasonGradleLockUnconfirmed, inv.Partiality.Reasons)
 	}
-	if hasReason(inv.Partiality, reasonGradleTransitive) {
-		t.Errorf("C4: G2 has a lockfile — no gradle_transitive residue expected; got %v", inv.Partiality.Reasons)
-	}
-	// Each declared-versionless direct dep must resolve to exactly its build-selected version.
-	selected := []struct{ group, artifact, version, via string }{
-		{"org.junit.jupiter", "junit-jupiter-api", "5.10.3", "junit-bom platform()"},
-		{"org.apache.commons", "commons-lang3", "3.14.0", "constraints{}"},
-	}
-	for _, s := range selected {
-		if !hasNode(t, inv, s.group, s.artifact, s.version) {
-			t.Errorf("C4: %s:%s must resolve to the %s-selected %s", s.group, s.artifact, s.via, s.version)
+	for _, s := range []struct{ group, artifact, version string }{
+		{"org.junit.jupiter", "junit-jupiter-api", "5.10.3"},
+		{"org.apache.commons", "commons-lang3", "3.14.0"},
+	} {
+		if hasNode(t, inv, s.group, s.artifact, s.version) {
+			t.Errorf("C4: %s:%s must not be bound to the locked %s", s.group, s.artifact, s.version)
+		}
+		if !hasNode(t, inv, s.group, s.artifact, "") {
+			t.Errorf("C4: %s:%s must be present, unresolved", s.group, s.artifact)
 		}
 	}
 }
 
 func TestInventory_C3_GradleMixedMultiproject(t *testing.T) {
-	// G3: one subproject (app-a) is LOCKED and resolves fully; another (app-b) has NO lockfile and is
-	// declared residue. The whole inventory must be Partial (a single subproject's lockfile must NOT
-	// make the truncated build report Complete), app-a's locked coordinates must all resolve, and
-	// app-b's declared coordinates must be present as gradle_transitive residue.
+	// G3: one subproject (app-a) is LOCKED; another (app-b) has NO lockfile and is declared residue.
+	// The whole inventory must be Partial (a single subproject's lockfile must NOT make the truncated
+	// build report Complete), app-a's locked coordinates must be present, and app-b's declared
+	// coordinates must be present as gradle_transitive residue.
 	inv := resolveBenchmark("G3-gradle-multiproject-residue")
 	if inv.Partiality.Complete {
 		t.Fatal("C3: G3 must be Partial — a locked subproject must not mask the unlocked one as Complete")
@@ -396,20 +406,21 @@ func TestInventory_C3_GradleMixedMultiproject(t *testing.T) {
 	if !hasReason(inv.Partiality, reasonGradleTransitive) {
 		t.Errorf("C3: G3 must declare gradle_transitive residue for the unlocked subproject; got %v", inv.Partiality.Reasons)
 	}
-	// app-a locked coordinates (the 3.37.0/2.21.1/1.0.1 divergent versions) resolve cleanly.
+	// app-a's locked coordinates are present but unconfirmed: app-b locks nothing yet declares
+	// dependencies and substitutes guava, so it can resolve any of them at another version (and the
+	// settings script is not read in full either).
 	for _, want := range [][3]string{
 		{"com.google.guava", "guava", "32.1.3-jre"},
 		{"org.checkerframework", "checker-qual", "3.37.0"},
 		{"com.google.errorprone", "error_prone_annotations", "2.21.1"},
 		{"com.google.guava", "failureaccess", "1.0.1"},
 	} {
-		n := findNodeGAV(inv, want[0], want[1], want[2])
-		if n == nil {
-			t.Errorf("C3: G3 locked app-a coordinate %s:%s:%s must resolve", want[0], want[1], want[2])
-			continue
+		if findNodeGAV(inv, want[0], want[1], want[2]) != nil {
+			t.Errorf("C3: G3 locked app-a coordinate %s:%s must not be bound to %s", want[0], want[1], want[2])
 		}
-		if !n.Partiality.Complete {
-			t.Errorf("C3: G3 locked coordinate %s:%s must be Complete (fully resolved from the lockfile); got %+v", want[0], want[1], n.Partiality)
+		n := findNodeGAV(inv, want[0], want[1], "")
+		if n == nil || !hasReason(n.Partiality, reasonGradleLockUnconfirmed) {
+			t.Errorf("C3: G3 locked app-a coordinate %s:%s must be present with %s; got %+v", want[0], want[1], reasonGradleLockUnconfirmed, n)
 		}
 	}
 	// app-b declared coordinates (unlocked) are present as honest-absent residue, never dropped.

@@ -1,9 +1,12 @@
 package pythonanalysis
 
 import (
+	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -151,26 +154,77 @@ type distResolver struct {
 	curated    DistImportMap
 	declared   map[string]bool // PEP 503 names from the build's manifests
 	firstParty map[string]bool // top-level import names the build's own sources provide
+	python     interpreterRange
 }
 
-// distFor returns the distribution providing the top-level import name top.
-func (d distResolver) distFor(top string) (string, bool) {
+// distsFor returns the distributions that may provide the dotted import path. The longest
+// curated package that is the path or a whole-segment prefix of it names every curated
+// distribution shipping it, declared or not: they install into the same directory, so the
+// code the path names can come from any of them, and azure.identity.X reaches azure-identity
+// even though several distributions share the azure namespace. With no curated package on the
+// path, a top-level name exactly one curated distribution provides names that distribution.
+// A declared distribution whose PEP 503 name is the top-level name is always among the
+// result, so a declared dotenv or the legacy azure monolith keeps its edge beside any curated
+// shipper. A namespace root several distributions share names nothing else.
+func (d distResolver) distsFor(path string) []string {
+	top, _, _ := strings.Cut(path, ".")
 	if top == "" || d.firstParty[top] {
-		return "", false
+		return nil
 	}
-	if dists := d.curated.Reverse(top); len(dists) == 1 {
-		return dists[0], true
-	} else if len(dists) > 1 {
-		return "", false
+	dists := d.curatedShippers(path)
+	if len(dists) == 0 {
+		if r := d.curated.Reverse(top); len(r) == 1 {
+			dists = r
+		}
 	}
 	if n := normalizePyCoordinate(top); d.declared[n] {
-		return n, true
+		dists = sortedDedup(append(dists, n))
 	}
-	return "", false
+	return dists
+}
+
+// importDeclared reports whether the build's manifests declare a distribution providing the
+// dotted import path: one of the distributions distsFor names. A declared distribution
+// shipping a different package (azure-core for azure.identity) never covers the path. A
+// top-level name exactly one curated distribution provides decides on its own either way, and
+// first-party imports count as declared.
+func (d distResolver) importDeclared(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	if top == "" || d.firstParty[top] || len(d.curated.Reverse(top)) == 1 {
+		return true
+	}
+	return slices.ContainsFunc(d.distsFor(path), func(s string) bool { return d.declared[s] })
+}
+
+// curatedShippers returns the curated distributions shipping exactly the longest curated
+// package that is path or a whole-segment prefix of it, or nil when none is.
+func (d distResolver) curatedShippers(path string) []string {
+	for prefix := path; prefix != ""; {
+		if owners := d.curated.Owners(prefix); len(owners) > 0 {
+			return owners
+		}
+		i := strings.LastIndexByte(prefix, '.')
+		if i < 0 {
+			return nil
+		}
+		prefix = prefix[:i]
+	}
+	return nil
+}
+
+// undeclaredImport reports whether the import binding target names a module no distribution
+// the manifests read here declare provides: not an instance binding (empty target), not a
+// standard-library module every interpreter the build may run on ships, and not importDeclared.
+func (d distResolver) undeclaredImport(target string) bool {
+	top, _, _ := strings.Cut(target, ".")
+	if top == "" || d.python.ships(top) {
+		return false
+	}
+	return !d.importDeclared(target)
 }
 
 // importTops returns the top-level import names distribution dist provides: its curated
-// rows, else its own name read as an import name (the PEP 503 fallback distFor applies in
+// rows, else its own name read as an import name (the PEP 503 fallback distsFor applies in
 // reverse).
 func (d distResolver) importTops(dist string) []string {
 	var tops []string
@@ -221,18 +275,40 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares.
-func declaredDistributions(buildDir string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range manifestFiles(buildDir) {
-		deps, _ := parseManifest(m)
+// declares. complete is false when a manifest fails to parse, a file declares dependencies
+// version resolution does not read (the same surfaces that leave a version unresolved), or an
+// install surface is not fully read by the coverage check (ManifestCandidates): a name only
+// that file holds is missing, so an import of it reaches no boundary node. read is false when a
+// manifest cannot be read at all.
+func declaredDistributions(buildDir string) (names map[string]bool, complete, read bool) {
+	names, complete, read = map[string]bool{}, true, true
+	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
 			if n := normalizePyCoordinate(d.Coordinate); n != "" {
-				out[n] = true
+				names[n] = true
 			}
 		}
 	}
-	return out
+	manifests, unread := versionSurfaces(buildDir)
+	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
+	for _, f := range manifests {
+		data, err := readRegular(f)
+		if err != nil {
+			complete, read = false, false
+			continue
+		}
+		deps, _, ok := parseManifestData(f, data)
+		if !ok {
+			complete = false
+		}
+		add(deps)
+		if filepath.Base(f) == "pyproject.toml" {
+			// The lexical [project] reader still yields names from a file TOML rejects.
+			lexical, _ := parsePyprojectLexical(data)
+			add(lexical)
+		}
+	}
+	return names, complete, read
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code
@@ -275,15 +351,15 @@ func pypiDistFromPURL(purl string) string {
 
 // boundaryTarget resolves a call chain against the bindings visible at the call (its def
 // scopes inner→outer, then the module) to the dotted dependency path it reaches and the
-// providing distribution. ok is false when the chain's first segment is not bound to a
-// non-first-party import the resolver can map.
-func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scopedBinding, dists distResolver) (dist, dotted string, ok bool) {
+// distributions that may provide it. It returns no distributions when the chain's first
+// segment is not bound to a non-first-party import the resolver can map.
+func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scopedBinding, dists distResolver) (provides []string, dotted string) {
 	if len(chain) == 0 {
-		return "", "", false
+		return nil, ""
 	}
 	b, found := lookupBinding(chain[0], scopes, bindings)
 	if !found {
-		return "", "", false
+		return nil, ""
 	}
 	target := b.target
 	if b.inst != nil {
@@ -291,19 +367,12 @@ func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scope
 		// recursion through further instance bindings).
 		ib, ifound := lookupBinding(b.inst[0], scopes, bindings)
 		if !ifound || ib.target == "" {
-			return "", "", false
+			return nil, ""
 		}
 		target = strings.Join(append([]string{ib.target}, b.inst[1:]...), ".")
 	}
-	top := target
-	if i := strings.IndexByte(top, '.'); i >= 0 {
-		top = top[:i]
-	}
-	dist, ok = dists.distFor(top)
-	if !ok {
-		return "", "", false
-	}
-	return dist, strings.Join(append([]string{target}, chain[1:]...), "."), true
+	dotted = strings.Join(append([]string{target}, chain[1:]...), ".")
+	return dists.distsFor(dotted), dotted
 }
 
 // lookupBinding finds the binding for name visible from the innermost def scope outward,

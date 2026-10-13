@@ -142,7 +142,7 @@ func maliciousMessage(f report.AdvisoryFinding) string {
 	var b strings.Builder
 	b.WriteString(f.Advisory.ID)
 	if f.Package != nil {
-		fmt.Fprintf(&b, " (%s@%s)", f.Package.Name, f.Package.Version)
+		fmt.Fprintf(&b, " (%s)", f.Package.Label())
 	}
 	b.WriteString(": known-malicious package present at a listed affected version. Remove or replace this dependency.")
 	return b.String()
@@ -177,7 +177,7 @@ func candidateMessage(f report.AdvisoryFinding) string {
 	var b strings.Builder
 	b.WriteString(f.Advisory.ID)
 	if f.Package != nil {
-		fmt.Fprintf(&b, " (%s@%s)", f.Package.Name, f.Package.Version)
+		fmt.Fprintf(&b, " (%s)", f.Package.Label())
 	}
 	b.WriteString(": reachable candidate path found")
 	if f.Evidence.ReachablePath != "" {
@@ -262,7 +262,7 @@ func renderSummary(r report.Report) string {
 		for _, f := range candidates(r) {
 			pkg := "—"
 			if f.Package != nil {
-				pkg = fmt.Sprintf("`%s@%s`", f.Package.Name, f.Package.Version)
+				pkg = fmt.Sprintf("`%s`", f.Package.Label())
 			}
 			path := f.Evidence.ReachablePath
 			if path == "" {

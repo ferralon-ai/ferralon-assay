@@ -153,6 +153,7 @@ type distResolver struct {
 	curated    DistImportMap
 	declared   map[string]bool // PEP 503 names from the build's manifests
 	firstParty map[string]bool // top-level import names the build's own sources provide
+	python     interpreterRange
 }
 
 // distFor returns the distribution providing the top-level import name top.
@@ -172,10 +173,11 @@ func (d distResolver) distFor(top string) (string, bool) {
 }
 
 // undeclaredTop reports whether top reaches a distribution only through the PEP 503
-// fallback and no manifest name read here matches it: not first-party, not the standard
-// library, and absent from the curated table, which decides on its own either way.
+// fallback and no manifest name read here matches it: not first-party, not a standard-library
+// module every interpreter the build may run on ships, and not a curated name exactly one
+// distribution provides, which decides on its own either way.
 func (d distResolver) undeclaredTop(top string) bool {
-	if top == "" || d.firstParty[top] || stdlibModules[top] || len(d.curated.Reverse(top)) > 0 {
+	if top == "" || d.firstParty[top] || d.python.ships(top) || len(d.curated.Reverse(top)) == 1 {
 		return false
 	}
 	return !d.declared[normalizePyCoordinate(top)]

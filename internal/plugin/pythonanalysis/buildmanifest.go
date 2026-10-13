@@ -42,18 +42,8 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	}
 
 	meta := readPyprojectMeta(req.BuildDir)
-
-	// Interpreter version: declared requires-python, falling back to a lockfile-declared
-	// python constraint (uv.lock / pdm.lock), then a .python-version pin. Never probed by
-	// launching an interpreter (§3.3); undetermined stays "" and is NOT guessed.
 	pin := readPythonVersionPin(req.BuildDir)
-	version := meta.requiresPython
-	if version == "" {
-		version = lockfileRequiresPython(req.BuildDir)
-	}
-	if version == "" {
-		version = pin
-	}
+	version := declaredPython(req.BuildDir)
 
 	// Toolchain: the stronger, exact pin when the manifest declares one — a .python-version
 	// file, or an exact "==X.Y.Z" requires-python. A range/minimum requires-python is NOT a
@@ -96,6 +86,20 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		res.Partiality = plugin.Complete()
 	}
 	return res, nil
+}
+
+// declaredPython returns the interpreter the build at dir declares: requires-python, falling
+// back to a lockfile-declared python constraint (uv.lock / pdm.lock), then a .python-version
+// pin. Never probed by launching an interpreter (§3.3); undetermined stays "" and is NOT
+// guessed.
+func declaredPython(dir string) string {
+	if v := readPyprojectMeta(dir).requiresPython; v != "" {
+		return v
+	}
+	if v := lockfileRequiresPython(dir); v != "" {
+		return v
+	}
+	return readPythonVersionPin(dir)
 }
 
 // pyprojectMeta is the declared build-context read from a project's pyproject.toml.

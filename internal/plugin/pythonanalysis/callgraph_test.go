@@ -336,6 +336,22 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 	const app = "import acmelib\n\ndef fetch(u):\n    return acmelib.get(u)\n"
 	const edge = "pypi:acmelib#acmelib.get"
 	const setupCfg = "[options]\ninstall_requires =\n    acmelib\n"
+	// interp builds a tree whose Pipfile goes unread, whose only read manifest declares
+	// acmelib, and whose interpreter is declared by the given files.
+	interp := func(imports string, files map[string]string) map[string]string {
+		tree := map[string]string{
+			"requirements.txt": "acmelib==1.0\n",
+			"Pipfile":          "[packages]\npyasyncore = \"*\"\ngraphlib-backport = \"*\"\n",
+			"app.py":           app + "\n" + imports,
+		}
+		for k, v := range files {
+			tree[k] = v
+		}
+		return tree
+	}
+	requires := func(spec string) map[string]string {
+		return map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nrequires-python = \"" + spec + "\"\n"}
+	}
 	cases := []struct {
 		name        string
 		files       map[string]string
@@ -413,6 +429,85 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 				"setup.cfg":        setupCfg,
 				"app.py":           app + "\nimport jwt\n",
 			},
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, asyncore on 3.12 or later",
+			files:       interp("import asyncore\n", requires(">=3.12")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, graphlib on 3.8",
+			files:       interp("import graphlib\n", requires("==3.8.*")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, undeclared third-party import",
+			files:       interp("import othermod\n", requires(">=3.12")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, asyncore on 3.8 through 3.11",
+			files:    interp("import asyncore\n", requires(">=3.8,<3.12")),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, graphlib on 3.9 or later",
+			files:    interp("import graphlib\n", requires(">=3.9")),
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, asyncore only on releases newer than the tables",
+			files:       interp("import asyncore\n", requires(">=3.15")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, dataclasses on 3.6 or later",
+			files:       interp("import dataclasses\n", requires(">=3.6")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, enum on 2.7 or later",
+			files:       interp("import enum\n", requires(">=2.7")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, no interpreter declared, module 3.8 and later ship",
+			files:    interp("import dataclasses\nimport asyncio\n", nil),
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, no interpreter declared, module 3.8 lacks",
+			files:       interp("import tomllib\n", nil),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, no interpreter declared, module 3.12 dropped",
+			files:       interp("import distutils\n", nil),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, unreadable requires-python",
+			files:       interp("import dataclasses\n", requires("3.8 or newer")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, .python-version pin",
+			files:    interp("import tomllib\n", map[string]string{".python-version": "3.11\n"}),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, uv.lock requires-python",
+			files:    interp("import asyncore\n", map[string]string{"uv.lock": "version = 1\nrequires-python = \">=3.8, <3.12\"\n"}),
 			boundary: true,
 		},
 	}

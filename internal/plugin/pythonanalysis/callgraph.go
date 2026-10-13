@@ -161,6 +161,7 @@ func loadProgram(buildDir string) (*program, error) {
 		curated:    NewDistImportMap(CuratedContributions()...),
 		declared:   declared,
 		firstParty: firstPartyTops(modules),
+		python:     buildInterpreter(buildDir),
 	}
 	prog.importUnattributed = !declaredComplete && prog.hasUndeclaredImport()
 	return prog, nil

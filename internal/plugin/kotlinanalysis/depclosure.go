@@ -68,6 +68,11 @@ type depClosure struct {
 	// mainClasses are the launch main classes the start scripts name; empty when the
 	// closure came from the inventory.
 	mainClasses []string
+	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
+	// no empty search is Searched: the inventory's graph-level reasons that leave the version it
+	// names for a node unknown (an uncached BOM or parent, an unresolved property, an unevaluable
+	// profile).
+	reasons []string
 }
 
 // depNode is one distinct (group, artifact, version) from the inventory, with the inventory
@@ -95,7 +100,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 	g := newInventoryGraph(inv)
 	program := g.programClosure()
 	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
-	dc := &depClosure{loaded: map[string]string{}}
+	dc := &depClosure{loaded: map[string]string{}, reasons: versionSelectionReasons(inv)}
 
 	var locks *runtimeLocks
 	if fromLockfile(inv) {
@@ -339,6 +344,18 @@ func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, 
 		}
 	}
 	return load, misses
+}
+
+// versionSelectionReasons returns the inventory's graph-level reasons under which a node's
+// version may not be the one the build selects.
+func versionSelectionReasons(inv plugin.DependencyInventory) []string {
+	var out []string
+	for _, r := range inv.Partiality.Reasons {
+		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) || strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // fromLockfile reports whether the inventory's node set came from a Gradle lockfile.

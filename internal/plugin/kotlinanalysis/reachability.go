@@ -67,6 +67,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	for _, sr := range deps.scoped {
 		prog.reasons[sr.Reason] = true
 	}
+	for _, r := range deps.reasons {
+		prog.reasons[r] = true
+	}
 	all := make([]classfile.Class, 0, len(prog.classes)+len(deps.classes))
 	all = append(all, prog.classes...)
 	all = append(all, deps.classes...)
@@ -106,7 +109,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		case len(mains) == 0:
 			prog.reasons[partialReasonNoWholeProgramRoot] = true
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
-		case out.undetermined || !concrete[sink.String()] || multiProject:
+		case out.undetermined || !concrete[sink.String()] || multiProject || len(deps.reasons) > 0:
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true

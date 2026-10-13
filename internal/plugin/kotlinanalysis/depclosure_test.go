@@ -741,3 +741,55 @@ func TestResolveDependencySymbols_GradleLockRuntimeVersion(t *testing.T) {
 		})
 	}
 }
+
+// TestReachability_InventoryVersionSelectionLimit: an inventory graph-level reason under which a
+// node's version may not be the one the build selects (here an imported BOM absent from the
+// cache, so the versions it manages are unknown) is declared run-wide on the result.
+func TestReachability_InventoryVersionSelectionLimit(t *testing.T) {
+	const bomUncached = plugin.PartialReasonSourceUnpinned + ":bom_uncached"
+	tests := []struct {
+		name      string
+		cacheBOM  bool
+		wantLimit bool
+	}{
+		{name: "imported BOM cached", cacheBOM: true},
+		{name: "imported BOM uncached", wantLimit: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			dir := t.TempDir()
+			writeBuildFile(t, dir, "pom.xml", `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
+<dependencies><dependency><groupId>`+jacksonGroup+`</groupId><artifactId>`+jacksonArtifact+`</artifactId><version>`+jacksonVersion+`</version></dependency></dependencies></project>`)
+			writePOM := func(group, artifact, version, body string) {
+				p := m2Path(dir, group, artifact, version, "pom")
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.cacheBOM {
+				writePOM("org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
+			}
+			writePOM(jacksonGroup, jacksonArtifact, jacksonVersion, `<project><groupId>`+jacksonGroup+`</groupId><artifactId>`+jacksonArtifact+`</artifactId><version>`+jacksonVersion+`</version></project>`)
+			writeJar(t, m2Path(dir, jacksonGroup, jacksonArtifact, jacksonVersion, "jar"), jacksonJar())
+			writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+
+			res := reach(t, dir, readValueSink)
+			if got := hasReason(res.Partiality, bomUncached); got != tt.wantLimit {
+				t.Errorf("%s declared = %v, want %v: %+v", bomUncached, got, tt.wantLimit, res.Partiality)
+			}
+			if tt.wantLimit && res.Partiality.Complete {
+				t.Error("result Complete despite an inventory version-selection limit")
+			}
+			// The loaded jackson may not be the version the BOM would select: no Searched.
+			if got := res.Searched != nil; got == tt.wantLimit {
+				t.Errorf("Searched = %v with limit %v", res.Searched, tt.wantLimit)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ type groundsFixture struct {
 	advisoryPURL    string
 	advisorySymbols []string
 	affected        []string // affected_packages[] PURLs
+	dropped         []string // dropped_affected_packages: elements that failed validation
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
@@ -32,6 +33,7 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
 		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
+		"dropped_affected_packages": fx.dropped,
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
@@ -215,6 +217,16 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 			name: "multi-package: an element without a package URL is another package",
 			mutate: func(fx *groundsFixture) {
 				fx.affected = []string{"pkg:pypi/pyyaml", ""}
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			// CVE-2023-39325's shape: the second element failed validation and left the
+			// multi-package set, but the advisory still names it.
+			name: "multi-package: an element dropped at decode is another package",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml"}
+				fx.dropped = []string{"pkg:pypi/ruamel.yaml"}
 			},
 			wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},

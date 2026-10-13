@@ -29,6 +29,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -54,6 +55,9 @@ type loadSet struct {
 	installed    map[string]bool // installed by a command or committed to the repository: never refuted
 	projectNames map[string]bool // the project's own distribution names: root subjects, never refuted
 	markerless   []string        // install sources whose runtime/dev split is unknown: nothing refutes
+
+	treeRoot string                // the build dir tree was walked from
+	tree     []buildtree.Candidate // every file under treeRoot and every entry not read through
 }
 
 // noMarkers records an install source that cannot tell runtime from dev, or whose lockfile

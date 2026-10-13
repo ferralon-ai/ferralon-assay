@@ -7,7 +7,7 @@ package pythonanalysis
 // at runtime, so the scanner needs positive evidence that the production install is fully
 // characterized, and fails closed whenever it lacks that evidence:
 //
-//   - Every file under the build dir is walked (buildwalk.go: only a committed node_modules or
+//   - Every file under the build dir is walked (buildtree.Walk: only a committed node_modules or
 //     site-packages is skipped, and a symlink that leaves the build dir vetoes). A file is a
 //     candidate install surface when it is a Dockerfile/Containerfile, a GitHub workflow or
 //     action, GitLab CI, a shell script (by extension or shebang), a Makefile, Procfile or
@@ -51,6 +51,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
 // installScan is what the repository's files install.
@@ -103,57 +105,25 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 	sc := &installScan{ls: ls, root: buildDir, keep: map[string]string{}, reqSeen: map[string]bool{}, images: map[string]bool{}}
 	ls.scan = sc
 	var workflows []pendingWorkflow
-	links := newBuildTreeLinks(buildDir)
-	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
-		links.visit(e, err)
-		rel := relSlash(buildDir, e.Path)
-		c := scanCtx{file: rel, where: rel, prod: true}
-		switch {
-		case err != nil:
-			sc.veto(c, "could not be read: install commands under it are unknown")
-			if e.D != nil && e.D.IsDir() && e.Path != buildDir {
-				return filepath.SkipDir
-			}
-			return nil
-		case e.Symlink && e.Escapes:
-			sc.veto(c, "symlink that leaves the repository or does not resolve: install commands behind it are unknown")
-			return nil
-		case e.Skipped, e.D.IsDir():
-			return nil
-		case e.Symlink && buildTreeIsDir(e.Path):
-			return nil // read at its target, or vetoed below when the walk does not read that
-		case e.Symlink:
-		case !e.D.Type().IsRegular():
-			return nil // a device, socket or pipe runs nothing, and reading a pipe would block
-		}
-		if e.Symlink {
-			switch buildTreeLinkedFile(e.Path) {
-			case "unreadable":
-				sc.veto(c, "could not be read")
-				return nil
-			case "symlink to a non-regular file":
-				sc.veto(c, "symlink to a non-regular file: install commands behind it are unknown")
-				return nil
-			}
-		}
-		base := strings.ToLower(path.Base(rel))
+	read := func(c scanCtx, file string) {
+		base := strings.ToLower(path.Base(c.file))
 		if base == "pip.conf" || base == "pip.ini" {
 			sc.veto(c, "pip configuration file: it can add requirements and options the scanner does not read")
-			return nil
+			return
 		}
-		data, content, err := readInstallFile(e.Path)
+		data, content, err := readInstallFile(file)
 		switch {
 		case err != nil:
 			sc.veto(c, "could not be read")
-			return nil
+			return
 		case content == contentArchive:
 			sc.veto(c, "archive: distributions or install commands it bundles are not read")
-			return nil
+			return
 		case content == contentExecutable:
 			sc.veto(c, "executable: an interpreter or distributions it bundles are not read")
-			return nil
+			return
 		case content == contentBinary:
-			return nil // an image, a font or other data: neither text nor an archive
+			return // an image, a font or other data: neither text nor an archive
 		}
 		sc.configIndexes(c, base, data)
 		if condaEnvironment(base, data) {
@@ -161,31 +131,69 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		} else if manager := environmentManifest(base, data); manager != "" {
 			sc.veto(c, "%s: its environment manager installs the packages it lists, which the lockfile does not describe", manager)
 		}
-		kind := installSurface(rel, data)
+		kind := installSurface(c.file, data)
 		if kind == "" {
-			return nil
+			return
 		}
-		sc.files = append(sc.files, rel)
+		sc.files = append(sc.files, c.file)
 		if kind != "docker" && dockerInstructionRe.Match(data) {
 			sc.veto(c, "Dockerfile instructions in a file not read as a Dockerfile: which files its install commands read is unknown")
 		}
 		sc.envVetoes(c, data)
 		if kind == "workflow" {
-			workflows = append(workflows, pendingWorkflow{rel, data})
-			return nil
+			workflows = append(workflows, pendingWorkflow{c.file, data})
+			return
 		}
-		sc.scanFile(rel, data, kind)
-		return nil
-	})
-	for _, link := range links.unread() {
-		rel := relSlash(buildDir, link)
-		sc.veto(scanCtx{file: rel, where: rel, prod: true}, "symlinked directory whose target the walk does not read: install commands behind it are unknown")
+		sc.scanFile(c.file, data, kind)
+	}
+	for _, cand := range ls.buildTree(buildDir) {
+		rel := relSlash(buildDir, cand.Path)
+		c := scanCtx{file: rel, where: rel, prod: true}
+		switch cand.Why {
+		case treeFile:
+			read(c, cand.Path)
+		case "symlink leaves the build dir":
+			sc.veto(c, "symlink that leaves the repository or does not resolve: install commands behind it are unknown")
+		case "symlink to a non-regular file":
+			sc.veto(c, "symlink to a non-regular file: install commands behind it are unknown")
+		case "symlinked directory the walk does not read":
+			sc.veto(c, "symlinked directory whose target the walk does not read: install commands behind it are unknown")
+		default: // "unreadable", or any reason buildtree adds: what it holds is not read
+			if unlistedDir(cand.Path) {
+				sc.veto(c, "could not be read: install commands under it are unknown")
+			} else {
+				sc.veto(c, "could not be read")
+			}
+		}
 	}
 	sc.scanWorkflows(workflows)
 	sort.Strings(sc.files)
 	if sc.noDeps != "" && sc.pipInstalls > 1 {
 		ls.noMarkers("%s: pip install --no-deps alongside another pip install leaves the installed dependencies unknown", sc.noDeps)
 	}
+}
+
+// treeFile is the reason buildTree gives every regular file under the build dir, or symlink
+// to one inside it: both scans read every file, not only the ones a lane classifier names.
+const treeFile = "file"
+
+// buildTree is buildtree.Candidates over buildDir with every file accepted, walked once for both
+// scans: each file in walk order, then every entry what it holds cannot be read through.
+func (ls *loadSet) buildTree(buildDir string) []buildtree.Candidate {
+	if ls.treeRoot != buildDir {
+		ls.tree = buildtree.Candidates(buildDir,
+			func(string, []byte) (string, bool) { return treeFile, true },
+			func(string) bool { return false })
+		ls.treeRoot = buildDir
+	}
+	return ls.tree
+}
+
+// unlistedDir reports whether an unreadable candidate is a directory the walk could not list
+// (or a build dir that does not exist) rather than a file it could not open.
+func unlistedDir(p string) bool {
+	fi, err := os.Lstat(p)
+	return err != nil || fi.IsDir()
 }
 
 func relSlash(root, p string) string {
@@ -208,7 +216,7 @@ func underSkipped(root, target string) bool {
 		return true
 	}
 	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		if buildTreeSkipped(part) {
+		if buildtree.Skipped(part) {
 			return true
 		}
 	}
@@ -2546,31 +2554,46 @@ var vendorDirs = setOf("lib", "vendor", "_vendor", "vendored", "third_party", "s
 // egg, every top-level entry of a committed site-packages, and a package or module vendored
 // under lib/, vendor/, python/ and the like.
 func (ls *loadSet) committedInstalls(buildDir string) {
-	links := newBuildTreeLinks(buildDir)
-	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
-		links.visit(e, err)
-		rel := relSlash(buildDir, e.Path)
+	for _, cand := range ls.buildTree(buildDir) {
+		rel := relSlash(buildDir, cand.Path)
+		switch cand.Why {
+		case treeFile:
+		case "symlink leaves the build dir":
+			ls.noMarkers("%s: symlink that leaves the repository or does not resolve: installed copies behind it are unknown", rel)
+		case "symlink to a non-regular file":
+			ls.noMarkers("%s: symlink to a non-regular file: installed copies behind it are unknown", rel)
+		case "symlinked directory the walk does not read":
+			ls.noMarkers("%s: symlinked directory whose target the walk does not read: installed copies behind it are unknown", rel)
+		default:
+			if fi, err := os.Lstat(cand.Path); err != nil || fi.IsDir() {
+				ls.noMarkers("%s: could not be read: installed copies under it are unknown", rel)
+			} else if fi.Mode()&os.ModeSymlink != 0 {
+				ls.noMarkers("%s: unreadable: installed copies behind it are unknown", rel)
+			}
+			// A regular file the walk could not open places nothing by name; the install scan
+			// vetoes it.
+		}
+	}
+	_ = buildtree.Walk(buildDir, func(e buildtree.Entry, err error) error {
 		if err != nil {
-			ls.noMarkers("%s: could not be read: installed copies under it are unknown", rel)
 			if e.D != nil && e.D.IsDir() && e.Path != buildDir {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if e.Path == buildDir {
+		if e.Path == buildDir || e.Symlink && e.Escapes {
 			return nil
 		}
-		if e.Symlink && e.Escapes {
-			ls.noMarkers("%s: symlink that leaves the repository or does not resolve: installed copies behind it are unknown", rel)
-			return nil
-		}
+		rel := relSlash(buildDir, e.Path)
 		// A symlink inside the repository is read at its target too, but its own name still
 		// places what it links: a dist-info, a wheel, or a package under a vendor directory.
 		name, isDir := e.D.Name(), e.D.IsDir()
 		if e.Symlink {
-			isDir = buildTreeIsDir(e.Path)
-			if why := buildTreeLinkedFile(e.Path); !isDir && why != "" {
-				ls.noMarkers("%s: %s: installed copies behind it are unknown", rel, why)
+			fi, err := os.Stat(e.Path)
+			if err != nil {
+				return nil
+			}
+			if isDir = fi.IsDir(); !isDir && !fi.Mode().IsRegular() {
 				return nil
 			}
 		}
@@ -2597,9 +2620,6 @@ func (ls *loadSet) committedInstalls(buildDir string) {
 		}
 		return nil
 	})
-	for _, link := range links.unread() {
-		ls.noMarkers("%s: symlinked directory whose target the walk does not read: installed copies behind it are unknown", relSlash(buildDir, link))
-	}
 }
 
 // committedSitePackages marks every top-level entry of a committed site-packages installed.

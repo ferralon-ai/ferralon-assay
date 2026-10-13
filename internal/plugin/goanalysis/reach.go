@@ -265,10 +265,19 @@ func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string
 }
 
 // importable reports whether code outside the build's module can import p: it is not a main
-// package, and no element of its path is internal, which only the module's own packages can
-// import. Those callers are the build's mains, whose calls govulncheck searches.
+// package, and no element of its path below the module path is internal, which only the module's
+// own packages can import. Those callers are the build's mains, whose calls govulncheck searches.
+// An internal element in the module path itself still admits importers from other modules under
+// its parent, so it does not count.
 func importable(p *packages.Package) bool {
-	return !isMain(p) && !slices.Contains(strings.Split(p.PkgPath, "/"), "internal")
+	if isMain(p) {
+		return false
+	}
+	rel := p.PkgPath
+	if p.Module != nil {
+		rel = strings.TrimPrefix(rel, p.Module.Path)
+	}
+	return !slices.Contains(strings.Split(rel, "/"), "internal")
 }
 
 // isMain reports whether p is a main package with files the build compiles; a directory holding

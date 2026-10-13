@@ -74,6 +74,15 @@ func TestGradleLockedVersions(t *testing.T) {
 			"gradle.lockfile":  "com.example:extra:1.0=runtimeClasspath,testRuntimeClasspath\n",
 			"app/build.gradle": gradleLockingOn, "app/gradle.lockfile": "empty=\n",
 		}, nil, false},
+		{"a root that declares and locks nothing", map[string]string{
+			"settings.gradle":  "include 'app'\n",
+			"build.gradle":     "group = 'com.example'\n",
+			"app/build.gradle": gradleLockingOn + gradleWidgetDecl, "app/gradle.lockfile": gradleWidgetLock,
+		}, []string{"2.5"}, true},
+		{"compileOnly and runtimeOnly need only the classpaths they feed", map[string]string{
+			"build.gradle":    gradleLockingOn + "dependencies {\n    compileOnly 'com.example.lib:widget:2.0'\n    runtimeOnly 'com.example:other:1.0'\n}\n",
+			"gradle.lockfile": "com.example.lib:widget:2.5=compileClasspath\ncom.example:other:1.0=runtimeClasspath,testRuntimeClasspath\nempty=annotationProcessor,testAnnotationProcessor,testCompileClasspath\n",
+		}, []string{"2.5"}, true},
 		{"an intermediate project of a nested include, unread", map[string]string{
 			"settings.gradle":       "include 'libs:app'\n",
 			"build.gradle":          gradleLockingOn,

@@ -3219,18 +3219,23 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 	} else if len(arts) > 0 {
 		var full struct {
 			Reachability plugin.ReachabilityResult `json:"reachability"`
+			CallGraph    plugin.CallGraphResult    `json:"call_graph"`
 		}
 		// Partiality is harvested whether or not any path was found, and BEFORE the
 		// path-count branch. Harvesting it only on len(Paths) > 0 dropped the disclosure
 		// on precisely the case it exists for: a reachability pass that resolved nothing
 		// because it could not see the code produces zero paths, and without the reason
 		// codes it is indistinguishable from a pass that looked and found nothing.
+		//
+		// The call graph's limits are harvested beside reachability's: a lane may declare a
+		// step that did not run only on its graph, and that limit must hold the verdict
+		// whether or not the graph has edges.
 		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
-		if unmarshalled && full.Reachability.Partiality.Reasons != nil {
-			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
-		}
 		if unmarshalled {
+			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
+			payload.PartialityFlags = append(payload.PartialityFlags, full.CallGraph.Partiality.Reasons...)
 			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.CallGraph.Partiality.Scoped)
 		}
 		if unmarshalled && len(full.Reachability.Paths) > 0 {
 			payload.ReachablePathCount = len(full.Reachability.Paths)
@@ -3257,8 +3262,8 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 		}
 	}
 
-	// Dependency-version resolution is the fourth partiality axis (alongside ingress,
-	// reachability and vulnerable-symbol above): the inventory stage records why it
+	// Dependency-version resolution is a partiality axis too (alongside ingress, call
+	// graph, reachability and vulnerable-symbol above): the inventory stage records why it
 	// could not pin an installed version. Harvesting it here keeps the footprint an
 	// honest account of what the pass could not establish.
 	if arts, err := store.Query(c.ID, artifact.TypeInventory); err != nil {

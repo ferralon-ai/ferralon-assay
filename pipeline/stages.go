@@ -1988,9 +1988,15 @@ const (
 
 // affectedRange is the single, unambiguous structured constraint this stage understands: an
 // upper-exclusive semver bound (the "affects < X" form).
+//
+// LowerInclusive and LastAffected carry the bounds that form cannot express, so a reader can tell
+// "every version from here on" (no fix, no lower bound above zero) from a range the version axis
+// cannot bound. The version axis itself reads only UpperExclusive.
 type affectedRange struct {
 	UpperExclusive string `json:"upper_exclusive"`
 	Scheme         string `json:"scheme,omitempty"`
+	LowerInclusive string `json:"lower_inclusive,omitempty"` // an introduced bound above zero
+	LastAffected   string `json:"last_affected,omitempty"`
 }
 
 // advisoryAffectedPackage is one element of the normalized-advisory artifact's affected_packages[]
@@ -2038,7 +2044,12 @@ func buildAffectedRanges(ranges []Range, upperExclusive, scheme string) []affect
 	if len(ranges) > 0 {
 		out := make([]affectedRange, 0, len(ranges))
 		for _, r := range ranges {
-			out = append(out, affectedRange{UpperExclusive: r.Fixed, Scheme: scheme})
+			ar := affectedRange{UpperExclusive: r.Fixed, Scheme: scheme, LastAffected: r.LastAffected}
+			// OSV writes an unbounded start as "0"; some feeds spell it "0.0.0".
+			if r.Introduced != "0" && r.Introduced != "0.0.0" {
+				ar.LowerInclusive = r.Introduced
+			}
+			out = append(out, ar)
 		}
 		return out
 	}

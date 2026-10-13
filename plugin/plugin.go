@@ -346,8 +346,10 @@ type ReachabilityRequest struct {
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
 	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
-	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
-	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is
+	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package sits outside
+	// the production install, and that nothing loads it, answers with a RefutationPackageNotLoaded
+	// ReachabilityResult.Refutation; a production-installed package never refutes for lack of a
+	// load. Package is
 	// empty when either the PURL or the resolved version is unknown, and a lane MUST NOT emit a
 	// package_not_loaded Refutation then: with no admitted version there is nothing to refute, so
 	// the advisory stays undetermined, never not_exploitable.
@@ -481,8 +483,10 @@ const (
 	// RefutationAnalyzerSymbolNotReached: govulncheck reported the advisory against a module or
 	// package in the build and found no call path to any of its vulnerable symbols.
 	RefutationAnalyzerSymbolNotReached = "analyzer_symbol_not_reached"
-	// RefutationPackageNotLoaded: the package is installed at the admitted version and no
-	// runtime-loaded module imports it.
+	// RefutationPackageNotLoaded: every installed copy of the package sits outside the production
+	// install closure (the lockfile's own dev markers), at least one is at the admitted version, and
+	// no runtime-loaded module imports any of them. The load set only withholds: a package the
+	// production install puts on disk never refutes, whether or not anything imports it.
 	RefutationPackageNotLoaded = "package_not_loaded"
 )
 

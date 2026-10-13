@@ -1,9 +1,10 @@
 package jsanalysis
 
-// loadset.go computes the runtime load set: the installed npm package instances that
-// first-party runtime code can load. It is the evidence behind the package_not_loaded
-// refutation (ne-gate-contract §5, arm B): a package installed at the admitted version that
-// no runtime-loaded module can reach.
+// loadset.go backs the package_not_loaded refutation (ne-gate-contract §5, arm B). The
+// refutation rests on install-closure membership: every installed copy of the package sits
+// outside the production install (class (i), below). The runtime load set computed here, the
+// installed instances first-party runtime code can load, only withholds: a loaded copy blocks
+// the refutation, and a production-installed package nothing loads never refutes.
 //
 // The set is an over-approximation by construction. Every uncertain step either adds
 // instances (never removes them) or marks the result incomplete, and an incomplete result
@@ -33,8 +34,8 @@ package jsanalysis
 //     config: view engines, SQL clients, babel/webpack plugins) add their curated targets, or
 //     emit an unbounded ScopedReason that blocks refutation.
 //
-// Not being in the load set is necessary but not sufficient. A package also has to sit outside
-// the runtime install closure (class (i)): every instance at the admitted version carries its
+// Not being in the load set is necessary, never sufficient. The basis is the runtime install
+// closure (class (i)): every instance at the admitted version carries its
 // lockfile's dev marker and is unreachable over dependencies/optionalDependencies/
 // peerDependencies from every first-party manifest and lockfile workspace entry. A package a
 // production install puts on disk (class (ii)) never refutes, because code we cannot see (a
@@ -70,6 +71,9 @@ type pkgInstance struct {
 	peers    []string
 	bins     []string
 	root     string // owning lock root, build-relative ("" = build dir)
+	// installScript: the lockfile says the package runs a preinstall, install or postinstall
+	// script.
+	installScript bool
 }
 
 // installSeed is one runtime-dependency edge of a first-party manifest or lockfile workspace
@@ -94,6 +98,10 @@ type installModel struct {
 	devMarks  map[string]string // install path -> version, for lockfile entries marked dev-only
 	seeds     []installSeed     // runtime-dependency edges of lockfile root/workspace entries
 	ownNames  []string          // names of lockfile root/workspace entries (first-party packages)
+	lockOf    map[string]string // lock root -> dialect of its selected lockfile (unambiguous roots only)
+	committed []string          // node_modules dirs tracked or not excluded by .gitignore: shipped with the repo
+	git       *gitIndex         // read on the first node_modules the sweep finds
+	verify    *loadSet          // set during the node_modules sweep: disk must agree with the index
 }
 
 type resolveKind int
@@ -121,6 +129,7 @@ type loadSet struct {
 	// noDevOnly says why no package counts as outside the runtime install closure ("" = class
 	// (i) is decidable for this build).
 	noDevOnly string
+	scan      *installScan // out-of-manifest installs: named packages it blocks, files it read
 }
 
 func (ls *loadSet) gap(format string, args ...any) {
@@ -171,8 +180,12 @@ func computeLoadSet(buildDir string) *loadSet {
 		ls.ownNames[canonicalNpmName(n)] = true
 	}
 	ls.installed, ls.noDevOnly = m.installClosure(append(m.seeds, fp.install...))
-	if ls.noDevOnly == "" {
-		ls.noDevOnly = prodInstallKeepsDev(m.buildReal)
+	ls.scan = scanBuild(m.buildReal, m, ls.installed)
+	if ls.noDevOnly == "" && len(ls.scan.keepDev) > 0 {
+		ls.noDevOnly = ls.scan.keepDev[0]
+	}
+	if ls.noDevOnly == "" && ls.scan.all != "" {
+		ls.noDevOnly = "out-of-manifest install: " + ls.scan.all
 	}
 	return ls
 }
@@ -220,10 +233,16 @@ func (m *installModel) installClosure(seeds []installSeed) (map[string]bool, str
 	return in, why
 }
 
-// devOnly reports whether instance in is outside the runtime install closure (class (i)).
+// devOnly reports whether instance in is outside the runtime install closure (class (i)): no
+// out-of-manifest install names it and it is not in a node_modules tree the repo commits.
 func (ls *loadSet) devOnly(in *pkgInstance) bool {
 	if ls.noDevOnly != "" || ls.installed[in.path] {
 		return false
+	}
+	for _, c := range ls.model.committed {
+		if strings.HasPrefix(in.path, c+"/") {
+			return false
+		}
 	}
 	v, ok := ls.model.devMarks[in.path]
 	return ok && v == in.version
@@ -255,6 +274,7 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		byName:    map[string][]*pkgInstance{},
 		byBin:     map[string][]*pkgInstance{},
 		devMarks:  map[string]string{},
+		lockOf:    map[string]string{},
 	}
 	absRoots := discoverProjectRoots(real)
 	if len(absRoots) == 0 {
@@ -273,6 +293,9 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 			label = "."
 		}
 		sel, part := selectLockfile(ar)
+		if part.Complete {
+			m.lockOf[rel] = sel.dialect
+		}
 		if !part.Complete && containsReason(part.Reasons, plugin.PartialReasonNoManifest) {
 			ls.gap("%s: no lockfile", label)
 			continue
@@ -297,6 +320,7 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		}
 		ls.gap("%s: %s and node_modules is not installed", label, why)
 	}
+	m.sweepNodeModules(ls)
 	for _, idx := range []map[string][]*pkgInstance{m.byDir, m.byName, m.byBin} {
 		for _, list := range idx {
 			sort.Slice(list, func(i, j int) bool { return list[i].path < list[j].path })
@@ -403,12 +427,13 @@ type npmLoadPkg struct {
 	PeerDependencies     map[string]string `json:"peerDependencies"`
 	Bin                  json.RawMessage   `json:"bin"`
 	Dev                  bool              `json:"dev"`
+	HasInstallScript     bool              `json:"hasInstallScript"`
 }
 
 // loadNpmLock loads an npm v2/v3 lockfile's `packages` map. It returns false when the
 // lockfile has no `packages` map (v1), leaving the root to the disk engine.
 func (m *installModel) loadNpmLock(lockPath, root string, ls *loadSet) bool {
-	data, err := os.ReadFile(lockPath)
+	data, err := readRegular(lockPath)
 	if err != nil {
 		ls.gap("%s: unreadable", m.rel(lockPath))
 		return true
@@ -454,6 +479,7 @@ func (m *installModel) loadNpmLock(lockPath, root string, ls *loadSet) bool {
 			path: ip, dirName: dir, name: name, version: p.Version,
 			deps: sortedKeysOf(p.Dependencies), optional: sortedKeysOf(p.OptionalDependencies),
 			peers: sortedKeysOf(p.PeerDependencies), bins: binNames(p.Bin, name), root: root,
+			installScript: p.HasInstallScript,
 		}
 		if m.add(in) {
 			ls.gap("lockfiles disagree on the package installed at %s", ip)
@@ -483,7 +509,7 @@ func runtimeSeeds(p npmLoadPkg, dir string) []installSeed {
 // node_modules. The caller never passes a lockfile the root did not select, so a yarn or pnpm
 // root records none and nothing in it is class (i).
 func (m *installModel) readDevMarks(lockPath, root string) {
-	data, err := os.ReadFile(lockPath)
+	data, err := readRegular(lockPath)
 	if err != nil {
 		return
 	}
@@ -609,17 +635,122 @@ func (m *installModel) indexDiskEntry(abs string, e os.DirEntry, ls *loadSet) {
 	m.walkNodeModules(filepath.Join(abs, "node_modules"), ls)
 }
 
+// sweepNodeModules reads every node_modules tree in the build dir, wherever it sits and
+// whichever engine indexed its root. A package on disk the lockfile does not list joins the
+// model with no dev marker (so its name never refutes); one that disagrees with the lockfile
+// leaves the load set incomplete. A tree no .gitignore excludes, or one the git index tracks
+// anyway, is committed: it ships with the repo, so everything in it counts as installed.
+func (m *installModel) sweepNodeModules(ls *loadSet) {
+	m.verify = ls
+	defer func() { m.verify = nil }()
+	_ = filepath.WalkDir(m.buildReal, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				ls.gap("%s: unreadable", m.rel(p))
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == ".git" && p != m.buildReal {
+			return filepath.SkipDir
+		}
+		if d.Name() != "node_modules" {
+			return nil
+		}
+		rel := m.rel(p)
+		if m.git == nil {
+			m.git = readGitIndex(m.buildReal)
+		}
+		if !m.gitIgnored(rel) || m.git.tracked(rel) {
+			m.committed = append(m.committed, rel)
+		}
+		m.walkNodeModules(p, ls)
+		return filepath.SkipDir
+	})
+}
+
+// gitIgnored reports whether some .gitignore from the build root down to its parent excludes
+// build-relative path rel. A negation naming node_modules, or an unreadable file, counts as
+// not excluded.
+func (m *installModel) gitIgnored(rel string) bool {
+	parts := strings.Split(rel, "/")
+	ignored := false
+	for depth := 0; depth < len(parts); depth++ {
+		base := strings.Join(parts[:depth], "/")
+		data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(base), ".gitignore"))
+		if err != nil {
+			continue
+		}
+		sub := parts[depth:] // rel below the .gitignore's directory
+		for _, line := range strings.Split(string(data), "\n") {
+			pat := strings.TrimSpace(line)
+			if pat == "" || strings.HasPrefix(pat, "#") {
+				continue
+			}
+			neg := strings.HasPrefix(pat, "!")
+			pat = strings.TrimPrefix(pat, "!")
+			if neg && strings.Contains(pat, "node_modules") {
+				return false
+			}
+			pat = strings.TrimSuffix(strings.TrimSuffix(pat, "/"), "/**")
+			pat = strings.TrimPrefix(pat, "**/")
+			anchored := strings.Contains(pat, "/")
+			pat = strings.TrimPrefix(pat, "/")
+			if pat == "" {
+				continue
+			}
+			re := regexp.MustCompile("^" + globRegex(pat) + "$")
+			hit := false
+			if anchored {
+				for k := 1; k <= len(sub); k++ {
+					if re.MatchString(strings.Join(sub[:k], "/")) {
+						hit = true
+						break
+					}
+				}
+			} else {
+				for _, seg := range sub {
+					if re.MatchString(seg) {
+						hit = true
+						break
+					}
+				}
+			}
+			if hit {
+				ignored = !neg
+			}
+		}
+	}
+	return ignored
+}
+
 // indexDiskPackage reads the package.json installed at build-relative dir rel.
 func (m *installModel) indexDiskPackage(rel string) *pkgInstance {
 	if in, ok := m.inst[rel]; ok {
+		if ls := m.verify; ls != nil {
+			if data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel), "package.json")); err == nil {
+				var p npmLoadPkg
+				if json.Unmarshal(data, &p) != nil {
+					ls.gap("%s: unparseable package.json on disk", rel)
+				} else if (p.Name != "" && p.Name != in.name) || p.Version != in.version {
+					ls.gap("%s: node_modules holds %s@%s, the index says %s@%s", rel, p.Name, p.Version, in.name, in.version)
+				}
+			}
+		}
 		return in
 	}
-	data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(rel), "package.json"))
+	data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel), "package.json"))
 	if err != nil {
 		return nil
 	}
 	var p npmLoadPkg
 	if json.Unmarshal(data, &p) != nil {
+		if ls := m.verify; ls != nil {
+			ls.gap("%s: unparseable package.json on disk", rel)
+		}
 		return nil
 	}
 	dir := npmName(rel, "")
@@ -1289,7 +1420,7 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 		}
 	}
 	for _, rel := range sortedSet(jsonRuntime) {
-		data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+		data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}
@@ -1299,7 +1430,7 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 		out.manifestRoots(m, rel)
 	}
 	for _, rel := range opsFiles {
-		data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+		data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}
@@ -1331,7 +1462,7 @@ func dirOf(rel string) string {
 
 // scanFile collects a file's package references and relative-import targets.
 func scanFile(m *installModel, f *fpFile, jsonRuntime map[string]bool) {
-	data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(f.rel)))
+	data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(f.rel)))
 	if err != nil {
 		f.unreadable = true
 		return
@@ -1478,7 +1609,7 @@ func jsonStringRoots(m *installModel, data []byte, dir, label string) []rootRef 
 // runtime bins are runtime roots, `imports`/`browser` package mappings are runtime roots, and
 // every other script bin is a dev-tooling root (labels only).
 func (out *firstPartyRoots) manifestRoots(m *installModel, rel string) {
-	data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+	data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
 	if err != nil {
 		return
 	}
@@ -1872,11 +2003,11 @@ func (ls *loadSet) detail(name string, instances []*pkgInstance, atVersion int) 
 	for _, in := range instances {
 		if label, ok := ls.devFrom[in.path]; ok {
 			b.WriteString("; only reachable from dev tooling: " + label)
-			return b.String() + devOnlyNote
+			return b.String() + ls.scan.note() + devOnlyNote
 		}
 	}
 	b.WriteString("; not reachable from any first-party root or package script")
-	return b.String() + devOnlyNote
+	return b.String() + ls.scan.note() + devOnlyNote
 }
 
 // devOnlyNote closes every refutation detail: the class (i) evidence and its assumption.

@@ -3,21 +3,27 @@ package jsanalysis
 // prodinstall.go looks for evidence that the repo's deploy path installs dev dependencies,
 // which voids the class (i) assumption (dev/tooling groups are not installed at runtime).
 //
-// Scope: Dockerfile*/Containerfile*, Makefile/*.mk, Procfile, shell scripts outside test
-// directories, and GitHub workflows whose file name or `name:` says deploy/release/publish/
-// docker, plus, in any workflow, a job that sets an `environment:` not named exactly test,
-// testing, ci, dev or development (case-insensitive; an expression counts), uses
-// docker/build-push-action or uses an action whose name says deploy/publish. Generic test CI
-// does not count. An install
-// (npm install/ci, yarn [install], pnpm install) keeps dev dependencies unless it passes a
-// production flag, runs under NODE_ENV=production, or is followed in the same Dockerfile stage
-// or script by a production prune or reinstall. Forcing dev dependencies in (--include=dev,
-// --also=dev, --production=false, or NPM_CONFIG_PRODUCTION=false / NPM_CONFIG_INCLUDE=dev in the
-// environment) outranks every production signal. Unreadable or unparseable files count as
-// evidence: the check fails closed.
+// The surfaces are installscan.go's, found by walking the whole build tree. Read whole:
+// Dockerfiles and Containerfiles (judged per FROM stage), Makefiles, justfiles, Procfiles,
+// every shell script, Jenkinsfiles, Cloud Build configs, every package.json script, any YAML,
+// TOML or JSON config read by command keys (the CI dialects, deploy platforms and manifests),
+// and any other file that carries an install command. Read per deploy job: GitHub workflows whose file name or `name:` says deploy/
+// release/publish/docker, plus, in any workflow, a job that sets an `environment:` not named
+// exactly test, testing, ci, dev or development (case-insensitive; an expression counts), uses
+// docker/build-push-action or uses an action whose name says deploy/publish, with its local
+// actions and reusable workflows expanded; GitLab jobs whose environment, stage or name says
+// deploy. Also: a .npmrc that forces dev dependencies in, docker-compose service commands, and
+// a Dockerfile directory copy that takes a lockfile root's node_modules into the image without
+// .dockerignore excluding it.
+//
+// An install (npm install/ci, yarn [install], pnpm install) keeps dev dependencies unless it
+// passes a production flag, runs under NODE_ENV=production, or is followed in the same
+// Dockerfile stage or script by a production prune or reinstall. Forcing dev dependencies in
+// (--include=dev, --also=dev, --production=false, or NPM_CONFIG_PRODUCTION=false /
+// NPM_CONFIG_INCLUDE=dev in the environment) outranks every production signal. Unreadable or
+// unparseable files count as evidence: the check fails closed.
 
 import (
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -38,68 +44,12 @@ var (
 )
 
 // prodInstallKeepsDev returns the first deploy-path install that keeps dev dependencies, as
-// "<file>: <command>", or "" when none is in scope.
+// "<file>: <command>", or "" when none is in scope. The surfaces it reads are installscan.go's.
 func prodInstallKeepsDev(buildReal string) string {
-	var hits []string
-	_ = filepath.WalkDir(buildReal, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree holds no visible deploy config.
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if p != buildReal && skipDir(name) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, _ := filepath.Rel(buildReal, p)
-		rel = filepath.ToSlash(rel)
-		lower := strings.ToLower(name)
-		docker := strings.HasPrefix(name, "Dockerfile") || strings.HasPrefix(name, "Containerfile") ||
-			strings.HasSuffix(lower, ".dockerfile") || strings.HasSuffix(lower, ".containerfile")
-		plain := name == "Makefile" || name == "makefile" || name == "GNUmakefile" || path.Ext(lower) == ".mk" ||
-			name == "Procfile" || (path.Ext(lower) == ".sh" && !inTestDir(rel))
-		if !docker && !plain {
-			return nil
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			hits = append(hits, rel+": unreadable")
-			return nil
-		}
-		if cmd := keepsDevInstall(string(data), docker); cmd != "" {
-			hits = append(hits, rel+": "+cmd)
-		}
-		return nil
-	})
-	hits = append(hits, workflowsKeepingDev(buildReal)...)
-	if len(hits) == 0 {
-		return ""
+	if hits := scanBuild(buildReal, nil, nil).keepDev; len(hits) > 0 {
+		return hits[0]
 	}
-	sort.Strings(hits)
-	return hits[0]
-}
-
-func inTestDir(rel string) bool {
-	for _, seg := range strings.Split(path.Dir(rel), "/") {
-		if devSegments[seg] {
-			return true
-		}
-	}
-	return false
-}
-
-type ghWorkflow struct {
-	Name string           `yaml:"name"`
-	Jobs map[string]ghJob `yaml:"jobs"`
-}
-
-type ghJob struct {
-	Environment yaml.Node `yaml:"environment"`
-	Steps       []struct {
-		Uses string `yaml:"uses"`
-		Run  string `yaml:"run"`
-	} `yaml:"steps"`
+	return ""
 }
 
 // nonDeployEnvironments are the only environment names that do not mark a deploy job.
@@ -145,45 +95,138 @@ func environmentName(n yaml.Node) *string {
 	return &name
 }
 
-func workflowsKeepingDev(buildReal string) []string {
-	dir := filepath.Join(buildReal, ".github", "workflows")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
+// workflowKeepsDev applies the deploy-job check to one workflow. Every job is judged when the
+// workflow deploys by its name, can be called by another workflow (on: workflow_call), or all
+// is set; otherwise the deploy jobs and every job they need, transitively, since a needed job's
+// output is what the deploy job ships. A judged job's local actions (uses: ./path) and local
+// reusable workflows contribute their run steps; one the scanner cannot resolve counts as
+// evidence.
+func (sc *installScan) workflowKeepsDev(rel, name string, wf ghWorkflow, all bool) []string {
 	var hits []string
-	for _, e := range entries {
-		ext := strings.ToLower(path.Ext(e.Name()))
-		if e.IsDir() || (ext != ".yml" && ext != ".yaml") {
+	every := all || deployWord.MatchString(name) || deployWord.MatchString(wf.Name) ||
+		slicesContains(nodeWords(wf.On), "workflow_call")
+	judged := map[string]bool{}
+	var queue []string
+	for _, id := range sortedJobIDs(wf.Jobs) {
+		if every || wf.Jobs[id].isDeploy() {
+			queue = append(queue, id)
+		}
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if judged[id] {
 			continue
 		}
-		rel := ".github/workflows/" + e.Name()
-		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			hits = append(hits, rel+": unreadable")
+		judged[id] = true
+		queue = append(queue, nodeWords(wf.Jobs[id].Needs)...)
+	}
+	for _, id := range sortedJobIDs(wf.Jobs) {
+		job := wf.Jobs[id]
+		if !judged[id] {
 			continue
 		}
-		var wf ghWorkflow
-		if yaml.Unmarshal(data, &wf) != nil {
-			hits = append(hits, rel+": unparseable workflow")
-			continue
+		label := rel + " job " + id
+		var runs []string
+		if job.Uses != "" {
+			r, bad := sc.expandUses(job.Uses, 0)
+			if bad != "" {
+				hits = append(hits, label+": "+bad)
+			}
+			runs = append(runs, r...)
 		}
-		deployFile := deployWord.MatchString(e.Name()) || deployWord.MatchString(wf.Name)
-		for _, id := range sortedJobIDs(wf.Jobs) {
-			job := wf.Jobs[id]
-			if !deployFile && !job.isDeploy() {
-				continue
+		for _, s := range job.Steps {
+			runs = append(runs, s.Run)
+			if strings.HasPrefix(s.Uses, "./") {
+				r, bad := sc.expandUses(s.Uses, 0)
+				if bad != "" {
+					hits = append(hits, label+": "+bad)
+				}
+				runs = append(runs, r...)
 			}
-			var runs []string
-			for _, s := range job.Steps {
-				runs = append(runs, s.Run)
-			}
-			if cmd := keepsDevInstall(strings.Join(runs, "\n"), false); cmd != "" {
-				hits = append(hits, rel+" job "+id+": "+cmd)
-			}
+		}
+		if cmd := keepsDevInstall(strings.Join(runs, "\n"), false); cmd != "" {
+			hits = append(hits, label+": "+cmd)
 		}
 	}
 	return hits
+}
+
+// expandUses returns the run steps of a local action or reusable workflow, or why it could
+// not be read. A remote reusable workflow cannot be read; a remote action is not expanded.
+func (sc *installScan) expandUses(uses string, depth int) (runs []string, bad string) {
+	if depth > 8 {
+		return nil, "uses: nesting too deep at " + uses
+	}
+	if !strings.HasPrefix(uses, "./") {
+		if strings.Contains(uses, ".github/workflows/") {
+			return nil, "remote reusable workflow " + uses + " is not read"
+		}
+		return nil, ""
+	}
+	target := strings.TrimPrefix(path.Clean(uses), "./")
+	if target == ".." || strings.HasPrefix(target, "../") || dynamicTok(target) {
+		return nil, "uses: " + uses + " leaves the build dir"
+	}
+	if strings.HasPrefix(target, ".github/workflows/") {
+		data, err := readRegular(filepath.Join(sc.real, filepath.FromSlash(target)))
+		if err != nil {
+			return nil, "reusable workflow " + uses + " unreadable"
+		}
+		var wf ghWorkflow
+		if yaml.Unmarshal(data, &wf) != nil {
+			return nil, "reusable workflow " + uses + " unparseable"
+		}
+		for _, id := range sortedJobIDs(wf.Jobs) {
+			j := wf.Jobs[id]
+			if j.Uses != "" {
+				r, b := sc.expandUses(j.Uses, depth+1)
+				if b != "" {
+					return nil, b
+				}
+				runs = append(runs, r...)
+			}
+			for _, s := range j.Steps {
+				runs = append(runs, s.Run)
+				if strings.HasPrefix(s.Uses, "./") {
+					r, b := sc.expandUses(s.Uses, depth+1)
+					if b != "" {
+						return nil, b
+					}
+					runs = append(runs, r...)
+				}
+			}
+		}
+		return runs, ""
+	}
+	var data []byte
+	var err error
+	for _, n := range []string{"action.yml", "action.yaml"} {
+		if data, err = readRegular(filepath.Join(sc.real, filepath.FromSlash(target), n)); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, "local action " + uses + " unreadable"
+	}
+	var a ghAction
+	if yaml.Unmarshal(data, &a) != nil {
+		return nil, "local action " + uses + " unparseable"
+	}
+	for _, s := range a.Runs.Steps {
+		runs = append(runs, s.Run)
+		if strings.HasPrefix(s.Uses, "./") {
+			r, b := sc.expandUses(s.Uses, depth+1)
+			if b != "" {
+				return nil, b
+			}
+			runs = append(runs, r...)
+		}
+	}
+	if a.Runs.Entrypoint != "" || len(a.Runs.Args) > 0 {
+		runs = append(runs, strings.TrimSpace(a.Runs.Entrypoint+" "+strings.Join(a.Runs.Args, " ")))
+	}
+	return runs, ""
 }
 
 func sortedJobIDs(jobs map[string]ghJob) []string {
@@ -244,6 +287,9 @@ const (
 
 func classifyInstall(seg string, prodEnv, keepDevEnv bool) installKind {
 	toks, envProd, envKeepDev := stripCommandPrefix(strings.Fields(seg))
+	for i, t := range toks {
+		toks[i] = strings.Trim(t, `"'`)
+	}
 	prodEnv = prodEnv || envProd
 	keepDevEnv = keepDevEnv || envKeepDev
 	if len(toks) == 0 {
@@ -293,16 +339,54 @@ func classifyInstall(seg string, prodEnv, keepDevEnv bool) installKind {
 	return installKeepsDev
 }
 
-// stripCommandPrefix drops a segment's leading RUN/sudo/env words, `name:` labels, Makefile `@`, and
-// environment assignments, reporting whether those assignments select a production install
-// (NODE_ENV=production, NPM_CONFIG_PRODUCTION=true) or force dev dependencies in
-// (NPM_CONFIG_PRODUCTION=false, NPM_CONFIG_INCLUDE=dev).
+// stripCommandPrefix drops the words in front of a segment's command: RUN and its --mount/
+// --network/--security flags, Makefile @-+ markers, `name:` labels, environment assignments,
+// command wrappers (sudo, env, exec, eval, time, nice, nohup, timeout, command, builtin,
+// corepack), shell keywords and grouping, and `sh -c` style shells, which run their argument.
+// It reports whether the assignments select a production install (NODE_ENV=production,
+// NPM_CONFIG_PRODUCTION=true) or force dev dependencies in (NPM_CONFIG_PRODUCTION=false,
+// NPM_CONFIG_INCLUDE=dev).
 func stripCommandPrefix(toks []string) (rest []string, prodEnv, keepDev bool) {
 	for len(toks) > 0 {
-		t := strings.TrimPrefix(toks[0], "@")
+		raw := toks[0]
+		if strings.HasPrefix(raw, "--mount=") || strings.HasPrefix(raw, "--network=") || strings.HasPrefix(raw, "--security=") {
+			toks = toks[1:]
+			continue
+		}
+		t := strings.TrimLeft(raw, "@-+")
+		t = strings.TrimLeft(t, "({")
+		t = strings.Trim(t, `"'`)
+		skip := 0 // extra tokens a wrapper consumes
 		switch {
 		case t == "":
-		case strings.EqualFold(t, "RUN"), t == "-", t == "sudo", t == "exec", t == "env", procLabel.MatchString(t):
+		case strings.EqualFold(t, "RUN"), procLabel.MatchString(t):
+		case t == "exec", t == "eval", t == "time", t == "nohup", t == "command", t == "builtin", t == "corepack",
+			t == "!", t == "then", t == "do", t == "else", t == "elif", t == "if", t == "while", t == "until":
+		case t == "sudo", t == "env", t == "nice", t == "timeout":
+			// flags, then (timeout) a duration
+			for skip+1 < len(toks) && strings.HasPrefix(toks[skip+1], "-") && !envAssignment.MatchString(toks[skip+1]) {
+				f := toks[skip+1]
+				skip++
+				if (t == "sudo" && (f == "-u" || f == "-g" || f == "-C" || f == "-D")) || (t == "env" && (f == "-u" || f == "-C")) ||
+					(t == "nice" && f == "-n") || (t == "timeout" && (f == "-s" || f == "-k" || f == "--signal" || f == "--kill-after")) {
+					skip++
+				}
+			}
+			if t == "timeout" && skip+1 < len(toks) {
+				skip++
+			}
+		case t == "sh" || t == "bash" || t == "zsh" || t == "dash" || t == "ash" || t == "ksh":
+			// `sh -c 'cmd'` runs cmd; `sh script` runs a script scanned as its own file.
+			j := 1
+			for j < len(toks) && strings.HasPrefix(toks[j], "-") && !strings.Contains(toks[j], "c") {
+				j++
+			}
+			if j < len(toks) && strings.HasPrefix(toks[j], "-") {
+				skip = j
+			} else {
+				toks[0] = t
+				return toks, prodEnv, keepDev
+			}
 		case envAssignment.MatchString(t):
 			k, v, _ := strings.Cut(t, "=")
 			v = strings.ToLower(strings.Trim(v, `"'`))
@@ -317,22 +401,35 @@ func stripCommandPrefix(toks []string) (rest []string, prodEnv, keepDev bool) {
 			toks[0] = t
 			return toks, prodEnv, keepDev
 		}
-		toks = toks[1:]
+		toks = toks[1+skip:]
 	}
 	return nil, prodEnv, keepDev
 }
 
 // keepDevFlag reports whether an install's flags force dev dependencies in, whatever NODE_ENV
-// says: npm's --include=dev and --also=dev, and --production=false.
+// says: npm's --include=dev, --also=dev, --only=dev and --production=false, and an --omit that
+// does not list dev (it replaces the omit list NODE_ENV=production sets).
 func keepDevFlag(flags, args []string) bool {
+	devVal := func(flag, v string) bool {
+		v = strings.ToLower(strings.Trim(v, `"'`))
+		switch flag {
+		case "--include", "--also", "--only":
+			return strings.HasPrefix(v, "dev")
+		case "--omit":
+			return !strings.Contains(v, "dev")
+		}
+		return false
+	}
 	for _, f := range flags {
-		switch f {
-		case "--include=dev", "--also=dev", "--also=development", "--production=false":
+		if f == "--production=false" {
+			return true
+		}
+		if k, v, ok := strings.Cut(f, "="); ok && devVal(k, v) {
 			return true
 		}
 	}
 	for i := 0; i+1 < len(args); i++ {
-		if (args[i] == "--include" || args[i] == "--also") && strings.HasPrefix(args[i+1], "dev") {
+		if devVal(args[i], args[i+1]) {
 			return true
 		}
 	}

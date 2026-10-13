@@ -1,7 +1,9 @@
 package jsanalysis
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -22,6 +24,25 @@ type lockPkg struct {
 	Bin      map[string]string `json:"bin,omitempty"`
 	Link     bool              `json:"link,omitempty"`
 	Resolved string            `json:"resolved,omitempty"`
+	Script   bool              `json:"hasInstallScript,omitempty"`
+}
+
+// gitIndexV2 builds a version-2 git index listing paths, in the order given.
+func gitIndexV2(paths ...string) string {
+	var b bytes.Buffer
+	b.WriteString("DIRC")
+	_ = binary.Write(&b, binary.BigEndian, uint32(2))
+	_ = binary.Write(&b, binary.BigEndian, uint32(len(paths)))
+	for _, p := range paths {
+		e := make([]byte, 62)
+		binary.BigEndian.PutUint16(e[60:], uint16(len(p)))
+		e = append(e, p...)
+		for pad := 8 - (62+len(p))%8; pad > 0; pad-- {
+			e = append(e, 0)
+		}
+		b.Write(e)
+	}
+	return b.String()
 }
 
 // npmLockJSON builds a v3 lockfile whose root entry depends on every top-level package: a
@@ -402,10 +423,11 @@ func TestLoadSet(t *testing.T) {
 			name: "v1 lockfile dev markers apply to the installed tree",
 			files: func(t *testing.T) map[string]string {
 				return map[string]string{
-					"package.json":                                     `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
-					"package-lock.json":                                v1DevLock,
-					"node_modules/a/package.json":                      `{"name":"a","version":"1.0.0"}`,
-					"node_modules/tool/package.json":                   `{"name":"tool","version":"2.0.0","dependencies":{"glob":"^7"}}`,
+					".gitignore":                     "node_modules\n",
+					"package.json":                   `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
+					"package-lock.json":              v1DevLock,
+					"node_modules/a/package.json":    `{"name":"a","version":"1.0.0"}`,
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0","dependencies":{"glob":"^7"}}`,
 					"node_modules/tool/node_modules/glob/package.json": `{"name":"glob","version":"7.0.0"}`,
 					"node_modules/stale/package.json":                  `{"name":"stale","version":"1.1.0"}`,
 					"index.js":                                         `require('a');`,
@@ -653,14 +675,14 @@ func TestLoadSet(t *testing.T) {
 						"node_modules/a":    {Version: "1.0.0"},
 						"node_modules/tool": {Version: "1.0.0", Dev: true},
 					}),
-					"Dockerfile":                 "FROM node:20\nCOPY . .\nRUN npm ci --omit=dev\n",
+					".dockerignore":              "node_modules\n",
+					"Dockerfile":                 "FROM node:20\nWORKDIR /app\nCOPY . .\nRUN npm ci --omit=dev\n",
 					".github/workflows/test.yml": "name: test\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n      - run: npm test\n",
-					"test/setup.sh":              "npm install\n",
 					"index.js":                   `require('a');`,
 				}
 			},
 			complete: true,
-			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: true}},
+			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: true, detail: "no out-of-manifest install in 3 scanned files: .github/workflows/test.yml, Dockerfile, package.json"}},
 		},
 		{
 			name: "every installed copy counts: a runtime copy at another version withholds the dev-only copy",
@@ -715,6 +737,176 @@ func TestLoadSet(t *testing.T) {
 			complete: true,
 			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: false}},
 		},
+		{
+			// npx foo fetches foo and its dependency tree outside the lockfile. qs is a dev-only
+			// lockfile entry no code loads, but foo may depend on qs without listing it anywhere
+			// the scanner reads, so no package refutes.
+			name: "a named runner install withholds every refutation (npx foo)",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/qs": {Version: "6.11.0", Dev: true},
+					}),
+					"Dockerfile": "FROM node:20\nCMD [\"npx\", \"foo\"]\n",
+					"index.js":   "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "qs", version: "6.11.0", refuted: false}},
+		},
+		{
+			name: "an install the scanner cannot pin down withholds every refutation",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/other": {Version: "1.0.0", Dev: true},
+					}),
+					"deploy.sh": "npm install -g $TOOLS\n",
+					"index.js":  "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "other", version: "1.0.0", refuted: false}},
+		},
+		{
+			// No .gitignore excludes node_modules, so the tree is committed and ships whatever
+			// the lockfile says about dev.
+			name: "a committed node_modules counts as installed under a lockfile root",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			name: "a gitignored node_modules under a lockfile root is the lockfile's install",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: true}},
+		},
+		{
+			// The index walk must step over a first entry to see the second.
+			name: "a git index that tracks no node_modules leaves a gitignored tree to the lockfile",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".git/index":   gitIndexV2(".gitignore", "index.js", "package-lock.json", "package.json"),
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: true}},
+		},
+		{
+			name: "a node_modules the git index tracks despite .gitignore counts as installed",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".git/index":   gitIndexV2(".gitignore", "index.js", "node_modules/tool/package.json", "package.json"),
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			name: "an unparseable git index counts as tracking node_modules",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".git/index":   "DIRC\x00\x00\x00\x04",
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			// The disk holds a copy of tool the lockfile does not list; nothing marks it dev.
+			name: "an extra disk copy of a dev-marked name withholds it",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".gitignore":   "node_modules/\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json":                    `{"name":"tool","version":"2.0.0"}`,
+					"node_modules/extra/package.json":                   `{"name":"extra","version":"1.0.0"}`,
+					"node_modules/extra/node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			name: "an unparseable package.json in a disk-only node_modules dir leaves the load set incomplete",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json":  `{"name":"tool","version":"2.0.0"}`,
+					"node_modules/extra/package.json": "{",
+					"index.js":                        "module.exports = 1;\n",
+				}
+			},
+			complete: false,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			name: "a disk copy disagreeing with the lockfile leaves the load set incomplete",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					".gitignore":   "node_modules\n",
+					"package.json": `{"name":"app"}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/tool": {Version: "2.0.0", Dev: true},
+					}),
+					"node_modules/tool/package.json": `{"name":"tool","version":"3.0.0"}`,
+					"index.js":                       "module.exports = 1;\n",
+				}
+			},
+			complete: false,
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -750,7 +942,7 @@ func TestLoadSet(t *testing.T) {
 			for _, c := range tc.checks {
 				ref := ls.refute(c.pkg, c.version)
 				if (ref != nil) != c.refuted {
-					t.Errorf("refute(%s@%s) = %+v, want refuted=%v", c.pkg, c.version, ref, c.refuted)
+					t.Errorf("refute(%s@%s) = %+v, want refuted=%v (withheld: %q)", c.pkg, c.version, ref, c.refuted, ls.noDevOnly)
 					continue
 				}
 				if ref == nil {

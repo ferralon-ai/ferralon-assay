@@ -3038,6 +3038,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		VulnID:      vulnID,
 		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
+		Package:     admittedPackagePURL(store, c.ID),
 	})
 	if err != nil {
 		return err
@@ -3336,6 +3337,28 @@ func AdvisoryListsAffectedPackages(store artifact.Store, caseID string) bool {
 func AdvisoryPURL(store artifact.Store, caseID string) string {
 	purl, _ := advisoryPURLAndSymbols(store, caseID)
 	return purl
+}
+
+// admittedPackagePURL returns the assessed package's PURL pinned to the inventory-resolved
+// version, or "" when either is unknown or the assessed package is the scanned project itself
+// (RootSubject), whose own code always loads. Any version or qualifier the advisory PURL carries
+// is replaced: the resolved version is the one installed in the build.
+func admittedPackagePURL(store artifact.Store, caseID string) string {
+	if RootSubject(store, caseID) {
+		return ""
+	}
+	purl := AdvisoryPURL(store, caseID)
+	version, ok := ResolvedVersion(store, caseID)
+	if purl == "" || !ok {
+		return ""
+	}
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		purl = purl[:i]
+	}
+	if at := strings.LastIndexByte(purl, '@'); at > strings.LastIndexByte(purl, '/') {
+		purl = purl[:at]
+	}
+	return purl + "@" + version
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP

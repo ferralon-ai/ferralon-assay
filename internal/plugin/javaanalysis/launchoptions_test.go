@@ -312,6 +312,7 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"J6 UTF-16LE script", map[string]string{"start.ps1": utf16Text("$env:JAVA_TOOL_OPTIONS = \"-javaagent:C:\\otel.jar\"\r\n", false)}, agentAndOption},
 		{"UTF-16BE script", map[string]string{"start.ps1": utf16Text("$env:JAVA_TOOL_OPTIONS = \"-javaagent:C:\\otel.jar\"\r\n", true)}, agentAndOption},
 		{"names in a binary file are not read", map[string]string{"bin/tool": "ELF\x01JAVA_OPTS\x02\x00\x00"}, []string{}},
+		{"text lines before a binary's first NUL are not read", map[string]string{"bin/tool": "\x7fELF\x02\nJAVA_OPTS=$FLAGS\n\x00\x00"}, []string{}},
 		{"J7 script with a binary payload", map[string]string{"bin/run": "#!/bin/sh\nexport JAVA_TOOL_OPTIONS=\"$AGENT_FLAGS\"\nexec \"$JAVA_HOME/bin/java\" Main \"$0\"\n\x00\x01payload"}, optionOnly},
 		{"bzip2 distTar start script agent", map[string]string{"build/distributions/app.tbz2": distTarBz2}, agentOnly},
 		{"bzip2 distTar, .tar.bz2", map[string]string{"build/distributions/app.tar.bz2": distTarBz2}, agentOnly},

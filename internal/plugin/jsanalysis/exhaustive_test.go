@@ -88,6 +88,7 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 pnpm spec drift", map[string]string{"package.json": pkgJSONDrift, "pnpm-lock.yaml": exPnpmV9}, false},
 		{"S1 package-lock v1 records no specs", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV1}, false},
 		{"S1 nested project the lock does not record", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": toolJSON}, false},
+		{"S1 nested project the lock does not record, declaring only a peer it keys", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tools/package.json": `{"name":"tool","peerDependencies":{"express":"^4.18.0"}}`}, false},
 		{"S1 nested workspace the lock records", map[string]string{"package.json": exPkgJSON, "package-lock.json": lockV3Tools, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn workspace named by the root", map[string]string{"package.json": yarnWorkspaces, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn project not a workspace", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, false},

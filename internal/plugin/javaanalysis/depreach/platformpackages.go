@@ -14,11 +14,28 @@ package depreach
 // attributes: the roots are the modules with an unqualified export that ModuleResolution
 // does not mark do-not-resolve; the boot layer adds java.base, the transitive closure of
 // every requires that is not static, and every module providing a service a resolved
-// module uses, to a fixed point (62 modules). Each listed key is a ModulePackages entry of
-// a boot-layer module under the javax/, com/sun/, org/, jdk/ and sun/ families the engine
-// has always treated as platform; java/ is left to isPlatformClass. Packages only a Linux
-// image defines (sun/awt/X11, com/sun/java/swing/plaf/gtk, ...) are absent, which costs
-// precision only.
+// module uses, to a fixed point (62 modules). A key is a ModulePackages entry p of a
+// boot-layer module where p+"/" starts with one of the class-name prefixes the engine
+// matched before this list:
+//
+//	jdk/ sun/
+//	javax/accessibility/ javax/annotation/processing/ javax/crypto/ javax/imageio/
+//	javax/lang/model/ javax/management/ javax/naming/ javax/net/ javax/print/
+//	javax/rmi/ssl/ javax/script/ javax/security/auth/ javax/security/cert/
+//	javax/security/sasl/ javax/smartcardio/ javax/sound/ javax/sql/ javax/swing/
+//	javax/tools/ javax/transaction/xa/
+//	javax/xml/catalog/ javax/xml/crypto/ javax/xml/datatype/ javax/xml/namespace/
+//	javax/xml/parsers/ javax/xml/stream/ javax/xml/transform/ javax/xml/validation/
+//	javax/xml/xpath/
+//	com/sun/crypto/provider/ com/sun/java/ com/sun/jdi/ com/sun/jndi/
+//	com/sun/management/ com/sun/net/httpserver/ com/sun/nio/ com/sun/org/apache/
+//	com/sun/security/ com/sun/source/ com/sun/tools/
+//	org/ietf/jgss/ org/w3c/dom/ org/xml/sax/
+//
+// That gives these 647 keys. The same list also matched java/ and the single class
+// javax/xml/XMLConstants; isPlatformClass keeps both and they are not keys. Packages only a
+// Linux image defines (sun/awt/X11, com/sun/java/swing/plaf/gtk, ...) are absent, which
+// costs precision only.
 var platformPackages = map[string]bool{
 	// java.base
 	"com/sun/crypto/provider":                      true,

@@ -1,6 +1,9 @@
 package depreach
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -55,13 +58,18 @@ func TestPlatformPackages_AreModulePackageNames(t *testing.T) {
 	}
 }
 
-// TestPlatformPackages_Pinned pins the generated list: its size, packages each boot-layer
-// family must keep, and names that are not packages of a JDK 21 boot-layer module (javadoc
+// TestPlatformPackages_Pinned pins the generated list: the sha256 of its sorted keys (one
+// per line), its size, packages each boot-layer family must keep, and names that are not packages of a JDK 21 boot-layer module (javadoc
 // snippet-files and doclets parent directories in src.zip, and packages removed from the
 // JDK) which must stay out.
 func TestPlatformPackages_Pinned(t *testing.T) {
 	if n := len(platformPackages); n != 647 {
 		t.Errorf("len(platformPackages) = %d, want 647", n)
+	}
+	const want = "f03a7cf0f1181482d9218bfc8686457fcc484c6886a50c91d9c8aa3457d96546"
+	sum := sha256.Sum256([]byte(strings.Join(slices.Sorted(maps.Keys(platformPackages)), "\n") + "\n"))
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Errorf("sha256 of the sorted keys = %s, want %s: regenerate from the jmods as the header describes", got, want)
 	}
 	for _, p := range []string{
 		"com/sun/crypto/provider", "javax/net/ssl", "jdk/internal/misc", "sun/misc", "sun/nio/cs",

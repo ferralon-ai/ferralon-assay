@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -70,7 +71,7 @@ func TestLockClosures(t *testing.T) {
 		{"a reachable package missing a required dependency is unbounded", "broken", "ok", nil},
 		{"a reachable package missing a required peer is unbounded", "peer", "ok", nil},
 		{"a package the lock does not list is unbounded", "", "not-installed", nil},
-		{"a v1 lock is unbounded", "v1", "qs", nil},
+		{"a v1 lock is read", "v1", "qs", []string{"qs"}},
 		{"a node_modules on disk that matches the lock is bounded", "disk", "ok", []string{"ok", "@s/p", "inner"}},
 		{"a node_modules on disk holding a package the lock does not list is unbounded", "stale", "ok", nil},
 	}
@@ -279,5 +280,115 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 				t.Errorf("closureOf = %#v; bounded = %v, want %v", got, bounded, tc.bounded)
 			}
 		})
+	}
+}
+
+// TestLockClosures_V1: a lockfileVersion 1 lock is read into the same install tree as a v2/v3
+// lock. Install positions come from the nesting of `dependencies`; `requires` names what each
+// package requires, resolved from its position. dev, optional, peer and bundled entries stay
+// in the reach.
+func TestLockClosures_V1(t *testing.T) {
+	const tree = `{"name":"app","version":"1.0.0","lockfileVersion":1,"requires":true,"dependencies":{
+"a":{"version":"1.0.0","requires":{"b":"^2.0.0"},"dependencies":{"b":{"version":"2.0.0","requires":{"c":"^1.0.0"}}}},
+"b":{"version":"1.0.0"},
+"c":{"version":"1.0.0"},
+"host":{"version":"1.0.0","requires":{"inner":"1.0.0"},"dependencies":{
+  "inner":{"version":"1.0.0","bundled":true,"requires":{"deep":"1.0.0"}},
+  "deep":{"version":"1.0.0","bundled":true}}},
+"tool":{"version":"1.0.0","dev":true,"requires":{"devdep":"1.0.0"}},
+"devdep":{"version":"1.0.0","dev":true},
+"watch":{"version":"1.0.0","optional":true,"requires":{"fsevents":"2.0.0"}},
+"fsevents":{"version":"2.0.0","optional":true},
+"strip":{"version":"npm:strip-ansi@6.0.1"},
+"vendored":{"version":"file:vendor/vendored-1.0.0.tgz"}
+}}`
+	all := []string{"a", "b", "c", "deep", "devdep", "fsevents", "host", "inner", "strip", "strip-ansi", "tool", "vendored", "watch"}
+	reach := func(pkg string) []string {
+		out := []string{pkg}
+		for _, n := range all {
+			if n != pkg {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	// npm 7+ writing lockfileVersion 1 (lockfile-version=1) installs peers and marks them.
+	const npm7 = `{"name":"app","version":"1.0.0","lockfileVersion":1,"requires":true,"dependencies":{
+"react-dom":{"version":"18.2.0","requires":{"loose-envify":"^1.1.0","react":"^18.2.0"}},
+"react":{"version":"18.2.0","peer":true,"requires":{"loose-envify":"^1.1.0"}},
+"loose-envify":{"version":"1.4.0","devOptional":true}
+}}`
+	const v3 = `{"lockfileVersion":3,"packages":{"":{"name":"b"},"node_modules/zed":{}}}`
+	cases := []struct {
+		name  string
+		files map[string]string
+		from  string
+		pkg   string
+		want  []string
+	}{
+		{"a v1 lock bounds the reach", map[string]string{"package-lock.json": tree}, "", "a", reach("a")},
+		{"a bundled dependency is installed where the tree nests it", map[string]string{"package-lock.json": tree}, "", "host", reach("host")},
+		{"dev and optional entries stay in the reach", map[string]string{"package-lock.json": tree}, "", "c", reach("c")},
+		{"an alias answers to both names", map[string]string{"package-lock.json": tree}, "", "strip", reach("strip")},
+		{"npm 7+ writing lockfileVersion 1 with peer and devOptional entries", map[string]string{"package-lock.json": npm7}, "", "react-dom",
+			[]string{"react-dom", "loose-envify", "react"}},
+		{"a v1 lock in one workspace", map[string]string{"packages/a/package-lock.json": tree, "packages/b/package-lock.json": v3}, "packages/a", "a", reach("a")},
+		{"beside a v3 lock in another", map[string]string{"packages/a/package-lock.json": tree, "packages/b/package-lock.json": v3}, "packages/b", "zed", []string{"zed"}},
+		{"npm-shrinkwrap.json v1", map[string]string{"npm-shrinkwrap.json": tree}, "", "a", reach("a")},
+		{"a node_modules on disk that matches the nesting", map[string]string{"package-lock.json": tree,
+			"node_modules/a/package.json": "{}", "node_modules/a/node_modules/b/package.json": "{}", "node_modules/host/node_modules/inner/package.json": "{}"}, "", "a", reach("a")},
+
+		// A require resolves only along the install path: x nested under d does not satisfy a's.
+		{"a required package nested only under a sibling", map[string]string{"package-lock.json": `{"lockfileVersion":1,"dependencies":{
+"a":{"version":"1.0.0","requires":{"x":"1.0.0"}},
+"d":{"version":"1.0.0","dependencies":{"x":{"version":"1.0.0"}}}}}`}, "", "a", nil},
+		{"a required package the lock does not list", map[string]string{"package-lock.json": `{"lockfileVersion":1,"dependencies":{
+"a":{"version":"1.0.0","requires":{"gone":"1.0.0"}}}}`}, "", "a", nil},
+		{"a file: directory dependency", map[string]string{"package-lock.json": `{"lockfileVersion":1,"dependencies":{
+"a":{"version":"1.0.0"},"shared":{"version":"file:../shared"}}}`}, "", "a", nil},
+		{"a name that is not a package name", map[string]string{"package-lock.json": `{"lockfileVersion":1,"dependencies":{
+"a":{"version":"1.0.0"},"../x":{"version":"1.0.0"}}}`}, "", "a", nil},
+		{"a node_modules on disk the nesting does not list", map[string]string{"package-lock.json": tree,
+			"node_modules/c/node_modules/extra/package.json": "{}"}, "", "a", nil},
+		{"a node_modules above a v1 lock", map[string]string{"app/package-lock.json": tree,
+			"node_modules/zed/package.json": "{}"}, "app", "a", nil},
+		{"lockfileVersion 1 with no dependencies tree to read", map[string]string{"package-lock.json": `{"lockfileVersion":1}`}, "", "a", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := newLockClosures(writeProgram(t, tc.files)).closureOf(tc.from, tc.pkg)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("closureOf(%q, %q) = %#v, want %#v", tc.from, tc.pkg, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestV1Packages_LayoutFromNesting pins the conversion: an entry's key is its position in the
+// `dependencies` nesting, and its `requires` become dependencies resolved from that position.
+func TestV1Packages_LayoutFromNesting(t *testing.T) {
+	var raw struct {
+		Dependencies map[string]v1Dep `json:"dependencies"`
+	}
+	if err := json.Unmarshal([]byte(`{"dependencies":{
+"a":{"version":"1.0.0","requires":{"b":"^2.0.0"},"dependencies":{"b":{"version":"2.0.0","requires":{"c":"1"}}}},
+"b":{"version":"1.0.0"},
+"@s/c":{"version":"npm:@s/real@1.0.0","dependencies":{"@s/d":{"version":"1.0.0","bundled":true}}}}}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := v1Packages("app", raw.Dependencies)
+	if !ok {
+		t.Fatal("v1Packages reported false")
+	}
+	want := map[string]lockEntry{
+		"":                                    {Name: "app"},
+		"node_modules/a":                      {Dependencies: map[string]string{"b": "^2.0.0"}},
+		"node_modules/a/node_modules/b":       {Dependencies: map[string]string{"c": "1"}},
+		"node_modules/b":                      {},
+		"node_modules/@s/c":                   {Name: "@s/real"},
+		"node_modules/@s/c/node_modules/@s/d": {},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("v1Packages =\n%#v\nwant\n%#v", got, want)
 	}
 }

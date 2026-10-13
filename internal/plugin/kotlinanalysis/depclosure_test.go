@@ -591,3 +591,153 @@ func TestResolveDependencySymbols_OriginsAndMatched(t *testing.T) {
 		t.Errorf("Searched = %v, want [%s]", r.Searched, readValueSink)
 	}
 }
+
+// jacksonJarWriteCallsRead is a jackson-databind whose writeValueAsString calls readValue: the
+// sink is reachable from a main that only writes.
+func jacksonJarWriteCallsRead() map[string][]byte {
+	b := newKClassBuilder()
+	b.addMethod("readValue", readValueDesc, []byte{opReturn})
+	code := append(b.invokeVirtual(objectMapper, "readValue", readValueDesc), opReturn)
+	b.addMethod("writeValueAsString", "(Ljava/lang/Object;)Ljava/lang/String;", code)
+	return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
+}
+
+// lockedJacksonBuild is a Gradle build declaring jackson-databind with the given lockfiles
+// (path relative to the build -> content). Jackson 2.9.8's writeValueAsString is a leaf and
+// 2.9.9's calls the sink; both JARs are cached, with their POMs in the user Gradle cache so the
+// inventory graph is complete. main calls writeValueAsString.
+func lockedJacksonBuild(t *testing.T, lockfiles map[string]string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	writeBuildFile(t, dir, "build.gradle.kts", "dependencies {\n    implementation(\""+jacksonGroup+":"+jacksonArtifact+":2.9.8\")\n}\n")
+	for rel, content := range lockfiles {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, v := range []string{"2.9.8", "2.9.9"} {
+		pom := filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1", jacksonGroup, jacksonArtifact, v, "feed", jacksonArtifact+"-"+v+".pom")
+		if err := os.MkdirAll(filepath.Dir(pom), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "<project><groupId>" + jacksonGroup + "</groupId><artifactId>" + jacksonArtifact + "</artifactId><version>" + v + "</version></project>"
+		if err := os.WriteFile(pom, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.8", jacksonJar())
+	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.9", jacksonJarWriteCallsRead())
+	writeMain(t, dir, func(b *kclassBuilder) []byte {
+		return b.invokeVirtual(objectMapper, "writeValueAsString", "(Ljava/lang/Object;)Ljava/lang/String;")
+	})
+	return dir
+}
+
+// TestReachability_GradleLockRuntimeVersion: with a lockfile, the closure loads the version
+// runtimeClasspath locks, never one locked only for kapt, annotation processing or tests. A
+// coordinate runtimeClasspath locks at more than one version, or at one that is not concrete,
+// loads nothing: a named scoped miss (mirrored run-wide) and its package is never Searched.
+func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
+	const ga = jacksonGroup + ":" + jacksonArtifact
+	bounded := []string{"", jacksonPURL}
+	tests := []struct {
+		name       string
+		lockfiles  map[string]string
+		wantPath   bool
+		wantScoped []plugin.ScopedReason
+	}{
+		{
+			// The inventory keeps the first-seen 2.9.8 (kapt); the runtime runs 2.9.9, whose
+			// writeValueAsString reaches the sink.
+			name:      "kapt version and runtime version: runtime loads",
+			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=compileClasspath,runtimeClasspath\nempty=\n"},
+			wantPath:  true,
+		},
+		{
+			// Not on the runtime classpath: not loaded, so the call is an unloaded dependency.
+			name:      "locked only for kapt and tests: not loaded",
+			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt,testRuntimeClasspath\nempty=\n"},
+		},
+		{
+			name: "two runtime versions: named miss",
+			lockfiles: map[string]string{
+				"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\nempty=\n",
+				"gradle/dependency-locks/runtimeClasspath.lockfile": ga + ":2.9.9=runtimeClasspath\n",
+			},
+			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
+				Path: ga + ": runtimeClasspath locks 2.9.8, 2.9.9", Targets: bounded}},
+		},
+		{
+			name:      "runtime version not concrete: named miss",
+			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.+=runtimeClasspath\nempty=\n"},
+			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
+				Path: ga + ": runtimeClasspath locks 2.+", Targets: bounded}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := reach(t, lockedJacksonBuild(t, tt.lockfiles), readValueSink)
+			if got := len(res.Paths) == 1; got != tt.wantPath {
+				t.Errorf("path found = %v, want %v (partiality %+v)", got, tt.wantPath, res.Partiality)
+			}
+			if res.Searched != nil {
+				t.Errorf("Searched = %v, want none", res.Searched)
+			}
+			if !reflect.DeepEqual(res.Partiality.Scoped, tt.wantScoped) {
+				t.Errorf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, tt.wantScoped)
+			}
+			if mirrored := hasReason(res.Partiality, partialReasonRuntimeVersionAmbiguous); mirrored != (len(tt.wantScoped) > 0) {
+				t.Errorf("run-wide %s declared = %v, want %v: %v", partialReasonRuntimeVersionAmbiguous, mirrored, len(tt.wantScoped) > 0, res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// TestResolveDependencySymbols_GradleLockRuntimeVersion: with a lockfile the sink resolves
+// against the runtimeClasspath version, the bytes the closure loads, not the build file's or a
+// kapt lock's. A PURL pinned to another version is declared: the bytes resolved are not the ones
+// it names.
+func TestResolveDependencySymbols_GradleLockRuntimeVersion(t *testing.T) {
+	const (
+		ga       = jacksonGroup + ":" + jacksonArtifact
+		onlyNew  = "com.fasterxml.jackson.databind.ObjectMapper.onlyInRuntime"
+		onlyDesc = "()V"
+	)
+	tests := []struct {
+		name         string
+		purl         string
+		wantDeclared bool
+	}{
+		{name: "unpinned", purl: jacksonPURL},
+		{name: "pinned to the kapt version", purl: jacksonPURL + "@2.9.8", wantDeclared: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=runtimeClasspath\nempty=\n"})
+			b := newKClassBuilder()
+			b.addMethod("readValue", readValueDesc, []byte{opReturn})
+			b.addMethod("onlyInRuntime", onlyDesc, []byte{opReturn})
+			writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, "2.9.9", map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")})
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir:        dir,
+				PURL:            tt.purl,
+				AdvisorySymbols: []string{onlyNew},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := res.Matched[onlyNew]; !ok {
+				t.Errorf("%s did not resolve against the runtime 2.9.9 JAR: Matched=%v partiality=%+v", onlyNew, res.Matched, res.Partiality)
+			}
+			if got := hasReason(res.Partiality, partialReasonNoDependencyArtifact); got != tt.wantDeclared {
+				t.Errorf("%s declared = %v, want %v: %v", partialReasonNoDependencyArtifact, got, tt.wantDeclared, res.Partiality.Reasons)
+			}
+		})
+	}
+}

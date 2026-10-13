@@ -18,6 +18,12 @@ import (
 // node's JAR is located in the local caches by LocateDependencyJar (Gradle modules-2, then
 // .m2) and parsed by the shared classfile reader.
 //
+// With a Gradle lockfile, a locked coordinate loads only the version runtimeClasspath locks
+// (gradlelocks.go), the one the application runs with: a coordinate locked only for kapt, an
+// annotation processor or a test classpath is not loaded, and one locked at more than one
+// runtime version, or at a version that is not concrete, is a scoped blind spot rather than a
+// guess.
+//
 // A dependency that is in the inventory but whose JAR cannot be opened is a blind spot bounded
 // by what it could reach (contract §4): a ScopedReason whose Targets are the JAR's package, its
 // transitive dependency closure, first-party code ("") and first-party code's own dependency
@@ -45,6 +51,12 @@ const partialReasonMissingJar = plugin.PartialReasonRelationshipUnexpressed + ":
 // previously loaded JAR already defined. The engine keeps one body per name, so the shadowed
 // body's edges are unseen.
 const partialReasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed + ":duplicate_class"
+
+// partialReasonRuntimeVersionAmbiguous is the scoped reason for a dependency whose runtime
+// version cannot be selected: the Gradle lockfile locks it in runtimeClasspath at more than one
+// version, or at one that is not concrete.
+// Loading any one candidate could trace bytes that never run, so none is loaded.
+const partialReasonRuntimeVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":runtime_version_ambiguous"
 
 // depClosure is the loaded dependency bytecode plus the scoped blind spots loading it incurred.
 type depClosure struct {
@@ -85,10 +97,26 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
 	dc := &depClosure{loaded: map[string]string{}}
 
+	var locks *runtimeLocks
+	if fromLockfile(inv) {
+		if rl, ok := readRuntimeLocks(buildDir); ok {
+			locks = &rl
+		}
+	}
+	load, misses := g.runtimeSelection(locks)
+	for _, m := range misses {
+		dc.scoped = append(dc.scoped, plugin.ScopedReason{
+			Reason:  partialReasonRuntimeVersionAmbiguous,
+			Package: m.node.packageURL(),
+			Path:    m.detail,
+			Targets: targets(m.node),
+		})
+	}
+
 	definedBy := map[string]depNode{} // class binary name -> the dependency that defined it
 	shadowed := map[string]bool{}     // "<kept gav>|<shadowed gav>" pairs already reported
 
-	for _, n := range g.distinctNodes() {
+	for _, n := range load {
 		jarPath, ok := "", false
 		if n.version != "" {
 			jarPath, ok = LocateDependencyJar(buildDir, n.coordinate(), n.version)
@@ -264,9 +292,64 @@ func newInventoryGraph(inv plugin.DependencyInventory) *inventoryGraph {
 	return g
 }
 
-// distinctNodes returns one entry per distinct group:artifact:version, sorted, so the load
-// order (and therefore which JAR wins a duplicate class) is deterministic.
-func (g *inventoryGraph) distinctNodes() []depNode { return g.nodes }
+// versionMiss is a dependency whose runtime version could not be selected: node carries every
+// inventory node ID of the group:artifact and no version; detail names what the lockfile locks.
+type versionMiss struct {
+	node   depNode
+	detail string
+}
+
+// runtimeSelection returns the dependencies whose JARs the closure loads, in inventory order.
+// Without a lockfile (locks nil) that is every inventory node. With one, a locked coordinate
+// loads the single concrete version runtimeClasspath locks, whichever version the inventory node
+// names; one locked only in other configurations (kapt, annotationProcessor, ksp, test) is not on
+// the runtime classpath and is not loaded, so a call into it stays an unloaded_dependency hazard;
+// one runtimeClasspath locks at more than one version, or at one that is not concrete, is a miss
+// and loads nothing. A coordinate the lockfile does not lock loads the inventory's version.
+func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, misses []versionMiss) {
+	if locks == nil {
+		return g.nodes, nil
+	}
+	merged := map[string]*depNode{}
+	var locked []string
+	for _, n := range g.nodes {
+		c := n.coordinate()
+		if !locks.locked[c] {
+			load = append(load, n)
+			continue
+		}
+		if m, ok := merged[c]; ok {
+			m.ids = append(m.ids, n.ids...)
+			continue
+		}
+		merged[c] = &depNode{group: n.group, artifact: n.artifact, ids: append([]string(nil), n.ids...)}
+		locked = append(locked, c)
+	}
+	sort.Strings(locked)
+	for _, c := range locked {
+		m := *merged[c]
+		version, detail, onRuntime := locks.selection(c)
+		switch {
+		case !onRuntime:
+		case version == "":
+			misses = append(misses, versionMiss{node: m, detail: detail})
+		default:
+			m.version = version
+			load = append(load, m)
+		}
+	}
+	return load, misses
+}
+
+// fromLockfile reports whether the inventory's node set came from a Gradle lockfile.
+func fromLockfile(inv plugin.DependencyInventory) bool {
+	for _, n := range inv.Nodes {
+		if n.Provenance.Resolver == "gradle-lockfile" {
+			return true
+		}
+	}
+	return false
+}
 
 // targets returns the packages (PURL without version) any code in n could reach: n itself and
 // its transitive dependency closure. It is nil (unbounded) when some node in that closure has
@@ -309,7 +392,7 @@ func (g *inventoryGraph) programClosure() []string {
 		return nil
 	}
 	for _, n := range g.byID {
-		// A node distinctNodes skipped (not a Maven package) has an unknown closure.
+		// A node newInventoryGraph skipped (not a Maven package) has an unknown closure.
 		if _, _, _, ok := splitMavenNodePURL(n.PURL); !ok {
 			return nil
 		}

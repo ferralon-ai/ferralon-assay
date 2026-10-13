@@ -73,6 +73,7 @@ func TestLoadSet_BinaryInstallSurface(t *testing.T) {
 		{"control: no NUL", "Dockerfile", docker + pad, false},
 		{"NUL at byte 40", "Dockerfile", docker[:40] + "\x00" + docker[40:], true},
 		{"NUL past byte 8000", "Dockerfile", docker + pad + "\x00\n", true},
+		{"NUL in a Dockerfile with no installer token", "Dockerfile", "FROM python:3.12\x00\nCMD gunicorn app:app\n", true},
 		{"binary carrying an install command", "tools/blob.bin", "\x00\x01pip install black\n", true},
 		{"control: binary, no surface, no token", "assets/logo.png", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", false},
 	}
@@ -102,7 +103,7 @@ func TestLoadSet_CondaRecipe(t *testing.T) {
 		{"plain recipe naming the package", "recipe/meta.yaml", plain("black"), false},
 		{"Jinja recipe", "recipe/meta.yaml", "{% set version = \"1.0.0\" %}\n" + plain("app"), false},
 		{"rattler-build expression", "recipe/recipe.yaml", strings.Replace(plain("app"), "1.0.0", "${{ version }}", 1), false},
-		{"selector recipe", "recipe/meta.yaml", plain("app") + "    - pywin32  # [win]\n", false},
+		{"selector recipe", "recipe/meta.yaml", plain("app") + "    - pip  # [not win]\n", false},
 		{"control: a run requirement conda resolves", "recipe/meta.yaml", plain("app") + "    - requests\n", false},
 		{"rattler-build conditional run requirement", "recipe/recipe.yaml", plain("app") + "    - if: win\n      then: pywin32\n", false},
 		{"recipe with outputs", "recipe/meta.yaml", plain("app") + "outputs:\n  - name: app-extra\n    requirements:\n      run:\n        - requests\n", false},

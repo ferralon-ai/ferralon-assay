@@ -99,8 +99,12 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": artifact variant declared"))
 			continue
 		}
-		jarPath, ok := locateArtifactJar(buildDir, coordinate, v)
-		if !ok {
+		jarPath, ok, ambiguous := locateArtifactJar(buildDir, coordinate, v)
+		switch {
+		case ambiguous:
+			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": cached copies differ"))
+			continue
+		case !ok:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v))
 			continue
 		}

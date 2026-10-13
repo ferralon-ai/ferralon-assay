@@ -250,12 +250,39 @@ func TestLocateArtifactJar_GradleCache(t *testing.T) {
 	build := t.TempDir()
 	jar := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar")
 	writeJar(t, jar, "com/evil/netkit/UrlFetcher.class", emitClass(&cpb{}, "com/evil/netkit/UrlFetcher", nil))
-	got, ok := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
-	if !ok || got != jar {
-		t.Errorf("locateArtifactJar = %q, %v; want %q", got, ok, jar)
+	got, ok, ambiguous := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
+	if !ok || ambiguous || got != jar {
+		t.Errorf("locateArtifactJar = %q, %v, %v; want %q", got, ok, ambiguous, jar)
 	}
-	if _, ok := locateArtifactJar(build, "com.evil:netkit", "2.0.0"); ok {
+	if _, ok, _ := locateArtifactJar(build, "com.evil:netkit", "2.0.0"); ok {
 		t.Error("located a version that is not cached")
+	}
+}
+
+// Copies in the Maven repository and the Gradle cache are compared whichever cache comes
+// first: the same bytes resolve, different bytes resolve neither, and the resolver reports
+// the miss.
+func TestLocateArtifactJar_ComparesEveryCache(t *testing.T) {
+	class := func(owner string) []byte { return emitClass(&cpb{}, owner, nil) }
+	for _, tc := range []struct {
+		name          string
+		gradleOwner   string
+		wantAmbiguous bool
+	}{
+		{"same bytes", "com/evil/netkit/UrlFetcher", false},
+		{"different bytes", "com/evil/netkit/Other", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := t.TempDir()
+			m2 := filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
+			writeJar(t, m2, "com/evil/netkit/UrlFetcher.class", class("com/evil/netkit/UrlFetcher"))
+			gradle := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar")
+			writeJar(t, gradle, "com/evil/netkit/UrlFetcher.class", class(tc.gradleOwner))
+			got, ok, ambiguous := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
+			if ambiguous != tc.wantAmbiguous || ok == tc.wantAmbiguous || (ok && got != m2) {
+				t.Fatalf("locateArtifactJar = %q, %v, %v; want ambiguous=%v", got, ok, ambiguous, tc.wantAmbiguous)
+			}
+		})
 	}
 }
 

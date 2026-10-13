@@ -1,6 +1,9 @@
 package javaanalysis
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,48 +86,84 @@ func mavenRepoRoots(buildDir string) []string {
 	return roots
 }
 
-// locateArtifactJar finds a dependency JAR in the build's local caches: the Maven
-// repositories first (the Java common case), then the Gradle module cache. ok is false
-// when no cache holds it.
-func locateArtifactJar(buildDir, coordinate, version string) (string, bool) {
-	if path, ok := LocateDependencyJar(mavenRepoRoots(buildDir), coordinate, version); ok {
-		return path, true
+// locateArtifactJar finds a dependency JAR in the build's local caches. Both the Maven
+// repositories and the Gradle module cache are searched whatever the build tool, since a
+// Gradle build can read the Maven local repository (mavenLocal()) and nothing here says
+// which copy it used. ok is false when no cache holds the JAR. ambiguous is true when two
+// copies differ, or one cannot be read to compare: either could be the bytes the build ran,
+// so neither is offered.
+func locateArtifactJar(buildDir, coordinate, version string) (path string, ok, ambiguous bool) {
+	rel, ok := mavenJarRelPath(coordinate, version)
+	if !ok {
+		return "", false, false
 	}
-	group, artifact, ok := splitCoordinate(coordinate)
-	if !ok || version == "" {
-		return "", false
+	group, artifact, _ := splitCoordinate(coordinate)
+	var copies []string
+	for _, root := range mavenRepoRoots(buildDir) {
+		if candidate := filepath.Join(root, rel); isFile(candidate) {
+			copies = append(copies, candidate)
+		}
 	}
-	return locateGradleJar(gradleCacheRoots(buildDir), group, artifact, version)
+	copies = append(copies, gradleJarCopies(gradleCacheRoots(buildDir), group, artifact, version)...)
+	switch len(copies) {
+	case 0:
+		return "", false, false
+	case 1:
+		return copies[0], true, false
+	}
+	want, err := fileDigest(copies[0])
+	if err != nil {
+		return "", false, true
+	}
+	for _, c := range copies[1:] {
+		if got, err := fileDigest(c); err != nil || got != want {
+			return "", false, true
+		}
+	}
+	return copies[0], true, false
 }
 
-// locateGradleJar resolves the Gradle module cache layout:
+// gradleJarCopies lists every copy of the JAR in the Gradle module cache layout:
 //
 //	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.jar
 //
-// Gradle keeps the group dotted and interposes a content-hash directory, so the version
-// directory's immediate children are scanned for the expected JAR.
-func locateGradleJar(roots []string, group, artifact, version string) (string, bool) {
+// Gradle keeps the group dotted and interposes a content-hash directory, so every child of
+// the version directory is checked, in sorted order.
+func gradleJarCopies(roots []string, group, artifact, version string) []string {
 	jar := artifact + "-" + version + ".jar"
+	var out []string
 	for _, root := range roots {
-		if root == "" {
-			continue
-		}
 		versionDir := filepath.Join(root, group, artifact, version)
 		hashDirs, err := os.ReadDir(versionDir)
 		if err != nil {
 			continue
 		}
 		for _, hd := range hashDirs {
-			if !hd.IsDir() {
-				continue
-			}
-			candidate := filepath.Join(versionDir, hd.Name(), jar)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate, true
+			if candidate := filepath.Join(versionDir, hd.Name(), jar); hd.IsDir() && isFile(candidate) {
+				out = append(out, candidate)
 			}
 		}
 	}
-	return "", false
+	return out
+}
+
+func isFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// fileDigest returns the SHA-256 of a file's contents.
+func fileDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // gradleCacheRoots returns the Gradle module-cache roots to search, in priority order: a

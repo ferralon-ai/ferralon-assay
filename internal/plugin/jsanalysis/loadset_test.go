@@ -109,6 +109,39 @@ func dep(names ...string) map[string]string {
 	return m
 }
 
+// staleLockBeside is a root whose package-lock.json marks x dev, with another lockfile named
+// lock beside it (none when lock is empty); index.js loads only a.
+func staleLockBeside(t *testing.T, lock, body string) map[string]string {
+	files := map[string]string{
+		"package.json": `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"x":"*"}}`,
+		"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+			"node_modules/a": {Version: "1.0.0"},
+			"node_modules/x": {Version: "1.0.0", Dev: true},
+		}),
+		"index.js": `require('a');`,
+	}
+	if lock != "" {
+		files[lock] = body
+	}
+	return files
+}
+
+// devBinTree is a lockfile-only root whose dev-only tool ships a bin and depends on leaf;
+// extra adds or replaces files.
+func devBinTree(t *testing.T, extra map[string]string) map[string]string {
+	files := map[string]string{
+		"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+			"node_modules/tool": {Version: "2.0.0", Dev: true, Deps: dep("leaf"), Bin: map[string]string{"tool": "bin/tool.js"}},
+			"node_modules/leaf": {Version: "1.0.0", Dev: true},
+		}),
+		"index.js": "module.exports = 1;\n",
+	}
+	for k, v := range extra {
+		files[k] = v
+	}
+	return files
+}
+
 func TestLoadSet(t *testing.T) {
 	type check struct {
 		pkg, version string
@@ -447,6 +480,7 @@ func TestLoadSet(t *testing.T) {
 			name: "v1 lockfile beside a yarn.lock never refutes",
 			files: func(t *testing.T) map[string]string {
 				return map[string]string{
+					".gitignore":                     "node_modules\n",
 					"package.json":                   `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
 					"yarn.lock":                      "# yarn lockfile v1\n",
 					"package-lock.json":              v1DevLock,
@@ -469,6 +503,7 @@ func TestLoadSet(t *testing.T) {
 			name: "pnpm root ignores a stale package-lock.json's dev markers",
 			files: func(t *testing.T) map[string]string {
 				return map[string]string{
+					".gitignore":                     "node_modules\n",
 					"package.json":                   `{"name":"app","packageManager":"pnpm@8.15.0","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
 					"pnpm-lock.yaml":                 "lockfileVersion: '6.0'\n",
 					"package-lock.json":              `{"name":"app","lockfileVersion":1,"dependencies":{"a":{"version":"1.0.0"},"tool":{"version":"2.0.0","dev":true}}}`,
@@ -480,6 +515,146 @@ func TestLoadSet(t *testing.T) {
 			complete: true,
 			unloaded: []string{"node_modules/tool"},
 			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			// npm reads npm-shrinkwrap.json and ignores package-lock.json; here the stale
+			// package-lock marks x dev while the shrinkwrap installs it as a's dependency.
+			name: "npm-shrinkwrap.json beats a stale package-lock.json",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","dependencies":{"a":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/a": {Version: "1.0.0"},
+						"node_modules/x": {Version: "1.0.0", Dev: true},
+					}),
+					"npm-shrinkwrap.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/a": {Version: "1.0.0", Deps: dep("x")},
+						"node_modules/x": {Version: "1.0.0"},
+					}),
+					"index.js": `require('a');`,
+				}
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/a", "node_modules/x"},
+			checks:      []check{{pkg: "x", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "bun.lock beside a stale package-lock.json withholds dev markers",
+			files: func(t *testing.T) map[string]string {
+				return staleLockBeside(t, "bun.lock", "{\"lockfileVersion\": 1}\n")
+			},
+			complete: true,
+			checks:   []check{{pkg: "x", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "bun.lockb beside a stale package-lock.json withholds dev markers",
+			files: func(t *testing.T) map[string]string {
+				return staleLockBeside(t, "bun.lockb", "#!/usr/bin/env bun\nbun-lockfile-format-v0\n")
+			},
+			complete: true,
+			checks:   []check{{pkg: "x", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "an unknown *.lock beside package-lock.json withholds dev markers",
+			files: func(t *testing.T) map[string]string {
+				return staleLockBeside(t, "deps.lock", "x 1.0.0\n")
+			},
+			complete: true,
+			checks:   []check{{pkg: "x", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "a lone package-lock.json still refutes",
+			files: func(t *testing.T) map[string]string {
+				return staleLockBeside(t, "", "")
+			},
+			complete: true,
+			checks:   []check{{pkg: "x", version: "1.0.0", refuted: true, detail: "outside the runtime install closure"}},
+		},
+		{
+			name: "scripts.start running a dev bin loads its package",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","scripts":{"start":"tool index.js"},"devDependencies":{"tool":"*"}}`,
+				})
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/tool", "node_modules/leaf"},
+			checks:      []check{{pkg: "tool", version: "2.0.0"}, {pkg: "leaf", version: "1.0.0"}},
+		},
+		{
+			name: "a Procfile web line running a dev bin loads its package",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"tool":"*"}}`,
+					"Procfile":     "web: tool index.js\n",
+				})
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/tool", "node_modules/leaf"},
+			checks:      []check{{pkg: "tool", version: "2.0.0"}, {pkg: "leaf", version: "1.0.0"}},
+		},
+		{
+			name: "a Dockerfile CMD npm start runs scripts.start",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","scripts":{"start":"tool index.js"},"devDependencies":{"tool":"*"}}`,
+					"Dockerfile":   "FROM myorg/base\nCOPY . .\nCMD [\"npm\",\"start\"]\n",
+				})
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/tool"},
+			checks:      []check{{pkg: "tool", version: "2.0.0"}},
+		},
+		{
+			// Not a start script, so only the Dockerfile's CMD makes serve a launch line.
+			name: "a Dockerfile CMD npm run names the script it launches",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","scripts":{"serve":"tool index.js"},"devDependencies":{"tool":"*"}}`,
+					"Dockerfile":   "FROM myorg/base\nCOPY . .\nCMD [\"npm\",\"run\",\"serve\"]\n",
+				})
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/tool"},
+			checks:      []check{{pkg: "tool", version: "2.0.0"}},
+		},
+		{
+			// hook ships no bin, so only the preload flag can root it.
+			name: "an exec-form CMD preloading a dev package loads it",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"hook":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/hook": {Version: "1.0.0", Dev: true},
+					}),
+					"Dockerfile": "FROM myorg/base\nCOPY . .\nCMD [\"node\",\"-r\",\"hook\",\"index.js\"]\n",
+				})
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/hook"},
+			checks:      []check{{pkg: "hook", version: "1.0.0"}},
+		},
+		{
+			name: "a launch line the lane cannot parse withholds everything",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"tool":"*"}}`,
+					"Procfile":     "web: $(cat launch.txt) index.js\n",
+				})
+			},
+			complete: false,
+		},
+		{
+			name: "a dev bin used only by a non-launch script still refutes",
+			files: func(t *testing.T) map[string]string {
+				return devBinTree(t, map[string]string{
+					"package.json": `{"name":"app","scripts":{"start":"node index.js","test":"tool index.js"},"devDependencies":{"tool":"*"}}`,
+					"Procfile":     "web: node index.js\n",
+				})
+			},
+			complete: true,
+			unloaded: []string{"node_modules/tool"},
+			checks:   []check{{pkg: "leaf", version: "1.0.0", refuted: true, detail: "only reachable from dev tooling: tool (scripts.test)"}},
 		},
 		{
 			// The probe from the #93 review: moment-timezone is bundled from a webpack entry, so

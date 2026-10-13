@@ -432,3 +432,26 @@ func mustSymlink(t *testing.T, target, link string) {
 		t.Fatal(err)
 	}
 }
+
+// A first-party reader opens only files inside the build dir: a deploy script symlinked to a
+// file outside it is not read, so its preload flag roots nothing, and the load set is partial.
+func TestFirstPartyReadStaysInBuildDir(t *testing.T) {
+	outside := writeTree(t, map[string]string{"deploy.sh": "#!/bin/sh\nnode -r tool index.js\n"})
+	dir := writeTree(t, devBinTree(t, map[string]string{
+		"package.json": `{"name":"app","devDependencies":{"tool":"*"}}`,
+	}))
+	mustSymlink(t, filepath.Join(outside, "deploy.sh"), filepath.Join(dir, "deploy.sh"))
+	ls := computeLoadSet(dir)
+	if ls.complete {
+		t.Fatalf("complete = true, want a gap for the outside symlink")
+	}
+	if !strings.Contains(strings.Join(ls.gaps, "\n"), "deploy.sh resolves outside the build dir") {
+		t.Errorf("gaps = %q, want the first-party reader's refusal", ls.gaps)
+	}
+	if ls.loaded["node_modules/tool"] {
+		t.Errorf("node_modules/tool loaded: the outside file was read")
+	}
+	if ref := ls.refute("tool", "2.0.0"); ref != nil {
+		t.Errorf("refute(tool@2.0.0) = %+v, want withheld", ref)
+	}
+}

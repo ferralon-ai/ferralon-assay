@@ -16,8 +16,11 @@ package jsanalysis
 //   - Roots: bare specifiers in first-party runtime source (require, import, import(),
 //     require.resolve, re-export), string literals naming an installed package, JSX/SFC
 //     runtimes, Node preload flags (-r/--require/--import/--loader) and a curated table of
-//     bins that run application code in-process. Other script bins and dev-tooling files are
-//     not roots (Eric's standing decision); they are tracked separately only to label the
+//     bins that run application code in-process. A runtime launch line (scripts.start, a
+//     Procfile process, Dockerfile/Compose CMD and ENTRYPOINT, and the scripts they run, see
+//     launch.go) roots every package whose bin it runs, and a launch line the lane cannot
+//     parse marks the result incomplete. Other script bins and dev-tooling files are not
+//     roots (Eric's standing decision); they are tracked separately only to label the
 //     refutation detail.
 //   - Closure: dependencies, optional and peer edges, resolved by Node's node_modules walk
 //     from the loading instance, so a hoisted copy and a nested copy are distinct instances.
@@ -41,13 +44,17 @@ package jsanalysis
 // production install puts on disk (class (ii)) never refutes, because code we cannot see (a
 // dependency's soft import, a dynamic require) could load it. Class (i) assumes dev/tooling
 // groups are not installed at runtime, so the refutation is withheld whenever the repo shows a
-// deploy-path install that keeps them (prodinstall.go), the lockfile a root selected carries
-// no dev markers (yarn, pnpm, or an ambiguous dialect), or the install closure resolves outside
-// the build dir.
+// deploy-path install that keeps them (prodinstall.go), the lockfile a root's installer reads
+// carries no dev markers (yarn, pnpm, or an ambiguous dialect; npm-shrinkwrap.json takes
+// precedence over package-lock.json, as in npm), any lockfile the lane does not model sits in
+// the build dir (bun, deno, an unknown *.lock), or the install closure resolves outside the
+// build dir.
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
@@ -57,6 +64,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -102,6 +110,9 @@ type installModel struct {
 	committed []string          // node_modules dirs tracked or not excluded by .gitignore: shipped with the repo
 	git       *gitIndex         // read on the first node_modules the sweep finds
 	verify    *loadSet          // set during the node_modules sweep: disk must agree with the index
+	// noDevMarks says why no lockfile dev marker counts ("" = the selected lockfiles are the
+	// only lockfiles in the build).
+	noDevMarks string
 }
 
 type resolveKind int
@@ -161,6 +172,13 @@ func computeLoadSet(buildDir string) *loadSet {
 	for _, r := range fp.runtime {
 		c.addRoot(r)
 	}
+	for _, r := range fp.launched {
+		c.label = r.label
+		if _, ok := ls.roots[r.in.name]; !ok {
+			ls.roots[r.in.name] = r.label
+		}
+		c.add(r.in)
+	}
 	c.drain()
 	rc := &closer{ls: ls, m: m, reach: map[string]bool{}}
 	for _, r := range fp.config {
@@ -180,6 +198,9 @@ func computeLoadSet(buildDir string) *loadSet {
 		ls.ownNames[canonicalNpmName(n)] = true
 	}
 	ls.installed, ls.noDevOnly = m.installClosure(append(m.seeds, fp.install...))
+	if ls.noDevOnly == "" {
+		ls.noDevOnly = m.noDevMarks
+	}
 	ls.scan = scanBuild(m.buildReal, m, ls.installed)
 	if ls.noDevOnly == "" && len(ls.scan.keepDev) > 0 {
 		ls.noDevOnly = ls.scan.keepDev[0]
@@ -292,7 +313,7 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		if label == "" {
 			label = "."
 		}
-		sel, part := selectLockfile(ar)
+		sel, part := installerLockfile(ar)
 		if part.Complete {
 			m.lockOf[rel] = sel.dialect
 		}
@@ -320,6 +341,7 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		}
 		ls.gap("%s: %s and node_modules is not installed", label, why)
 	}
+	m.noDevMarks = unmodelledLock(real, absRoots)
 	m.sweepNodeModules(ls)
 	for _, idx := range []map[string][]*pkgInstance{m.byDir, m.byName, m.byBin} {
 		for _, list := range idx {
@@ -327,6 +349,53 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		}
 	}
 	return m, nil
+}
+
+// installerLockfile is selectLockfile with npm's own precedence: a root holding both
+// npm-shrinkwrap.json and package-lock.json installs from the shrinkwrap and ignores the
+// package-lock.json, so dev markers come from the shrinkwrap.
+func installerLockfile(root string) (selectedLock, plugin.Partiality) {
+	sel, part := selectLockfile(root)
+	if part.Complete && sel.dialect == "npm" && filepath.Base(sel.path) == "package-lock.json" {
+		sw := filepath.Join(root, "npm-shrinkwrap.json")
+		if fi, err := os.Stat(sw); err == nil && !fi.IsDir() {
+			sel.path = sw
+		}
+	}
+	return sel, part
+}
+
+// unmodelledLock names a lockfile in the build that lockfile selection does not model, or
+// returns "". Lockfile selection models the four lockfiles that make a directory a lock root;
+// any other file #97's JavaScript candidate rule (jsCandidate) reads as a lockfile, by name or
+// content (bun.lock, bun.lockb, deno.lock, any other *.lock), may be the one the installer
+// reads, so no dev marker in the build counts beside it. The walk's own failures (a symlink
+// leaving the build dir, an unreadable entry) are not judged here: the install scan withholds
+// every refutation for them.
+func unmodelledLock(real string, absRoots []string) string {
+	isRoot := map[string]bool{}
+	for _, r := range absRoots {
+		isRoot[r] = true
+	}
+	match := func(p string, head []byte) (string, bool) {
+		if slices.Contains(recognizedLockNames, filepath.Base(p)) && isRoot[filepath.Dir(p)] {
+			return "", false
+		}
+		why, ok := jsCandidate(p, head)
+		if !ok || !strings.Contains(why, "lock") && !strings.Contains(strings.ToLower(filepath.Base(p)), "lock") {
+			return "", false
+		}
+		return why, true
+	}
+	for _, c := range buildtree.Candidates(real, match, func(string) bool { return false }) {
+		switch c.Why {
+		case "unreadable", "symlink leaves the build dir", "symlink to a non-regular file", "symlinked directory the walk does not read":
+			continue
+		}
+		rel, _ := filepath.Rel(real, c.Path)
+		return filepath.ToSlash(rel) + ": a lockfile the lane does not model (" + c.Why + ")"
+	}
+	return ""
 }
 
 // add registers an instance and indexes it once per install path. Two lockfiles can both
@@ -1249,6 +1318,9 @@ type firstPartyRoots struct {
 	dev     []rootRef
 	install []installSeed // production-install edges of every first-party manifest
 	names   []string      // `name` of every first-party manifest
+	// launched are the installed instances whose bins a launch command runs (launch.go).
+	launched []launchRoot
+	scripts  []manifestScripts // every first-party manifest's scripts, in path order
 }
 
 var (
@@ -1256,7 +1328,7 @@ var (
 	markupExts   = map[string]bool{".html": true, ".htm": true, ".ejs": true, ".pug": true, ".jade": true, ".hbs": true, ".handlebars": true, ".njk": true, ".css": true, ".scss": true, ".sass": true, ".less": true, ".styl": true}
 	devSegments  = map[string]bool{"test": true, "tests": true, "__tests__": true, "__mocks__": true, "__fixtures__": true, "spec": true, "specs": true, "e2e": true, "cypress": true, "stories": true, "__snapshots__": true}
 	devTestFile  = regexp.MustCompile(`\.(test|spec|cy|stories|story|e2e)\.[cm]?[jt]sx?$`)
-	preloadFlag  = regexp.MustCompile(`(?:^|[\s="'])(?:-r|--require|--import|--loader|--experimental-loader)(?:=|\s+)["']?([^\s"']+)`)
+	preloadFlag  = regexp.MustCompile(`(?:^|[\s="',\[])(?:-r|--require|--import|--loader|--experimental-loader)(?:=|["']?\s*,\s*|\s+)["']?([^\s"',\]]+)`) // shell text or an argv list
 	markupModRef = regexp.MustCompile(`node_modules/((?:@[\w.\-]+/)?[\w.\-]+)`)
 	cssBareRef   = regexp.MustCompile(`(?:@import|@use|@forward)\s+(?:url\()?["']~?((?:@[\w.\-]+/)?[\w.\-]+)|url\(\s*["']?~((?:@[\w.\-]+/)?[\w.\-]+)`)
 )
@@ -1370,7 +1442,7 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 			files = append(files, f)
 			byRel[rel] = f
 		case name == "Procfile" || strings.HasPrefix(name, "Dockerfile") || ext == ".yml" || ext == ".yaml" ||
-			strings.HasPrefix(name, ".env") || strings.HasSuffix(name, ".sh"):
+			strings.HasPrefix(name, ".env") || strings.HasSuffix(name, ".sh") || surfaceOf(rel, name, nil) == surfDocker:
 			opsFiles = append(opsFiles, rel)
 		}
 		return nil
@@ -1420,18 +1492,20 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 		}
 	}
 	for _, rel := range sortedSet(jsonRuntime) {
-		data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+		data, err := m.readFirstParty(rel)
 		if err != nil {
+			ls.gap("%s %s", rel, unreadableWhy(err))
 			continue
 		}
 		out.runtime = append(out.runtime, jsonStringRoots(m, data, path.Dir(rel), rel)...)
 	}
 	for _, rel := range manifests {
-		out.manifestRoots(m, rel)
+		out.manifestRoots(m, ls, rel)
 	}
 	for _, rel := range opsFiles {
-		data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+		data, err := m.readFirstParty(rel)
 		if err != nil {
+			ls.gap("%s %s", rel, unreadableWhy(err))
 			continue
 		}
 		for _, mm := range preloadFlag.FindAllStringSubmatch(string(data), -1) {
@@ -1440,7 +1514,30 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 			}
 		}
 	}
+	lr := &launchReader{m: m, ls: ls, out: &out, seen: map[string]bool{}, files: map[string]bool{}}
+	lr.read(opsFiles)
 	return out
+}
+
+// errOutsideBuild is readFirstParty's error for a path that resolves outside the build dir.
+var errOutsideBuild = errors.New("resolves outside the build dir")
+
+// readFirstParty reads a file scanFirstParty listed. Its walk lists a symlink as a file without
+// following it, so the read goes through the link only when the link resolves inside the build
+// dir to a regular file (readRegular); a target elsewhere is never opened.
+func (m *installModel) readFirstParty(rel string) ([]byte, error) {
+	p := filepath.Join(m.buildReal, filepath.FromSlash(rel))
+	if !buildtree.Inside(m.buildReal, p) {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: errOutsideBuild}
+	}
+	return readRegular(p)
+}
+
+func unreadableWhy(err error) string {
+	if errors.Is(err, errOutsideBuild) {
+		return errOutsideBuild.Error()
+	}
+	return "unreadable"
 }
 
 func sortedSet(s map[string]bool) []string {
@@ -1462,7 +1559,7 @@ func dirOf(rel string) string {
 
 // scanFile collects a file's package references and relative-import targets.
 func scanFile(m *installModel, f *fpFile, jsonRuntime map[string]bool) {
-	data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(f.rel)))
+	data, err := m.readFirstParty(f.rel)
 	if err != nil {
 		f.unreadable = true
 		return
@@ -1608,9 +1705,10 @@ func jsonStringRoots(m *installModel, data []byte, dir, label string) []rootRef 
 // manifestRoots reads a first-party package.json: preload flags in scripts and in-process
 // runtime bins are runtime roots, `imports`/`browser` package mappings are runtime roots, and
 // every other script bin is a dev-tooling root (labels only).
-func (out *firstPartyRoots) manifestRoots(m *installModel, rel string) {
-	data, err := readRegular(filepath.Join(m.buildReal, filepath.FromSlash(rel)))
+func (out *firstPartyRoots) manifestRoots(m *installModel, ls *loadSet, rel string) {
+	data, err := m.readFirstParty(rel)
 	if err != nil {
+		ls.gap("%s %s", rel, unreadableWhy(err))
 		return
 	}
 	var man struct {
@@ -1623,6 +1721,7 @@ func (out *firstPartyRoots) manifestRoots(m *installModel, rel string) {
 		return
 	}
 	dir := dirOf(rel)
+	out.scripts = append(out.scripts, manifestScripts{dir: dir, rel: rel, scripts: man.Scripts})
 	out.install = append(out.install, runtimeSeeds(man.npmLoadPkg, dir)...)
 	if man.Name != "" {
 		out.names = append(out.names, man.Name)

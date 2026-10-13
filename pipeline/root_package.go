@@ -14,6 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
@@ -22,8 +23,8 @@ import (
 // RootPackage is the identity the scanned project itself publishes under: the package an advisory
 // names when the repository IS the vulnerable package (an advisory against grafana scanned in the
 // grafana repository). Version is set only when it is positively established as the version of the
-// checked-out code (a Go module tag at HEAD, or a release version the manifest states outright in a
-// declaration the reader fully models) and is "" otherwise; the advisory is still admitted on it,
+// checked-out code (a Go module tag at HEAD whose major version the module path allows, or a
+// release version the manifest states outright where nothing the reader cannot see can change it) and is "" otherwise; the advisory is still admitted on it,
 // and the verdict gate reports the version as unresolved.
 type RootPackage struct {
 	// PURLType is the package URL type ("golang", "npm", "pypi", "maven", "nuget").
@@ -96,11 +97,12 @@ const (
 )
 
 // goPathOwner reports which module owns the Go import path p, given that mod is the module the
-// go.mod in buildDir declares. p is the root's when it is mod itself, or a path under it that no
-// nested go.mod claims, whose first element is not a major-version suffix (example.com/m/v2 is a
-// different module from example.com/m), and that no module go.mod requires or replaces claims. A
-// longer module path go.sum records but go.mod does not name, or a go.mod that does not parse,
-// leaves the owner ambiguous.
+// go.mod in buildDir declares. p is the root's when it is mod itself, or a path under it whose
+// first element is not a major-version suffix (example.com/m/v2 is a different module from
+// example.com/m) and that no other module claims: none another go.mod in the tree declares, none a
+// go.work at or above buildDir uses, and none go.mod requires or replaces. A longer module path
+// go.sum records but go.mod does not name, or a go.mod or go.work that does not parse, leaves the
+// owner ambiguous.
 func goPathOwner(buildDir, mod, p string) goOwner {
 	if p == mod {
 		return goOwnedByRoot
@@ -119,6 +121,19 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 		}
 	}
 	claims := func(m string) bool { return len(m) > len(mod) && (p == m || strings.HasPrefix(p, m+"/")) }
+	others, ok := goTreeModules(buildDir)
+	if !ok {
+		return goOwnerAmbiguous
+	}
+	members, ok := goWorkModules(buildDir)
+	if !ok {
+		return goOwnerAmbiguous
+	}
+	for _, m := range append(others, members...) {
+		if claims(m) {
+			return goOwnedElsewhere
+		}
+	}
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
 		return goOwnerAmbiguous
@@ -147,6 +162,81 @@ func goPathOwner(buildDir, mod, p string) goOwner {
 	return goOwnedByRoot
 }
 
+// goTreeModules returns the module path every go.mod below buildDir declares, whatever directory
+// it sits in; ok is false when the tree cannot be walked or a go.mod declares no module.
+func goTreeModules(buildDir string) ([]string, bool) {
+	var mods []string
+	err := filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "go.mod" || filepath.Dir(p) == filepath.Clean(buildDir) {
+			return nil
+		}
+		m := goModFileModule(p)
+		if m == "" {
+			return os.ErrInvalid
+		}
+		mods = append(mods, m)
+		return nil
+	})
+	return mods, err == nil
+}
+
+// goWorkModules returns the module path of every module the go.work the go command would find
+// from buildDir (the nearest at or above it) uses; ok is false when that go.work does not parse or
+// a module it uses declares no module path.
+func goWorkModules(buildDir string) ([]string, bool) {
+	dir, err := filepath.Abs(buildDir)
+	if err != nil {
+		return nil, false
+	}
+	for {
+		data, err := os.ReadFile(filepath.Join(dir, "go.work"))
+		if err == nil {
+			wf, err := modfile.ParseWork("go.work", data, nil)
+			if err != nil {
+				return nil, false
+			}
+			var mods []string
+			for _, u := range wf.Use {
+				use := filepath.FromSlash(u.Path)
+				if !filepath.IsAbs(use) {
+					use = filepath.Join(dir, use)
+				}
+				m := goModFileModule(filepath.Join(use, "go.mod"))
+				if m == "" {
+					return nil, false
+				}
+				mods = append(mods, m)
+			}
+			return mods, true
+		}
+		if !os.IsNotExist(err) {
+			return nil, false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil, true
+		}
+		dir = parent
+	}
+}
+
+func goModFileModule(gomod string) string {
+	data, err := os.ReadFile(gomod)
+	if err != nil {
+		return ""
+	}
+	return modfile.ModulePath(data)
+}
+
 var pep503Separators = regexp.MustCompile(`[-_.]+`)
 
 // CanonicalName returns the form under which two names of a package of PURL type purlType name the
@@ -165,7 +255,8 @@ func CanonicalName(purlType, name string) string {
 
 // goRootPackage reads the module path from go.mod. A Go module declares no version of its own, so
 // the version is the semver tag at HEAD for this module (a nested module's tags carry its
-// directory as a prefix), or "" when HEAD is not tagged.
+// directory as a prefix) whose major version the module path allows (v0 or v1 with no /vN suffix,
+// vN with one), or "" when HEAD carries no such tag.
 func goRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
@@ -175,10 +266,14 @@ func goRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
 	if err != nil || mf.Module == nil || mf.Module.Mod.Path == "" {
 		return RootPackage{}, false
 	}
-	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: goModuleTagAtHead(ctx, buildDir)}, true
+	return RootPackage{PURLType: "golang", Name: mf.Module.Mod.Path, Version: goModuleTagAtHead(ctx, buildDir, mf.Module.Mod.Path)}, true
 }
 
-func goModuleTagAtHead(ctx context.Context, dir string) string {
+func goModuleTagAtHead(ctx context.Context, dir, mod string) string {
+	_, pathMajor, ok := module.SplitPathVersion(mod)
+	if !ok {
+		return ""
+	}
 	prefix, err := gitOutput(ctx, dir, "rev-parse", "--show-prefix")
 	if err != nil {
 		return ""
@@ -189,7 +284,7 @@ func goModuleTagAtHead(ctx context.Context, dir string) string {
 	}
 	var versions []string
 	for _, t := range strings.Fields(tags) {
-		if v, ok := strings.CutPrefix(t, prefix); ok && semver.IsValid(v) && semver.Build(v) == "" {
+		if v, ok := strings.CutPrefix(t, prefix); ok && semver.IsValid(v) && semver.Build(v) == "" && module.CheckPathMajor(v, pathMajor) == nil {
 			versions = append(versions, v)
 		}
 	}
@@ -223,12 +318,18 @@ func npmRootPackage(buildDir string) (RootPackage, bool) {
 	return RootPackage{PURLType: "npm", Name: pkg.Name, Version: establishedVersion("npm", pkg.Version)}, true
 }
 
+var pyVersionPlugin = regexp.MustCompile(`(?i)version`)
+
 var pyVersionAssign = regexp.MustCompile(`(?m)^__version__\s*(?::\s*str\s*)?=\s*['"]([^'"]+)['"]`)
 
 // pypiRootPackage reads pyproject.toml ([project], then [tool.poetry]), falling back to setup.cfg
 // [metadata]. A dynamic version is read from the file hatch's [tool.hatch.version] path names.
 func pypiRootPackage(buildDir string) (RootPackage, bool) {
 	var py struct {
+		BuildSystem struct {
+			Requires []string `toml:"requires"`
+			Backend  string   `toml:"build-backend"`
+		} `toml:"build-system"`
 		Project struct {
 			Name    string   `toml:"name"`
 			Version string   `toml:"version"`
@@ -236,26 +337,47 @@ func pypiRootPackage(buildDir string) (RootPackage, bool) {
 		} `toml:"project"`
 		Tool struct {
 			Poetry struct {
-				Name    string `toml:"name"`
-				Version string `toml:"version"`
+				Name           string         `toml:"name"`
+				Version        string         `toml:"version"`
+				RequirePlugins map[string]any `toml:"requires-plugins"`
 			} `toml:"poetry"`
 			Hatch struct {
 				Version struct {
-					Path string `toml:"path"`
+					Path    string `toml:"path"`
+					Source  string `toml:"source"`
+					Pattern any    `toml:"pattern"`
 				} `toml:"version"`
 			} `toml:"hatch"`
 		} `toml:"tool"`
 	}
-	if _, err := toml.DecodeFile(filepath.Join(buildDir, "pyproject.toml"), &py); err == nil {
+	md, err := toml.DecodeFile(filepath.Join(buildDir, "pyproject.toml"), &py)
+	if err == nil {
+		// A version plugin (poetry-dynamic-versioning, or any other) rewrites the stated version
+		// from VCS at build time, so what the file states is not the version built.
+		plugin := len(py.Tool.Poetry.RequirePlugins) > 0 || pyVersionPlugin.MatchString(py.BuildSystem.Backend)
+		for _, r := range py.BuildSystem.Requires {
+			plugin = plugin || pyVersionPlugin.MatchString(r)
+		}
+		for _, k := range md.Keys() {
+			plugin = plugin || len(k) >= 2 && k[0] == "tool" && pyVersionPlugin.MatchString(k[1])
+		}
 		if name := py.Project.Name; name != "" {
 			version := py.Project.Version
-			if version == "" && py.Tool.Hatch.Version.Path != "" {
-				version = hatchVersion(buildDir, py.Tool.Hatch.Version.Path)
+			hv := py.Tool.Hatch.Version
+			if version == "" && hv.Path != "" && (hv.Source == "" || hv.Source == "regex") && hv.Pattern == nil {
+				version = hatchVersion(buildDir, hv.Path)
+			}
+			if plugin {
+				version = ""
 			}
 			return RootPackage{PURLType: "pypi", Name: name, Version: establishedVersion("pypi", version)}, true
 		}
 		if name := py.Tool.Poetry.Name; name != "" {
-			return RootPackage{PURLType: "pypi", Name: name, Version: establishedVersion("pypi", py.Tool.Poetry.Version)}, true
+			version := py.Tool.Poetry.Version
+			if plugin {
+				version = ""
+			}
+			return RootPackage{PURLType: "pypi", Name: name, Version: establishedVersion("pypi", version)}, true
 		}
 	}
 	return setupCfgRootPackage(buildDir)
@@ -348,18 +470,24 @@ var gradleRootName = regexp.MustCompile(`(?m)^\s*rootProject\.name\s*=\s*['"]([^
 
 // gradleRootPackage reads group and version from the root build script and the project name from
 // settings. A project with no literal top-level group, or no rootProject.name, publishes no
-// coordinate the scan can name. The version is read only from a script nothing else in can set it:
-// see gradleScript.
+// coordinate the scan can name. The version is read only from a script nothing else in can set it
+// (see gradleScript), and never when settings configures projects (allprojects, beforeProject,
+// afterProject, projectsLoaded, a rootProject block), which can set it before or after the script.
 func gradleRootPackage(buildDir string) (RootPackage, bool) {
 	script, ok := readGradleScript(readFirst(buildDir, "build.gradle.kts", "build.gradle"))
 	if !ok || script.group == "" {
 		return RootPackage{}, false
 	}
-	name := submatch(gradleRootName, readFirst(buildDir, "settings.gradle.kts", "settings.gradle"))
+	settings := readFirst(buildDir, "settings.gradle.kts", "settings.gradle")
+	name := submatch(gradleRootName, settings)
 	if name == "" {
 		return RootPackage{}, false
 	}
-	return RootPackage{PURLType: "maven", Name: script.group + ":" + name, Version: establishedVersion("maven", script.version)}, true
+	version := script.version
+	if gradleSettingsHook.MatchString(settings) {
+		version = ""
+	}
+	return RootPackage{PURLType: "maven", Name: script.group + ":" + name, Version: establishedVersion("maven", version)}, true
 }
 
 // gradleScript is what a root build script states outright at its top level.
@@ -369,13 +497,16 @@ type gradleScript struct {
 	// version is the literal of the one top-level version assignment, and "" when there is none,
 	// when version is named anywhere else in the script (a nested block, project.version, a plugin
 	// declaration), or when the script has a plugins, allprojects, subprojects or configure block or
-	// an apply: each can set the project version where this reader cannot see it.
+	// an apply, calls setVersion or setProperty anywhere, or names version in a string (a property
+	// lookup or setter by name): each can set the project version where this reader cannot see it.
 	version string
 }
 
 var (
-	gradleWord      = regexp.MustCompile(`\b(group|version|plugins|allprojects|subprojects|configure|apply)\b`)
-	gradleAssignRHS = regexp.MustCompile(`^\s*=\s*(['"])`)
+	gradleWord         = regexp.MustCompile(`\b(group|version|plugins|allprojects|subprojects|configure|apply|setVersion|setProperty)\b`)
+	gradleAssignRHS    = regexp.MustCompile(`^\s*=\s*(['"])`)
+	gradleVersionName  = regexp.MustCompile(`['"]version['"]`)
+	gradleSettingsHook = regexp.MustCompile(`\b(allprojects|beforeProject|afterProject|projectsLoaded)\b|\brootProject\s*\{`)
 )
 
 // readGradleScript reads a Groovy or Kotlin build script; ok is false when it does not lex.
@@ -402,10 +533,13 @@ func readGradleScript(src string) (gradleScript, bool) {
 			} else {
 				versions = append(versions, lit)
 			}
+		case "setVersion", "setProperty":
+			opaque = true
 		default:
 			opaque = opaque || top
 		}
 	}
+	opaque = opaque || gradleVersionName.MatchString(src)
 	var out gradleScript
 	if len(groups) == 1 {
 		out.group = groups[0]
@@ -513,9 +647,10 @@ func maskGradle(src string) (string, []int, bool) {
 }
 
 // nugetRootPackage reads the one project file at buildDir: PackageId, else AssemblyName, else the
-// file name. The version is read only when the project states exactly one unconditioned Version (or,
-// with none, one VersionPrefix) and no VersionSuffix, and no Directory.Build.targets beside it can
-// set it after the project file is read. A directory holding several projects has no single root.
+// file name. The version is read only when the project states exactly one unconditioned Version and
+// no VersionSuffix, has no Choose or Import, and no Directory.Build.props or Directory.Build.targets
+// at or above buildDir can set it. A VersionPrefix alone is never the version: the SDK appends a
+// suffix the build can pass. A directory holding several projects has no single root.
 func nugetRootPackage(buildDir string) (RootPackage, bool) {
 	projects, _ := filepath.Glob(filepath.Join(buildDir, "*.csproj"))
 	if len(projects) != 1 {
@@ -530,12 +665,13 @@ func nugetRootPackage(buildDir string) (RootPackage, bool) {
 		Condition string `xml:"Condition,attr"`
 	}
 	var proj struct {
+		Choose []struct{} `xml:"Choose"`
+		Import []struct{} `xml:"Import"`
 		Groups []struct {
 			Condition     string `xml:"Condition,attr"`
 			PackageID     string `xml:"PackageId"`
 			AssemblyName  string `xml:"AssemblyName"`
 			Version       []prop `xml:"Version"`
-			VersionPrefix []prop `xml:"VersionPrefix"`
 			VersionSuffix []prop `xml:"VersionSuffix"`
 		} `xml:"PropertyGroup"`
 	}
@@ -543,17 +679,13 @@ func nugetRootPackage(buildDir string) (RootPackage, bool) {
 		return RootPackage{}, false
 	}
 	var id, assembly string
-	var versions, prefixes []string
+	var versions []string
 	conditioned, suffixed := false, false
 	for _, g := range proj.Groups {
 		id = firstNonEmpty(id, strings.TrimSpace(g.PackageID))
 		assembly = firstNonEmpty(assembly, strings.TrimSpace(g.AssemblyName))
 		for _, v := range g.Version {
 			versions = append(versions, strings.TrimSpace(v.Value))
-			conditioned = conditioned || g.Condition != "" || v.Condition != ""
-		}
-		for _, v := range g.VersionPrefix {
-			prefixes = append(prefixes, strings.TrimSpace(v.Value))
 			conditioned = conditioned || g.Condition != "" || v.Condition != ""
 		}
 		suffixed = suffixed || len(g.VersionSuffix) > 0
@@ -563,17 +695,32 @@ func nugetRootPackage(buildDir string) (RootPackage, bool) {
 		return RootPackage{}, false
 	}
 	version := ""
-	switch {
-	case conditioned || suffixed:
-	case len(versions) == 1:
+	if len(versions) == 1 && !conditioned && !suffixed && len(proj.Choose) == 0 && len(proj.Import) == 0 && !msbuildDirectoryFiles(buildDir) {
 		version = versions[0]
-	case len(versions) == 0 && len(prefixes) == 1:
-		version = prefixes[0]
-	}
-	if _, err := os.Stat(filepath.Join(buildDir, "Directory.Build.targets")); err == nil {
-		version = ""
 	}
 	return RootPackage{PURLType: "nuget", Name: id, Version: establishedVersion("nuget", version)}, true
+}
+
+// msbuildDirectoryFiles reports whether MSBuild could import a Directory.Build.props or
+// Directory.Build.targets into a project at buildDir: one at or above it, or a directory it cannot
+// read.
+func msbuildDirectoryFiles(buildDir string) bool {
+	dir, err := filepath.Abs(buildDir)
+	if err != nil {
+		return true
+	}
+	for {
+		for _, name := range []string{"Directory.Build.props", "Directory.Build.targets"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				return true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 var (

@@ -740,6 +740,9 @@ func (rs *resolver) workspaceMemberDirs(patterns []string) []string {
 			base := strings.TrimSuffix(p, "/*")
 			entries, err := os.ReadDir(filepath.Join(rs.prog.root, filepath.FromSlash(base)))
 			if err != nil {
+				if !absent(err) {
+					rs.prog.readFailed = true
+				}
 				continue
 			}
 			for _, e := range entries {
@@ -818,6 +821,9 @@ func (rs *resolver) governingTsconfig(fromModule string) *tsconfigResolved {
 		rel := path.Join(dir, "tsconfig.json")
 		if _, err := os.Stat(filepath.Join(rs.prog.root, filepath.FromSlash(rel))); err == nil {
 			return rs.loadTsconfig(dir, rel, 0)
+		} else if !absent(err) {
+			rs.prog.readFailed = true
+			return nil
 		}
 		if dir == "" {
 			return nil

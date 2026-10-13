@@ -85,18 +85,22 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		return plugin.DependencyInventory{}, fmt.Errorf("jsanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	roots := discoverProjectRoots(req.BuildDir)
-	if len(roots) == 0 {
-		// No lockfile and no package.json anywhere: honest absence, never an
-		// empty-but-Complete inventory that would read downstream as "no dependencies".
-		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoManifest)}, nil
-	}
-
+	roots, rootsRead := discoverProjectRoots(req.BuildDir)
 	var (
 		allNodes  []plugin.DependencyNode
 		allEdges  []plugin.DependencyEdge
 		graphPart = plugin.Complete()
 	)
+	if !rootsRead {
+		graphPart = plugin.Partial(plugin.PartialReasonToolFailure)
+	}
+	if len(roots) == 0 {
+		// No lockfile and no package.json found: declared absence (with tool_failure when part
+		// of the tree went unread), never an empty-but-Complete inventory that would read
+		// downstream as "no dependencies".
+		return plugin.DependencyInventory{Partiality: mergePartiality(plugin.Partial(plugin.PartialReasonNoManifest), graphPart)}, nil
+	}
+
 	for _, root := range roots {
 		sel, selPart := selectLockfile(root)
 		if !selPart.Complete {
@@ -137,13 +141,16 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // — the authoritative install roots. Vendored/build/VCS trees are skipped so a nested
 // install never shadows the project's own lockfiles. When no lockfile exists anywhere but the
 // build dir is itself a package (has a package.json), the build dir is returned so
-// selectLockfile can declare no_manifest rather than silently emitting an empty graph.
-func discoverProjectRoots(buildDir string) []string {
+// selectLockfile can declare no_manifest rather than silently emitting an empty graph. read
+// is false when a directory or the build dir's package.json is there but cannot be read: a
+// root may be missing.
+func discoverProjectRoots(buildDir string) (roots []string, read bool) {
 	seen := make(map[string]struct{})
-	var roots []string
+	read = true
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no roots; keep walking.
+			read = read && absent(err)
+			return nil //nolint:nilerr // keep walking: the other roots are still read.
 		}
 		if d.IsDir() {
 			if path != buildDir && skipDir(d.Name()) {
@@ -162,12 +169,16 @@ func discoverProjectRoots(buildDir string) []string {
 		return nil
 	})
 	if len(roots) == 0 {
-		if fi, err := os.Stat(filepath.Join(buildDir, "package.json")); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(filepath.Join(buildDir, "package.json"))
+		switch {
+		case err == nil && !fi.IsDir():
 			roots = append(roots, buildDir)
+		case err != nil && !absent(err):
+			read = false
 		}
 	}
 	sort.Strings(roots)
-	return roots
+	return roots, read
 }
 
 // selectLockfile selects the ONE authoritative lockfile for a root (D3). corepack's
@@ -277,12 +288,13 @@ func adapterFor(dialect string) inventoryAdapter {
 
 // manifestsUnder reads every package.json under root (same skip rules as the walkers), parsed
 // into the invManifest subset for the membership/direct join. complete is false when a
-// package.json exists that cannot be read.
+// package.json or a directory is there but cannot be read.
 func manifestsUnder(root string) (out []manifestFile, complete bool) {
 	complete = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree contributes no manifests.
+			complete = complete && absent(err)
+			return nil //nolint:nilerr // keep walking: the other manifests are still read.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {

@@ -1,8 +1,9 @@
 package jsanalysis
 
 import (
+	"bytes"
 	"encoding/json"
-	"io/fs"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,12 +19,12 @@ import (
 // every node_modules directory on the requiring package's path, whatever the package
 // declares, so the reach of an instance is its runtime, optional, and peer dependencies
 // plus every package installed in a node_modules directory on its install path, which
-// always includes the hoisted top level. Any answer it cannot give exactly (no lockfile, a
-// v1/yarn/pnpm lock, a package the lock does not list, a required dependency the lock does
-// not install, a node_modules on disk holding a package the lock does not list, a Yarn
-// Plug'n'Play install, or a surface that may launch the production process setting
-// NODE_PATH, NODE_OPTIONS, npm's node-options, NODE_PRESERVE_SYMLINKS, or a node flag that
-// preloads code or changes resolution) is nil, which a ScopedReason reads as unbounded.
+// always includes the hoisted top level. Any answer it cannot give exactly is nil, which a
+// ScopedReason reads as unbounded: no lockfile or a v1 lock; a package the lock does not
+// list; a required dependency the lock does not install; a link to a directory above the
+// lockfile's; a node_modules on disk, anywhere under the lockfile's directory, holding a
+// package the lock does not list at that position; a node_modules in a directory above the
+// lockfile's; and anything resolutionOverridden reports.
 //
 // The JS package-load refutation builds a fuller install model (disk, yarn, and pnpm
 // engines); when it lands, closureOf should delegate to that model's resolve and closure.
@@ -32,9 +33,13 @@ type lockClosures struct {
 	graphs map[string]*lockGraph // lockfile dir (build-relative, "" = root) -> parsed lock; nil = unusable
 	govern map[string]string     // build-relative dir -> governing lockfile dir; "\x00" = none
 	memo   map[string][]string   // lockDir + "\x00" + install path -> closure names
-	// override is 0 until the build tree is scanned, then 1 when nothing overrides
-	// resolution from the lock and 2 when something does (see resolutionOverridden).
-	override int
+	// scanned is set once the build tree has been walked; overridden and nodeModules hold
+	// what the walk found (see resolutionOverridden).
+	scanned    bool
+	overridden bool
+	// nodeModules lists the build-relative directory holding each node_modules the walk saw
+	// ("" = the build root), in walk order.
+	nodeModules []string
 }
 
 // lockGraph is one npm v2/v3 lockfile's `packages` map, keyed by install path relative to
@@ -76,6 +81,13 @@ func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
 	lockDir := lc.governingLock(fromDir)
 	if lockDir == lockNoGovern {
 		return nil
+	}
+	// Node walks every ancestor node_modules, so one above the lockfile's directory is on
+	// every installed package's resolution path, and the lock does not describe it.
+	for _, d := range lc.nodeModules {
+		if d != lockDir && (d == "" || strings.HasPrefix(lockDir, d+"/")) {
+			return nil
+		}
 	}
 	g := lc.graph(lockDir)
 	if g == nil {
@@ -277,6 +289,16 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 		}
 		break
 	}
+	if g != nil {
+		// A `file:` link to a directory above the lockfile's has a key above it ("../x"), and
+		// that directory's dependencies resolve through node_modules the lock does not describe.
+		for k := range g.pkgs {
+			if k == ".." || strings.HasPrefix(k, "../") {
+				g = nil
+				break
+			}
+		}
+	}
 	if g != nil && !lc.diskMatchesLock(lockDir, g) {
 		g = nil
 	}
@@ -285,17 +307,24 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 }
 
 // diskMatchesLock reports whether every package installed on disk under lockDir is listed
-// in the lock. When one is not (a stale lock, a hand install), Node resolves through a
-// layout the lock does not describe, so no reach read from the lock bounds what loads. An
-// absent node_modules is the layout an install from the lock produces. Dot entries (.bin,
-// .package-lock.json) are npm's own, and a workspace link's own node_modules is checked at
-// the linked directory's key.
+// in the lock at the position it is installed. When one is not (a stale lock, a hand
+// install, a committed src/node_modules), Node resolves through a layout the lock does not
+// describe, so no reach read from the lock bounds what loads. Every node_modules the build
+// walk saw under the lockfile's governance is checked, plus each one nested in an installed
+// package. An absent node_modules is the layout an install from the lock produces. Dot
+// entries (.bin, .package-lock.json) are npm's own (resolutionOverridden vetoes pnpm's and
+// yarn's), and a workspace link's own node_modules is checked at the linked directory's key.
 func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 	base := filepath.Join(lc.root, filepath.FromSlash(lockDir))
 	dirs := []string{""}
 	for k := range g.pkgs {
 		if k != "" && !strings.Contains(k, "node_modules/") {
 			dirs = append(dirs, k)
+		}
+	}
+	for _, d := range lc.nodeModules {
+		if lc.governingLock(d) == lockDir {
+			dirs = append(dirs, lockRel(lockDir, d))
 		}
 	}
 	for len(dirs) > 0 {
@@ -338,90 +367,145 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 	return true
 }
 
-// launchOverride matches a launch setting under which Node resolves or loads packages the
-// lock does not describe, on a surface that may start the production process:
-//   - NODE_PATH (resolve through extra directories), NODE_OPTIONS (any flag below, or an
-//     indirect value), and NODE_PRESERVE_SYMLINKS (resolve a linked package's dependencies
-//     from the link) given a value: `X=v` (shell, .env, Procfile, package.json scripts),
-//     `X: v` and `"X": "v"` (YAML, JSON), `ENV X v` (Dockerfile), `name: X` (Kubernetes);
-//   - npm's `node-options` setting, which npm exports as NODE_OPTIONS to the scripts it runs;
-//   - a node flag that preloads a module or a loader (`--require`/`-r`, `--import`,
-//     `--loader`, `--experimental-loader`) or keeps symlinked paths (`--preserve-symlinks`,
-//     `--preserve-symlinks-main`).
-var launchOverride = regexp.MustCompile(
-	`\b(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\b["']?\s*[=:]` +
-		`|\bENV\s+(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\s` +
-		`|\bname:\s*["']?(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\b` +
-		`|(?m:^\s*node-options\s*=)` +
-		`|--(?:require|import|loader|experimental-loader|preserve-symlinks(?:-main)?)\b` +
-		`|\b(?:node|nodemon)(?:\.exe)?(?:\s[^\n]*)?\s-r[\s=]`)
+// launchToken matches, anywhere in a file, a launch setting under which Node resolves or
+// loads packages the lock does not describe: NODE_PATH (extra resolution directories),
+// NODE_OPTIONS (which can carry any flag below), NODE_PRESERVE_SYMLINKS, npm's node-options
+// (exported as NODE_OPTIONS to the scripts npm runs), and the node flags that preload a
+// module or a loader or keep symlinked paths: --require, --import, --loader,
+// --experimental-loader, --preserve-symlinks (and -main). The short -r counts only as an
+// argument of a node, nodejs or nodemon command: after the command name on the same line,
+// with no ;, | or & in between, as its own word (also as a quoted exec-form array element),
+// so `cp -r` and `rm -r` do not. A -r inside NODE_OPTIONS is caught by NODE_OPTIONS itself.
+var launchToken = regexp.MustCompile(
+	`\bNODE_PATH\b|\bNODE_OPTIONS\b|\bNODE_PRESERVE_SYMLINKS\b|\bnode-options\b` +
+		`|--(?:require|import|loader|experimental-loader|preserve-symlinks)\b` +
+		`|\b(?:node|nodejs|nodemon)(?:\.exe)?\b[^\n;|&]{0,256}[\s,"'\[]-r(?:[\s"'=,\]]|$)`)
 
-// pnpRuntime names the files a Yarn Plug'n'Play install writes. Under PnP, packages load
-// through the PnP runtime's own map, not node_modules, so no npm lock bounds them.
-var pnpRuntime = map[string]bool{".pnp.cjs": true, ".pnp.js": true, ".pnp.loader.mjs": true}
+// launchNeedles prefilter launchToken: a window holding none of them cannot match.
+var launchNeedles = [][]byte{
+	[]byte("NODE_PATH"), []byte("NODE_OPTIONS"), []byte("NODE_PRESERVE_SYMLINKS"),
+	[]byte("node-options"), []byte("--require"), []byte("--import"), []byte("--loader"),
+	[]byte("--experimental-loader"), []byte("--preserve-symlinks"), []byte("-r"),
+}
+
+// installerMarkers name files that mean something other than npm installs (or installed)
+// packages here: a yarn, pnpm or bun lockfile, or a Yarn Plug'n'Play runtime. Their layout
+// (yarn and bun hoisting, pnpm's .pnpm store and hidden hoist, PnP's own resolution map)
+// differs from the npm lock's positions.
+var installerMarkers = map[string]bool{
+	"yarn.lock": true, "pnpm-lock.yaml": true, "bun.lock": true, "bun.lockb": true,
+	".pnp.cjs": true, ".pnp.js": true, ".pnp.loader.mjs": true,
+}
+
+// installedByOther name entries a node_modules holds when pnpm or yarn installed it.
+var installedByOther = []string{".pnpm", ".modules.yaml", ".yarn-state.yml"}
 
 // nodeModulesLinker matches a .yarnrc.yml that selects the node_modules linker. Yarn 2+
 // defaults to Plug'n'Play, so a .yarnrc.yml without it is a PnP install.
 var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modules["']?\s*(?:#.*)?$`)
 
-// resolutionOverridden reports whether anything in the build tree makes Node resolve or
-// load packages other than through the node_modules layout the lock describes: a Yarn PnP
-// runtime file, a .yarnrc.yml that does not select the node_modules linker, or a
-// launchOverride on a surface that may start the production process. Surfaces are
-// container files, Procfiles, env files, .npmrc, Makefiles, pm2 ecosystem files, shell
-// scripts, and every JSON, YAML, or TOML file (package.json scripts, CI workflows, compose
-// and deploy manifests), outside directories the lane does not index other than .github.
+// resolutionOverridden walks the build tree once, by the shared walker rule (every directory
+// except node_modules and site-packages is entered; node_modules is visited, not entered; no
+// symlink is followed), recording every node_modules it sees. It reports true, leaving every
+// closure unbounded, when the walk finds:
+//   - a file anywhere containing a launchToken. Over-firing on a mention is the price of not
+//     enumerating launch surfaces;
+//   - an installerMarker, a .yarnrc.yml that does not select the node_modules linker, or a
+//     node_modules holding pnpm's or yarn's state;
+//   - a symlink that leaves the build tree or does not resolve, a symlinked node_modules, or
+//     anything it cannot read.
 func (lc *lockClosures) resolutionOverridden() bool {
-	if lc.override == 0 {
-		lc.override = 1
-		_ = filepath.WalkDir(lc.root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			name := d.Name()
-			if d.IsDir() {
-				if p != lc.root && skipDir(name) && name != ".github" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if pnpRuntime[name] {
-				lc.override = 2
-				return filepath.SkipAll
-			}
-			if !d.Type().IsRegular() || !launchSurface(name) {
-				return nil
-			}
-			b, err := os.ReadFile(p)
-			if err != nil {
-				return nil
-			}
-			if (name == ".yarnrc.yml" && !nodeModulesLinker.Match(b)) || launchOverride.Match(b) {
-				lc.override = 2
-				return filepath.SkipAll
-			}
-			return nil
-		})
+	if lc.scanned {
+		return lc.overridden
 	}
-	return lc.override == 2
+	lc.scanned = true
+	veto := func() error {
+		lc.overridden = true
+		return filepath.SkipAll
+	}
+	_ = walkBuildTree(lc.root, func(e buildTreeEntry, err error) error {
+		if err != nil || e.Escapes {
+			return veto()
+		}
+		name := e.D.Name()
+		if e.Skipped {
+			if name != "node_modules" {
+				return nil
+			}
+			if e.Symlink {
+				return veto()
+			}
+			for _, m := range installedByOther {
+				if _, err := os.Lstat(filepath.Join(e.Path, m)); err == nil {
+					return veto()
+				}
+			}
+			rel, _ := filepath.Rel(lc.root, filepath.Dir(e.Path))
+			if rel = filepath.ToSlash(rel); rel == "." {
+				rel = ""
+			}
+			lc.nodeModules = append(lc.nodeModules, rel)
+			return nil
+		}
+		if installerMarkers[name] {
+			return veto()
+		}
+		if e.D.IsDir() || (e.Symlink && buildTreeIsDir(e.Path)) {
+			// A symlinked directory inside the tree is walked where it lives.
+			return nil
+		}
+		if !e.Symlink && !e.D.Type().IsRegular() {
+			return nil
+		}
+		// A symlinked file inside the tree is read through the link, since its target may sit
+		// in a directory the walk does not enter.
+		found, err := fileHasLaunchToken(e.Path, name == ".yarnrc.yml")
+		if err != nil || found {
+			return veto()
+		}
+		return nil
+	})
+	return lc.overridden
 }
 
-// launchSurface reports whether a file of this name can configure how the production
-// process is launched.
-func launchSurface(name string) bool {
-	lower := strings.ToLower(name)
-	switch lower {
-	case "package-lock.json", "npm-shrinkwrap.json":
-		return false
+// fileHasLaunchToken scans the file at p for a launchToken in overlapping windows, so a file
+// of any size is read in bounded memory. yarnrc also reports true when the whole file does
+// not select the node_modules linker.
+func fileHasLaunchToken(p string, yarnrc bool) (bool, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return false, err
 	}
-	for _, prefix := range []string{"dockerfile", "containerfile", "procfile", ".env", ".npmrc", "makefile", "ecosystem.config"} {
-		if strings.HasPrefix(lower, prefix) {
-			return true
+	defer f.Close()
+	const window, overlap = 1 << 20, 512
+	buf := make([]byte, 0, window+overlap)
+	linker := false
+	for {
+		n, err := io.ReadFull(f, buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if hasNeedle(buf) && launchToken.Match(buf) {
+			return true, nil
+		}
+		if yarnrc && nodeModulesLinker.Match(buf) {
+			linker = true
+		}
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			return yarnrc && !linker, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if len(buf) > overlap {
+			buf = append(buf[:0], buf[len(buf)-overlap:]...)
 		}
 	}
-	switch path.Ext(lower) {
-	case ".dockerfile", ".json", ".yml", ".yaml", ".toml", ".sh", ".env":
-		return true
+}
+
+func hasNeedle(b []byte) bool {
+	for _, n := range launchNeedles {
+		if bytes.Contains(b, n) {
+			return true
+		}
 	}
 	return false
 }

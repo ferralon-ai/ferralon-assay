@@ -409,6 +409,59 @@ go(process.argv[2]);
 			held:  []*report.Package{qs, zed},
 		},
 		{
+			// app/package-lock.json lists only qs, so without the check qs's reach would be {qs}
+			// and zed, installed in the root node_modules every require from app/ also searches,
+			// would refute.
+			name: "a node_modules above the governing lock holds every advisory",
+			src:  "require('./app/main.js');\n",
+			files: map[string]string{
+				"app/package-lock.json":         `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"app/main.js":                   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+				"node_modules/zed/package.json": `{"name":"zed","version":"1.0.0"}`,
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "a committed src/node_modules the lock does not list holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"src/node_modules/zed/index.js": "module.exports = {}\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "NODE_PATH in a CircleCI config holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{".circleci/config.yml": "jobs:\n  build:\n    environment:\n      NODE_PATH: lib\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "node -r in a Dockerfile exec-form CMD holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"Dockerfile": "FROM node:20\nCMD [\"node\", \"-r\", \"./apm.js\", \"index.js\"]\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "a yarn.lock beside the npm lock holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"yarn.lock": "# yarn lockfile v1\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
 			// Held twice over: by cfg's limit, whose reach includes the hoisted json5, and by the
 			// dynamic_import_specifier a literal import() keeps for an unmodeled condition.
 			name: "a literal import() of X whose development export loads a hoisted package X does not declare",

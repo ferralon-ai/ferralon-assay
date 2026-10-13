@@ -1,7 +1,10 @@
 package jsanalysis
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -84,12 +87,14 @@ func TestLockClosures(t *testing.T) {
 	}
 }
 
-// TestLockClosures_LaunchOverrides: on any surface that may launch the production process,
-// NODE_PATH adds resolution roots no lockfile lists, NODE_OPTIONS or a node flag can preload
-// code or a loader or keep symlinked paths, and a Yarn PnP install resolves through its own
-// map, so every closure is unbounded. A mention that sets nothing, a flag that changes
-// neither, or a file that cannot configure the process leaves it bounded.
-func TestLockClosures_LaunchOverrides(t *testing.T) {
+// TestLockClosures_LaunchTokens: NODE_PATH adds resolution roots no lockfile lists, and
+// NODE_OPTIONS or a node flag can preload code or a loader or keep symlinked paths. Launch
+// surfaces are not enumerated: a file anywhere in the build tree (node_modules and
+// site-packages aside) that mentions one of these settings leaves every closure unbounded,
+// so a mention that sets nothing over-fires by design. The short -r counts only as an
+// argument of a node command on the same line; a flag that changes neither resolution nor
+// preloading leaves the closure bounded.
+func TestLockClosures_LaunchTokens(t *testing.T) {
 	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
 	cases := []struct {
 		name    string
@@ -99,43 +104,169 @@ func TestLockClosures_LaunchOverrides(t *testing.T) {
 	}{
 		{"Dockerfile ENV with =", "Dockerfile", "FROM node:20\nENV NODE_PATH=/srv/lib\n", false},
 		{"Dockerfile ENV with a space", "deploy/Dockerfile.prod", "FROM node:20\nENV NODE_PATH /srv/lib\n", false},
+		{"Dockerfile ARG", "Dockerfile", "FROM node:20\nARG NODE_OPTIONS\n", false},
+		{"Dockerfile under build/", "build/Dockerfile", "FROM node:20\nENV NODE_PATH=/srv/lib\n", false},
 		{"package.json script", "package.json", `{"name":"app","scripts":{"start":"NODE_PATH=src node index.js"}}`, false},
 		{"workflow env", ".github/workflows/deploy.yml", "jobs:\n  run:\n    env:\n      NODE_PATH: src\n", false},
+		{"CircleCI config", ".circleci/config.yml", "jobs:\n  build:\n    environment:\n      NODE_PATH: lib\n", false},
 		{"Procfile", "Procfile", "web: NODE_PATH=lib node server.js\n", false},
 		{"Kubernetes env list", "k8s/deployment.yaml", "env:\n  - name: NODE_PATH\n    value: /app/lib\n", false},
+		{"compose environment list", "docker-compose.yml", "services:\n  web:\n    environment:\n      - NODE_PATH=/app/lib\n", false},
+		{"TOML env table", "fly.toml", "[env]\n  NODE_PATH = \"lib\"\n", false},
 		{"env file", ".env.production", "NODE_PATH=lib\n", false},
-		{"README mention", "README.md", "Set NODE_PATH=src to run locally.\n", true},
-		{"a manifest that does not set it", "app.yaml", "runtime: nodejs20\nenv_variables:\n  NODE_ENV: production\n", true},
-		{"a source file under node_modules", "node_modules/qs/package.json", `{"name":"qs","scripts":{"x":"NODE_PATH=a node"}}`, true},
+		{"shell script", "scripts/run.sh", "export NODE_PATH=lib\nnode index.js\n", false},
+		{"extensionless start script", "bin/start", "#!/bin/sh\nNODE_PATH=lib exec node index.js\n", false},
+		{"pm2 ecosystem env", "ecosystem.config.js", "module.exports = {apps: [{script: 'index.js', env: {NODE_PATH: 'lib'}}]}\n", false},
+		{"systemd unit", "deploy/app.service", "[Service]\nEnvironment=NODE_PATH=/srv/lib\nExecStart=/usr/bin/node /srv/index.js\n", false},
+		{"set by first-party code before a child process", "src/spawn.js", "process.env.NODE_OPTIONS = '--require ./hook.js';\n", false},
+		{"a README mention", "README.md", "Set NODE_PATH=src to run locally.\n", false},
+		{"a manifest that sets none of them", "app.yaml", "runtime: nodejs20\nenv_variables:\n  NODE_ENV: production\n", true},
+		{"a mention inside node_modules, which the walk does not enter", "node_modules/qs/package.json", `{"name":"qs","scripts":{"x":"NODE_PATH=a node"}}`, true},
+		{"a mention inside site-packages, which the walk does not enter", "venv/lib/python3.12/site-packages/x/run.sh", "export NODE_PATH=lib\n", true},
 
 		// NODE_OPTIONS, npm's node-options, and node flags that preload code or keep symlinks.
 		{"NODE_OPTIONS in a Dockerfile", "Dockerfile", "FROM node:20\nENV NODE_OPTIONS=\"--require ./otel.js\"\n", false},
 		{"NODE_OPTIONS from a variable", "deploy.sh", "export NODE_OPTIONS=\"$EXTRA\"\nnode server.js\n", false},
+		{"NODE_OPTIONS carrying -r", "Procfile", "web: NODE_OPTIONS='-r ./apm.js' npm start\n", false},
 		{"NODE_OPTIONS in a Kubernetes env list", "k8s/deployment.yaml", "env:\n  - name: NODE_OPTIONS\n    value: --import=./hook.mjs\n", false},
 		{"node-options in .npmrc", ".npmrc", "node-options=--experimental-loader ./loader.mjs\n", false},
 		{"--require in a package.json script", "package.json", `{"name":"app","scripts":{"start":"node --require ./apm.js index.js"}}`, false},
-		{"-r in a Procfile", "Procfile", "web: node -r dotenv/config server.js\n", false},
+		{"--require= in a Procfile", "Procfile", "web: node --require=./apm.js server.js\n", false},
 		{"--import in a Makefile", "Makefile", "run:\n\tnode --import ./register.mjs index.js\n", false},
 		{"--loader in a pm2 ecosystem file", "ecosystem.config.js", "module.exports = {apps: [{script: 'index.js', node_args: '--loader ts-node/esm'}]}\n", false},
 		{"--experimental-loader in a workflow", ".github/workflows/deploy.yml", "jobs:\n  run:\n    steps:\n      - run: node --experimental-loader ./l.mjs index.js\n", false},
 		{"--preserve-symlinks in compose", "docker-compose.yml", "services:\n  web:\n    command: node --preserve-symlinks index.js\n", false},
 		{"--preserve-symlinks-main in a script", "start.sh", "exec node --preserve-symlinks-main index.js\n", false},
 		{"NODE_PRESERVE_SYMLINKS in an env file", ".env", "NODE_PRESERVE_SYMLINKS=1\n", false},
+
+		// -r as a node argument.
+		{"node -r in a Procfile", "Procfile", "web: node -r dotenv/config server.js\n", false},
+		{"nodejs -r", "bin/start", "#!/bin/sh\nexec nodejs -r ./apm server.js\n", false},
+		{"node.exe -r", "start.cmd", "node.exe -r ./apm index.js\r\n", false},
+		{"nodemon -r in a package.json script", "package.json", `{"name":"app","scripts":{"dev":"nodemon -r dotenv/config index.js"}}`, false},
+		{"-r after another node flag", "Procfile", "web: node --max-old-space-size=4096 -r ./apm server.js\n", false},
+		{"-r in a Dockerfile exec-form array", "Dockerfile", "FROM node:20\nCMD [\"node\", \"-r\", \"dotenv/config\", \"server.js\"]\n", false},
+		{"-r at the end of a node line", "run.sh", "node index.js -r\n", false},
 		{"a node flag that changes neither", "Procfile", "web: node --max-old-space-size=4096 server.js\n", true},
 		{"-r for another command", "build.sh", "cp -r public dist\n", true},
-
-		// Yarn Plug'n'Play.
-		{"PnP runtime .pnp.cjs", ".pnp.cjs", "#!/usr/bin/env node\n", false},
-		{"PnP runtime .pnp.js", ".pnp.js", "module.exports = {}\n", false},
-		{"PnP ESM loader", ".pnp.loader.mjs", "export {}\n", false},
-		{"PnP linker in .yarnrc.yml", ".yarnrc.yml", "nodeLinker: pnp\n", false},
-		{".yarnrc.yml with the default linker", ".yarnrc.yml", "yarnPath: .yarn/releases/yarn-4.1.0.cjs\n", false},
-		{".yarnrc.yml with the node_modules linker", ".yarnrc.yml", "nodeLinker: node-modules\n", true},
+		{"-r after && on a node line", "build.sh", "node build.js && rm -r dist\n", true},
+		{"-r after ; on a node line", "build.sh", "node build.js; cp -r out dist\n", true},
+		{"-r on the line after node", "build.sh", "node build.js\ncp -r out dist\n", true},
+		{"-r inside a longer word", "Procfile", "web: node server.js -rf\n", true},
+		{"-r after a word that only contains node", "ops.sh", "kubectl get nodes -r\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeProgram(t, map[string]string{"package-lock.json": lock, tc.file: tc.body})
 			got := newLockClosures(dir).closureOf("", "qs")
+			if bounded := got != nil; bounded != tc.bounded {
+				t.Errorf("closureOf = %#v; bounded = %v, want %v", got, bounded, tc.bounded)
+			}
+		})
+	}
+}
+
+// TestLockClosures_TreeVetoes: the lock bounds a reach only when it describes every package
+// Node can resolve from the importing file. A node_modules above the governing lock, a
+// node_modules under its governance holding an entry it does not list at that key, another
+// installer's lockfile, runtime or install state anywhere in the tree, a file: link above the
+// lock, a symlink that leaves the tree or dangles, a symlinked node_modules, or a file the
+// walk cannot read each leave the closure unbounded.
+func TestLockClosures_TreeVetoes(t *testing.T) {
+	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
+	const lockSrcNM = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"src/node_modules/util":{}}}`
+	const lockAbove = `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"shared":"file:../shared"}},"node_modules/qs":{},"node_modules/shared":{"link":true,"resolved":"../shared"},"../shared":{"name":"shared"}}}`
+	const window, overlap = 1 << 20, 512
+	cases := []struct {
+		name    string
+		from    string
+		files   map[string]string
+		setup   func(t *testing.T, dir string)
+		bounded bool
+	}{
+		// A node_modules above the governing lock is on every resolution path from it.
+		{name: "a node_modules above the governing lock", from: "app", files: map[string]string{
+			"app/package-lock.json": lock, "app/main.js": "require('qs')\n", "node_modules/zed/package.json": `{"name":"zed"}`}},
+		{name: "a node_modules beside the governing lock that matches it", from: "app", bounded: true, files: map[string]string{
+			"app/package-lock.json": lock, "app/main.js": "require('qs')\n", "app/node_modules/qs/package.json": `{"name":"qs"}`}},
+		{name: "a node_modules in a sibling subtree under its own lock", from: "app", bounded: true, files: map[string]string{
+			"app/package-lock.json": lock, "other/package-lock.json": lock, "other/node_modules/qs/package.json": `{"name":"qs"}`}},
+
+		// Every node_modules under the lock's governance must match it, not only the ones the
+		// lock names.
+		{name: "a committed src/node_modules the lock does not list", files: map[string]string{
+			"package-lock.json": lock, "src/node_modules/evil/index.js": ""}},
+		{name: "a node_modules in a nested tool directory the lock does not list", from: "src", files: map[string]string{
+			"package-lock.json": lock, "tools/gen/node_modules/x/index.js": ""}},
+		{name: "a src/node_modules entry the lock lists at that key", bounded: true, files: map[string]string{
+			"package-lock.json": lockSrcNM, "src/node_modules/util/index.js": ""}},
+
+		// Another installer.
+		{name: "yarn.lock beside the npm lock", files: map[string]string{"package-lock.json": lock, "yarn.lock": "# yarn lockfile v1\n"}},
+		{name: "pnpm-lock.yaml beside the npm lock", files: map[string]string{"package-lock.json": lock, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"}},
+		{name: "bun.lock beside the npm lock", files: map[string]string{"package-lock.json": lock, "bun.lock": "{}\n"}},
+		{name: "a yarn.lock in another workspace", files: map[string]string{"package-lock.json": lock, "packages/x/yarn.lock": "# yarn lockfile v1\n"}},
+		{name: "PnP runtime .pnp.cjs", files: map[string]string{"package-lock.json": lock, ".pnp.cjs": "#!/usr/bin/env node\n"}},
+		{name: "PnP runtime .pnp.js", files: map[string]string{"package-lock.json": lock, ".pnp.js": "module.exports = {}\n"}},
+		{name: "PnP ESM loader .pnp.loader.mjs", files: map[string]string{"package-lock.json": lock, ".pnp.loader.mjs": "export {}\n"}},
+		{name: "pnpm's node_modules/.pnpm store", files: map[string]string{"package-lock.json": lock, "node_modules/.pnpm/lock.yaml": ""}},
+		{name: "pnpm's node_modules/.modules.yaml", files: map[string]string{"package-lock.json": lock, "node_modules/.modules.yaml": ""}},
+		{name: "yarn's node_modules/.yarn-state.yml", files: map[string]string{"package-lock.json": lock, "node_modules/.yarn-state.yml": ""}},
+		{name: "PnP linker in .yarnrc.yml", files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "nodeLinker: pnp\n"}},
+		{name: ".yarnrc.yml with the default linker", files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "yarnPath: .yarn/releases/yarn-4.1.0.cjs\n"}},
+		{name: ".yarnrc.yml with the node_modules linker", bounded: true, files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "nodeLinker: node-modules\n"}},
+		{name: "npm's own node_modules/.package-lock.json", bounded: true, files: map[string]string{"package-lock.json": lock, "node_modules/.package-lock.json": "{}"}},
+
+		{name: "a file: link to a directory above the lock", from: "app", files: map[string]string{
+			"app/package-lock.json": lockAbove, "shared/package.json": `{"name":"shared"}`}},
+
+		// Symlinks are never followed; one that leaves the tree or dangles fails closed.
+		{name: "a symlink out of the build tree", files: map[string]string{"package-lock.json": lock},
+			setup: func(t *testing.T, dir string) { treeSymlink(t, t.TempDir(), filepath.Join(dir, "vendor")) }},
+		{name: "a dangling symlink", files: map[string]string{"package-lock.json": lock},
+			setup: func(t *testing.T, dir string) { treeSymlink(t, filepath.Join(dir, "gone"), filepath.Join(dir, "cfg")) }},
+		{name: "a symlinked node_modules inside the tree", files: map[string]string{"package-lock.json": lock, "store/qs/package.json": `{"name":"qs"}`},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, filepath.Join(dir, "store"), filepath.Join(dir, "node_modules"))
+			}},
+		{name: "an in-tree symlink to a file with no token", bounded: true, files: map[string]string{"package-lock.json": lock, "conf/base.yml": "port: 80\n"},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, filepath.Join(dir, "conf", "base.yml"), filepath.Join(dir, "app.yml"))
+			}},
+		{name: "an in-tree symlink is read through the link into node_modules", files: map[string]string{
+			"package-lock.json": lock, "node_modules/.hooks/start": "NODE_PATH=lib node index.js\n"},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, filepath.Join(dir, "node_modules", ".hooks", "start"), filepath.Join(dir, "start"))
+			}},
+
+		{name: "a file the walk cannot read", files: map[string]string{"package-lock.json": lock, "secret.env": "PORT=80\n"},
+			setup: func(t *testing.T, dir string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root reads any file")
+				}
+				p := filepath.Join(dir, "secret.env")
+				if err := os.Chmod(p, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+			}},
+		// The first read takes window+overlap bytes, so this token is split across two reads.
+		{name: "a token straddling the read window", files: map[string]string{
+			"package-lock.json": lock, "big.txt": strings.Repeat("x", window+overlap-5) + "\nNODE_PATH=lib\n"}},
+		{name: "a token past the first read windows", files: map[string]string{
+			"package-lock.json": lock, "big.txt": strings.Repeat("x", 3*window) + "\nNODE_PATH=lib\n"}},
+		{name: "a large file with no token", bounded: true, files: map[string]string{
+			"package-lock.json": lock, "big.txt": strings.Repeat("x", 3*window)}},
+		{name: "a token under .git, which the walk enters", files: map[string]string{
+			"package-lock.json": lock, ".git/hooks/post-merge": "#!/bin/sh\nNODE_PATH=lib node migrate.js\n"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeProgram(t, tc.files)
+			if tc.setup != nil {
+				tc.setup(t, dir)
+			}
+			got := newLockClosures(dir).closureOf(tc.from, "qs")
 			if bounded := got != nil; bounded != tc.bounded {
 				t.Errorf("closureOf = %#v; bounded = %v, want %v", got, bounded, tc.bounded)
 			}

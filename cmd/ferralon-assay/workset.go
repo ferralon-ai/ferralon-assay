@@ -212,9 +212,9 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 // dependencies (sorted, floor-deduplicated), plus the ids that could not be judged either way: those
 // naming no affected package, and those whose record did not resolve. Both are sorted.
 //
-// A package matches when its name is a dependency name in pkgs and its ecosystem is the
-// repository's, or is unknown (no parseable PURL) — the same fail-open direction the intake
-// ecosystem guard takes. It also matches when isRoot (nil when the project declares no package
+// A package matches when its name is a dependency name in pkgs, compared as pipeline.CanonicalName
+// compares them, and its ecosystem is the repository's, or is unknown (no parseable PURL) — the
+// same fail-open direction the intake ecosystem guard takes. It also matches when isRoot (nil when the project declares no package
 // identity) says it names the scanned project itself. A package in another ecosystem, or one the
 // repository neither is nor declares, is a real answer ("does not apply here") and is neither
 // admitted nor disclosed.
@@ -223,11 +223,11 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 	for _, a := range floor {
 		inFloor[a.ID] = struct{}{}
 	}
+	purlType := purlTypeForEcosystem(ecosystem)
 	deps := make(map[string]struct{}, len(pkgs))
 	for _, p := range pkgs {
-		deps[p.Name] = struct{}{}
+		deps[pipeline.CanonicalName(purlType, p.Name)] = struct{}{}
 	}
-	purlType := purlTypeForEcosystem(ecosystem)
 
 	// A floor id is evaluated whatever the policy says about it, so it is neither looked up nor
 	// disclosed here.
@@ -252,7 +252,7 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 			if k.Ecosystem != "" && k.Ecosystem != purlType {
 				continue
 			}
-			if _, hit := deps[k.Name]; hit || (isRoot != nil && isRoot(k)) {
+			if _, hit := deps[pipeline.CanonicalName(purlType, k.Name)]; hit || (isRoot != nil && isRoot(k)) {
 				additions = append(additions, assessment.VulnRef{ID: id, Source: "osv"})
 				return
 			}

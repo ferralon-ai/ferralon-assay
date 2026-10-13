@@ -83,7 +83,7 @@ func (r RootPackage) Matches(buildDir, module, coordinate, purl string) (string,
 		}
 		return "", false
 	}
-	if coordinate != "" && normalizeRootName(r.PURLType, coordinate) == normalizeRootName(r.PURLType, r.Name) {
+	if coordinate != "" && CanonicalName(r.PURLType, coordinate) == CanonicalName(r.PURLType, r.Name) {
 		return r.Version, true
 	}
 	return "", false
@@ -242,7 +242,11 @@ func goModFileModule(gomod string) string {
 
 var pep503Separators = regexp.MustCompile(`[-_.]+`)
 
-func normalizeRootName(purlType, name string) string {
+// CanonicalName returns the form under which two names of a package of PURL type purlType name the
+// same package: a PyPI name normalized per PEP 503 (lowercase, each run of '-', '_' and '.' as one
+// '-'), a NuGet id lowercased, and any other name as given. The PyPI and NuGet version resolvers
+// compare names the same way.
+func CanonicalName(purlType, name string) string {
 	switch purlType {
 	case "pypi":
 		return pep503Separators.ReplaceAllString(strings.ToLower(name), "-")

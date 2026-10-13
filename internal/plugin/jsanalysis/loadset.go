@@ -20,6 +20,11 @@ package jsanalysis
 //     refutation detail.
 //   - Closure: dependencies, optional and peer edges, resolved by Node's node_modules walk
 //     from the loading instance, so a hoisted copy and a nested copy are distinct instances.
+//   - Build configs (webpack, vite, babel, ...): a package a build config names is bundled,
+//     and the bundler resolves its imports, declared or not, by the node_modules walk. It
+//     brings its dependency closure plus every package that walk can see from its install
+//     path (in practice the hoisted top level), transitively. A walk that leaves the build
+//     dir declares uninspectable_package.
 //   - Build injectors (babel helpers, tslib, bundler polyfills) are loaded whenever their
 //     injector is installed in the same lock root, because they land in runtime output
 //     without a first-party import.
@@ -34,8 +39,9 @@ package jsanalysis
 // production install puts on disk (class (ii)) never refutes, because code we cannot see (a
 // dependency's soft import, a dynamic require) could load it. Class (i) assumes dev/tooling
 // groups are not installed at runtime, so the refutation is withheld whenever the repo shows a
-// deploy-path install that keeps them (prodinstall.go), a lockfile carries no dev markers
-// (yarn, pnpm), or the install closure resolves outside the build dir.
+// deploy-path install that keeps them (prodinstall.go), the lockfile a root selected carries
+// no dev markers (yarn, pnpm, or an ambiguous dialect), or the install closure resolves outside
+// the build dir.
 
 import (
 	"encoding/json"
@@ -103,7 +109,7 @@ type loadSet struct {
 	complete  bool
 	gaps      []string
 	loaded    map[string]bool   // install paths with code loaded at runtime
-	selfOnly  map[string]bool   // loaded paths whose dependency closure was not taken (build-config references)
+	selfOnly  map[string]bool   // loaded paths whose dependency closure was not taken (bundler runtimes)
 	roots     map[string]string // package name -> first-party reference that rooted it
 	loaders   map[string]bool
 	injectors map[string]bool
@@ -147,8 +153,9 @@ func computeLoadSet(buildDir string) *loadSet {
 		c.addRoot(r)
 	}
 	c.drain()
-	for _, r := range fp.selfOnly {
-		c.markSelf(r)
+	rc := &closer{ls: ls, m: m, reach: map[string]bool{}}
+	for _, r := range fp.config {
+		rc.addRoot(r)
 	}
 	c.applyInjectors()
 	c.applyLoaders()
@@ -276,7 +283,12 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 		nm := filepath.Join(ar, "node_modules")
 		if fi, err := os.Stat(nm); err == nil && fi.IsDir() {
 			m.loadDisk(ar, ls)
-			m.readDevMarks(ar, rel)
+			// Dev markers come only from the lockfile the root selected. A yarn or pnpm root,
+			// or one whose lockfile dialect is ambiguous, cannot tell dev from runtime, so
+			// nothing in it refutes.
+			if part.Complete && sel.dialect == "npm" {
+				m.readDevMarks(sel.path, rel)
+			}
 			continue
 		}
 		why := "lockfile carries no per-instance edges"
@@ -434,33 +446,31 @@ func runtimeSeeds(p npmLoadPkg, dir string) []installSeed {
 	return out
 }
 
-// readDevMarks records the dev markers of an npm lockfile at a root the disk engine loaded:
-// v2/v3 `packages` entries by install path, or the v1 nested `dependencies` tree, whose nesting
-// mirrors node_modules. A yarn or pnpm root records none, so nothing in it is class (i).
-func (m *installModel) readDevMarks(absRoot, root string) {
-	for _, name := range []string{"npm-shrinkwrap.json", "package-lock.json"} {
-		data, err := os.ReadFile(filepath.Join(absRoot, name))
-		if err != nil {
-			continue
-		}
-		var lock struct {
-			Packages     map[string]npmLoadPkg `json:"packages"`
-			Dependencies map[string]v1LockDep  `json:"dependencies"`
-		}
-		if json.Unmarshal(data, &lock) != nil {
-			return
-		}
-		if len(lock.Packages) > 0 {
-			for key, p := range lock.Packages {
-				if p.Dev && isInstallPath(key) {
-					m.devMarks[joinRel(root, key)] = p.Version
-				}
-			}
-			return
-		}
-		m.walkV1Marks(lock.Dependencies, root)
+// readDevMarks records the dev markers of the npm lockfile a disk-engine root selected: v2/v3
+// `packages` entries by install path, or the v1 nested `dependencies` tree, whose nesting mirrors
+// node_modules. The caller never passes a lockfile the root did not select, so a yarn or pnpm
+// root records none and nothing in it is class (i).
+func (m *installModel) readDevMarks(lockPath, root string) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
 		return
 	}
+	var lock struct {
+		Packages     map[string]npmLoadPkg `json:"packages"`
+		Dependencies map[string]v1LockDep  `json:"dependencies"`
+	}
+	if json.Unmarshal(data, &lock) != nil {
+		return
+	}
+	if len(lock.Packages) > 0 {
+		for key, p := range lock.Packages {
+			if p.Dev && isInstallPath(key) {
+				m.devMarks[joinRel(root, key)] = p.Version
+			}
+		}
+		return
+	}
+	m.walkV1Marks(lock.Dependencies, root)
 }
 
 type v1LockDep struct {
@@ -675,9 +685,20 @@ type closer struct {
 	dev   bool
 	queue []*pkgInstance
 	label string
+	// reach, when non-nil, makes this the build-config closer: a package a build config names
+	// is bundled, and a bundler resolves the package's imports, declared or not, by the same
+	// node_modules walk Node uses. Every instance it adds brings its dependency closure plus
+	// every package that walk can see from its install path (in practice the hoisted top
+	// level), transitively. reach records the instances already expanded that way.
+	reach map[string]bool
+	// walked records the node_modules directories the build-config closer has added.
+	walked map[string]bool
 }
 
 func (c *closer) seen(in *pkgInstance) bool {
+	if c.reach != nil {
+		return c.reach[in.path]
+	}
 	if c.dev {
 		_, ok := c.ls.devFrom[in.path]
 		return ok || c.ls.loaded[in.path]
@@ -688,6 +709,9 @@ func (c *closer) seen(in *pkgInstance) bool {
 func (c *closer) add(in *pkgInstance) {
 	if c.seen(in) {
 		return
+	}
+	if c.reach != nil {
+		c.reach[in.path] = true
 	}
 	if c.dev {
 		c.ls.devFrom[in.path] = c.label
@@ -739,7 +763,85 @@ func (c *closer) drain() {
 		c.edges(in, in.deps, true)
 		c.edges(in, in.optional, false)
 		c.edges(in, in.peers, false)
+		if c.reach != nil {
+			c.visible(in)
+		}
 	}
+}
+
+// visible adds every package the node_modules walk can resolve from in's install path: each
+// package directly inside a node_modules directory at that path or any ancestor in the build dir.
+func (c *closer) visible(in *pkgInstance) {
+	if c.walked == nil {
+		c.walked = map[string]bool{}
+	}
+	for d := in.path; ; d = parentDir(d) {
+		nm := "node_modules"
+		if d != "" {
+			nm = d + "/node_modules"
+		}
+		if !c.walked[nm] {
+			c.walked[nm] = true
+			for _, child := range c.m.nodeModulesChildren(nm) {
+				c.add(child)
+			}
+			for _, t := range c.m.nodeModulesLinks(nm) {
+				switch kind, child := c.m.followLink(t); kind {
+				case resolvedInstance:
+					c.add(child)
+				case resolvedExternal:
+					c.uninspectable(in)
+				}
+			}
+		}
+		if d == "" {
+			return
+		}
+	}
+}
+
+// uninspectable declares that the build-config reach of in cannot be enumerated: a link on its
+// resolution path leaves the build dir. The declaration names no targets, so it withholds every
+// refutation.
+func (c *closer) uninspectable(in *pkgInstance) {
+	purl := "pkg:npm/" + in.name
+	for _, s := range c.ls.scoped {
+		if s.Reason == plugin.PartialReasonUninspectablePackage && s.Package == purl {
+			return
+		}
+	}
+	c.ls.scoped = append(c.ls.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonUninspectablePackage, Package: purl})
+}
+
+// nodeModulesDir returns the node_modules directory an install path sits directly inside.
+func nodeModulesDir(ip string) string {
+	i := strings.LastIndex(ip, "node_modules/")
+	if i < 0 {
+		return ""
+	}
+	return ip[:i+len("node_modules")]
+}
+
+// nodeModulesChildren returns the instances directly inside node_modules directory nm.
+func (m *installModel) nodeModulesChildren(nm string) []*pkgInstance {
+	var out []*pkgInstance
+	for _, p := range m.sortedPaths() {
+		if nodeModulesDir(p) == nm {
+			out = append(out, m.inst[p])
+		}
+	}
+	return out
+}
+
+// nodeModulesLinks returns the targets of the install links directly inside nm.
+func (m *installModel) nodeModulesLinks(nm string) []string {
+	var out []string
+	for _, ip := range sortedKeysOf(m.links) {
+		if nodeModulesDir(ip) == nm {
+			out = append(out, m.links[ip])
+		}
+	}
+	return out
 }
 
 func (c *closer) edges(in *pkgInstance, names []string, required bool) {
@@ -751,6 +853,9 @@ func (c *closer) edges(in *pkgInstance, names []string, required bool) {
 		case resolvedExternal:
 			if !c.dev {
 				c.ls.gap("%s (dependency of %s) resolves outside the build dir", dep, in.name)
+			}
+			if c.reach != nil {
+				c.uninspectable(in)
 			}
 		case resolvedNone:
 			if !required {
@@ -765,20 +870,6 @@ func (c *closer) edges(in *pkgInstance, names []string, required bool) {
 			}
 		}
 	}
-}
-
-// markSelf loads a referenced package's own code without its dependency closure: build-config
-// references (loaders, presets) whose shipped runtime helpers land in the output bundle.
-func (c *closer) markSelf(r rootRef) {
-	dir, _ := splitBareSpecifier(r.spec)
-	kind, in := c.m.resolve(r.from, dir)
-	if kind != resolvedInstance {
-		return
-	}
-	if _, ok := c.ls.roots[in.name]; !ok {
-		c.ls.roots[in.name] = r.label
-	}
-	c.selfLoad(in)
 }
 
 func (c *closer) selfLoad(in *pkgInstance) {
@@ -997,15 +1088,15 @@ type fileClass int
 const (
 	classRuntime fileClass = iota
 	classDev
-	classInjector // build config: referenced packages are loaded without their closure
+	classInjector // build config: referenced packages are bundled with their whole resolution reach
 )
 
 type firstPartyRoots struct {
-	runtime  []rootRef
-	selfOnly []rootRef
-	dev      []rootRef
-	install  []installSeed // production-install edges of every first-party manifest
-	names    []string      // `name` of every first-party manifest
+	runtime []rootRef
+	config  []rootRef // build-config references, closed by the build-config closer
+	dev     []rootRef
+	install []installSeed // production-install edges of every first-party manifest
+	names   []string      // `name` of every first-party manifest
 }
 
 var (
@@ -1083,8 +1174,16 @@ func classifyFile(rel string) fileClass {
 type fpFile struct {
 	rel   string
 	class fileClass
-	refs  []rootRef
-	rels  []string // build-relative targets of relative imports
+	// config is set for a build config. Its references stay build-config roots even when
+	// runtime code imports the file, since the bundle carries them either way.
+	config bool
+	refs   []rootRef
+	rels   []string // build-relative targets of relative imports
+	// Load-set gaps that count only once the file's final class is known: a dev file that
+	// runtime code imports runs at runtime.
+	unreadable bool
+	computed   string // first computed require/import
+	wholeDir   string // a literal serving a whole node_modules directory
 }
 
 func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
@@ -1111,10 +1210,11 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 		case strings.HasSuffix(name, ".d.ts"):
 		case codeExts[ext] || markupExts[ext]:
 			f := &fpFile{rel: rel, class: classifyFile(rel)}
+			f.config = f.class == classInjector
 			files = append(files, f)
 			byRel[rel] = f
 		case name == ".babelrc" || name == ".babelrc.json" || name == "babel.config.json" || name == ".parcelrc":
-			f := &fpFile{rel: rel, class: classInjector}
+			f := &fpFile{rel: rel, class: classInjector, config: true}
 			files = append(files, f)
 			byRel[rel] = f
 		case name == "Procfile" || strings.HasPrefix(name, "Dockerfile") || ext == ".yml" || ext == ".yaml" ||
@@ -1126,7 +1226,7 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 
 	jsonRuntime := map[string]bool{}
 	for _, f := range files {
-		scanFile(m, ls, f, jsonRuntime)
+		scanFile(m, f, jsonRuntime)
 	}
 
 	// A dev-classified or build-config file imported by runtime code runs at runtime.
@@ -1149,12 +1249,21 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 
 	var out firstPartyRoots
 	for _, f := range files {
-		switch f.class {
-		case classRuntime:
+		if f.unreadable && f.class != classDev {
+			ls.gap("%s unreadable", f.rel)
+		}
+		if f.computed != "" && f.class == classRuntime {
+			ls.gap("%s: computed %s", f.rel, f.computed)
+		}
+		if f.wholeDir != "" && f.class == classRuntime {
+			ls.gap("%s serves a whole node_modules directory (%q)", f.rel, f.wholeDir)
+		}
+		switch {
+		case f.config:
+			out.config = append(out.config, f.refs...)
+		case f.class == classRuntime:
 			out.runtime = append(out.runtime, f.refs...)
-		case classInjector:
-			out.selfOnly = append(out.selfOnly, f.refs...)
-		case classDev:
+		case f.class == classDev:
 			out.dev = append(out.dev, f.refs...)
 		}
 	}
@@ -1200,12 +1309,10 @@ func dirOf(rel string) string {
 }
 
 // scanFile collects a file's package references and relative-import targets.
-func scanFile(m *installModel, ls *loadSet, f *fpFile, jsonRuntime map[string]bool) {
+func scanFile(m *installModel, f *fpFile, jsonRuntime map[string]bool) {
 	data, err := os.ReadFile(filepath.Join(m.buildReal, filepath.FromSlash(f.rel)))
 	if err != nil {
-		if f.class != classDev {
-			ls.gap("%s unreadable", f.rel)
-		}
+		f.unreadable = true
 		return
 	}
 	dir := dirOf(f.rel)
@@ -1265,12 +1372,12 @@ func scanFile(m *installModel, ls *loadSet, f *fpFile, jsonRuntime map[string]bo
 		}
 		if spec, whole, ok := literalPackageRef(m, lit); ok {
 			f.refs = append(f.refs, rootRef{spec: spec, from: dir, label: f.rel, fallback: true})
-		} else if whole && f.class == classRuntime {
-			ls.gap("%s serves a whole node_modules directory (%q)", f.rel, lit)
+		} else if whole && f.wholeDir == "" {
+			f.wholeDir = lit
 		}
 	}
-	if len(sc.computed) > 0 && f.class == classRuntime {
-		ls.gap("%s: computed %s", f.rel, sc.computed[0])
+	if len(sc.computed) > 0 {
+		f.computed = sc.computed[0]
 	}
 	if ext == ".jsx" || ext == ".tsx" || sc.jsx {
 		for _, rt := range jsxRuntimes {
@@ -1634,10 +1741,54 @@ func npmPackageRef(purl string) (name, version string, ok bool) {
 	return canonicalNpmName(n), v, true
 }
 
-// canonicalNpmName is npm's case of the arm B name rule (pipeline.CanonicalName): npm names
+// canonicalNpmName is npm's case of the arm B name rule (the ReachabilityRequest.Package
+// contract in plugin/plugin.go; the gate's side is trigger's normalizePackageName): npm names
 // compare exactly, `name` or `@scope/name`, after a PURL's percent-encoding is decoded. Both
 // sides of every comparison go through it: the requested Package and each installed name.
 func canonicalNpmName(name string) string { return name }
+
+// npmPackageKey returns the canonical npm name a package URL names, ignoring version,
+// qualifiers and subpath and decoding percent-encoding: the key trigger's purlKey compares on.
+// ok is false for anything that is not an npm package URL.
+func npmPackageKey(purl string) (string, bool) {
+	rest, ok := strings.CutPrefix(purl, "pkg:")
+	if !ok {
+		return "", false
+	}
+	rest, _, _ = strings.Cut(rest, "#")
+	rest, _, _ = strings.Cut(rest, "?")
+	typ, p, ok := strings.Cut(rest, "/")
+	if !ok || !strings.EqualFold(typ, "npm") || p == "" {
+		return "", false
+	}
+	if at := strings.LastIndex(p, "@"); at > strings.LastIndex(p, "/") {
+		p = p[:at]
+	}
+	dec, err := url.PathUnescape(p)
+	if err != nil || dec == "" {
+		return "", false
+	}
+	return canonicalNpmName(dec), true
+}
+
+// scopedReaches reports whether scoped reason s could hide a load of the npm package with
+// canonical name `name`: it names no targets, or its Package or one of its Targets names the
+// package. A Package or Target that does not parse as an npm package URL counts as naming it.
+func scopedReaches(s plugin.ScopedReason, name string) bool {
+	if len(s.Targets) == 0 {
+		return true
+	}
+	refs := s.Targets
+	if s.Package != "" {
+		refs = append([]string{s.Package}, s.Targets...)
+	}
+	for _, r := range refs {
+		if k, ok := npmPackageKey(r); !ok || k == name {
+			return true
+		}
+	}
+	return false
+}
 
 // refute returns the package_not_loaded refutation for name@version, or nil when any
 // condition fails. The gate matches a refutation on type and name only, never version, so the
@@ -1656,7 +1807,7 @@ func (ls *loadSet) refute(name, version string) *plugin.Refutation {
 	}
 	purl := "pkg:npm/" + name
 	for _, s := range ls.scoped {
-		if len(s.Targets) == 0 || s.Package == purl || containsReason(s.Targets, purl) {
+		if scopedReaches(s, name) {
 			return nil
 		}
 	}

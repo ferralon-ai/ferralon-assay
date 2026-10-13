@@ -86,7 +86,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	}
 	if name, version, ok := npmPackageRef(req.Package); ok {
 		ls := computeLoadSet(req.BuildDir)
-		blocked := loadLimitReaches(res.Partiality, "pkg:npm/"+name)
+		blocked := loadLimitReaches(res.Partiality, name)
 		if len(ls.scoped) > 0 {
 			res.Partiality.Complete = false
 			res.Partiality.Scoped = append(res.Partiality.Scoped, ls.scoped...)
@@ -107,9 +107,10 @@ var callLimits = map[string]bool{
 	plugin.PartialReasonNoIngress:       true,
 }
 
-// loadLimitReaches reports whether a declared limit could hide a load of purl: any run-wide
-// reason outside callLimits, or a scoped one that is unbounded or names purl.
-func loadLimitReaches(p plugin.Partiality, purl string) bool {
+// loadLimitReaches reports whether a declared limit could hide a load of the npm package with
+// canonical name `name`: any run-wide reason outside callLimits, or a scoped one that is
+// unbounded or names the package (scopedReaches compares canonical keys, never raw PURLs).
+func loadLimitReaches(p plugin.Partiality, name string) bool {
 	for _, r := range p.Reasons {
 		if !callLimits[r] {
 			return true
@@ -119,7 +120,7 @@ func loadLimitReaches(p plugin.Partiality, purl string) bool {
 		if callLimits[s.Reason] {
 			continue
 		}
-		if len(s.Targets) == 0 || s.Package == purl || containsReason(s.Targets, purl) {
+		if scopedReaches(s, name) {
 			return true
 		}
 	}

@@ -63,6 +63,12 @@ func writeTree(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// v1DevLock is an npm v1 lockfile whose dev-marked tool carries a nested glob.
+const v1DevLock = `{"name":"app","lockfileVersion":1,"dependencies":{
+	"a":{"version":"1.0.0"},
+	"tool":{"version":"2.0.0","dev":true,"dependencies":{"glob":{"version":"7.0.0","dev":true}}},
+	"stale":{"version":"1.0.0","dev":true}}}`
+
 func dep(names ...string) map[string]string {
 	m := map[string]string{}
 	for _, n := range names {
@@ -85,6 +91,7 @@ func TestLoadSet(t *testing.T) {
 		unloaded     []string
 		checks       []check
 		scopedLoader string
+		scopedUninsp string // a package the result must declare uninspectable_package for
 	}{
 		{
 			name: "nested instance loaded, hoisted copy of the same name is not",
@@ -381,15 +388,11 @@ func TestLoadSet(t *testing.T) {
 			checks:      []check{{pkg: "supports-color", version: "5.5.0", refuted: true}},
 		},
 		{
-			name: "v1 lockfile dev markers apply to the installed tree, alongside a yarn.lock",
+			name: "v1 lockfile dev markers apply to the installed tree",
 			files: func(t *testing.T) map[string]string {
 				return map[string]string{
-					"package.json": `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
-					"yarn.lock":    "# yarn lockfile v1\n",
-					"package-lock.json": `{"name":"app","lockfileVersion":1,"dependencies":{
-						"a":{"version":"1.0.0"},
-						"tool":{"version":"2.0.0","dev":true,"dependencies":{"glob":{"version":"7.0.0","dev":true}}},
-						"stale":{"version":"1.0.0","dev":true}}}`,
+					"package.json":                                     `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
+					"package-lock.json":                                v1DevLock,
 					"node_modules/a/package.json":                      `{"name":"a","version":"1.0.0"}`,
 					"node_modules/tool/package.json":                   `{"name":"tool","version":"2.0.0","dependencies":{"glob":"^7"}}`,
 					"node_modules/tool/node_modules/glob/package.json": `{"name":"glob","version":"7.0.0"}`,
@@ -404,6 +407,141 @@ func TestLoadSet(t *testing.T) {
 				{pkg: "glob", version: "7.0.0", refuted: true, detail: "outside the runtime install closure"},
 				{pkg: "stale", version: "1.1.0", refuted: false}, // installed version differs from the marked entry
 			},
+		},
+		{
+			// Two lockfile dialects and no packageManager: the root selected no lockfile, so
+			// the package-lock.json beside the yarn.lock says nothing about dev.
+			name: "v1 lockfile beside a yarn.lock never refutes",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json":                   `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
+					"yarn.lock":                      "# yarn lockfile v1\n",
+					"package-lock.json":              v1DevLock,
+					"node_modules/a/package.json":    `{"name":"a","version":"1.0.0"}`,
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0","dependencies":{"glob":"^7"}}`,
+					"node_modules/tool/node_modules/glob/package.json": `{"name":"glob","version":"7.0.0"}`,
+					"index.js": `require('a');`,
+				}
+			},
+			complete: true,
+			unloaded: []string{"node_modules/tool", "node_modules/tool/node_modules/glob"},
+			checks: []check{
+				{pkg: "tool", version: "2.0.0", refuted: false},
+				{pkg: "glob", version: "7.0.0", refuted: false},
+			},
+		},
+		{
+			// packageManager selects pnpm-lock.yaml, which cannot say dev; a stale
+			// package-lock.json marking tool dev must not be read.
+			name: "pnpm root ignores a stale package-lock.json's dev markers",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json":                   `{"name":"app","packageManager":"pnpm@8.15.0","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
+					"pnpm-lock.yaml":                 "lockfileVersion: '6.0'\n",
+					"package-lock.json":              `{"name":"app","lockfileVersion":1,"dependencies":{"a":{"version":"1.0.0"},"tool":{"version":"2.0.0","dev":true}}}`,
+					"node_modules/a/package.json":    `{"name":"a","version":"1.0.0"}`,
+					"node_modules/tool/package.json": `{"name":"tool","version":"2.0.0"}`,
+					"index.js":                       `require('a');`,
+				}
+			},
+			complete: true,
+			unloaded: []string{"node_modules/tool"},
+			checks:   []check{{pkg: "tool", version: "2.0.0", refuted: false}},
+		},
+		{
+			// The probe from the #93 review: moment-timezone is bundled from a webpack entry, so
+			// the moment it imports ships too, though every copy is dev-marked.
+			name: "a package a build config names brings its dependency closure",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"moment-timezone":"*","webpack":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/moment-timezone":                     {Version: "0.5.33", Dev: true, Deps: dep("moment")},
+						"node_modules/moment-timezone/node_modules/moment": {Version: "2.29.1", Dev: true},
+						"node_modules/webpack":                             {Version: "5.0.0", Dev: true},
+					}),
+					"webpack.config.js": "module.exports = { entry: { app: './src/index.js', vendor: ['moment-timezone'] } };\n",
+					"src/index.js":      "module.exports = 1;\n",
+				}
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/moment-timezone", "node_modules/moment-timezone/node_modules/moment"},
+			checks: []check{
+				{pkg: "moment", version: "2.29.1", refuted: false},
+				{pkg: "moment-timezone", version: "0.5.33", refuted: false},
+			},
+		},
+		{
+			// widget imports helper without declaring it; the bundler finds the hoisted copy.
+			name: "a package a build config names brings every package its node_modules walk can see",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"widget":"*","helper":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/widget": {Version: "1.0.0", Dev: true},
+						"node_modules/helper": {Version: "1.0.0", Dev: true, Deps: dep("leaf")},
+						"node_modules/leaf":   {Version: "1.0.0", Dev: true},
+					}),
+					"vite.config.js": "export default { optimizeDeps: { include: ['widget'] } };\n",
+					"src/index.js":   "module.exports = 1;\n",
+				}
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/widget", "node_modules/helper", "node_modules/leaf"},
+			checks:      []check{{pkg: "helper", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "a build config runtime code imports keeps its build-config reach",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"widget":"*","helper":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/a":      {Version: "1.0.0"},
+						"node_modules/widget": {Version: "1.0.0", Dev: true},
+						"node_modules/helper": {Version: "1.0.0", Dev: true},
+					}),
+					"webpack.config.js": "module.exports = { entry: { vendor: ['widget'] } };\n",
+					"server.js":         "require('a');\nconst config = require('./webpack.config.js');\n",
+				}
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/widget", "node_modules/helper"},
+			checks:      []check{{pkg: "helper", version: "1.0.0", refuted: false}},
+		},
+		{
+			name: "a build-config walk leaving the build dir declares uninspectable_package",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"widget":"*","ext":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/widget": {Version: "1.0.0", Dev: true},
+						"node_modules/ext":    {Link: true, Resolved: "../ext", Dev: true},
+					}),
+					"webpack.config.js": "module.exports = { entry: { vendor: ['widget'] } };\n",
+					"src/index.js":      "module.exports = 1;\n",
+				}
+			},
+			complete:     true,
+			scopedUninsp: "pkg:npm/widget",
+			checks:       []check{{pkg: "widget", version: "1.0.0", refuted: false}},
+		},
+		{
+			// test/ is dev tooling, but runtime code imports this helper, so its computed
+			// require runs at runtime.
+			name: "a computed require in a dev file runtime code imports leaves the load set incomplete",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","dependencies":{"a":"*"},"devDependencies":{"tool":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/a":    {Version: "1.0.0"},
+						"node_modules/tool": {Version: "1.0.0", Dev: true},
+					}),
+					"server.js":       "require('a');\nrequire('./test/plugins.js');\n",
+					"test/plugins.js": "module.exports = require(process.env.PLUGIN);\n",
+				}
+			},
+			complete: false,
+			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: false}},
 		},
 		{
 			name: "install closure resolving outside the build dir withholds every refutation",
@@ -533,6 +671,15 @@ func TestLoadSet(t *testing.T) {
 					t.Errorf("scoped = %+v, want one unbounded reason for %s", ls.scoped, tc.scopedLoader)
 				}
 			}
+			if tc.scopedUninsp != "" {
+				found := false
+				for _, s := range ls.scoped {
+					found = found || (s.Reason == plugin.PartialReasonUninspectablePackage && s.Package == tc.scopedUninsp && s.Targets == nil)
+				}
+				if !found {
+					t.Errorf("scoped = %+v, want an unbounded uninspectable_package for %s", ls.scoped, tc.scopedUninsp)
+				}
+			}
 			for _, c := range tc.checks {
 				ref := ls.refute(c.pkg, c.version)
 				if (ref != nil) != c.refuted {
@@ -656,6 +803,34 @@ func TestNpmPackageRef(t *testing.T) {
 		n, v, ok := npmPackageRef(c.purl)
 		if n != c.name || v != c.version || ok != c.ok {
 			t.Errorf("npmPackageRef(%q) = %q %q %v", c.purl, n, v, ok)
+		}
+	}
+}
+
+func TestLoadLimitReachesCanonicalKeys(t *testing.T) {
+	scoped := func(pkg string, targets ...string) plugin.Partiality {
+		return plugin.Partiality{Scoped: []plugin.ScopedReason{{
+			Reason: plugin.PartialReasonUninspectablePackage, Package: pkg, Targets: targets,
+		}}}
+	}
+	cases := []struct {
+		name string
+		p    plugin.Partiality
+		pkg  string // canonical name of the refutation candidate
+		want bool
+	}{
+		{"percent-encoded scoped Target", scoped("", "pkg:npm/%40scope/tool"), "@scope/tool", true},
+		{"versioned Target", scoped("", "pkg:npm/tool@1.0.0"), "tool", true},
+		{"percent-encoded versioned Package", scoped("pkg:npm/%40scope/tool@2.0.0", "pkg:npm/other"), "@scope/tool", true},
+		{"unrelated Target", scoped("", "pkg:npm/other@1.0.0"), "tool", false},
+		{"case-distinct npm name", scoped("", "pkg:npm/JSONStream"), "jsonstream", false},
+		{"unparseable Target withholds", scoped("", "not-a-purl"), "tool", true},
+		{"non-npm Target withholds", scoped("", "pkg:pypi/tool"), "tool", true},
+		{"no Targets withholds", scoped("pkg:npm/other"), "tool", true},
+	}
+	for _, c := range cases {
+		if got := loadLimitReaches(c.p, c.pkg); got != c.want {
+			t.Errorf("%s: loadLimitReaches(%s) = %v, want %v", c.name, c.pkg, got, c.want)
 		}
 	}
 }

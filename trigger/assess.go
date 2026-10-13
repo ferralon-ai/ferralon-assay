@@ -41,6 +41,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 		return nil, "", fmt.Errorf("trigger: create assessment: %w", err)
 	}
 
+	// finding() settles a disqualified advisory on the discovery artifact alone, so the symbol and
+	// reach work S4/S5 would do for it is never read; skip it.
+	opts = append(opts[:len(opts):len(opts)], pipeline.WithSkipDisqualifiedAnalysis(true))
 	orch := pipeline.NewOrchestrator(assessments, store, pipeline.AssessStages(opts...))
 	if err := orch.Run(ctx, a.ID); err != nil {
 		return nil, "", fmt.Errorf("trigger: assess %s: %w", req.Vulnerability.ID, err)
@@ -876,22 +879,52 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 }
 
 // scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given
-// package: it does unless its Targets are bounded and neither its Package nor any Target is that
+// package: it does unless its Targets are bounded and neither its Package nor any Target could be that
 // package. An unbounded limit (no Targets, nil or empty, since JSON drops an empty list), or an
 // advisory whose package did not resolve, always counts.
 //
-// A first-party entry ("") matches only a root package, which no advisory is admitted on yet, so it
-// matches nothing here.
+// Every entry fails wide:
+//
+//   - An entry that is not a package URL counts, so a producer's malformed scope cannot narrow it.
+//     The one non-PURL value allowed is "", the first-party code.
+//   - Go names match when either path is the other or under it, so a package path inside the
+//     admitted module counts, and so does a module path holding an admitted package path.
+//   - Against the Go standard library (a toolchain subject), every Go entry and the first-party code
+//     count: code the analysis did not see can call into the standard library from anywhere in the
+//     build.
+//
+// Otherwise the first-party entry matches only a root package, which no advisory is admitted on yet,
+// so it matches nothing here.
 func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved bool) bool {
 	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
+	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
 	for _, p := range append([]string{r.Package}, r.Targets...) {
-		if key, ok := purlKey(p); ok && key == admitted {
+		if p == "" {
+			if stdlib {
+				return true
+			}
+			continue
+		}
+		key, ok := purlKey(p)
+		switch {
+		case !ok, key == admitted:
 			return true
+		case key.typ == "golang" && admitted.typ == "golang":
+			if stdlib || goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// goPathWithin reports whether the Go import path p is root or lies under it, ignoring case so that
+// two spellings of one module path fail wide.
+func goPathWithin(p, root string) bool {
+	p, root = strings.ToLower(p), strings.ToLower(root)
+	return p == root || strings.HasPrefix(p, root+"/")
 }
 
 // toolchainUndetermined is the Go toolchain/stdlib arm of undeterminedReason. Two clauses:

@@ -2,6 +2,7 @@ package goanalysis
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,16 +27,47 @@ func TestParseFindings_ResolvesAliasThroughOSVEntries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.vulnID, func(t *testing.T) {
-			findings, err := parseFindings([]byte(stream), tc.vulnID)
+			scanned, err := parseFindings([]byte(stream), tc.vulnID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var got []string
-			for _, f := range findings {
+			for _, f := range scanned.findings {
 				got = append(got, f.OSV)
 			}
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("parseFindings(%q) = %v, want %v", tc.vulnID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestVulnerablePackages: an advisory's vulnerable packages in a module are those its OSV entries
+// list for the module, plus those a package-level finding names; another advisory's do not count.
+func TestVulnerablePackages(t *testing.T) {
+	const stream = `{"osv":{"id":"GO-2025-0001","aliases":["CVE-2025-0001"],"affected":[{"package":{"name":"stdlib"},"ecosystem_specific":{"imports":[{"path":"net/http"},{"path":"net/textproto"}]}},{"package":{"name":"golang.org/x/net"},"ecosystem_specific":{"imports":[{"path":"golang.org/x/net/http2"}]}}]}}
+{"osv":{"id":"GO-2025-0002","affected":[{"package":{"name":"stdlib"},"ecosystem_specific":{"imports":[{"path":"crypto/tls"}]}}]}}
+{"finding":{"osv":"GO-2025-0001","trace":[{"module":"stdlib","version":"v1.22.0","package":"net/http/internal"}]}}
+{"finding":{"osv":"GO-2025-0001","trace":[{"module":"stdlib","version":"v1.22.0"}]}}
+`
+	cases := []struct {
+		vulnID, module string
+		want           []string
+	}{
+		{"GO-2025-0001", "stdlib", []string{"net/http", "net/http/internal", "net/textproto"}},
+		{"CVE-2025-0001", "stdlib", []string{"net/http", "net/http/internal", "net/textproto"}},
+		{"GO-2025-0001", "golang.org/x/net", []string{"golang.org/x/net/http2"}},
+		{"GO-2025-0002", "stdlib", []string{"crypto/tls"}},
+		{"GO-2099-0000", "stdlib", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.vulnID+"/"+tc.module, func(t *testing.T) {
+			scanned, err := parseFindings([]byte(stream), tc.vulnID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := scanned.vulnerablePackages(tc.module); !slices.Equal(got, tc.want) {
+				t.Errorf("vulnerablePackages(%q) = %q, want %q", tc.module, got, tc.want)
 			}
 		})
 	}
@@ -114,6 +146,21 @@ func TestEvidenceResult(t *testing.T) {
 				t.Errorf("detail %q: imported = %v, want %v", r.Detail, imported, tc.wantImported)
 			}
 		})
+	}
+}
+
+// TestModuleRefutation_NamesBuildTags: the refutation holds for the tags govulncheck built with,
+// which GOFLAGS can set.
+func TestModuleRefutation_NamesBuildTags(t *testing.T) {
+	findings := []vulnFinding{{Trace: []vulnFrame{{Module: "golang.org/x/net", Version: "v0.1.0"}}}}
+	for _, tc := range []struct{ goflags, want string }{
+		{"", "default build tags"},
+		{"-tags=prod,netgo", "build tags from GOFLAGS: prod,netgo"},
+	} {
+		r := moduleRefutation(findings, []string{"GOFLAGS=" + tc.goflags})
+		if r == nil || !strings.Contains(r.Detail, tc.want) {
+			t.Errorf("GOFLAGS=%q: refutation %+v, want detail naming %q", tc.goflags, r, tc.want)
+		}
 	}
 }
 

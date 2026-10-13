@@ -15,8 +15,6 @@ package dotnetanalysis
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -38,13 +36,31 @@ const tblMemberRefTable = 0x0A
 // IL, or a reader parse-hazard): the caller falls back to the lexical tier + tool_failure and
 // NEVER an empty IL graph, NEVER a false not_exploitable.
 func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, bool) {
-	fp, deps, locator, ok := loadFirstPartyIL(req.BuildDir)
-	if !ok {
+	build := locateFirstPartyBuild(req.BuildDir)
+	if build.fp == nil {
 		return plugin.ReachabilityResult{}, false // degrade to lexical + tool_failure
+	}
+	fp := build.fp
+	var (
+		deps    []assembly.DepRef
+		locator *assembly.AssetsLocator
+		graph   *assetsGraph
+	)
+	if build.assets != nil {
+		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
+			locator = loc
+		}
+		deps = depRefsFrom(build.assets, build.target)
+		for i := range deps {
+			deps[i].Runtime = build.runtime
+		}
+		graph = parseAssetsGraph(build.assets)
 	}
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
-	// a completeness hazard on any call into it ⇒ undetermined, never a silent leaf.
+	// a completeness hazard on any call into it ⇒ undetermined, never a silent leaf. It is
+	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
+	// run-wide reason too, so a consumer that reads only Reasons still sees it.
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
@@ -58,27 +74,38 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	runtimeRoots := idx.runtimeRootKeys(set.Assemblies)
 
 	reasons := map[string]bool{}
+	for _, r := range build.reasons {
+		reasons[r] = true
+	}
+	for _, m := range set.Misses {
+		reasons[missReason(m.Reason)] = true
+	}
 	var paths []plugin.ReachPath
+	var searched []string
 	for _, scip := range req.Symbols {
 		if scip == "" {
 			continue
 		}
-		sinkKey, ambiguous, found := idx.reconcile(scip)
-		if !found || ambiguous || !mainOK {
-			// SYMBOL-NORM (A2) DEFERRAL / NO CONFIDENT ROOT: a sink whose SCIP does not
-			// reconcile to a single MethodKey, or a program with NO Main (a library — whose
-			// consumer-invoked public API is NOT a runtime root, so the runtime roots alone
-			// cannot bound reachability), is UNDETERMINED — never a false not_exploitable.
+		sinkKeys := idx.reconcile(scip)
+		if len(sinkKeys) == 0 || !mainOK {
+			// NO LOADED SINK / NO CONFIDENT ROOT: a sink whose SCIP names no method of the
+			// loaded set, or a program with NO Main (a library — whose consumer-invoked public
+			// API is NOT a runtime root, so the runtime roots alone cannot bound
+			// reachability), is UNDETERMINED — never a false not_exploitable.
 			// NE-LICENSING INVARIANT (i): a clean NE requires a confident program entry.
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 			continue
 		}
+		// A SCIP id names a method at (type, name, arity) granularity, so it can cover several
+		// same-arity overloads. The sink is the whole set: reached if any member is reached,
+		// not_exploitable only if no member is.
+		//
 		// (1) MAIN is authoritative and settles the sink whenever it reaches it or hits a
-		// frontier hazard — the pre-fix behavior, byte-for-byte (reachable ⇒ path + real
-		// frontier reason; undetermined ⇒ reachability_undetermined). Only a hazard-free
-		// Main NotExploitable falls through: Main alone would clear it, but a runtime entry
-		// may still reach it (the barrier-5 defect). NE-LICENSING INVARIANT (ii).
-		res := engine.Reach(mainKey, sinkKey)
+		// frontier hazard (reachable ⇒ path + real frontier reason; undetermined ⇒
+		// reachability_undetermined). Only a hazard-free Main NotExploitable falls through:
+		// Main alone would clear it, but a runtime entry may still reach it (the barrier-5
+		// defect). NE-LICENSING INVARIANT (ii).
+		res := engine.ReachAny(mainKey, sinkKeys)
 		switch res.Verdict {
 		case depreach.ReachableCandidate:
 			paths = append(paths, idx.projectPath(res.Path, scip))
@@ -101,10 +128,10 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		// to reachability_undetermined WITH a candidate evidence path, never the confident-
 		// safe Complete and never a false NE. A hazard on a runtime root's frontier likewise
 		// degrades to undetermined. Only when Main NE AND every runtime root is a hazard-free
-		// NotExploitable do we emit nothing — the EARNED proven-not-exploitable.
+		// NotExploitable is the sink SEARCHED.
 		runtimeHit := false
 		for _, root := range runtimeRoots {
-			res := engine.Reach(root, sinkKey)
+			res := engine.ReachAny(root, sinkKeys)
 			switch res.Verdict {
 			case depreach.ReachableCandidate:
 				paths = append(paths, idx.projectPath(res.Path, scip))
@@ -119,56 +146,70 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		}
 		if runtimeHit {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			continue
 		}
-		// else: EVERY root (Main + runtime) proved NotExploitable over a hazard-free
-		// frontier. Emit nothing: the ABSENCE of both a path and a reason IS the sound
-		// proven-not-exploitable. Undetermined DOMINATES across sinks (any undetermined sink
-		// poisons the whole result via reasons below), so a clean result only ever arises
-		// when EVERY requested sink is reachable-or-provably-NE.
+		// EVERY root (Main + runtime) proved NotExploitable over a hazard-free frontier, and
+		// every sink key is a method of an assembly this run read (reconcile only indexes the
+		// loaded set, never a boundary node). That is a searched sink: listing it in Searched
+		// is the lane's positive claim the not_exploitable gate requires.
+		searched = append(searched, scip)
 	}
 
+	if len(build.reasons) > 0 {
+		// Another project or entry assembly went untraced, or the dependency bytes may not
+		// be the ones this build runs against: nothing was searched for the whole program.
+		searched = nil
+	}
 	return plugin.ReachabilityResult{
-		Partiality: ilPartiality(reasons),
+		Partiality: ilPartiality(reasons, missScopes(set.Misses, graph)),
 		Paths:      paths,
+		Searched:   searched,
 	}, true
 }
 
-// loadFirstPartyIL locates+reads the first-party assembly from the build output and gathers
-// the dependency spanning-set inputs. ok is false — the DEGRADE signal — when there is no
-// project file, no located first-party dll, or the dll is unreadable / a reader parse-hazard
-// (Failed): none of these may fabricate an empty IL graph.
-func loadFirstPartyIL(buildDir string) (fp *assembly.Assembly, deps []assembly.DepRef, locator *assembly.AssetsLocator, ok bool) {
-	projPath, found := findProjectFile(buildDir)
-	if !found {
-		return nil, nil, nil, false
-	}
-	name := strings.TrimSuffix(filepath.Base(projPath), filepath.Ext(projPath))
-	dllPath, located := assembly.LocateBuildOutput(buildDir, name)
-	if !located {
-		return nil, nil, nil, false
-	}
-	a, read := assembly.ReadAssembly(dllPath)
-	if !read || a == nil || a.Failed {
-		// A first-party assembly present but unreadable/parse-hazard is a DEGRADE, not a
-		// crash and not an empty graph.
-		return nil, nil, nil, false
-	}
-	if assetsPath, has := findFile(buildDir, "project.assets.json", true); has {
-		if data, err := os.ReadFile(assetsPath); err == nil {
-			if loc, parsed := assembly.ParseAssetsLocator(data); parsed {
-				locator = loc
-			}
-			deps = depRefsFrom(data)
+// missScopes discloses each declared dependency miss as a scoped limit: the package's code
+// was not read, so any call into it hides edges into it and everything it depends on.
+func missScopes(misses []assembly.DepMiss, graph *assetsGraph) []plugin.ScopedReason {
+	var out []plugin.ScopedReason
+	seen := map[string]bool{}
+	for _, m := range misses {
+		id, _ := splitPkgKey(m.Dep.PkgKey)
+		if id == "" || seen[m.Dep.PkgKey] {
+			continue
 		}
+		seen[m.Dep.PkgKey] = true
+		out = append(out, plugin.ScopedReason{
+			Reason:  missReason(m.Reason),
+			Package: nugetPackageURL(id),
+			Path:    m.Dep.PkgKey,
+			Targets: graph.closure(m.Dep.Target, m.Dep.PkgKey),
+		})
 	}
-	return a, deps, locator, true
+	return out
+}
+
+// missReason maps a spanning-set miss to its partiality code: code that was not on disk
+// (or only as a stub reference assembly) is an unavailable artifact; bytes that did not
+// parse are a reader failure; a per-runtime implementation the build's runtime does not
+// pick out is named for why.
+func missReason(miss string) string {
+	switch miss {
+	case assembly.MissUnreadable:
+		return plugin.PartialReasonToolFailure
+	case assembly.MissRIDUnknown:
+		return partialReasonRIDUnknown
+	case assembly.MissRIDAmbiguous:
+		return partialReasonRIDAmbiguous
+	}
+	return partialReasonNoDependencyArtifact
 }
 
 // depRefsFrom extracts the dependency coordinates to load from a project.assets.json's
-// per-target package rows (project references are skipped — they are first-party siblings,
-// not NuGet deps). A dep that later fails to locate/read is a declared miss inside
+// package rows for target, or every target when target is "" (an unbound build, which is
+// never searched). Project references are skipped — they are first-party siblings, not
+// NuGet deps. A dep that later fails to locate/read is a declared miss inside
 // LoadSpanningSet, never fabricated. Sorted for a deterministic loaded-set order.
-func depRefsFrom(data []byte) []assembly.DepRef {
+func depRefsFrom(data []byte, target string) []assembly.DepRef {
 	var af struct {
 		Targets map[string]map[string]struct {
 			Type string `json:"type"`
@@ -179,6 +220,9 @@ func depRefsFrom(data []byte) []assembly.DepRef {
 	}
 	var out []assembly.DepRef
 	for tfm, pkgs := range af.Targets {
+		if target != "" && tfm != target {
+			continue
+		}
 		for pkgKey, meta := range pkgs {
 			if strings.EqualFold(meta.Type, "project") {
 				continue
@@ -196,20 +240,19 @@ func depRefsFrom(data []byte) []assembly.DepRef {
 }
 
 // reconcileIndex maps the plugin's SCIP addressing onto the engine's MethodKey addressing,
-// built over the loaded assembly set. scipToKeys carries the ambiguity guard: a SCIP that
-// resolves to more than one distinct MethodKey is unreconcilable (undetermined), never a
-// silent pick. keyToSym projects a resolved path node back to a source-level plugin.Symbol.
+// built over the loaded assembly set. scipToKeys maps a SCIP to EVERY MethodKey it covers
+// (same-arity overloads share a SCIP); the caller searches the whole set. keyToSym projects
+// a resolved path node back to a source-level plugin.Symbol.
 type reconcileIndex struct {
 	scipToKeys map[string]map[depreach.MethodKey]bool
 	keyToSym   map[depreach.MethodKey]plugin.Symbol
 }
 
 // buildReconcileIndex indexes every method of the loaded set by its reconstructed SCIP id
-// (byte-identical to IndexSymbols' scheme) and its engine MethodKey (computed with the SAME
-// formula NewEngine uses, so the key resolves in the engine's byKey). A2-LIMITED: the
-// reconstruction keys on (namespace, top-level type, name, decoded arity) — flat types,
-// arity-disambiguated, no signature-descriptor normalization — which is the deferred
-// symbol-norm predecessor. Anything it cannot reconcile degrades to undetermined.
+// (IndexSymbols' scheme) and its engine MethodKey (computed with the SAME formula NewEngine
+// uses, so the key resolves in the engine's byKey). The SCIP keys on (namespace, enclosing
+// type chain, name, decoded arity), with generic types' backtick arity dropped as C# source
+// spells them; anything it cannot reconcile degrades to undetermined.
 func buildReconcileIndex(asms []*assembly.Assembly) *reconcileIndex {
 	idx := &reconcileIndex{
 		scipToKeys: map[string]map[depreach.MethodKey]bool{},
@@ -241,7 +284,8 @@ func buildReconcileIndex(asms []*assembly.Assembly) *reconcileIndex {
 
 // methodIdentity computes a method's (engine MethodKey, plugin SCIP id) pair. The MethodKey
 // MUST match NewEngine's construction exactly (owner display + name + ECMA-335 signature
-// key) so the key resolves in the engine's byKey index.
+// key) so the key resolves in the engine's byKey index. The SCIP is the identity
+// ResolveDependencySymbols emits for dependency methods, so a resolved sink reconciles here.
 func methodIdentity(a *assembly.Assembly, td *assembly.TypeDef, m *assembly.MethodDef) (depreach.MethodKey, string) {
 	sigKey := ""
 	arity := 0
@@ -250,8 +294,21 @@ func methodIdentity(a *assembly.Assembly, td *assembly.TypeDef, m *assembly.Meth
 		arity = len(sig.Params)
 	}
 	key := depreach.MethodKey{Owner: ownerDisplay(td.Namespace, td.Name), Name: m.Name, Sig: sigKey}
-	scip := funcSCIP(td.Namespace, []string{td.Name}, m.Name, arity)
-	return key, scip
+	ns, chain := sourceTypePath(a, td)
+	return key, funcSCIP(ns, chain, m.Name, arity)
+}
+
+// sourceTypePath is td's namespace and enclosing chain as C# source names them: nested
+// types under their outer types, and a generic type's metadata arity suffix ("List`1")
+// dropped.
+func sourceTypePath(a *assembly.Assembly, td *assembly.TypeDef) (string, []string) {
+	ns, chain := a.TypePath(td)
+	for i, t := range chain {
+		if j := strings.IndexByte(t, '`'); j > 0 {
+			chain[i] = t[:j]
+		}
+	}
+	return ns, chain
 }
 
 // ownerDisplay renders a type's "Namespace.Name" display — the same owner spelling
@@ -263,21 +320,15 @@ func ownerDisplay(namespace, name string) string {
 	return namespace + "." + name
 }
 
-// reconcile resolves a requested sink SCIP to a single engine MethodKey. found is false when
-// no method carries that SCIP; ambiguous is true when more than one distinct MethodKey does
-// (an overload the arity-only SCIP cannot separate) — both degrade the sink to undetermined,
-// never a silent match.
-func (idx *reconcileIndex) reconcile(scip string) (key depreach.MethodKey, ambiguous, found bool) {
-	keys := idx.scipToKeys[scip]
-	switch len(keys) {
-	case 0:
-		return depreach.MethodKey{}, false, false
-	case 1:
-		for k := range keys {
-			return k, false, true
-		}
+// reconcile returns every engine MethodKey the requested sink SCIP covers, sorted for a
+// deterministic search order; empty when no loaded method carries that SCIP.
+func (idx *reconcileIndex) reconcile(scip string) []depreach.MethodKey {
+	keys := make([]depreach.MethodKey, 0, len(idx.scipToKeys[scip]))
+	for k := range idx.scipToKeys[scip] {
+		keys = append(keys, k)
 	}
-	return depreach.MethodKey{}, true, true
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+	return keys
 }
 
 // ECMA-335 MethodAttributes bits (§II.23.1.10) used to recognize a finalizer's shape.
@@ -471,15 +522,19 @@ func hazardReason(why string) string {
 	}
 }
 
-// ilPartiality collapses the accumulated reason set into a Partiality. An EMPTY set is
-// Complete() — the confident-safe the IL engine EARNS (every requested sink was reachable
-// or provably NotExploitable over a hazard-free frontier); this is the EXCEED-Go result the
-// lexical tier is forbidden to produce.
-func ilPartiality(reasons map[string]bool) plugin.Partiality {
-	if len(reasons) == 0 {
+// ilPartiality collapses the accumulated reason set and scoped limits into a Partiality.
+// Nothing at all is Complete() — the confident-safe the IL engine EARNS (every requested
+// sink was reachable or provably NotExploitable over a hazard-free frontier, and every
+// dependency was read).
+func ilPartiality(reasons map[string]bool, scoped []plugin.ScopedReason) plugin.Partiality {
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	p := plugin.Partiality{Scoped: scoped}
+	if len(reasons) > 0 {
+		p.Reasons = sortedKeys(reasons)
+	}
+	return p
 }
 
 // withReason returns p with reason added (idempotent), reasons sorted for a stable payload.

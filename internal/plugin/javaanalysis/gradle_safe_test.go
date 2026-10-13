@@ -713,4 +713,23 @@ func TestGradleWrapperSafe(t *testing.T) {
 			t.Errorf("gradleWrapperSafe = true (%s), want false", why)
 		}
 	})
+	t.Run("a wrapper directory above the build directory that can't be searched", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		checkout := t.TempDir()
+		wrapper := filepath.Join(checkout, "gradle", "wrapper")
+		writeFile(t, filepath.Join(wrapper, "gradle-wrapper.properties"), "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n")
+		writeFile(t, filepath.Join(checkout, "svc", "build.gradle"), "")
+		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); !ok {
+			t.Fatalf("control: gradleWrapperSafe = false (%s), want true", why)
+		}
+		if err := os.Chmod(wrapper, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(wrapper, 0o755) })
+		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); ok {
+			t.Errorf("gradleWrapperSafe = true (%s), want false", why)
+		}
+	})
 }

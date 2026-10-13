@@ -86,6 +86,14 @@ func wantErr(t *testing.T, dir, rel string, want error, lstat ...bool) {
 	}
 }
 
+// wantListErr fails the row unless listing the directory rel under dir fails with want.
+func wantListErr(t *testing.T, dir, rel string, want error) {
+	t.Helper()
+	if _, err := os.ReadDir(filepath.Join(dir, filepath.FromSlash(rel))); !errors.Is(err, want) {
+		t.Fatalf("readdir %s: %v, want %v", rel, err, want)
+	}
+}
+
 // TestFSErrors_NotAbsent: at every call site that reads a missing path as absent, an error
 // other than a missing path (a permission error, a symlink loop) leaves the path unread, and
 // the claim absence would support is withheld. A path that is genuinely missing (here a
@@ -143,6 +151,32 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		return func(t *testing.T, dir string) {
 			if _, ok := installedCopies(filepath.Join(dir, sub)); ok != want {
 				t.Errorf("installedCopies ok = %v, want %v", ok, want)
+			}
+		}
+	}
+	// installedExpress is a tree whose lock and installed copy agree on express 4.18.2.
+	installedExpress := with(map[string]string{
+		"node_modules/express/package.json":  `{"name":"express","version":"4.18.2"}`,
+		"node_modules/left-pad/package.json": `{"name":"left-pad","version":"1.3.0"}`,
+	})
+	// oldExpress returns a directory outside the build dir holding an express 4.17.0 copy at
+	// node_modules/express.
+	oldExpress := func(t *testing.T) string {
+		out := t.TempDir()
+		mkdir(t, out, "node_modules/express")
+		if err := os.WriteFile(filepath.Join(out, "node_modules", "express", "package.json"), []byte(`{"name":"express","version":"4.17.0"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	// expressUnread checks that installedCopies reports the tree unread and that express is
+	// then not resolved Complete to the lock's 4.18.2.
+	expressUnread := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			copiesRead("", !want)(t, dir)
+			r := resolveJS(t, dir, "express")
+			if got := !r.Partiality.Complete || !r.Match.Resolved; got != want {
+				t.Errorf("express = %+v, partiality %+v; want unread %v", r.Match, r.Partiality, want)
 			}
 		}
 	}
@@ -265,6 +299,7 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		{"installedCopies walk", []row{
 			{"EACCES", map[string]string{"web/node_modules/absent-package/package.json": `{"name":"absent-package","version":"1.0.0"}`}, func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "web"))
+				wantListErr(t, dir, "web", os.ErrPermission)
 			}, copiesRead("", false)},
 			{"missing", nil, nil, copiesRead("missing", true)},
 		}},
@@ -277,9 +312,29 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 				mkdir(t, dir, pnpmID)
 			}, copiesRead("", true)},
 		}},
+		{"installedCopies symlink leaving the build dir", []row{
+			{"nested node_modules", installedExpress, func(t *testing.T, dir string) {
+				link(t, dir, "node_modules/left-pad/node_modules", filepath.Join(oldExpress(t), "node_modules"))
+			}, expressUnread(true)},
+			{"pnpm store entry", installedExpress, func(t *testing.T, dir string) {
+				link(t, dir, "node_modules/.pnpm/express@4.17.0", oldExpress(t))
+			}, expressUnread(true)},
+			{"dangling nested node_modules", installedExpress, func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/left-pad/node_modules")
+			}, expressUnread(true)},
+			{"nested node_modules inside root", installedExpress, func(t *testing.T, dir string) {
+				mkdir(t, dir, "shared")
+				link(t, dir, "node_modules/left-pad/node_modules", filepath.Join(dir, "shared"))
+			}, expressUnread(false)},
+			{"pnpm store entry inside root", installedExpress, func(t *testing.T, dir string) {
+				mkdir(t, dir, "shared")
+				link(t, dir, "node_modules/.pnpm/express@4.18.2", filepath.Join(dir, "shared"))
+			}, expressUnread(false)},
+		}},
 		{"discoverProjectRoots walk", []row{
 			{"EACCES", map[string]string{"package.json": `{"name":"app"}`, "package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app"}}}`, "web/package-lock.json": `{"lockfileVersion":3,"packages":{"":{}}}`}, func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "web"))
+				wantListErr(t, dir, "web", os.ErrPermission)
 			}, rootsRead("", false)},
 			{"missing", nil, nil, rootsRead("missing", true)},
 		}},
@@ -299,6 +354,7 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		{"manifestsUnder walk", []row{
 			{"EACCES", map[string]string{"package.json": `{"name":"app"}`, "packages/a/package.json": `{"name":"a"}`}, func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "packages"))
+				wantListErr(t, dir, "packages", os.ErrPermission)
 			}, manifestsRead("", false)},
 			{"missing", nil, nil, manifestsRead("missing", true)},
 		}},

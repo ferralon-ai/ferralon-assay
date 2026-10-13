@@ -83,8 +83,8 @@ func TestLoadSet_LinkToPipe(t *testing.T) {
 }
 
 // TestLoadSet_ReadsOpenOnlyRegularFiles: every read outside the install walk (a requirements
-// file named by -r, installed metadata, a config file, a nested project, a lockfile, a source
-// file) skips a pipe instead of opening it, and the pipe still blocks refutation.
+// file named by -r or found by name, installed metadata, a config file, a nested project, a
+// lockfile, a source file) skips a pipe instead of opening it, and the pipe still blocks refutation.
 func TestLoadSet_ReadsOpenOnlyRegularFiles(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -96,6 +96,9 @@ func TestLoadSet_ReadsOpenOnlyRegularFiles(t *testing.T) {
 		{"a config file", map[string]string{}, "app/settings.yaml"},
 		{"a nested project's pyproject.toml", map[string]string{}, "services/worker/pyproject.toml"},
 		{"a nested lockfile", map[string]string{}, "services/worker/poetry.lock"},
+		{"a nested project's setup.cfg", map[string]string{}, "services/worker/setup.cfg"},
+		{"a nested project's setup.py", map[string]string{}, "services/worker/setup.py"},
+		{"a requirements file", map[string]string{}, "services/worker/requirements.txt"},
 		{"a source file", map[string]string{}, "app/worker.py"},
 	}
 	for _, tt := range tests {

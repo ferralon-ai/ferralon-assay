@@ -770,6 +770,7 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		Name:      name,
 		Version:   inv.ResolvedVersion,
 		PURL:      purl,
+		Root:      pipeline.RootSubject(store, assessmentID),
 	}
 }
 
@@ -857,7 +858,7 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
 		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
 		for _, r := range scoped {
-			if scopedLimitCounts(r, admitted, resolved) {
+			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
 				reasons = append(reasons, r.Reason)
 			}
 		}
@@ -893,16 +894,16 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 //     count: code the analysis did not see can call into the standard library from anywhere in the
 //     build.
 //
-// Otherwise the first-party entry matches only a root package, which no advisory is admitted on yet,
-// so it matches nothing here.
-func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved bool) bool {
+// Otherwise the first-party entry matches only when the advisory's package is the scanned project
+// itself.
+func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved, root bool) bool {
 	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
 	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
 	for _, p := range append([]string{r.Package}, r.Targets...) {
 		if p == "" {
-			if stdlib {
+			if stdlib || root {
 				return true
 			}
 			continue

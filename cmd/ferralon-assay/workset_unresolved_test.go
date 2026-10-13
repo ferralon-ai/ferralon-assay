@@ -78,6 +78,7 @@ const (
 
 var (
 	minioResolved   = plugin.ResolvedDependency{Coordinate: minio, Version: "8.5.4", Resolved: true}
+	minioPatched    = plugin.ResolvedDependency{Coordinate: minio, Version: "8.5.11", Resolved: true}
 	minioUnresolved = plugin.ResolvedDependency{Coordinate: minio, Constraint: "8.5.4"}
 	widgetResolved  = plugin.ResolvedDependency{Coordinate: widget, Version: "1.0.0", Resolved: true}
 )
@@ -134,14 +135,16 @@ func notesFor(notes []report.PartialityNote, reason string) []report.PartialityN
 
 // TestWorkSet_UnresolvedDependency pins admission of a dependency that is declared but carries no
 // resolved version. Unread is not absent: policy admission matches by name, so the advisory gets a
-// row; the OSV query cannot ask without a version, so the skipped dependency is named.
+// row; the OSV query cannot ask without a version, so the skipped dependency is named. Any unresolved
+// copy of a coordinate is named even beside a resolved copy, and every distinct resolved version is
+// queried.
 func TestWorkSet_UnresolvedDependency(t *testing.T) {
 	tests := []struct {
 		name        string
 		acq         func(t *testing.T) *acquired
 		policy      bool
 		wantIDs     []string
-		wantQueried []string
+		wantQueried []string          // name@version, in query order
 		wantSkipped map[string]string // skipped coordinate -> the note's Package
 		wantSource  string
 	}{
@@ -167,7 +170,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantSource: workSetSourceBuiltinUnionPolicy,
 		},
 		{
-			name:       "policy: a resolved declaration wins over an unresolved one",
+			name:       "policy: a coordinate declared both resolved and unresolved is admitted once",
 			acq:        func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved, minioResolved)) },
 			policy:     true,
 			wantIDs:    []string{minioID},
@@ -176,8 +179,21 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		{
 			name:        "osv: mixed build queries the resolved dependency and names the skipped one",
 			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioUnresolved)) },
-			wantQueried: []string{widget},
+			wantQueried: []string{widget + "@1.0.0"},
 			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:        "osv: an unresolved copy beside a resolved one queries the version and names the coordinate",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved, minioResolved)) },
+			wantQueried: []string{minio + "@8.5.4"},
+			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:        "osv: two resolved versions of one coordinate are each queried",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioResolved, minioPatched)) },
+			wantQueried: []string{minio + "@8.5.11", minio + "@8.5.4"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
@@ -189,7 +205,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		{
 			name:        "osv: resolved control queries everything and names nothing",
 			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioResolved)) },
-			wantQueried: []string{widget, minio},
+			wantQueried: []string{widget + "@1.0.0", minio + "@8.5.4"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
@@ -202,7 +218,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		{
 			name:        "python osv: the unpinned requirement is named",
 			acq:         func(t *testing.T) *acquired { return pythonTree(t, "requests==2.31.0\nflask>=2.0\n") },
-			wantQueried: []string{"requests"},
+			wantQueried: []string{"requests@2.31.0"},
 			wantSkipped: map[string]string{"flask": "pkg:pypi/flask"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
@@ -232,7 +248,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 
 			var queried []string
 			for _, p := range osv.seen {
-				queried = append(queried, p.Name)
+				queried = append(queried, p.Name+"@"+p.Version)
 				if p.Version == "" {
 					t.Errorf("OSV was asked about %s with no version", p.Name)
 				}

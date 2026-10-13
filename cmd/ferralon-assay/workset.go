@@ -510,10 +510,11 @@ func aliasIndex() map[string]string {
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.
 //
-// resolved carries a version; unresolved is every declared coordinate with no resolved declaration
-// anywhere in the build, Version empty (inv.5 — a version is never guessed). A coordinate resolved by
-// one declaration is resolved, as the pipeline's Match prefers a resolved declaration. Both are
-// sorted. The inventory is absent only when neither holds anything.
+// resolved holds every distinct resolved (coordinate, version); unresolved is every coordinate with at
+// least one declaration that carries no resolved version, Version empty (inv.5 — a version is never
+// guessed). A coordinate can sit in both: its resolved versions are still queried, and the unresolved
+// copy is still disclosed, because the pipeline's version match treats any unresolved copy as
+// unresolved. Both are sorted. The inventory is absent only when neither holds anything.
 func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	eco := ecosystemForLanguage(acq.language)
 	if eco == "" {
@@ -537,28 +538,22 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	}
 
 	seen := make(map[report.Package]struct{}, len(res.All))
-	hasVersion := make(map[string]bool, len(res.All))
 	for _, d := range res.All {
 		if d.Coordinate == "" {
 			continue
 		}
-		if !d.Resolved || d.Version == "" {
-			if _, ok := hasVersion[d.Coordinate]; !ok {
-				hasVersion[d.Coordinate] = false
-			}
-			continue
+		p := report.Package{Ecosystem: eco, Name: d.Coordinate}
+		if d.Resolved && d.Version != "" {
+			p.Version = d.Version
 		}
-		hasVersion[d.Coordinate] = true
-		p := report.Package{Ecosystem: eco, Name: d.Coordinate, Version: d.Version}
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		resolved = append(resolved, p)
-	}
-	for coord, ok := range hasVersion {
-		if !ok {
-			unresolved = append(unresolved, report.Package{Ecosystem: eco, Name: coord})
+		if p.Version == "" {
+			unresolved = append(unresolved, p)
+		} else {
+			resolved = append(resolved, p)
 		}
 	}
 

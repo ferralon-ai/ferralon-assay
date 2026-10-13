@@ -35,7 +35,8 @@ type bindingTable map[string]binding
 // flags that drive the C5 partiality codes.
 type moduleBindings struct {
 	imports       bindingTable       // local name → import/require binding (names usable IN this module)
-	instances     map[string]string  // local var → class name, from `const x = new Class()`
+	instances     map[string]string  // local var → class name, from `const x = new Class()` ("ns.Class" for `new ns.Class()`)
+	derived       map[string]string  // local var → callee chain, from `const x = callee.chain(...)` (whole initializer)
 	reExports     map[string]binding // exported name → re-export binding (for `export { x } from 'spec'`)
 	reExportStars []string           // specifiers from `export * from 'spec'`
 	ambiguous     map[string]bool    // local names bound more than once → resolve as unresolved
@@ -69,6 +70,7 @@ func newModuleBindings() moduleBindings {
 	return moduleBindings{
 		imports:   bindingTable{},
 		instances: map[string]string{},
+		derived:   map[string]string{},
 		reExports: map[string]binding{},
 		ambiguous: map[string]bool{},
 	}
@@ -332,11 +334,48 @@ func parseDeclForm(clean, src []rune, pos int, mb *moduleBindings, add func(bind
 		}
 	case "new":
 		p = skipSpace(clean, wq)
-		if cw, _ := peekWord(clean, p); cw != "" {
-			mb.instances[name] = cw
+		if chain, _ := readChain(clean, p); chain != "" {
+			mb.instances[name] = chain
+		}
+	case "":
+	default:
+		if chain, q := readChain(clean, p); q < n && clean[q] == '(' && wholeInitializer(clean, skipGroup(clean, q)) {
+			mb.derived[name] = chain
 		}
 	}
 	return pos
+}
+
+// readChain reads a dotted identifier chain ("express.Router") starting at p and returns it
+// with the index just past it. It returns "" when p does not start an identifier.
+func readChain(clean []rune, p int) (string, int) {
+	n := len(clean)
+	var b strings.Builder
+	for p < n && isIdentStart(clean[p]) {
+		w, nx := readWord(clean, p)
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(w)
+		p = nx
+		if p+1 < n && clean[p] == '.' && isIdentStart(clean[p+1]) {
+			p++
+			continue
+		}
+		break
+	}
+	return b.String(), p
+}
+
+// wholeInitializer reports whether the declarator's initializer ends at p: nothing but
+// blanks before a statement or declarator boundary, so `x = f()` binds the call's result
+// and `x = f().g` does not.
+func wholeInitializer(clean []rune, p int) bool {
+	n := len(clean)
+	for p < n && (clean[p] == ' ' || clean[p] == '\t' || clean[p] == '\r') {
+		p++
+	}
+	return p >= n || clean[p] == ';' || clean[p] == '\n' || clean[p] == ',' || clean[p] == '}'
 }
 
 // collectBraceList parses a `{ a, b as c }` (import) or `{ a, b: c }` (destructure)

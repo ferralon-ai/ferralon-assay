@@ -56,16 +56,19 @@ type bodyFrame struct {
 	funcName  string   // non-empty when this frame is a function body
 	funcArity int      // arity of the function whose body this is
 	end       int      // > 0 for an expression-bodied arrow: the frame closes when the scan reaches end
+	params    []string // the function's positional parameter names ("" for a destructured or rest parameter)
 }
 
 // handlerExpr is an inline function expression found as a top-level argument of a
 // route-method / server-factory call, waiting for the scan to reach it.
 type handlerExpr struct {
-	kind  string // ingress kind: "http_route" | "http_server"
-	arity int
-	open  int // index of the body-opening '{'; -1 for an expression body
-	body  int // first index of an expression body
-	end   int // index of the ',' or ')' that ends the argument
+	kind   string // ingress kind: "http_route" | "http_server"
+	arity  int
+	open   int      // index of the body-opening '{'; -1 for an expression body
+	body   int      // first index of an expression body
+	end    int      // index of the ',' or ')' that ends the argument
+	params []string // positional parameter names ("" for a destructured or rest parameter)
+	router []string // the value the registering route method was called on (callExpr.router)
 }
 
 // parseCallsAndIngresses scans cleaned JS/TS source (already comment/string-
@@ -141,7 +144,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 		name := anonHandlerFunc(lineCol(at))
 		ingresses = append(ingresses, ingressMarker{
 			enclosing: append([]string(nil), enc...),
-			name:      name, kind: h.kind, arity: h.arity, frame: true,
+			name:      name, kind: h.kind, arity: h.arity, frame: true, router: h.router,
 		})
 		m := innermostFunc()
 		calls = append(calls, callSite{
@@ -153,7 +156,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 			calleeEnclosing: append([]string(nil), enc...),
 			calleeFrame:     true,
 		})
-		f := bodyFrame{enclosing: enc, funcName: name, funcArity: h.arity}
+		f := bodyFrame{enclosing: enc, funcName: name, funcArity: h.arity, params: h.params}
 		if h.open >= 0 {
 			stack = append(stack, f)
 			return h.open + 1
@@ -222,7 +225,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 						})
 					}
 					pendingExportDefault = false
-					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity})
+					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, next, openIdx)})
 					i = openIdx + 1
 					continue
 				}
@@ -239,7 +242,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 						})
 					}
 					pendingExportDefault = false
-					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity})
+					stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, assignPos(r, next), openIdx)})
 					i = openIdx + 1
 					continue
 				}
@@ -267,7 +270,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 				if inClassBody() && !methodModifierSkip(word) {
 					if mname, marity, openIdx, ok := methodDeclAt(r, i); ok {
 						enc := enclosingChain()
-						stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity})
+						stack = append(stack, bodyFrame{enclosing: enc, funcName: mname, funcArity: marity, params: frameParams(r, i, openIdx)})
 						i = openIdx + 1
 						continue
 					}
@@ -277,6 +280,7 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 				// registration / server factory (ingress) or a plain call.
 				if ce, isCall := callExprAt(r, i); isCall {
 					if in, ok := routeIngress(ce.leaf, ce.handler); ok {
+						in.router = ce.router()
 						ingresses = append(ingresses, in)
 					}
 					m := innermostFunc()
@@ -300,10 +304,13 @@ func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingres
 							receiver:        recv,
 							receiverThis:    recvThis,
 							head:            ce.head,
+							chain:           memberChain(r, i, ce.chain),
+							headParam:       headParamOf(stack, ce.chain),
 						})
 					}
 					if kind := handlerKind(ce.leaf); kind != "" {
 						for _, h := range inlineHandlerArgs(r, ce.open, kind) {
+							h.expr.router = ce.router()
 							pending[skipSpace(r, h.start)] = h.expr
 						}
 					}
@@ -456,17 +463,21 @@ func funcExprAt(r []rune, start, end int) (handlerExpr, bool) {
 		if open < 0 || open >= end {
 			return handlerExpr{}, false
 		}
-		return handlerExpr{arity: arity, open: open}, true
+		return handlerExpr{arity: arity, open: open, params: paramNames(r, pos)}, true
 	}
 	var arity, after int
+	var params []string
 	parens := false
 	switch {
 	case pos < end && r[pos] == '(':
 		arity, after = parseParamArity(r, pos)
+		params = paramNames(r, pos)
 		parens = true
 	case pos < end && isIdentStart(r[pos]):
-		_, after = readWord(r, pos)
+		var w string
+		w, after = readWord(r, pos)
 		arity = 1
+		params = []string{w}
 	default:
 		return handlerExpr{}, false
 	}
@@ -481,9 +492,9 @@ func funcExprAt(r []rune, start, end int) (handlerExpr, bool) {
 	}
 	body := skipSpace(r, after+2)
 	if body < end && r[body] == '{' {
-		return handlerExpr{arity: arity, open: body}, true
+		return handlerExpr{arity: arity, open: body, params: params}, true
 	}
-	return handlerExpr{arity: arity, open: -1, body: body, end: end}, true
+	return handlerExpr{arity: arity, open: -1, body: body, end: end, params: params}, true
 }
 
 // callExpr is a recognized call expression ("name(args)" or "a.b.name(args)").
@@ -494,7 +505,17 @@ type callExpr struct {
 	handler  routeArg // the route-handler argument (named last arg, if any)
 	receiver string   // the single-identifier receiver of "recv.name(...)"; "" otherwise
 	head     string   // first segment of a dotted chain ("JSON5" in JSON5.parse); "" for a bare call
+	chain    []string // every dotted segment, leaf last ("JSON5","parse")
 	open     int      // index of the argument list's '('
+}
+
+// router is the value a method call is made on: every segment but the leaf. It is nil for
+// a bare call, whose callee is not a member of anything.
+func (ce callExpr) router() []string {
+	if len(ce.chain) < 2 {
+		return nil
+	}
+	return ce.chain[:len(ce.chain)-1]
 }
 
 // callExprAt reports whether the identifier run starting at i is a call expression
@@ -507,6 +528,7 @@ func callExprAt(r []rune, i int) (callExpr, bool) {
 	first := ""
 	prev := "" // the member-access segment immediately before the leaf ("jar" in jar.setCookie)
 	segs := 0  // number of dotted segments consumed
+	var chain []string
 	for pos < n {
 		if isIdentStart(r[pos]) {
 			prev = last
@@ -514,6 +536,7 @@ func callExprAt(r []rune, i int) (callExpr, bool) {
 			if segs == 0 {
 				first = last
 			}
+			chain = append(chain, last)
 			segs++
 		} else if r[pos] == '.' {
 			pos++
@@ -541,7 +564,7 @@ func callExprAt(r []rune, i int) (callExpr, bool) {
 	// fail-closes on the non-instance and drops the edge. Leave the receiver empty so
 	// the leaf resolves through the bare-name path (whose own ambiguity guard keeps it
 	// fail-closed against fabrication).
-	ce := callExpr{name: last, leaf: last, arity: ar, handler: routeArg{leaf: last, handlerRef: lastArgNamedRef(r, p)}, open: p}
+	ce := callExpr{name: last, leaf: last, arity: ar, handler: routeArg{leaf: last, handlerRef: lastArgNamedRef(r, p)}, chain: chain, open: p}
 	if segs == 2 {
 		ce.receiver = prev
 	}
@@ -616,4 +639,122 @@ var callKeywords = map[string]bool{
 	"throw": true, "do": true, "else": true, "yield": true,
 	"await": true, "typeof": true, "delete": true, "void": true,
 	"in": true, "of": true, "with": true, "super": true,
+}
+
+// memberChain returns a call's dotted segments, or nil when the call is itself a member of
+// an expression the scanner did not read as a chain ("json" in res.status(404).json()): the
+// segments then do not start at a name bound in this scope.
+func memberChain(r []rune, i int, chain []string) []string {
+	p := i - 1
+	for p >= 0 && (r[p] == ' ' || r[p] == '\t' || r[p] == '\n' || r[p] == '\r') {
+		p--
+	}
+	if p >= 0 && r[p] == '.' {
+		return nil
+	}
+	return chain
+}
+
+// headParamOf finds the innermost open function frame that declares a parameter named by
+// the chain's head ("res" in res.redirect). Frames are searched outward, so a nested
+// callback's own parameters shadow the handler's. A bare call has no head and names none.
+func headParamOf(stack []bodyFrame, chain []string) paramRef {
+	if len(chain) < 2 {
+		return paramRef{idx: -1}
+	}
+	for k := len(stack) - 1; k >= 0; k-- {
+		f := stack[k]
+		if f.funcName == "" {
+			continue
+		}
+		for idx, p := range f.params {
+			if p != "" && p == chain[0] {
+				return paramRef{enclosing: append([]string(nil), f.enclosing...), name: f.funcName, arity: f.funcArity, idx: idx}
+			}
+		}
+	}
+	return paramRef{idx: -1}
+}
+
+// paramNames reads the positional parameter names of the list opening at open. A
+// destructured, rest, or otherwise non-identifier parameter keeps its position as "".
+func paramNames(r []rune, open int) []string {
+	var out []string
+	depth := 0
+	start := open + 1
+	for pos := open; pos < len(r); pos++ {
+		switch r[pos] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				if name, ok := paramNameIn(r, start, pos); ok || len(out) > 0 {
+					out = append(out, name)
+				}
+				return out
+			}
+		case ',':
+			if depth == 1 {
+				name, _ := paramNameIn(r, start, pos)
+				out = append(out, name)
+				start = pos + 1
+			}
+		}
+	}
+	return out
+}
+
+// paramNameIn returns the identifier a parameter in [start,end) binds, and whether the
+// range holds any parameter at all.
+func paramNameIn(r []rune, start, end int) (string, bool) {
+	p := skipSpace(r, start)
+	if p >= end {
+		return "", false
+	}
+	if isIdentStart(r[p]) {
+		w, _ := readWord(r, p)
+		return w, true
+	}
+	return "", true
+}
+
+// frameParams reads the parameter names of a function whose header starts at or after
+// from and whose body opens at bodyOpen: the first parenthesized list, or the single
+// identifier of a "x => {" arrow.
+func frameParams(r []rune, from, bodyOpen int) []string {
+	for p := from; p < bodyOpen && p < len(r); p++ {
+		if r[p] == '(' {
+			return paramNames(r, p)
+		}
+		if r[p] == '=' && p+1 < len(r) && r[p+1] == '>' {
+			q := p - 1
+			for q >= from && (r[q] == ' ' || r[q] == '\t') {
+				q--
+			}
+			end := q + 1
+			for q >= from && isIdentPart(r[q]) {
+				q--
+			}
+			if q+1 < end {
+				return []string{string(r[q+1 : end])}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// assignPos returns the index just past the '=' of a declarator starting at pos, or pos
+// when the statement ends first.
+func assignPos(r []rune, pos int) int {
+	for p := pos; p < len(r); p++ {
+		switch r[p] {
+		case '=':
+			return p + 1
+		case ';', '\n':
+			return pos
+		}
+	}
+	return pos
 }

@@ -23,6 +23,8 @@ const (
 	attrCompilerGenerated = "CompilerGeneratedAttribute"
 	attrGeneratedCode     = "GeneratedCodeAttribute"
 	attrExtension         = "ExtensionAttribute"
+	attrReferenceAssembly = "ReferenceAssemblyAttribute"
+	attrTargetFramework   = "TargetFrameworkAttribute"
 )
 
 // customAttrCtors returns the attribute-ctor tokens (the Type column, a MethodDef or
@@ -123,4 +125,54 @@ func (a *Assembly) IsExtensionMethod(m *MethodDef) bool {
 		return false
 	}
 	return a.hasAttributeSuffix(m.Token, attrExtension)
+}
+
+// IsReferenceAssembly reports whether the assembly carries [ReferenceAssembly]: a
+// compile-time surface whose method bodies are stubs (`throw null`). Its bodies say nothing
+// about what the shipped code calls, so a reader must treat it as code it did not load.
+func (a *Assembly) IsReferenceAssembly() bool {
+	return a.hasAttributeSuffix(makeToken(tAssembly, 1), attrReferenceAssembly)
+}
+
+// TargetFramework returns the framework name the assembly was compiled for, as its
+// [assembly: TargetFramework(".NETCoreApp,Version=v8.0")] records it. ok is false when the
+// attribute is absent or its value blob does not decode.
+func (a *Assembly) TargetFramework() (string, bool) {
+	if a.md == nil {
+		return "", false
+	}
+	self := makeToken(tAssembly, 1)
+	for _, row := range a.md.rows[tCustomAttribute] {
+		if len(row) < 3 || decodeCoded(ciHasCustomAttribute, row[0]) != self {
+			continue
+		}
+		name := a.attributeTypeName(decodeCoded(ciCustomAttributeType, row[1]))
+		if name != attrTargetFramework && !strings.HasSuffix(name, "."+attrTargetFramework) {
+			continue
+		}
+		return firstStringArg(a.md.blob(row[2]))
+	}
+	return "", false
+}
+
+// firstStringArg decodes the leading SerString fixed argument of a custom-attribute value
+// blob (§II.23.3): the 0x0001 prolog, then a compressed length and UTF-8 bytes. A null
+// string (0xFF) or a malformed blob yields ok=false.
+func firstStringArg(b []byte) (string, bool) {
+	r := &reader{b: b}
+	if r.u1() != 0x01 || r.u1() != 0x00 || r.err != nil {
+		return "", false
+	}
+	if len(b) > 2 && b[2] == 0xFF {
+		return "", false
+	}
+	n, ok := r.compressedUint()
+	if !ok {
+		return "", false
+	}
+	raw := r.bytes(int(n))
+	if r.err != nil {
+		return "", false
+	}
+	return string(raw), true
 }

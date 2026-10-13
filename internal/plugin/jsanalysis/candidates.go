@@ -22,7 +22,8 @@ import (
 // symlink that leaves root, symlinked directory the walk does not read through its target, and
 // unreadable entry (buildtree.Candidates).
 // FullyRead is true only for a regular package.json that decodes with string-valued dependency
-// maps, or a lockfile the resolver discovers (lockFiles), parses, and finds no opaque entry in.
+// maps and declares no install rewrite (depManifest.rewrites), or a lockfile the resolver
+// discovers (lockFiles), parses, and finds no opaque entry in.
 func ManifestCandidates(root string) []buildtree.Candidate {
 	locks := map[string]lockInfo{}
 	for _, l := range lockFiles(root) {
@@ -38,8 +39,8 @@ func ManifestCandidates(root string) []buildtree.Candidate {
 func manifestCandidates(root string, locks map[string]lockInfo) []buildtree.Candidate {
 	cs := buildtree.Candidates(root, jsCandidate, func(path string) bool {
 		if filepath.Base(path) == "package.json" {
-			_, ok := readPackageJSON(path)
-			return ok
+			m, ok := readPackageJSON(path)
+			return ok && !m.rewrites
 		}
 		l, ok := locks[path]
 		return ok && !l.opaque
@@ -53,7 +54,18 @@ type depManifest struct {
 	name     string
 	hasName  bool
 	declared map[string]map[string]string // dependency field → name → spec
+	// rewrites is set when the manifest carries overrides, resolutions, pnpm.overrides or
+	// pnpm.packageExtensions (or a "pnpm" field that is not an object): each can make an install
+	// add or swap a package the lockfile does not show.
+	rewrites bool
 }
+
+// rewriteKeys and pnpmRewriteKeys are the package.json fields, top-level and under "pnpm", that
+// rewrite what an install resolves.
+var (
+	rewriteKeys     = []string{"overrides", "resolutions"}
+	pnpmRewriteKeys = []string{"overrides", "packageExtensions"}
+)
 
 // readPackageJSON decodes the package.json at path. ok is false when it cannot be read, is not a
 // JSON object, or has a non-string name or a dependency field that is not a map of strings.
@@ -83,6 +95,20 @@ func readPackageJSON(path string) (depManifest, bool) {
 			return depManifest{}, false
 		}
 		p.declared[field] = deps
+	}
+	for _, k := range rewriteKeys {
+		_, has := manifest[k]
+		p.rewrites = p.rewrites || has
+	}
+	if raw, ok := manifest["pnpm"]; ok {
+		var pnpm map[string]json.RawMessage
+		if json.Unmarshal(raw, &pnpm) != nil {
+			p.rewrites = true
+		}
+		for _, k := range pnpmRewriteKeys {
+			_, has := pnpm[k]
+			p.rewrites = p.rewrites || has
+		}
 	}
 	return p, true
 }
@@ -116,14 +142,39 @@ var docExts = map[string]bool{
 // buildtree.HeadSize bytes of content head (nil when binary or empty), names or holds a
 // JavaScript install surface, and the rule that matched.
 //
-// pnpm-workspace.yaml, .yarnrc.yml, .npmrc and .pnpmfile.cjs are not candidates: each selects
-// workspaces, registries or rewrites whose result the lockfile records, and every workspace
-// package.json is itself a candidate.
+// Every file whose name holds "pnpmfile" is a candidate (an install hook can add any package),
+// and so is a pnpm-workspace.yaml, .yarnrc* or .npmrc that mentions packageExtensions,
+// overrides, resolutions or pnpmfile (installRewriteConfig); neither is ever fully read. Other
+// workspace, registry and linker configuration is not a candidate: the lockfile records its
+// result, and every workspace package.json is itself a candidate.
 func jsCandidate(path string, head []byte) (string, bool) {
 	if why, ok := jsCandidateName(path); ok {
 		return why, true
 	}
+	if installRewriteConfig(path, head) {
+		return "install rewrite config", true
+	}
 	return jsCandidateContent(path, head)
+}
+
+// rewriteConfigWords are the settings through which pnpm-workspace.yaml, .yarnrc.yml and .npmrc
+// add or swap packages at install time.
+var rewriteConfigWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
+
+// installRewriteConfig reports whether the file is installer configuration whose head mentions
+// a setting that rewrites what an install resolves. It matches the word anywhere, comments
+// included.
+func installRewriteConfig(path string, head []byte) bool {
+	lower := strings.ToLower(filepath.Base(path))
+	if !strings.HasPrefix(lower, ".yarnrc") && !strings.HasPrefix(lower, ".npmrc") && !strings.HasPrefix(lower, "pnpm-workspace.") {
+		return false
+	}
+	for _, w := range rewriteConfigWords {
+		if bytes.Contains(head, []byte(w)) {
+			return true
+		}
+	}
+	return false
 }
 
 func jsCandidateName(path string) (string, bool) {
@@ -138,6 +189,8 @@ func jsCandidateName(path string) (string, bool) {
 	switch {
 	case jsManifestNames[name]:
 		return "manifest name", true
+	case strings.Contains(lower, "pnpmfile") && !docExts[ext]:
+		return "pnpm install hook", true
 	case (ext == ".lock" || ext == ".lockb") && !foreignLocks[name] &&
 		!(strings.Contains(lower, "requirement") || strings.Contains(lower, "constraint")):
 		return "lockfile name", true

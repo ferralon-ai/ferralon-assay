@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +44,9 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		pnpmCustomReg  = "lockfileVersion: 5.4\n\nspecifiers:\n  express: ^4.18.0\n  left-pad: ^1.3.0\n\npackages:\n\n  /express/4.18.2:\n    resolution: {integrity: sha512-x}\n\n  /left-pad/1.3.0:\n    resolution: {integrity: sha512-y}\n\n  registry.example.com/absent-package/2.2.1:\n    resolution: {tarball: https://registry.example.com/absent-package/-/absent-package-2.2.1.tgz}\n"
 		yarnWorkspaces = `{"name":"app","workspaces":["tools"],"dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}}`
 	)
+	// rewrite is exPkgJSON with one more top-level field.
+	rewrite := func(field string) string { return strings.TrimSuffix(exPkgJSON, "}") + "," + field + "}" }
+	const pnpmfileAdds = "module.exports = {hooks: {readPackage(pkg) { pkg.dependencies['absent-package'] = '^2'; return pkg }}}\n"
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -109,6 +113,19 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"B6 NuGet packages.lock.json is not a manifest", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "svc/packages.lock.json": `{"version":1,"dependencies":{"net8.0":{"Serilog":{"type":"Direct","resolved":"3.1.1"}}}}`}, true},
 		{"B6 Python lock is not a JS candidate", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "uv.lock": "version = 1\n"}, true},
 		{"B6 workspace and registry config without a lock", map[string]string{"package.json": exPkgJSON, "pnpm-workspace.yaml": "packages:\n  - tools\n", ".yarnrc.yml": "nodeLinker: node-modules\n", ".npmrc": "registry=https://registry.example.com/\n", ".pnpmfile.cjs": "module.exports = {hooks: {}}\n"}, false},
+		{"B11 npm overrides", map[string]string{"package.json": rewrite(`"overrides":{"left-pad":"npm:absent-package@^2"}`), "package-lock.json": exLockV3}, false},
+		{"B11 yarn resolutions", map[string]string{"package.json": rewrite(`"resolutions":{"left-pad":"npm:absent-package@^2"}`), "yarn.lock": exYarnLock}, false},
+		{"B11 pnpm.overrides", map[string]string{"package.json": rewrite(`"pnpm":{"overrides":{"left-pad":"npm:absent-package@^2"}}`), "pnpm-lock.yaml": exPnpmV9}, false},
+		{"B11 pnpm.packageExtensions", map[string]string{"package.json": rewrite(`"pnpm":{"packageExtensions":{"express":{"dependencies":{"absent-package":"^2"}}}}`), "pnpm-lock.yaml": exPnpmV9}, false},
+		{"B11 pnpmfile hook adding a dependency", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, ".pnpmfile.cjs": pnpmfileAdds}, false},
+		{"B11 yarnrc packageExtensions", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, ".yarnrc.yml": "packageExtensions:\n  \"express@*\":\n    dependencies:\n      absent-package: ^2\n"}, false},
+		{"B11 pnpm-workspace overrides", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "overrides:\n  left-pad: npm:absent-package@^2\n"}, false},
+		{"B11 pnpm settings that rewrite nothing", map[string]string{"package.json": rewrite(`"pnpm":{"onlyBuiltDependencies":["esbuild"]}`), "pnpm-lock.yaml": exPnpmV9}, true},
+		{"B11 installer config that rewrites nothing", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "packages:\n  - .\n", ".yarnrc.yml": "nodeLinker: node-modules\n", ".npmrc": "registry=https://registry.example.com/\n"}, true},
+		{"B12 pnpm package bundling the coordinate", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": strings.Replace(exPnpmV9, "sha512-x}\n", "sha512-x}\n    bundledDependencies:\n      - absent-package\n", 1)}, false},
+		{"B12 pnpm package bundling the coordinate, flow list", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": strings.Replace(exPnpmV9, "sha512-x}\n", "sha512-x}\n    bundledDependencies: [absent-package]\n", 1)}, false},
+		{"B13 dependency-free package.json and a pnpmfile without a lock", map[string]string{"package.json": `{"name":"app"}`, ".pnpmfile.cjs": pnpmfileAdds}, false},
+		{"B13 dependency-free package.json without a lock", map[string]string{"package.json": `{"name":"app"}`}, false},
 		{"B6 manifest quoted in docs", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "docs/setup.md": `{"dependencies":{"absent-package":"^2"}}`}, true},
 	}
 	for _, tt := range tests {

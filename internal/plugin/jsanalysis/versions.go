@@ -207,7 +207,8 @@ type lockInfo struct {
 	// alike, so a package.json's declared keys can be checked against it.
 	names map[string]bool
 	// opaque is set when some entry's installed package cannot be identified from the lock: a git,
-	// tarball or path dependency recorded only under the key it was declared as.
+	// tarball or path dependency recorded only under the key it was declared as, or (pnpm) a
+	// package that ships bundled packages the lock names only in its bundledDependencies list.
 	opaque bool
 	// importers maps each project the lock records, by directory relative to the lock ("." for
 	// its own), to the specs it recorded: dependency field → declared name → spec. Field "" holds
@@ -543,7 +544,8 @@ func yarnVersionField(trimmed string) (string, bool) {
 // fields, when present, override (pnpm writes them for git, tarball and custom-registry entries,
 // whose key is not a registry descriptor). A non-registry key with no "name:" field names no
 // package and marks the lock opaque. A registry descriptor we cannot split into name+version is
-// UNRESOLVED.
+// UNRESOLVED. An entry with a "bundledDependencies:" field also marks the lock opaque: pnpm
+// installs those packages from inside the entry's tarball and gives them no entry of their own.
 //
 // The specs each project was locked against are read from "importers:" (or, for a single-project
 // lock, the top-level specifiers/dependency blocks): v5 "specifiers:" maps and v6+ per-dependency
@@ -617,6 +619,8 @@ func parsePnpmLock(data []byte) (lockInfo, bool) {
 					entryName = v
 				case "version":
 					ver = v
+				case "bundledDependencies", "bundleDependencies":
+					info.opaque = true
 				}
 			}
 			continue

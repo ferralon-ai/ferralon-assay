@@ -563,6 +563,14 @@ func TestLoadSet(t *testing.T) {
 			checks:   []check{{pkg: "x", version: "1.0.0", refuted: false}},
 		},
 		{
+			name: "an npm-shrinkwrap.json that is not a regular file withholds dev markers",
+			files: func(t *testing.T) map[string]string {
+				return staleLockBeside(t, "npm-shrinkwrap.json/keep", "")
+			},
+			complete: false,
+			checks:   []check{{pkg: "x", version: "1.0.0", refuted: false}},
+		},
+		{
 			name: "a lone package-lock.json still refutes",
 			files: func(t *testing.T) map[string]string {
 				return staleLockBeside(t, "", "")
@@ -598,7 +606,7 @@ func TestLoadSet(t *testing.T) {
 			files: func(t *testing.T) map[string]string {
 				return devBinTree(t, map[string]string{
 					"package.json": `{"name":"app","scripts":{"start":"tool index.js"},"devDependencies":{"tool":"*"}}`,
-					"Dockerfile":   "FROM myorg/base\nCOPY . .\nCMD [\"npm\",\"start\"]\n",
+					"Dockerfile":   "FROM node:20\nCOPY . .\nCMD [\"npm\",\"start\"]\n",
 				})
 			},
 			complete:    true,
@@ -611,7 +619,7 @@ func TestLoadSet(t *testing.T) {
 			files: func(t *testing.T) map[string]string {
 				return devBinTree(t, map[string]string{
 					"package.json": `{"name":"app","scripts":{"serve":"tool index.js"},"devDependencies":{"tool":"*"}}`,
-					"Dockerfile":   "FROM myorg/base\nCOPY . .\nCMD [\"npm\",\"run\",\"serve\"]\n",
+					"Dockerfile":   "FROM node:20\nCOPY . .\nCMD [\"npm\",\"run\",\"serve\"]\n",
 				})
 			},
 			complete:    true,
@@ -627,7 +635,7 @@ func TestLoadSet(t *testing.T) {
 					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
 						"node_modules/hook": {Version: "1.0.0", Dev: true},
 					}),
-					"Dockerfile": "FROM myorg/base\nCOPY . .\nCMD [\"node\",\"-r\",\"hook\",\"index.js\"]\n",
+					"Dockerfile": "FROM node:20\nCOPY . .\nCMD [\"node\",\"-r\",\"hook\",\"index.js\"]\n",
 				})
 			},
 			complete:    true,
@@ -923,7 +931,7 @@ func TestLoadSet(t *testing.T) {
 					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
 						"node_modules/qs": {Version: "6.11.0", Dev: true},
 					}),
-					"Dockerfile": "FROM node:20\nCMD [\"npx\", \"foo\"]\n",
+					"Dockerfile": "FROM node:20\nRUN npx foo\n",
 					"index.js":   "module.exports = 1;\n",
 				}
 			},

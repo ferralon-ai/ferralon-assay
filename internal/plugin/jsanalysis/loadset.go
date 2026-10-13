@@ -202,6 +202,7 @@ func computeLoadSet(buildDir string) *loadSet {
 		ls.noDevOnly = m.noDevMarks
 	}
 	ls.scan = scanBuild(m.buildReal, m, ls.installed)
+	checkLaunchContexts(ls, m, fp.launchCands)
 	if ls.noDevOnly == "" && len(ls.scan.keepDev) > 0 {
 		ls.noDevOnly = ls.scan.keepDev[0]
 	}
@@ -209,6 +210,32 @@ func computeLoadSet(buildDir string) *loadSet {
 		ls.noDevOnly = "out-of-manifest install: " + ls.scan.all
 	}
 	return ls
+}
+
+// checkLaunchContexts withholds when the build scan names a docker build context the launch
+// reader did not simulate for a Dockerfile whose files it followed: the file a container runs
+// could come from that context instead.
+func checkLaunchContexts(ls *loadSet, m *installModel, cands map[string]map[string]bool) {
+	if len(cands) == 0 {
+		return
+	}
+	if ls.scan.ctxUnknown != "" {
+		ls.gap("a docker build context (%s) is not resolved, so the files a container runs are unknown", ls.scan.ctxUnknown)
+		return
+	}
+	ctxs := append([]string(nil), ls.scan.contexts...)
+	sort.Strings(ctxs)
+	for _, df := range sortedMapKeys(cands) {
+		for _, c := range ctxs {
+			c = normRel(c)
+			fi, err := os.Stat(filepath.Join(m.buildReal, filepath.FromSlash(c)))
+			if err != nil || !fi.IsDir() || cands[df][c] {
+				continue
+			}
+			ls.gap("%s: a docker build context (%s) the launch reader did not simulate", df, c)
+			return
+		}
+	}
 }
 
 // installClosure is the set of install paths a production install puts on disk: the
@@ -356,12 +383,17 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 
 // installerLockfile is selectLockfile with npm's own precedence: a root holding both
 // npm-shrinkwrap.json and package-lock.json installs from the shrinkwrap and ignores the
-// package-lock.json, so dev markers come from the shrinkwrap.
+// package-lock.json, so dev markers come from the shrinkwrap. A shrinkwrap entry that is not a
+// regular file (a directory, a pipe, a dangling link) leaves the installer's lockfile unknown.
 func installerLockfile(root string) (selectedLock, plugin.Partiality) {
 	sel, part := selectLockfile(root)
 	if part.Complete && sel.dialect == "npm" && filepath.Base(sel.path) == "package-lock.json" {
 		sw := filepath.Join(root, "npm-shrinkwrap.json")
-		if fi, err := os.Stat(sw); err == nil && !fi.IsDir() {
+		if _, err := os.Lstat(sw); err == nil {
+			fi, err := os.Stat(sw)
+			if err != nil || !fi.Mode().IsRegular() {
+				return selectedLock{}, plugin.Partial(plugin.PartialReasonToolFailure)
+			}
 			sel.path = sw
 		}
 	}
@@ -1324,6 +1356,9 @@ type firstPartyRoots struct {
 	// launched are the installed instances whose bins a launch command runs (launch.go).
 	launched []launchRoot
 	scripts  []manifestScripts // every first-party manifest's scripts, in path order
+	// launchCands are the build contexts the launch reader simulated, per Dockerfile whose
+	// files it followed.
+	launchCands map[string]map[string]bool
 }
 
 var (
@@ -1518,7 +1553,7 @@ func scanFirstParty(m *installModel, ls *loadSet) firstPartyRoots {
 		}
 	}
 	lr := &launchReader{m: m, ls: ls, out: &out, seen: map[string]bool{}, files: map[string]bool{}}
-	lr.read(opsFiles)
+	lr.read()
 	return out
 }
 

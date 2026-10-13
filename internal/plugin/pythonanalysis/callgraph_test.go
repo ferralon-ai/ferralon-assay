@@ -374,6 +374,12 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 			exact:  []string{"pypi:jwt#jwt.decode", "pypi:pyjwt#jwt.decode"},
 		},
 		{
+			name:   "declaring one shipper keeps the edge to every shipper",
+			files:  map[string]string{"requirements.txt": "pyjwt==2.8.0\n", "app.py": "import jwt\n\ndef check(t):\n    return jwt.decode(t)\n"},
+			caller: funcSCIP("app", nil, "check", 1),
+			exact:  []string{"pypi:jwt#jwt.decode", "pypi:pyjwt#jwt.decode"},
+		},
+		{
 			name:   "PIL reaches every distribution shipping it",
 			files:  map[string]string{"app.py": "from PIL import Image\n\ndef load(p):\n    return Image.open(p)\n"},
 			caller: funcSCIP("app", nil, "load", 1),

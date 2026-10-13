@@ -166,7 +166,8 @@ func TestDispatch_ReachabilitySliceOps_Live(t *testing.T) {
 
 // TestDispatch_CallGraph_DeclaredCoShipperIsAttributed: with a manifest the lane reads only in
 // part, an import several curated distributions ship (jwt: jwt and pyjwt) counts as attributed
-// when one of them is declared, so call_graph reaches pyjwt and carries no tool_failure.
+// when one of them is declared, so call_graph carries no tool_failure. That only holds because
+// the edges still reach every shipper, not just the declared one, so both are asserted.
 func TestDispatch_CallGraph_DeclaredCoShipperIsAttributed(t *testing.T) {
 	root := t.TempDir()
 	for rel, content := range map[string]string{
@@ -185,12 +186,14 @@ func TestDispatch_CallGraph_DeclaredCoShipperIsAttributed(t *testing.T) {
 	if rs := reasons(resp.CallGraph); hasReason(rs, plugin.PartialReasonToolFailure) {
 		t.Errorf("declared pyjwt must attribute import jwt; got reasons %v", rs)
 	}
-	var reached bool
+	reached := map[string]bool{}
 	for _, e := range resp.CallGraph.Edges {
-		reached = reached || e.Callee.SCIP == "pypi:pyjwt#jwt.decode"
+		reached[e.Callee.SCIP] = true
 	}
-	if !reached {
-		t.Errorf("no edge to pypi:pyjwt#jwt.decode; edges %+v", resp.CallGraph.Edges)
+	for _, want := range []string{"pypi:jwt#jwt.decode", "pypi:pyjwt#jwt.decode"} {
+		if !reached[want] {
+			t.Errorf("no edge to %s; edges %+v", want, resp.CallGraph.Edges)
+		}
 	}
 }
 

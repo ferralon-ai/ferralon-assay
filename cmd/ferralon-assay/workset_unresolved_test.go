@@ -1,0 +1,327 @@
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/statestore"
+	"github.com/ferralon-ai/ferralon-assay/trigger"
+)
+
+// inventoryAnalyzer is an unsearchingAnalyzer whose manifest declares deps. Match follows the
+// plugin contract: a resolved declaration of the coordinate wins over an unresolved one.
+type inventoryAnalyzer struct {
+	unsearchingAnalyzer
+	deps []plugin.ResolvedDependency
+}
+
+func (a inventoryAnalyzer) ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	res := plugin.DependencyVersionResult{Partiality: plugin.Complete(), All: a.deps}
+	for _, d := range a.deps {
+		if d.Coordinate != req.Coordinate {
+			continue
+		}
+		if !res.Found || d.Resolved && !res.Match.Resolved {
+			res.Found, res.Match = true, d
+		}
+	}
+	return res, nil
+}
+
+// pythonInventory is the real Python lane's manifest reader behind the analyzer double.
+type pythonInventory struct {
+	unsearchingAnalyzer
+}
+
+func (pythonInventory) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	return pythonanalysis.ResolveDependencyVersions(ctx, req)
+}
+
+func mavenRecord(id, coordinate string) map[string]any {
+	return map[string]any{
+		"schema_version":  "ferralon.normalized_advisory.v3",
+		"vuln_id":         id,
+		"coordinate":      coordinate,
+		"purl":            "pkg:maven/" + strings.Replace(coordinate, ":", "/", 1),
+		"version_scheme":  "maven",
+		"affected_ranges": []map[string]string{{"introduced": "8.4.0", "fixed": "8.5.10"}},
+	}
+}
+
+func pypiRecord(id, name string) map[string]any {
+	return map[string]any{
+		"schema_version":  "ferralon.normalized_advisory.v3",
+		"vuln_id":         id,
+		"coordinate":      name,
+		"purl":            "pkg:pypi/" + name,
+		"version_scheme":  "pypi",
+		"affected_ranges": []map[string]string{{"introduced": "0", "fixed": "99.0.0"}},
+	}
+}
+
+const (
+	minioID  = "CVE-2025-59952"
+	widgetID = "GHSA-wwww-wwww-wwww"
+	flaskID  = "GHSA-ffff-ffff-ffff"
+	minio    = "io.minio:minio"
+	widget   = "com.example.lib:widget"
+)
+
+var (
+	minioResolved   = plugin.ResolvedDependency{Coordinate: minio, Version: "8.5.4", Resolved: true}
+	minioUnresolved = plugin.ResolvedDependency{Coordinate: minio, Constraint: "8.5.4"}
+	widgetResolved  = plugin.ResolvedDependency{Coordinate: widget, Version: "1.0.0", Resolved: true}
+)
+
+// javaTree writes a Java source tree and returns an *acquired with an empty floor, so the work set
+// is exactly what admission added.
+func javaTree(t *testing.T, p plugin.LanguagePlugin) *acquired {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "App.java"), []byte("class App {}\n"), 0o600); err != nil {
+		t.Fatalf("write App.java: %v", err)
+	}
+	return &acquired{buildDir: dir, language: checkout.LangJava, repo: "example.com/fixture", plugin: p}
+}
+
+// pythonTree writes a Python tree with requirements.txt and returns an *acquired over the real
+// Python manifest reader.
+func pythonTree(t *testing.T, requirements string) *acquired {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range map[string]string{"app.py": "x = 1\n", "requirements.txt": requirements} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return &acquired{
+		buildDir: dir, language: checkout.LangPython, repo: "example.com/fixture",
+		plugin: pythonInventory{unsearchingAnalyzer{language: checkout.LangPython}},
+	}
+}
+
+func javaAnalyzer(deps ...plugin.ResolvedDependency) plugin.LanguagePlugin {
+	return inventoryAnalyzer{unsearchingAnalyzer{language: checkout.LangJava}, deps}
+}
+
+func policyCorpus(t *testing.T) pipeline.AdvisorySource {
+	t.Helper()
+	return pipeline.NewBundleSource(writePolicyBundle(t, []corpusEntry{
+		{doc: mavenRecord(minioID, minio)},
+		{doc: mavenRecord(widgetID, widget)},
+		{doc: pypiRecord(flaskID, "flask")},
+	}))
+}
+
+func notesFor(notes []report.PartialityNote, reason string) []report.PartialityNote {
+	var out []report.PartialityNote
+	for _, n := range notes {
+		if n.Reason == reason {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// TestWorkSet_UnresolvedDependency pins admission of a dependency that is declared but carries no
+// resolved version. Unread is not absent: policy admission matches by name, so the advisory gets a
+// row; the OSV query cannot ask without a version, so the skipped dependency is named.
+func TestWorkSet_UnresolvedDependency(t *testing.T) {
+	tests := []struct {
+		name        string
+		acq         func(t *testing.T) *acquired
+		policy      bool
+		wantIDs     []string
+		wantQueried []string
+		wantSkipped map[string]string // skipped coordinate -> the note's Package
+		wantSource  string
+	}{
+		{
+			name:       "policy: mixed build admits the unresolved dependency's advisory",
+			acq:        func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioUnresolved)) },
+			policy:     true,
+			wantIDs:    []string{minioID, widgetID},
+			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name:       "policy: all-unresolved build is admitted, not an absent inventory",
+			acq:        func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved)) },
+			policy:     true,
+			wantIDs:    []string{minioID},
+			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name:       "policy: resolved control is unchanged",
+			acq:        func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioResolved)) },
+			policy:     true,
+			wantIDs:    []string{minioID, widgetID},
+			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name:       "policy: a resolved declaration wins over an unresolved one",
+			acq:        func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved, minioResolved)) },
+			policy:     true,
+			wantIDs:    []string{minioID},
+			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name:        "osv: mixed build queries the resolved dependency and names the skipped one",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioUnresolved)) },
+			wantQueried: []string{widget},
+			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:        "osv: all-unresolved build names every skipped dependency",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved)) },
+			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
+			wantSource:  report.WorkSetBuiltinLanguageSet,
+		},
+		{
+			name:        "osv: resolved control queries everything and names nothing",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioResolved)) },
+			wantQueried: []string{widget, minio},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:       "python policy: an unpinned requirement beside a pinned one is admitted",
+			acq:        func(t *testing.T) *acquired { return pythonTree(t, "requests==2.31.0\nflask>=2.0\n") },
+			policy:     true,
+			wantIDs:    []string{flaskID},
+			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name:        "python osv: the unpinned requirement is named",
+			acq:         func(t *testing.T) *acquired { return pythonTree(t, "requests==2.31.0\nflask>=2.0\n") },
+			wantQueried: []string{"requests"},
+			wantSkipped: map[string]string{"flask": "pkg:pypi/flask"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			acq := tt.acq(t)
+			osv := &fakeOSV{}
+			var ws workSet
+			if tt.policy {
+				corpus := policyCorpus(t)
+				ws = selectWorkSet(context.Background(), acq, corpus, corpus, "full", false, osv)
+			} else {
+				ws = selectWorkSet(context.Background(), acq, nil, nil, "", true, osv)
+			}
+
+			if got := ids(ws.advisories); strings.Join(got, ",") != strings.Join(tt.wantIDs, ",") {
+				t.Errorf("work set = %v, want %v", got, tt.wantIDs)
+			}
+			if ws.source != tt.wantSource {
+				t.Errorf("source = %q, want %q", ws.source, tt.wantSource)
+			}
+			if hasReason(ws.partiality, reasonWorkSetNoInventory) {
+				t.Errorf("work_set_no_inventory fired over a manifest that declares dependencies: %+v", ws.partiality)
+			}
+
+			var queried []string
+			for _, p := range osv.seen {
+				queried = append(queried, p.Name)
+				if p.Version == "" {
+					t.Errorf("OSV was asked about %s with no version", p.Name)
+				}
+			}
+			if strings.Join(queried, ",") != strings.Join(tt.wantQueried, ",") {
+				t.Errorf("OSV queried %v, want %v", queried, tt.wantQueried)
+			}
+
+			skipped := notesFor(ws.partiality, reasonWorkSetDependencyUnresolved)
+			if len(skipped) != len(tt.wantSkipped) {
+				t.Fatalf("%d %s notes, want %d: %+v", len(skipped), reasonWorkSetDependencyUnresolved, len(tt.wantSkipped), ws.partiality)
+			}
+			for _, n := range skipped {
+				coord := strings.SplitN(n.Detail, " ", 2)[0]
+				want, ok := tt.wantSkipped[coord]
+				if !ok {
+					t.Errorf("note names %q, want one of %v: %+v", coord, tt.wantSkipped, n)
+					continue
+				}
+				if n.Package != want {
+					t.Errorf("note Package = %q, want %q", n.Package, want)
+				}
+				if !strings.Contains(ws.describe(), coord) {
+					t.Errorf("terminal summary does not name %s:\n%s", coord, ws.describe())
+				}
+			}
+		})
+	}
+}
+
+// TestWorkSet_UnresolvedAdmissionIsUndetermined follows an admitted advisory through the baseline
+// path. With no resolved version the version check fails open, so the row is undetermined and
+// carries no package; the resolved control shows the double does deliver a version when there is one.
+func TestWorkSet_UnresolvedAdmissionIsUndetermined(t *testing.T) {
+	tests := []struct {
+		name        string
+		acq         func(t *testing.T) *acquired
+		id          string
+		wantVersion string
+	}{
+		{"java: unresolved minio", func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioUnresolved)) }, minioID, ""},
+		{"python: unpinned flask", func(t *testing.T) *acquired { return pythonTree(t, "requests==2.31.0\nflask>=2.0\n") }, flaskID, ""},
+		{"java control: resolved minio", func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(widgetResolved, minioResolved)) }, minioID, "8.5.4"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			trapEgress(t)
+			acq := tt.acq(t)
+			corpus := policyCorpus(t)
+			ws := selectWorkSet(context.Background(), acq, corpus, corpus, "full", false, &fakeOSV{})
+
+			rep, err := trigger.RunBaseline(context.Background(), statestore.NewMemStore(), trigger.BaselineRequest{
+				Subject: trigger.Subject{Repo: "specimen", Revision: "HEAD"},
+				Codebase: assessment.CodebaseRef{
+					Repo:        "specimen",
+					Revision:    "HEAD",
+					Acquisition: assessment.Acquisition{Mode: "vendored_repro", Path: acq.buildDir},
+				},
+				Advisories:    ws.advisories,
+				WorkSetLimits: ws.partiality,
+				AssessOptions: []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin), pipeline.WithAdvisorySource(corpus)},
+			})
+			if err != nil {
+				t.Fatalf("RunBaseline: %v", err)
+			}
+
+			var found *report.AdvisoryFinding
+			for i := range rep.Advisories {
+				if rep.Advisories[i].Advisory.ID == tt.id {
+					found = &rep.Advisories[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("no row for %s: the advisory against a declared dependency left the work set", tt.id)
+			}
+			if tt.wantVersion != "" {
+				if found.Package == nil || found.Package.Version != tt.wantVersion {
+					t.Fatalf("control row package = %+v, want version %s", found.Package, tt.wantVersion)
+				}
+				return
+			}
+			if found.Verdict != report.VerdictUndetermined {
+				t.Errorf("%s verdict = %q, want %q: an unresolved version cannot place the dependency out of range",
+					tt.id, found.Verdict, report.VerdictUndetermined)
+			}
+			if found.Package != nil && found.Package.Version != "" {
+				t.Errorf("%s carries version %q that nothing resolved", tt.id, found.Package.Version)
+			}
+		})
+	}
+}

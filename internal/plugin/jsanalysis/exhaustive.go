@@ -14,7 +14,8 @@ package jsanalysis
 //     whole tree but node_modules and site-packages, by name or by content) is fully read, so a
 //     bun.lock, deno.lock, deno.json, a lockfile outside the directories lockFiles walks, a
 //     templated or symlinked package.json, a symlink leaving the build dir, a symlinked
-//     directory or an unreadable one withholds;
+//     directory whose target the walk does not itself read (one into node_modules included),
+//     or an unreadable one withholds;
 //   - every package.json that declares a dependency is a project its governing lockfiles (those
 //     in the nearest directory at or above it holding any) record: the lock's own root, or a
 //     workspace the lock (or, for classic yarn, the root package.json's "workspaces") names;

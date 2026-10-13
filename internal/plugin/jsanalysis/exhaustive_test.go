@@ -123,8 +123,10 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	}
 }
 
-// B2, B6: the walk never follows a symlink. A symlinked directory or manifest, or an installed
-// package linked from outside the build dir, is not fully read; an in-tree workspace link is.
+// B2, B6: the walk never follows a symlink. A symlinked manifest, a directory linked from
+// outside the build dir or into node_modules, or an installed package linked from outside the
+// build dir, is not fully read; an in-tree workspace link, and a directory linked to one the walk
+// reads itself, are.
 func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
 	const lockV3Tools = `{"name":"app","lockfileVersion":3,"packages":{
   "": {"name":"app","dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}},
@@ -148,8 +150,14 @@ func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
 		{"in-tree workspace link", func(t *testing.T, dir string) (string, string) {
 			return filepath.Join("..", "tools"), filepath.Join(dir, "node_modules", "tool")
 		}, true},
-		{"symlinked directory", func(t *testing.T, dir string) (string, string) {
+		{"directory linked from outside", func(t *testing.T, dir string) (string, string) {
 			return t.TempDir(), filepath.Join(dir, "linked")
+		}, false},
+		{"directory linked to an in-tree directory", func(t *testing.T, dir string) (string, string) {
+			return "tools", filepath.Join(dir, "web")
+		}, true},
+		{"directory linked into node_modules", func(t *testing.T, dir string) (string, string) {
+			return filepath.Join("node_modules", "express"), filepath.Join(dir, "vendor")
 		}, false},
 		{"symlinked package.json", func(t *testing.T, dir string) (string, string) {
 			return filepath.Join("..", "tools", "package.json"), filepath.Join(dir, "web", "package.json")

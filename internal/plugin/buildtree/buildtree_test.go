@@ -124,8 +124,9 @@ func TestWalk_SkipRuleAndSymlinks(t *testing.T) {
 	}
 }
 
-// TestCandidates: matches come back with FullyRead from the lane only for regular files; every
-// symlink, escaping or not, and every unreadable entry is a candidate that is not fully read.
+// TestCandidates: matches come back with FullyRead from the lane only for regular files; a
+// symlinked file, every symlink that escapes root, and every unreadable entry is a candidate that
+// is not fully read. in-dir links to a directory the walk reads at its real path, so it is not one.
 func TestCandidates(t *testing.T) {
 	root, _ := tree(t)
 	match := func(path string, head []byte) (string, bool) {
@@ -152,7 +153,6 @@ func TestCandidates(t *testing.T) {
 		{"build/dep.txt", "dep", true},
 		{"dangling.txt", "symlink leaves the build dir", false},
 		{"dep.txt", "dep", true},
-		{"in-dir", "symlinked directory", false},
 		{"in-file.txt", "dep", false},
 		{"linked/node_modules", "symlink leaves the build dir", false},
 		{"out-dir", "symlink leaves the build dir", false},
@@ -166,6 +166,79 @@ func TestCandidates(t *testing.T) {
 	}
 	if AllFullyRead(Candidates(root, match, fullyRead)) {
 		t.Error("AllFullyRead = true with symlinked candidates")
+	}
+}
+
+// TestCandidates_SymlinkedDirs: a symlinked directory inside root is read in full, through its
+// target, only when the walk enters that target at its real path. A target under a Skipped
+// directory or one the walk cannot list, and a link cycle, stay candidates that are not fully read.
+func TestCandidates_SymlinkedDirs(t *testing.T) {
+	type row struct {
+		Path, Why string
+		FullyRead bool
+	}
+	tests := []struct {
+		name  string
+		links map[string]string // link → target, relative to the link's directory
+		want  []row
+	}{
+		{"lib64 to lib", map[string]string{".venv/lib64": "lib"}, nil},
+		{"link to root", map[string]string{"self": "."}, nil},
+		{"link through a linked directory", map[string]string{"a": ".venv", "b": "a/lib"}, nil},
+		{"link into node_modules", map[string]string{"vendor": "node_modules/lib"},
+			[]row{{"vendor", "symlinked directory the walk does not read", false}}},
+		{"link to node_modules", map[string]string{"deps": "node_modules"},
+			[]row{{"deps", "symlinked directory the walk does not read", false}}},
+		{"link into site-packages", map[string]string{"pkgs": ".venv/lib/site-packages"},
+			[]row{{"pkgs", "symlinked directory the walk does not read", false}}},
+		{"symlink cycle", map[string]string{"loop1": "loop2", "loop2": "loop1"},
+			[]row{{"loop1", "symlink leaves the build dir", false}, {"loop2", "symlink leaves the build dir", false}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			write(t, filepath.Join(root, ".venv", "lib", "dep.txt"), "x")
+			write(t, filepath.Join(root, ".venv", "lib", "site-packages", "x", "dep.txt"), "x")
+			write(t, filepath.Join(root, "node_modules", "lib", "dep.txt"), "x")
+			for link, target := range tt.links {
+				symlink(t, target, filepath.Join(root, link))
+			}
+			never := func(string, []byte) (string, bool) { return "", false }
+			var got []row
+			for _, c := range Candidates(root, never, func(string) bool { return true }) {
+				rel, _ := filepath.Rel(root, c.Path)
+				got = append(got, row{filepath.ToSlash(rel), c.Why, c.FullyRead})
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("candidates:\n%v\nwant:\n%v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCandidates_LinkToUnreadable: a symlinked directory whose target the walk cannot list is
+// not read through its target.
+func TestCandidates_LinkToUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every directory")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	write(t, filepath.Join(locked, "dep.txt"), "x")
+	symlink(t, "locked", filepath.Join(root, "via"))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	var got []string
+	for _, c := range Candidates(root, func(string, []byte) (string, bool) { return "", false }, func(string) bool { return true }) {
+		if c.FullyRead {
+			t.Errorf("%s fully read", c.Path)
+		}
+		got = append(got, filepath.Base(c.Path))
+	}
+	if want := []string{"locked", "via"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("candidates = %v, want %v", got, want)
 	}
 }
 

@@ -5,7 +5,9 @@
 // The skip rule is fixed (see Skipped): a directory named node_modules or site-packages holds
 // installed packages, not the build's own declarations, and is not entered. Nothing else is
 // skipped, .git included. Walk never follows a symlink, and Candidates treats one that leaves
-// the build dir as a surface it could not read.
+// the build dir as a surface it could not read. A symlinked directory inside the build dir is
+// read in full only through its target, when the walk itself enters that target at its real
+// path; every other symlinked directory is a surface Candidates could not read.
 package buildtree
 
 import (
@@ -122,8 +124,14 @@ const HeadSize = 64 << 10
 // Candidates walks root and returns, in walk order:
 //
 //   - every regular file, or symlink to a file inside root, that match accepts;
-//   - every symlink that escapes root, every symlinked directory, and every directory or file
-//     that cannot be read, since what they hold cannot be classified.
+//   - every symlink that escapes root (or does not resolve, a link cycle included), every
+//     directory or file that cannot be read, and every symlinked directory whose target the walk
+//     does not itself read, since what they hold cannot be classified.
+//
+// A symlinked directory is read in full, and is not a candidate, only when its target resolves
+// inside root's real path to a directory the walk enters at that real path: not a Skipped
+// directory or anything under one, and not one it could not list. The walk never follows the
+// link, so whatever the target holds is classified once, at its real path.
 //
 // match sees the path and up to HeadSize bytes of the file's content (nil when the content
 // looks binary or the file is empty). fullyRead is asked only about a regular file match
@@ -134,9 +142,22 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 	add := func(path, why string, read bool) {
 		out = append(out, Candidate{Path: path, Why: why, FullyRead: read})
 	}
+	realRoot, rootErr := filepath.EvalSymlinks(root)
+	// walked holds the real path of every directory the walk entered and listed. The walk never
+	// follows a symlink, so a walked path is root's real path joined with its path under root.
+	walked := map[string]bool{}
+	realOf := func(path string) string {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(realRoot, rel)
+	}
+	var linkedDirs []string
 	_ = Walk(root, func(e Entry, err error) error {
 		switch {
 		case err != nil:
+			delete(walked, realOf(e.Path))
 			add(e.Path, "unreadable", false)
 			if e.D != nil && e.D.IsDir() && e.Path != root {
 				return filepath.SkipDir
@@ -148,9 +169,10 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 		case e.Skipped:
 			return nil
 		case e.Symlink && isDir(e.Path):
-			add(e.Path, "symlinked directory", false)
+			linkedDirs = append(linkedDirs, e.Path)
 			return nil
 		case e.D.IsDir():
+			walked[realOf(e.Path)] = true
 			return nil
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
@@ -168,6 +190,12 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 		add(e.Path, why, !e.Symlink && fullyRead(e.Path))
 		return nil
 	})
+	for _, link := range linkedDirs {
+		target, err := filepath.EvalSymlinks(link)
+		if rootErr != nil || err != nil || !walked[target] {
+			add(link, "symlinked directory the walk does not read", false)
+		}
+	}
 	return out
 }
 

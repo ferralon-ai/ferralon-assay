@@ -19,7 +19,8 @@ import (
 
 // ManifestCandidates returns every JavaScript install surface under root, sorted by path: each
 // file whose name or content looks like a package manifest or lockfile (jsCandidate), plus every
-// symlink that leaves root, symlinked directory and unreadable entry (buildtree.Candidates).
+// symlink that leaves root, symlinked directory the walk does not read through its target, and
+// unreadable entry (buildtree.Candidates).
 // FullyRead is true only for a regular package.json that decodes with string-valued dependency
 // maps, or a lockfile the resolver discovers (lockFiles), parses, and finds no opaque entry in.
 func ManifestCandidates(root string) []buildtree.Candidate {

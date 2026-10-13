@@ -27,8 +27,10 @@ package pythonanalysis
 //     environment files, *.in, tox deps, nox installs, a requirement file under any name), a
 //     manifest outside the directories it discovers, a requirements file with an editable,
 //     VCS or URL line or an include it does not read, a computed setup.py, any hatch_build.py,
-//     a dynamic [project] field with no source it reads, a symlink or symlinked directory, or
-//     an unreadable entry each fail open. The walk skips only node_modules and site-packages
+//     a dynamic [project] field with no source it reads, a symlinked manifest, a symlink
+//     leaving the build dir (a .venv/bin/python link to an outside interpreter included), a
+//     symlinked directory whose target the walk does not itself read, or an unreadable entry
+//     each fail open. The walk skips only node_modules and site-packages
 //     (buildtree.Skipped);
 //   - no installed copy of the coordinate is present: a *.dist-info or *.egg-info anywhere
 //     (directly inside a site-packages, or anywhere the walk reaches, a build backend's

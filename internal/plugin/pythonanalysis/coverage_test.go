@@ -244,19 +244,27 @@ func TestResolveVersions_ExhaustiveUnreadSurfaces(t *testing.T) {
 }
 
 // TestResolveVersions_ExhaustiveSymlinks: a symlinked manifest is not fully read even when its
-// target is, and a symlink leaving the build dir is a surface the walk cannot read. The last
-// row is the layout uv sync leaves: a .venv/bin/python link to an interpreter outside it.
+// target is, and a symlink leaving the build dir is a surface the walk cannot read: the
+// .venv/bin/python link uv sync leaves to an interpreter outside the build dir included. A
+// symlinked directory inside it is read through its target when the walk reads that target
+// itself (the .venv/lib64 link to lib), and not when the target is under a skipped directory.
 func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
 	outside := writeTree(t, map[string]string{"python3.12": "#!binary\n"})
 	tests := []struct {
 		name, target, link string
+		want               bool
 	}{
-		{"symlinked requirements file inside root", "requirements-base.txt", "requirements-dev.txt"},
-		{"symlink leaving root", filepath.Join(outside, "python3.12"), ".venv/bin/python"},
+		{"symlinked requirements file inside root", "requirements-base.txt", "requirements-dev.txt", false},
+		{"symlink leaving root", filepath.Join(outside, "python3.12"), ".venv/bin/python", false},
+		{"venv lib64 linked to lib", "lib", ".venv/lib64", true},
+		{"directory linked into site-packages", filepath.Join(".venv", "lib", "python3.12", "site-packages"), "pkgs", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := writeTree(t, map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements-base.txt": "flask==3.0.0\n"})
+			root := writeTree(t, map[string]string{
+				"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements-base.txt": "flask==3.0.0\n",
+				".venv/lib/python3.12/site-packages/flask-3.0.0.dist-info/METADATA": "Name: flask\n",
+			})
 			if r := resolveVersion(t, root, "PyJWT"); !r.Exhaustive {
 				t.Fatalf("baseline not exhaustive")
 			}
@@ -267,8 +275,8 @@ func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
 			if err := os.Symlink(tt.target, link); err != nil {
 				t.Skipf("symlinks unavailable: %v", err)
 			}
-			if r := resolveVersion(t, root, "PyJWT"); r.Exhaustive {
-				t.Fatalf("Exhaustive with %s", tt.link)
+			if r := resolveVersion(t, root, "PyJWT"); r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v with %s, want %v (partiality %+v)", r.Exhaustive, tt.link, tt.want, r.Partiality)
 			}
 		})
 	}

@@ -14,8 +14,8 @@ import (
 
 // ManifestCandidates returns every Python install surface under root, sorted by path: each file
 // whose name or content looks like a Python manifest, lockfile or requirement file
-// (pyCandidate), plus every symlink that leaves root, symlinked directory and unreadable entry
-// (buildtree.Candidates). FullyRead is true only for a regular file the resolver discovers
+// (pyCandidate), plus every symlink that leaves root, symlinked directory the walk does not
+// read through its target, and unreadable entry (buildtree.Candidates). FullyRead is true only for a regular file the resolver discovers
 // (manifestFiles) or reads through a discovered manifest's file directive, that parses, and
 // whose parse captures everything it can cause to be installed (pySurface.fullyRead).
 func ManifestCandidates(root string) []buildtree.Candidate {

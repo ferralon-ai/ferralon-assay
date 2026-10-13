@@ -124,7 +124,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 	}
 }
 
-// A symlinked directory is not followed by the walk, so what it holds goes unread.
+// A symlinked directory leaving the build dir is not followed by the walk, so what it holds goes
+// unread.
 func TestResolveVersions_ExhaustiveSymlinkedDir(t *testing.T) {
 	root := writeTree(t, map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject})
 	elsewhere := writeTree(t, map[string]string{"requirements.txt": "pyjwt==2.8.0\n"})

@@ -274,6 +274,67 @@ func TestLane_PathsAndTaint(t *testing.T) {
 	}
 }
 
+// A sink that is a node no ingress reaches is declared cgx_sink_unreached by every op that is
+// handed it (Reachability, ComputeTaint, ResolveDependencySymbols), and a reached sink is not.
+// count is static and called only through the handler's function pointer, so the graph has no
+// edge to it: the shape that would read as a refutation if no path were taken as absence.
+func TestLane_SinkUnreachedDeclared(t *testing.T) {
+	ctx := context.Background()
+	dir := copyFixture(t, "c")
+	l := newTestLane(t, Config{}, (&fakeOpener{g: cGraph()}).open)
+
+	for _, tc := range []struct {
+		sink string
+		want bool
+	}{
+		{"count", true},
+		{"scan", false},
+	} {
+		re, err := l.Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{tc.sink}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ta, err := l.ComputeTaint(ctx, plugin.ComputeTaintRequest{BuildDir: dir, Sinks: []string{tc.sink}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rs, err := l.ResolveDependencySymbols(ctx, plugin.ResolveSymbolsRequest{BuildDir: dir, AdvisorySymbols: []string{tc.sink}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rs.Resolved) != 1 {
+			t.Fatalf("%s: resolve = %+v, want it resolved", tc.sink, rs)
+		}
+		for op, p := range map[string]plugin.Partiality{"reachability": re.Partiality, "taint": ta.Partiality, "resolve": rs.Partiality} {
+			if got := hasReason(p, reasonSinkUnreached); got != tc.want {
+				t.Errorf("%s %s: cgx_sink_unreached = %v, want %v (%v)", tc.sink, op, got, tc.want, p.Reasons)
+			}
+		}
+		if (len(re.Paths) == 0) != tc.want {
+			t.Errorf("%s: paths = %+v", tc.sink, re.Paths)
+		}
+	}
+
+	// The tree-wide ops are shared across a scan's advisories, so they never declare it.
+	cg, err := l.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := l.FindIngresses(ctx, plugin.FindIngressesRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := l.IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for op, p := range map[string]plugin.Partiality{"callgraph": cg.Partiality, "ingresses": in.Partiality, "index": idx.Partiality} {
+		if hasReason(p, reasonSinkUnreached) {
+			t.Errorf("%s declares cgx_sink_unreached: %v", op, p.Reasons)
+		}
+	}
+}
+
 // C++: a name with a header prototype and a definition is one symbol, its duplicated edge rows
 // one edge, and a path to it is found from the merged anchor, never "absent".
 func TestLane_CXX_SplitDeclarationsMerged(t *testing.T) {

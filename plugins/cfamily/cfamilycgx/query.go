@@ -31,6 +31,10 @@ const (
 	reasonQueryTruncated = plugin.PartialReasonToolFailure + ":cgx_query_truncated"
 	// A requested sink, or an advisory symbol being resolved, has no definition in the graph.
 	reasonSinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
+	// A requested sink, or a resolved advisory symbol, is a node no ingress reaches. The graph
+	// can lose calls (a parse error inside a body, a call through a macro alias), so no path is
+	// not a refutation: the advisory's analysis did not run to an answer.
+	reasonSinkUnreached = plugin.PartialReasonToolFailure + ":cgx_sink_unreached"
 )
 
 // node is one cgx symbol occurrence (a C++ name can have several).

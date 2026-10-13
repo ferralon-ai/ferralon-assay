@@ -388,6 +388,16 @@ func (s *session) ingresses() ([]plugin.Ingress, map[string]bool) {
 	return out, reasons
 }
 
+// roots is the sorted ingress FQNs a path starts from, with the ingress reasons.
+func (s *session) roots() ([]string, map[string]bool) {
+	ing, reasons := s.ingresses()
+	from := make([]string, 0, len(ing))
+	for _, in := range ing {
+		from = append(from, in.Symbol.SCIP)
+	}
+	return sortedUnique(from), reasons
+}
+
 // sym mints the plugin Symbol for a cgx FQN. Every graph-shaped result goes through it, so a
 // node's Symbol is byte-identical wherever it appears (plugin.Symbol compares all fields).
 func sym(fqn string) plugin.Symbol { return plugin.Symbol{SCIP: fqn, DisplayName: fqn} }
@@ -420,7 +430,9 @@ func (l *Lane) IndexSymbols(ctx context.Context, req plugin.IndexSymbolsRequest)
 // matched exactly, else as the last component of a qualified C++ name (declared). A name with
 // no definition in the graph is declared cgx_sink_unresolved (loud): the dependency's own code,
 // where it is usually defined, is not in the graph, and a call through a macro alias or a
-// function pointer names it nowhere, so its absence is never read as safe.
+// function pointer names it nowhere, so its absence is never read as safe. A resolved function
+// no ingress reaches is declared cgx_sink_unreached (loud), for the same reason: the graph can
+// lose the call that reaches it.
 func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (res plugin.SymbolResolutionResult, err error) {
 	if !cfamilyanalysis.NamesSymbol(req) {
 		return cfamilyanalysis.ResolveDependencySymbols(ctx, req)
@@ -465,6 +477,15 @@ func (l *Lane) ResolveDependencySymbols(ctx context.Context, req plugin.ResolveS
 		reasons[reasonSinkUnresolved] = true
 	}
 	hits = sortedUnique(hits)
+	if len(hits) > 0 {
+		from, _ := s.roots()
+		for _, h := range hits {
+			if _, ok := s.gv.path(from, h); !ok {
+				reasons[reasonSinkUnreached] = true
+				break
+			}
+		}
+	}
 	res = plugin.SymbolResolutionResult{Partiality: partiality(reasons), Resolved: make([]plugin.Symbol, 0, len(hits))}
 	for _, h := range hits {
 		res.Resolved = append(res.Resolved, sym(h))
@@ -532,7 +553,7 @@ func (l *Lane) FindIngresses(ctx context.Context, req plugin.FindIngressesReques
 }
 
 // Reachability finds, for each requested sink, a call path from an ingress to it. With no sinks
-// (as the pipeline calls it) it still runs, so its partiality states what the graph misses.
+// it still runs, so its partiality states what the graph misses.
 func (l *Lane) Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	paths, part, err := l.paths(ctx, plugin.OpReachability, req.BuildDir, req.Symbols)
 	return plugin.ReachabilityResult{Partiality: part, Paths: paths}, err
@@ -545,8 +566,10 @@ func (l *Lane) ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest)
 }
 
 // paths is Reachability and ComputeTaint: a shortest path from the ingresses to each sink. A
-// sink that is not a node is declared; an unreached one is no path, under the partiality every
-// result carries (dynamic dispatch and the residue), never a clean refutation.
+// sink that is not a node is declared cgx_sink_unresolved, and a node no ingress reaches is
+// declared cgx_sink_unreached. Both are did_not_run, so a missing path never refutes. Both are
+// declared only here and in ResolveDependencySymbols, which run per advisory with that
+// advisory's sinks, never in the tree-wide ops shared across a scan's advisories.
 func (l *Lane) paths(ctx context.Context, op, buildDir string, sinks []string) (paths []plugin.ReachPath, part plugin.Partiality, err error) {
 	s, engine, err := l.begin(ctx, op, buildDir)
 	if err != nil {
@@ -561,13 +584,8 @@ func (l *Lane) paths(ctx context.Context, op, buildDir string, sinks []string) (
 		return nil, part, err
 	}
 	reasons[plugin.PartialReasonDynamicDispatch] = true
-	ing, ir := s.ingresses()
+	from, ir := s.roots()
 	merge(reasons, ir)
-	from := make([]string, 0, len(ing))
-	for _, in := range ing {
-		from = append(from, in.Symbol.SCIP)
-	}
-	from = sortedUnique(from)
 
 	paths = []plugin.ReachPath{}
 	for _, sink := range nonEmpty(sinks) {
@@ -577,6 +595,7 @@ func (l *Lane) paths(ctx context.Context, op, buildDir string, sinks []string) (
 		}
 		trace, ok := s.gv.path(from, sink)
 		if !ok {
+			reasons[reasonSinkUnreached] = true
 			continue
 		}
 		p := plugin.ReachPath{Sink: sym(sink), Ingress: sym(trace[0]), Trace: make([]plugin.Symbol, 0, len(trace))}

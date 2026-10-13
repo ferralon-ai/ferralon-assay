@@ -262,9 +262,43 @@ func TestReadRootPackage(t *testing.T) {
 		{
 			name:     "nuget package id",
 			language: checkout.LangDotNet,
-			files:    map[string]string{"Newtonsoft.Json.csproj": "<Project><PropertyGroup><PackageId>Newtonsoft.Json</PackageId><VersionPrefix>13.0.1</VersionPrefix></PropertyGroup></Project>"},
+			files:    map[string]string{"Newtonsoft.Json.csproj": "<Project><PropertyGroup><PackageId>Newtonsoft.Json</PackageId><Version>13.0.1</Version></PropertyGroup></Project>"},
 			want:     RootPackage{PURLType: "nuget", Name: "Newtonsoft.Json", Version: "13.0.1"},
 			wantOK:   true,
+		},
+		{
+			name:     "nuget version prefix alone takes a suffix the build can pass",
+			language: checkout.LangDotNet,
+			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><VersionPrefix>13.0.1</VersionPrefix></PropertyGroup></Project>"},
+			want:     RootPackage{PURLType: "nuget", Name: "N"},
+			wantOK:   true,
+		},
+		{
+			name:     "nuget version under a Choose",
+			language: checkout.LangDotNet,
+			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup><Choose><When Condition=\"'$(Configuration)' == 'Release'\"><PropertyGroup><Version>2.0.0</Version></PropertyGroup></When></Choose></Project>"},
+			want:     RootPackage{PURLType: "nuget", Name: "N"},
+			wantOK:   true,
+		},
+		{
+			name:     "nuget version an Import can override",
+			language: checkout.LangDotNet,
+			files: map[string]string{
+				"N.csproj":      "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup><Import Project=\"version.props\"/></Project>",
+				"version.props": "<Project><PropertyGroup><Version>2.0.0</Version></PropertyGroup></Project>",
+			},
+			want:   RootPackage{PURLType: "nuget", Name: "N"},
+			wantOK: true,
+		},
+		{
+			name:     "nuget version a Directory.Build.props can override",
+			language: checkout.LangDotNet,
+			files: map[string]string{
+				"N.csproj":              "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup></Project>",
+				"Directory.Build.props": "<Project><PropertyGroup><VersionSuffix>beta.1</VersionSuffix></PropertyGroup></Project>",
+			},
+			want:   RootPackage{PURLType: "nuget", Name: "N"},
+			wantOK: true,
 		},
 		{
 			name:     "nuget version suffix makes a pre-release",
@@ -288,6 +322,80 @@ func TestReadRootPackage(t *testing.T) {
 				"Directory.Build.targets": "<Project/>",
 			},
 			want:   RootPackage{PURLType: "nuget", Name: "N"},
+			wantOK: true,
+		},
+		{
+			name:     "gradle settings configuring every project before its script",
+			language: checkout.LangJava,
+			files: map[string]string{
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n",
+				"settings.gradle": "rootProject.name = 'lib'\ngradle.beforeProject { p -> p.version = '2.0.0' }\n",
+			},
+			want:   RootPackage{PURLType: "maven", Name: "com.example:lib"},
+			wantOK: true,
+		},
+		{
+			name:     "gradle settings with an allprojects hook",
+			language: checkout.LangJava,
+			files: map[string]string{
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n",
+				"settings.gradle": "rootProject.name = 'lib'\ngradle.allprojects { version = '2.0.0' }\n",
+			},
+			want:   RootPackage{PURLType: "maven", Name: "com.example:lib"},
+			wantOK: true,
+		},
+		{
+			name:     "gradle version reset with setVersion",
+			language: checkout.LangJava,
+			files: map[string]string{
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n\ntasks.register('x') {}\nsetVersion('1.2.3-SNAPSHOT')\n",
+				"settings.gradle": "rootProject.name = 'lib'\n",
+			},
+			want:   RootPackage{PURLType: "maven", Name: "com.example:lib"},
+			wantOK: true,
+		},
+		{
+			name:     "gradle version set by name",
+			language: checkout.LangJava,
+			files: map[string]string{
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n\next { set('version', '2.0.0') }\n",
+				"settings.gradle": "rootProject.name = 'lib'\n",
+			},
+			want:   RootPackage{PURLType: "maven", Name: "com.example:lib"},
+			wantOK: true,
+		},
+		{
+			name:     "poetry version under poetry-dynamic-versioning",
+			language: checkout.LangPython,
+			files:    map[string]string{"pyproject.toml": "[tool.poetry]\nname = \"x\"\nversion = \"1.2.3\"\n\n[tool.poetry-dynamic-versioning]\nenable = true\n"},
+			want:     RootPackage{PURLType: "pypi", Name: "x"},
+			wantOK:   true,
+		},
+		{
+			name:     "poetry version under a versioning build backend",
+			language: checkout.LangPython,
+			files:    map[string]string{"pyproject.toml": "[build-system]\nrequires = [\"poetry-core\"]\nbuild-backend = \"poetry_dynamic_versioning.backend\"\n\n[tool.poetry]\nname = \"x\"\nversion = \"1.2.3\"\n"},
+			want:     RootPackage{PURLType: "pypi", Name: "x"},
+			wantOK:   true,
+		},
+		{
+			name:     "hatch version from code, not the version file's text",
+			language: checkout.LangPython,
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"x\"\ndynamic = [\"version\"]\n\n[tool.hatch.version]\nsource = \"code\"\npath = \"x/__init__.py\"\n",
+				"x/__init__.py":  "__version__ = \"1.2.3\"\n__version__ += \".dev0\"\n",
+			},
+			want:   RootPackage{PURLType: "pypi", Name: "x"},
+			wantOK: true,
+		},
+		{
+			name:     "hatch version file read with a custom pattern",
+			language: checkout.LangPython,
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"x\"\ndynamic = [\"version\"]\n\n[tool.hatch.version]\npath = \"x/__init__.py\"\npattern = \"VERSION = (?P<version>.+)\"\n",
+				"x/__init__.py":  "__version__ = \"1.2.3\"\nVERSION = \"2.0.0\"\n",
+			},
+			want:   RootPackage{PURLType: "pypi", Name: "x"},
 			wantOK: true,
 		},
 		{
@@ -347,6 +455,78 @@ func TestRootPackage_Matches(t *testing.T) {
 	}
 }
 
+// TestGoPathOwner_ModulesOutsideTheRootGoMod: a module another go.mod in the tree declares, or a
+// go.work at or above the build directory uses, owns its own paths wherever its directory sits; a
+// go.work or go.mod that cannot be read leaves the owner ambiguous.
+func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
+	const gomod = "module example.com/x\n\ngo 1.22\n"
+	root := RootPackage{PURLType: "golang", Name: "example.com/x", Version: "v3.0.0"}
+	cases := []struct {
+		name        string
+		files       map[string]string
+		buildDir    string
+		module      string
+		want        bool
+		wantVersion string
+	}{
+		{"a go.work member in a directory not mirroring its path", map[string]string{
+			"go.mod":                  gomod,
+			"go.work":                 "go 1.22\n\nuse (\n\t.\n\t./modules/subthing\n)\n",
+			"modules/subthing/go.mod": "module example.com/x/sub\n\ngo 1.22\n",
+			"modules/subthing/sub.go": "package sub\n",
+		}, "", "example.com/x/sub", false, ""},
+		{"a nested module in a directory not mirroring its path", map[string]string{
+			"go.mod":                  gomod,
+			"modules/subthing/go.mod": "module example.com/x/sub\n\ngo 1.22\n",
+		}, "", "example.com/x/sub/pkg", false, ""},
+		{"a go.work above the build directory", map[string]string{
+			"go.work":    "go 1.22\n\nuse (\n\t./app\n\t./lib\n)\n",
+			"app/go.mod": gomod,
+			"lib/go.mod": "module example.com/x/lib\n\ngo 1.22\n",
+		}, "app", "example.com/x/lib", false, ""},
+		{"a go.work that does not parse", map[string]string{
+			"go.mod":  gomod,
+			"go.work": "go 1.22\n\nuse (\n",
+		}, "", "example.com/x/internal", true, ""},
+		{"a go.work using a directory with no go.mod", map[string]string{
+			"go.mod":  gomod,
+			"go.work": "go 1.22\n\nuse (\n\t.\n\t./gone\n)\n",
+		}, "", "example.com/x/internal", true, ""},
+		{"a nested go.mod declaring no module", map[string]string{
+			"go.mod":       gomod,
+			"third/go.mod": "go 1.22\n",
+		}, "", "example.com/x/internal", true, ""},
+		{"a go.work using only the root", map[string]string{
+			"go.mod":  gomod,
+			"go.work": "go 1.22\n\nuse .\n",
+		}, "", "example.com/x/internal", true, "v3.0.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(writeTree(t, tc.files), filepath.FromSlash(tc.buildDir))
+			if v, got := root.Matches(dir, tc.module, "", ""); got != tc.want || v != tc.wantVersion {
+				t.Fatalf("Matches = %q, %v; want %q, %v", v, got, tc.wantVersion, tc.want)
+			}
+		})
+	}
+}
+
+// TestNugetRootPackage_DirectoryFilesAboveTheProject: MSBuild imports Directory.Build.props and
+// Directory.Build.targets from any directory above the project, so one there leaves the version
+// unknown.
+func TestNugetRootPackage_DirectoryFilesAboveTheProject(t *testing.T) {
+	const proj = "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup></Project>"
+	for _, name := range []string{"Directory.Build.props", "Directory.Build.targets"} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"src/N/N.csproj": proj, name: "<Project/>"})
+			got, ok := ReadRootPackage(context.Background(), filepath.Join(dir, "src", "N"), checkout.LangDotNet)
+			if want := (RootPackage{PURLType: "nuget", Name: "N"}); !ok || got != want {
+				t.Fatalf("got %+v, %v; want %+v", got, ok, want)
+			}
+		})
+	}
+}
+
 // gitTree commits dir and tags HEAD with tags. Identity is passed per command; no config is written.
 func gitTree(t *testing.T, dir string, tags ...string) {
 	t.Helper()
@@ -381,6 +561,32 @@ func TestGoRootPackage_VersionIsTheModuleTagAtHead(t *testing.T) {
 	}
 	if got, _ := ReadRootPackage(context.Background(), filepath.Join(dir, "sub"), checkout.LangGo); got.Version != "v0.3.0" {
 		t.Fatalf("nested module version = %q, want v0.3.0", got.Version)
+	}
+}
+
+// TestGoRootPackage_TagMajorMustMatchThePath: a tag at HEAD is the module's version only when the
+// module path allows its major version, so a v2 module tagged v1.5.0 has no established version.
+func TestGoRootPackage_TagMajorMustMatchThePath(t *testing.T) {
+	cases := []struct {
+		name, module string
+		tags         []string
+		want         string
+	}{
+		{"a v2 module tagged v1", "example.com/app/v2", []string{"v1.5.0"}, ""},
+		{"a v2 module tagged v1 and v2", "example.com/app/v2", []string{"v1.5.0", "v2.1.0"}, "v2.1.0"},
+		{"a module without a suffix tagged v2", "example.com/app", []string{"v2.0.0"}, ""},
+		{"a module without a suffix tagged v0", "example.com/app", []string{"v0.4.0"}, "v0.4.0"},
+		{"a gopkg.in module tagged another major", "gopkg.in/yaml.v3", []string{"v2.4.0"}, ""},
+		{"a gopkg.in module tagged its major", "gopkg.in/yaml.v3", []string{"v3.0.1"}, "v3.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"go.mod": "module " + tc.module + "\n"})
+			gitTree(t, dir, tc.tags...)
+			if got, _ := ReadRootPackage(context.Background(), dir, checkout.LangGo); got.Version != tc.want {
+				t.Fatalf("version = %q, want %q", got.Version, tc.want)
+			}
+		})
 	}
 }
 

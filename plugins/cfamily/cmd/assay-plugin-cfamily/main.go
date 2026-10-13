@@ -25,7 +25,8 @@
 //	                                  baked into this build, if any)
 //	ASSAY_CFAMILY_CGX_CACHE_DIR       index snapshots and the native binary's private copy
 //	                                  (default: user cache dir)
-//	ASSAY_CFAMILY_CGX_WASM_CACHE_DIR  wasm engine compilation cache: an absolute path, not
+//	ASSAY_CFAMILY_CGX_WASM_CACHE_DIR  wasm engine compilation cache: an absolute path to a
+//	                                  directory (not a symlink) owned by this user, not
 //	                                  writable or readable by group or other. ferralon-assay
 //	                                  sets a private dir per scan when the operator sets none;
 //	                                  unset, caches in memory only for the life of this process

@@ -182,12 +182,14 @@ func embeddedKey() string {
 	return "wasm-embedded-" + hex.EncodeToString(sum[:8])
 }
 
-// checkWasmCacheDir refuses a configured wasm compile cache dir that is not absolute, or that
-// group or other can write or read: the cache holds compiled machine code the SDK runs
-// in-process, so a shared or loosely permissioned directory is never used. An unset dir (the
-// default) passes untouched; OpenSDK then caches in memory only for the life of the process. A
-// dir that does not yet exist is created private to this user; one that exists is checked, never
-// relaxed.
+// checkWasmCacheDir refuses a configured wasm compile cache dir that is not absolute, that is a
+// symlink or not a directory, that this process's effective user does not own, or that group or
+// other can write or read: the cache holds compiled machine code the SDK runs in-process, so a
+// shared, foreign or loosely permissioned directory is never used. An unset dir (the default)
+// passes untouched; OpenSDK then caches in memory only for the life of the process. A dir that
+// does not yet exist is created private to this user. The dir is checked after the create, never
+// before, so one that appears in between is held to the same checks as one that was already
+// there, and none is ever relaxed.
 func checkWasmCacheDir(cfg Config) error {
 	dir := cfg.WasmCacheDir
 	if dir == "" {
@@ -196,18 +198,34 @@ func checkWasmCacheDir(cfg Config) error {
 	if !filepath.IsAbs(dir) {
 		return fmt.Errorf("%w: the cgx wasm compile cache dir must be given by absolute path, got %q", ErrEngineUnconfigured, dir)
 	}
-	info, err := os.Stat(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("%w: create cgx wasm compile cache dir: %v", ErrEngineUnconfigured, err)
-		}
-		return nil
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return fmt.Errorf("%w: create cgx wasm compile cache dir parent: %v", ErrEngineUnconfigured, err)
 	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%w: create cgx wasm compile cache dir: %v", ErrEngineUnconfigured, err)
+	}
+	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("%w: stat cgx wasm compile cache dir: %v", ErrEngineUnconfigured, err)
 	}
+	return checkPrivateDir(dir, info, os.Geteuid())
+}
+
+// checkPrivateDir holds an Lstat result for dir to the wasm compile cache dir's rules: a real
+// directory, owned by euid, with no group or other access.
+func checkPrivateDir(dir string, info os.FileInfo, euid int) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: cgx wasm compile cache dir %q is a symlink", ErrEngineUnconfigured, dir)
+	}
 	if !info.IsDir() {
 		return fmt.Errorf("%w: cgx wasm compile cache dir %q is not a directory", ErrEngineUnconfigured, dir)
+	}
+	owner, ok := fileOwner(info)
+	if !ok {
+		return fmt.Errorf("%w: cannot determine the owner of cgx wasm compile cache dir %q on this platform", ErrEngineUnconfigured, dir)
+	}
+	if owner != euid {
+		return fmt.Errorf("%w: cgx wasm compile cache dir %q is owned by uid %d, not this process's uid %d; it holds machine code run in-process", ErrEngineUnconfigured, dir, owner, euid)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%w: cgx wasm compile cache dir %q is readable or writable by group or other (mode %s); it holds machine code run in-process", ErrEngineUnconfigured, dir, info.Mode().Perm())

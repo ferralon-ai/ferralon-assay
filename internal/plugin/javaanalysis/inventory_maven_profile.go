@@ -234,37 +234,60 @@ func readMavenConfig(buildDir string) (ids []string, unknown, found bool) {
 		return nil, true, true
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		toks := strings.Fields(line)
-		for i := 0; i < len(toks); i++ {
-			v, kind := profileOption(toks[i])
-			switch kind {
-			case optionNone:
-				continue
-			case optionUnknown:
-				unknown = true
-				continue
-			case optionNeedsValue:
-				if i+1 >= len(toks) {
-					unknown = true
-					continue
-				}
-				i++
-				v = toks[i]
-			}
-			// A list written with spaces after its commas ("-P a, b") continues on the line.
-			for strings.HasSuffix(v, ",") && i+1 < len(toks) && !strings.HasPrefix(toks[i+1], "-") {
-				i++
-				v += toks[i]
-			}
-			list, ok := profileList(v)
-			if !ok {
-				unknown = true
-				continue
-			}
-			ids = append(ids, list...)
+		if strings.ContainsRune(line, '\ufeff') {
+			unknown = true // a byte-order mark hides what the line's first token is
+			continue
 		}
+		list, selects, ok := profileLine(strings.Fields(line))
+		if !selects {
+			continue
+		}
+		if !ok {
+			unknown = true
+			continue
+		}
+		ids = append(ids, list...)
 	}
 	return ids, unknown, true
+}
+
+// profileLine reads one maven.config line. selects is false when no token on it is, or could be,
+// a profile selection. Maven takes the whole line as one argument, so a line that selects is read
+// only in the shapes modelled here: the option first, its value attached or in the next token,
+// and a list written with spaces after its commas ("-P a, b") continuing on the line. Any token
+// left over, a second option, or an option that isn't first leaves ok false: the line selects
+// profiles this reader can't name.
+func profileLine(toks []string) (ids []string, selects, ok bool) {
+	for _, tok := range toks {
+		if _, kind := profileOption(tok); kind != optionNone {
+			selects = true
+			break
+		}
+	}
+	if !selects {
+		return nil, false, false
+	}
+	v, kind := profileOption(toks[0])
+	i := 0
+	switch kind {
+	case optionValue:
+	case optionNeedsValue:
+		if len(toks) < 2 {
+			return nil, true, false
+		}
+		i, v = 1, toks[1]
+	default:
+		return nil, true, false
+	}
+	for strings.HasSuffix(v, ",") && i+1 < len(toks) && !strings.HasPrefix(toks[i+1], "-") {
+		i++
+		v += toks[i]
+	}
+	if i+1 < len(toks) {
+		return nil, true, false
+	}
+	ids, ok = profileList(v)
+	return ids, true, ok
 }
 
 type optionKind int

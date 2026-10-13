@@ -146,6 +146,17 @@ func TestMavenProfile_MavenConfigSelection(t *testing.T) {
 		{"an id holding =", "-P p=1\n", true},
 		{"abbreviated long form", "--activate-profile p\n", true},
 		{"abbreviated long form with =", "--activate-prof=p\n", true},
+		// R3-B1: Maven takes a line as one argument, so these select p. Any shape the reader
+		// doesn't model withholds, whether or not p is visibly named.
+		{"R3-B1 a list continued after whitespace", "-P a ,p\n", true},
+		{"R3-B1 spaces either side of the comma", "-P a , p\n", true},
+		{"R3-B1 attached, then continued after whitespace", "-Pa ,p\n", true},
+		{"R3-B1 a second token before the list goes on", "-P a b,p\n", true},
+		{"R3-B1 deselection continued after whitespace", "-P a ,!p\n", true},
+		{"two options on one line", "-Pa -Pother\n", true},
+		{"a selection after another option", "-DskipTests -Pother\n", true},
+		{"a byte-order mark", "\ufeff-Pother\n", true},
+		{"control, a list continued after a comma, p not named", "-P a, other\n", false},
 		{"another profile only", "-Pother\n", false},
 		{"another profile only, -P=", "-P=other\n", false},
 		{"another profile only, long form with =", "--activate-profiles=other\n", false},

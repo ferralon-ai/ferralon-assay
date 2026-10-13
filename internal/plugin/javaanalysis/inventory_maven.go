@@ -133,6 +133,12 @@ type mvnProfile struct {
 	Properties map[string]string
 	DepMgmt    []mvnDep
 	Deps       []mvnDep
+	// Build is set when the profile has a <build> section with anything in it.
+	Build bool
+	// Modules are the profile's <module> entries, as written.
+	Modules []string
+	// Repositories is set when the profile declares a repository or plugin repository.
+	Repositories bool
 }
 
 // mvnActivation is a profile's <activation> block. Every condition present must hold (Maven
@@ -207,6 +213,14 @@ type xmlProfile struct {
 	Properties invProps `xml:"properties"`
 	DepMgmt    []xmlDep `xml:"dependencyManagement>dependencies>dependency"`
 	Deps       []xmlDep `xml:"dependencies>dependency"`
+	Build      struct {
+		Children []struct {
+			XMLName xml.Name
+		} `xml:",any"`
+	} `xml:"build"`
+	Modules            []string   `xml:"modules>module"`
+	Repositories       []struct{} `xml:"repositories>repository"`
+	PluginRepositories []struct{} `xml:"pluginRepositories>pluginRepository"`
 }
 
 // invProps captures the arbitrary child elements of a <properties> block as name→value pairs.
@@ -307,9 +321,16 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 				FileMissing:     strings.TrimSpace(a.File.Missing),
 				Other:           len(a.Other) > 0,
 			},
-			Properties: pr.Properties.Entries,
-			DepMgmt:    convDeps(pr.DepMgmt),
-			Deps:       convDeps(pr.Deps),
+			Properties:   pr.Properties.Entries,
+			DepMgmt:      convDeps(pr.DepMgmt),
+			Deps:         convDeps(pr.Deps),
+			Build:        len(pr.Build.Children) > 0,
+			Repositories: len(pr.Repositories)+len(pr.PluginRepositories) > 0,
+		}
+		for _, m := range pr.Modules {
+			if m = strings.TrimSpace(m); m != "" {
+				mp.Modules = append(mp.Modules, m)
+			}
 		}
 		if mp.Properties == nil {
 			mp.Properties = map[string]string{}
@@ -366,10 +387,12 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 
 	// Pass 4 (folded in before interpolation so profile props/deps participate): profile eval
 	// (inventory_maven_profile.go). Active profiles contribute properties/depMgmt/deps; an
-	// undecided one is never applied, and is residue only when it could change the graph.
+	// undecided one is never applied, and is residue unless it provably changes nothing. The
+	// invocation's explicit selection reaches a reactor module's whole lineage, never a
+	// dependency's POM.
 	env := activationEnv{targetEnv: targetEnv}
 	if pom.path != "" {
-		env.basedir = filepath.Dir(pom.path)
+		env.selection = selectionOf(targetEnv)
 	}
 	var mgmtSrc []mvnDep
 	var depSrc []mvnDep
@@ -442,6 +465,9 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 		ps := newProfileScope(chain.poms, profileList, pom.path == "")
 		for _, idx := range undecided {
 			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps)
+			if chain.parentMissing || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
+				bounded = false // what it changes can't be read, or reaches past the dependency graph
+			}
 			if bounded && len(touched) == 0 {
 				continue // cannot change the graph either way
 			}
@@ -461,23 +487,36 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 // unresolveReversioned marks every dependency an undecided profile could re-version as
 // unresolved. The build may run either version, so the one without the profile isn't taken.
 func unresolveReversioned(em *effectiveModel) {
-	alt := map[string][]string{}
+	alt := reversions(*em)
+	for i, d := range em.deps {
+		if d.Version != "" && alt.reversioned(d.ga(), d.Version) {
+			em.deps[i].unresolvedBy = reasonProfileActivation
+		}
+	}
+}
+
+// profileVersions maps each "g:a" an undecided profile can add or re-version to every version it
+// can resolve to under the profile.
+type profileVersions map[string][]string
+
+func reversions(em effectiveModel) profileVersions {
+	alt := profileVersions{}
 	for _, u := range em.undecided {
 		for _, d := range u.touched {
 			alt[d.ga()] = append(alt[d.ga()], d.Version)
 		}
 	}
-	for i, d := range em.deps {
-		if d.Version == "" {
-			continue
-		}
-		for _, v := range alt[d.ga()] {
-			if v != d.Version {
-				em.deps[i].unresolvedBy = reasonProfileActivation
-				break
-			}
+	return alt
+}
+
+// reversioned reports whether some undecided profile can put ga at a version other than version.
+func (alt profileVersions) reversioned(ga, version string) bool {
+	for _, v := range alt[ga] {
+		if v != version {
+			return true
 		}
 	}
+	return false
 }
 
 type chainResult struct {

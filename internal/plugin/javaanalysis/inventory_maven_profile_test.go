@@ -1,7 +1,6 @@
 package javaanalysis
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -38,11 +37,23 @@ func TestEvalJDK(t *testing.T) {
 		{"[1.8,11)", "9.0.4", triTrue},
 		{"[1.8,11)", "11.0.0", triFalse},
 		{"[11.0.5,12)", "11", triUnknown},
+		{"[17.0.5,)", "17.0", triUnknown},
 		{"[11,12)", "11", triTrue},
 		{"[11", "11.0.2", triTrue},
 		{"[11", "1.8.0", triFalse},
 		{"[a,b)", "11", triUnknown},
 		{"[1,2,3]", "1", triUnknown},
+		// JDK 8 and earlier report java.version as 1.N.0_U, so a stated "8" is "1.8".
+		{"1.8", "8", triTrue},
+		{"!1.8", "8", triFalse},
+		{"8", "8", triFalse},
+		{"1.8", "8.0.382", triTrue},
+		{"1.8.0", "8", triUnknown},
+		{"[1.8,)", "8", triTrue},
+		{"[1.8,11)", "8", triTrue},
+		{"[9,)", "8", triFalse},
+		{"!1.8", "11", triTrue},
+		{"11", "11.0.2", triTrue},
 	}
 	for _, tt := range tests {
 		if got := evalJDK(tt.spec, tt.version); got != tt.want {
@@ -52,7 +63,7 @@ func TestEvalJDK(t *testing.T) {
 }
 
 func TestEvalProperty(t *testing.T) {
-	env := map[string]string{"release": "true", "java.version": "11", "empty": ""}
+	env := map[string]string{"release": "true", "java.version": "11", "empty": "", "maven.profiles": "a"}
 	tests := []struct {
 		name, value string
 		want        tri
@@ -67,7 +78,8 @@ func TestEvalProperty(t *testing.T) {
 		{"skip", "", triUnknown},
 		{"skip", "!x", triUnknown},
 		{"empty", "", triFalse},
-		{"java.version", "11", triTrue},
+		{"java.version", "11", triUnknown},
+		{"maven.profiles", "", triUnknown},
 		{"java.vendor", "", triUnknown},
 		{"!os.name", "", triUnknown},
 		{"env.CI", "true", triUnknown},
@@ -82,39 +94,29 @@ func TestEvalProperty(t *testing.T) {
 	}
 }
 
-func TestEvalFile(t *testing.T) {
-	base := t.TempDir()
-	outside := t.TempDir()
-	writeFile(t, filepath.Join(base, "marker"), "")
-	writeFile(t, filepath.Join(base, "sub", "inner"), "")
-	writeFile(t, filepath.Join(outside, "secret"), "")
-	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(base, "link")); err != nil {
-		t.Fatal(err)
-	}
-	env := activationEnv{basedir: base}
+// A <property> condition on java.version compares against the stated version in the form Maven's
+// JVM reports it. A stated version with fewer than three components stands for every version it
+// prefixes, so it can't decide equality with one of them.
+func TestEvalProperty_JavaVersion(t *testing.T) {
 	tests := []struct {
-		exists, missing string
-		env             activationEnv
-		want            tri
+		stated, value string
+		want          tri
 	}{
-		{"marker", "", env, triTrue},
-		{"${basedir}/marker", "", env, triTrue},
-		{"${project.basedir}/sub/inner", "", env, triTrue},
-		{filepath.Join(base, "marker"), "", env, triTrue},
-		{"absent", "", env, triFalse},
-		{"", "absent", env, triTrue},
-		{"", "marker", env, triFalse},
-		{"marker", "", activationEnv{}, triUnknown},
-		{"../x", "", env, triUnknown},
-		{filepath.Join(outside, "secret"), "", env, triUnknown},
-		{"link", "", env, triUnknown},
-		{"target/generated", "", env, triUnknown},
-		{"", "build/out", env, triUnknown},
-		{"${env.HOME}/x", "", env, triUnknown},
+		{"17.0.2", "17.0.2", triTrue},
+		{"17.0.2+8", "17.0.2", triTrue},
+		{"17", "17.0.2", triUnknown},
+		{"17", "17", triUnknown},
+		{"17", "!17.0.2", triUnknown},
+		{"17.0.2", "17", triFalse},
+		{"17", "11.0.2", triFalse},
+		{"8", "1.8.0_382", triUnknown},
+		{"1.8.0_382", "1.8.0_382", triTrue},
+		{"8.0.382", "1.8.0_382", triTrue},
+		{"openjdk", "17", triUnknown},
 	}
 	for _, tt := range tests {
-		if got := evalFile(tt.exists, tt.missing, tt.env); got != tt.want {
-			t.Errorf("evalFile(%q, %q, basedir=%q) = %d, want %d", tt.exists, tt.missing, tt.env.basedir, got, tt.want)
+		if got := evalProperty(targetEnvJavaVersion, tt.value, map[string]string{targetEnvJavaVersion: tt.stated}); got != tt.want {
+			t.Errorf("evalProperty(java.version, %q) against stated %q = %d, want %d", tt.value, tt.stated, got, tt.want)
 		}
 	}
 }
@@ -134,7 +136,7 @@ func TestEvalProfiles_ActiveByDefault(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := activationEnv{targetEnv: map[string]string{targetEnvJavaVersion: tt.version}}
+			env := activationEnv{targetEnv: map[string]string{targetEnvJavaVersion: tt.version}, selection: selectionOf(map[string]string{targetEnvMavenProfiles: ","})}
 			if tt.version == "" {
 				env.targetEnv = nil
 			}
@@ -142,6 +144,15 @@ func TestEvalProfiles_ActiveByDefault(t *testing.T) {
 				t.Errorf("evalProfiles = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A profile whose own condition holds is active whether or not it is also activeByDefault.
+func TestEvalProfiles_ActiveByDefaultWithAConditionThatHolds(t *testing.T) {
+	both := mvnProfile{ID: "both", Activation: mvnActivation{ActiveByDefault: true, JDK: "11"}}
+	env := activationEnv{targetEnv: map[string]string{targetEnvJavaVersion: "11.0.2"}, selection: selectionOf(map[string]string{targetEnvMavenProfiles: ","})}
+	if got := evalProfiles([]mvnProfile{both}, env); !reflect.DeepEqual(got, []tri{triTrue}) {
+		t.Errorf("evalProfiles = %v, want [%d]", got, triTrue)
 	}
 }
 
@@ -157,6 +168,10 @@ func TestEvalConditions_AndAndUnknownElements(t *testing.T) {
 		{"os undecided", mvnActivation{OS: true}, triUnknown},
 		{"os undecided and false", mvnActivation{OS: true, JDK: "17"}, triFalse},
 		{"unknown element", mvnActivation{Other: true, JDK: "11"}, triUnknown},
+		{"file undecided", mvnActivation{FileExists: "pom.xml"}, triUnknown},
+		{"missing file undecided", mvnActivation{FileMissing: "absent"}, triUnknown},
+		{"file undecided and false", mvnActivation{FileExists: "pom.xml", JDK: "17"}, triFalse},
+		{"no condition", mvnActivation{}, triFalse},
 	}
 	for _, tt := range tests {
 		if got := evalConditions(tt.a, env); got != tt.want {
@@ -230,7 +245,7 @@ func TestMavenProfile_ProvidedJavaVersionDecides(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.version, func(t *testing.T) {
 			dir, m2 := profileFixture(t, `<jdk>11</jdk>`, false)
-			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), map[string]string{targetEnvJavaVersion: tt.version})
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", tt.version))
 			inv := toJSON(t, raw)
 			if got := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil; got != tt.applied {
 				t.Errorf("profile applied = %v, want %v", got, tt.applied)
@@ -260,9 +275,9 @@ func TestMavenProfile_PropertyActivationNeedsAStatedValue(t *testing.T) {
 		applied   bool
 		disclosed bool
 	}{
-		{"not stated", map[string]string{targetEnvJavaVersion: "11"}, false, true},
-		{"stated set", map[string]string{"skipP": "true"}, false, false},
-		{"stated empty", map[string]string{"skipP": ""}, true, false},
+		{"not stated", stated(",", "11"), false, true},
+		{"stated set", map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, false, false},
+		{"stated empty", map[string]string{targetEnvMavenProfiles: ",", "skipP": ""}, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -275,22 +290,6 @@ func TestMavenProfile_PropertyActivationNeedsAStatedValue(t *testing.T) {
 				t.Errorf("profile_activation listed = %v, want %v; got %+v", got, tt.disclosed, inv.Partiality)
 			}
 		})
-	}
-}
-
-func TestMavenProfile_ModuleFileActivation(t *testing.T) {
-	for _, present := range []bool{true, false} {
-		dir, m2 := profileFixture(t, `<file><exists>marker</exists></file>`, false)
-		if present {
-			writeFile(t, filepath.Join(dir, "marker"), "")
-		}
-		inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
-		if got := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil; got != present {
-			t.Errorf("marker present=%v: profile applied = %v", present, got)
-		}
-		if !inv.Partiality.Complete {
-			t.Errorf("marker present=%v: a decided <file> profile costs no reason; got %+v", present, inv.Partiality)
-		}
 	}
 }
 
@@ -399,7 +398,7 @@ func TestMavenProfile_PropertyReferencedVersionIsTouched(t *testing.T) {
 		t.Errorf("x must be emitted unresolved for profile_activation; got %+v", n)
 	}
 
-	decided := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), map[string]string{targetEnvJavaVersion: "11.0.2"}))
+	decided := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "11.0.2")))
 	if findNode(t, decided, "pkg:maven/org.x/x@4.0") == nil || !decided.Partiality.Complete {
 		t.Errorf("with java 11 the profile applies and re-versions x to 4.0; got %+v", decided)
 	}

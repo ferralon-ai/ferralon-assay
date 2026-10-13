@@ -15,6 +15,7 @@ import (
 // contributes nodes keyed by its own relative path (Membership.Project), so the same PURL in two
 // modules gets distinct IDs (per-instance keying).
 func resolveMaven(buildDir string, pomPaths []string, cache *mavenCache, targetEnv map[string]string) plugin.DependencyInventory {
+	targetEnv = withMavenConfig(targetEnv, buildDir)
 	var reactorList []*mvnPOM
 	reactor := map[string]*mvnPOM{}
 	for _, p := range pomPaths {
@@ -80,6 +81,9 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 	em := buildEffectiveModel(pom, reactor, cache, targetEnv, 0)
 	reasons := append([]string{}, em.residue...)
 	scoped := profileScoped(em, "", em.managed, reactor, cache, targetEnv)
+	// A transitive dependency an undecided profile of the module could manage or declare at
+	// another version resolves to that version whenever the profile is on.
+	alt := reversions(em)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
 	var nodes []plugin.DependencyNode
@@ -109,6 +113,9 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		}
 
 		version := strings.TrimSpace(it.dep.Version)
+		if it.depth > 0 && it.dep.unresolvedBy == "" && alt.reversioned(ga, version) {
+			it.dep.unresolvedBy = reasonProfileActivation
+		}
 		if it.dep.unresolvedBy != "" {
 			version = ""
 		}

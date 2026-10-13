@@ -818,8 +818,9 @@ type pyprojectDeps struct {
 // [project].optional-dependencies group, plus every requirement file a dynamic-metadata table
 // names for them (pyprojectDynamicFiles), read relative to the pyproject. Each entry is a
 // declared PEP 508 requirement: an exact "==" pin resolves, a range rides in Constraint with
-// Resolved=false (the authoritative pins live in a lockfile). ok is false when a dynamic table
-// has a shape not read here or a file it names fails readRequirementFiles. A file the TOML
+// Resolved=false (the authoritative pins live in a lockfile). ok is false when an entry ends in
+// a backslash (setuptoolsJoins), or a dynamic table has a shape not read here or a file it names
+// fails readRequirementFiles. A file the TOML
 // decoder rejects (a templated pyproject, say) falls back to the lexical [project] dependencies
 // reader, so such a file still contributes the names it visibly declares.
 func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
@@ -828,7 +829,9 @@ func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool
 		return parsePyprojectLexical(data)
 	}
 	var out []plugin.ResolvedDependency
+	listOK := true
 	add := func(spec string) {
+		listOK = listOK && !setuptoolsJoins(spec)
 		if d, ok := declaredDependency(spec, "pyproject.toml"); ok {
 			out = append(out, d)
 		}
@@ -852,7 +855,7 @@ func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool
 			return out, false
 		}
 	}
-	return out, true
+	return out, listOK
 }
 
 // pyprojectDynamicFiles returns, in a stable order, every requirement file named for

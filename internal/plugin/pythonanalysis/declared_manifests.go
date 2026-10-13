@@ -7,6 +7,7 @@ package pythonanalysis
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -249,7 +250,9 @@ func universalNewlines(s string) string {
 // when it holds a line break, else on ';', each entry trimmed and empty ones dropped. For
 // install_requires and extras_require (dropComments) setuptools also drops entries that start
 // with '#'. ok is false when an entry is not a well-formed PEP 508 requirement or has a marker
-// that is not strictly well formed (strictMarker): setuptools fails on both.
+// that is not strictly well formed (strictMarker): setuptools fails on both. ok is also false
+// when an entry ends in a backslash: setuptools joins it to the next entry (join_continuation)
+// before parsing, and the joined requirement is not read here.
 func setupCfgList(value string, dropComments bool) (specs []string, ok bool) {
 	sep := ";"
 	if strings.Contains(value, "\n") {
@@ -259,6 +262,10 @@ func setupCfgList(value string, dropComments bool) (specs []string, ok bool) {
 	for _, e := range strings.Split(value, sep) {
 		e = strings.Trim(e, " \t")
 		if e == "" || dropComments && strings.HasPrefix(e, "#") {
+			continue
+		}
+		if setuptoolsJoins(e) {
+			ok = false
 			continue
 		}
 		r, valid := parsePEP508(e)
@@ -347,7 +354,9 @@ func readRequirementFiles(dir, spec, source string) ([]plugin.ResolvedDependency
 // spec names relative to dir, and the files it read. ok is false when a path is empty,
 // absolute, a URL, or resolves (symlinks included) outside dir, when a file cannot be read, or
 // when a line is a pip option (-r, -c, -e, --hash): setuptools does not follow them, so their
-// presence means the file is not what it is read as.
+// presence means the file is not what it is read as. Comment lines drop and an inline comment
+// is cut before a line is read, as _reqs.parse does; ok is also false when what is left ends
+// in a backslash (setuptoolsJoins).
 func readRequirementSpecs(dir, spec string) (specs, files []string, ok bool) {
 	for _, p := range strings.Split(spec, ",") {
 		target, local := localFile(dir, strings.TrimSpace(p))
@@ -364,13 +373,46 @@ func readRequirementSpecs(dir, spec string) (specs, files []string, ok bool) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if strings.HasPrefix(line, "-") {
+			if strings.HasPrefix(line, "-") || setuptoolsJoins(line) {
 				return specs, files, false
 			}
 			specs = append(specs, line)
 		}
 	}
 	return specs, files, true
+}
+
+// setuptoolsJoins reports whether setuptools joins entry, one entry of a requirement list after
+// the reader's own comment handling, to the entry after it. Every setuptools requirement list
+// goes through _reqs.parse, whose join_continuation drops the last two characters of an entry
+// that ends in a backslash and appends the next entry: "pyjw@\" then "t==2.10.0" installs
+// pyjwt==2.10.0. setuptools splits a list element at line breaks first, so a line of entry
+// ending in a backslash counts. A reader withholds the manifest rather than read the halves.
+func setuptoolsJoins(entry string) bool {
+	return slices.ContainsFunc(pyLines(entry), func(l string) bool {
+		return strings.HasSuffix(strings.TrimSpace(l), `\`)
+	})
+}
+
+// setuptoolsReadsAsWritten reports whether _reqs.parse reads a setup.py requirement list
+// element, as readPyString decoded it, as the one requirement it spells: it holds no line break
+// (yield_lines makes each line an entry), no " #" (drop_comment cuts there), and no backslash.
+// A backslash covers both an entry setuptools joins (setuptoolsJoins) and an escape readPyString
+// leaves undecoded, such as "\f" or "\x0b", which Python decodes to a line break.
+func setuptoolsReadsAsWritten(elem string) bool {
+	return len(pyLines(elem)) <= 1 && !strings.Contains(elem, " #") && !strings.Contains(elem, `\`)
+}
+
+// pyLines splits s at every line boundary Python's str.splitlines recognizes, dropping empty
+// lines.
+func pyLines(s string) []string {
+	return strings.FieldsFunc(s, func(r rune) bool {
+		switch r {
+		case '\n', '\r', '\v', '\f', '\x1c', '\x1d', '\x1e', '\u0085', '\u2028', '\u2029':
+			return true
+		}
+		return false
+	})
 }
 
 // localFile resolves p against dir and returns it when it names a file inside dir, symlinks
@@ -453,7 +495,8 @@ func scanSetupPy(src string) (specs []string, complete bool) {
 
 // scanSetupPyKeys returns the requirement strings of every literal value assigned to one of
 // keys in src (a list, or a dict of lists for extras_require), and whether every occurrence of
-// those names was such a literal.
+// those names was such a literal whose every element setuptools reads as written
+// (setuptoolsReadsAsWritten).
 func scanSetupPyKeys(src string, keys []string) (specs []string, complete bool) {
 	complete = true
 	for _, key := range keys {
@@ -483,8 +526,10 @@ func scanSetupPyKeys(src string, keys []string) (specs []string, complete bool) 
 			case key != "extras_require" && j < len(src) && src[j] == '[':
 				elems, i, ok = literalStringList(src, j+1)
 			}
-			if !ok {
+			if !ok || slices.ContainsFunc(elems, func(e string) bool { return !setuptoolsReadsAsWritten(e) }) {
 				complete = false
+			}
+			if !ok {
 				continue
 			}
 			specs = append(specs, elems...)

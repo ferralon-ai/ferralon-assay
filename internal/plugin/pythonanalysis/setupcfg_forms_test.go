@@ -7,15 +7,17 @@ import (
 )
 
 // setuptoolsReading is what setuptools 84 reads from a setup.cfg (setuptools.config.setupcfg
-// applied to a Distribution, each entry parsed by packaging's Requirement): the install_requires
-// and extras_require entries, the setup_requires entries, or fails when either step raises.
+// applied to a Distribution, its lists run through setuptools._reqs.parse, which drops comments
+// and joins backslash continuations before packaging's Requirement parses each entry): the
+// install_requires and extras_require entries, the setup_requires entries, or fails when either
+// step raises.
 type setuptoolsReading struct {
 	specs, build []string
 	fails        bool
 }
 
 // Every row is a configparser form, with setuptools' own reading of it recorded beside it
-// (configparser behaves the same on Python 3.9, 3.13 and 3.14 for each). scanSetupCfg must
+// (the same on Python 3.13 and 3.14 for each). scanSetupCfg must
 // either read exactly what setuptools reads or withhold (ok=false); it never reads a form
 // differently, and it withholds wherever setuptools fails. withhold pins which of the two the
 // reader does, so a rule that starts withholding a form setuptools reads is caught too.
@@ -57,7 +59,7 @@ func TestScanSetupCfg_ConfigparserForms(t *testing.T) {
 		{"line without a delimiter", opts + "install_requires = pyjwt==2.10.0\nzip_safe\n", fails, true},
 		{"option before any section", "install_requires = pyjwt==2.10.0\n" + opts, fails, true},
 		{"key repeated", opts + "install_requires = six\ninstall_requires = pyjwt==2.10.0\n", fails, true},
-		{"key repeated in another case", opts + "install_requires = six\nINSTALL_REQUIRES = pyjwt==2.10.0\n", fails, true},
+		{"key repeated in another case", opts + "install_requires = six\nINSTALL_REQUIRES = pyjwt==2.10.0\n", setuptoolsReading{specs: pin}, true},
 		{"key repeated dashed", opts + "install_requires = six\ninstall-requires = pyjwt==2.10.0\n", setuptoolsReading{specs: pin}, true},
 		// Sections.
 		{"key repeated across split sections", opts + "install_requires = six\n[metadata]\nname = x\n" + opts + "install_requires = pyjwt==2.10.0\n", fails, true},
@@ -72,11 +74,16 @@ func TestScanSetupCfg_ConfigparserForms(t *testing.T) {
 		// List values: lines when the value has a line break, else ';'-separated.
 		{"inline semicolon after whitespace", opts + "install_requires = pyjwt==2.10.0 ; pinned\n", setuptoolsReading{specs: []string{"pyjwt==2.10.0", "pinned"}}, false},
 		{"semicolon then hash entry", opts + "install_requires = pyjwt==2.10.0; # pinned\n", setuptoolsReading{specs: pin}, false},
-		{"semicolon then hash in setup_requires", opts + "setup_requires = pyjwt==2.10.0; # pinned\n", fails, true},
-		{"inline hash in a continuation", opts + "install_requires =\n    pyjwt==2.10.0  # pinned\n", fails, true},
+		{"semicolon then hash in setup_requires", opts + "setup_requires = pyjwt==2.10.0; # pinned\n", setuptoolsReading{build: pin}, true},
+		{"inline hash in a continuation", opts + "install_requires =\n    pyjwt==2.10.0  # pinned\n", setuptoolsReading{specs: pin}, true},
 		{"marker on its own line", opts + "install_requires =\n    pyjwt==2.10.0; python_version >= \"3.8\"\n", setuptoolsReading{specs: []string{"pyjwt==2.10.0; python_version >= \"3.8\""}}, false},
 		{"marker on a single-line value", opts + "install_requires = pyjwt==2.10.0; python_version >= \"3.8\"\n", fails, true},
 		{"second requirement after a semicolon", opts + "install_requires =\n    six;pyjwt==2\n", fails, true},
+		// A trailing backslash joins the entry to the next one, dropping the character before it.
+		{"backslash continuation", opts + "install_requires =\n    pyjw@\\\n    t==2.10.0\n", setuptoolsReading{specs: pin}, true},
+		{"backslash continuation on a single line", opts + "install_requires = pyjw@\\;t==2.10.0\n", setuptoolsReading{specs: pin}, true},
+		{"backslash continuation in extras", "[options.extras_require]\njwt =\n    pyjw@\\\n    t==2.10.0\n", setuptoolsReading{specs: pin}, true},
+		{"backslash continuation in setup_requires", opts + "setup_requires =\n    pyjw@\\\n    t==2.10.0\n", setuptoolsReading{build: pin}, true},
 		// Interpolation.
 		{"interpolation", opts + "install_requires =\n    pyjwt==2.10.0; os_name == \"%(os)s\"\nos = posix\n", setuptoolsReading{specs: []string{"pyjwt==2.10.0; os_name == \"posix\""}}, true},
 		{"escaped percent", opts + "install_requires =\n    pyjwt==2.10.0; platform_release == \"5%%\"\n", setuptoolsReading{specs: []string{"pyjwt==2.10.0; platform_release == \"5%\""}}, true},
@@ -130,4 +137,26 @@ func TestResolveVersions_SetupCfgIndentedKeys(t *testing.T) {
 		})
 		mustResolvedCompletePy(t, dir, "pyjwt", "2.8.0")
 	})
+}
+
+// R7-B1: setuptools joins a list entry ending in a backslash to the next entry before parsing
+// it, so "pyjw@\" + "t==2.10.0" installs pyjwt 2.10.0. The reader withholds the file in each
+// list setuptools reads, and the root pin stays unresolved.
+func TestResolveVersions_SetupCfgBackslashContinuation(t *testing.T) {
+	const split = "    pyjw@\\\n    t==2.10.0\n"
+	for name, files := range map[string]map[string]string{
+		"install_requires":       {"svc/setup.cfg": "[options]\ninstall_requires =\n" + split},
+		"single-line value":      {"svc/setup.cfg": "[options]\ninstall_requires = pyjw@\\;t==2.10.0\n"},
+		"extras_require":         {"svc/setup.cfg": "[options.extras_require]\njwt =\n" + split},
+		"setup_requires":         {"svc/setup.cfg": "[options]\nsetup_requires =\n" + split},
+		"install_requires file:": {"svc/setup.cfg": "[options]\ninstall_requires = file: rb.txt\n", "svc/rb.txt": "pyjw@\\\nt==2.10.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files["requirements.txt"] = "pyjwt==2.8.0\n"
+			dir := writeTree(t, files)
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, dir, "pyjwt"))
+			}
+		})
+	}
 }

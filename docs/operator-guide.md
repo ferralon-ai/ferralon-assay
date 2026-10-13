@@ -8,8 +8,8 @@ surfaces a run publishes to under which permissions. The Action's own inputs are
 
 ## Reading the Report
 
-Every finding carries one verdict. [Language support](language-support.md#the-three-valued-verdict)
-explains the three-valued core — `reachable_candidate`, `disqualified`, `undetermined` — and why an
+Every finding carries one verdict. [Language support](language-support.md#the-verdicts)
+explains each one — `reachable_candidate`, `not_exploitable`, `disqualified`, `undetermined` — and why an
 `undetermined` row is an open question, never a clean bill. The rest of this section is the evidence
 that sits next to the verdict. None of it changes the verdict; it tells you which findings to look at
 first.

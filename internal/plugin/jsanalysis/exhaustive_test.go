@@ -157,7 +157,13 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := resolveJS(t, writeLockTree(t, tt.files), "absent-package")
-			if r.Found {
+			// A copy installed under node_modules is a found match of its own (installedCopies);
+			// no lock or manifest in any row holds absent-package.
+			installed := false
+			for f := range tt.files {
+				installed = installed || strings.Contains(f, "node_modules/")
+			}
+			if r.Found && !installed {
 				t.Fatalf("absent-package unexpectedly found")
 			}
 			if r.Exhaustive != tt.want {

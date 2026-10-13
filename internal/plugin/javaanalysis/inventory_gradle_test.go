@@ -230,7 +230,7 @@ func TestGradle_LockReadOnlyWhereGradleKeepsIt(t *testing.T) {
 			writeFile(t, filepath.Join(dir, "other", "build.gradle"), "")
 			writeFile(t, filepath.Join(dir, "settings.gradle"), "include 'sub'\n")
 			writeFile(t, filepath.Join(dir, filepath.FromSlash(tt.path)), "org.top:top:1.0=runtimeClasspath\norg.x:x:1.0=runtimeClasspath\n")
-			_, files, haveLock, _ := readLockfiles(dir)
+			_, files, haveLock, _, _ := readLockfiles(dir)
 			if haveLock != tt.read {
 				t.Errorf("lock read = %v (files %v), want %v", haveLock, files, tt.read)
 			}
@@ -416,10 +416,36 @@ func TestGradle_LockCheckedPerProject(t *testing.T) {
 			"app/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
 			"app/gradle.lockfile": lock,
 		}, false},
-		{"a nested project path", map[string]string{
+		{"a nested project path, its intermediate project's script safe", map[string]string{
+			"settings.gradle":           "include ':libs:core'\n",
+			"libs/build.gradle":         "",
+			"libs/core/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
+			"libs/core/gradle.lockfile": lock,
+		}, true},
+		// R5-B1: include 'libs:core' creates :libs too, and Gradle evaluates its script.
+		{"R5-B1 a nested project path whose intermediate project has no build script", map[string]string{
 			"settings.gradle":           "include ':libs:core'\n",
 			"libs/core/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
 			"libs/core/gradle.lockfile": lock,
+		}, false},
+		{"R5-B1 an intermediate project's script turns locking off below it", map[string]string{
+			"settings.gradle":     "include 'a:b'\n",
+			"a/build.gradle":      "subprojects { configurations.all { resolutionStrategy.deactivateDependencyLocking() } }\n",
+			"a/b/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"a/b/gradle.lockfile": lock,
+		}, false},
+		{"an include path with an empty segment", map[string]string{
+			"settings.gradle":     "include 'a::b'\n",
+			"a/build.gradle":      "",
+			"a/b/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"a/b/gradle.lockfile": lock,
+		}, false},
+		{"R5-B1 control, every intermediate project's script safe", map[string]string{
+			"settings.gradle":       "include 'a:b:c'\n",
+			"a/build.gradle":        "group = 'x'\n",
+			"a/b/build.gradle":      "",
+			"a/b/c/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"a/b/c/gradle.lockfile": lock,
 		}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -463,4 +489,44 @@ func TestGradle_LockCheckedPerProject(t *testing.T) {
 			t.Errorf("netkit must not resolve when its project's script cannot be read; nodes %+v", inv.Nodes)
 		}
 	})
+}
+
+// R5-B2: Gradle's default lock mode constrains only a configuration that has lock state, so a
+// lock confirms the runtime graph only when it pins runtimeClasspath: an entry for it, or STRICT
+// mode (which fails a configuration with no lock state) with no "empty=" line naming it.
+func TestGradle_LockPinsRuntimeClasspath(t *testing.T) {
+	const enforced = "dependencyLocking {\n    lockAllConfigurations()\n}\n"
+	const strict = "dependencyLocking {\n    lockAllConfigurations()\n    lockMode = LockMode.STRICT\n}\n"
+	const dynamic = "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n"
+	netkit := mavenPURL("com.evil", "netkit", "1.0.0")
+	for _, tt := range []struct {
+		name, script, buildFile, lock string
+		resolved                      bool
+	}{
+		{"entries for runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", true},
+		{"default mode, no runtimeClasspath entries", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false},
+		{"L1 default mode, compileClasspath entries and a bare empty= line", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=\n", false},
+		{"default mode, empty= names runtimeClasspath", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false},
+		{"L1b a literal declaration, both locked for compileClasspath only",
+			enforced + "dependencies {\n    implementation 'org.pulls:it:1.0'\n}\n", "build.gradle",
+			"com.evil:netkit:1.0.0=compileClasspath\norg.pulls:it:1.0=compileClasspath\n", false},
+		{"STRICT, no empty= line", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", true},
+		{"STRICT, empty= names runtimeClasspath", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=runtimeClasspath\n", false},
+		{"STRICT, empty= names another configuration", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\nempty=testRuntimeClasspath\n", true},
+		{"STRICT set with set(), kts", "dependencyLocking {\n    lockMode.set(LockMode.STRICT)\n    lockAllConfigurations()\n}\ndependencies {\n    implementation(\"com.evil:netkit:1.+\")\n}\n", "build.gradle.kts", "com.evil:netkit:1.0.0=compileClasspath\n", true},
+		{"STRICT beside a second lock mode", "dependencyLocking {\n    lockAllConfigurations()\n    lockMode = LockMode.STRICT\n    lockMode = LockMode.LENIENT\n}\n" + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, tt.buildFile), tt.script)
+			writeFile(t, filepath.Join(dir, "gradle.lockfile"), tt.lock)
+			inv := toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir())))
+			if got := findNode(t, inv, netkit) != nil; got != tt.resolved {
+				t.Errorf("netkit resolved at 1.0.0 = %v, want %v; nodes %+v", got, tt.resolved, inv.Nodes)
+			}
+			if !tt.resolved && inv.Partiality.Complete {
+				t.Errorf("want partial; got %+v", inv.Partiality)
+			}
+		})
+	}
 }

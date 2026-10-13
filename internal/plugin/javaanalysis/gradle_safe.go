@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/gradlewrapper"
 )
 
 // The SAFE set: the only Gradle build-script statements a lock confirmation admits. Each one is
@@ -23,7 +25,8 @@ import (
 //     a string coordinate 'g:a[:v[:classifier]][@ext]', bare or parenthesized; Groovy map
 //     notation group: 'g', name: 'a'[, version: 'v'] on one line, unparenthesized; or
 //     project('<path>'), bare or parenthesized;
-//   - dependencyLocking { lockAllConfigurations() }, exactly that;
+//   - dependencyLocking { lockAllConfigurations() }, that call alone or with a STRICT lock mode,
+//     lockMode = LockMode.STRICT or lockMode.set(LockMode.STRICT);
 //   - group, version, description: a string literal, with or without '=';
 //   - sourceCompatibility / targetCompatibility (also as java.<name>, or inside java {}): a
 //     string, a number or JavaVersion.VERSION_<n>;
@@ -55,17 +58,26 @@ var gradleSafeConfigs = map[string]bool{
 // made only of SAFE statements, so that the build can't select a version other than the one its
 // lock and literal declarations name. The scripts in scope are the settings scripts, which must
 // pass the settings allow-list (gradleSettingsProjects, which rejects includeBuild, apply and
-// the rest), and the build scripts of root and every project they include. The SAFE set has no
-// apply from, so no applied script is ever in scope. Code Gradle loads that no SAFE statement
-// names still runs: buildSrc/ and build-logic/ (with or without a build script of their own),
+// the rest), and the build scripts of root and every project they create, the intermediate
+// projects of a nested path included (gradleProjects); a created project with no build script
+// is unsafe too, though Gradle would take it as empty. The SAFE set has no apply from, so no
+// applied script is ever in scope. Code Gradle loads that no SAFE statement names still runs: buildSrc/ and build-logic/ (with or without a build script of their own),
 // and init scripts in a Gradle user home kept in the checkout (.gradle/init.d,
-// .gradle/init.gradle[.kts]). Any of these present, or any script that can't be read, makes the
-// build unsafe. why names the first reason, for tests and evidence.
+// .gradle/init.gradle[.kts]). So does a wrapper distribution other than Gradle's own, whose
+// init.d runs on every build (gradleWrapperSafe). Any of these present, a settings script or
+// buildSrc above root that could define or extend the build (gradleAncestorBuild), or any script
+// that can't be read, makes the build unsafe. why names the first reason, for tests and evidence.
 func gradleBuildSafe(root string) (why string, ok bool) {
 	for _, rel := range []string{"buildSrc", "build-logic", ".gradle/init.d", ".gradle/init.gradle", ".gradle/init.gradle.kts"} {
 		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil || !missing(err) {
 			return rel + " is present", false
 		}
+	}
+	if path, found := gradleAncestorBuild(root); found {
+		return path + " can define the build from above it", false
+	}
+	if why, ok := gradleWrapperSafe(root); !ok {
+		return why, false
 	}
 	projects, ok := gradleProjects(root)
 	if !ok {
@@ -77,7 +89,11 @@ func gradleBuildSafe(root string) (why string, ok bool) {
 	}
 	sort.Strings(dirs)
 	for _, dir := range dirs {
-		for _, path := range gradleScriptsIn(dir) {
+		scripts := gradleScriptsIn(dir)
+		if len(scripts) == 0 && dir != filepath.Clean(root) {
+			return relToBase(root, dir) + " is a project with no build script to read", false
+		}
+		for _, path := range scripts {
 			data, err := readRegular(path)
 			if err != nil {
 				return relToBase(root, path) + " cannot be read", false
@@ -85,6 +101,87 @@ func gradleBuildSafe(root string) (why string, ok bool) {
 			if !gradleScriptSafe(string(data)) {
 				return relToBase(root, path) + " holds a statement outside the SAFE set", false
 			}
+		}
+	}
+	return "", true
+}
+
+// gradleAncestorBuild returns something above root that can take over or extend the build: a
+// settings script, or a buildSrc directory. Gradle looks for settings.gradle[.kts] in the
+// directory it runs in and then in each parent up to the filesystem root, so a directory without
+// a settings script of its own can be a project of a build defined above it, whose root script
+// configures it, and whose buildSrc is compiled onto every build script's classpath. found is
+// true when either is present, or its presence can't be determined (any Lstat error but
+// not-exist), in any ancestor of root's absolute or real path, or when either path can't be
+// resolved. Nothing is opened, so a FIFO in either place is seen, never read. A settings script
+// in root itself ends Gradle's search, so its ancestors are never consulted.
+func gradleAncestorBuild(root string) (path string, found bool) {
+	return gradleAncestorFile(root, "settings.gradle", "settings.gradle.kts", "buildSrc")
+}
+
+// gradleAncestorFile returns the first of names present, or of undetermined presence, in an
+// ancestor of root, as gradleAncestorBuild does.
+func gradleAncestorFile(root string, names ...string) (path string, found bool) {
+	if len(gradleSettingsIn(root)) > 0 {
+		return "", false
+	}
+	dirs, ok := gradleAncestors(root)
+	if !ok {
+		return root, true
+	}
+	for _, dir := range dirs {
+		if s := gradleFilesIn(dir, names...); len(s) > 0 {
+			return s[0], true
+		}
+	}
+	return "", false
+}
+
+// gradleAncestors returns every directory above root, up to the filesystem root, along root's
+// absolute path and along its real path. ok is false when either path can't be resolved.
+func gradleAncestors(root string) ([]string, bool) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, start := range []string{abs, real} {
+		for dir := start; filepath.Dir(dir) != dir; {
+			dir = filepath.Dir(dir)
+			if !seen[dir] {
+				seen[dir] = true
+				out = append(out, dir)
+			}
+		}
+	}
+	return out, true
+}
+
+// gradleWrapperSafe reports whether every gradle/wrapper/gradle-wrapper.properties at root or
+// above it names a distribution from services.gradle.org (gradlewrapper.StockGradleWrapper). A
+// wrapper distribution is a Gradle home, and a custom one's init.d runs on every build it starts.
+// A properties file that is present but not a regular file this reader can open is unsafe; it is
+// opened non-blocking first, so a FIFO in its place fails rather than hangs.
+func gradleWrapperSafe(root string) (why string, ok bool) {
+	dirs, ok := gradleAncestors(root)
+	if !ok {
+		return root + " cannot be resolved", false
+	}
+	for _, dir := range append([]string{root}, dirs...) {
+		path := filepath.Join(dir, "gradle", "wrapper", "gradle-wrapper.properties")
+		if _, err := os.Lstat(path); err != nil && missing(err) {
+			continue
+		}
+		if _, err := readRegular(path); err != nil {
+			return path + " cannot be read", false
+		}
+		if !gradlewrapper.StockGradleWrapper(dir) {
+			return path + " names a distribution other than Gradle's own", false
 		}
 	}
 	return "", true
@@ -305,11 +402,21 @@ func gradleSafeTop(st []gradleToken) bool {
 			return gradleAllSafe(body, gradleSafeDependency)
 		case gradleIs(head, "dependencyLocking"):
 			stmts, ok := gradleStatements(body)
-			if !ok || len(stmts) != 1 {
+			if !ok || len(stmts) == 0 || len(stmts) > 2 {
 				return false
 			}
-			_, ok = gradleMatch(stmts[0], "lockAllConfigurations", "(", ")")
-			return ok
+			lockAll, strict := 0, 0
+			for _, st := range stmts {
+				if _, ok := gradleMatch(st, "lockAllConfigurations", "(", ")"); ok {
+					lockAll++
+				} else if _, ok := gradleMatchAny(st,
+					[]string{"lockMode", "=", "LockMode.STRICT"},
+					[]string{"lockMode.set", "(", "LockMode.STRICT", ")"},
+				); ok {
+					strict++
+				}
+			}
+			return lockAll == 1 && lockAll+strict == len(stmts)
 		case gradleIs(head, "java"):
 			return gradleAllSafe(body, gradleSafeJava)
 		case gradleIs(head, "application"):

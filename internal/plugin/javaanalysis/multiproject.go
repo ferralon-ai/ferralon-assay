@@ -21,8 +21,10 @@ const reasonMultipleProjectsUnsupported = "multiple_projects_unsupported"
 // inverted: anything that can name a second project counts unless it is read in full and names
 // none. Maven: a POM that lists <modules>, in any profile too, or more than one pom.xml. Gradle:
 // a root settings script that includes more than one project, or one beside root code, or that
-// includes a build, or that cannot be read; a settings script below the root; or more than one
-// build script beside a src directory. The walk enters every directory but VCS metadata,
+// includes a build, or that cannot be read; a settings script below the root; with a Gradle build
+// script anywhere in the tree, a settings script above the root that Gradle could take instead
+// (gradleAncestorFile), whose root project is a second one; or more than one build script
+// beside a src directory. The walk enters every directory but VCS metadata,
 // installed-package trees and the local dependency caches, since a project in bin/ or a dot-dir
 // is still a project; anything it cannot read (see walkProjectTree) counts too. why names the
 // evidence, for the partiality path.
@@ -33,6 +35,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 	}
 	tree := walkProjectTree(buildDir, skip)
 	var poms, gradle, settings []string
+	gradleScripts := false
 	for _, path := range tree.files {
 		switch filepath.Base(path) {
 		case "pom.xml":
@@ -40,6 +43,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		case "settings.gradle", "settings.gradle.kts":
 			settings = append(settings, path)
 		case "build.gradle", "build.gradle.kts":
+			gradleScripts = true
 			if info, err := os.Stat(filepath.Join(filepath.Dir(path), "src")); err == nil && info.IsDir() {
 				gradle = append(gradle, path)
 			}
@@ -69,6 +73,11 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		}
 		if count > 1 {
 			return true, relSlash(buildDir, p) + " includes " + strings.Join(projects, ", ")
+		}
+	}
+	if gradleScripts {
+		if path, found := gradleAncestorFile(buildDir, "settings.gradle", "settings.gradle.kts"); found {
+			return true, filepath.ToSlash(path) + " can define the build from above it"
 		}
 	}
 	if len(gradle) > 1 {

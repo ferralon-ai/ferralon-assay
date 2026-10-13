@@ -1,6 +1,8 @@
 package javaanalysis
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -308,6 +310,14 @@ func TestGradle_SafeBuildGatesLock(t *testing.T) {
 			"build.gradle":                   enforced + pulls,
 			".gradle/caches/modules-2/x.bin": "",
 		}, true},
+		{"W1 enforced, a custom wrapper distribution", map[string]string{
+			"build.gradle": enforced + pulls,
+			"gradle/wrapper/gradle-wrapper.properties": "distributionUrl=https\\://gradle.example.com/custom-gradle-8.5-bin.zip\n",
+		}, false},
+		{"W1 control, enforced, Gradle's own distribution", map[string]string{
+			"build.gradle": enforced + pulls,
+			"gradle/wrapper/gradle-wrapper.properties": "distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n",
+		}, true},
 		{"P13 capabilities resolution", map[string]string{
 			"build.gradle": enforced + "configurations.all { getResolutionStrategy().capabilitiesResolution.all { selectHighestVersion() } }\n" + pulls,
 		}, false},
@@ -452,4 +462,188 @@ func TestGradleBuildSafe(t *testing.T) {
 			})
 		})
 	}
+}
+
+// Gradle looks for the settings script in the directory it runs in and then in every parent, so
+// a project directory with no settings script of its own can belong to a build defined above it.
+// U1: the root script above the build directory forces netkit 2.0.0 and relaxes the lock, while
+// the build directory's own script, lock and declaration all say 1.0.0.
+func TestGradle_AncestorBuild(t *testing.T) {
+	const svc = "dependencyLocking {\n    lockAllConfigurations()\n}\ndependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n"
+	const lock = "com.evil:netkit:1.0.0=runtimeClasspath\n"
+	const above = "subprojects { configurations.all { resolutionStrategy.force 'com.evil:netkit:2.0.0' }; dependencyLocking { lockMode = LockMode.LENIENT } }\n"
+	netkit := mavenPURL("com.evil", "netkit", "1.0.0")
+	chmod := func(t *testing.T, path string, mode os.FileMode) {
+		t.Helper()
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		name  string
+		files map[string]string // under the checkout; the build directory is svc
+		setup func(t *testing.T, checkout string)
+		link  bool // run on a symlink to svc placed outside the checkout
+		safe  bool
+		multi bool
+	}{
+		{name: "U1 a settings script above includes the build directory", files: map[string]string{"settings.gradle": "include 'svc'\n", "build.gradle": above}, multi: true},
+		{name: "U1k a kts settings script above", files: map[string]string{"settings.gradle.kts": "include(\"svc\")\n", "build.gradle.kts": above}, multi: true},
+		{name: "a settings script two levels above", files: map[string]string{"../settings.gradle": "include 'repo:svc'\n"}, multi: true},
+		{name: "a settings script above the real path of a linked build directory", files: map[string]string{"settings.gradle": "include 'svc'\n", "build.gradle": above}, link: true, multi: true},
+		{name: "R5-B3 a settings script above at mode 0, never opened", files: map[string]string{"settings.gradle": "include 'svc'\n"},
+			setup: func(t *testing.T, checkout string) { chmod(t, filepath.Join(checkout, "settings.gradle"), 0) }, multi: true},
+		{name: "R5-B3 a FIFO named settings.gradle above, never opened",
+			setup: func(t *testing.T, checkout string) { mustFIFO(t, filepath.Join(checkout, "settings.gradle")) }, multi: true},
+		// buildSrc above is compiled onto the build scripts' classpath when Gradle takes that
+		// directory as the build root; it names no second project.
+		{name: "R5-B3 a buildSrc above, no settings script above", files: map[string]string{"buildSrc/build.gradle": "", "buildSrc/src/main/java/P.java": "class P {}\n"}},
+		{name: "R5-B3 a buildSrc directory above, empty",
+			setup: func(t *testing.T, checkout string) {
+				if err := os.Mkdir(filepath.Join(checkout, "buildSrc"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "control, no settings script or buildSrc above", files: map[string]string{"build.gradle": above}, safe: true},
+		{name: "control, the build directory's own settings script ends the search", files: map[string]string{"settings.gradle": "include 'svc'\n", "build.gradle": above, "buildSrc/build.gradle": "", "svc/settings.gradle": "rootProject.name = 'svc'\n"}, safe: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checkout := filepath.Join(t.TempDir(), "repo")
+			for rel, body := range tt.files {
+				writeFile(t, filepath.Join(checkout, filepath.FromSlash(rel)), body)
+			}
+			dir := filepath.Join(checkout, "svc")
+			writeFile(t, filepath.Join(dir, "build.gradle"), svc)
+			writeFile(t, filepath.Join(dir, "gradle.lockfile"), lock)
+			writeFile(t, filepath.Join(dir, "src", "main", "java", "A.java"), "class A {}\n")
+			if tt.setup != nil {
+				tt.setup(t, checkout)
+			}
+			if tt.link {
+				link := filepath.Join(t.TempDir(), "svc")
+				mustSymlink(t, dir, link)
+				dir = link
+			}
+			withinDeadline(t, 5*time.Second, func() {
+				why, safe := gradleBuildSafe(dir)
+				if safe != tt.safe {
+					t.Errorf("gradleBuildSafe = %v (%s), want %v", safe, why, tt.safe)
+				}
+				if got := findNode(t, toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir()))), netkit) != nil; got != tt.safe {
+					t.Errorf("netkit bound at 1.0.0 = %v, want %v", got, tt.safe)
+				}
+				if multi, why := multipleProjects(dir); multi != tt.multi {
+					t.Errorf("multipleProjects = %v (%s), want %v", multi, why, tt.multi)
+				}
+			})
+		})
+	}
+
+	// "Unread is never absent": an Lstat error other than not-exist counts as present. With the
+	// build directory's parent unsearchable, nothing under it can be determined, so the build is
+	// unsafe and binds nothing. (Any ancestor the build directory is reachable through is
+	// searchable, so Lstat there fails this way only when the build directory itself is not.)
+	t.Run("R5-B3 an unsearchable parent (EACCES)", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		checkout := filepath.Join(t.TempDir(), "repo")
+		dir := filepath.Join(checkout, "svc")
+		writeFile(t, filepath.Join(dir, "build.gradle"), svc)
+		writeFile(t, filepath.Join(dir, "gradle.lockfile"), lock)
+		chmod(t, checkout, 0)
+		t.Cleanup(func() { chmod(t, checkout, 0o755) })
+		if _, err := os.Lstat(filepath.Join(checkout, "settings.gradle")); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("setup: want EACCES from Lstat, got %v", err)
+		}
+		if why, safe := gradleBuildSafe(dir); safe {
+			t.Errorf("gradleBuildSafe = true (%s), want false", why)
+		}
+		if findNode(t, toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir()))), netkit) != nil {
+			t.Error("netkit must not bind at 1.0.0")
+		}
+	})
+
+	// Maven never reads a Gradle settings script, so one above a Maven-only build costs nothing.
+	t.Run("a Maven build directory under a Gradle settings script", func(t *testing.T) {
+		checkout := t.TempDir()
+		writeFile(t, filepath.Join(checkout, "settings.gradle"), "include 'svc'\n")
+		dir := filepath.Join(checkout, "svc")
+		writeFile(t, filepath.Join(dir, "pom.xml"), "<project><artifactId>a</artifactId></project>")
+		if multi, why := multipleProjects(dir); multi {
+			t.Errorf("multipleProjects = true (%s), want false", why)
+		}
+	})
+}
+
+// A wrapper distribution is a Gradle home whose init.d runs on every build it starts, so only
+// Gradle's own distributions are SAFE (gradlewrapper.StockGradleWrapper, which pipeline's root
+// admission uses too): exactly one distributionUrl, naming an https services.gradle.org
+// distribution in the form Gradle publishes. Anything else is not, whether or not Gradle would
+// read it as Gradle's own.
+func TestGradleWrapperSafe(t *testing.T) {
+	const own = "https\\://services.gradle.org/distributions/gradle-8.5-bin.zip"
+	for _, tt := range []struct {
+		name  string
+		props string
+		safe  bool
+	}{
+		{"Gradle's own distribution", "distributionUrl=" + own + "\n", true},
+		{"colon separator and spaces", "  distributionUrl : " + own + "\n", true},
+		{"the -all distribution", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-all.zip\n", true},
+		{"space separator", "distributionUrl " + own + "\n", false},
+		{"two entries, Gradle's own last", "distributionUrl=https\\://gradle.example.com/g.zip\ndistributionUrl=" + own + "\n", false},
+		{"a comment naming another host", "# distributionUrl=https\\://gradle.example.com/g.zip\n! x\ndistributionUrl=" + own + "\n", true},
+		{"CRLF line endings", "distributionBase=GRADLE_USER_HOME\r\ndistributionUrl=" + own + "\r\n", true},
+		{"upper-case host", "distributionUrl=https\\://SERVICES.gradle.org/distributions/gradle-8.5-bin.zip\n", false},
+		{"explicit https port", "distributionUrl=https\\://services.gradle.org\\:443/distributions/gradle-8.5-bin.zip\n", false},
+		{"http", "distributionUrl=http\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n", false},
+		{"another path on Gradle's host", "distributionUrl=https\\://services.gradle.org/custom/gradle-8.5-bin.zip\n", false},
+		{"another host", "distributionUrl=https\\://gradle.example.com/custom-gradle-8.5-bin.zip\n", false},
+		{"two entries, another host last", "distributionUrl=" + own + "\ndistributionUrl=https\\://gradle.example.com/g.zip\n", false},
+		{"a host that ends like Gradle's", "distributionUrl=https\\://evil-services.gradle.org.example.com/g.zip\n", false},
+		{"user info", "distributionUrl=https\\://u@services.gradle.org/distributions/gradle-8.5-bin.zip\n", false},
+		{"another port", "distributionUrl=https\\://services.gradle.org\\:8443/distributions/gradle-8.5-bin.zip\n", false},
+		{"a file URL", "distributionUrl=file\\:///opt/custom-gradle.zip\n", false},
+		{"a relative path", "distributionUrl=custom-gradle.zip\n", false},
+		{"an ftp URL", "distributionUrl=ftp\\://services.gradle.org/g.zip\n", false},
+		{"no distributionUrl", "distributionBase=GRADLE_USER_HOME\n", false},
+		{"a continuation line", "distributionUrl=https\\://services.gradle.org/\\\n    distributions/gradle-8.5-bin.zip\n", false},
+		{"a unicode escape", "distributionUrl=https\\://services.gradle.org/\\u0067.zip\n", false},
+		{"a key holding a backslash", "distribution\\Url=" + own + "\n", false},
+		{"a lone CR hides a second entry", "distributionUrl=" + own + "\rdistributionUrl=https\\://gradle.example.com/g.zip\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "gradle", "wrapper", "gradle-wrapper.properties"), tt.props)
+			if why, got := gradleWrapperSafe(dir); got != tt.safe {
+				t.Errorf("gradleWrapperSafe = %v (%s), want %v", got, why, tt.safe)
+			}
+		})
+	}
+	t.Run("no wrapper", func(t *testing.T) {
+		if why, ok := gradleWrapperSafe(t.TempDir()); !ok {
+			t.Errorf("gradleWrapperSafe = false (%s), want true", why)
+		}
+	})
+	t.Run("a wrapper properties file that is a FIFO", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "gradle", "wrapper"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustFIFO(t, filepath.Join(dir, "gradle", "wrapper", "gradle-wrapper.properties"))
+		withinDeadline(t, 5*time.Second, func() {
+			if why, ok := gradleWrapperSafe(dir); ok {
+				t.Errorf("gradleWrapperSafe = true (%s), want false", why)
+			}
+		})
+	})
+	t.Run("a custom distribution above the build directory", func(t *testing.T) {
+		checkout := t.TempDir()
+		writeFile(t, filepath.Join(checkout, "gradle", "wrapper", "gradle-wrapper.properties"), "distributionUrl=https\\://gradle.example.com/g.zip\n")
+		writeFile(t, filepath.Join(checkout, "svc", "build.gradle"), "")
+		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); ok {
+			t.Errorf("gradleWrapperSafe = true (%s), want false", why)
+		}
+	})
 }

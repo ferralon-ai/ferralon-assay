@@ -83,8 +83,10 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 	dg := &dependencyGraph{Complete: true}
 	// A partial dependency-resolution result (no manifest, unparseable build file)
 	// means the declared set itself is untrustworthy — the whole closure is a gap.
+	var cp depreach.Classpath
 	if !res.Partiality.Complete {
 		dg.Complete = false
+		cp.Unlisted = true
 		for _, r := range res.Partiality.Reasons {
 			dg.Gaps = append(dg.Gaps, "dependency resolution partial: "+r)
 		}
@@ -95,13 +97,22 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 	for _, d := range res.All {
 		if !d.Resolved {
 			dg.Complete = false
+			cp.Unlisted = true
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: version unresolved", d.Coordinate))
 			continue
 		}
 		jarPath, ok := LocateDependencyJar(roots, d.Coordinate, d.Version)
 		if !ok {
 			dg.Complete = false
+			cp.Unlisted = true
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR not in local cache", d.Coordinate, d.Version))
+			continue
+		}
+		pkgs, listed := classfile.ClasspathPackages(jarPath, buildDir)
+		cp.Add(pkgs, listed)
+		if !listed {
+			dg.Complete = false
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR cannot be listed", d.Coordinate, d.Version))
 			continue
 		}
 		jr, err := classfile.LoadJar(jarPath)
@@ -120,6 +131,6 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 	}
 
 	dg.Classes = classes
-	dg.Engine = depreach.NewEngine(classes)
+	dg.Engine = depreach.NewEngineOn(classes, cp)
 	return dg, nil
 }

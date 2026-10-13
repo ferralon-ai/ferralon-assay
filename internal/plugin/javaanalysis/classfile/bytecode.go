@@ -14,20 +14,21 @@ import (
 // never a panic, and never a partial edge list masquerading as complete.
 //
 // initTriggers are the classes whose <clinit> the JVM runs on first active use of
-// the class within this method — `new`, `getstatic`/`putstatic`, and `invokestatic`
-// (JVMS §5.5). <clinit> is never the target of an explicit invoke instruction, so
-// without these a sink reachable only through a static initializer is invisible to
-// the call graph — a false-not_exploitable seam the caller closes by walking into
-// each triggered class's <clinit>.
-func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, err error) {
+// the class within this method — `new` and `invokestatic` (JVMS §5.5); fieldRefs are
+// the fields `getstatic`/`putstatic` name, whose declaring class is initialized once
+// the caller resolves it. <clinit> is never the target of an explicit invoke
+// instruction, so without these a sink reachable only through a static initializer
+// is invisible to the call graph — a false-not_exploitable seam the caller closes by
+// walking into each triggered class's <clinit>.
+func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, fieldRefs []FieldRef, err error) {
 	// Code attribute prefix: u2 max_stack, u2 max_locals, u4 code_length, code[]...
 	if len(code) < 8 {
-		return nil, nil, fmt.Errorf("Code attribute too short: %d bytes", len(code))
+		return nil, nil, nil, fmt.Errorf("Code attribute too short: %d bytes", len(code))
 	}
 	codeLen := int(binary.BigEndian.Uint32(code[4:]))
 	start := 8
 	if codeLen < 0 || start+codeLen > len(code) {
-		return nil, nil, fmt.Errorf("Code length %d overflows attribute (%d bytes)", codeLen, len(code))
+		return nil, nil, nil, fmt.Errorf("Code length %d overflows attribute (%d bytes)", codeLen, len(code))
 	}
 	insns := code[start : start+codeLen]
 
@@ -39,13 +40,15 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 		}
 	}
 
+	fieldSeen := map[FieldRef]bool{}
+
 	pc := 0
 	for pc < len(insns) {
 		op := insns[pc]
 		switch op {
 		case 0xB6, 0xB7, 0xB8: // invokevirtual, invokespecial, invokestatic: u2 index
 			if pc+3 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated invoke at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated invoke at pc %d", pc)
 			}
 			// A well-formed invoke site always resolves; an unresolvable methodref
 			// (corrupt/mis-tagged constant pool) means malformed bytecode. Surface it
@@ -54,45 +57,52 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 			// and hiding the path it would have carried (inv.5).
 			ref, ok := resolveMethodRef(cp, binary.BigEndian.Uint16(insns[pc+1:]))
 			if !ok {
-				return nil, nil, fmt.Errorf("unresolvable methodref for invoke at pc %d: malformed constant pool", pc)
+				return nil, nil, nil, fmt.Errorf("unresolvable methodref for invoke at pc %d: malformed constant pool", pc)
 			}
 			edges = append(edges, Edge{To: ref, Kind: invokeKind(op)})
 			if op == 0xB8 { // invokestatic triggers the target class's <clinit>
 				trigger(ref.Owner)
 			}
 			pc += 3
-		case 0xB2, 0xB3: // getstatic, putstatic: u2 fieldref index — triggers the field's class <clinit>
+		case 0xB2, 0xB3: // getstatic, putstatic: u2 fieldref index — initializes the field's declarer
 			if pc+3 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated static field access at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated static field access at pc %d", pc)
 			}
-			trigger(cp.fieldOwner(binary.BigEndian.Uint16(insns[pc+1:])))
+			ref, ok := cp.fieldRef(binary.BigEndian.Uint16(insns[pc+1:]))
+			if !ok {
+				return nil, nil, nil, fmt.Errorf("unresolvable fieldref for static field access at pc %d: malformed constant pool", pc)
+			}
+			if !fieldSeen[ref] {
+				fieldSeen[ref] = true
+				fieldRefs = append(fieldRefs, ref)
+			}
 			pc += 3
 		case 0xBB: // new: u2 class index — triggers the instantiated class's <clinit>
 			if pc+3 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated new at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated new at pc %d", pc)
 			}
 			trigger(cp.className(binary.BigEndian.Uint16(insns[pc+1:])))
 			pc += 3
 		case 0xB9: // invokeinterface: u2 index, u1 count, u1 0
 			if pc+5 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated invokeinterface at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated invokeinterface at pc %d", pc)
 			}
 			ref, ok := resolveMethodRef(cp, binary.BigEndian.Uint16(insns[pc+1:]))
 			if !ok {
-				return nil, nil, fmt.Errorf("unresolvable methodref for invokeinterface at pc %d: malformed constant pool", pc)
+				return nil, nil, nil, fmt.Errorf("unresolvable methodref for invokeinterface at pc %d: malformed constant pool", pc)
 			}
 			edges = append(edges, Edge{To: ref, Kind: EdgeInterface})
 			pc += 5
 		case 0xBA: // invokedynamic: u2 index, u2 0
 			if pc+5 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated invokedynamic at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated invokedynamic at pc %d", pc)
 			}
 			// A well-formed invokedynamic always resolves (to owner "" — a hazard the
 			// engine handles); an unresolvable one is a corrupt constant pool, surfaced
 			// as a Gap rather than a silently omitted hazard edge.
 			ref, ok := resolveMethodRef(cp, binary.BigEndian.Uint16(insns[pc+1:]))
 			if !ok {
-				return nil, nil, fmt.Errorf("unresolvable methodref for invokedynamic at pc %d: malformed constant pool", pc)
+				return nil, nil, nil, fmt.Errorf("unresolvable methodref for invokedynamic at pc %d: malformed constant pool", pc)
 			}
 			edges = append(edges, Edge{To: ref, Kind: EdgeDynamic})
 			pc += 5
@@ -102,7 +112,7 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 				pc++
 			}
 			if pc+12 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated tableswitch at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated tableswitch at pc %d", pc)
 			}
 			pc += 4 // default
 			low := int32(binary.BigEndian.Uint32(insns[pc:]))
@@ -110,7 +120,7 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 			high := int32(binary.BigEndian.Uint32(insns[pc:]))
 			pc += 4
 			if high < low {
-				return nil, nil, fmt.Errorf("tableswitch high %d < low %d", high, low)
+				return nil, nil, nil, fmt.Errorf("tableswitch high %d < low %d", high, low)
 			}
 			n := int(high-low) + 1
 			pc += 4 * n
@@ -120,18 +130,18 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 				pc++
 			}
 			if pc+8 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated lookupswitch at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated lookupswitch at pc %d", pc)
 			}
 			pc += 4 // default
 			npairs := int(binary.BigEndian.Uint32(insns[pc:]))
 			pc += 4
 			if npairs < 0 {
-				return nil, nil, fmt.Errorf("lookupswitch npairs %d < 0", npairs)
+				return nil, nil, nil, fmt.Errorf("lookupswitch npairs %d < 0", npairs)
 			}
 			pc += 8 * npairs
 		case 0xC4: // wide: modifies the following instruction's operand width
 			if pc+2 > len(insns) {
-				return nil, nil, fmt.Errorf("truncated wide at pc %d", pc)
+				return nil, nil, nil, fmt.Errorf("truncated wide at pc %d", pc)
 			}
 			if insns[pc+1] == 0x84 { // iinc: wide gives u2 index, u2 const
 				pc += 6
@@ -142,7 +152,7 @@ func parseCode(code []byte, cp constPool) (edges []Edge, initTriggers []string, 
 			pc += 1 + operandLen[op]
 		}
 	}
-	return edges, initTriggers, nil
+	return edges, initTriggers, fieldRefs, nil
 }
 
 func invokeKind(op byte) EdgeKind {

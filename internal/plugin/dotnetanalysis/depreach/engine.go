@@ -402,6 +402,28 @@ func (e *Engine) Reach(ingress, sink MethodKey) Result {
 // SCIP id covers) is searched: not_exploitable means no member of the set is reachable.
 // Every key must be present in the loaded set, else the search is undetermined.
 func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
+	return e.reachFrom(e.byKey[ingress], "ingress not found in loaded set: "+ingress.String(), sinks)
+}
+
+// ReachFromAny is ReachAny from a set of ingresses searched together: a path from any of
+// them is a candidate, a hazard on the joint frontier with no path is undetermined. Keys
+// absent from the loaded set are skipped; when none is present the search never ran and
+// the result is undetermined.
+func (e *Engine) ReachFromAny(ingresses []MethodKey, sinks []MethodKey) Result {
+	var starts []*methodNode
+	seen := map[*methodNode]bool{}
+	for _, k := range ingresses {
+		for _, n := range e.byKey[k] {
+			if !seen[n] {
+				seen[n] = true
+				starts = append(starts, n)
+			}
+		}
+	}
+	return e.reachFrom(starts, "no ingress found in loaded set", sinks)
+}
+
+func (e *Engine) reachFrom(startNodes []*methodNode, noIngress string, sinks []MethodKey) Result {
 	res := Result{}
 	var sinkNodes []*methodNode
 	missing := ""
@@ -413,13 +435,12 @@ func (e *Engine) ReachAny(ingress MethodKey, sinks []MethodKey) Result {
 		sinkNodes = append(sinkNodes, nodes...)
 	}
 	res.SinkPresent = len(sinks) > 0 && missing == ""
-	startNodes := e.byKey[ingress]
 
 	if len(startNodes) == 0 {
 		// The search never began; absence proves nothing.
 		res.Verdict = Undetermined
 		res.HazardOnFrontier = true
-		res.HazardWhy = "ingress not found in loaded set: " + ingress.String()
+		res.HazardWhy = noIngress
 		return res
 	}
 	if !res.SinkPresent {

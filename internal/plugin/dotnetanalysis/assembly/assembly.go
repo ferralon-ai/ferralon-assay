@@ -546,3 +546,19 @@ func buildModel(pe *peFile, m *mdTables) (*Assembly, error) {
 	}
 	return a, nil
 }
+
+// ReferencesNamespace reports whether any TypeRef row of the assembly names a type in the
+// namespace prefix or one nested under it ("Microsoft.AspNetCore" matches
+// "Microsoft.AspNetCore.Mvc").
+func (a *Assembly) ReferencesNamespace(prefix string) bool {
+	if a.md == nil {
+		return false
+	}
+	for rid := uint32(1); int(rid) <= len(a.md.rows[tTypeRef]); rid++ {
+		ns := a.rowStr(tTypeRef, rid, 2)
+		if ns == prefix || strings.HasPrefix(ns, prefix+".") {
+			return true
+		}
+	}
+	return false
+}

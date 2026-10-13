@@ -72,12 +72,25 @@ func resolveInDependency(buildDir, id, version string, wanted []string) plugin.S
 	}
 	locator, _ := assembly.ParseAssetsLocator(build.assets)
 	graph := parseAssetsGraph(build.assets)
+	rt := resolveRuntimeTarget(graph, build.target, build.runtime, locator)
 	var occurrences []assembly.DepRef
 	for _, d := range graph.occurrences(id, version) {
-		if build.target == "" || d.Target == build.target {
+		if (rt.load == "" || d.Target == rt.load) && !rt.shadowed[d.PkgKey] {
 			d.Runtime = build.runtime
 			occurrences = append(occurrences, d)
 		}
+	}
+	// A runtime target that adds or re-versions the package, when the build's runtime does
+	// not pick out which runtime target runs: those bytes are named, never read in its place.
+	runtimeMissed := false
+	for _, m := range rt.misses {
+		if pkgID, _ := splitPkgKey(m.Dep.PkgKey); strings.EqualFold(pkgID, id) {
+			runtimeMissed = true
+			miss(missReason(m.Reason), purl, m.Dep.PkgKey+" ("+m.Dep.Target+"): "+m.Reason, graph.closure(m.Dep.Target, m.Dep.PkgKey))
+		}
+	}
+	if len(occurrences) == 0 && runtimeMissed {
+		return finish(plugin.SymbolResolutionResult{})
 	}
 	if len(occurrences) == 0 {
 		coord := id
@@ -85,8 +98,8 @@ func resolveInDependency(buildDir, id, version string, wanted []string) plugin.S
 			coord += "@" + version
 		}
 		where := "project.assets.json"
-		if build.target != "" {
-			where += " target " + build.target
+		if rt.load != "" {
+			where += " target " + rt.load
 		}
 		miss(partialReasonNoDependencyArtifact, purl, coord+" not in "+where, nil)
 		return finish(plugin.SymbolResolutionResult{})

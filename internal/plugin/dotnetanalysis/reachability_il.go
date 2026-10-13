@@ -45,16 +45,21 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		deps    []assembly.DepRef
 		locator *assembly.AssetsLocator
 		graph   *assetsGraph
+		rt      runtimeTarget
 	)
 	if build.assets != nil {
 		if loc, parsed := assembly.ParseAssetsLocator(build.assets); parsed {
 			locator = loc
 		}
-		deps = depRefsFrom(build.assets, build.target)
-		for i := range deps {
-			deps[i].Runtime = build.runtime
-		}
 		graph = parseAssetsGraph(build.assets)
+		rt = resolveRuntimeTarget(graph, build.target, build.runtime, locator)
+		for _, d := range depRefsFrom(build.assets, rt.load) {
+			if rt.shadowed[d.PkgKey] {
+				continue
+			}
+			d.Runtime = build.runtime
+			deps = append(deps, d)
+		}
 	}
 
 	// A dep that does not locate/read is a DECLARED MISS: absent from the set ⇒ out-of-set ⇒
@@ -62,6 +67,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// disclosed as a scoped limit bounded by what the missing code could reach, and as a
 	// run-wide reason too, so a consumer that reads only Reasons still sees it.
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
+	set.Misses = append(set.Misses, rt.misses...)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
 	// Two root classes. MAIN is the confident, PRECISE two-trace root and the ONLY root that

@@ -162,7 +162,7 @@ func declaredDependencies(root string) []plugin.ResolvedDependency {
 		if d.Name() != "package.json" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := readRegular(path)
 		if rerr != nil {
 			return nil
 		}
@@ -258,7 +258,7 @@ func (l *lockInfo) record(project, field, name, spec string) {
 // bool is false when the file cannot be read or is structurally unparseable (the caller
 // degrades partiality).
 func parseLockfile(path string) (lockInfo, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return lockInfo{}, false
 	}

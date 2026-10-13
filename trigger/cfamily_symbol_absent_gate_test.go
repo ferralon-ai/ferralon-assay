@@ -118,9 +118,9 @@ const (
 	cfamilyAdvisoryID       = "CVE-2022-37434"
 	cfamilySecondAdvisoryID = "CVE-2018-25032"
 	cfamilySecondSymbol     = "deflate"
-	goAdvisoryID      = "GO-2099-0001"
-	goAdvisoryModule  = "example.com/lib"
-	goAdvisorySymbol  = "example.com/lib.Decode"
+	goAdvisoryID            = "GO-2099-0001"
+	goAdvisoryModule        = "example.com/lib"
+	goAdvisorySymbol        = "example.com/lib.Decode"
 )
 
 func (s cfamilyAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {

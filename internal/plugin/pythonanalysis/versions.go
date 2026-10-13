@@ -82,7 +82,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: exhaustiveManifestSet(req.Coordinate, manifests, perFile, parseFailed),
+		Exhaustive: exhaustiveManifestSet(req.BuildDir, req.Coordinate, manifests, perFile, parseFailed),
 	}
 	want := normalizePyCoordinate(req.Coordinate)
 	if want != "" {

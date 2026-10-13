@@ -21,12 +21,26 @@ package pythonanalysis
 //     a setup.py whose name is not a literal: lockfiles omit the project itself, so its absence
 //     from them proves nothing (Go's oracle counts the root module as present for the same
 //     reason);
-//   - a poetry.lock whose lexical advisory read and TOML decode disagree on the package set.
+//   - a poetry.lock whose lexical advisory read and TOML decode disagree on the package set;
+//   - a pyproject.toml declaring, outside [project], a name no lockfile contains: PEP 735
+//     [dependency-groups], [tool.uv] dev-dependencies, [tool.poetry] dependencies,
+//     dev-dependencies and groups, [tool.pdm] dev-dependencies, [tool.hatch] environment
+//     dependencies (a non-frozen sync re-locks and installs it);
+//   - a requirements file whose -r/-c include is not itself a parsed manifest;
+//   - anything the walk of the whole build dir (everything but .git; no skip list) finds that
+//     installs packages the parsed manifests do not account for: a manifest the resolver did not
+//     read (one under build/, env/, a dot-dir, ...), an install manifest it never parses
+//     (requirements-style *.txt it does not recognize or any under a requirements*/ directory,
+//     *.in, Pipfile, environment.yml, tox.ini deps, noxfile.py installs), a symlinked
+//     directory, or an installed copy of the coordinate (a site-packages/dist-packages
+//     *.dist-info or *.egg-info, a stray *.dist-info/*.egg-info, a wheel, egg, sdist archive or
+//     .egg-link named for it).
 //
 // Lockfile group/category/dev membership is never consulted: every locked package counts as
 // present whatever group it belongs to.
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,13 +52,21 @@ import (
 // completeLockfiles are the formats whose [[package]] set is the full resolved closure.
 var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true}
 
-// exhaustiveManifestSet reports whether the parsed manifests enumerate every installable
-// package. perFile maps each manifest path to what parseManifest returned for it.
-func exhaustiveManifestSet(coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
+// exhaustiveManifestSet reports whether the parsed manifests (found under root) enumerate every
+// installable package. perFile maps each manifest path to what parseManifest returned for it.
+func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
-	if names, ok := firstPartyNames(manifests); !ok || names[normalizePyCoordinate(coordinate)] {
+	coord := normalizePyCoordinate(coordinate)
+	if names, ok := firstPartyNames(manifests); !ok || names[coord] {
+		return false
+	}
+	parsed := make(map[string]bool, len(manifests))
+	for _, m := range manifests {
+		parsed[filepath.Clean(m)] = true
+	}
+	if !installSurfaceCovered(root, coord, parsed) {
 		return false
 	}
 	var lockDirs []string
@@ -86,8 +108,19 @@ func exhaustiveManifestSet(coordinate string, manifests []string, perFile map[st
 		if completeLockfiles[filepath.Base(m)] {
 			continue
 		}
-		if isRequirementsFile(filepath.Base(m)) && requirementsHasUnenumeratedSource(m) {
+		if isRequirementsFile(filepath.Base(m)) && (requirementsHasUnenumeratedSource(m) || !includesParsed(m, parsed)) {
 			return false
+		}
+		if filepath.Base(m) == "pyproject.toml" {
+			names, ok := pyprojectGroupNames(m)
+			if !ok {
+				return false
+			}
+			for _, n := range names {
+				if _, isLocked := locked[n]; !isLocked {
+					return false
+				}
+			}
 		}
 		for _, d := range perFile[m] {
 			versions, ok := locked[normalizePyCoordinate(d.Coordinate)]
@@ -311,4 +344,246 @@ func uvRootNames(path string) []string {
 		}
 	}
 	return out
+}
+
+// installSurfaceCovered walks root (everything but .git) and reports whether every install
+// surface in it is a manifest the resolver parsed (parsed holds their cleaned paths), and no
+// installed copy of coord is present.
+func installSurfaceCovered(root, coord string, parsed map[string]bool) bool {
+	covered := true
+	fail := func() error {
+		covered = false
+		return filepath.SkipAll
+	}
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return fail()
+		}
+		name := d.Name()
+		if d.Type()&fs.ModeSymlink != 0 {
+			info, err := os.Stat(path)
+			if err != nil || info.IsDir() {
+				return fail() // WalkDir does not follow it, so what it holds goes unread
+			}
+		}
+		if d.IsDir() {
+			switch {
+			case name == ".git" && path != root:
+				return filepath.SkipDir
+			case name == "site-packages" || name == "dist-packages":
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					return fail()
+				}
+				for _, e := range entries {
+					if n, ok := installedDistName(e.Name()); ok && n == coord {
+						return fail()
+					}
+				}
+				return filepath.SkipDir
+			}
+			if n, ok := installedDistName(name); ok {
+				if n == coord {
+					return fail()
+				}
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isManifest(name) {
+			if !parsed[filepath.Clean(path)] {
+				return fail()
+			}
+			return nil
+		}
+		if n, ok := installedDistName(name); ok && n == coord {
+			return fail()
+		}
+		if archiveNames(name, coord) || unparsedInstallManifest(path, name) {
+			return fail()
+		}
+		return nil
+	})
+	return covered
+}
+
+// installedDistName returns the normalized distribution name of an installed-metadata entry
+// (Name-1.0.dist-info, Name.egg-info, Name-1.0-py3.11.egg-info, Name.egg-link, Name-1.0.egg).
+// Installers escape '-' in the name to '_', so the name ends at the first '-'.
+func installedDistName(entry string) (string, bool) {
+	for _, suffix := range []string{".dist-info", ".egg-info", ".egg-link", ".egg"} {
+		if base, ok := strings.CutSuffix(entry, suffix); ok && base != "" {
+			if i := strings.IndexByte(base, '-'); i > 0 {
+				base = base[:i]
+			}
+			return normalizePyCoordinate(base), true
+		}
+	}
+	return "", false
+}
+
+// archiveNames reports whether file is a distribution archive (wheel or sdist) that could be
+// coord's: its normalized name starts with coord followed by a version separator.
+func archiveNames(file, coord string) bool {
+	lower := strings.ToLower(file)
+	for _, ext := range []string{".whl", ".tar.gz", ".tgz", ".tar.bz2", ".zip"} {
+		if base, ok := strings.CutSuffix(lower, ext); ok {
+			return strings.HasPrefix(normalizePyCoordinate(base), coord+"-")
+		}
+	}
+	return false
+}
+
+// unparsedInstallManifest reports whether path is an install manifest the resolver never parses.
+// The recognized requirements*.txt family is a manifest (isManifest) and is handled by the caller.
+func unparsedInstallManifest(path, name string) bool {
+	lower := strings.ToLower(name)
+	ext := filepath.Ext(lower)
+	switch {
+	case name == "Pipfile":
+		return true
+	case (ext == ".yml" || ext == ".yaml") && (strings.HasPrefix(lower, "environment") || strings.HasPrefix(lower, "conda")):
+		return true
+	case ext == ".in":
+		return name != "MANIFEST.in"
+	case ext == ".txt":
+		return strings.Contains(lower, "requirements") || strings.Contains(lower, "constraints") ||
+			strings.HasPrefix(strings.ToLower(filepath.Base(filepath.Dir(path))), "requirements")
+	case name == "tox.ini":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return true
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if k, _, ok := strings.Cut(line, "="); ok && strings.TrimSpace(k) == "deps" {
+				return true
+			}
+		}
+	case name == "noxfile.py":
+		data, err := os.ReadFile(path)
+		return err != nil || strings.Contains(string(data), ".install(")
+	}
+	return false
+}
+
+// includesParsed reports whether every -r/--requirement and -c/--constraint include in the
+// requirements file at path names a manifest the resolver parsed.
+func includesParsed(path string, parsed map[string]bool) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, raw := range joinContinuations(string(data)) {
+		line := strings.TrimSpace(stripReqCommentSafe(raw))
+		target, isInclude := includeTarget(line)
+		if !isInclude {
+			continue
+		}
+		if target == "" || strings.Contains(target, "://") {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		if !parsed[filepath.Clean(target)] {
+			return false
+		}
+	}
+	return true
+}
+
+// includeTarget returns the file an include line names, in any of pip's spellings
+// (-r f, -rf, -r=f, --requirement f, --requirement=f, and the -c/--constraint equivalents).
+func includeTarget(line string) (string, bool) {
+	for _, flag := range []string{"--requirement", "--constraint", "-r", "-c"} {
+		rest, ok := strings.CutPrefix(line, flag)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(flag, "--") && rest != "" && rest[0] != '=' && rest[0] != ' ' && rest[0] != '\t' {
+			continue // a longer option sharing the prefix
+		}
+		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
+	}
+	return "", false
+}
+
+// pyprojectGroupNames returns the normalized names a pyproject.toml declares outside [project]
+// for a sync or environment to install. ok is false when the file does not decode into the
+// expected shapes or an entry is not a readable requirement.
+func pyprojectGroupNames(path string) (names []string, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	type poetryDeps map[string]any
+	var pp struct {
+		DependencyGroups map[string][]any `toml:"dependency-groups"`
+		Tool             struct {
+			UV struct {
+				DevDependencies []string `toml:"dev-dependencies"`
+			} `toml:"uv"`
+			Poetry struct {
+				Dependencies    poetryDeps `toml:"dependencies"`
+				DevDependencies poetryDeps `toml:"dev-dependencies"`
+				Group           map[string]struct {
+					Dependencies poetryDeps `toml:"dependencies"`
+				} `toml:"group"`
+			} `toml:"poetry"`
+			PDM struct {
+				DevDependencies map[string][]string `toml:"dev-dependencies"`
+			} `toml:"pdm"`
+			Hatch struct {
+				Envs map[string]struct {
+					Dependencies      []string `toml:"dependencies"`
+					ExtraDependencies []string `toml:"extra-dependencies"`
+				} `toml:"envs"`
+			} `toml:"hatch"`
+		} `toml:"tool"`
+	}
+	if toml.Unmarshal(data, &pp) != nil {
+		return nil, false
+	}
+	var reqs []string
+	for _, group := range pp.DependencyGroups {
+		for _, e := range group {
+			switch v := e.(type) {
+			case string:
+				reqs = append(reqs, v)
+			case map[string]any:
+				if _, inc := v["include-group"]; !inc || len(v) != 1 {
+					return nil, false
+				}
+			default:
+				return nil, false
+			}
+		}
+	}
+	reqs = append(reqs, pp.Tool.UV.DevDependencies...)
+	for _, group := range pp.Tool.PDM.DevDependencies {
+		reqs = append(reqs, group...)
+	}
+	for _, env := range pp.Tool.Hatch.Envs {
+		reqs = append(reqs, env.Dependencies...)
+		reqs = append(reqs, env.ExtraDependencies...)
+	}
+	for _, r := range reqs {
+		req, ok := parsePEP508(r)
+		if !ok {
+			return nil, false
+		}
+		names = append(names, normalizePyCoordinate(req.Name))
+	}
+	poetry := []poetryDeps{pp.Tool.Poetry.Dependencies, pp.Tool.Poetry.DevDependencies}
+	for _, g := range pp.Tool.Poetry.Group {
+		poetry = append(poetry, g.Dependencies)
+	}
+	for _, deps := range poetry {
+		for n := range deps {
+			if n != "python" {
+				names = append(names, normalizePyCoordinate(n))
+			}
+		}
+	}
+	return names, true
 }

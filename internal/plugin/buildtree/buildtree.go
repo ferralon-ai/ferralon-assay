@@ -237,6 +237,10 @@ func Head(path string) ([]byte, error) {
 // symlink to one.
 var errNotRegular = errors.New("not a regular file")
 
+// betweenStatAndOpen, when set (by tests only), runs in rawHead after the path is found to be a
+// regular file and before it is opened, where a swap of the file would land.
+var betweenStatAndOpen func(path string)
+
 // rawHead returns the first HeadSize bytes of the file's canonical content, following symlinks,
 // only when it is a regular file. A file's canonical content is its bytes, except when it starts
 // with a byte-order mark and the text behind the mark decodes: then it is that text in UTF-8
@@ -255,6 +259,9 @@ func rawHead(path string) ([]byte, error) {
 	}
 	if !want.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: %w", path, errNotRegular)
+	}
+	if betweenStatAndOpen != nil {
+		betweenStatAndOpen(path)
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {

@@ -218,11 +218,25 @@ func manifestFiles(root string) (paths []string, read bool) {
 
 // walkManifests returns every file under root whose path satisfies match, skipping the
 // same trees as manifestFiles. read is false when the walk met an error other than a path
-// that is not there.
+// that is not there, or a symlinked directory whose target it does not itself read: one that
+// resolves outside root, or to a directory the walk skips or could not list. WalkDir never
+// follows the link, so a target inside the walk is matched once, at its real path.
 func walkManifests(root string, match func(string) bool) (out []string, read bool) {
 	read = true
+	realRoot, rootErr := filepath.EvalSymlinks(root)
+	// walked holds the real path of every directory the walk entered and listed.
+	walked := map[string]bool{}
+	realOf := func(path string) string {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(realRoot, rel)
+	}
+	var linkedDirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			delete(walked, realOf(path))
 			if !absent(err) {
 				read = false
 			}
@@ -232,13 +246,26 @@ func walkManifests(root string, match func(string) bool) (out []string, read boo
 			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
+			walked[realOf(path)] = true
 			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 && !skipDir(d.Name()) {
+			if fi, serr := os.Stat(path); serr == nil && fi.IsDir() {
+				linkedDirs = append(linkedDirs, path)
+				return nil
+			}
 		}
 		if match(path) {
 			out = append(out, path)
 		}
 		return nil
 	})
+	for _, link := range linkedDirs {
+		target, err := filepath.EvalSymlinks(link)
+		if rootErr != nil || err != nil || !walked[target] {
+			read = false
+		}
+	}
 	return out, read
 }
 

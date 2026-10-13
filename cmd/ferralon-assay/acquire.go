@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 	"github.com/ferralon-ai/ferralon-assay/internal/repoconfig"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -145,7 +146,15 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 		repo = repoOverride
 	}
 
-	lp, err := selectPlugin(language, pluginBin)
+	var cfOpts []plugin.CFamilyOption
+	if language == checkout.LangCFamily {
+		if dir := scanWasmCacheDir(); dir != "" {
+			prev := cleanup
+			cleanup = func() { prev(); _ = os.RemoveAll(dir) }
+			cfOpts = append(cfOpts, plugin.WithCFamilyWasmCacheDir(dir))
+		}
+	}
+	lp, err := selectPlugin(language, pluginBin, cfOpts...)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -167,8 +176,9 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 // selectPlugin constructs the subprocess-backed analyzer client for the detected language.
 // A non-empty bin is an explicit path to that language's assay-plugin-<lang> binary
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
-// plugin runs per scan (the tree is a single language), so a single override suffices.
-func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
+// plugin runs per scan (the tree is a single language), so a single override suffices. cfOpts
+// apply to the C-family plugin only.
+func selectPlugin(language, bin string, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
 	switch language {
 	case checkout.LangGo:
 		if bin != "" {
@@ -202,12 +212,32 @@ func selectPlugin(language, bin string) (plugin.LanguagePlugin, error) {
 		return plugin.NewDotNetPlugin()
 	case checkout.LangCFamily:
 		if bin != "" {
-			return plugin.NewCFamilyPlugin(plugin.WithCFamilyBinaryPath(bin))
+			cfOpts = append(cfOpts, plugin.WithCFamilyBinaryPath(bin))
 		}
-		return plugin.NewCFamilyPlugin()
+		return plugin.NewCFamilyPlugin(cfOpts...)
 	default:
 		return nil, fmt.Errorf("no analyzer plugin for detected source language %q", language)
 	}
+}
+
+// envCFamilyWasmCacheDir is plugin.CFamilyWasmCacheDirEnv, read here where the operator sets it.
+const envCFamilyWasmCacheDir = brand.EnvPrefix + "_CFAMILY_CGX_WASM_CACHE_DIR"
+
+// scanWasmCacheDir creates the private directory one scan's C-family subprocesses share their
+// compiled wasm module through, so only the first of them compiles it. The caller removes it
+// when the scan ends. An operator-set CFamilyWasmCacheDirEnv wins, and then nothing is created.
+// A directory that cannot be created leaves every spawn compiling cold, which is slower and
+// changes no result.
+func scanWasmCacheDir() string {
+	if os.Getenv(envCFamilyWasmCacheDir) != "" {
+		return ""
+	}
+	dir, err := os.MkdirTemp("", "assay-cfamily-wasm-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cfamily wasm cache dir: %v; each analysis step compiles the module\n", err)
+		return ""
+	}
+	return dir
 }
 
 // isRemoteURL reports whether target names a remote repository to clone rather than a local

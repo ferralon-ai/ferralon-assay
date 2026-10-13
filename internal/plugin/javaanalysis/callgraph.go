@@ -60,6 +60,7 @@ type program struct {
 // fileParse pairs a parsed file with its package (needed to qualify call-site
 // callers/callees into SCIP ids).
 type fileParse struct {
+	path      string // source file path under the build dir
 	pkg       string
 	decls     []decl
 	calls     []callSite
@@ -112,7 +113,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
-		fp := fileParse{pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
+		fp := fileParse{path: f, pkg: pr.pkg, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses}
 		prog.files = append(prog.files, fp)
 		for _, d := range pr.decls {
 			if d.kind != kindMethod {

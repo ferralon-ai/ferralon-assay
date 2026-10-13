@@ -205,6 +205,40 @@ func TestResolveVersions_NoBuildFilesDegradesToPartial(t *testing.T) {
 	}
 }
 
+// An unparseable build file vetoes every coordinate: it could declare any version of
+// anything, so the copies that did parse don't decide.
+func TestResolveVersions_UnparseableBuildFileVetoes(t *testing.T) {
+	const gradle = "dependencies {\n    implementation 'org.yaml:snakeyaml:2.0'\n}\n"
+	const truncated = `<project><dependencies><dependency><groupId>org.yaml</groupId><artifactId>snakeyaml</artifactId><version>1.33`
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name:  "a truncated pom beside a Gradle literal",
+			files: map[string]string{"a/build.gradle": gradle, "b/pom.xml": truncated},
+		},
+		{
+			name:  "a truncated pom alone",
+			files: map[string]string{"pom.xml": truncated},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolve(t, writeTree(t, tc.files), "org.yaml:snakeyaml")
+			if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("Reasons = %v, want %q", res.Partiality.Reasons, plugin.PartialReasonToolFailure)
+			}
+			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+				t.Errorf("want Found and UNRESOLVED; got found=%v %+v", res.Found, res.Match)
+			}
+		})
+	}
+	if res := resolve(t, writeTree(t, map[string]string{"pom.xml": truncated}), ""); res.Found {
+		t.Errorf("an empty coordinate must not be Found; got %+v", res.Match)
+	}
+}
+
 func TestResolveVersions_MissingBuildDirIsHardError(t *testing.T) {
 	_, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: filepath.Join(t.TempDir(), "nope"), Coordinate: "x:y"})
 	if err == nil {
@@ -242,15 +276,94 @@ func TestResolveVersions_CorpusRepros(t *testing.T) {
 	}
 }
 
-// A resolved match for a coordinate that ALSO appears versionless elsewhere must win (the
-// resolver prefers a Resolved match over an UNRESOLVED one for the same coordinate).
-func TestResolveVersions_ResolvedMatchWinsOverUnresolved(t *testing.T) {
-	dir := writeTree(t, map[string]string{"build.gradle": `dependencies {
-    implementation 'com.example.lib:widget'          // UNRESOLVED, appears first
-    implementation 'com.example.lib:widget:1.4.0'    // RESOLVED
-}`})
-	res := resolve(t, dir, "com.example.lib:widget")
-	if !res.Match.Resolved || res.Match.Version != "1.4.0" {
-		t.Fatalf("resolved match must win, got %+v", res.Match)
+func pomWith(artifact, depVersion string) string {
+	v := ""
+	if depVersion != "" {
+		v = "<version>" + depVersion + "</version>"
+	}
+	return `<project><groupId>com.example</groupId><artifactId>` + artifact + `</artifactId><version>1.0.0</version>
+  <properties><widget.version>1.4.0</widget.version></properties>
+  <dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId>` + v + `</dependency></dependencies>
+</project>`
+}
+
+// When the build declares a coordinate more than once, no single declaration decides: two
+// distinct versions, or any declaration whose version is unknown, leave Match UNRESOLVED so
+// the predicate fails open. The Kotlin lane delegates here, so these rows cover it too.
+func TestResolveVersions_MultipleDeclarations(t *testing.T) {
+	cases := []struct {
+		name    string
+		files   map[string]string
+		version string // "" means Found but UNRESOLVED
+	}{
+		{
+			name: "multi-module Maven build pins different versions",
+			files: map[string]string{
+				"pom.xml":       pomWith("parent", "1.4.0"),
+				"core/pom.xml":  pomWith("core", "1.4.0"),
+				"admin/pom.xml": pomWith("admin", "1.5.0"),
+			},
+		},
+		{
+			name: "Gradle modules pin different versions",
+			files: map[string]string{
+				"app/build.gradle":     "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n}\n",
+				"lib/build.gradle.kts": "dependencies {\n    implementation(\"com.example.lib:widget:1.5.0\")\n}\n",
+			},
+		},
+		{
+			name: "two configurations in one build.gradle pin different versions",
+			files: map[string]string{"build.gradle": `dependencies {
+    implementation 'com.example.lib:widget:1.4.0'
+    testImplementation 'com.example.lib:widget:1.5.0'
+}`},
+		},
+		{
+			name: "Maven and Gradle disagree",
+			files: map[string]string{
+				"pom.xml":      pomWith("app", "1.5.0"),
+				"build.gradle": "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n}\n",
+			},
+		},
+		{
+			name: "a platform-managed declaration beside a literal one",
+			files: map[string]string{"build.gradle": `dependencies {
+    implementation 'com.example.lib:widget'
+    implementation 'com.example.lib:widget:1.4.0'
+}`},
+		},
+		{
+			name: "a BOM-managed module beside a pinned module",
+			files: map[string]string{
+				"core/pom.xml":  pomWith("core", "1.4.0"),
+				"admin/pom.xml": pomWith("admin", ""),
+			},
+		},
+		{
+			name: "every declaration agrees",
+			files: map[string]string{
+				"pom.xml":          pomWith("parent", "1.4.0"),
+				"core/pom.xml":     pomWith("core", "${widget.version}"),
+				"app/build.gradle": "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n    testImplementation group: 'com.example.lib', name: 'widget', version: '1.4.0'\n}\n",
+			},
+			version: "1.4.0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolve(t, writeTree(t, tc.files), "com.example.lib:widget")
+			if !res.Found {
+				t.Fatal("com.example.lib:widget not found")
+			}
+			if tc.version == "" {
+				if res.Match.Resolved || res.Match.Version != "" {
+					t.Fatalf("declarations straddle, want UNRESOLVED; got %+v", res.Match)
+				}
+				return
+			}
+			if !res.Match.Resolved || res.Match.Version != tc.version {
+				t.Fatalf("want resolved %s; got %+v", tc.version, res.Match)
+			}
+		})
 	}
 }

@@ -277,9 +277,10 @@ func (lc *lockClosures) governingLock(dir string) string {
 // declaresInstall reports whether dir's package.json declares workspaces or a non-empty
 // dependency field of any kind: an install there needs no lockfile. One that is not a regular
 // file or cannot be read or decoded counts, since npm would not install from it as this lane
-// reads it.
+// reads it. readRegular follows a symlink to a regular file wherever it points; one that leaves
+// the build tree is vetoed by resolutionOverridden's walk.
 func (lc *lockClosures) declaresInstall(dir string) bool {
-	data, err := readRegularFile(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
+	data, err := readRegular(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false
 	}
@@ -316,7 +317,7 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 	}
 	var g *lockGraph
 	for _, name := range []string{"npm-shrinkwrap.json", "package-lock.json"} {
-		data, err := readRegularFile(filepath.Join(lc.root, filepath.FromSlash(lockDir), name))
+		data, err := readRegular(filepath.Join(lc.root, filepath.FromSlash(lockDir), name))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
@@ -506,7 +507,7 @@ var npmLockNames = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.js
 // npmLockParses reports whether the file at p decodes as an npm lockfile: a lockfileVersion
 // and a packages or dependencies map of entries.
 func npmLockParses(p string) bool {
-	data, err := readRegularFile(p)
+	data, err := readRegular(p)
 	if err != nil {
 		return false
 	}
@@ -516,24 +517,6 @@ func npmLockParses(p string) bool {
 		Dependencies    map[string]struct{} `json:"dependencies"`
 	}
 	return json.Unmarshal(data, &raw) == nil && raw.LockfileVersion >= 1 && (raw.Packages != nil || raw.Dependencies != nil)
-}
-
-// errNotRegularFile is readRegularFile's error for a path that is not a regular file.
-var errNotRegularFile = errors.New("not a regular file")
-
-// readRegularFile reads the file at p only when it resolves, through any symlink, to a regular
-// file. It stats before it opens and never opens a pipe, socket or device, since opening a pipe
-// with no writer blocks. It follows a symlink to a regular file wherever it points: one that
-// leaves the build tree is vetoed by resolutionOverridden's walk, not here.
-func readRegularFile(p string) ([]byte, error) {
-	fi, err := os.Stat(p)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, &fs.PathError{Op: "read", Path: p, Err: errNotRegularFile}
-	}
-	return os.ReadFile(p)
 }
 
 // installedByOther name entries a node_modules holds when pnpm or yarn installed it.

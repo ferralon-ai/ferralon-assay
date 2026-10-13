@@ -98,8 +98,9 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 	if !cg.Partiality.Complete {
 		// A call graph that is itself partial cannot fully corroborate any trace.
 		// Carry its incompleteness even when it listed no explicit reasons — the
-		// cause is unknown, which is exactly what the undetermined code says.
-		if len(cg.Partiality.Reasons) == 0 {
+		// cause is unknown, which is exactly what the undetermined code says. Scoped
+		// limits are a stated cause, carried below.
+		if len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		}
 	}
@@ -125,10 +126,12 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return part
 }
 
 // Reachability runs govulncheck as a LIBRARY (golang.org/x/vuln/scan) over
@@ -262,10 +265,19 @@ func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string
 }
 
 // importable reports whether code outside the build's module can import p: it is not a main
-// package, and no element of its path is internal, which only the module's own packages can
-// import. Those callers are the build's mains, whose calls govulncheck searches.
+// package, and no element of its path below the module path is internal, which only the module's
+// own packages can import. Those callers are the build's mains, whose calls govulncheck searches.
+// An internal element in the module path itself still admits importers from other modules under
+// its parent, so it does not count.
 func importable(p *packages.Package) bool {
-	return !isMain(p) && !slices.Contains(strings.Split(p.PkgPath, "/"), "internal")
+	if isMain(p) {
+		return false
+	}
+	rel := p.PkgPath
+	if p.Module != nil {
+		rel = strings.TrimPrefix(rel, p.Module.Path)
+	}
+	return !slices.Contains(strings.Split(rel, "/"), "internal")
 }
 
 // isMain reports whether p is a main package with files the build compiles; a directory holding
@@ -378,7 +390,9 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	}
 	reasons := append(append([]string(nil), p.Reasons...), reason)
 	slices.Sort(reasons)
-	return plugin.Partial(reasons...)
+	out := plugin.Partial(reasons...)
+	out.Scoped = p.Scoped
+	return out
 }
 
 // envOr returns the last value env assigns to key, else def.

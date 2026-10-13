@@ -256,7 +256,7 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 		setup   func(t *testing.T, dir string)
 		bounded bool
 	}{
-		// readRegularFile follows symlinks; a package.json linked to a regular file outside the
+		// readRegular follows symlinks; a package.json linked to a regular file outside the
 		// tree is left to the walk, which vetoes every symlink that leaves it.
 		{name: "a package.json above the lock symlinked to a regular file outside the tree", from: "app", files: map[string]string{
 			"app/package-lock.json": lock, "app/main.js": "require('qs')\n"},

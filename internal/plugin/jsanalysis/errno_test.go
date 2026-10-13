@@ -221,6 +221,29 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		}
 	}
 
+	// importKeepsLimit checks whether a dynamic import of x keeps dynamic_import_specifier,
+	// which follows from the package.json installedManifest finds for x.
+	importKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonDynamicImportSpecifier, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	const loadX = "async function load(s) { const m = await import('x'); return m.parse(s); }\nload(process.argv);\n"
+	const plainX = `{"name":"x","exports":{"import":"./i.js","default":"./i.js"}}`
+	importX := func(extra map[string]string) map[string]string {
+		m := map[string]string{"package.json": `{"name":"app"}`, "app.js": loadX}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -231,6 +254,31 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		site string
 		rows []row
 	}{
+		{"installedManifest", []row{
+			{"EACCES", importX(map[string]string{"node_modules/x/package.json": plainX}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules", "x"))
+				wantErr(t, dir, "node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"EACCES on a nested copy that shadows a readable one", map[string]string{
+				"package.json":                    `{"name":"app"}`,
+				"src/app.js":                      loadX,
+				"src/node_modules/x/package.json": plainX,
+				"node_modules/x/package.json":     plainX,
+			}, func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "src", "node_modules", "x"))
+				wantErr(t, dir, "src/node_modules/x/package.json", os.ErrPermission, true)
+			}, importKeepsLimit(true)},
+			{"ELOOP", importX(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules/x")
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ELOOP, true)
+			}, importKeepsLimit(true)},
+			{"ENOTDIR", importX(map[string]string{"node_modules/x": "not a directory"}), func(t *testing.T, dir string) {
+				wantErr(t, dir, "node_modules/x/package.json", syscall.ENOTDIR, true)
+			}, importKeepsLimit(false)},
+			{"missing", importX(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules/x")
+			}, importKeepsLimit(false)},
+		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable

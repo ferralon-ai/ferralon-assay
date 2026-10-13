@@ -276,7 +276,8 @@ const maxInstalledManifest = 1 << 20
 // installedManifest returns the package.json of npm package name that Node's node_modules
 // walk from fromModule's directory finds, or nil when none is installed. unsafe reports a
 // candidate it will not read: one whose real path leaves the build root, that is not a
-// regular file, or that exceeds maxInstalledManifest.
+// regular file, or that exceeds maxInstalledManifest, and one whose stat fails with an error
+// other than a missing path.
 func (rs *resolver) installedManifest(fromModule, name string) (mm *pkgManifest, unsafe bool) {
 	if name == "" || strings.ContainsAny(name, `\:`) || strings.Count(name, "/") > 1 || strings.Contains(name, "..") ||
 		(strings.Contains(name, "/") && !strings.HasPrefix(name, "@")) {
@@ -289,12 +290,16 @@ func (rs *resolver) installedManifest(fromModule, name string) (mm *pkgManifest,
 		}
 		if path.Base(dir) != "node_modules" {
 			full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name), "package.json")
-			if _, err := os.Lstat(full); err == nil {
+			_, err := os.Lstat(full)
+			switch {
+			case err == nil:
 				data, ok := readInRoot(rs.prog.root, full, maxInstalledManifest)
 				if !ok {
 					return nil, true
 				}
 				return parsePkgManifest(data), false
+			case !absent(err):
+				return nil, true
 			}
 		}
 		if dir == "" {

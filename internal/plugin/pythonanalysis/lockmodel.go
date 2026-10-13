@@ -16,11 +16,12 @@ package pythonanalysis
 //   - Pipfile.lock: carries no edges; never complete.
 //
 // A model that cannot tell runtime from dev for any one lockfile sets distinguishes=false,
-// and nothing refutes.
+// and nothing refutes. Neither does one where two lockfiles could install the same project.
 
 import (
 	"encoding/json"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -83,6 +84,17 @@ func loadLocks(buildDir string, ls *loadSet) *lockModel {
 		}
 	})
 	sort.Strings(m.files)
+	// The inventory reads every lockfile, so which one installs a project is known only when
+	// no other lockfile sits in its directory or an ancestor's: a stale poetry.lock beside the
+	// uv.lock in use, or a member's own lock under a workspace lock, would otherwise feed
+	// markers for an install it does not describe.
+	for _, a := range m.files {
+		for _, b := range m.files {
+			if da, db := path.Dir(a), path.Dir(b); (da == db && a < b) || (da != db && (da == "." || strings.HasPrefix(db, da+"/"))) {
+				ls.noMarkers("%s and %s are both candidate lockfiles for %s", a, b, db)
+			}
+		}
+	}
 	if len(m.files) == 0 {
 		m.distinguishes = false
 		ls.gap("no lockfile: the installed distributions and their edges are unknown")

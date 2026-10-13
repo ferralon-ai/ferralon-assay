@@ -21,6 +21,7 @@ package pythonanalysis
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -58,6 +59,15 @@ type loadSet struct {
 	prodKeepsDev string          // where a production install keeps dev deps, "" if nowhere seen
 	reqRuntime   map[string]bool // named by a non-dev requirements file or a [project] table
 	projectNames map[string]bool // the project's own distribution names: root subjects, never refuted
+	markerless   []string        // install sources whose runtime/dev split is unknown: nothing refutes
+}
+
+// noMarkers records an install source that cannot tell runtime from dev, or whose lockfile
+// cannot be identified: no lockfile marker then decides what is installed.
+func (ls *loadSet) noMarkers(format string, args ...any) {
+	if len(ls.markerless) < 20 {
+		ls.markerless = append(ls.markerless, fmt.Sprintf(format, args...))
+	}
 }
 
 func (ls *loadSet) gap(format string, args ...any) {
@@ -249,10 +259,15 @@ func (ls *loadSet) rootModule(mod, file string, gapOnMiss bool) {
 	}
 }
 
-// markRoot marks a distribution loaded directly from a first-party root.
+// markRoot marks a distribution loaded directly from a first-party root. close() later
+// brings its lockfile dependency closure in; a distribution the lockfile does not lock has no
+// known closure, so the load set is incomplete.
 func (ls *loadSet) markRoot(dist, root string) {
 	if ls.locks.members[dist] {
 		return // a workspace member is first-party code, read as such
+	}
+	if len(ls.locks.versions) > 0 && ls.locks.versions[dist] == nil {
+		ls.gap("%s, loaded from %s, is not locked: its dependencies are unknown", dist, root)
 	}
 	if !containsString(ls.rootDists[dist], root) {
 		ls.rootDists[dist] = append(ls.rootDists[dist], root)
@@ -394,9 +409,10 @@ type pyprojectEntryPoints struct {
 	} `toml:"project"`
 	Tool struct {
 		Poetry struct {
-			Scripts map[string]any               `toml:"scripts"`
-			Name    string                       `toml:"name"`
-			Plugins map[string]map[string]string `toml:"plugins"`
+			Scripts      map[string]any               `toml:"scripts"`
+			Name         string                       `toml:"name"`
+			Plugins      map[string]map[string]string `toml:"plugins"`
+			Dependencies map[string]any               `toml:"dependencies"`
 		} `toml:"poetry"`
 	} `toml:"tool"`
 }
@@ -422,6 +438,10 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			}
 			ls.addProjectName(pp.Project.Name)
 			ls.addProjectName(pp.Tool.Poetry.Name)
+			delete(pp.Tool.Poetry.Dependencies, "python")
+			if len(pp.Project.Dependencies) > 0 || len(pp.Tool.Poetry.Dependencies) > 0 {
+				ls.unlockedProject(rel)
+			}
 			var specs []string
 			for _, v := range pp.Project.Scripts {
 				specs = append(specs, v)
@@ -467,6 +487,9 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			for _, v := range iniSectionValues(string(data), "options.entry_points") {
 				ls.rootString(v, rel)
 			}
+			if strings.Contains(string(data), "install_requires") {
+				ls.unlockedProject(rel)
+			}
 			section := ""
 			for _, line := range strings.Split(string(data), "\n") {
 				t := strings.TrimSpace(line)
@@ -485,8 +508,26 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			for _, m := range setupPyName.FindAllStringSubmatch(string(data), -1) {
 				ls.addProjectName(m[1])
 			}
+			if strings.Contains(string(data), "install_requires") {
+				ls.unlockedProject(rel)
+			}
+		case "Pipfile":
+			ls.unlockedProject(rel)
 		}
 	})
+}
+
+// unlockedProject records a project manifest that declares runtime dependencies: installing
+// it resolves them afresh unless a lockfile in its directory or an ancestor's locks them, so
+// with none the install is markerless.
+func (ls *loadSet) unlockedProject(rel string) {
+	dir := path.Dir(rel)
+	for _, f := range ls.locks.files {
+		if ld := path.Dir(f); ld == "." || ld == dir || strings.HasPrefix(dir, ld+"/") {
+			return
+		}
+	}
+	ls.noMarkers("%s declares dependencies no lockfile locks", rel)
 }
 
 var setupPyName = regexp.MustCompile(`\bname\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]`)
@@ -731,7 +772,7 @@ func (ls *loadSet) installDists() []string {
 	}
 	var out []string
 	for d := range ls.locks.versions {
-		if !ls.locks.distinguishes || ls.prodKeepsDev != "" || ls.locks.runtime[d] || ls.loaded[d] || ls.reqRuntime[d] {
+		if !ls.locks.distinguishes || ls.prodKeepsDev != "" || len(ls.markerless) > 0 || ls.locks.runtime[d] || ls.loaded[d] || ls.reqRuntime[d] {
 			out = append(out, d)
 		}
 	}
@@ -799,7 +840,10 @@ func (ls *loadSet) closureTargets(dist string) []string {
 }
 
 // runtimeManifestNames marks every distribution a non-dev requirements file names as
-// installed at runtime: a pip install from it bypasses the lockfile's groups.
+// installed at runtime: a pip install from it bypasses the lockfile's groups. pip resolves the
+// file's dependencies itself, so the lockfile's markers describe that install only when the
+// file is a complete pinned export of locked copies; any other non-dev requirements file
+// leaves the install markerless.
 func (ls *loadSet) runtimeManifestNames(buildDir string) {
 	for _, m := range manifestFiles(buildDir) {
 		base := filepath.Base(m)
@@ -810,25 +854,90 @@ func (ls *loadSet) runtimeManifestNames(buildDir string) {
 		if err != nil {
 			rel = m
 		}
-		if devManifestPath(filepath.ToSlash(rel)) {
+		rel = filepath.ToSlash(rel)
+		if devManifestPath(rel) {
 			continue
 		}
-		deps, ok := parseManifest(m)
-		if !ok {
-			ls.gap("%s could not be parsed", rel)
+		data, err := os.ReadFile(m)
+		if err != nil {
+			ls.gap("%s could not be read", rel)
 			continue
 		}
+		deps, _ := parseRequirementsTxt(data)
 		for _, d := range deps {
 			ls.reqRuntime[normalizePyCoordinate(d.Coordinate)] = true
+		}
+		if why := ls.unpinnedExport(data); why != "" {
+			ls.noMarkers("%s: %s", rel, why)
 		}
 	}
 }
 
-// devManifestPath reports whether a requirements file's path marks it dev tooling.
+// reqOptionsKept are requirements-file options that change where pip fetches from, never
+// which distributions it installs.
+var reqOptionsKept = []string{"--hash", "--index-url", "--extra-index-url", "-i", "--trusted-host", "--require-hashes", "--only-binary", "--no-binary", "--prefer-binary"}
+
+// unpinnedExport returns why pip's install from a requirements file is not exactly a set of
+// locked copies, or "" when every line pins a locked version and the lockfile closure of
+// every pinned name is pinned too.
+func (ls *loadSet) unpinnedExport(data []byte) string {
+	pinned := map[string]bool{}
+	for _, req := range joinContinuations(string(data)) {
+		line := strings.TrimSpace(stripReqComment(req))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "-") {
+			opt, _, _ := strings.Cut(strings.Fields(line)[0], "=")
+			if !containsString(reqOptionsKept, opt) {
+				return "option " + opt + " is not resolved against the lockfile"
+			}
+			continue
+		}
+		if i := strings.IndexByte(line, ';'); i >= 0 {
+			line = line[:i]
+		}
+		if i := strings.Index(line, "--hash"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		name, version, resolved, _ := parseRequirementSpec(line)
+		n := normalizePyCoordinate(name)
+		switch {
+		case n == "" || strings.ContainsAny(line, "/@") || strings.Contains(line, "://"):
+			return line + " is not a pinned distribution"
+		case !resolved:
+			return name + " is not pinned to one version"
+		case !ls.locks.versions[n][version]:
+			return name + "==" + version + " is not a locked copy"
+		}
+		pinned[n] = true
+	}
+	for n := range pinned {
+		for c := range ls.locks.edges[n] {
+			if !pinned[c] && !ls.locks.members[c] {
+				return n + " depends on " + c + ", which the file does not pin"
+			}
+		}
+	}
+	return ""
+}
+
+// devManifestTokens mark a requirements file dev tooling when one is a whole word of its path.
+var devManifestTokens = map[string]bool{
+	"dev": true, "develop": true, "development": true, "test": true, "tests": true, "testing": true,
+	"lint": true, "linting": true, "doc": true, "docs": true, "typing": true, "mypy": true, "ci": true,
+	"tool": true, "tools": true, "tooling": true, "format": true, "style": true, "check": true,
+	"checks": true, "bench": true, "benchmark": true, "benchmarks": true,
+}
+
+// devManifestPath reports whether a requirements file's path marks it dev tooling. Whole words
+// only: requirements-docker.txt is a production install, not docs.
 func devManifestPath(rel string) bool {
-	l := strings.ToLower(rel)
-	for _, w := range []string{"dev", "test", "lint", "doc", "typing", "mypy", "ci", "tool", "format", "style", "check", "bench"} {
-		if strings.Contains(l, w) {
+	for _, w := range strings.FieldsFunc(strings.ToLower(rel), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if devManifestTokens[w] {
 			return true
 		}
 	}
@@ -859,7 +968,9 @@ func pypiPackageRef(purl string) (name, version string, ok bool) {
 // refute returns the package_not_loaded refutation for dist at version, or nil when any
 // condition fails: the load set is incomplete; a counted scoped limit targets dist; dist is
 // loaded, not locked at version, or the project's own distribution (a root subject); the
-// lockfile cannot tell runtime from dev; the production install keeps dev dependencies; or
+// lockfile cannot tell runtime from dev; some install source is markerless (an unpinned
+// requirements file, an unlocked project, or a lockfile that is not the only candidate for
+// its directory); the production install keeps dev dependencies; or
 // any locked copy of dist is in the runtime install (unless refuteRuntimeUnloaded).
 //
 // dist arrives PEP 503 normalized (pypiPackageRef), and every name it is compared against was
@@ -887,7 +998,7 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 	if runtime && refuteRuntimeUnloaded != "1" {
 		return nil
 	}
-	if !ls.locks.distinguishes || ls.prodKeepsDev != "" {
+	if !ls.locks.distinguishes || ls.prodKeepsDev != "" || len(ls.markerless) > 0 {
 		return nil
 	}
 	return &plugin.Refutation{

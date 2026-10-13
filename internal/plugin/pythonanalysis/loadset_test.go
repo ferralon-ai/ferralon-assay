@@ -173,6 +173,22 @@ version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 `
 
+// withClosureLock returns the uv workspace where django-debug-toolbar (dev) depends on
+// sqlparse and asyncpg (extra pg) depends on async-timeout, neither imported anywhere.
+func withClosureLock(files map[string]string) map[string]string {
+	lock := strings.Replace(loadsetLock, "name = \"django-debug-toolbar\"\nversion = \"4.4.2\"\nsource = { registry = \"https://pypi.org/simple\" }\n",
+		"name = \"django-debug-toolbar\"\nversion = \"4.4.2\"\nsource = { registry = \"https://pypi.org/simple\" }\ndependencies = [{ name = \"sqlparse\" }]\n", 1)
+	lock = strings.Replace(lock, "name = \"asyncpg\"\nversion = \"0.29.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n",
+		"name = \"asyncpg\"\nversion = \"0.29.0\"\nsource = { registry = \"https://pypi.org/simple\" }\ndependencies = [{ name = \"async-timeout\" }]\n", 1)
+	lock += "\n[[package]]\nname = \"sqlparse\"\nversion = \"0.5.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	lock += "\n[[package]]\nname = \"async-timeout\"\nversion = \"4.0.3\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	out := withLock(files)
+	out["uv.lock"] = lock
+	return out
+}
+
+const devPoetryLock = "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\ngroups = [\"main\"]\n\n[[package]]\nname = \"black\"\nversion = \"24.4.2\"\ngroups = [\"dev\"]\n"
+
 // withLock returns a tree of the uv workspace plus files.
 func withLock(files map[string]string) map[string]string {
 	out := map[string]string{"uv.lock": loadsetLock, "app/__init__.py": "", "app/main.py": "import requests\n"}
@@ -502,6 +518,116 @@ func TestLoadSet_PackageNotLoaded(t *testing.T) {
 			name:  "deploy-named workflow is a production install",
 			files: withLock(map[string]string{".github/workflows/deploy.yml": "on: [push]\njobs:\n  go:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pip install -r requirements-dev.txt\n"}),
 			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "INSTALLED_APPS string root brings the app's lockfile closure into the load set",
+			files: withClosureLock(map[string]string{"app/settings.py": "INSTALLED_APPS = [\n    \"django.contrib.admin\",\n    \"debug_toolbar\",\n]\n"}),
+			pkg:   "pkg:pypi/sqlparse@0.5.0",
+		},
+		{
+			name:  "the app's dependency refutes when no settings string names the app",
+			files: withClosureLock(map[string]string{"app/settings.py": "INSTALLED_APPS = [\"django.contrib.admin\"]\n"}),
+			pkg:   "pkg:pypi/sqlparse@0.5.0", refute: true, purl: "pkg:pypi/sqlparse",
+		},
+		{
+			name:  "SQLAlchemy URL driver in a config file brings the driver's closure in",
+			files: withClosureLock(map[string]string{"app/config.yaml": "database:\n  url: postgresql+asyncpg://app@db/app\n"}),
+			pkg:   "pkg:pypi/async-timeout@4.0.3",
+		},
+		{
+			name:  "the driver's dependency refutes when no URL names the driver",
+			files: withClosureLock(nil),
+			pkg:   "pkg:pypi/async-timeout@4.0.3", refute: true, purl: "pkg:pypi/async-timeout",
+		},
+		{
+			name:  "entry point string root brings its distribution's closure in",
+			files: withClosureLock(map[string]string{"pyproject.toml": "[project]\nname = \"app\"\n\n[project.entry-points.\"flask.commands\"]\ntoolbar = \"debug_toolbar.cli:main\"\n"}),
+			pkg:   "pkg:pypi/sqlparse@0.5.0",
+		},
+		{
+			name:  "a settings string naming an unlocked distribution leaves its closure unknown",
+			files: withLock(map[string]string{"app/settings.py": "MIDDLEWARE = [\"whitenoise.middleware.WhiteNoiseMiddleware\"]\n", "requirements-dev.txt": "whitenoise==6.6.0\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "complete pinned export of locked copies keeps the lockfile's markers",
+			files: withLock(map[string]string{"requirements.txt": "requests==2.31.0 \\\n    --hash=sha256:00\nurllib3==2.2.1\nidna==3.7 ; python_version >= \"3.8\"\n"}),
+			pkg:   "pkg:pypi/black@24.4.2", refute: true, purl: "pkg:pypi/black",
+		},
+		{
+			name:  "unpinned requirements file cannot tell runtime from dev",
+			files: withLock(map[string]string{"requirements.txt": "requests\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "requirements file pinning an unlocked version cannot tell runtime from dev",
+			files: withLock(map[string]string{"requirements.txt": "requests==2.32.0\nurllib3==2.2.1\nidna==3.7\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "requirements file omitting a pinned name's dependency cannot tell runtime from dev",
+			files: withLock(map[string]string{"requirements.txt": "requests==2.31.0\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "requirements file with a local path cannot tell runtime from dev",
+			files: withLock(map[string]string{"requirements.txt": "./dist/app-0.1.0.tar.gz\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "requirements file including another cannot tell runtime from dev",
+			files: withLock(map[string]string{"requirements.txt": "-r base.txt\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "requirements-docker.txt is a production install, not docs",
+			files: withLock(map[string]string{"requirements-docker.txt": "black==24.4.2\npathspec==0.12.1\n"}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "stale poetry.lock beside the uv.lock in use feeds no markers",
+			files: withLock(map[string]string{"poetry.lock": devPoetryLock}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name: "stale uv.lock beside the poetry.lock in use feeds no markers",
+			files: map[string]string{
+				"poetry.lock": devPoetryLock,
+				"uv.lock":     "version = 1\n\n[manifest]\nmembers = [\"app\"]\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\nsource = { virtual = \".\" }\ndependencies = [{ name = \"requests\" }]\n\n[package.dev-dependencies]\ndev = [{ name = \"black\" }]\n\n[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n\n[[package]]\nname = \"black\"\nversion = \"24.4.2\"\nsource = { registry = \"https://pypi.org/simple\" }\n",
+				"app.py":      "import requests\n",
+			},
+			pkg: "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "a nested lockfile under the workspace lockfile feeds no markers",
+			files: withLock(map[string]string{"packages/tool/poetry.lock": devPoetryLock}),
+			pkg:   "pkg:pypi/black@24.4.2",
+		},
+		{
+			name:  "a project manifest the lockfile's directory covers keeps the markers",
+			files: withLock(map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"requests\"]\n"}),
+			pkg:   "pkg:pypi/black@24.4.2", refute: true, purl: "pkg:pypi/black",
+		},
+		{
+			name: "a project manifest no lockfile covers cannot tell runtime from dev",
+			files: map[string]string{
+				"svc/uv.lock":         loadsetLock,
+				"svc/app/__init__.py": "",
+				"svc/app/main.py":     "import requests\n",
+				"web/pyproject.toml":  "[project]\nname = \"web\"\ndependencies = [\"requests\"]\n",
+				"web/web/__init__.py": "",
+			},
+			pkg: "pkg:pypi/black@24.4.2",
+		},
+		{
+			name: "the same tree without the uncovered manifest refutes",
+			files: map[string]string{
+				"svc/uv.lock":         loadsetLock,
+				"svc/app/__init__.py": "",
+				"svc/app/main.py":     "import requests\n",
+				"web/web/__init__.py": "",
+			},
+			pkg: "pkg:pypi/black@24.4.2", refute: true, purl: "pkg:pypi/black",
 		},
 	}
 	for _, tc := range cases {

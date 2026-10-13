@@ -29,10 +29,10 @@ func depEdge(caller, callee string) plugin.CallEdge {
 // TestFinding_DependencyInclusiveGraphYieldsNotExploitable is the PLAN-040 G verdict:
 // the SSRF-0002 shape — a sink present in the closure but with NO reaching path, over
 // a graph that carries edges proving the code was actually opened and searched —
-// resolves not_exploitable. The dependency-inclusive edges are what supply that proof:
-// the graph's only incompleteness is dynamic_dispatch, an inherent limit of static
-// analysis (not a step that did not run), so the empty path set is a searched-negative,
-// not an analysis that never happened.
+// resolves not_exploitable. The graph's only incompleteness is dynamic_dispatch, an
+// inherent limit of static analysis (not a step that did not run), and the lane names
+// the in-package sink as Searched, so the empty path set is a searched-negative, not an
+// analysis that never happened.
 func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 	store := artifact.NewMemStore()
 	const aid = "ssrf0002"
@@ -45,10 +45,25 @@ func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 		},
 	}
 	// The advisory sink is present but unreached: no candidate path.
-	reach := plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)}
+	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
+	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
+		"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
+		"advisory_symbols": []string{"com.example.net.UrlKit.get"},
+	})
+	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
+		Partiality: plugin.Complete(),
+		Resolved:   []plugin.Symbol{{SCIP: sink}},
+		Origins:    map[string]string{sink: "pkg:maven/com.example/urlkit"},
+		Matched:    map[string][]string{"com.example.net.UrlKit.get": {sink}},
+	})
+	reach := plugin.ReachabilityResult{
+		Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
+		Searched:   []string{sink},
+	}
 	seedReachArtifact(t, store, aid, cg, reach)
 
-	f := finding(store, aid, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, nil)
+	pkg := &report.Package{Ecosystem: "Maven", Name: "com.example:urlkit", Version: "1.0.0", PURL: "pkg:maven/com.example/urlkit@1.0.0"}
+	f := finding(store, aid, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, pkg)
 	if f.Verdict != report.VerdictNotExploitable {
 		t.Fatalf("verdict = %q, want %q — a searched COMPLETE-enough graph with no reaching path refutes",
 			f.Verdict, report.VerdictNotExploitable)

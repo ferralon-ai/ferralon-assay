@@ -92,6 +92,46 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 	return report.SBOM{Packages: pkgs, Relationships: rels}, notes
 }
 
+// inventoryLimitDetail marks a note as the whole-graph inventory's own limit. CVE-watch reads the
+// prior Report's notes back by it (inventoryLimits).
+const inventoryLimitDetail = "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem"
+
+// inventoryLimits returns the whole-graph inventory notes among notes.
+func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
+	var out []report.PartialityNote
+	for _, n := range notes {
+		if n.Detail == inventoryLimitDetail {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// withInventoryLimits is G0 for the scan-wide inventory: an inventory step that did not run for an
+// ecosystem (an ambiguous lockfile left a root's packages out, a resolver failed) means the
+// admitted package may also be installed where the analysis never looked, so no
+// not_exploitable of that ecosystem stands. Those limits are resolved once per scan, outside
+// every assessment's own artifacts, which is why finding() cannot see them and this runs after
+// it. It only ever removes not_exploitable.
+func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
+	if f.Verdict != report.VerdictNotExploitable || f.Package == nil {
+		return f
+	}
+	for _, n := range limits {
+		if n.Ecosystem != "" && n.Ecosystem != f.Package.Ecosystem {
+			continue
+		}
+		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun {
+			continue
+		}
+		f.Verdict = report.VerdictUndetermined
+		f.UndeterminedReason = report.ReasonAnalysisDidNotRun
+		f.Evidence = report.EvidenceSummary{Detail: report.UndeterminedDetail(report.ReasonAnalysisDidNotRun)}
+		return f
+	}
+	return f
+}
+
 // inventoryPartialityNotes turns a graph-level Partiality into the scan-level notes that declare an
 // unresolved inventory (C3). A Complete inventory declares nothing — a codebase with genuinely zero
 // dependencies is silent, and only a resolver that could NOT establish the inventory (Unsupported /
@@ -111,7 +151,7 @@ func inventoryPartialityNotes(p plugin.Partiality, ecosystem string) []report.Pa
 		notes = append(notes, report.PartialityNote{
 			Reason:    r,
 			Ecosystem: ecosystem,
-			Detail:    "dependency inventory not fully resolved; the SBOM may omit packages for this ecosystem",
+			Detail:    inventoryLimitDetail,
 		})
 	}
 	return notes

@@ -81,7 +81,10 @@ func TestLoadSetPipes(t *testing.T) {
 			pipe:  "node_modules/evil/package.json", all: "node_modules/evil/package.json: unreadable"},
 		{name: "a lockfile that is a pipe",
 			files: map[string]string{"package.json": `{"name":"app"}`},
-			pipe:  "package-lock.json", gap: "package-lock.json: unreadable"},
+			pipe:  "package-lock.json", gap: ".: a lockfile or the package.json naming its package manager is unreadable"},
+		{name: "a root package.json that is a pipe beside its lockfile",
+			files: map[string]string{"package-lock.json": npmLockJSON(t, map[string]lockPkg{})},
+			pipe:  "package.json", gap: ".: a lockfile or the package.json naming its package manager is unreadable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

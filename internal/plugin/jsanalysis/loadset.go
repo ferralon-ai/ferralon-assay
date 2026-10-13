@@ -336,7 +336,10 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 			continue
 		}
 		why := "lockfile carries no per-instance edges"
-		if !part.Complete {
+		switch {
+		case slices.Contains(part.Reasons, plugin.PartialReasonToolFailure):
+			why = "a lockfile or the package.json naming its package manager is unreadable"
+		case !part.Complete:
 			why = "lockfile dialect ambiguous"
 		}
 		ls.gap("%s: %s and node_modules is not installed", label, why)

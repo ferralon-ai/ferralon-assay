@@ -1,7 +1,6 @@
 package jsanalysis
 
 import (
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -80,20 +79,4 @@ func walkTree(root string, file func(path, rel string, d fs.DirEntry) error, fai
 			fail(relOf(link), "symlinked directory the walk does not read")
 		}
 	}
-}
-
-// errNotRegular is readRegular's error for a path that is not a regular file.
-var errNotRegular = errors.New("not a regular file")
-
-// readRegular reads the file at path, following symlinks, only when it resolves to a regular
-// file. It never opens a pipe, socket or device, since opening a pipe with no writer blocks.
-func readRegular(path string) ([]byte, error) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, &fs.PathError{Op: "read", Path: path, Err: errNotRegular}
-	}
-	return os.ReadFile(path)
 }

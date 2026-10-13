@@ -39,6 +39,7 @@ const (
 
 // Method access flags (JVMS §4.6) we care about for graph soundness.
 const (
+	accPublic   = 0x0001
 	accPrivate  = 0x0002
 	accStatic   = 0x0008
 	accNative   = 0x0100
@@ -48,6 +49,7 @@ const (
 // Class access flags (JVMS §4.1). An interface always carries ACC_ABSTRACT too; both
 // are checked so a malformed interface without it is still never treated as concrete.
 const (
+	accClassPublic    = 0x0001
 	accClassInterface = 0x0200
 	accClassAbstract  = 0x0400
 )
@@ -154,7 +156,10 @@ type Method struct {
 	// method can be selected by virtual dispatch, so neither can override another.
 	Static  bool
 	Private bool
-	Edges   []Edge
+	// Public is ACC_PUBLIC: the platform's by-name instantiation (ServiceLoader and
+	// the factory lookups) needs a public constructor or provider method.
+	Public bool
+	Edges  []Edge
 	// InitTriggers are the internal names of classes whose static initializer
 	// (<clinit>) this method's bytecode triggers — via new / getstatic / putstatic /
 	// invokestatic (JVMS §5.5). <clinit> is never an explicit invoke target, so a
@@ -194,7 +199,9 @@ type Class struct {
 	// Abstract is set for an abstract class or an interface: no object has exactly
 	// this class at runtime.
 	Abstract bool
-	Methods  []Method
+	// Public is ACC_PUBLIC on the class.
+	Public  bool
+	Methods []Method
 	// Fields are the class's declared fields, retained for their annotation + declared
 	// type only (a field is never a call-graph node). Populated for every class; a
 	// field with no annotations still appears so the injection-point type is available.
@@ -444,6 +451,7 @@ func ParseClass(data []byte) (Class, error) {
 			Abstract: acc&accAbstract != 0,
 			Static:   acc&accStatic != 0,
 			Private:  acc&accPrivate != 0,
+			Public:   acc&accPublic != 0,
 		}
 		attrCount := int(r.u2())
 		for a := 0; a < attrCount; a++ {
@@ -510,6 +518,7 @@ func ParseClass(data []byte) (Class, error) {
 	return Class{
 		Name: thisClass, Super: superClass, Interfaces: ifaces,
 		Abstract: classAcc&(accClassAbstract|accClassInterface) != 0,
+		Public:   classAcc&accClassPublic != 0,
 		Fields:   fields, Methods: methods, Annotations: classAnnos,
 	}, nil
 }

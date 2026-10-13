@@ -250,13 +250,13 @@ func TestReach_StringConcatenation(t *testing.T) {
 func TestReach_PlatformReceiver(t *testing.T) {
 	evil := class("com/acme/Evil", "java/lang/Object", nil, meth("com/acme/Evil", "toString", toStr, sinkCall()...))
 	var cases []reachCase
-	for owner := range finalValueClasses {
+	for owner := range valueClasses {
 		cases = append(cases, reachCase{name: "final value receiver " + owner, want: NotExploitable, classes: []classfile.Class{
 			app(edge(classfile.EdgeVirtual, owner, "toString", toStr)), evil,
 		}})
 	}
 	// Every other platform receiver can hold application objects; adding any of these
-	// to finalValueClasses must fail here.
+	// to valueClasses must fail here.
 	for _, r := range []classfile.MethodRef{
 		mref("java/util/ArrayList", "hashCode", "()I"),
 		mref("java/lang/Object", "toString", toStr),
@@ -304,12 +304,14 @@ func TestReach_PlatformBodyRunsOnThis(t *testing.T) {
 		{name: "inherited platform body calls an override", want: Undetermined, why: "higher-order re-entry: inherited platform body", classes: []classfile.Class{
 			app(edge(classfile.EdgeVirtual, "com/acme/EvilList", "toString", toStr)), evilList,
 		}},
-		{name: "receiver with nothing to override", want: NotExploitable, classes: []classfile.Class{
-			app(edge(classfile.EdgeVirtual, "com/acme/Quiet", "toString", toStr)),
-			class("com/acme/Quiet", "java/util/AbstractList", nil,
-				meth("com/acme/Quiet", "<init>", "()V"),
-				staticMeth("com/acme/Quiet", "of", "()V", sinkCall()...),
-				privateMeth("com/acme/Quiet", "help", "()V", sinkCall()...)),
+		// class Foos extends ArrayList<Foo> {}: overriding nothing does not make the
+		// inherited body a leaf, since ArrayList.hashCode calls each element's hashCode.
+		{name: "stateful platform base with nothing overridden", want: Undetermined, why: "higher-order re-entry: inherited platform body", classes: []classfile.Class{
+			app(edge(classfile.EdgeVirtual, "com/acme/Foos", "hashCode", "()I")),
+			class("com/acme/Foos", "java/util/ArrayList", nil,
+				meth("com/acme/Foos", "<init>", "()V"),
+				staticMeth("com/acme/Foos", "of", "()V", sinkCall()...),
+				privateMeth("com/acme/Foos", "help", "()V", sinkCall()...)),
 		}},
 		{name: "override inherited from a loaded superclass", want: Undetermined, why: "higher-order re-entry: inherited platform body", classes: []classfile.Class{
 			app(edge(classfile.EdgeVirtual, "com/acme/SubList", "toString", toStr)),
@@ -357,7 +359,9 @@ func TestReach_PlatformBodyRunsOnThis(t *testing.T) {
 				return c
 			}(),
 		}},
-		{name: "super.toString into Object on a class with an unopened interface stays conservative", want: Undetermined, why: "unloaded_dependency:", ingress: mref("com/acme/Tagged", "trigger", "()V"), classes: []classfile.Class{
+		// Selection finds Object's hashCode on the superclass chain before any
+		// superinterface (JVMS §5.4.6), so the unopened interface cannot supply it.
+		{name: "super.toString into Object on a class with an unopened interface", want: NotExploitable, ingress: mref("com/acme/Tagged", "trigger", "()V"), classes: []classfile.Class{
 			class("com/acme/Tagged", "java/lang/Object", []string{unopened},
 				meth("com/acme/Tagged", "trigger", "()V", edge(classfile.EdgeSpecial, "java/lang/Object", "toString", toStr))),
 		}},

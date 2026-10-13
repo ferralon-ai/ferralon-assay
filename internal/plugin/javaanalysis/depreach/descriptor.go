@@ -101,3 +101,18 @@ func paramTypes(desc string) []string {
 	}
 	return out
 }
+
+// returnRefType returns the internal name of a method descriptor's reference return
+// type (the element type, for an array of references), and false for void, a
+// primitive, an array of primitives or a malformed descriptor.
+func returnRefType(desc string) (string, bool) {
+	i := strings.LastIndexByte(desc, ')')
+	if i < 0 {
+		return "", false
+	}
+	r := strings.TrimLeft(desc[i+1:], "[")
+	if len(r) < 3 || r[0] != 'L' || r[len(r)-1] != ';' {
+		return "", false
+	}
+	return r[1 : len(r)-1], true
+}

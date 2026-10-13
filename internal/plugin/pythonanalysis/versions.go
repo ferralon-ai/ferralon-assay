@@ -36,8 +36,10 @@ import (
 //     JS there is nothing left to seed — All is legitimately empty. Soundness rests entirely
 //     on the declared partiality: the result is Complete=false, so a consumer must not read
 //     the empty All as proof the dependency is absent and fabricate a not-affected.
-//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure); the
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure), and
+//     every Found Match is UNRESOLVED: the broken file may hold another copy of any
+//     coordinate, so the readable manifests cannot decide its version. A coordinate no
+//     readable manifest holds stays not found.
 //
 // Several pinned versions of one project: Match is chosen by matchCoordinate, which never
 // picks one pin out of several distinct versions. See its doc comment for the rule.
@@ -83,21 +85,27 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
 	res.Match, res.Found = matchCoordinate(all, origins, normalizePyCoordinate(req.Coordinate))
+	if parseFailed && res.Found {
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
 	return res, nil
 }
 
 // manifestOrigin records where an entry of All was read: its manifest's directory, and
-// whether that manifest is a lock or a pyproject.toml declaration.
+// whether that manifest is a pyproject.toml declaration or a lock that resolves one.
 type manifestOrigin struct {
-	dir         string
-	lock        bool
-	declaration bool
+	dir           string
+	pyprojectLock bool
+	declaration   bool
 }
 
+// originOf classifies a manifest path. Pipfile.lock is not a pyproject lock: pipenv locks
+// the Pipfile, not [project].dependencies.
 func originOf(path string) manifestOrigin {
 	switch filepath.Base(path) {
-	case "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock":
-		return manifestOrigin{dir: filepath.Dir(path), lock: true}
+	case "poetry.lock", "pdm.lock", "uv.lock":
+		return manifestOrigin{dir: filepath.Dir(path), pyprojectLock: true}
 	case "pyproject.toml":
 		return manifestOrigin{dir: filepath.Dir(path), declaration: true}
 	}
@@ -118,10 +126,10 @@ func originOf(path string) manifestOrigin {
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
 // One exception to the third case: an UNRESOLVED pyproject.toml declaration does not veto
-// when a lock in the SAME directory (poetry.lock, Pipfile.lock, pdm.lock, uv.lock) pins the
-// coordinate. That lock is the project's own resolution of the declared range, so both
-// describe one environment. A range in any other manifest or directory is a separate install
-// surface and still vetoes.
+// when a lock in the SAME directory (poetry.lock, pdm.lock, uv.lock) pins the coordinate.
+// That lock is the project's own resolution of the declared range, so both describe one
+// environment. A range in any other manifest or directory, or beside a Pipfile.lock, is a
+// separate install surface and still vetoes.
 // Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
 // open.
 func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {
@@ -130,7 +138,7 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 	}
 	lockPinned := make(map[string]bool)
 	for i, d := range all {
-		if d.Resolved && origins[i].lock && normalizePyCoordinate(d.Coordinate) == want {
+		if d.Resolved && origins[i].pyprojectLock && normalizePyCoordinate(d.Coordinate) == want {
 			lockPinned[origins[i].dir] = true
 		}
 	}
@@ -227,10 +235,12 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 // --- requirements.txt --------------------------------------------------------
 
 // parseRequirementsTxt parses a pip requirements file. Only an EXACT "==" pin yields a
-// resolved version; a range/compatible/prefix spec, an editable/URL/-r include, or an
-// option line is UNRESOLVED (or skipped). Continuation lines ("\") and hashed pins
-// ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
-// comments ("#...") are stripped.
+// resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a URL or VCS
+// requirement that names its project ("pkg @ https://...", "git+https://...#egg=pkg",
+// editable or not), since it installs a version nobody can read here. A -r include, an
+// option line, or a URL that names no project is skipped. Continuation lines ("\") and
+// hashed pins ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...")
+// and inline comments ("#...") are stripped.
 func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
 	for _, req := range joinContinuations(string(data)) {
@@ -239,11 +249,18 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "-") { // -r include, -e editable, --option
+		target, editable := trimEditable(line)
+		if strings.HasPrefix(line, "-") && !editable { // -r include, --option
 			continue
 		}
-		if strings.Contains(line, "://") || strings.HasPrefix(line, "git+") {
-			continue // URL / VCS requirement — no PyPI-pinned version
+		if isDirectReference(target) {
+			if name := directReferenceName(req); name != "" {
+				out = append(out, pyResolved(name, "", false, "requirements.txt"))
+			}
+			continue
+		}
+		if editable { // a local editable path ("-e .") is the project itself
+			continue
 		}
 		// Drop an environment marker ("; python_version < '3.8'") and any --hash tokens.
 		if i := strings.IndexByte(line, ';'); i >= 0 {
@@ -260,6 +277,73 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		out = append(out, pyResolved(name, version, resolved, "requirements.txt"))
 	}
 	return out, true
+}
+
+// trimEditable strips a leading "-e"/"--editable" option, reporting whether it was there.
+func trimEditable(line string) (string, bool) {
+	for _, p := range []string{"--editable=", "--editable ", "-e "} {
+		if rest, ok := strings.CutPrefix(line, p); ok {
+			return strings.TrimSpace(rest), true
+		}
+	}
+	return line, false
+}
+
+// isDirectReference reports whether a requirement installs from a URL or VCS checkout.
+func isDirectReference(line string) bool {
+	if strings.Contains(line, "://") {
+		return true
+	}
+	for _, p := range []string{"git+", "hg+", "svn+", "bzr+"} {
+		if strings.HasPrefix(line, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// directReferenceName returns the project a URL or VCS requirement installs: the PEP 508
+// "name[extras] @ url" form, else a "#egg=name" fragment. Empty when the line names none.
+func directReferenceName(req string) string {
+	line, _ := trimEditable(strings.TrimSpace(req))
+	if i := strings.IndexByte(line, '@'); i > 0 {
+		head := strings.TrimSpace(line[:i])
+		if j := strings.IndexByte(head, '['); j >= 0 {
+			head = strings.TrimSpace(head[:j])
+		}
+		if isProjectName(head) {
+			return head
+		}
+	}
+	if _, frag, ok := strings.Cut(line, "#egg="); ok {
+		end := len(frag)
+		for i, c := range frag {
+			if !isProjectNameRune(c) {
+				end = i
+				break
+			}
+		}
+		if isProjectName(frag[:end]) {
+			return frag[:end]
+		}
+	}
+	return ""
+}
+
+func isProjectName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if !isProjectNameRune(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isProjectNameRune(c rune) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.'
 }
 
 // parseRequirementSpec extracts (name, version, resolved, extras) from a single requirement

@@ -258,6 +258,90 @@ func TestResolveVersions_RangeBesideOtherProjectsLockUnresolved(t *testing.T) {
 	}
 }
 
+// A manifest that fails to parse may hold another copy, so the readable pin cannot decide.
+func TestResolveVersions_CorruptSecondLockUnresolved(t *testing.T) {
+	for lock, body := range map[string]string{
+		"Pipfile.lock": `{"default": {"flask": {"version": "==2.`,
+		"uv.lock":      "version = 1\n[[package]\nname = \"flask\"\n",
+	} {
+		t.Run(lock, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + lock:          body,
+			})
+			for i := 0; i < resolveRuns; i++ {
+				res := resolveVersion(t, dir, "flask")
+				mustUnresolvedPy(t, res)
+				if res.Partiality.Complete {
+					t.Fatalf("a corrupt %s must leave the result partial", lock)
+				}
+			}
+			if resolveVersion(t, dir, "requests").Found {
+				t.Fatal("a coordinate no readable manifest holds must stay not found")
+			}
+		})
+	}
+}
+
+// pipenv locks the Pipfile, not [project].dependencies, so a Pipfile.lock pin does not
+// resolve a pyproject range in the same directory.
+func TestResolveVersions_PyprojectRangeBesidePipfileLockUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"a\"\ndependencies = [\n    \"flask>=2.0\",\n]\n",
+		"Pipfile.lock":   `{"default": {"flask": {"version": "==2.3.0"}}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
+	}
+}
+
+// A URL or VCS requirement installs a copy whose version is unreadable here, so it vetoes
+// a pin for the same project in another manifest.
+func TestResolveVersions_URLRequirementVetoesPin(t *testing.T) {
+	for name, req := range map[string]string{
+		"pep508":        "requests @ https://example.com/requests-2.31.0.tar.gz\n",
+		"pep508-extras": "requests[socks] @ https://example.com/requests-2.31.0.tar.gz\n",
+		"vcs-egg":       "git+https://github.com/psf/requests.git@v2.31.0#egg=requests\n",
+		"editable-vcs":  "-e git+https://github.com/psf/requests.git#egg=requests\n",
+		"url-egg":       "https://example.com/requests-2.31.0.tar.gz#egg=requests\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "requests==2.32.3\n",
+				"svc-b/requirements.txt": req,
+			})
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, dir, "requests"))
+			}
+		})
+	}
+}
+
+// The same veto holds for a PEP 508 direct reference in pyproject.toml.
+func TestResolveVersions_PyprojectURLDependencyVetoesPin(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "requests==2.32.3\n",
+		"svc-b/pyproject.toml":   "[project]\nname = \"b\"\ndependencies = [\n    \"requests @ https://example.com/requests-2.31.0.tar.gz\",\n]\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "requests"))
+	}
+}
+
+// Option lines that carry a URL are not requirements and name no project.
+func TestResolveVersions_IndexURLOptionIgnored(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt": "--index-url https://pypi.example.com/simple\n--extra-index-url https://x.example.com/simple\n-e .\nrequests==2.32.3\n",
+	})
+	res := resolveVersion(t, dir, "requests")
+	if !res.Found || !res.Match.Resolved || res.Match.Version != "2.32.3" {
+		t.Fatalf("got %+v", res.Match)
+	}
+	if len(res.All) != 1 {
+		t.Fatalf("All = %+v, want only requests", res.All)
+	}
+}
+
 // Pipfile.lock's maps are walked in sorted key order, so All is the same on every run.
 func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
 	dir := writeTree(t, map[string]string{

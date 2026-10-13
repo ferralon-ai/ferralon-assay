@@ -24,7 +24,8 @@ package pythonanalysis
 //   - every file under the build dir that names or holds a Python install surface is one the
 //     resolver reads fully (ManifestCandidates): an install format it never parses (Pipfile,
 //     pylock.toml, rye's requirements.lock, pixi.toml, a pyproject configuring pixi, conda
-//     environment files, *.in, tox deps, nox installs, a requirement file under any name), a
+//     environment files, conda recipes, *.in, tox deps, nox installs, a requirement file under
+//     any name), a
 //     manifest outside the directories it discovers, a requirements file with an editable,
 //     VCS or URL line or an include it does not read, a computed setup.py, any hatch_build.py,
 //     a dynamic [project] field with no source it reads, a symlinked manifest, a symlink

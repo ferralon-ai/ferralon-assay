@@ -51,10 +51,14 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
+	veto := newScriptVeto(root, read)
+	for _, c := range buildtree.Candidates(root, veto.classify(pyInstallSurface), veto.fullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
+	}
+	if veto.rebound() {
+		unread = true
 	}
 	return manifests, unread
 }

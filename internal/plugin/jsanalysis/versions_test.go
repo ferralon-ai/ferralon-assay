@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -404,5 +405,131 @@ func TestResolveVersions_CoordinateNotDeclaredNotFound(t *testing.T) {
 	}
 	if !res.Partiality.Complete {
 		t.Fatal("a clean parse with a missing coordinate is still Complete (the absence is known)")
+	}
+}
+
+// --- multiple installed copies -----------------------------------------------
+
+// resolveRuns is how many times a multi-copy row re-resolves. Go randomizes map iteration on
+// every range, so a resolver whose answer depends on map order flips across these runs.
+const resolveRuns = 50
+
+func mustUnresolved(t *testing.T, res plugin.DependencyVersionResult) {
+	t.Helper()
+	if !res.Found {
+		t.Fatalf("coordinate not found; all=%+v", res.All)
+	}
+	if res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match must be UNRESOLVED with no version; match=%+v", res.Match)
+	}
+}
+
+// qs installed at 6.5.2 (hoisted) and 6.5.1 (nested under x): an advisory whose range covers
+// only one of them must not be ruled on the other.
+const packageLockStraddleV3 = `{
+  "lockfileVersion": 3,
+  "packages": {
+    "": { "name": "app", "version": "1.0.0" },
+    "node_modules/qs": { "version": "6.5.2" },
+    "node_modules/x": { "version": "1.0.0" },
+    "node_modules/x/node_modules/qs": { "version": "6.5.1" }
+  }
+}`
+
+func TestResolveVersions_V2StraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV3})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+	mustMatch(t, resolveJS(t, dir, "x"), "1.0.0")
+}
+
+const packageLockStraddleV1 = `{
+  "lockfileVersion": 1,
+  "dependencies": {
+    "qs": { "version": "6.5.2" },
+    "x": {
+      "version": "1.0.0",
+      "dependencies": {
+        "qs": { "version": "6.5.1" }
+      }
+    }
+  }
+}`
+
+func TestResolveVersions_V1NestedStraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV1})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+func TestResolveVersions_LockfilesDisagreeUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/yarn.lock":     "qs@^6.5.0:\n  version \"6.5.1\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+func TestResolveVersions_YarnTwoVersionsUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "qs@6.5.1:\n  version \"6.5.1\"\n\nqs@^6.5.2:\n  version \"6.5.2\"\n",
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+}
+
+func TestResolveVersions_SameVersionCopiesResolve(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {"version": "6.5.2"}
+}}`,
+		"svc/yarn.lock": "qs@^6.5.0:\n  version \"6.5.2\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustMatch(t, resolveJS(t, dir, "qs"), "6.5.2")
+	}
+}
+
+func TestResolveVersions_UnknownCopyNextToResolvedUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {}
+}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+// All is built in sorted key order for every map the npm parser walks (v2/v3 packages, v1
+// dependencies and their nested children), so its order is the same on every run.
+func TestResolveVersions_AllOrderDeterministic(t *testing.T) {
+	cases := []struct {
+		name string
+		lock string
+		want []string
+	}{
+		{"v3 packages", packageLockStraddleV3, []string{"qs@6.5.2", "x@1.0.0", "qs@6.5.1"}},
+		{"v1 dependencies", packageLockV1, []string{"express@4.17.1", "cookie@0.4.0", "left-pad@1.2.0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{"package-lock.json": tc.lock})
+			for i := 0; i < resolveRuns; i++ {
+				all := resolveJS(t, dir, "qs").All
+				got := make([]string, 0, len(all))
+				for _, d := range all {
+					got = append(got, d.Coordinate+"@"+d.Version)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("run %d: All order = %v, want %v", i, got, tc.want)
+				}
+			}
+		})
 	}
 }

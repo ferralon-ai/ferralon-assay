@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -36,6 +38,9 @@ import (
 //     clean scan.
 //   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure); the
 //     coordinate it would have carried becomes UNRESOLVED, not absent.
+//
+// Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
+// out of several distinct versions. See its doc comment for the rule.
 //
 // "plugin resolves, pipeline ranges" symmetry (matching Java): this op resolves only the
 // concrete installed literal version. Advisory RANGE matching (^ ~ || x-ranges, npm
@@ -77,20 +82,55 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizeNPMCoordinate(req.Coordinate)
-	if want != "" {
-		for _, d := range all {
-			if normalizeNPMCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Match = d
-				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if d.Resolved {
-					break
-				}
-			}
-		}
-	}
+	res.Match, res.Found = matchCoordinate(all, normalizeNPMCoordinate(req.Coordinate))
 	return res, nil
+}
+
+// matchCoordinate selects the Match for the normalized coordinate want across every entry in
+// all — every lockfile, nested copies included. A JS tree routinely installs several copies
+// of one package (node_modules/qs next to node_modules/x/node_modules/qs), and the predicate
+// reads a single Match, so the rule is:
+//
+//   - every matching copy resolved to the SAME version (N copies of one version count as one):
+//     Match is that version, Resolved=true;
+//   - two or more distinct resolved versions, or any matching copy whose version is unknown:
+//     Match is UNRESOLVED (Resolved=false, Version empty).
+//
+// Picking one copy would let a range that straddles the installed set rule the advisory
+// not-affected on the copy that happens to sit outside it while a vulnerable copy is still
+// installed. UNRESOLVED makes the predicate fail OPEN instead. Versions compare as exact
+// strings: two spellings of one version read as distinct, which can only fail open.
+func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
+	if want == "" {
+		return plugin.ResolvedDependency{}, false
+	}
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		versions = make(map[string]struct{})
+	)
+	for _, d := range all {
+		if normalizeNPMCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			unknown = true
+			continue
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	if found && (unknown || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
 }
 
 // lockFiles returns every recognized lockfile under root (npm/yarn/pnpm), skipping
@@ -166,7 +206,7 @@ func declaredDependencies(root string) []plugin.ResolvedDependency {
 			if json.Unmarshal(raw, &deps) != nil {
 				continue
 			}
-			for name := range deps {
+			for _, name := range slices.Sorted(maps.Keys(deps)) {
 				key := normalizeNPMCoordinate(name)
 				if key == "" {
 					continue
@@ -227,6 +267,7 @@ type packageLockDep struct {
 // parsePackageLock parses package-lock.json (v1/v2/v3). v2/v3's "packages" map is
 // preferred when present (it is the authoritative resolved tree); v1's "dependencies"
 // map is the fallback. A package whose version is empty is UNRESOLVED, never guessed.
+// Every map is walked in sorted key order so All is identical across runs.
 func parsePackageLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var pl packageLock
 	if err := json.Unmarshal(data, &pl); err != nil {
@@ -235,7 +276,8 @@ func parsePackageLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 
 	var out []plugin.ResolvedDependency
 	if len(pl.Packages) > 0 {
-		for installPath, pkg := range pl.Packages {
+		for _, installPath := range slices.Sorted(maps.Keys(pl.Packages)) {
+			pkg := pl.Packages[installPath]
 			if installPath == "" {
 				// The "" install path is the root project itself, not a dependency — skip
 				// it even when it carries a "name" field.
@@ -250,8 +292,8 @@ func parsePackageLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 		return out, true
 	}
 
-	for name, dep := range pl.Dependencies {
-		collectV1(name, dep, &out)
+	for _, name := range slices.Sorted(maps.Keys(pl.Dependencies)) {
+		collectV1(name, pl.Dependencies[name], &out)
 	}
 	return out, true
 }
@@ -276,8 +318,8 @@ func packageLockName(installPath, explicit string) string {
 // (nested transitive deps included).
 func collectV1(name string, dep packageLockDep, out *[]plugin.ResolvedDependency) {
 	*out = append(*out, npmResolved(name, dep.Version))
-	for child, c := range dep.Dependencies {
-		collectV1(child, c, out)
+	for _, child := range slices.Sorted(maps.Keys(dep.Dependencies)) {
+		collectV1(child, dep.Dependencies[child], out)
 	}
 }
 

@@ -464,9 +464,15 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	if len(undecided) > 0 {
 		ps := newProfileScope(chain.poms, profileList, pom.path == "")
 		for _, idx := range undecided {
-			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps)
-			if chain.parentMissing || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
+			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps, reactor, cache, targetEnv, depth)
+			// What an unbounded profile re-versions is unknown, so every dependency it could
+			// reach is: each transitive of a reactor module, each dependency of a cached POM.
+			anyVersion := !bounded || chain.parentMissing
+			if anyVersion || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
 				bounded = false // what it changes can't be read, or reaches past the dependency graph
+			}
+			if len(profileList[idx].Properties) > 0 {
+				bounded = false // a property can reach plugin configuration or a repository, which this reader doesn't follow
 			}
 			if bounded && len(touched) == 0 {
 				continue // cannot change the graph either way
@@ -474,22 +480,25 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 			owner := profileOwner[idx]
 			em.residue = append(em.residue, reasonProfileActivation)
 			em.undecided = append(em.undecided, undecidedProfile{
-				path:    gavKey(owner.GroupID, owner.ArtifactID, owner.Version) + " profile " + profileList[idx].ID,
-				touched: touched,
-				bounded: bounded,
+				path:       gavKey(owner.GroupID, owner.ArtifactID, owner.Version) + " profile " + profileList[idx].ID,
+				touched:    touched,
+				bounded:    bounded,
+				anyVersion: anyVersion,
 			})
 		}
-		unresolveReversioned(&em)
+		unresolveReversioned(&em, pom.path == "")
 	}
 	return em
 }
 
 // unresolveReversioned marks every dependency an undecided profile could re-version as
-// unresolved. The build may run either version, so the one without the profile isn't taken.
-func unresolveReversioned(em *effectiveModel) {
+// unresolved. The build may run either version, so the one without the profile isn't taken. A
+// cached POM's dependencies are transitives of the build, so a profile whose versions are
+// unknown unresolves all of them.
+func unresolveReversioned(em *effectiveModel, cached bool) {
 	alt := reversions(*em)
 	for i, d := range em.deps {
-		if d.Version != "" && alt.reversioned(d.ga(), d.Version) {
+		if d.Version != "" && (alt.reversioned(d.ga(), d.Version) || cached && alt.anyVersion) {
 			em.deps[i].unresolvedBy = reasonProfileActivation
 		}
 	}
@@ -497,13 +506,18 @@ func unresolveReversioned(em *effectiveModel) {
 
 // profileVersions maps each "g:a" an undecided profile can add or re-version to every version it
 // can resolve to under the profile.
-type profileVersions map[string][]string
+// anyVersion is set when some undecided profile's versions are unknown.
+type profileVersions struct {
+	versions   map[string][]string
+	anyVersion bool
+}
 
 func reversions(em effectiveModel) profileVersions {
-	alt := profileVersions{}
+	alt := profileVersions{versions: map[string][]string{}}
 	for _, u := range em.undecided {
+		alt.anyVersion = alt.anyVersion || u.anyVersion
 		for _, d := range u.touched {
-			alt[d.ga()] = append(alt[d.ga()], d.Version)
+			alt.versions[d.ga()] = append(alt.versions[d.ga()], d.Version)
 		}
 	}
 	return alt
@@ -511,7 +525,7 @@ func reversions(em effectiveModel) profileVersions {
 
 // reversioned reports whether some undecided profile can put ga at a version other than version.
 func (alt profileVersions) reversioned(ga, version string) bool {
-	for _, v := range alt[ga] {
+	for _, v := range alt.versions[ga] {
 		if v != version {
 			return true
 		}

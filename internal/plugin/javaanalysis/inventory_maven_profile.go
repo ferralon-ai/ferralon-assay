@@ -233,51 +233,97 @@ func readMavenConfig(buildDir string) (ids []string, unknown, found bool) {
 	if err != nil {
 		return nil, true, true
 	}
-	addList := func(v string) {
-		if strings.Contains(v, "${") {
-			unknown = true
-			return
-		}
-		for _, tok := range strings.Split(v, ",") {
-			if id, _, ok := profileToken(tok); ok {
-				ids = append(ids, id)
-			}
-		}
-	}
 	for _, line := range strings.Split(string(data), "\n") {
 		toks := strings.Fields(line)
 		for i := 0; i < len(toks); i++ {
-			tok := strings.Trim(toks[i], `"'`)
-			var v string
-			switch {
-			case tok == "-P" || tok == "--activate-profiles":
+			v, kind := profileOption(toks[i])
+			switch kind {
+			case optionNone:
+				continue
+			case optionUnknown:
+				unknown = true
+				continue
+			case optionNeedsValue:
 				if i+1 >= len(toks) {
 					unknown = true
 					continue
 				}
 				i++
-				v = strings.Trim(toks[i], `"'`)
-			case strings.HasPrefix(tok, "--activate-profiles="):
-				v = strings.TrimPrefix(tok, "--activate-profiles=")
-			case strings.HasPrefix(tok, "-P"):
-				v = tok[2:]
-			case strings.HasPrefix(tok, "-D") || strings.HasPrefix(tok, "--"):
-				continue
-			case strings.HasPrefix(tok, "-") && strings.Contains(tok, "P"):
-				unknown = true // a short-option cluster carrying -P
-				continue
-			default:
-				continue
+				v = toks[i]
 			}
 			// A list written with spaces after its commas ("-P a, b") continues on the line.
 			for strings.HasSuffix(v, ",") && i+1 < len(toks) && !strings.HasPrefix(toks[i+1], "-") {
 				i++
-				v += strings.Trim(toks[i], `"'`)
+				v += toks[i]
 			}
-			addList(v)
+			list, ok := profileList(v)
+			if !ok {
+				unknown = true
+				continue
+			}
+			ids = append(ids, list...)
 		}
 	}
 	return ids, unknown, true
+}
+
+type optionKind int
+
+const (
+	optionNone       optionKind = iota // not a profile selection
+	optionValue                        // a selection with its value attached
+	optionNeedsValue                   // a selection whose value is the next token
+	optionUnknown                      // a selection, or possibly one, this reader doesn't parse
+)
+
+// profileOption classifies one maven.config token: -P, -P=, --activate-profiles and
+// --activate-profiles=, with the value attached or in the next token. A short-option cluster
+// holding P, an abbreviation of --activate-profiles, or a quoted selection is unknown.
+func profileOption(tok string) (string, optionKind) {
+	if strings.HasPrefix(tok, `"`) || strings.HasPrefix(tok, "'") {
+		if _, kind := profileOption(strings.Trim(tok, `"'`)); kind != optionNone {
+			return "", optionUnknown // a quoted selection: how Maven unquotes it isn't modelled
+		}
+		return "", optionNone
+	}
+	switch {
+	case tok == "-P" || tok == "--activate-profiles":
+		return "", optionNeedsValue
+	case strings.HasPrefix(tok, "--activate-profiles="):
+		return strings.TrimPrefix(tok, "--activate-profiles="), optionValue
+	case strings.HasPrefix(tok, "-P="):
+		return strings.TrimPrefix(tok, "-P="), optionValue
+	case strings.HasPrefix(tok, "-P"):
+		return tok[2:], optionValue
+	case strings.HasPrefix(tok, "--"):
+		name, _, _ := strings.Cut(tok, "=")
+		if len(name) > 2 && strings.HasPrefix("--activate-profiles", name) {
+			return "", optionUnknown
+		}
+		return "", optionNone
+	case strings.HasPrefix(tok, "-D"):
+		return "", optionNone
+	case strings.HasPrefix(tok, "-") && strings.Contains(tok, "P"):
+		return "", optionUnknown
+	}
+	return "", optionNone
+}
+
+// profileList splits a -P value into the profile ids it selects or deselects. A value that is empty, has an empty element, or holds anything outside a
+// plain id (quotes, interpolation, =, a backslash) is not parsed.
+func profileList(v string) ([]string, bool) {
+	if v == "" || strings.ContainsAny(v, "\"'$=\\{}") {
+		return nil, false
+	}
+	var ids []string
+	for _, tok := range strings.Split(v, ",") {
+		id, _, ok := profileToken(tok)
+		if !ok {
+			return nil, false
+		}
+		ids = append(ids, id)
+	}
+	return ids, true
 }
 
 // readMavenConfigFile reads path only when it is a regular file. The open doesn't block, so a
@@ -558,6 +604,8 @@ type undecidedProfile struct {
 	path    string // disclosure: the declaring POM and profile id
 	touched []mvnDep
 	bounded bool
+	// anyVersion: what the profile re-versions is unknown, so any version in its reach may change.
+	anyVersion bool
 }
 
 // declEntry is one dependency or managed-version declaration of a POM chain. owner is the
@@ -677,9 +725,10 @@ func (ps profileScope) referencedProps(raws ...string) map[string]bool {
 
 // profileTouches returns what profile idx can change: its own consequential declarations, and
 // every consequential declaration whose coordinates reference a property it sets. Each is
-// resolved under the model without the profile and with it; a declaration that resolves to no
-// literal coordinate in either, or an imported BOM, leaves the result unbounded.
-func profileTouches(ps profileScope, idx int, pr mvnProfile, em *effectiveModel, rawProps map[string]string) (touched []mvnDep, bounded bool) {
+// resolved under the model without the profile and with it; an imported BOM contributes every
+// version it manages. A declaration that resolves to no literal coordinate in either, or a BOM
+// that isn't cached or doesn't read in full, leaves the result unbounded.
+func profileTouches(ps profileScope, idx int, pr mvnProfile, em *effectiveModel, rawProps map[string]string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) (touched []mvnDep, bounded bool) {
 	cons := ps.consequential()
 	var picked []declEntry
 	for i, e := range ps.entries {
@@ -723,7 +772,12 @@ func profileTouches(ps profileScope, idx int, pr mvnProfile, em *effectiveModel,
 	bounded = true
 	for _, e := range picked {
 		if e.mgmt && isImportBOM(e.dep) {
-			return nil, false
+			managed, ok := profileBOMManaged(e.dep, []map[string]string{em.props, overlay}, reactor, cache, targetEnv, depth)
+			if !ok {
+				return nil, false
+			}
+			touched = append(touched, managed...)
+			continue
 		}
 		seen := map[string]bool{}
 		for _, props := range []map[string]string{em.props, overlay} {
@@ -760,6 +814,64 @@ func profileTouches(ps profileScope, idx int, pr mvnProfile, em *effectiveModel,
 		}
 	}
 	return touched, bounded
+}
+
+// profileBOMManaged reads an imported BOM under each property set and returns every version it
+// manages, as managed declarations. ok is false when a BOM coordinate doesn't interpolate to a
+// literal, the BOM isn't cached, or reading it leaves anything undecided or unread.
+func profileBOMManaged(bom mvnDep, propSets []map[string]string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) ([]mvnDep, bool) {
+	if depth > 10 {
+		return nil, false
+	}
+	var out []mvnDep
+	seen := map[string]bool{}
+	for _, props := range propSets {
+		g, okG := interp(bom.GroupID, props)
+		a, okA := interp(bom.ArtifactID, props)
+		v, okV := interp(bom.Version, props)
+		if !okG || !okA || !okV || !isLiteralVersion(v) {
+			return nil, false
+		}
+		pom, ok := cache.get(g, a, v)
+		if !ok {
+			return nil, false
+		}
+		if !bomProfilesDecided(pom, reactor, cache, targetEnv, depth) {
+			return nil, false
+		}
+		sub := buildEffectiveModel(pom, reactor, cache, targetEnv, depth+1)
+		if len(sub.residue) > 0 || len(sub.undecided) > 0 {
+			return nil, false
+		}
+		for ga, mv := range sub.managed {
+			mg, ma, _ := strings.Cut(ga, ":")
+			if k := gavKey(mg, ma, mv); !seen[k] && isLiteralVersion(mv) {
+				seen[k] = true
+				out = append(out, mvnDep{GroupID: mg, ArtifactID: ma, Version: mv, Scope: "import"})
+			}
+		}
+	}
+	return out, true
+}
+
+// bomProfilesDecided reports whether every profile in a BOM's lineage that could change what it
+// manages is decided. A dependency POM's own model counts only the managed versions its
+// dependencies use; a BOM's managed versions are all it contributes.
+func bomProfilesDecided(bom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) bool {
+	chain := parentChain(bom, reactor, cache, depth+1)
+	if chain.parentMissing {
+		return false
+	}
+	env := activationEnv{targetEnv: targetEnv}
+	for _, anc := range chain.poms {
+		for i, st := range evalProfiles(anc.Profiles, env) {
+			pr := anc.Profiles[i]
+			if st == triUnknown && (len(pr.DepMgmt) > 0 || len(pr.Properties) > 0) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // profileExtras reports whether a profile contributes something besides dependencies, managed

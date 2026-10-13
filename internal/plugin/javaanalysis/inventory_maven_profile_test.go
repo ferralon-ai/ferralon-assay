@@ -298,13 +298,101 @@ func TestMavenProfile_NonContributingProfileCostsNothing(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
 <groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
 <dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>
-<profiles><profile><id>p</id><activation><jdk>11</jdk></activation>
-<properties><unused.prop>x</unused.prop></properties></profile></profiles></project>`)
+<profiles><profile><id>p</id><activation><jdk>11</jdk></activation></profile></profiles></project>`)
 	m2 := t.TempDir()
 	writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></project>`)
 	inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
 	if !inv.Partiality.Complete {
-		t.Errorf("a profile that changes no declaration costs no reason; got %+v", inv.Partiality)
+		t.Errorf("a profile that changes nothing costs no reason; got %+v", inv.Partiality)
+	}
+}
+
+// A property an undecided profile sets can reach plugin configuration or a repository URL, which
+// this reader doesn't follow, so the profile is unbounded whatever else it holds.
+func TestMavenProfile_PropertiesMakeAProfileUnbounded(t *testing.T) {
+	for _, tt := range []struct{ name, body, profile string }{
+		{"a property nothing reads", "", `<properties><unused.prop>x</unused.prop></properties>`},
+		{"a property a body plugin reads", `<properties><skip.unpack>true</skip.unpack></properties>
+<build><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><configuration><skip>${skip.unpack}</skip></configuration></plugin></plugins></build>`,
+			`<properties><skip.unpack>false</skip.unpack></properties>`},
+		{"a property a body repository reads", `<properties><repo.url>https://good.example/</repo.url></properties>
+<repositories><repository><id>r</id><url>${repo.url}</url></repository></repositories>`,
+			`<properties><repo.url>https://other.example/</repo.url></properties>`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>`+tt.body+`
+<profiles><profile><id>p</id><activation><jdk>11</jdk></activation>`+tt.profile+`</profile></profiles></project>`)
+			writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></project>`)
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", ""))
+			if raw.Partiality.Complete || len(raw.Partiality.Scoped) != 1 || raw.Partiality.Scoped[0].Targets != nil {
+				t.Errorf("want one unbounded profile_activation; got %+v", raw.Partiality)
+			}
+		})
+	}
+}
+
+// What an undecided profile's imported BOM manages is read from the cache: a transitive it
+// manages to another version is unresolved. A BOM that can't be read unresolves every transitive.
+func TestMavenProfile_ProfileBOMReversionsTransitives(t *testing.T) {
+	for _, tt := range []struct {
+		name, bom   string // bom: the version org.bom:bom:1.0 manages org.t:t to, "" when uncached
+		tUnresolved bool
+		bounded     bool
+	}{
+		{"manages the transitive to another version", "2.0", true, true},
+		{"manages the transitive to its version", "1.0", false, true},
+		{"isn't cached", "", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>
+<profiles><profile><id>p</id><activation><jdk>11</jdk></activation>
+<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></profile></profiles></project>`)
+			writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></project>`)
+			writeCachePOM(t, m2, "org.t", "t", "2.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>2.0</version></project>`)
+			if tt.bom != "" {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<dependencyManagement><dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>`+tt.bom+`</version></dependency></dependencies></dependencyManagement></project>`)
+			}
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", ""))
+			inv := toJSON(t, raw)
+			if got := findNode(t, inv, "pkg:maven/org.t/t@1.0") == nil; got != tt.tUnresolved {
+				t.Errorf("org.t:t unresolved = %v, want %v", got, tt.tUnresolved)
+			}
+			if findNode(t, inv, "pkg:maven/org.base/base@1.0") == nil {
+				t.Error("a direct dependency with its own version stays resolved")
+			}
+			if len(raw.Partiality.Scoped) != 1 || (raw.Partiality.Scoped[0].Targets != nil) != tt.bounded {
+				t.Errorf("want one profile_activation, bounded = %v; got %+v", tt.bounded, raw.Partiality)
+			}
+		})
+	}
+}
+
+// A cached POM's undecided profile whose versions are unknown unresolves that POM's dependencies.
+func TestMavenProfile_DependencyPOMUnboundedProfileUnresolvesItsDependencies(t *testing.T) {
+	dir, m2 := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.top", "top", "1.0", `<project><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version></dependency></dependencies>
+<profiles><profile><id>tp</id><activation><jdk>1.8</jdk></activation>
+<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></profile></profiles></project>`)
+	writeCachePOM(t, m2, "org.x", "x", "3.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version></project>`)
+	inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
+	if findNode(t, inv, "pkg:maven/org.x/x@3.0") != nil {
+		t.Error("x must not keep the version it has without the profile")
+	}
+	if findNode(t, inv, "pkg:maven/org.top/top@1.0") == nil {
+		t.Error("the module's direct dependency stays resolved")
 	}
 }
 
@@ -386,8 +474,8 @@ func TestMavenProfile_PropertyReferencedVersionIsTouched(t *testing.T) {
 	if len(raw.Partiality.Scoped) != 1 {
 		t.Fatalf("a profile re-versioning a dependency through a property must be disclosed; got %+v", raw.Partiality)
 	}
-	if got, want := raw.Partiality.Scoped[0].Targets, []string{"", "pkg:maven/org.x/x", "pkg:maven/org.y/y"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("Targets = %v, want %v (both candidate versions' closures)", got, want)
+	if got := raw.Partiality.Scoped[0].Targets; got != nil {
+		t.Errorf("Targets = %v, want nil: a profile setting a property is unbounded", got)
 	}
 
 	undecided := toJSON(t, raw)
@@ -414,10 +502,16 @@ func TestMavenProfile_UnboundedTouches(t *testing.T) {
 			profile: `<dependencies><dependency><groupId>org.z</groupId><artifactId>z</artifactId><version>${nope}</version></dependency></dependencies>`,
 		},
 		{
-			name:    "import BOM",
+			name:    "import BOM not cached",
+			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
+		},
+		{
+			name:    "import BOM with an undecided profile of its own",
 			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
 			extra: func(t *testing.T, m2 string) {
-				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<profiles><profile><id>bp</id><activation><jdk>11</jdk></activation>
+<dependencyManagement><dependencies><dependency><groupId>org.q</groupId><artifactId>q</artifactId><version>${nope}</version></dependency></dependencies></dependencyManagement></profile></profiles></project>`)
 			},
 		},
 		{

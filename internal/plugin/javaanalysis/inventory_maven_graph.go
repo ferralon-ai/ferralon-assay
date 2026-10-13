@@ -113,7 +113,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		}
 
 		version := strings.TrimSpace(it.dep.Version)
-		if it.depth > 0 && it.dep.unresolvedBy == "" && alt.reversioned(ga, version) {
+		if it.depth > 0 && it.dep.unresolvedBy == "" && (alt.anyVersion || alt.reversioned(ga, version)) {
 			it.dep.unresolvedBy = reasonProfileActivation
 		}
 		if it.dep.unresolvedBy != "" {

@@ -16,10 +16,10 @@ import (
 const (
 	// SDKModule is the cgx Go SDK's module path.
 	SDKModule = "github.com/ferralon-ai/cgx/sdk/go"
-	// PinnedSDKVersion is the SDK pseudo-version, cgx commit d3cdf76b49d3.
-	PinnedSDKVersion = "v0.0.0-20261012205234-d3cdf76b49d3"
+	// PinnedSDKVersion is the SDK pseudo-version, cgx commit 6eb2990f5280.
+	PinnedSDKVersion = "v0.0.0-20261012234334-6eb2990f5280"
 	// PinnedWasmSHA256 is the SHA-256 of cgx.wasm built from the same commit.
-	PinnedWasmSHA256 = "28cf326f912391ca6bdc19f7ee029e56736d16a76dc2dca3d4e85ce7e5dd3cc9"
+	PinnedWasmSHA256 = "af1f079fd5acaf7f21f56505fe0ca0d2f3a4a7660f0e8f4528b6b40df1b706c3"
 )
 
 // readBuildInfo is debug.ReadBuildInfo, swappable in tests.

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -9,8 +10,8 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"golang.org/x/mod/modfile"
@@ -23,9 +24,10 @@ import (
 // RootPackage is the identity the scanned project itself publishes under: the package an advisory
 // names when the repository IS the vulnerable package (an advisory against grafana scanned in the
 // grafana repository). Version is set only when it is positively established as the version of the
-// checked-out code (a Go module tag at HEAD whose major version the module path allows, or a
-// release version the manifest states outright where nothing the reader cannot see can change it) and is "" otherwise; the advisory is still admitted on it,
-// and the verdict gate reports the version as unresolved.
+// checked-out code, and is "" otherwise: the advisory is still admitted on it, and the verdict gate
+// reports the version as unresolved. For Go that is the one full semver tag at HEAD whose major
+// version the module path allows; elsewhere, a release version the manifest states outright where
+// nothing the reader cannot see can change it.
 type RootPackage struct {
 	// PURLType is the package URL type ("golang", "npm", "pypi", "maven", "nuget").
 	PURLType string
@@ -51,7 +53,7 @@ func ReadRootPackage(ctx context.Context, buildDir, language string) (RootPackag
 	case checkout.LangPython:
 		return pypiRootPackage(buildDir)
 	case checkout.LangJava, checkout.LangKotlin:
-		if r, ok := mavenRootPackage(buildDir); ok {
+		if r, ok := mavenRootPackage(ctx, buildDir); ok {
 			return r, true
 		}
 		return gradleRootPackage(buildDir)
@@ -254,9 +256,10 @@ func CanonicalName(purlType, name string) string {
 }
 
 // goRootPackage reads the module path from go.mod. A Go module declares no version of its own, so
-// the version is the semver tag at HEAD for this module (a nested module's tags carry its
+// the version is the full semver tag at HEAD for this module (a nested module's tags carry its
 // directory as a prefix) whose major version the module path allows (v0 or v1 with no /vN suffix,
-// vN with one), or "" when HEAD carries no such tag.
+// vN with one). It is "" when HEAD carries no such tag, or more than one: the reader cannot tell
+// which of them the build publishes.
 func goRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
 	data, err := os.ReadFile(filepath.Join(buildDir, "go.mod"))
 	if err != nil {
@@ -282,17 +285,18 @@ func goModuleTagAtHead(ctx context.Context, dir, mod string) string {
 	if err != nil {
 		return ""
 	}
-	var versions []string
+	version := ""
 	for _, t := range strings.Fields(tags) {
-		if v, ok := strings.CutPrefix(t, prefix); ok && semver.IsValid(v) && semver.Build(v) == "" && module.CheckPathMajor(v, pathMajor) == nil {
-			versions = append(versions, v)
+		v, ok := strings.CutPrefix(t, prefix)
+		if !ok || !semver.IsValid(v) || semver.Canonical(v) != v || module.CheckPathMajor(v, pathMajor) != nil {
+			continue
 		}
+		if version != "" && version != v {
+			return ""
+		}
+		version = v
 	}
-	if len(versions) == 0 {
-		return ""
-	}
-	sort.Slice(versions, func(i, j int) bool { return semver.Compare(versions[i], versions[j]) > 0 })
-	return versions[0]
+	return version
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
@@ -439,52 +443,165 @@ func setupCfgRootPackage(buildDir string) (RootPackage, bool) {
 
 // mavenRootPackage reads pom.xml, inheriting groupId and version from <parent>. A version that
 // holds a ${…} reference stays unresolved: CI-friendly versions (${revision}${changelist}) are set
-// on the command line, and the defaults in <properties> are placeholders (999999-SNAPSHOT).
-func mavenRootPackage(buildDir string) (RootPackage, bool) {
-	data, err := os.ReadFile(filepath.Join(buildDir, "pom.xml"))
+// on the command line, and the defaults in <properties> are placeholders (999999-SNAPSHOT). Any
+// version is left unknown where something this reader cannot see may set it (see
+// mavenVersionWritersVisible).
+func mavenRootPackage(ctx context.Context, buildDir string) (RootPackage, bool) {
+	pomPath := filepath.Join(buildDir, "pom.xml")
+	data, err := os.ReadFile(pomPath)
 	if err != nil {
 		return RootPackage{}, false
 	}
-	var pom struct {
-		GroupID    string `xml:"groupId"`
-		ArtifactID string `xml:"artifactId"`
-		Version    string `xml:"version"`
-		Parent     struct {
-			GroupID string `xml:"groupId"`
-			Version string `xml:"version"`
-		} `xml:"parent"`
-	}
+	var pom mavenPOM
 	if err := xml.Unmarshal(data, &pom); err != nil {
 		return RootPackage{}, false
 	}
-	group := strings.TrimSpace(firstNonEmpty(pom.GroupID, pom.Parent.GroupID))
+	group, version := pom.coordinates()
 	artifact := strings.TrimSpace(pom.ArtifactID)
 	if group == "" || artifact == "" || strings.Contains(group+artifact, "${") {
 		return RootPackage{}, false
 	}
-	version := strings.TrimSpace(firstNonEmpty(pom.Version, pom.Parent.Version))
+	if !mavenVersionWritersVisible(ctx, buildDir, pomPath, data, pom) {
+		version = ""
+	}
 	return RootPackage{PURLType: "maven", Name: group + ":" + artifact, Version: establishedVersion("maven", version)}, true
 }
 
-var gradleRootName = regexp.MustCompile(`(?m)^\s*rootProject\.name\s*=\s*['"]([^'"$]+)['"]`)
+type mavenPOM struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Parent     *struct {
+		GroupID      string  `xml:"groupId"`
+		ArtifactID   string  `xml:"artifactId"`
+		Version      string  `xml:"version"`
+		RelativePath *string `xml:"relativePath"`
+	} `xml:"parent"`
+}
+
+// coordinates returns the POM's groupId and version, each inherited from <parent> when absent.
+func (p mavenPOM) coordinates() (group, version string) {
+	if p.Parent != nil {
+		group, version = p.Parent.GroupID, p.Parent.Version
+	}
+	return strings.TrimSpace(firstNonEmpty(p.GroupID, group)), strings.TrimSpace(firstNonEmpty(p.Version, version))
+}
+
+// mavenVersionWritersVisible reports whether every writer of the project version is one this
+// reader sees in the checkout:
+//   - the .mvn directory Maven uses (the first at or above buildDir) loads no core extension:
+//     no extensions.xml, and no maven.config or jvm.config naming maven.ext.class.path;
+//   - no POM in the parent chain has an <extensions> element, since a build extension or a plugin
+//     with extensions can set the version once projects are read;
+//   - every parent resolves to a POM inside the checkout, at its relativePath (default
+//     ../pom.xml), whose coordinates match the ones declared; Maven takes any other parent from a
+//     repository, which can carry extensions of its own.
+//
+// Anything that cannot be read counts as a writer.
+func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) bool {
+	if mavenCoreExtensions(buildDir) {
+		return false
+	}
+	root := buildDir
+	if top, err := gitOutput(ctx, buildDir, "rev-parse", "--show-toplevel"); err == nil && top != "" {
+		root = top
+	}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	seen := map[string]bool{}
+	for {
+		if bytes.Contains(data, []byte("<extensions")) {
+			return false
+		}
+		if pom.Parent == nil {
+			return true
+		}
+		rel := "../pom.xml"
+		if pom.Parent.RelativePath != nil {
+			rel = strings.TrimSpace(*pom.Parent.RelativePath)
+		}
+		if rel == "" {
+			return false
+		}
+		next := filepath.Join(filepath.Dir(pomPath), filepath.FromSlash(rel))
+		if info, err := os.Stat(next); err == nil && info.IsDir() {
+			next = filepath.Join(next, "pom.xml")
+		}
+		real, err := filepath.EvalSymlinks(next)
+		if err != nil || seen[real] {
+			return false
+		}
+		if r, err := filepath.Rel(root, real); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return false
+		}
+		seen[real] = true
+		want := *pom.Parent
+		if data, err = os.ReadFile(real); err != nil {
+			return false
+		}
+		pom = mavenPOM{}
+		if xml.Unmarshal(data, &pom) != nil {
+			return false
+		}
+		group, version := pom.coordinates()
+		if group != strings.TrimSpace(want.GroupID) || strings.TrimSpace(pom.ArtifactID) != strings.TrimSpace(want.ArtifactID) || version != strings.TrimSpace(want.Version) || strings.Contains(version, "${") {
+			return false
+		}
+		pomPath = real
+	}
+}
+
+// mavenCoreExtensions reports whether the .mvn directory Maven uses for a build at buildDir (the
+// first at or above it) can load a core extension, or cannot be read.
+func mavenCoreExtensions(buildDir string) bool {
+	dir, err := filepath.Abs(buildDir)
+	if err != nil {
+		return true
+	}
+	for {
+		mvn := filepath.Join(dir, ".mvn")
+		if !absent(mvn) {
+			if !absent(filepath.Join(mvn, "extensions.xml")) {
+				return true
+			}
+			for _, name := range []string{"maven.config", "jvm.config"} {
+				path := filepath.Join(mvn, name)
+				data, err := os.ReadFile(path)
+				if err != nil && !absent(path) || bytes.Contains(data, []byte("maven.ext.class.path")) {
+					return true
+				}
+			}
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
 
 // gradleRootPackage reads group and version from the root build script and the project name from
-// settings. A project with no literal top-level group, or no rootProject.name, publishes no
-// coordinate the scan can name. The version is read only from a script nothing else in can set it
-// (see gradleScript), and never when settings configures projects (allprojects, beforeProject,
-// afterProject, projectsLoaded, a rootProject block), which can set it before or after the script.
+// settings. A project with no literal top-level group, or no top-level rootProject.name literal,
+// publishes no coordinate the scan can name. The version is read only where every statement that
+// runs before publishing is one this reader can see does not set it: the root script's top-level
+// statements are all on its allowlist (see gradleScript), settings holds nothing but the
+// rootProject.name assignment (an include adds projects whose scripts run after the root's), there
+// is no buildSrc, and the wrapper, if any, fetches a stock distribution (a custom one can carry
+// init scripts).
 func gradleRootPackage(buildDir string) (RootPackage, bool) {
 	script, ok := readGradleScript(readFirst(buildDir, "build.gradle.kts", "build.gradle"))
 	if !ok || script.group == "" {
 		return RootPackage{}, false
 	}
-	settings := readFirst(buildDir, "settings.gradle.kts", "settings.gradle")
-	name := submatch(gradleRootName, settings)
+	name, settingsPlain := readGradleSettings(readFirst(buildDir, "settings.gradle.kts", "settings.gradle"))
 	if name == "" {
 		return RootPackage{}, false
 	}
 	version := script.version
-	if gradleSettingsHook.MatchString(settings) {
+	if !settingsPlain || bothExist(buildDir, "build.gradle.kts", "build.gradle") || bothExist(buildDir, "settings.gradle.kts", "settings.gradle") || !absent(filepath.Join(buildDir, "buildSrc")) || !stockGradleWrapper(buildDir) {
 		version = ""
 	}
 	return RootPackage{PURLType: "maven", Name: script.group + ":" + name, Version: establishedVersion("maven", version)}, true
@@ -494,19 +611,21 @@ func gradleRootPackage(buildDir string) (RootPackage, bool) {
 type gradleScript struct {
 	// group is the literal of the one top-level group assignment, or "".
 	group string
-	// version is the literal of the one top-level version assignment, and "" when there is none,
-	// when version is named anywhere else in the script (a nested block, project.version, a plugin
-	// declaration), or when the script has a plugins, allprojects, subprojects or configure block or
-	// an apply, calls setVersion or setProperty anywhere, or names version in a string (a property
-	// lookup or setter by name): each can set the project version where this reader cannot see it.
+	// version is the literal of the one top-level version assignment, and "" unless every other
+	// top-level statement is a literal group assignment or a plain dependencies or repositories
+	// block (see gradlePlainBlock): anything else can run code that sets the version.
 	version string
 }
 
 var (
-	gradleWord         = regexp.MustCompile(`\b(group|version|plugins|allprojects|subprojects|configure|apply|setVersion|setProperty)\b`)
-	gradleAssignRHS    = regexp.MustCompile(`^\s*=\s*(['"])`)
-	gradleVersionName  = regexp.MustCompile(`['"]version['"]`)
-	gradleSettingsHook = regexp.MustCompile(`\b(allprojects|beforeProject|afterProject|projectsLoaded)\b|\brootProject\s*\{`)
+	gradleGroupWord     = regexp.MustCompile(`\bgroup\b`)
+	gradleAssignRHS     = regexp.MustCompile(`^\s*=\s*(['"])`)
+	gradleStatementWord = regexp.MustCompile(`^(group|version|dependencies|repositories)\b`)
+	gradleRootNameStmt  = regexp.MustCompile(`^rootProject\.name\b`)
+	gradleDependency    = regexp.MustCompile(`^(api|implementation|compileOnly|runtimeOnly|annotationProcessor|testImplementation|testCompileOnly|testRuntimeOnly|testAnnotationProcessor)\s*(\(\s*['"]\s*['"]\s*\)|['"]\s*['"])$`)
+	gradleRepository    = regexp.MustCompile(`^(mavenCentral|google|gradlePluginPortal|mavenLocal)\s*\(\s*\)$`)
+	gradleStockDist     = regexp.MustCompile(`^https://services\.gradle\.org/distributions/gradle-[0-9][0-9A-Za-z.-]*-(bin|all)\.zip$`)
+	gradleDistURL       = regexp.MustCompile(`(?m)^[ \t\f]*distributionUrl[ \t\f]*[=:][ \t\f]*(.*?)[ \t\f\r]*$`)
 )
 
 // readGradleScript reads a Groovy or Kotlin build script; ok is false when it does not lex.
@@ -515,39 +634,146 @@ func readGradleScript(src string) (gradleScript, bool) {
 	if !ok {
 		return gradleScript{}, false
 	}
-	var groups, versions []string
-	versionNamed, opaque := 0, false
-	for _, m := range gradleWord.FindAllStringIndex(code, -1) {
-		word, top := code[m[0]:m[1]], depth[m[0]] == 0
-		switch word {
-		case "group", "version":
-			if word == "version" {
-				versionNamed++
-			}
-			lit, isLit := gradleLiteralAssign(src, code, m[0], m[1])
-			if !top || !isLit {
-				continue
-			}
-			if word == "group" {
-				groups = append(groups, lit)
-			} else {
-				versions = append(versions, lit)
-			}
-		case "setVersion", "setProperty":
-			opaque = true
-		default:
-			opaque = opaque || top
+	var groups []string
+	for _, m := range gradleGroupWord.FindAllStringIndex(code, -1) {
+		if lit, isLit := gradleLiteralAssign(src, code, m[0], m[1]); depth[m[0]] == 0 && isLit {
+			groups = append(groups, lit)
 		}
 	}
-	opaque = opaque || gradleVersionName.MatchString(src)
 	var out gradleScript
 	if len(groups) == 1 {
 		out.group = groups[0]
 	}
-	if len(versions) == 1 && versionNamed == 1 && !opaque {
+	var versions []string
+	for _, st := range gradleStatements(code, depth, 0, len(code), 0) {
+		text := code[st[0]:st[1]]
+		word := gradleStatementWord.FindString(text)
+		switch word {
+		case "group", "version":
+			lit, isLit := gradleLiteralAssign(src, code, st[0], st[0]+len(word))
+			if !isLit {
+				return out, true
+			}
+			if word == "version" {
+				versions = append(versions, lit)
+			}
+		case "dependencies", "repositories":
+			if !gradlePlainBlock(src, code, depth, st, word) {
+				return out, true
+			}
+		default:
+			return out, true
+		}
+	}
+	if len(versions) == 1 {
 		out.version = versions[0]
 	}
 	return out, true
+}
+
+// readGradleSettings returns the literal of the settings file's one top-level rootProject.name
+// assignment, and whether that assignment is the file's only statement. A file that does not lex
+// names nothing.
+func readGradleSettings(src string) (name string, plain bool) {
+	code, depth, ok := maskGradle(src)
+	if !ok {
+		return "", false
+	}
+	var names []string
+	plain = true
+	for _, st := range gradleStatements(code, depth, 0, len(code), 0) {
+		lit, isLit := "", false
+		if m := gradleRootNameStmt.FindStringIndex(code[st[0]:st[1]]); m != nil {
+			lit, isLit = gradleLiteralAssign(src, code, st[0], st[0]+m[1])
+		}
+		if !isLit || strings.Contains(lit, "$") {
+			plain = false
+			continue
+		}
+		names = append(names, lit)
+	}
+	if len(names) != 1 {
+		return "", false
+	}
+	return names[0], plain
+}
+
+// gradleStatements splits code[from:to] into the statements at brace depth level: each runs from
+// its first non-blank byte to the next newline or semicolon at that depth, so a block runs through
+// the line its closing brace is on. Anything that spans lines otherwise splits into fragments no
+// allowlist accepts.
+func gradleStatements(code string, depth []int, from, to, level int) [][2]int {
+	var out [][2]int
+	start := -1
+	for i := from; i < to; i++ {
+		end := (code[i] == '\n' || code[i] == ';') && depth[i] == level
+		switch {
+		case end && start >= 0:
+			out = append(out, [2]int{start, i})
+			start = -1
+		case !end && start < 0 && strings.TrimSpace(code[i:i+1]) != "":
+			start = i
+		}
+	}
+	if start >= 0 {
+		out = append(out, [2]int{start, to})
+	}
+	for k, st := range out {
+		out[k][1] = st[0] + len(strings.TrimRightFunc(code[st[0]:st[1]], unicode.IsSpace))
+	}
+	return out
+}
+
+// gradlePlainBlock reports whether the statement st is `word { ... }` holding only plain entries:
+// a dependency on a standard configuration declared as one string literal with no interpolation,
+// or a stock repository. Any other name in the block resolves against the project as well, so a
+// call such as setVersion would run there.
+func gradlePlainBlock(src, code string, depth []int, st [2]int, word string) bool {
+	rest := strings.TrimLeftFunc(code[st[0]+len(word):st[1]], unicode.IsSpace)
+	if !strings.HasPrefix(rest, "{") || !strings.HasSuffix(rest, "}") {
+		return false
+	}
+	open := st[1] - len(rest)
+	if depth[st[1]-1] != 1 {
+		return false
+	}
+	for _, in := range gradleStatements(code, depth, open+1, st[1]-1, 1) {
+		text := code[in[0]:in[1]]
+		if word == "repositories" && !gradleRepository.MatchString(text) {
+			return false
+		}
+		if word == "dependencies" && (!gradleDependency.MatchString(text) || strings.ContainsAny(src[in[0]:in[1]], "$")) {
+			return false
+		}
+	}
+	return true
+}
+
+// stockGradleWrapper reports whether the wrapper, when there is one, fetches a distribution from
+// services.gradle.org; a custom distribution can carry init scripts that set the version.
+func stockGradleWrapper(buildDir string) bool {
+	path := filepath.Join(buildDir, "gradle", "wrapper", "gradle-wrapper.properties")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return absent(path)
+	}
+	urls := gradleDistURL.FindAllStringSubmatch(string(data), -1)
+	if len(urls) != 1 {
+		return false
+	}
+	return gradleStockDist.MatchString(strings.NewReplacer(`\:`, ":", `\=`, "=").Replace(urls[0][1]))
+}
+
+// absent reports whether nothing exists at path; an error other than not-exist counts as present.
+func absent(path string) bool {
+	_, err := os.Lstat(path)
+	return os.IsNotExist(err)
+}
+
+// bothExist reports whether both names exist in dir, where which one Gradle reads is not this
+// reader's to decide.
+func bothExist(dir, a, b string) bool {
+	return !absent(filepath.Join(dir, a)) && !absent(filepath.Join(dir, b))
 }
 
 // gradleLiteralAssign reports whether the word at code[start:end] begins a statement assigning it
@@ -647,10 +873,9 @@ func maskGradle(src string) (string, []int, bool) {
 }
 
 // nugetRootPackage reads the one project file at buildDir: PackageId, else AssemblyName, else the
-// file name. The version is read only when the project states exactly one unconditioned Version and
-// no VersionSuffix, has no Choose or Import, and no Directory.Build.props or Directory.Build.targets
-// at or above buildDir can set it. A VersionPrefix alone is never the version: the SDK appends a
-// suffix the build can pass. A directory holding several projects has no single root.
+// file name. The version is never established from the checkout: a property passed on the MSBuild
+// command line (dotnet pack -p:Version=...) overrides every value the project sets, and nothing in
+// the checkout records it. A directory holding several projects has no single root.
 func nugetRootPackage(buildDir string) (RootPackage, bool) {
 	projects, _ := filepath.Glob(filepath.Join(buildDir, "*.csproj"))
 	if len(projects) != 1 {
@@ -660,67 +885,25 @@ func nugetRootPackage(buildDir string) (RootPackage, bool) {
 	if err != nil {
 		return RootPackage{}, false
 	}
-	type prop struct {
-		Value     string `xml:",chardata"`
-		Condition string `xml:"Condition,attr"`
-	}
 	var proj struct {
-		Choose []struct{} `xml:"Choose"`
-		Import []struct{} `xml:"Import"`
 		Groups []struct {
-			Condition     string `xml:"Condition,attr"`
-			PackageID     string `xml:"PackageId"`
-			AssemblyName  string `xml:"AssemblyName"`
-			Version       []prop `xml:"Version"`
-			VersionSuffix []prop `xml:"VersionSuffix"`
+			PackageID    string `xml:"PackageId"`
+			AssemblyName string `xml:"AssemblyName"`
 		} `xml:"PropertyGroup"`
 	}
 	if err := xml.Unmarshal(data, &proj); err != nil {
 		return RootPackage{}, false
 	}
 	var id, assembly string
-	var versions []string
-	conditioned, suffixed := false, false
 	for _, g := range proj.Groups {
 		id = firstNonEmpty(id, strings.TrimSpace(g.PackageID))
 		assembly = firstNonEmpty(assembly, strings.TrimSpace(g.AssemblyName))
-		for _, v := range g.Version {
-			versions = append(versions, strings.TrimSpace(v.Value))
-			conditioned = conditioned || g.Condition != "" || v.Condition != ""
-		}
-		suffixed = suffixed || len(g.VersionSuffix) > 0
 	}
 	id = firstNonEmpty(id, assembly, strings.TrimSuffix(filepath.Base(projects[0]), ".csproj"))
 	if strings.Contains(id, "$(") {
 		return RootPackage{}, false
 	}
-	version := ""
-	if len(versions) == 1 && !conditioned && !suffixed && len(proj.Choose) == 0 && len(proj.Import) == 0 && !msbuildDirectoryFiles(buildDir) {
-		version = versions[0]
-	}
-	return RootPackage{PURLType: "nuget", Name: id, Version: establishedVersion("nuget", version)}, true
-}
-
-// msbuildDirectoryFiles reports whether MSBuild could import a Directory.Build.props or
-// Directory.Build.targets into a project at buildDir: one at or above it, or a directory it cannot
-// read.
-func msbuildDirectoryFiles(buildDir string) bool {
-	dir, err := filepath.Abs(buildDir)
-	if err != nil {
-		return true
-	}
-	for {
-		for _, name := range []string{"Directory.Build.props", "Directory.Build.targets"} {
-			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-				return true
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
-	}
+	return RootPackage{PURLType: "nuget", Name: id}, true
 }
 
 var (

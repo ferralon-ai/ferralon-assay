@@ -98,8 +98,9 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 	if !cg.Partiality.Complete {
 		// A call graph that is itself partial cannot fully corroborate any trace.
 		// Carry its incompleteness even when it listed no explicit reasons — the
-		// cause is unknown, which is exactly what the undetermined code says.
-		if len(cg.Partiality.Reasons) == 0 {
+		// cause is unknown, which is exactly what the undetermined code says. Scoped
+		// limits are a stated cause, carried below.
+		if len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		}
 	}
@@ -125,10 +126,12 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return part
 }
 
 // Reachability runs govulncheck as a LIBRARY (golang.org/x/vuln/scan) over
@@ -224,16 +227,17 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 	return false
 }
 
-// withholdForLibraryEscape drops a refutation a library's callers may contradict. With no main
-// package in the build, govulncheck searches only the calls the library makes itself. A value it
-// hands its caller (a function, an interface value, a struct carrying either, through a result, an
-// exported var or field, or an embedded type) can still run the module's code once the caller
-// calls it, and that call is outside the search. So when any of the build's packages reaches the
-// refuted module (for the standard library, a vulnerable package), or the load cannot say whether
-// one does, the result declares library_escape instead.
+// withholdForLibraryEscape drops a refutation an importer of the build's packages may contradict.
+// govulncheck searches only the calls the build's own packages make. A value an importable package
+// hands its importer (a function, an interface value, a struct carrying either, through a result, an
+// exported var or field, or an embedded type) can still run the module's code once the importer
+// calls it, and that call is outside the search, whether or not the build also has a main package.
+// So when any importable package reaches the refuted module (for the standard library, a
+// vulnerable package), or the load cannot say whether one does, the result declares library_escape
+// instead.
 func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
 	r := res.Refutation
-	if r == nil || slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return p.Name == "main" }) {
+	if r == nil {
 		return res
 	}
 	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
@@ -244,8 +248,8 @@ func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, p
 	return res
 }
 
-// libraryReaches reports whether one of the build's packages reaches module, counting a load in
-// which a package failed to load or type-check, since its imports may be incomplete.
+// libraryReaches reports whether one of the build's importable packages reaches module, counting a
+// load in which a package failed to load or type-check, since its imports may be incomplete.
 func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string) bool {
 	incomplete := false
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
@@ -256,7 +260,21 @@ func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string
 	if incomplete {
 		return true
 	}
-	return slices.ContainsFunc(pkgs, newModuleReach(pkgs, module, vulnerable).reachesModule)
+	reach := newModuleReach(pkgs, module, vulnerable)
+	return slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return importable(p) && reach.reachesModule(p) })
+}
+
+// importable reports whether code outside the build's module can import p: it is not a main
+// package, and no element of its path is internal, which only the module's own packages can
+// import. Those callers are the build's mains, whose calls govulncheck searches.
+func importable(p *packages.Package) bool {
+	return !isMain(p) && !slices.Contains(strings.Split(p.PkgPath, "/"), "internal")
+}
+
+// isMain reports whether p is a main package with files the build compiles; a directory holding
+// only a test in package main is no program.
+func isMain(p *packages.Package) bool {
+	return p.Name == "main" && len(p.GoFiles) > 0
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
@@ -363,7 +381,9 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	}
 	reasons := append(append([]string(nil), p.Reasons...), reason)
 	slices.Sort(reasons)
-	return plugin.Partial(reasons...)
+	out := plugin.Partial(reasons...)
+	out.Scoped = p.Scoped
+	return out
 }
 
 // envOr returns the last value env assigns to key, else def.

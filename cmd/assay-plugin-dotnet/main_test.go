@@ -19,7 +19,7 @@ func fixtureDir(t *testing.T) string {
 	files := map[string]string{
 		"ZipEntry.cs": "namespace Ionic.Zip { public class ZipEntry { public void Extract(string dir) { } } }\n",
 		"Ecdsa.cs":    "namespace EllipticCurve;\npublic static class Ecdsa { public static bool Verify(string m, string s, string k) { return false; } }\n",
-		"App.csproj":  "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"DotNetZip\" Version=\"1.16.0\" /></ItemGroup></Project>\n",
+		"App.csproj":  "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><PackageReference Include=\"DotNetZip\" Version=\"[1.16.0]\" /></ItemGroup></Project>\n",
 	}
 	for rel, content := range files {
 		p := filepath.Join(root, rel)

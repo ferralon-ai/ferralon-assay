@@ -422,7 +422,7 @@ func sortedParents(set map[string]bool) []string {
 // parsePDMLockAdvisory / parseUVLockAdvisory adapt the E4 parsers to the environment-blind
 // advisory path (ResolveDependencyVersions), which wants {coordinate, version} pins and ignores
 // edges/markers. isManifest now recognizes pdm.lock/uv.lock, so parseManifest must route them
-// here rather than letting parseRequirementsTxt mis-read TOML.
+// here rather than letting parseRequirementLines mis-read TOML.
 func parsePDMLockAdvisory(data []byte) ([]plugin.ResolvedDependency, bool) {
 	reqs, err := parsePDMLock(data, nil, nil)
 	if err != nil {

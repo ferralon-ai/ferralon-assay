@@ -21,19 +21,25 @@ import (
 // — the reader never reads os.UserHomeDir at resolution time. Parsed POMs are memoized; a GAV
 // whose POM is absent is a recorded cache-miss (nil), never assumed edgeless.
 type mavenCache struct {
-	roots []string
-	memo  map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
-	miss  map[string]bool
+	roots   []string
+	memo    map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
+	miss    map[string]bool
+	escaped bool // the build's own repository links out of the checkout: every lookup misses
 }
 
 // newMavenCache builds the default reader for a build dir (project-local .m2 first, then the
-// user ~/.m2). A blank home is harmless — that root simply resolves nothing.
+// user ~/.m2). A blank home is harmless — that root simply resolves nothing. A project-local
+// repository that resolves outside the build is an escape in the first root, so nothing is read
+// past it.
 func newMavenCache(buildDir string) *mavenCache {
-	roots := []string{filepath.Join(buildDir, ".m2", "repository")}
+	local := filepath.Join(buildDir, ".m2", "repository")
+	roots := []string{local}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		roots = append(roots, filepath.Join(home, ".m2", "repository"))
 	}
-	return newMavenCacheAt(roots...)
+	c := newMavenCacheAt(roots...)
+	c.escaped = rootLeavesCheckout(buildDir, local)
+	return c
 }
 
 // newMavenCacheAt builds a reader over explicit repository roots (the S4/test injection point).
@@ -50,9 +56,10 @@ func pomRelPath(g, a, v string) string {
 }
 
 // get returns the cached POM for a GAV, or (nil, false) on a cache-miss. Roots are searched in
-// order; the first hit wins.
+// order; the first hit wins. A GAV that cannot name a cache path, or whose POM resolves outside
+// its root, is a miss in every root: what sits there is not the cached POM.
 func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
-	if g == "" || a == "" || v == "" {
+	if c.escaped || !validGAV(g, a, v) {
 		return nil, false
 	}
 	key := gavKey(g, a, v)
@@ -64,10 +71,14 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 	}
 	rel := pomRelPath(g, a, v)
 	for _, root := range c.roots {
-		if root == "" {
+		path, st := inCache(root, rel)
+		if st == cacheEscape {
+			break
+		}
+		if st != cacheHit {
 			continue
 		}
-		if p, ok := parseMavenPOM(filepath.Join(root, rel)); ok {
+		if p, ok := parseMavenPOM(path); ok {
 			p.path = "" // a cached POM has no project directory
 			c.memo[key] = p
 			return p, true
@@ -80,13 +91,20 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 // digestFor reads the on-disk .sha1 sidecar of a cached artifact (jar preferred, else pom) as a
 // declared digest — no fetch, no compute (verified digest is PLAN-200). "" when absent.
 func (c *mavenCache) digestFor(g, a, v string) string {
+	if c.escaped || !validGAV(g, a, v) {
+		return ""
+	}
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {
 		rel := filepath.Join(strings.ReplaceAll(g, ".", "/"), a, v, a+"-"+v+ext)
 		for _, root := range c.roots {
-			if root == "" {
+			path, st := inCache(root, rel)
+			if st == cacheEscape {
+				return ""
+			}
+			if st != cacheHit {
 				continue
 			}
-			if data, err := os.ReadFile(filepath.Join(root, rel)); err == nil {
+			if data, err := readRegular(path); err == nil {
 				if h := strings.TrimSpace(string(data)); h != "" {
 					return "sha1:" + strings.Fields(h)[0]
 				}
@@ -119,10 +137,27 @@ type mvnGA struct{ GroupID, ArtifactID string }
 type mvnDep struct {
 	GroupID, ArtifactID, Version string
 	Scope, Type, Optional        string
+	Classifier                   string
 	Exclusions                   []mvnGA
 	// unresolvedBy, when set, makes the graph emit this dependency with no version, for that
 	// reason. Version keeps the value without the profile, for closures that walk every candidate.
 	unresolvedBy string
+	// variantSibling is set when the same POM also declares another file of this GA (a
+	// classifier or non-jar type) that GA dedup dropped.
+	variantSibling bool
+}
+
+// variant reports whether the declaration selects an artifact file other than the GA's main
+// JAR: a classifier (sources, tests, jdk15, linux-x86_64, ...) or a non-jar type.
+func (d mvnDep) variant() bool {
+	if d.Classifier != "" || d.variantSibling {
+		return true
+	}
+	switch strings.ToLower(defaultType(d.Type)) {
+	case "jar", "bundle":
+		return false
+	}
+	return true
 }
 
 func (d mvnDep) ga() string { return d.GroupID + ":" + d.ArtifactID }
@@ -180,6 +215,7 @@ type xmlDep struct {
 	Version    string `xml:"version"`
 	Scope      string `xml:"scope"`
 	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
 	Optional   string `xml:"optional"`
 	Exclusions []struct {
 		GroupID    string `xml:"groupId"`
@@ -255,6 +291,7 @@ func convDeps(in []xmlDep) []mvnDep {
 			Version:    strings.TrimSpace(d.Version),
 			Scope:      strings.TrimSpace(d.Scope),
 			Type:       strings.TrimSpace(d.Type),
+			Classifier: strings.TrimSpace(d.Classifier),
 			Optional:   strings.TrimSpace(d.Optional),
 		}
 		for _, e := range d.Exclusions {
@@ -268,7 +305,7 @@ func convDeps(in []xmlDep) []mvnDep {
 // parseMavenPOM reads and binds one pom.xml. ok is false only when the file is unreadable or the
 // XML is structurally unparseable (the caller records a cache-miss/residue, never a guess).
 func parseMavenPOM(path string) (*mvnPOM, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -443,13 +480,17 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	}
 
 	// Effective direct deps: interpolate versions, fall back to the managed map, dedup by GA
-	// (first declaration wins).
-	seen := map[string]bool{}
+	// (first declaration wins). A dropped declaration that names another file of the GA marks
+	// the kept one, since both files can reach the classpath.
+	seen := map[string]int{}
 	for _, d := range depSrc {
-		if seen[d.ga()] {
+		if i, dup := seen[d.ga()]; dup {
+			if d.variant() {
+				em.deps[i].variantSibling = true
+			}
 			continue
 		}
-		seen[d.ga()] = true
+		seen[d.ga()] = len(em.deps)
 		ed := d
 		if v, ok := interp(d.Version, em.props); ok {
 			ed.Version = v

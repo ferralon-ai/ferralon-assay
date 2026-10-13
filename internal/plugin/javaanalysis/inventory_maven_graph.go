@@ -6,6 +6,7 @@ package javaanalysis
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -114,6 +115,7 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 	scoped = profileScoped(em, "", em.managed, reactor, cache, targetEnv)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
+	nodeAt := map[string]int{}      // node ID -> index in nodes
 	// Seed the queue with the module's direct dependencies, in declaration order.
 	var queue []bfsItem
 	for _, d := range em.deps {
@@ -133,6 +135,12 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 		if winID, ok := selected[ga]; ok {
 			if it.parentID != "" {
 				edges = append(edges, plugin.DependencyEdge{Parent: it.parentID, Child: winID})
+			}
+			// A losing declaration that names another file of the same GA (a classifier or
+			// non-jar type) may still put that file on the classpath, so the winner can no
+			// longer say which bytes the build uses.
+			if i, ok := nodeAt[winID]; ok && it.dep.variant() && !slices.Contains(nodes[i].Partiality.Reasons, reasonMavenArtifactVariant) {
+				nodes[i].Partiality = nodePartiality(append(append([]string{}, nodes[i].Partiality.Reasons...), reasonMavenArtifactVariant))
 			}
 			continue
 		}
@@ -158,6 +166,12 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 			}
 			nodeReasons = append(nodeReasons, why)
 			reasons = mergeReasons(reasons, why)
+		}
+		// Node-level only: the package is still in the inventory, so this is not a graph limit
+		// (which would block every not_exploitable of the ecosystem); it tells whatever binds
+		// the node to bytes that the main JAR may not be the file the build uses.
+		if it.dep.variant() {
+			nodeReasons = append(nodeReasons, reasonMavenArtifactVariant)
 		}
 
 		node := plugin.DependencyNode{
@@ -213,6 +227,7 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 		// expanded (non-propagating scopes) — sound, no residue.
 
 		node.Partiality = nodePartiality(nodeReasons)
+		nodeAt[nodeID] = len(nodes)
 		nodes = append(nodes, node)
 	}
 

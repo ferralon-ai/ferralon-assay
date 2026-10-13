@@ -99,6 +99,9 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 
 	pkg := npmPURLName(req.PURL)
 	bp := readBuildPackages(ctx, req.BuildDir)
+	if bp.unread {
+		out.Partiality = mergePartiality(out.Partiality, plugin.Partial(plugin.PartialReasonToolFailure))
+	}
 	firstParty := map[string][]string{}
 	if !bp.isDependency(pkg) {
 		for _, sym := range index.Symbols {

@@ -130,8 +130,9 @@ public class Client {
 	}
 }
 
-// An advisory that names a class stands for every method the class declares; its static
-// initializer runs on class load and is not a call target.
+// An advisory that names a class stands for every method the class declares, its static
+// initializer included: touching a static field of the class runs <clinit>, and the reach
+// engine follows that, so leaving it out would narrow the sink set.
 func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 	build := t.TempDir()
 	if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(netkitPom), 0o644); err != nil {
@@ -149,6 +150,7 @@ func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher")
 	want := []string{
 		depEdgeSymbol(classfile.MethodRef{Owner: "com/evil/netkit/UrlFetcher", Name: "<init>", Descriptor: "()V"}),
+		depEdgeSymbol(classfile.MethodRef{Owner: "com/evil/netkit/UrlFetcher", Name: "<clinit>", Descriptor: "()V"}),
 		depEdgeSymbol(netkitFetch),
 	}
 	sort.Strings(want)

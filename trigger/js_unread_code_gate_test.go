@@ -193,6 +193,46 @@ load(process.argv[2]);
 	}
 }
 
+// TestUndeterminedReason_JSStylesheetImport: a stylesheet import loads no unread code only with
+// a stylesheet extension, a regular file in the tree, and no bundler or transform config in the
+// tree. A program that does nothing else can then refute; one that also loads unread code is
+// still held, and so is each program missing one of the three conditions.
+func TestUndeterminedReason_JSStylesheetImport(t *testing.T) {
+	const body = "function parse(s) { return s.trim(); }\nfunction load(s) { return parse(s); }\nload(process.argv[2]);\n"
+	const css = "body { margin: 0; }\n"
+	cases := []struct {
+		name  string
+		src   string
+		files map[string]string
+		held  bool
+	}{
+		{"an in-tree stylesheet and nothing else unread", "import './index.css';\n" + body,
+			map[string]string{"index.css": css}, false},
+		{"an in-tree stylesheet beside a native addon", "import './index.css';\nconst addon = require('./build/Release/x.node');\n" + body + "addon.parse(process.argv[2]);\n",
+			map[string]string{"index.css": css}, true},
+		{"an in-tree asset that is not a stylesheet", "import './logo.svg';\n" + body,
+			map[string]string{"logo.svg": "<svg/>\n"}, true},
+		{"a stylesheet absent from the tree", "import './index.css';\n" + body, nil, true},
+		{"an in-tree stylesheet under a custom webpack rule for .css", "import './index.css';\n" + body,
+			map[string]string{"index.css": css, "webpack.config.js": "module.exports = { module: { rules: [{ test: /\\.css$/, use: './css-loader.js' }] } };\n"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, edges := gateStoreFromJS(t, tc.src, tc.files)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true)", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.held && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
+}
+
 // TestUndeterminedReason_JSScopedLimits runs programs whose package limits are scoped
 // through the gate. A scoped limit holds every advisory for a package in its Targets (the
 // package's resolution reach) and lets an advisory for a package outside them refute; a

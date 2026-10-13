@@ -34,6 +34,9 @@ type program struct {
 	// pkgJSONs caches parsed package.json manifests by build-relative dir (nil = absent or
 	// unparseable).
 	pkgJSONs map[string]*pkgManifest
+	// styleTooling caches whether the tree holds a bundler or transform config that can change
+	// what a stylesheet import loads; nil until first use.
+	styleTooling *bool
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the

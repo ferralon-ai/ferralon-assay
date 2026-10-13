@@ -616,7 +616,8 @@ var errNotRegularFile = errors.New("not a regular file")
 
 // readRegularFile reads the file at p only when it resolves, through any symlink, to a regular
 // file. It stats before it opens and never opens a pipe, socket or device, since opening a pipe
-// with no writer blocks.
+// with no writer blocks. It follows a symlink to a regular file wherever it points: one that
+// leaves the build tree is vetoed by resolutionOverridden's walk, not here.
 func readRegularFile(p string) ([]byte, error) {
 	fi, err := os.Stat(p)
 	if err != nil {

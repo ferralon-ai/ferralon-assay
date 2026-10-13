@@ -75,7 +75,7 @@ func TestAdvisoryFromArtifacts_NamesPackageInEveryEcosystem(t *testing.T) {
 			store := artifact.NewMemStore()
 			putJSON(t, store, "a1", artifact.TypeNormalizedAdvisory, tc.advisory)
 			seedInventory(t, store, "a1", tc.inv)
-			_, got := advisoryFromArtifacts(store, "a1", assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-test"}})
+			_, got := advisoryFromArtifacts(store, "a1", assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-test"}}, nil)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("package = %+v, want %+v", got, tc.want)
 			}
@@ -106,12 +106,45 @@ func TestFinding_FuGetGalleryNewtonsoftIsNotGroundedOnFirstPartySource(t *testin
 		Edges:      []plugin.CallEdge{depEdge("main", "lib")},
 	}, plugin.ReachabilityResult{Partiality: plugin.Complete(), Searched: []string{appSink}})
 
-	adv, pkg := advisoryFromArtifacts(store, aid, assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-2024-21907"}})
+	adv, pkg := advisoryFromArtifacts(store, aid, assessment.Request{Vulnerability: assessment.VulnRef{ID: "CVE-2024-21907"}}, nil)
 	if pkg == nil {
 		t.Fatal("no package for a NuGet advisory with a resolved version")
 	}
 	f := finding(store, aid, adv, pkg)
 	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonVulnerableSymbolUnresolved {
 		t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, report.ReasonVulnerableSymbolUnresolved)
+	}
+}
+
+// A C/C++ advisory's package carries the inventory's pin only when exactly one version of the name
+// is in the SBOM and the assessment declared it source_unpinned. Every shape is one G1 rejects.
+func TestCFamilyObservedPackage(t *testing.T) {
+	zlib := func(v string) report.Package {
+		return report.Package{Ecosystem: "cfamily", Name: "zlib", Version: v, PURL: "pkg:conan/zlib@" + v}
+	}
+	for _, tc := range []struct {
+		name          string
+		flags         []string
+		sbom          []report.Package
+		version, part string
+	}{
+		{"one pin", []string{cfamilySoleSourceUnproven}, []report.Package{zlib("1.2.11")}, "1.2.11", cfamilySoleSourceUnproven},
+		{"one pin, two instances", []string{cfamilySoleSourceUnproven}, []report.Package{zlib("1.2.11"), zlib("1.2.11")}, "1.2.11", cfamilySoleSourceUnproven},
+		{"two pins", []string{plugin.PartialReasonLockfileAmbiguous, cfamilySoleSourceUnproven}, []report.Package{zlib("1.2.11"), zlib("1.3")}, "", cfamilySoleSourceUnproven},
+		{"no pin in the SBOM", []string{plugin.PartialReasonSourceUnpinned}, nil, "", plugin.PartialReasonSourceUnpinned},
+		{"another ecosystem's pin", []string{cfamilySoleSourceUnproven}, []report.Package{{Ecosystem: "Go", Name: "zlib", Version: "v1.0.0"}}, "", cfamilySoleSourceUnproven},
+		{"not declared source_unpinned", []string{plugin.PartialReasonNoManifest}, []report.Package{zlib("1.2.11")}, "", plugin.PartialReasonNoManifest},
+		{"no declaration", nil, []report.Package{zlib("1.2.11")}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfamilyObservedPackage("zlib", "pkg:conan/zlib", inventoryFacts{Language: "cfamily", PartialityFlags: tc.flags}, tc.sbom)
+			want := report.Package{Ecosystem: "cfamily", Name: "zlib", PURL: "pkg:conan/zlib", Version: tc.version, PartialReason: tc.part}
+			if *got != want {
+				t.Errorf("package = %+v, want %+v", *got, want)
+			}
+			if _, _, ok := admittedPackage(artifact.NewMemStore(), "a1", got); ok {
+				t.Errorf("G1 admits %+v", *got)
+			}
+		})
 	}
 }

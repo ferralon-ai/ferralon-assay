@@ -924,12 +924,15 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// v3 multi-package set. Carry ALL elements through with PER-ELEMENT fail-open validation: an
 	// element with an unrecognized version_scheme or a boundless range DROPS that element (continue),
 	// never the whole document — the opposite of the scalar path's whole-doc reject. Dropping a
-	// garbled element can only remove a select-by-target candidate (a target on it then falls back to
-	// the scalar primary → OPEN), never fabricate a not-affected (inv.5). The scalar-primary mapping
-	// below is UNCHANGED; the array decodes alongside it.
+	// garbled element removes a select-by-target candidate (a target on it then falls back to the
+	// scalar primary → OPEN). Its package URL is kept in DroppedPackages so the not_exploitable gate
+	// still sees that the advisory names another package. The scalar-primary mapping below is
+	// UNCHANGED; the array decodes alongside it.
 	var affectedPkgs []AffectedPackage
+	var droppedPkgs []string
 	for _, p := range d.AffectedPackages {
 		if !schemeRecognized(p.VersionScheme) {
+			droppedPkgs = append(droppedPkgs, p.PURL)
 			continue // fail open: drop this element, keep the document
 		}
 		var pranges []Range
@@ -947,6 +950,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			})
 		}
 		if garbled {
+			droppedPkgs = append(droppedPkgs, p.PURL)
 			continue // boundless range → drop this element, keep the document
 		}
 		affectedPkgs = append(affectedPkgs, AffectedPackage{
@@ -1017,6 +1021,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		GadgetClasses:    d.GadgetClasses,
 		GuardSufficiency: guardSuff,
 		AffectedPackages: affectedPkgs,
+		DroppedPackages:  droppedPkgs,
 		// v4 additive field. Zero-safe passthrough: nil (producer has not emitted) stays nil —
 		// never conflated with an empty symbol set (anvil-q15 declared-awaiting-emit).
 		SymbolsTyped:     d.SymbolsTyped,

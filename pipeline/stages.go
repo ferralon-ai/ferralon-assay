@@ -53,6 +53,10 @@ type AssessConfig struct {
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
 	SubjectToolchainReachability bool
+	// SkipDisqualifiedAnalysis lets symbol_mapping and reachability_ingress return without calling
+	// the plugin when disqualification_discovery already settled the advisory. Off by default. See
+	// WithSkipDisqualifiedAnalysis.
+	SkipDisqualifiedAnalysis bool
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -119,6 +123,16 @@ func WithSubjectToolchainReachability(enabled bool) AssessOption {
 	return func(c *AssessConfig) { c.SubjectToolchainReachability = enabled }
 }
 
+// WithSkipDisqualifiedAnalysis lets S4 symbol_mapping and S5 reachability_ingress skip their plugin
+// work for an advisory S3 disqualified, leaving no vulnerable_symbol / reachability / ingress_map /
+// candidate_pair artifact behind. It is only sound for a caller whose verdict for a disqualified
+// advisory reads nothing those stages write — Assay's report builder settles a disqualified row on
+// the discovery artifact alone. A caller that consults the S4/S5 artifacts after a disqualification
+// (a Prove tier weighing a static refutation against it) must leave it off, which is the default.
+func WithSkipDisqualifiedAnalysis(enabled bool) AssessOption {
+	return func(c *AssessConfig) { c.SkipDisqualifiedAnalysis = enabled }
+}
+
 // AssessStages returns the deterministic Assess stages S1–S6 in pipeline order, applying any
 // options. The Service composes the full S1–S10 pipeline as append(AssessStages(opts...),
 // prove.ProveStages(...)...).
@@ -132,8 +146,8 @@ func AssessStages(opts ...AssessOption) []Stage {
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
 		exposureFootprintStage{},
 	}
 }
@@ -2596,15 +2610,35 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	return err
 }
 
+// settledByDisqualification reports whether S3 recorded the advisory as disqualified. An absent or
+// undecodable discovery artifact reads as not disqualified, so the analysis stages still run.
+func settledByDisqualification(store artifact.Store, assessmentID string) (bool, error) {
+	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
+	if err != nil || len(arts) == 0 {
+		return false, err
+	}
+	var res DisqualResult
+	if json.Unmarshal(arts[0].Payload, &res) != nil {
+		return false, nil
+	}
+	return res.Disqualified, nil
+}
+
 // --- Stage 4: symbol_mapping --------------------------------------------------
 
 type symbolMapping struct {
-	plugin plugin.LanguagePlugin
+	plugin           plugin.LanguagePlugin
+	skipDisqualified bool
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
 func (symbolMapping) Status() assessment.Status { return assessment.StatusAnalysis }
 func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
+	if s.skipDisqualified {
+		if settled, err := settledByDisqualification(store, c.ID); err != nil || settled {
+			return err
+		}
+	}
 	if s.plugin != nil {
 		buildDir, err := InventoryBuildDir(store, c.ID)
 		if err != nil {
@@ -2693,11 +2727,17 @@ type reachabilityIngress struct {
 	// toolchain when it resolved to an exact version (flag-gated, off by default). See
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
+	skipDisqualified bool
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
 func (reachabilityIngress) Status() assessment.Status { return assessment.StatusAnalysis }
 func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
+	if s.skipDisqualified {
+		if settled, err := settledByDisqualification(store, c.ID); err != nil || settled {
+			return err
+		}
+	}
 	var sinkRef artifact.Ref
 	if syms, err := store.Query(c.ID, artifact.TypeVulnerableSymbol); err != nil {
 		return err
@@ -3067,6 +3107,23 @@ func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
 		purls = append(purls, p.PURL)
 	}
 	return append(purls, adv.DroppedPackages...)
+}
+
+// AdvisoryListsAffectedPackages reports whether the advisory carries an affected_packages[] set. Only
+// that set enumerates every package the advisory affects; a record with only the scalar purl may
+// affect packages it does not name.
+func AdvisoryListsAffectedPackages(store artifact.Store, caseID string) bool {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var adv struct {
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return false
+	}
+	return len(adv.AffectedPackages) > 0
 }
 
 // AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's

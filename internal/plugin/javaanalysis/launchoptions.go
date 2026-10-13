@@ -974,7 +974,7 @@ func (f *launchFile) testSpans(base string) {
 		if !ok {
 			continue
 		}
-		end := f.lineEnd(f.lineOf(loc[0]))
+		var end int
 		if string(f.data[loc[0]:loc[1]]) == "<argLine>" {
 			i := bytes.Index(f.data[loc[1]:], []byte("</argLine>"))
 			if i < 0 {
@@ -990,12 +990,49 @@ func (f *launchFile) testSpans(base string) {
 					break
 				}
 			}
+			start := loc[1] + len(rest) - len(trimmed)
 			if expr, ok := bracketedExpr(trimmed); ok {
-				end = loc[1] + len(rest) - len(trimmed) + len(expr)
+				end = start + len(expr)
+			} else if end, ok = literalArgsEnd(f.data, start, strings.HasSuffix(base, ".kts")); !ok {
+				continue
 			}
 		}
 		f.spans = append(f.spans, launchSpan{loc[0], min(end, scopeEnd), spanTest})
 	}
+}
+
+// literalArgsEnd returns where an unbracketed jvmArgs value starting at i ends: string
+// literals, commas and comments, up to the first ';', line end or '}' (after a comma the value
+// continues on the next line). ok is false when anything else comes first or the lexer cannot
+// classify a token: a value with no positive end is not test-only, so none of it is exempt.
+func literalArgsEnd(data []byte, i int, kts bool) (int, bool) {
+	comma := false
+	for i < len(data) {
+		ok := true
+		switch at := data[i:]; {
+		case at[0] == ';' || at[0] == '}' || (at[0] == '\n' || at[0] == '\r') && !comma:
+			return i, true
+		case isGradleSpace(at[0]):
+			i++
+		case at[0] == ',':
+			i, comma = i+1, true
+		case bytes.HasPrefix(at, []byte("//")):
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case bytes.HasPrefix(at, []byte("/*")):
+			i, ok = skipBlockComment(data, i, kts)
+		case stringQuote(at, kts) != "":
+			i, ok = skipString(data, i, stringQuote(at, kts), kts)
+			comma = false
+		default:
+			ok = false
+		}
+		if !ok {
+			return 0, false
+		}
+	}
+	return 0, false
 }
 
 // gradleTestBlock matches the opening of a block that configures Gradle test tasks: test { },

@@ -1,11 +1,13 @@
 package pythonanalysis
 
 // The walk of a build directory that the install scan and the committed-install scan share
-// with the other lanes' manifest classifiers. The skip rule is fixed (see buildTreeSkipped): a
-// directory named node_modules or site-packages holds installed packages, not the build's own
+// with the other lanes' manifest classifiers, copied from internal/plugin/buildtree at
+// 444cd8f until that package lands. The skip rule is fixed (see buildTreeSkipped): a directory
+// named node_modules or site-packages holds installed packages, not the build's own
 // declarations, and is not entered. Nothing else is skipped, .git included. The walk never
 // follows a symlink; a symlink that leaves the build dir is reported so the caller fails
-// closed on it.
+// closed on it. A symlinked directory inside the build dir is read in full only through its
+// target, when the walk itself enters that target at its real path (see buildTreeLinks).
 
 import (
 	"io/fs"
@@ -78,4 +80,59 @@ func buildTreeInside(realRoot, path string) bool {
 func buildTreeIsDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// buildTreeLinks decides, for one buildTreeWalk, which symlinked directories inside root are
+// read in full: the rule buildtree.Candidates applies. A symlinked directory is read in full
+// only when its target resolves inside root's real path to a directory the walk enters at that
+// real path: not a skipped directory or anything under one, and not one it could not list. The
+// walk never follows the link, so whatever the target holds is read once, at its real path.
+type buildTreeLinks struct {
+	root, realRoot string
+	// walked holds the real path of every directory the walk entered and listed. The walk never
+	// follows a symlink, so a walked path is root's real path joined with its path under root.
+	walked     map[string]bool
+	linkedDirs []string
+}
+
+func newBuildTreeLinks(root string) *buildTreeLinks {
+	// If root does not resolve, realRoot is empty, no walked path matches a resolved target,
+	// and every symlinked directory is unread.
+	realRoot, _ := filepath.EvalSymlinks(root)
+	return &buildTreeLinks{root: root, realRoot: realRoot, walked: map[string]bool{}}
+}
+
+func (l *buildTreeLinks) realOf(path string) string {
+	rel, err := filepath.Rel(l.root, path)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(l.realRoot, rel)
+}
+
+// visit records one entry buildTreeWalk passed to its caller's visit, before the caller acts on
+// it.
+func (l *buildTreeLinks) visit(e buildTreeEntry, err error) {
+	switch {
+	case err != nil:
+		delete(l.walked, l.realOf(e.Path))
+	case e.Symlink && e.Escapes, e.Skipped:
+	case e.Symlink && buildTreeIsDir(e.Path):
+		l.linkedDirs = append(l.linkedDirs, e.Path)
+	case e.D.IsDir():
+		l.walked[l.realOf(e.Path)] = true
+	}
+}
+
+// unread returns, in walk order, every symlinked directory inside root whose target the walk
+// did not read. Call it after the walk.
+func (l *buildTreeLinks) unread() []string {
+	var out []string
+	for _, link := range l.linkedDirs {
+		target, err := filepath.EvalSymlinks(link)
+		if err != nil || !l.walked[target] {
+			out = append(out, link)
+		}
+	}
+	return out
 }

@@ -103,7 +103,9 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 	sc := &installScan{ls: ls, root: buildDir, keep: map[string]string{}, reqSeen: map[string]bool{}, images: map[string]bool{}}
 	ls.scan = sc
 	var workflows []pendingWorkflow
+	links := newBuildTreeLinks(buildDir)
 	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
+		links.visit(e, err)
 		rel := relSlash(buildDir, e.Path)
 		c := scanCtx{file: rel, where: rel, prod: true}
 		switch {
@@ -118,14 +120,9 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			return nil
 		case e.Skipped, e.D.IsDir():
 			return nil
+		case e.Symlink && buildTreeIsDir(e.Path):
+			return nil // read at its target, or vetoed below when the walk does not read that
 		case e.Symlink:
-			if buildTreeIsDir(e.Path) {
-				// Its target is walked where it lives, unless that is inside a skipped directory.
-				if target, err := filepath.EvalSymlinks(e.Path); err != nil || underSkipped(buildDir, target) {
-					sc.veto(c, "symlink into a skipped directory: install commands behind it are unknown")
-				}
-				return nil
-			}
 		case !e.D.Type().IsRegular():
 			return nil // a device, socket or pipe runs nothing, and reading a pipe would block
 		}
@@ -168,6 +165,10 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		sc.scanFile(rel, data, kind)
 		return nil
 	})
+	for _, link := range links.unread() {
+		rel := relSlash(buildDir, link)
+		sc.veto(scanCtx{file: rel, where: rel, prod: true}, "symlinked directory whose target the walk does not read: install commands behind it are unknown")
+	}
 	sc.scanWorkflows(workflows)
 	sort.Strings(sc.files)
 	if sc.noDeps != "" && sc.pipInstalls > 1 {
@@ -2463,7 +2464,9 @@ var vendorDirs = setOf("lib", "vendor", "_vendor", "vendored", "third_party", "s
 // egg, every top-level entry of a committed site-packages, and a package or module vendored
 // under lib/, vendor/, python/ and the like.
 func (ls *loadSet) committedInstalls(buildDir string) {
+	links := newBuildTreeLinks(buildDir)
 	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
+		links.visit(e, err)
 		rel := relSlash(buildDir, e.Path)
 		if err != nil {
 			ls.noMarkers("%s: could not be read: installed copies under it are unknown", rel)
@@ -2475,13 +2478,16 @@ func (ls *loadSet) committedInstalls(buildDir string) {
 		if e.Path == buildDir {
 			return nil
 		}
-		if e.Symlink {
-			if e.Escapes {
-				ls.noMarkers("%s: symlink that leaves the repository or does not resolve: installed copies behind it are unknown", rel)
-			}
+		if e.Symlink && e.Escapes {
+			ls.noMarkers("%s: symlink that leaves the repository or does not resolve: installed copies behind it are unknown", rel)
 			return nil
 		}
-		name := e.D.Name()
+		// A symlink inside the repository is read at its target too, but its own name still
+		// places what it links: a dist-info, a wheel, or a package under a vendor directory.
+		name, isDir := e.D.Name(), e.D.IsDir()
+		if e.Symlink {
+			isDir = buildTreeIsDir(e.Path)
+		}
 		if e.Skipped {
 			if name == "site-packages" {
 				ls.committedSitePackages(e.Path, rel)
@@ -2489,22 +2495,25 @@ func (ls *loadSet) committedInstalls(buildDir string) {
 			return nil
 		}
 		if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
-			ls.committedDist(e.Path, name, e.D.IsDir())
+			ls.committedDist(e.Path, name, isDir)
 			if e.D.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !e.D.IsDir() && (strings.HasSuffix(name, ".whl") || strings.HasSuffix(name, ".egg")) {
+		if !isDir && (strings.HasSuffix(name, ".whl") || strings.HasSuffix(name, ".egg")) {
 			n, _, _ := strings.Cut(name, "-")
 			ls.markInstalled(normalizePyCoordinate(n))
 			return nil
 		}
 		if vendorDirs[filepath.Base(filepath.Dir(e.Path))] {
-			ls.committedModule(e.Path, name, e.D.IsDir())
+			ls.committedModule(e.Path, name, isDir)
 		}
 		return nil
 	})
+	for _, link := range links.unread() {
+		ls.noMarkers("%s: symlinked directory whose target the walk does not read: installed copies behind it are unknown", relSlash(buildDir, link))
+	}
 }
 
 // committedSitePackages marks every top-level entry of a committed site-packages installed.

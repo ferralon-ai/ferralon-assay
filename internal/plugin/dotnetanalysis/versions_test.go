@@ -202,14 +202,61 @@ func TestVersions_UnparseableManifest_Vetoes(t *testing.T) {
 	}
 }
 
-// A coordinate not declared anywhere is not Found (the pipeline fails open on a
-// missing/unresolved match — never a fabricated not-affected).
-func TestVersions_UnknownCoordinate_NotFound(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"App.csproj": "<Project><ItemGroup><PackageReference Include=\"A\" Version=\"1.0.0\" /></ItemGroup></Project>\n",
-	})
-	if r := versionsOf(t, dir, "NotDeclared"); r.Found {
-		t.Errorf("an undeclared coordinate must not be Found; got %+v", r)
+// A coordinate the tree shows is not installed is not Found. One a project could pull in
+// transitively, with nothing recording what restore installed, is Found and UNRESOLVED (the
+// pipeline fails open either way, never a fabricated not-affected).
+func TestVersions_UndeclaredCoordinate(t *testing.T) {
+	app := csproj("A", "1.0.0")
+	cases := []struct {
+		name   string
+		files  map[string]string
+		found  bool
+		reason string
+	}{
+		{
+			name:   "a project with other packages and no lockfile",
+			files:  map[string]string{"App.csproj": app},
+			found:  true,
+			reason: reasonNoLockfile,
+		},
+		{
+			name: "a project with a current lockfile that doesn't list it",
+			files: map[string]string{
+				"App.csproj":         app,
+				"packages.lock.json": `{"version": 1, "dependencies": {"net8.0": {"A": {"type": "Direct", "requested": "[1.0.0, )", "resolved": "1.0.0"}}}}`,
+			},
+		},
+		{
+			name: "a project with a stale lockfile",
+			files: map[string]string{
+				"App.csproj":         app,
+				"packages.lock.json": `{"version": 1, "dependencies": {"net8.0": {"A": {"type": "Direct", "requested": "[0.9.0, )", "resolved": "0.9.0"}}}}`,
+			},
+			found:  true,
+			reason: reasonLockfileStale,
+		},
+		{
+			name: "a project whose restore output doesn't list it",
+			files: map[string]string{
+				"App.csproj":              app,
+				"obj/project.assets.json": assetsJSON(map[string]string{"A/1.0.0": "package"}),
+			},
+		},
+		{
+			name:  "a project with no package references",
+			files: map[string]string{"App.csproj": `<Project Sdk="Microsoft.NET.Sdk"></Project>`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := versionsOf(t, writeTree(t, tc.files), "NotDeclared")
+			if r.Found != tc.found || r.Match.Resolved {
+				t.Fatalf("want Found=%v and unresolved; got %+v", tc.found, r)
+			}
+			if tc.reason != "" && !slices.Contains(r.Partiality.Reasons, tc.reason) {
+				t.Errorf("want reason %q; got %v", tc.reason, r.Partiality.Reasons)
+			}
+		})
 	}
 }
 
@@ -463,7 +510,7 @@ func TestVersions_MultipleCopies(t *testing.T) {
 		{
 			name: "an unmodeled item in the props file covers nothing",
 			files: map[string]string{
-				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /><GlobalPackageReference Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`,
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /><PackageReference Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`,
 				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
 				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
 			},
@@ -671,6 +718,10 @@ func TestReadCentralVersions(t *testing.T) {
 		{name: "document type declaration", props: `<!DOCTYPE Project><Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
 		{name: "stray text", props: `<Project>13.0.3<ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
 		{name: "truncated", props: `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />`},
+		{name: "GlobalPackageReference is skipped", props: `<Project><ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="12.0.1" /><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`, want: "13.0.3", ok: true},
+		{name: "GlobalPackageReference alone", props: `<Project><ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`, ok: true},
+		{name: "GlobalPackageReference metadata element", props: `<Project><ItemGroup><GlobalPackageReference Include="StyleCop.Analyzers"><Version>1.1.118</Version></GlobalPackageReference><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
+		{name: "GlobalPackageReference condition", props: `<Project><ItemGroup><GlobalPackageReference Include="StyleCop.Analyzers" Version="1.1.118" Condition="true" /><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

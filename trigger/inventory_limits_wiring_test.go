@@ -31,9 +31,9 @@ func (refutingGoPlugin) Reachability(context.Context, plugin.ReachabilityRequest
 	return plugin.ReachabilityResult{
 		Partiality: plugin.Complete(),
 		Refutation: &plugin.Refutation{
-			Basis:   plugin.RefutationPackageNotLoaded,
+			Basis:   plugin.RefutationAnalyzerSymbolNotReached,
 			Package: "pkg:golang/golang.org/x/text",
-			Detail:  "no loaded package imports it",
+			Detail:  "govulncheck reached no vulnerable symbol",
 		},
 	}, nil
 }
@@ -62,7 +62,7 @@ func groundedBaseline() (*memStore, *report.Report) {
 	baseline := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "base-sha"}).
 		AddPackage(pkg).
 		NotExploitable(report.Advisory{ID: wiringAdvisory.ID, Source: wiringAdvisory.Source}, &pkg,
-			"vulnerable_symbol_absent", "golang.org/x/text@v0.3.6: no loaded package imports it").
+			"vulnerable_symbol_absent", "golang.org/x/text@v0.3.6: govulncheck reached no vulnerable symbol").
 		WithProvenance(report.Provenance{CommitSHA: "base-sha", AdvisoryCursor: wiringAdvisory.ID}).
 		Build()
 	return &memStore{state: &statestore.State{Report: &baseline, SBOM: baseline.SBOM, Cursor: wiringAdvisory.ID}}, &baseline

@@ -49,7 +49,9 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 				strings.Join(symbols, ", "), label), "", true
 		}
 	}
-	if r := reach.Refutation; r != nil {
+	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
+	// every package it affects.
+	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded || pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
 		if key, ok := purlKey(r.Package); ok && key == admitted {
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", true

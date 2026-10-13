@@ -123,12 +123,15 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": artifact variant declared"))
 			continue
 		}
-		jarPath, ok, ambiguous := locateArtifactJar(buildDir, n.coordinate, n.version)
-		switch {
-		case ambiguous:
+		jarPath, found := locateArtifactJar(buildDir, n.coordinate, n.version)
+		switch found {
+		case jarCopiesDiffer:
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": cached copies differ"))
 			continue
-		case !ok:
+		case jarUnreadable:
+			rc.Scoped = append(rc.Scoped, scoped(plugin.PartialReasonToolFailure, n.coordinate, n.String()+": cached copy unreadable or outside the cache"))
+			continue
+		case jarMissing:
 			rc.Scoped = append(rc.Scoped, scoped(reasonMavenUncachedSubtree, n.coordinate, n.String()))
 			continue
 		}

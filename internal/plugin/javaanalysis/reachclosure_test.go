@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -212,5 +213,35 @@ func TestBytecodeReach_DifferingCachedCopiesAreNotLoaded(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("missing scoped no_dependency_artifact naming the differing copies: %+v", res.Partiality.Scoped)
+	}
+}
+
+// A cached copy that resolves outside its cache is never loaded: the miss is a tool_failure naming
+// the package, not a clean search.
+func TestBytecodeReach_EscapingCachedCopyIsNotLoaded(t *testing.T) {
+	a := newApp(t, "", false)
+	jar := filepath.Join(a.build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
+	outside := filepath.Join(t.TempDir(), "netkit-1.0.0.jar")
+	if err := os.Rename(jar, outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, jar); err != nil {
+		t.Fatal(err)
+	}
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(callFetch))
+
+	res := a.reach(netkitSinkID)
+	if len(res.Paths) != 0 || len(res.Searched) != 0 {
+		t.Fatalf("an escaping copy was searched: Paths %v Searched %v", res.Paths, res.Searched)
+	}
+	found := false
+	for _, s := range res.Partiality.Scoped {
+		if s.Reason == plugin.PartialReasonToolFailure && s.Package == netkitPURL && s.Path == "com.evil:netkit:1.0.0: cached copy unreadable or outside the cache" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing scoped tool_failure naming the escaping copy: %+v", res.Partiality.Scoped)
 	}
 }

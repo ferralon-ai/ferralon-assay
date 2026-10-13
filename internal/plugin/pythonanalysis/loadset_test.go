@@ -1132,6 +1132,8 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		{name: "control: an attached -W value and -mpip parse", files: pinnedDocker("python -Wignore -Bmpip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
 		{name: "control: a py launcher version selector parses", files: pinnedDocker("py -3.12 -m pip install -r requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
 		{name: "control: python -m piptools sync reads its files", files: pinnedDocker("python -m piptools sync requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "python -m piptools sync of a file naming black", files: rewrittenReqs("Dockerfile", "FROM python:3.12\nCOPY . .\nRUN python -m piptools sync requirements/docker.txt\n"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "control: a -W value as its own word, then -m piptools", files: pinnedDocker("python -W ignore -m piptools sync requirements.txt"), pkg: "pkg:pypi/black@24.4.2", refute: true},
 		{name: "control: python -I -m pip", files: dockerRun("python -I -m pip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
 		{name: "control: python3 -u -m pip", files: dockerRun("python3 -u -m pip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2", veto: "pathspec, in the locked closure"},
 
@@ -1164,6 +1166,7 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		{name: "a PIP_ setting off the allow-list", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_FROBNICATE=1\nCOPY . /src\nRUN pip install -r /src/requirements.txt\n", "requirements.txt": pinnedRuntimeExport}), pkg: "pkg:pypi/black@24.4.2", veto: "sets PIP_FROBNICATE"},
 		{name: "control: a PIP_ setting on the allow-list", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_NO_CACHE_DIR=1\nCOPY . /src\nRUN pip install -r /src/requirements.txt\n", "requirements.txt": pinnedRuntimeExport}), pkg: "pkg:pypi/black@24.4.2", refute: true},
 		{name: "UV_CONFIG_FILE", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nCOPY . .\nENV UV_CONFIG_FILE=/docker/uvcfg\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "UV_CONFIG_FILE"},
+		{name: "UV_CONFIG_FILE in a manifest that is a candidate only by content", files: withLock(map[string]string{"deploy/k8s/env.yaml": "env:\n  - name: UV_CONFIG_FILE\n    value: /cfg/uvcfg\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "UV_CONFIG_FILE"},
 		{name: "uv --config-file", files: dockerRun("uv --config-file docker/uvcfg sync --frozen --no-dev"), pkg: "pkg:pypi/black@24.4.2", veto: "uv --config-file"},
 		{name: "control: another config copied into /etc", files: pipConfigCopy("docker/pipcfg", "/etc/app.conf"), pkg: "pkg:pypi/black@24.4.2", refute: true},
 	}

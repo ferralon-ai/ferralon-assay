@@ -515,6 +515,22 @@ func TestMavenProfile_UnboundedTouches(t *testing.T) {
 			},
 		},
 		{
+			name:    "import BOM importing a BOM that isn't cached",
+			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
+			extra: func(t *testing.T, m2 string) {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<dependencyManagement><dependencies><dependency><groupId>org.inner</groupId><artifactId>inner</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement></project>`)
+			},
+		},
+		{
+			name:    "import BOM whose parent isn't cached",
+			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
+			extra: func(t *testing.T, m2 string) {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><parent><groupId>org.bomparent</groupId><artifactId>bp</artifactId><version>1.0</version></parent>
+<groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
+			},
+		},
+		{
 			name:    "closure through an unbounded profile",
 			profile: `<dependencies><dependency><groupId>org.n</groupId><artifactId>n</artifactId><version>1.0</version></dependency></dependencies>`,
 			extra: func(t *testing.T, m2 string) {

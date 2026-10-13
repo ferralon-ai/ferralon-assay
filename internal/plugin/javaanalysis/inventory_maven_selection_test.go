@@ -148,6 +148,7 @@ func TestMavenProfile_MavenConfigSelection(t *testing.T) {
 		{"abbreviated long form with =", "--activate-prof=p\n", true},
 		{"another profile only", "-Pother\n", false},
 		{"another profile only, -P=", "-P=other\n", false},
+		{"another profile only, long form with =", "--activate-profiles=other\n", false},
 		{"another long option", "--also-make --fail-at-end\n", false},
 		{"no selection", "-DskipTests -T 1C\n", false},
 	} {

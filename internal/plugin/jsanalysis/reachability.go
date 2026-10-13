@@ -27,6 +27,11 @@ import (
 //     reaches, declares no_known_ingress (NEVER "not reachable"/"safe"): the lexer's miss
 //     is UNKNOWN, never a confident not-affected.
 //
+// When the request names the admitted npm package (req.Package), the result also carries a
+// package_not_loaded Refutation if the runtime load set (loadset.go) is complete and no
+// installed copy of that package loads or sits in the runtime install closure, and no declared
+// load limit (loadLimitReaches) could hide a load of it.
+//
 // A load failure is a hard error (inv.4).
 func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
 	cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: req.BuildDir})
@@ -75,10 +80,51 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		})
 	}
 
-	if len(reasons) == 0 {
-		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}, nil
+	res := plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}
+	if len(reasons) > 0 {
+		res.Partiality = plugin.Partial(sortedReasons(reasons)...)
 	}
-	return plugin.ReachabilityResult{Partiality: plugin.Partial(sortedReasons(reasons)...), Paths: paths}, nil
+	if name, version, ok := npmPackageRef(req.Package); ok {
+		ls := computeLoadSet(req.BuildDir)
+		blocked := loadLimitReaches(res.Partiality, name)
+		if len(ls.scoped) > 0 {
+			res.Partiality.Complete = false
+			res.Partiality.Scoped = append(res.Partiality.Scoped, ls.scoped...)
+		}
+		if !blocked {
+			res.Refutation = ls.refute(name, version)
+		}
+	}
+	return res, nil
+}
+
+// callLimits are the call graph's limits that say nothing about which packages load: an
+// unresolved first-party callee and a sink with no ingress path. Every other declared limit
+// (an uninspectable package, a computed require or import, evaluated code, an unread module, a
+// tool failure) describes a load the lane cannot see, so it withholds package_not_loaded.
+var callLimits = map[string]bool{
+	plugin.PartialReasonDynamicDispatch: true,
+	plugin.PartialReasonNoIngress:       true,
+}
+
+// loadLimitReaches reports whether a declared limit could hide a load of the npm package with
+// canonical name `name`: any run-wide reason outside callLimits, or a scoped one that is
+// unbounded or names the package (scopedReaches compares canonical keys, never raw PURLs).
+func loadLimitReaches(p plugin.Partiality, name string) bool {
+	for _, r := range p.Reasons {
+		if !callLimits[r] {
+			return true
+		}
+	}
+	for _, s := range p.Scoped {
+		if callLimits[s.Reason] {
+			continue
+		}
+		if scopedReaches(s, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // entrySymbols is the set of static-reachability entry points: every discovered ingress

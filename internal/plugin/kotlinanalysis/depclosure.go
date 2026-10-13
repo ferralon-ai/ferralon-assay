@@ -76,8 +76,10 @@ type depClosure struct {
 	// cannot be listed leaves it unlisted.
 	cp depreach.Classpath
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: the inventory's graph reasons (inventoryReasons), or a
-	// JVM launch option the lanes do not model (javaanalysis.LaunchOptionReasons).
+	// no empty search is Searched: the inventory's graph reasons (inventoryReasons), a JVM
+	// launch option the lanes do not model (javaanalysis.LaunchOptionReasons), or a Gradle
+	// dependency declaration the inventory does not model
+	// (javaanalysis.UnmodeledGradleDependencies).
 	reasons []string
 }
 
@@ -101,6 +103,9 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 		return nil, err
 	}
 	dc.reasons = append(dc.reasons, javaanalysis.LaunchOptionReasons(buildDir)...)
+	if javaanalysis.UnmodeledGradleDependencies(buildDir) != nil {
+		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonUnmodeledDependency)
+	}
 	return dc, nil
 }
 

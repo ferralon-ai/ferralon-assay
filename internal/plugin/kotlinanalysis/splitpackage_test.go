@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -71,6 +72,15 @@ func TestReachability_SplitPackages(t *testing.T) {
 			writeGradleCacheJar(t, dir, errorproneGroup, errorproneArtifact, errorproneVersion, jar)
 		}
 		writeMain(t, dir, main)
+		return dir
+	}
+	// withFileDep is the control build plus libs/javac-shaded.jar defining a class beside
+	// Option, and the given extra dependency line.
+	withFileDep := func(t *testing.T, line string) string {
+		dir := gradleJacksonBuild(t, `    implementation("`+errorproneGroup+":"+errorproneArtifact+":"+errorproneVersion+`")`+"\n"+line)
+		writeGradleCacheJar(t, dir, errorproneGroup, errorproneArtifact, errorproneVersion, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
+		writeJar(t, filepath.Join(dir, "libs", "javac-shaded.jar"), map[string][]byte{"com/sun/tools/javac/main/Main": plainClass("com/sun/tools/javac/main/Main")})
+		writeMain(t, dir, callsOption)
 		return dir
 	}
 	// errorproneJarPath is the JAR's place in the user-level Gradle cache (HOME is the test's),
@@ -162,6 +172,18 @@ func TestReachability_SplitPackages(t *testing.T) {
 			})
 			writeStartScript(t, dir, "scripts/app", []string{jacksonJarName, errorproneArtifact + "-" + errorproneVersion + ".jar"}, "com.example.MainKt")
 			return dir
+		}, true, nil},
+		{"implementation(files(\"libs/javac-shaded.jar\")) is never loaded: not searched", func(t *testing.T) string {
+			return withFileDep(t, `    implementation(files("libs/javac-shaded.jar"))`)
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
+		{"implementation(fileTree(\"libs\")) is never loaded: not searched", func(t *testing.T) string {
+			return withFileDep(t, `    implementation(fileTree("libs"))`)
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
+		{"runtimeOnly(files(\"libs/javac-shaded.jar\")) is never loaded: not searched", func(t *testing.T) string {
+			return withFileDep(t, `    runtimeOnly(files("libs/javac-shaded.jar"))`)
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
+		{"control: libs/javac-shaded.jar present but not declared, so Option is the JDK's", func(t *testing.T) string {
+			return withFileDep(t, "")
 		}, true, nil},
 		{"a corrupt dependency JAR may define javax/xml/parsers: not searched", func(t *testing.T) string {
 			dir := withErrorprone(t, callsParsers, nil)

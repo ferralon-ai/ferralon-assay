@@ -1,6 +1,8 @@
 package pythonanalysis
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"unicode"
 
@@ -221,18 +223,40 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares.
-func declaredDistributions(buildDir string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range manifestFiles(buildDir) {
-		deps, _ := parseManifest(m)
+// declares. complete is false when a manifest fails to parse or a file declares
+// dependencies version resolution does not read (the same surfaces that leave a version
+// unresolved): a name only that file holds is missing, so an import of it reaches no
+// boundary node, and the call graph's partiality has to say so.
+func declaredDistributions(buildDir string) (names map[string]bool, complete bool) {
+	names, complete = map[string]bool{}, true
+	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
 			if n := normalizePyCoordinate(d.Coordinate); n != "" {
-				out[n] = true
+				names[n] = true
 			}
 		}
 	}
-	return out
+	for _, f := range walkManifests(buildDir, isVersionCandidate) {
+		if !isManifest(filepath.Base(f)) {
+			if unreadSurfaceVetoes(f) {
+				complete = false
+			}
+			continue
+		}
+		deps, _, ok := parseManifest(f)
+		if !ok {
+			complete = false
+		}
+		add(deps)
+		if filepath.Base(f) == "pyproject.toml" {
+			// The lexical [project] reader still yields names from a file TOML rejects.
+			if data, err := os.ReadFile(f); err == nil {
+				lexical, _ := parsePyproject(data)
+				add(lexical)
+			}
+		}
+	}
+	return names, complete
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code

@@ -325,6 +325,69 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 	}
 }
 
+// TestCallGraph_ManifestReadInPartIsToolFailure: the PEP 503 fallback maps an import to a
+// distribution only when a manifest declares it, so a manifest that fails to parse, or a
+// file declaring dependencies the lane does not read, can drop a boundary node; the call
+// graph then carries tool_failure. A pyproject TOML rejects still lends its lexical
+// [project] names to the fallback.
+func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
+	const app = "import acmelib\n\ndef fetch(u):\n    return acmelib.get(u)\n"
+	const edge = "pypi:acmelib#acmelib.get"
+	cases := []struct {
+		name        string
+		files       map[string]string
+		toolFailure bool
+		boundary    bool
+	}{
+		{
+			name:     "clean requirements",
+			files:    map[string]string{"requirements.txt": "acmelib==1.0\n", "app.py": app},
+			boundary: true,
+		},
+		{
+			name: "unparseable requirements",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\nhttps://example.com/pkg.whl\n",
+				"app.py":           app,
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "pyproject TOML rejects keeps lexical names",
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"acmelib>=1\"]\n\n[tool.broken\n",
+				"app.py":         app,
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "setup.py install_requires is unread",
+			files: map[string]string{
+				"setup.py": "from setuptools import setup\nsetup(install_requires=[\"acmelib\"])\n",
+				"app.py":   app,
+			},
+			toolFailure: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonToolFailure); got != c.toolFailure {
+				t.Errorf("tool_failure = %v, want %v (reasons %v)", got, c.toolFailure, res.Partiality.Reasons)
+			}
+			caller := funcSCIP("app", nil, "fetch", 1)
+			if got := hasEdge(res.Edges, caller, edge); got != c.boundary {
+				t.Errorf("boundary edge %s -> %s present = %v, want %v\nedges: %+v", caller, edge, got, c.boundary, res.Edges)
+			}
+		})
+	}
+}
+
 // TestCallGraph_ModuleLevelCallsGetModuleInitCaller: calls at module (and class-body)
 // level run at import time; they are attributed to a synthetic module-init caller that
 // is a root, so top-level `app = create_app()` and `jwt.decode(...)` produce edges.

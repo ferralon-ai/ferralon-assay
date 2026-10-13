@@ -28,6 +28,9 @@ type program struct {
 	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
 	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
 	dynamicImportOpaque bool
+	// declaredIncomplete records that a manifest could not be read in full, so an import
+	// of a distribution only it declares names no boundary node.
+	declaredIncomplete bool
 }
 
 // resolveCallee maps a lexical call (leaf name + explicit-argument arity) to the SCIP id
@@ -152,9 +155,11 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
+	declared, declaredComplete := declaredDistributions(buildDir)
+	prog.declaredIncomplete = !declaredComplete
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
-		declared:   declaredDistributions(buildDir),
+		declared:   declared,
 		firstParty: firstPartyTops(modules),
 	}
 	return prog, nil
@@ -275,11 +280,13 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 // callGraphPartiality declares the call graph ALWAYS partial for Python: the lexical
 // scanner categorically cannot resolve dynamic dispatch / getattr / decorator-rewriting /
 // monkeypatching, so dynamic_dispatch is a standing reason. Read failures and skipped
-// constructs add their own machine-readable reasons.
+// constructs add their own machine-readable reasons; a manifest read only in part counts as
+// a read failure, since the boundary nodes for the distributions it alone declares are
+// missing.
 func callGraphPartiality(prog *program) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
 	reasons = append(reasons, dynamicImportReasons(prog.dynamicImportOpaque)...)
-	if prog.readFailed {
+	if prog.readFailed || prog.declaredIncomplete {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if prog.skipped {

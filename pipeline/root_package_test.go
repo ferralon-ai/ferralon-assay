@@ -513,13 +513,15 @@ func TestGradleRootPackage_NameOnlyInACommentPublishesNothing(t *testing.T) {
 }
 
 // TestMavenRootPackage_VersionWriters: the version is read only when every writer of it is in the
-// checkout: no core extension from .mvn, no <extensions> in the POM or any parent, and every parent
-// a POM in the checkout whose coordinates match the declared ones.
+// checkout: no core extension from .mvn, no Maven wrapper fetching anything but a stock
+// distribution, no <extensions> in the POM or any parent, and every parent a POM in the checkout
+// whose coordinates match the declared ones.
 func TestMavenRootPackage_VersionWriters(t *testing.T) {
 	const (
-		child  = "<project><parent><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></parent><artifactId>a</artifactId></project>"
-		parent = "<project><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></project>"
-		single = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1.2.3</version></project>"
+		child     = "<project><parent><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></parent><artifactId>a</artifactId></project>"
+		parent    = "<project><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></project>"
+		single    = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1.2.3</version></project>"
+		mvnwStock = "distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip\n"
 	)
 	cases := []struct {
 		name  string
@@ -545,6 +547,16 @@ func TestMavenRootPackage_VersionWriters(t *testing.T) {
 		{"a core extension named in .mvn/maven.config", map[string]string{"pom.xml": single, ".mvn/maven.config": "-Dmaven.ext.class.path=ext.jar\n"}, "", ""},
 		{"a core extension named in .mvn/jvm.config", map[string]string{"pom.xml": single, ".mvn/jvm.config": "-Dmaven.ext.class.path=ext.jar\n"}, "", ""},
 		{"a core extension in a .mvn above the project", map[string]string{"a/pom.xml": single, ".mvn/extensions.xml": "<extensions/>"}, "a", ""},
+		{"a stock Maven wrapper", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock}, "", "1.2.3"},
+		{"a stock Maven wrapper with CRLF line endings and its JAR", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": strings.ReplaceAll("# Licensed to the ASF\nwrapperVersion=3.3.2\n"+mvnwStock+"wrapperUrl=https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.3.2/maven-wrapper-3.3.2.jar\n", "\n", "\r\n")}, "", "1.2.3"},
+		{"a Maven wrapper fetching a custom distribution", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.example.com/apache-maven-3.9.9-custom-bin.zip\n"}, "", ""},
+		{"a Maven wrapper fetching a custom wrapper JAR", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "wrapperUrl=https://repo.example.com/maven-wrapper-3.3.2.jar\n"}, "", ""},
+		{"a Maven wrapper naming two distributions", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "distributionUrl = https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.8.8/apache-maven-3.8.8-bin.zip\n"}, "", ""},
+		{"a Maven wrapper with an escaped key", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "distribution\\Url=https://repo.example.com/apache-maven-3.9.9-bin.zip\n"}, "", ""},
+		{"a Maven wrapper with a continued line", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\\\n" + mvnwStock}, "", ""},
+		{"a Maven wrapper properties file that cannot be read", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties/x": ""}, "", ""},
+		{"a Maven wrapper with no distribution", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\n"}, "", ""},
+		{"a custom Maven wrapper above a .mvn of the project's own", map[string]string{"a/pom.xml": single, "a/.mvn/maven.config": "-T 4\n", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.example.com/apache-maven-3.9.9-custom-bin.zip\n"}, "a", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

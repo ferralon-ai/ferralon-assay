@@ -504,6 +504,8 @@ func (p mavenPOM) coordinates() (group, version string) {
 // reader sees in the checkout:
 //   - the .mvn directory Maven uses (the first at or above buildDir) loads no core extension:
 //     no extensions.xml, and no maven.config or jvm.config naming maven.ext.class.path;
+//   - every Maven wrapper at or above buildDir fetches a stock distribution from Maven Central (a
+//     custom one can load core extensions from its lib/ext);
 //   - no POM in the parent chain has an <extensions> element, since a build extension or a plugin
 //     with extensions can set the version once projects are read;
 //   - every parent resolves to a POM inside the checkout, at its relativePath (default
@@ -512,7 +514,7 @@ func (p mavenPOM) coordinates() (group, version string) {
 //
 // Anything that cannot be read counts as a writer.
 func mavenVersionWritersVisible(ctx context.Context, buildDir, pomPath string, data []byte, pom mavenPOM) bool {
-	if mavenCoreExtensions(buildDir) {
+	if mavenCoreExtensions(buildDir) || !stockMavenWrappers(buildDir) {
 		return false
 	}
 	root := buildDir
@@ -596,6 +598,60 @@ func mavenCoreExtensions(buildDir string) bool {
 	}
 }
 
+// stockMavenWrappers reports whether every .mvn/wrapper/maven-wrapper.properties at or above
+// buildDir fetches a stock distribution, and the wrapper JAR, if it names one, from Maven Central.
+// Every one is checked, not only the first, since mvnw reads the properties beside wherever it
+// sits. The file must hold nothing but plain key=value lines with known keys: the mvnw script and
+// the wrapper JAR parse it differently, and only that form reads the same to both.
+func stockMavenWrappers(buildDir string) bool {
+	dir, err := filepath.Abs(buildDir)
+	if err != nil {
+		return false
+	}
+	for {
+		path := filepath.Join(dir, ".mvn", "wrapper", "maven-wrapper.properties")
+		if data, err := os.ReadFile(path); err != nil {
+			if !absent(path) {
+				return false
+			}
+		} else if !stockMavenWrapper(data) {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return true
+		}
+		dir = parent
+	}
+}
+
+func stockMavenWrapper(data []byte) bool {
+	seen := map[string]bool{}
+	for line := range strings.Lines(string(data)) {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || trimmed[0] == '#' || trimmed[0] == '!' {
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || seen[key] || strings.HasSuffix(value, "\\") || !mavenWrapperKey.MatchString(key) {
+			return false
+		}
+		seen[key] = true
+		switch key {
+		case "distributionUrl":
+			if !mavenStockDist.MatchString(value) {
+				return false
+			}
+		case "wrapperUrl":
+			if !mavenStockWrapper.MatchString(value) {
+				return false
+			}
+		}
+	}
+	return seen["distributionUrl"]
+}
+
 // gradleRootPackage reads group and version from the root build script and the project name from
 // settings. A project with no literal top-level group, or no top-level rootProject.name literal,
 // publishes no coordinate the scan can name. The version is read only where every statement that
@@ -639,6 +695,9 @@ var (
 	gradleRepository    = regexp.MustCompile(`^(mavenCentral|google|gradlePluginPortal|mavenLocal)\s*\(\s*\)$`)
 	gradleStockDist     = regexp.MustCompile(`^https://services\.gradle\.org/distributions/gradle-[0-9][0-9A-Za-z.-]*-(bin|all)\.zip$`)
 	gradleDistURL       = regexp.MustCompile(`(?m)^[ \t\f]*distributionUrl[ \t\f]*[=:][ \t\f]*(.*?)[ \t\f\r]*$`)
+	mavenWrapperKey     = regexp.MustCompile(`^(distributionUrl|distributionSha256Sum|distributionType|wrapperUrl|wrapperSha256Sum|wrapperVersion)$`)
+	mavenStockDist      = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/apache-maven/[0-9][0-9A-Za-z.-]*/apache-maven-[0-9][0-9A-Za-z.-]*-bin\.(zip|tar\.gz)$`)
+	mavenStockWrapper   = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/wrapper/maven-wrapper/[0-9][0-9A-Za-z.-]*/maven-wrapper-[0-9][0-9A-Za-z.-]*\.jar$`)
 )
 
 // readGradleScript reads a Groovy or Kotlin build script; ok is false when it does not lex.

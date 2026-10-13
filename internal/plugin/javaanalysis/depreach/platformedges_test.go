@@ -10,16 +10,18 @@ const (
 	svc         = "com/acme/Svc"
 	transformer = "com/acme/Transformer"
 	applyDesc   = "(Ljava/lang/String;)Ljava/lang/Object;"
-	implName    = "lambda$new$0"
+	implName    = "lambda$make$0"
 )
 
-// lambdaSvc is `class Svc { Transformer t = s -> Danger.parse(s); void handle(String
-// in) { t.apply(in); } }` with the given call in handle and lambda site in <init>.
-// The site lives only in the constructor, so a search from handle never reaches it.
+// lambdaSvc is `class Svc { static Transformer make() { return s -> Danger.parse(s); }
+// void handle(String in) { ... } }` with the given call in handle and lambda site in
+// make. The site lives only in make, which nothing calls, so a search from handle
+// (which also runs Svc's initializers and constructor) never reaches it.
 func lambdaSvc(call classfile.Edge, site classfile.Edge, extra ...classfile.Class) []classfile.Class {
 	return append([]classfile.Class{
 		class(svc, "java/lang/Object", nil,
-			meth(svc, "<init>", "()V", site),
+			meth(svc, "<init>", "()V"),
+			staticMeth(svc, "make", "()L"+transformer+";", site),
 			meth(svc, "handle", "(Ljava/lang/String;)V", call),
 			staticMeth(svc, implName, applyDesc, sinkCall()...)),
 		iface(transformer,
@@ -51,7 +53,7 @@ func TestReach_LambdaDispatchFromAnyRoot(t *testing.T) {
 	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
 	callApply := edge(classfile.EdgeInterface, transformer, "apply", applyDesc)
 	runReachCases(t, []reachCase{
-		{name: "lambda created in the constructor, applied from a handler", ingress: handle, want: ReachableCandidate,
+		{name: "lambda created elsewhere, applied from a handler", ingress: handle, want: ReachableCandidate,
 			classes: lambdaSvc(callApply, transformerSite(staticImpl))},
 		{name: "call through a superinterface", ingress: handle, want: ReachableCandidate,
 			classes: func() []classfile.Class {

@@ -361,7 +361,13 @@ func TestReach_PlatformBodyRunsOnThis(t *testing.T) {
 		}},
 		// Selection finds Object's hashCode on the superclass chain before any
 		// superinterface (JVMS §5.4.6), so the unopened interface cannot supply it.
-		{name: "super.toString into Object on a class with an unopened interface", want: NotExploitable, ingress: mref("com/acme/Tagged", "trigger", "()V"), classes: []classfile.Class{
+		// The call comes from another class: a search from Tagged itself first
+		// initializes Tagged, and the unopened interface's initializer is a hazard.
+		{name: "toString into Object on a class with an unopened interface", want: NotExploitable, classes: []classfile.Class{
+			class("com/acme/Tagged", "java/lang/Object", []string{unopened}),
+			app(edge(classfile.EdgeVirtual, "com/acme/Tagged", "toString", toStr)),
+		}},
+		{name: "a search from a class with an unopened interface initializes it", want: Undetermined, why: "unloaded_dependency: static initializer of unopened " + unopened, ingress: mref("com/acme/Tagged", "trigger", "()V"), classes: []classfile.Class{
 			class("com/acme/Tagged", "java/lang/Object", []string{unopened},
 				meth("com/acme/Tagged", "trigger", "()V", edge(classfile.EdgeSpecial, "java/lang/Object", "toString", toStr))),
 		}},

@@ -484,6 +484,7 @@ func TestGradle_AncestorBuild(t *testing.T) {
 		files map[string]string // under the checkout; the build directory is svc
 		setup func(t *testing.T, checkout string)
 		link  bool // run on a symlink to svc placed outside the checkout
+		under bool // run on a symlink to svc placed beside a settings script outside the checkout
 		safe  bool
 		multi bool
 	}{
@@ -491,6 +492,7 @@ func TestGradle_AncestorBuild(t *testing.T) {
 		{name: "U1k a kts settings script above", files: map[string]string{"settings.gradle.kts": "include(\"svc\")\n", "build.gradle.kts": above}, multi: true},
 		{name: "a settings script two levels above", files: map[string]string{"../settings.gradle": "include 'repo:svc'\n"}, multi: true},
 		{name: "a settings script above the real path of a linked build directory", files: map[string]string{"settings.gradle": "include 'svc'\n", "build.gradle": above}, link: true, multi: true},
+		{name: "a settings script above the path the build is given, through a link", under: true, multi: true},
 		{name: "R5-B3 a settings script above at mode 0, never opened", files: map[string]string{"settings.gradle": "include 'svc'\n"},
 			setup: func(t *testing.T, checkout string) { chmod(t, filepath.Join(checkout, "settings.gradle"), 0) }, multi: true},
 		{name: "R5-B3 a FIFO named settings.gradle above, never opened",
@@ -521,6 +523,13 @@ func TestGradle_AncestorBuild(t *testing.T) {
 			}
 			if tt.link {
 				link := filepath.Join(t.TempDir(), "svc")
+				mustSymlink(t, dir, link)
+				dir = link
+			}
+			if tt.under {
+				outer := filepath.Join(t.TempDir(), "outer")
+				writeFile(t, filepath.Join(outer, "settings.gradle"), "include 'svc'\n")
+				link := filepath.Join(outer, "svc")
 				mustSymlink(t, dir, link)
 				dir = link
 			}

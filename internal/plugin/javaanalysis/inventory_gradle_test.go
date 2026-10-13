@@ -530,3 +530,26 @@ func TestGradle_LockPinsRuntimeClasspath(t *testing.T) {
 		})
 	}
 }
+
+// The SAFE set's own dependencyLocking check rejects a second lock mode before this reader runs,
+// so the reader's rejection is pinned here directly.
+func TestGradleLockingBody(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		ok, strict bool
+	}{
+		{"lockAllConfigurations alone", "\n    lockAllConfigurations()\n", true, false},
+		{"with STRICT", "lockAllConfigurations()\nlockMode = LockMode.STRICT", true, true},
+		{"with STRICT set(), on one line", "lockMode.set(LockMode.STRICT); lockAllConfigurations()", true, true},
+		{"STRICT beside LENIENT", "lockAllConfigurations()\nlockMode = LockMode.STRICT\nlockMode = LockMode.LENIENT", false, false},
+		{"LENIENT alone", "lockAllConfigurations()\nlockMode = LockMode.LENIENT", false, false},
+		{"lockAllConfigurations twice", "lockAllConfigurations()\nlockAllConfigurations()", false, false},
+		{"STRICT without lockAllConfigurations", "lockMode = LockMode.STRICT", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if ok, strict := gradleLockingBody(tt.body); ok != tt.ok || strict != tt.strict {
+				t.Errorf("gradleLockingBody = (%v, %v), want (%v, %v)", ok, strict, tt.ok, tt.strict)
+			}
+		})
+	}
+}

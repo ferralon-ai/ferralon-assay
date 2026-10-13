@@ -86,7 +86,7 @@ func TestEvalProperty(t *testing.T) {
 		{"env.CI", "true", triUnknown},
 		{"!empty", "", triTrue},
 		{"user.home", "!x", triUnknown},
-		{"!", "", triFalse},
+		{"!", "", triUnknown},
 	}
 	for _, tt := range tests {
 		if got := evalProperty(tt.name, tt.value, env); got != tt.want {
@@ -169,9 +169,9 @@ func TestEvalConditions_AndAndUnknownElements(t *testing.T) {
 		{"os undecided", mvnActivation{OS: true}, triUnknown},
 		{"os undecided and false", mvnActivation{OS: true, JDK: "17"}, triFalse},
 		{"unknown element", mvnActivation{Other: true, JDK: "11"}, triUnknown},
-		{"file undecided", mvnActivation{FileExists: "pom.xml"}, triUnknown},
-		{"missing file undecided", mvnActivation{FileMissing: "absent"}, triUnknown},
-		{"file undecided and false", mvnActivation{FileExists: "pom.xml", JDK: "17"}, triFalse},
+		{"file undecided", mvnActivation{File: true}, triUnknown},
+		{"file undecided and false", mvnActivation{File: true, JDK: "17"}, triFalse},
+		{"undecidable beats a false condition", mvnActivation{Undecidable: true, JDK: "17"}, triUnknown},
 		{"no condition", mvnActivation{}, triFalse},
 	}
 	for _, tt := range tests {
@@ -414,17 +414,37 @@ func depProfileFixture(t *testing.T, activation, dep string) (dir, m2 string) {
 	return dir, m2
 }
 
-func TestMavenProfile_DependencyPOMNonPropagatingDepCostsNothing(t *testing.T) {
-	for name, dep := range map[string]string{
-		"system":   `<dependency><groupId>com.sun</groupId><artifactId>tools</artifactId><version>1.8</version><scope>system</scope><systemPath>${java.home}/../lib/tools.jar</systemPath></dependency>`,
-		"optional": `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>true</optional></dependency>`,
-		"test":     `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>test</scope></dependency>`,
+// A dependency's profile that adds a coordinate Maven's resolver drops before mediation costs
+// nothing; one that re-declares a coordinate the chain already declares, or adds one the resolver
+// keeps (a non-optional system dependency), changes the graph.
+func TestMavenProfile_DependencyPOMProfileDependencyAllowList(t *testing.T) {
+	const bodyX = `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version></dependency>`
+	for _, tt := range []struct {
+		name, body, dep string
+		complete        bool
+	}{
+		{"new optional", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>true</optional></dependency>`, true},
+		{"new optional, any case", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>True</optional></dependency>`, true},
+		{"new test", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>test</scope></dependency>`, true},
+		{"new provided", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>provided</scope></dependency>`, true},
+		{"new optional system", "", `<dependency><groupId>com.sun</groupId><artifactId>tools</artifactId><version>1.8</version><scope>system</scope><systemPath>${java.home}/../lib/tools.jar</systemPath><optional>true</optional></dependency>`, true},
+		{"new system", "", `<dependency><groupId>com.sun</groupId><artifactId>tools</artifactId><version>1.8</version><scope>system</scope><systemPath>${java.home}/../lib/tools.jar</systemPath></dependency>`, false},
+		{"re-declared as test", bodyX, `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>test</scope></dependency>`, false},
+		{"re-declared as optional", bodyX, `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>true</optional></dependency>`, false},
+		{"interpolated optional", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>${opt}</optional></dependency>`, false},
+		{"interpolated coordinate", "", `<dependency><groupId>${g}</groupId><artifactId>x</artifactId><version>3.0</version><optional>true</optional></dependency>`, false},
 	} {
-		t.Run(name, func(t *testing.T) {
-			dir, m2 := depProfileFixture(t, `<jdk>1.8</jdk>`, dep)
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := depProfileFixture(t, `<jdk>1.8</jdk>`, tt.dep)
+			if tt.body != "" {
+				writeCachePOM(t, m2, "org.top", "top", "1.0", `<project><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version>
+<dependencies>`+tt.body+`</dependencies>
+<profiles><profile><id>tp</id><activation><jdk>1.8</jdk></activation>
+<dependencies>`+tt.dep+`</dependencies></profile></profiles></project>`)
+			}
 			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
-			if !inv.Partiality.Complete {
-				t.Errorf("a dependency's profile adding a %s dep cannot reach this graph; got %+v", name, inv.Partiality)
+			if inv.Partiality.Complete != tt.complete {
+				t.Errorf("complete = %v, want %v; got %+v", inv.Partiality.Complete, tt.complete, inv.Partiality)
 			}
 		})
 	}
@@ -531,6 +551,14 @@ func TestMavenProfile_UnboundedTouches(t *testing.T) {
 			extra: func(t *testing.T, m2 string) {
 				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><parent><groupId>org.bomparent</groupId><artifactId>bp</artifactId><version>1.0</version></parent>
 <groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
+			},
+		},
+		{
+			name:    "import BOM whose undecided profile holds an element off the list",
+			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
+			extra: func(t *testing.T, m2 string) {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<profiles><profile><id>bp</id><activation><jdk>11</jdk></activation><futureElement/></profile></profiles></project>`)
 			},
 		},
 		{

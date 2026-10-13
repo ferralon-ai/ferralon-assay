@@ -3,34 +3,42 @@ package javaanalysis
 // inventory_maven_profile.go — Maven profile activation, evaluated three-valued: a profile is
 // active, inactive, or undecided. Only facts the build actually fixes are used.
 //
+// Every reader here is an allow-list: what it doesn't fully decide leaves the profile undecided.
+//
 // Explicit selection comes first, as in Maven's DefaultProfileSelector: a profile the invocation
 // deactivates is off, one it activates is on. The invocation's selection (its -P list together with
 // settings.xml <activeProfiles>) is a run condition the caller states (TargetEnv "maven.profiles");
 // Assay never infers it. Until it is stated, every profile of the reactor's POMs and their parents
 // is undecided, since -P or settings.xml can switch any of them on or off. A profile .mvn/maven.config
-// selects or deselects is undecided too, and every one is when that file can't be read in full.
-// Dependency POMs and imported BOMs never see -P, so explicit selection doesn't apply to them.
+// selects or deselects is undecided too, and every one is when .mvn holds anything off the
+// readers' allow-lists (see withMavenConfig). Dependency POMs and imported BOMs never see -P, so
+// explicit selection doesn't apply to them.
 //
-// Otherwise a profile's conditions are ANDed:
+// Otherwise a profile's conditions are ANDed. Maven counts a condition when its element is present,
+// empty or not, so each present element is one:
 //   - <jdk> against the java.version of the JVM running Maven (what `mvn -v` reports), as the
 //     caller provides it (TargetEnv "java.version"); not the compile target or a toolchains JDK.
-//     Without it every <jdk> condition is undecided;
-//   - <property> against the values the caller states in TargetEnv; a property it doesn't state
-//     is undecided, never assumed absent, since a -D on the command line or a settings.xml
-//     profile can set it;
-//   - <file>, <os> and any activation element this reader does not know are always undecided: a
-//     file test is decided by the tree Maven saw when it started, which the build or earlier CI
-//     steps may have changed since.
+//     Without it, or when .mvn defines java.version, every <jdk> condition is undecided;
+//   - <property> against the values the caller states in TargetEnv; a property it doesn't state,
+//     or one .mvn defines, is undecided, never assumed absent, since a -D on the command line or a
+//     settings.xml profile can set it;
+//   - <file>, <os>, an empty <jdk>, and any activation element or <property> child this reader
+//     does not know are always undecided: a file test is decided by the tree Maven saw when it
+//     started, which the build or earlier CI steps may have changed since;
+//   - a second <activation>, a repeated condition, a <property> without exactly one non-empty name,
+//     or a value holding an interpolation expression leaves the whole profile undecided.
 //
 // An undecided profile is never applied, and a dependency it could re-version, direct or
 // transitive, is left with an unresolved version rather than the one it has without the profile.
-// It costs a profile_activation reason unless it provably changes nothing: no dependency or
-// managed version the graph consumes, no property such a declaration's coordinates reference, no
-// build section, module outside the reactor, or repository. The reason is scoped to the
-// dependencies the profile can add or re-version plus their closure, and to first-party code and
-// its closure, since code nobody loaded can call back into the build. That scope is unbounded
-// whenever any of it cannot be read from the cache, or the profile has a build section, an
-// outside module or a repository. It is mirrored run-wide.
+// It costs a profile_activation reason unless every element in it is on profileElements' inert
+// list for its POM, or is modelled and provably changes nothing: no property, and no consequential
+// declaration (see consequential), which in a reactor POM is any dependency or managed version at
+// all, and in a dependency POM one the resolver keeps or management for a coordinate the POM
+// declares. The reason is scoped to the dependencies the profile can add or re-version plus their
+// closure, and to first-party code and its closure, since code nobody loaded can call back into
+// the build. That scope is unbounded whenever any of it cannot be read from the cache, the profile
+// sets a property, holds an element off the list, or has a build section, an outside module or a
+// repository. It is mirrored run-wide.
 
 import (
 	"errors"
@@ -55,13 +63,20 @@ const targetEnvJavaVersion = "java.version"
 // "," states that nothing is selected; an absent or blank value is no statement at all.
 const targetEnvMavenProfiles = "maven.profiles"
 
-// The .mvn/maven.config facts resolveMaven reads from the checkout ride to profile evaluation on
-// a copy of TargetEnv under these keys. They start with a NUL, which no property name in a POM
-// can contain, so a <property> activation never reads them.
+// The .mvn facts resolveMaven reads from the checkout ride to profile evaluation on a copy of
+// TargetEnv under these keys. They start with a NUL, which no property name in a POM can contain,
+// so a <property> activation never reads them.
 const (
 	mavenConfigProfiles = "\x00.mvn/maven.config profiles" // comma-joined ids it selects or deselects
-	mavenConfigUnknown  = "\x00.mvn/maven.config unknown"  // set when its selection can't be read in full
+	mavenConfigUnknown  = "\x00.mvn unknown"               // set when .mvn holds anything this reader doesn't decide
+	mavenConfigDefine   = "\x00.mvn define "               // prefix of each property name maven.config or jvm.config sets
 )
+
+// configDefines reports whether .mvn/maven.config or .mvn/jvm.config sets the property name.
+func configDefines(targetEnv map[string]string, name string) bool {
+	_, ok := targetEnv[mavenConfigDefine+name]
+	return ok
+}
 
 type tri int8
 
@@ -188,93 +203,334 @@ func profileToken(tok string) (id string, off, ok bool) {
 	return tok, off, tok != ""
 }
 
-// withMavenConfig returns targetEnv plus what buildDir's .mvn/maven.config says about profile
-// selection. Maven reads that file from the first .mvn directory at or above the directory it
-// starts in; every -P or --activate-profiles in it counts. A file that can't be read, or a
-// selection in it this reader can't parse, makes every reactor profile undecided. So does a
-// maven.config nested between buildDir and a reactor POM (nestedMavenConfig): a build started
-// there reads that file instead, and it isn't read here.
+// withMavenConfig returns targetEnv plus what the build's .mvn directory says. Maven reads
+// .mvn/maven.config and .mvn/jvm.config from the first .mvn directory at or above the directory
+// it starts in. Each is read against an allow-list: a profile selection (-P), a property
+// definition (-D), and options known to change neither which profiles are active nor what the
+// dependency graph is. Anything else, a file that can't be read, or a .mvn/extensions.xml makes
+// the reader's result unknown: every reactor profile is undecided, and so is every <jdk> and
+// <property> condition anywhere. A property it defines leaves every condition on that property
+// undecided, and a defined java.version every <jdk> condition. A .mvn nested between buildDir and
+// a reactor POM counts too (nestedMvn): a build started there reads it instead.
 func withMavenConfig(targetEnv map[string]string, buildDir string, pomPaths []string) map[string]string {
-	ids, unknown, found := readMavenConfig(buildDir)
-	if nestedMavenConfig(buildDir, pomPaths) {
-		unknown, found = true, true
-	}
-	if !found || (len(ids) == 0 && !unknown) {
+	f := readMvnDir(buildDir)
+	nested := nestedMvn(buildDir, pomPaths)
+	f.defines = append(f.defines, nested.defines...)
+	f.unknown = f.unknown || nested.unknown
+	if len(f.ids) == 0 && len(f.defines) == 0 && !f.unknown {
 		return targetEnv
 	}
-	out := make(map[string]string, len(targetEnv)+2)
+	out := make(map[string]string, len(targetEnv)+len(f.defines)+2)
 	for k, v := range targetEnv {
 		out[k] = v
 	}
-	if len(ids) > 0 {
-		out[mavenConfigProfiles] = strings.Join(ids, ",")
+	if len(f.ids) > 0 {
+		out[mavenConfigProfiles] = strings.Join(f.ids, ",")
 	}
-	if unknown {
+	for _, k := range f.defines {
+		out[mavenConfigDefine+k] = "true"
+	}
+	if f.unknown {
 		out[mavenConfigUnknown] = "true"
 	}
 	return out
 }
 
-// nestedMavenConfig reports whether a .mvn/maven.config is present, or can't be ruled absent, in
-// a directory below buildDir that holds a reactor POM or lies between one and buildDir.
-func nestedMavenConfig(buildDir string, pomPaths []string) bool {
+// mvnFacts is what a .mvn directory's files say about profile activation.
+type mvnFacts struct {
+	ids     []string // profiles maven.config selects or deselects
+	defines []string // properties maven.config or jvm.config sets
+	unknown bool     // something there this reader doesn't decide
+}
+
+// nestedMvn reads each .mvn directory below buildDir in a directory that holds a reactor POM or
+// lies between one and buildDir. A maven.config or extensions.xml there, or one that can't be
+// ruled absent, is unknown; a jvm.config there is read like the top one's.
+func nestedMvn(buildDir string, pomPaths []string) mvnFacts {
+	var f mvnFacts
 	root := filepath.Clean(buildDir)
 	seen := map[string]bool{}
 	for _, p := range pomPaths {
 		for dir := filepath.Dir(filepath.Clean(p)); dir != root && !seen[dir]; dir = filepath.Dir(dir) {
 			seen[dir] = true
 			if rel, err := filepath.Rel(root, dir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return true // not below buildDir: what governs it isn't known
+				f.unknown = true // not below buildDir: what governs it isn't known
+				return f
 			}
-			_, err := os.Lstat(filepath.Join(dir, ".mvn", "maven.config"))
-			if err == nil || !(os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)) {
-				return true
+			mvn := filepath.Join(dir, ".mvn")
+			if !ruledAbsent(filepath.Join(mvn, "maven.config")) || !ruledAbsent(filepath.Join(mvn, "extensions.xml")) {
+				f.unknown = true
+				return f
 			}
+			defines, unknown := readJVMConfig(filepath.Join(mvn, "jvm.config"))
+			f.defines = append(f.defines, defines...)
+			f.unknown = f.unknown || unknown
+		}
+	}
+	return f
+}
+
+// ruledAbsent reports whether path provably doesn't exist.
+func ruledAbsent(path string) bool {
+	_, err := os.Lstat(path)
+	return err != nil && (os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR))
+}
+
+func readMvnDir(buildDir string) mvnFacts {
+	dir, err := filepath.Abs(buildDir)
+	if err != nil {
+		return mvnFacts{unknown: true}
+	}
+	for {
+		if fi, err := os.Stat(filepath.Join(dir, ".mvn")); err == nil && fi.IsDir() {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return mvnFacts{}
+		}
+		dir = parent
+	}
+	mvn := filepath.Join(dir, ".mvn")
+	f := readMavenConfig(filepath.Join(mvn, "maven.config"))
+	defines, unknown := readJVMConfig(filepath.Join(mvn, "jvm.config"))
+	f.defines = append(f.defines, defines...)
+	f.unknown = f.unknown || unknown
+	// Seam: sound's resolver allow-list (fix/resolver-version-allowlist) adds mavenCoreExtensions,
+	// which also reads maven.ext.class.path; fold this check into it once that lands on main.
+	if !ruledAbsent(filepath.Join(mvn, "extensions.xml")) {
+		f.unknown = true // a core extension can rewrite the model, activation included
+	}
+	return f
+}
+
+// readMavenConfig reads .mvn/maven.config. Maven 3.9 takes each line as one argument and skips
+// blank and # lines; Maven 3.8 and earlier split the file on whitespace. A line is read only when
+// both agree on it: a comment without an option on it, a profile selection in the shapes
+// profileLine models, or one option from configLine's allow-list.
+func readMavenConfig(path string) mvnFacts {
+	var f mvnFacts
+	data, err := readMavenConfigFile(path)
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+		return f
+	}
+	if err != nil {
+		f.unknown = true
+		return f
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.ContainsRune(line, '\ufeff') {
+			f.unknown = true // a byte-order mark hides what the line's first token is
+			continue
+		}
+		toks := strings.Fields(line)
+		if len(toks) == 0 {
+			continue
+		}
+		if strings.HasPrefix(toks[0], "#") {
+			if hasOption(toks) {
+				f.unknown = true // Maven 3.8 reads the options on a comment line
+			}
+			continue
+		}
+		if list, selects, ok := profileLine(toks); selects {
+			if !ok {
+				f.unknown = true
+				continue
+			}
+			f.ids = append(f.ids, list...)
+			continue
+		}
+		key, ok := configLine(toks)
+		switch {
+		case !ok:
+			f.unknown = true
+		case key != "":
+			f.defines = append(f.defines, key)
+		}
+	}
+	return f
+}
+
+func hasOption(toks []string) bool {
+	for _, t := range toks {
+		if strings.HasPrefix(strings.TrimLeft(t, `"'`), "-") {
+			return true
 		}
 	}
 	return false
 }
 
-func readMavenConfig(buildDir string) (ids []string, unknown, found bool) {
-	dir, err := filepath.Abs(buildDir)
-	if err != nil {
-		return nil, true, true
+// inertFlags are the maven.config options, exactly as written, that take no value and change
+// neither profile activation nor the dependency graph. Abbreviated long options are not on it:
+// which option an abbreviation means depends on the Maven version's option set.
+var inertFlags = map[string]bool{
+	"-B": true, "--batch-mode": true,
+	"-q": true, "--quiet": true,
+	"-X": true, "--debug": true,
+	"-e": true, "--errors": true,
+	"-o": true, "--offline": true,
+	"-U": true, "--update-snapshots": true,
+	"-nsu": true, "--no-snapshot-updates": true,
+	"-N": true, "--non-recursive": true,
+	"-C": true, "--strict-checksums": true,
+	"-c": true, "--lax-checksums": true,
+	"-fae": true, "--fail-at-end": true,
+	"-ff": true, "--fail-fast": true,
+	"-fn": true, "--fail-never": true,
+	"-V": true, "--show-version": true,
+	"-v": true, "--version": true,
+	"-ntp": true, "--no-transfer-progress": true,
+	"-am": true, "--also-make": true,
+	"-amd": true, "--also-make-dependents": true,
+	"-h": true, "--help": true,
+}
+
+// inertValueOptions are the maven.config options that take a value and change neither profile
+// activation nor the dependency graph: thread count, builder, log file, toolchains, and which
+// reactor modules run. attached is whether a short form may carry its value attached ("-T4"):
+// it may only when no other Maven option's name starts with this one's, so Maven's longest-prefix
+// match can't pick another option (-l is excluded for -llr).
+var inertValueOptions = []struct {
+	short, long string
+	attached    bool
+}{
+	{"-T", "--threads", true},
+	{"-b", "--builder", true},
+	{"-l", "--log-file", false},
+	{"-t", "--toolchains", true},
+	{"-gt", "--global-toolchains", true},
+	{"-rf", "--resume-from", true},
+	{"-pl", "--projects", true},
+}
+
+// configLine reads one maven.config line that selects no profile. ok is true only for a line
+// holding one option from the allow-list: an inert flag, an inert option with its value attached,
+// after "=", or as the line's only other token, or a property definition (-Dk=v, -Dk, -D k=v,
+// --define=k=v, --define k=v) whose name is literal; key is that name. Anything else, settings
+// (-s, -gs) and an alternate POM (-f) among it, is not ok.
+func configLine(toks []string) (key string, ok bool) {
+	t := toks[0]
+	if key, isDefine := defineOption(toks); isDefine {
+		return key, key != ""
 	}
-	var path string
-	for {
-		if fi, err := os.Stat(filepath.Join(dir, ".mvn")); err == nil && fi.IsDir() {
-			path = filepath.Join(dir, ".mvn", "maven.config")
-			break
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return nil, false, false
-		}
-		dir = parent
+	if inertFlags[t] {
+		return "", len(toks) == 1
 	}
+	for _, o := range inertValueOptions {
+		switch {
+		case t == o.short || t == o.long:
+			return "", len(toks) == 2
+		case strings.HasPrefix(t, o.short+"=") || strings.HasPrefix(t, o.long+"="):
+			return "", len(toks) == 1
+		case o.attached && strings.HasPrefix(t, o.short) && len(t) > len(o.short):
+			return "", len(toks) == 1
+		}
+	}
+	return "", false
+}
+
+// defineOption reads a property definition. isDefine is set for any -D or --define line; key is
+// empty unless the line is one of the modelled shapes with a literal property name, and never set
+// for maven.ext.class.path, which loads a core extension.
+func defineOption(toks []string) (key string, isDefine bool) {
+	t := toks[0]
+	var v string
+	switch {
+	case t == "-D" || t == "--define":
+		if len(toks) != 2 {
+			return "", true
+		}
+		v = toks[1]
+	case strings.HasPrefix(t, "--define="):
+		v = strings.TrimPrefix(t, "--define=")
+	case strings.HasPrefix(t, "-D"):
+		v = t[2:]
+	default:
+		return "", false
+	}
+	if len(toks) != 1 && t != "-D" && t != "--define" {
+		return "", true
+	}
+	return propertyKey(v), true
+}
+
+// propertyKey returns the name a k=v or k definition sets, or "" when it isn't a literal name.
+func propertyKey(v string) string {
+	k, _, _ := strings.Cut(v, "=")
+	k = strings.TrimSpace(k)
+	if k == "" || strings.ContainsAny(k, "\"'${}\\ \t") || k == "maven.ext.class.path" {
+		return ""
+	}
+	return k
+}
+
+// readJVMConfig reads .mvn/jvm.config, which the mvn script splits on whitespace and passes to
+// the JVM that runs Maven. Each token must be a -D property definition with a literal name, or a
+// JVM option from inertJVMOption's allow-list; a # anywhere but at the start of a line is unknown,
+// since Maven versions differ on whether the rest of the line is dropped. A file that can't be
+// read is unknown.
+func readJVMConfig(path string) (defines []string, unknown bool) {
 	data, err := readMavenConfigFile(path)
-	if os.IsNotExist(err) {
-		return nil, false, false
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+		return nil, false
 	}
 	if err != nil {
-		return nil, true, true
+		return nil, true
 	}
 	for _, line := range strings.Split(string(data), "\n") {
+		toks := strings.Fields(line)
+		if len(toks) == 0 {
+			continue
+		}
 		if strings.ContainsRune(line, '\ufeff') {
-			unknown = true // a byte-order mark hides what the line's first token is
-			continue
-		}
-		list, selects, ok := profileLine(strings.Fields(line))
-		if !selects {
-			continue
-		}
-		if !ok {
 			unknown = true
 			continue
 		}
-		ids = append(ids, list...)
+		if strings.HasPrefix(toks[0], "#") {
+			unknown = unknown || hasOption(toks)
+			continue
+		}
+		if strings.Contains(line, "#") {
+			unknown = true
+			continue
+		}
+		for i := 0; i < len(toks); i++ {
+			t := toks[i]
+			switch {
+			case strings.HasPrefix(t, "-D"):
+				if k := propertyKey(t[2:]); k != "" {
+					defines = append(defines, k)
+				} else {
+					unknown = true
+				}
+			case inertJVMOption(t):
+			case jvmModuleOptions[t] && i+1 < len(toks):
+				i++
+			default:
+				unknown = true
+			}
+		}
 	}
-	return ids, unknown, true
+	return defines, unknown
+}
+
+// jvmModuleOptions take the next token as their value.
+var jvmModuleOptions = map[string]bool{"--add-opens": true, "--add-exports": true, "--add-reads": true, "--add-modules": true}
+
+// inertJVMOption reports whether a jvm.config token is a JVM option that sets memory, stack,
+// a -XX: flag, module access, or assertions: nothing that loads code into Maven or sets a property.
+func inertJVMOption(t string) bool {
+	switch t {
+	case "-ea", "-da", "-enableassertions", "-disableassertions", "-server", "-client":
+		return true
+	}
+	for _, p := range []string{"-Xmx", "-Xms", "-Xss", "-XX:", "--add-opens=", "--add-exports=", "--add-reads=", "--add-modules="} {
+		if strings.HasPrefix(t, p) && len(t) > len(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // profileLine reads one maven.config line. selects is false when no token on it is, or could be,
@@ -430,14 +686,26 @@ func evalConditions(a mvnActivation, env activationEnv) tri {
 		present = true
 		res = triAnd(res, t)
 	}
-	if a.JDK != "" {
-		add(evalJDK(a.JDK, env.targetEnv[targetEnvJavaVersion]))
+	if a.Undecidable {
+		return triUnknown
 	}
-	if a.OS || a.Other || a.FileExists != "" || a.FileMissing != "" {
+	_, configUnknown := env.targetEnv[mavenConfigUnknown]
+	if a.JDK != "" {
+		if configUnknown || configDefines(env.targetEnv, targetEnvJavaVersion) {
+			add(triUnknown) // the build overrides java.version with a value not compared here
+		} else {
+			add(evalJDK(a.JDK, env.targetEnv[targetEnvJavaVersion]))
+		}
+	}
+	if a.OS || a.File || a.Other {
 		add(triUnknown)
 	}
 	if a.PropName != "" {
-		add(evalProperty(a.PropName, a.PropValue, env.targetEnv))
+		if configUnknown || configDefines(env.targetEnv, strings.TrimPrefix(a.PropName, "!")) {
+			add(triUnknown) // the build sets the property itself
+		} else {
+			add(evalProperty(a.PropName, a.PropValue, env.targetEnv))
+		}
 	}
 	if !present {
 		return triFalse
@@ -454,7 +722,7 @@ func evalProperty(name, value string, env map[string]string) tri {
 	negName := strings.HasPrefix(name, "!")
 	name = strings.TrimPrefix(name, "!")
 	if name == "" {
-		return triFalse
+		return triUnknown
 	}
 	got, present := env[name]
 	if !present || name == targetEnvMavenProfiles {
@@ -671,8 +939,7 @@ type profileScope struct {
 	// defs maps each property name to every raw value any POM body or profile of the chain
 	// gives it, for following references transitively.
 	defs map[string][]string
-	// forDependency is true for a POM read from the cache: only declarations that reach a
-	// consumer's graph (non-optional compile/runtime deps, managed versions of those) count.
+	// forDependency is true for a POM read from the cache.
 	forDependency bool
 }
 
@@ -723,26 +990,90 @@ func propagatesToConsumer(d mvnDep) bool {
 	return true
 }
 
-// consequential reports which entries can affect the resolved graph.
+// elementRule is what one child element of an undecided profile costs.
+type elementRule int8
+
+const (
+	elementUnlisted elementRule = iota // off the allow-list: what the profile changes can't be bounded
+	elementInert                       // changes nothing the build's dependency graph or code reads
+	elementModelled                    // read, and costed by profileTouches and profileExtras
+)
+
+// profileElements is the allow-list of a profile's child elements, as {reactor lineage,
+// dependency POM}. Every child of an undecided profile must be on it. One that isn't (a Maven 4
+// addition, a misspelling, or something Maven ignores) leaves the profile unbounded, as does
+// <distributionManagement> in a dependency's POM, whose <relocation> moves the artifact the
+// consumer resolves. <build> and <modules> in a dependency's POM never run in the consumer's build.
+var profileElements = map[string][2]elementRule{
+	"id":                     {elementInert, elementInert},
+	"activation":             {elementInert, elementInert},
+	"reporting":              {elementInert, elementInert},
+	"reports":                {elementInert, elementInert},
+	"distributionManagement": {elementInert, elementUnlisted},
+	"build":                  {elementModelled, elementInert},
+	"modules":                {elementModelled, elementInert},
+	"dependencies":           {elementModelled, elementModelled},
+	"dependencyManagement":   {elementModelled, elementModelled},
+	"properties":             {elementModelled, elementModelled},
+	"repositories":           {elementModelled, elementModelled},
+	"pluginRepositories":     {elementModelled, elementModelled},
+}
+
+// profileUnlisted reports whether a profile has a child element off profileElements' allow-list
+// for its POM: cached for a dependency's POM, an imported BOM, or their parents.
+func profileUnlisted(pr mvnProfile, cached bool) bool {
+	col := 0
+	if cached {
+		col = 1
+	}
+	for _, name := range pr.Elements {
+		rule, ok := profileElements[name]
+		if !ok || rule[col] == elementUnlisted {
+			return true
+		}
+	}
+	return false
+}
+
+// consequential reports which entries can change the resolved graph. In a reactor module's
+// lineage every one can. In a dependency's POM every one can unless it is on this allow-list:
+//   - a dependency Maven's resolver drops before mediation (droppedBelow) whose literal
+//     groupId:artifactId every other entry of the chain declares only that way too: whichever of
+//     them Maven merges, the result is still dropped, so it adds a coordinate the consumer never
+//     sees rather than re-declaring one it does;
+//   - a managed version, not an imported BOM, for a literal groupId:artifactId no dependency of the
+//     chain declares: below the consumer, Maven 3's resolver applies only the consumer's own
+//     management, so it has nothing to manage.
 func (ps profileScope) consequential() []bool {
 	out := make([]bool, len(ps.entries))
-	versionless := map[string]bool{}
+	declared, kept := map[string]bool{}, map[string]bool{}
 	for _, e := range ps.entries {
-		if !e.mgmt && strings.TrimSpace(e.dep.Version) == "" && (!ps.forDependency || propagatesToConsumer(e.dep)) {
-			versionless[e.dep.ga()] = true
+		if !e.mgmt {
+			declared[e.dep.ga()] = true
+		}
+		if e.mgmt || !droppedBelow(e.dep) {
+			kept[e.dep.ga()] = true
 		}
 	}
 	for i, e := range ps.entries {
+		literal := e.dep.GroupID != "" && e.dep.ArtifactID != "" && !strings.Contains(e.dep.ga(), "${")
 		switch {
-		case !ps.forDependency:
+		case !ps.forDependency || !literal:
 			out[i] = true
 		case e.mgmt:
-			out[i] = isImportBOM(e.dep) || versionless[e.dep.ga()]
+			out[i] = isImportBOM(e.dep) || declared[e.dep.ga()]
 		default:
-			out[i] = propagatesToConsumer(e.dep)
+			out[i] = kept[e.dep.ga()]
 		}
 	}
 	return out
+}
+
+// droppedBelow reports whether a dependency declared in a dependency's POM is one Maven's
+// resolver drops before mediation (OptionalDependencySelector, ScopeDependencySelector): a literal
+// optional true, or a literal test or provided scope.
+func droppedBelow(d mvnDep) bool {
+	return strings.EqualFold(d.Optional, "true") || d.Scope == "test" || d.Scope == "provided"
 }
 
 // referencedProps returns every property name raw refers to, following definitions.
@@ -772,8 +1103,10 @@ func (ps profileScope) referencedProps(raws ...string) map[string]bool {
 	return seen
 }
 
-// profileTouches returns what profile idx can change: its own consequential declarations, and
-// every consequential declaration whose coordinates reference a property it sets. Each is
+// profileTouches returns what profile idx can change: its own consequential declarations, a
+// re-declaration's scope or optional change included (it moves how the graph mediates and scopes
+// that dependency), and every consequential declaration whose coordinates reference a property it
+// sets. Each is
 // resolved under the model without the profile and with it; an imported BOM contributes every
 // version it manages. A declaration that resolves to no literal coordinate in either, or a BOM
 // that isn't cached or doesn't read in full, leaves the result unbounded.
@@ -915,7 +1248,7 @@ func bomProfilesDecided(bom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCac
 	for _, anc := range chain.poms {
 		for i, st := range evalProfiles(anc.Profiles, env) {
 			pr := anc.Profiles[i]
-			if st == triUnknown && (len(pr.DepMgmt) > 0 || len(pr.Properties) > 0) {
+			if st == triUnknown && (len(pr.DepMgmt) > 0 || len(pr.Properties) > 0 || profileUnlisted(pr, true)) {
 				return false
 			}
 		}

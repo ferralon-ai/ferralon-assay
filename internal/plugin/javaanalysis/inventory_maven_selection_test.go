@@ -160,8 +160,8 @@ func TestMavenProfile_MavenConfigSelection(t *testing.T) {
 		{"another profile only", "-Pother\n", false},
 		{"another profile only, -P=", "-P=other\n", false},
 		{"another profile only, long form with =", "--activate-profiles=other\n", false},
-		{"another long option", "--also-make --fail-at-end\n", false},
-		{"no selection", "-DskipTests -T 1C\n", false},
+		{"other options, one per line", "--also-make\n--fail-at-end\n", false},
+		{"no selection", "-DskipTests\n-T 1C\n", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, m2 := profileFixture(t, `<jdk>11</jdk>`, false)

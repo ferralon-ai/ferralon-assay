@@ -174,17 +174,28 @@ type mvnProfile struct {
 	Modules []string
 	// Repositories is set when the profile declares a repository or plugin repository.
 	Repositories bool
+	// Elements are the local names of the profile's child elements, in document order. An
+	// undecided profile is bounded only when each is on profileElements' allow-list.
+	Elements []string
 }
 
 // mvnActivation is a profile's <activation> block. Every condition present must hold (Maven
 // 3.2.2+); activeByDefault is not a condition but a fallback (see evalProfiles).
 type mvnActivation struct {
-	ActiveByDefault         bool
-	JDK                     string
-	OS                      bool // any <os> condition: never evaluated, the runner's OS is not the subject's
-	PropName, PropValue     string
-	FileExists, FileMissing string
-	Other                   bool // an activation element this reader does not know (Maven 4 <packaging>, <condition>, ...)
+	ActiveByDefault     bool
+	JDK                 string
+	OS                  bool // any <os> element, an empty one included: never evaluated, the runner's OS is not the subject's
+	PropName, PropValue string
+	File                bool // any <file> element, an empty one included: the tree Maven saw isn't the one read here
+	// Other is a present condition no modelled rule decides: an element this reader does not know
+	// (Maven 4 <packaging>, <condition>, ...), a child of <property> it does not know, or an empty
+	// <jdk>. It is undecided and ANDed with the rest.
+	Other bool
+	// Undecidable is an activation whose meaning depends on which of several elements Maven reads,
+	// or on its version: a second <activation>, a repeated child, a <property> without exactly one
+	// non-empty name or with more than one value, or a <jdk> or <property> value holding an
+	// interpolation expression. No condition beside it decides the profile.
+	Undecidable bool
 }
 
 // --- XML binding -------------------------------------------------------------
@@ -224,31 +235,11 @@ type xmlDep struct {
 }
 
 type xmlProfile struct {
-	ID         string `xml:"id"`
-	Activation struct {
-		ActiveByDefault string `xml:"activeByDefault"`
-		JDK             string `xml:"jdk"`
-		OS              struct {
-			Name    string `xml:"name"`
-			Family  string `xml:"family"`
-			Arch    string `xml:"arch"`
-			Version string `xml:"version"`
-		} `xml:"os"`
-		Property struct {
-			Name  string `xml:"name"`
-			Value string `xml:"value"`
-		} `xml:"property"`
-		File struct {
-			Exists  string `xml:"exists"`
-			Missing string `xml:"missing"`
-		} `xml:"file"`
-		Other []struct {
-			XMLName xml.Name
-		} `xml:",any"`
-	} `xml:"activation"`
-	Properties invProps `xml:"properties"`
-	DepMgmt    []xmlDep `xml:"dependencyManagement>dependencies>dependency"`
-	Deps       []xmlDep `xml:"dependencies>dependency"`
+	ID         string          `xml:"id"`
+	Activation []xmlActivation `xml:"activation"`
+	Properties invProps        `xml:"properties"`
+	DepMgmt    []xmlDep        `xml:"dependencyManagement>dependencies>dependency"`
+	Deps       []xmlDep        `xml:"dependencies>dependency"`
 	Build      struct {
 		Children []struct {
 			XMLName xml.Name
@@ -257,6 +248,37 @@ type xmlProfile struct {
 	Modules            []string   `xml:"modules>module"`
 	Repositories       []struct{} `xml:"repositories>repository"`
 	PluginRepositories []struct{} `xml:"pluginRepositories>pluginRepository"`
+}
+
+// xmlActivation binds every child as a slice, so an element that is present but empty, or
+// repeated, is seen rather than read as absent.
+type xmlActivation struct {
+	ActiveByDefault []string     `xml:"activeByDefault"`
+	JDK             []string     `xml:"jdk"`
+	OS              []struct{}   `xml:"os"`
+	Property        []xmlActProp `xml:"property"`
+	File            []struct{}   `xml:"file"`
+	Other           []struct {
+		XMLName xml.Name
+	} `xml:",any"`
+}
+
+type xmlActProp struct {
+	Name  []string `xml:"name"`
+	Value []string `xml:"value"`
+	Other []struct {
+		XMLName xml.Name
+	} `xml:",any"`
+}
+
+// xmlProfileElements reads the local name of every child of each <profile>, in the same order
+// xmlPOM binds the profiles.
+type xmlProfileElements struct {
+	Profiles []struct {
+		Children []struct {
+			XMLName xml.Name
+		} `xml:",any"`
+	} `xml:"profiles>profile"`
 }
 
 // invProps captures the arbitrary child elements of a <properties> block as name→value pairs.
@@ -344,25 +366,24 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	if p.Version == "" {
 		p.Version = p.Parent.Version
 	}
-	for _, pr := range xp.Profiles {
-		a := pr.Activation
+	var elems xmlProfileElements
+	if len(xp.Profiles) > 0 {
+		if err := unmarshalPOM(data, &elems); err != nil || len(elems.Profiles) != len(xp.Profiles) {
+			return nil, false
+		}
+	}
+	for i, pr := range xp.Profiles {
 		mp := mvnProfile{
-			ID: strings.TrimSpace(pr.ID),
-			Activation: mvnActivation{
-				ActiveByDefault: strings.EqualFold(strings.TrimSpace(a.ActiveByDefault), "true"),
-				JDK:             strings.TrimSpace(a.JDK),
-				OS:              strings.TrimSpace(a.OS.Name+a.OS.Family+a.OS.Arch+a.OS.Version) != "",
-				PropName:        strings.TrimSpace(a.Property.Name),
-				PropValue:       strings.TrimSpace(a.Property.Value),
-				FileExists:      strings.TrimSpace(a.File.Exists),
-				FileMissing:     strings.TrimSpace(a.File.Missing),
-				Other:           len(a.Other) > 0,
-			},
+			ID:           strings.TrimSpace(pr.ID),
+			Activation:   convActivation(pr.Activation),
 			Properties:   pr.Properties.Entries,
 			DepMgmt:      convDeps(pr.DepMgmt),
 			Deps:         convDeps(pr.Deps),
 			Build:        len(pr.Build.Children) > 0,
 			Repositories: len(pr.Repositories)+len(pr.PluginRepositories) > 0,
+		}
+		for _, c := range elems.Profiles[i].Children {
+			mp.Elements = append(mp.Elements, c.XMLName.Local)
 		}
 		for _, m := range pr.Modules {
 			if m = strings.TrimSpace(m); m != "" {
@@ -375,6 +396,65 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		p.Profiles = append(p.Profiles, mp)
 	}
 	return p, true
+}
+
+// convActivation reads a profile's <activation> elements. Maven counts a condition whenever its
+// element is present, so an empty one is still a condition; a shape this reader can't map onto
+// one Maven reading is undecided.
+func convActivation(acts []xmlActivation) mvnActivation {
+	var m mvnActivation
+	if len(acts) == 0 {
+		return m
+	}
+	if len(acts) > 1 {
+		m.Undecidable = true
+	}
+	a := acts[0]
+	once := func(n int) bool {
+		if n > 1 {
+			m.Undecidable = true
+		}
+		return n > 0
+	}
+	if once(len(a.ActiveByDefault)) {
+		m.ActiveByDefault = strings.EqualFold(strings.TrimSpace(a.ActiveByDefault[0]), "true")
+	}
+	if once(len(a.JDK)) {
+		m.JDK = strings.TrimSpace(a.JDK[0])
+		if m.JDK == "" {
+			m.Other = true
+		}
+		if strings.Contains(m.JDK, "${") {
+			m.Undecidable = true // whether activation values are interpolated depends on the Maven version
+		}
+	}
+	m.OS = once(len(a.OS))
+	m.File = once(len(a.File))
+	if once(len(a.Property)) {
+		p := a.Property[0]
+		if len(p.Name) != 1 || len(p.Value) > 1 {
+			m.Undecidable = true
+		}
+		if len(p.Name) > 0 {
+			m.PropName = strings.TrimSpace(p.Name[0])
+		}
+		if len(p.Value) > 0 {
+			m.PropValue = strings.TrimSpace(p.Value[0])
+		}
+		if strings.TrimPrefix(m.PropName, "!") == "" {
+			m.Undecidable = true
+		}
+		if len(p.Other) > 0 {
+			m.Other = true
+		}
+		if strings.Contains(m.PropName+m.PropValue, "${") {
+			m.Undecidable = true
+		}
+	}
+	if len(a.Other) > 0 {
+		m.Other = true
+	}
+	return m
 }
 
 // --- effective model ---------------------------------------------------------
@@ -508,7 +588,7 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps, reactor, cache, targetEnv, depth)
 			// What an unbounded profile re-versions is unknown, so every dependency it could
 			// reach is: each transitive of a reactor module, each dependency of a cached POM.
-			anyVersion := !bounded || chain.parentMissing
+			anyVersion := !bounded || chain.parentMissing || profileUnlisted(profileList[idx], pom.path == "")
 			if anyVersion || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
 				bounded = false // what it changes can't be read, or reaches past the dependency graph
 			}

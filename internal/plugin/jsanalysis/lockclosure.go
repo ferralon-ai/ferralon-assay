@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // lockClosures answers "which packages can code loaded from package P reach?" from the
@@ -355,9 +356,11 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 // install, a committed src/node_modules), Node resolves through a layout the lock does not
 // describe, so no reach read from the lock bounds what loads. Every node_modules the build
 // walk saw under the lockfile's governance is checked, plus each one nested in an installed
-// package. An absent node_modules is the layout an install from the lock produces. Dot
-// entries (.bin, .package-lock.json) are npm's own (resolutionOverridden vetoes pnpm's and
-// yarn's), and a workspace link's own node_modules is checked at the linked directory's key.
+// package. An absent node_modules is the layout an install from the lock produces. One that
+// exists but cannot be listed is unread, not absent (Node still loads from a directory it can
+// search but not read), so the lock does not bound it. Dot entries (.bin, .package-lock.json)
+// are npm's own (resolutionOverridden vetoes pnpm's and yarn's), and a workspace link's own
+// node_modules is checked at the linked directory's key.
 func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 	base := filepath.Join(lc.root, filepath.FromSlash(lockDir))
 	dirs := []string{""}
@@ -376,8 +379,11 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 		dirs = dirs[:len(dirs)-1]
 		nm := path.Join(d, "node_modules")
 		entries, err := os.ReadDir(filepath.Join(base, filepath.FromSlash(nm)))
-		if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 			continue
+		}
+		if err != nil {
+			return false
 		}
 		for _, e := range entries {
 			names := []string{e.Name()}

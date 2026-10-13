@@ -154,8 +154,10 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 	// SBOM would silently flatten to packages-only, and the next PR diff against it
 	// would see every relationship as newly-absent.
 	b.SetRelationships(baseline.SBOM.Relationships)
+	// The head's inventory limits apply to the inherited rows as to fresh ones: a package the head
+	// could not inventory may be installed where the baseline's analysis never looked.
 	for i := range baseline.Advisories {
-		b.AddFinding(baseline.Advisories[i])
+		b.AddFinding(withInventoryLimits(baseline.Advisories[i], req.DiffLimits))
 	}
 	// Disclose, on the inherited fast path, what the head-SBOM resolution could not
 	// resolve — so a diff that inherited because a lane's inventory was unavailable is
@@ -213,7 +215,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq)
-		f := finding(st, assessmentID, advisory, pkg)
+		f := withInventoryLimits(finding(st, assessmentID, advisory, pkg), req.DiffLimits)
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -256,7 +258,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			delete(reFindings, key)
 			continue
 		}
-		b.AddFinding(f)
+		b.AddFinding(withInventoryLimits(f, req.DiffLimits))
 	}
 	for _, re := range reFindings {
 		b.AddFinding(re)
@@ -313,7 +315,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq)
 		pkg := a.Package
-		f := finding(st, assessmentID, advisory, &pkg)
+		f := withInventoryLimits(finding(st, assessmentID, advisory, &pkg), inventoryLimits(prior.Partiality))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather

@@ -147,7 +147,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		// row in tegron.report.v2, plus the scan-level limit that explains it.
 		// v1 had to withhold the row entirely, having no cell for "the advisory applies and
 		// we established nothing"; the row is what makes the omission legible at the count.
-		f := finding(st, assessmentID, advisory, pkg)
+		f := withInventoryLimits(finding(st, assessmentID, advisory, pkg), invNotes)
 		b.AddFinding(f)
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)

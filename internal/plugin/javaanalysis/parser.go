@@ -232,6 +232,12 @@ func parseFile(src string) parseResult {
 				}
 				continue
 			}
+			if typeKeywords[word] && precededByDot(r, i) {
+				// A class literal ("B.class", "int[].class", "java.util.Map.class") is an
+				// expression; no type header starts after a '.'.
+				i = next
+				continue
+			}
 			if typeKeywords[word] {
 				name, openIdx, ok := parseTypeHeader(r, next)
 				if !ok {
@@ -594,6 +600,16 @@ func precededByAt(r []rune, i int) bool {
 		j--
 	}
 	return j >= 0 && r[j] == '@'
+}
+
+// precededByDot reports whether the nearest non-whitespace rune before i is '.', i.e.
+// the word at i is a member selected from a qualifier.
+func precededByDot(r []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && (r[j] == ' ' || r[j] == '\t' || r[j] == '\n' || r[j] == '\r') {
+		j--
+	}
+	return j >= 0 && r[j] == '.'
 }
 
 // findBrace returns the index of the next '{' at or after i (and ok), or ok=false

@@ -94,13 +94,17 @@ func TestWithholdForLeftOutFiles(t *testing.T) {
 // does not count, so another platform's file importing syscall leaves the refutation standing.
 func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 	base := map[string]string{
-		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n)\n\n" +
-			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n)\n",
+		"go.mod": "module example.com/m\n\ngo 1.22\n\nrequire (\n\texample.com/webdep v0.0.0\n\texample.com/other v0.0.0\n\texample.com/tagdep v0.0.0\n)\n\n" +
+			"replace (\n\texample.com/webdep => ./_webdep\n\texample.com/other => ./_other\n\texample.com/tagdep => ./_tagdep\n)\n",
 		"main.go":           "package main\n\nfunc main() {}\n",
 		"_webdep/go.mod":    "module example.com/webdep\n\ngo 1.22\n",
 		"_webdep/webdep.go": "package webdep\n\nimport \"net/http\"\n\nfunc Serve() { _ = http.ListenAndServe(\":0\", nil) }\n",
 		"_other/go.mod":     "module example.com/other\n\ngo 1.22\n",
 		"_other/other.go":   "package other\n\nimport \"strings\"\n\nfunc Call() string { return strings.ToUpper(\"x\") }\n",
+		// tagdep reaches the vulnerable package only under the prod tag.
+		"_tagdep/go.mod":         "module example.com/tagdep\n\ngo 1.22\n",
+		"_tagdep/tagdep.go":      "package tagdep\n\nfunc Serve() {}\n",
+		"_tagdep/tagdep_prod.go": "//go:build prod\n\npackage tagdep\n\nimport \"net/http\"\n\nfunc init() { _ = http.ListenAndServe(\":0\", nil) }\n",
 	}
 	leftOut := func(constraint, imp string) string {
 		return "//go:build " + constraint + "\n\npackage main\n\nimport _ \"" + imp + "\"\n"
@@ -122,7 +126,11 @@ func TestWithholdForLeftOutFiles_StandardLibrary(t *testing.T) {
 		{"a tagged file imports a loaded package that imports the vulnerable package", merge(web, map[string]string{"prod.go": leftOut("prod", "example.com/m/web")}), httpVuln, true},
 		{"a tagged file imports an unloaded standard package that imports the vulnerable package", map[string]string{"prod.go": leftOut("prod", "net/http/httputil")}, httpVuln, true},
 		{"a tagged file imports an unloaded module that imports the vulnerable package", map[string]string{"prod.go": leftOut("prod", "example.com/webdep")}, httpVuln, true},
-		{"a tagged file imports an unloaded module that does not", map[string]string{"prod.go": leftOut("prod", "example.com/other")}, httpVuln, false},
+		{"a tagged file imports an unloaded module that reaches the vulnerable package only under the file's own tag", map[string]string{
+			"prod.go": "//go:build prod\n\npackage main\n\nimport \"example.com/tagdep\"\n\nfunc init() { tagdep.Serve() }\n",
+		}, httpVuln, true},
+		{"a tagged file imports an unloaded module that does not import the vulnerable package", map[string]string{"prod.go": leftOut("prod", "example.com/other")}, httpVuln, true},
+		{"a tagged file imports a standard-library path no port lists", map[string]string{"prod.go": leftOut("prod", "net/nosuch")}, httpVuln, true},
 		{"another platform's file imports only syscall", map[string]string{"run_windows.go": "package main\n\nimport _ \"syscall\"\n"}, httpVuln, false},
 		{"a tagged file imports only an unrelated standard package", map[string]string{"prod.go": leftOut("prod", "strings")}, httpVuln, false},
 		{"the vulnerable packages are unknown, so any standard import counts", map[string]string{"prod.go": leftOut("prod", "strings")}, nil, true},

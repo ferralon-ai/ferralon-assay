@@ -170,14 +170,13 @@ func loadProgram(buildDir string) (*program, error) {
 	return prog, nil
 }
 
-// hasUndeclaredImport reports whether any import binding's top-level module is one the
-// resolver can attribute only through a manifest name it does not hold.
+// hasUndeclaredImport reports whether any import binding names a module no distribution the
+// manifests read here declare provides.
 func (prog *program) hasUndeclaredImport() bool {
 	for _, f := range prog.files {
 		for _, scope := range f.bindings {
 			for _, b := range scope {
-				top, _, _ := strings.Cut(b.target, ".") // "" for an instance binding
-				if prog.dists.undeclaredTop(top) {
+				if prog.dists.undeclaredImport(b.target) {
 					return true
 				}
 			}
@@ -249,7 +248,8 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// A call through an import binding reaches a dependency attribute: emit a
 			// boundary edge to it. The node stands for code the lane does not read, so it is
 			// a candidate target only, never a searched sink.
-			if dist, dotted, ok := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists); ok {
+			provides, dotted := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists)
+			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			callee, ok := prog.resolveCallee(cs.calleeName, cs.calleeArity)

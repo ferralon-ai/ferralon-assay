@@ -169,7 +169,7 @@ func scanSourceClasses(clean, raw []rune, pkg string) []sourceClass {
 		case isIdentStart(c):
 			word, next := readWord(clean, i)
 			switch {
-			case typeKeywords[word]:
+			case typeKeywords[word] && !precededByDot(clean, i):
 				nm, supers, openIdx, ok := parseTypeHeaderFull(clean, next)
 				if !ok {
 					pending = nil

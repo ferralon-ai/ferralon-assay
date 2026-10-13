@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -21,6 +22,12 @@ type program struct {
 	// self/cls-tolerant arity; zero or multiple matches mean the lexical callee cannot be
 	// soundly resolved to a single edge (inv.5: no fabricated edge).
 	funcsByName map[string][]funcDecl
+	// dists maps an imported top-level module to the distribution providing it, so a call
+	// through an import binding names a dependency boundary node.
+	dists distResolver
+	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
+	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
+	dynamicImportOpaque bool
 }
 
 // resolveCallee maps a lexical call (leaf name + explicit-argument arity) to the SCIP id
@@ -61,12 +68,16 @@ func (d funcDecl) scip() string {
 	return scipSymbol(d.module, d.enclosing, functionDescriptor(d.name, d.arity))
 }
 
-// fileParse pairs a parsed file's module with its call sites and ingress markers (needed
-// to qualify callers/callees and ingress handlers into SCIP ids).
+// fileParse pairs a parsed file's module with its call sites, ingress markers, and import
+// bindings (needed to qualify callers/callees and ingress handlers into SCIP ids and to name
+// dependency boundary nodes). loadRoots are the module names the file imports dynamically
+// by literal (importlib.import_module("yaml") → "yaml"); a relative name keeps its dots.
 type fileParse struct {
 	module    string
 	calls     []callSite
 	ingresses []ingressMarker
+	bindings  map[string]map[string]scopedBinding
+	loadRoots []string
 }
 
 // funcSCIP builds the SCIP id for a function from its module, enclosing class chain, name,
@@ -111,11 +122,15 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, p)
-		clean := stripPython(string(data))
+		clean, lits := stripPythonLiterals(string(data))
 		lines := logicalLines(clean)
 
 		decls := parseDecls(lines)
-		calls, ingresses := parseCallsAndIngresses(lines)
+		scan := parseCallsAndIngresses(lines)
+		roots, opaque := dynamicImports(clean, lits)
+		if opaque {
+			prog.dynamicImportOpaque = true
+		}
 
 		for _, d := range decls {
 			if d.kind != kindFunc {
@@ -124,9 +139,34 @@ func loadProgram(buildDir string) (*program, error) {
 			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity}
 			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
 		}
-		prog.files = append(prog.files, fileParse{module: module, calls: calls, ingresses: ingresses})
+		prog.files = append(prog.files, fileParse{
+			module:    module,
+			calls:     scan.calls,
+			ingresses: scan.ingresses,
+			bindings:  indexBindings(scan.bindings),
+			loadRoots: roots,
+		})
+	}
+
+	modules := make([]string, 0, len(prog.files))
+	for _, f := range prog.files {
+		modules = append(modules, f.module)
+	}
+	prog.dists = distResolver{
+		curated:    NewDistImportMap(CuratedContributions()...),
+		declared:   declaredDistributions(buildDir),
+		firstParty: firstPartyTops(modules),
 	}
 	return prog, nil
+}
+
+// callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init
+// node for a call at module or class-body level.
+func (f fileParse) callerSCIP(cs callSite) string {
+	if cs.callerName == "" {
+		return moduleInitSCIP(f.module)
+	}
+	return funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity)
 }
 
 // CallGraph builds the source-level call graph for the Python module at req.BuildDir. It
@@ -137,24 +177,55 @@ func loadProgram(buildDir string) (*program, error) {
 // library/imported/builtin function with no source declaration), NO edge is fabricated and
 // the partiality carries dynamic_dispatch — the inv.5 honesty boundary.
 //
+// Two node kinds extend the declared functions. A call through an import binding
+// (`jwt.decode(t)` after `import jwt`, `Environment().from_string(x)` after `from jinja2
+// import Environment`) gets an edge to a dependency boundary node "pypi:<dist>#<dotted>"
+// naming the attribute by the import path the code used; the node stands for dependency
+// code the lane does not read, so it is a candidate target, never a searched sink. Calls at
+// module or class-body level are attributed to a module-init node per module, which is a
+// root because that code runs at import time.
+//
 // The graph is ALWAYS declared Partial(dynamic_dispatch): a lexical Python scanner cannot
 // see dynamic dispatch, getattr, decorator-rewriting, or monkeypatched edges, so it is
 // structurally an under-approximation of the true call graph. Declaring partiality is the
 // conservative direction (a missing edge is UNKNOWN, never a false not-affected); the
 // Python plugin therefore never claims a Complete call graph. Read failures add
-// tool_failure; skipped constructs add unsupported_phase1.
+// tool_failure; skipped constructs add unsupported_phase1; a dynamic import whose module
+// the scanner cannot name adds dynamic_import.
 func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.CallGraphResult{}, err
 	}
+	return callGraphOf(prog), nil
+}
 
+// callGraphOf builds the call graph of an already-loaded program.
+func callGraphOf(prog *program) plugin.CallGraphResult {
 	seen := map[plugin.CallEdge]bool{}
 	var edges []plugin.CallEdge
 	rootsSet := map[string]bool{}
+	initCallers := map[string]bool{}
+	addEdge := func(caller, callee string) {
+		e := plugin.CallEdge{Caller: sym(caller), Callee: sym(callee)}
+		if !seen[e] {
+			seen[e] = true
+			edges = append(edges, e)
+		}
+	}
 
 	for _, f := range prog.files {
 		for _, cs := range f.calls {
+			caller := f.callerSCIP(cs)
+			if cs.callerName == "" && !isTestModule(f.module) {
+				initCallers[caller] = true
+			}
+			// A call through an import binding reaches a dependency attribute: emit a
+			// boundary edge to it. The node stands for code the lane does not read, so it is
+			// a candidate target only, never a searched sink.
+			if dist, dotted, ok := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists); ok {
+				addEdge(caller, boundarySCIP(dist, dotted))
+			}
 			callee, ok := prog.resolveCallee(cs.calleeName, cs.calleeArity)
 			if !ok {
 				// 0 matches (library/import/builtin/unknown) or >1 (unresolvable name):
@@ -162,17 +233,21 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 				// covers this; never fabricate (inv.5).
 				continue
 			}
-			e := plugin.CallEdge{Caller: sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity)), Callee: sym(callee)}
-			if !seen[e] {
-				seen[e] = true
-				edges = append(edges, e)
-			}
+			addEdge(caller, callee)
 		}
 		// Framework ingress handler functions are call-graph roots (static-reachability
 		// entry points), so a reverse BFS can terminate at them even when no caller in the
 		// source invokes them.
 		for _, in := range f.ingresses {
 			rootsSet[funcSCIP(f.module, in.enclosing, in.name, in.arity)] = true
+		}
+	}
+
+	// Module-level code runs at import time, so a module-init caller with an outgoing edge
+	// is an entry point. Test modules are excluded: test code is not a runtime root.
+	for _, e := range edges {
+		if initCallers[e.Caller.SCIP] {
+			rootsSet[e.Caller.SCIP] = true
 		}
 	}
 
@@ -194,7 +269,7 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      roots,
-	}, nil
+	}
 }
 
 // callGraphPartiality declares the call graph ALWAYS partial for Python: the lexical
@@ -203,6 +278,7 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 // constructs add their own machine-readable reasons.
 func callGraphPartiality(prog *program) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
+	reasons = append(reasons, dynamicImportReasons(prog.dynamicImportOpaque)...)
 	if prog.readFailed {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
@@ -210,4 +286,17 @@ func callGraphPartiality(prog *program) plugin.Partiality {
 		reasons = append(reasons, plugin.PartialReasonUnsupported)
 	}
 	return plugin.Partial(reasons...)
+}
+
+// isTestModule reports whether a module path names test code: a test_*.py, *_test.py or
+// conftest.py file, or any module under a tests/ or test/ directory.
+func isTestModule(module string) bool {
+	segs := strings.Split(module, "/")
+	for _, s := range segs {
+		if s == "tests" || s == "test" {
+			return true
+		}
+	}
+	leaf := segs[len(segs)-1]
+	return strings.HasPrefix(leaf, "test_") || strings.HasSuffix(leaf, "_test") || leaf == "conftest"
 }

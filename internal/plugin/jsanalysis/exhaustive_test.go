@@ -46,6 +46,9 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	)
 	// rewrite is exPkgJSON with one more top-level field.
 	rewrite := func(field string) string { return strings.TrimSuffix(exPkgJSON, "}") + "," + field + "}" }
+	// catalogLock is exPnpmV9 as pnpm writes it for a left-pad declared as catalog:.
+	catalogLock := strings.Replace(exPnpmV9, "left-pad:\n        specifier: ^1.3.0", "left-pad:\n        specifier: 'catalog:'", 1) +
+		"\ncatalogs:\n\n  default:\n    left-pad:\n      specifier: ^1.3.0\n      version: 1.3.0\n"
 	const pnpmfileAdds = "module.exports = {hooks: {readPackage(pkg) { pkg.dependencies['absent-package'] = '^2'; return pkg }}}\n"
 	tests := []struct {
 		name  string
@@ -120,6 +123,11 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"B11 pnpmfile hook adding a dependency", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, ".pnpmfile.cjs": pnpmfileAdds}, false},
 		{"B11 yarnrc packageExtensions", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, ".yarnrc.yml": "packageExtensions:\n  \"express@*\":\n    dependencies:\n      absent-package: ^2\n"}, false},
 		{"B11 pnpm-workspace overrides", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "overrides:\n  left-pad: npm:absent-package@^2\n"}, false},
+		{"B14 pnpm-workspace catalog", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "catalog:\n  left-pad: npm:absent-package@^2\n"}, false},
+		{"B14 pnpm-workspace named catalogs", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "catalogs:\n  tools:\n    left-pad: npm:absent-package@^2\n"}, false},
+		{"B14 catalog: specifier the lock records as catalog:", map[string]string{"package.json": strings.Replace(exPkgJSON, `"left-pad":"^1.3.0"`, `"left-pad":"catalog:"`, 1), "pnpm-lock.yaml": catalogLock}, false},
+		{"B15 pnpm config-dependency plugin", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "configDependencies:\n  pnpm-plugin-x: 1.0.0+sha512-x\n"}, false},
+		{"B16 yarn berry plugin", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, ".yarnrc.yml": "plugins:\n  - path: .yarn/plugins/add.cjs\n", ".yarn/plugins/add.cjs": "module.exports = {name: 'add', factory: () => ({hooks: {reduceDependency: d => d}})}\n"}, false},
 		{"B11 pnpm settings that rewrite nothing", map[string]string{"package.json": rewrite(`"pnpm":{"onlyBuiltDependencies":["esbuild"]}`), "pnpm-lock.yaml": exPnpmV9}, true},
 		{"B11 installer config that rewrites nothing", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "packages:\n  - .\n", ".yarnrc.yml": "nodeLinker: node-modules\n", ".npmrc": "registry=https://registry.example.com/\n"}, true},
 		{"B12 pnpm package bundling the coordinate", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": strings.Replace(exPnpmV9, "sha512-x}\n", "sha512-x}\n    bundledDependencies:\n      - absent-package\n", 1)}, false},

@@ -55,8 +55,10 @@ type depManifest struct {
 	hasName  bool
 	declared map[string]map[string]string // dependency field → name → spec
 	// rewrites is set when the manifest carries overrides, resolutions, pnpm.overrides or
-	// pnpm.packageExtensions (or a "pnpm" field that is not an object): each can make an install
-	// add or swap a package the lockfile does not show.
+	// pnpm.packageExtensions (or a "pnpm" field that is not an object), or a dependency spec in
+	// the catalog: protocol: each can make an install add or swap a package the lockfile does not
+	// show. A catalog: spec resolves through pnpm-workspace.yaml, so the lock's matching
+	// "catalog:" specifier says nothing about what it resolves to now.
 	rewrites bool
 }
 
@@ -95,6 +97,9 @@ func readPackageJSON(path string) (depManifest, bool) {
 			return depManifest{}, false
 		}
 		p.declared[field] = deps
+		for _, spec := range deps {
+			p.rewrites = p.rewrites || strings.HasPrefix(spec, "catalog:")
+		}
 	}
 	for _, k := range rewriteKeys {
 		_, has := manifest[k]
@@ -143,8 +148,8 @@ var docExts = map[string]bool{
 // JavaScript install surface, and the rule that matched.
 //
 // Every file whose name holds "pnpmfile" is a candidate (an install hook can add any package),
-// and so is a pnpm-workspace.yaml, .yarnrc* or .npmrc that mentions packageExtensions,
-// overrides, resolutions or pnpmfile (installRewriteConfig); neither is ever fully read. Other
+// and so is a pnpm-workspace.yaml, .yarnrc* or .npmrc that mentions any of rewriteConfigWords
+// (installRewriteConfig); neither is ever fully read. Other
 // workspace, registry and linker configuration is not a candidate: the lockfile records its
 // result, and every workspace package.json is itself a candidate.
 func jsCandidate(path string, head []byte) (string, bool) {
@@ -158,8 +163,11 @@ func jsCandidate(path string, head []byte) (string, bool) {
 }
 
 // rewriteConfigWords are the settings through which pnpm-workspace.yaml, .yarnrc.yml and .npmrc
-// add or swap packages at install time.
-var rewriteConfigWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
+// add or swap packages at install time. "catalog" covers catalog: and catalogs:, which a plain
+// install re-resolves without the lock naming the result; "configDependencies" covers pnpm config
+// plugins, whose pnpmfile pnpm loads from node_modules; "plugins" covers yarn berry plugins, whose
+// hooks can replace any descriptor. Each matches in every one of the three files.
+var rewriteConfigWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile", "catalog", "configDependencies", "plugins"}
 
 // installRewriteConfig reports whether the file is installer configuration whose head mentions
 // a setting that rewrites what an install resolves. It matches the word anywhere, comments

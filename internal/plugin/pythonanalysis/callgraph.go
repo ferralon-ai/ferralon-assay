@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -138,11 +139,11 @@ func loadProgram(buildDir string) (*program, error) {
 		}
 		scan := parseCallsAndIngresses(lines)
 		roots, opaque := dynamicImports(clean, lits)
-		parsed = append(parsed, parsedFile{
-			path:    p,
-			funcs:   funcs,
-			opaque:  opaque,
-			imports: importedTops(lines),
+		pf := parsedFile{
+			path:   p,
+			funcs:  funcs,
+			opaque: opaque,
+			refs:   importRefs(lines, packageOf(module, p)),
 			parse: fileParse{
 				module:    module,
 				calls:     scan.calls,
@@ -150,10 +151,14 @@ func loadProgram(buildDir string) (*program, error) {
 				bindings:  indexBindings(scan.bindings),
 				loadRoots: roots,
 			},
-		})
+		}
+		if _, ok := buildScriptBackends[filepath.Base(p)]; ok {
+			pf.text = string(data)
+		}
+		parsed = append(parsed, pf)
 	}
 
-	build := buildScripts(parsed)
+	build := buildScripts(parsed, entryPointConfigs(buildDir))
 	modules := make([]string, 0, len(parsed))
 	for i, pf := range parsed {
 		// A build script is still the project's own code, so its module stays first-party.
@@ -179,11 +184,12 @@ func loadProgram(buildDir string) (*program, error) {
 
 // parsedFile is one file's parse before loadProgram decides whether it is runtime code.
 type parsedFile struct {
-	path    string
-	funcs   []funcDecl
-	opaque  bool            // a dynamic import whose module the scanner cannot name
-	imports map[string]bool // top-level modules its absolute import statements name
-	parse   fileParse
+	path   string
+	funcs  []funcDecl
+	opaque bool        // a dynamic import whose module the scanner cannot name
+	refs   []importRef // modules its import statements may load
+	text   string      // raw source, kept only for build-script candidates
+	parse  fileParse
 }
 
 // buildScriptBackends maps a packaging build script's file name to the build backends one
@@ -198,11 +204,16 @@ var buildScriptBackends = map[string][]string{
 // a regular package (no __init__.py beside it). Build scripts run when the project is
 // built, not when it runs, so their imports and calls are not runtime code.
 //
-// Leaving a file out can only make the program look like it loads less, so a script stays
-// in whenever runtime code could still load it: another file imports its module name (by
-// statement or literal dynamic import), or any other file has a dynamic import the scanner
-// cannot name.
-func buildScripts(parsed []parsedFile) map[int]bool {
+// Leaving a file out can only make the program look like it loads less, so a script is
+// left out only when nothing at runtime can reach it. It stays in when any other file
+// imports it under any name it could have (absolute, dotted, relative or star import), when
+// any other file imports anything dynamically, or when an entry point in configs or in a
+// build script names it. configs is nil when a config could not be read, which keeps every
+// script.
+func buildScripts(parsed []parsedFile, configs []string) map[int]bool {
+	if configs == nil {
+		return nil
+	}
 	build := map[int]bool{}
 	for i, pf := range parsed {
 		backends, ok := buildScriptBackends[filepath.Base(pf.path)]
@@ -212,27 +223,28 @@ func buildScripts(parsed []parsedFile) map[int]bool {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(pf.path), "__init__.py")); err == nil {
 			continue
 		}
-		for _, b := range backends {
-			if pf.imports[b] {
-				build[i] = true
-			}
+		if slices.ContainsFunc(pf.refs, func(r importRef) bool {
+			top, _, _ := strings.Cut(r.path, ".")
+			return !r.relative && slices.Contains(backends, top)
+		}) {
+			build[i] = true
 		}
 	}
 	if len(build) == 0 {
 		return nil
 	}
-	for i, pf := range parsed {
-		if !build[i] && pf.opaque {
-			return nil
-		}
+	texts := slices.Clone(configs)
+	for i := range build {
+		texts = append(texts, parsed[i].text)
 	}
 	for i := range build {
-		stem := strings.TrimSuffix(filepath.Base(parsed[i].path), ".py")
+		names := moduleNames(parsed[i].parse.module)
+		if namedByEntryPoint(names, texts) {
+			delete(build, i)
+			continue
+		}
 		for j, pf := range parsed {
-			if j != i && (pf.imports[stem] || slices.ContainsFunc(pf.parse.loadRoots, func(r string) bool {
-				top, _, _ := strings.Cut(r, ".")
-				return top == stem
-			})) {
+			if j != i && (pf.opaque || len(pf.parse.loadRoots) > 0 || reachesAny(pf.refs, names)) {
 				delete(build, i)
 				break
 			}
@@ -241,34 +253,165 @@ func buildScripts(parsed []parsedFile) map[int]bool {
 	return build
 }
 
-// importedTops returns the top-level module of every absolute import statement in lines,
-// star imports included (`from m import *` names m though it binds nothing listable).
-func importedTops(lines []logicalLine) map[string]bool {
-	tops := map[string]bool{}
-	for _, ll := range lines {
-		for _, stmt := range strings.Split(ll.text, ";") {
-			kw, rest := firstWord(strings.TrimSpace(stmt))
-			var paths []string
-			switch kw {
-			case "import":
-				for _, item := range splitImportList(rest) {
-					path, _ := splitAlias(item)
-					paths = append(paths, path)
-				}
-			case "from":
-				from, _, ok := strings.Cut(strings.TrimSpace(rest), " ")
-				if ok {
-					paths = append(paths, from)
-				}
-			}
-			for _, p := range paths {
-				if top, _, _ := strings.Cut(p, "."); isDottedName(p) && top != "" {
-					tops[top] = true
-				}
+// moduleNames returns every dotted name a module could be imported under: its path from
+// the build root and each suffix of it, since any directory on the path may be an import
+// root (a src layout, a namespace package, a sys.path entry).
+func moduleNames(module string) []string {
+	segs := strings.Split(module, "/")
+	names := make([]string, 0, len(segs))
+	for i := range segs {
+		names = append(names, strings.Join(segs[i:], "."))
+	}
+	return names
+}
+
+// reachesAny reports whether an import in refs may load a module imported under one of
+// names: the name itself or something beneath it. A relative import climbing above the
+// build root reaches everything. A star import from a package above a build script never
+// loads it: the script's directory has no __init__.py to list it in __all__.
+func reachesAny(refs []importRef, names []string) bool {
+	for _, r := range refs {
+		if r.unresolved {
+			return true
+		}
+		for _, n := range names {
+			if r.path == n || strings.HasPrefix(r.path, n+".") {
+				return true
 			}
 		}
 	}
-	return tops
+	return false
+}
+
+// namedByEntryPoint reports whether any text names one of names as an entry-point object
+// reference ("module:attr", as [project.scripts], setup.cfg and setup() entry_points write
+// it). The match is lexical, so a stray "name:" keeps a script in rather than leaving it out.
+func namedByEntryPoint(names, texts []string) bool {
+	for _, n := range names {
+		re := regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(n) + `\s*:\s*[A-Za-z_]`)
+		for _, t := range texts {
+			if re.MatchString(t) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// entryPointConfigs returns the text of every pyproject.toml and setup.cfg under buildDir
+// (skipping the directories the source walk skips), the files that declare entry points. It
+// returns nil when one cannot be read or the walk fails.
+func entryPointConfigs(buildDir string) []string {
+	texts := []string{}
+	err := filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipDir(d.Name()) && path != buildDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if n := d.Name(); n == "pyproject.toml" || n == "setup.cfg" {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			texts = append(texts, string(data))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil
+	}
+	return texts
+}
+
+// importRef is one module an import statement may load, made absolute against the
+// importing file's package.
+type importRef struct {
+	path       string
+	relative   bool // written as a relative import
+	unresolved bool // a relative import climbing above the build root
+}
+
+// packageOf returns the package a module's relative imports resolve against: the module
+// itself for a package __init__, else its parent.
+func packageOf(module, path string) []string {
+	var segs []string
+	if module != "" {
+		segs = strings.Split(module, "/")
+	}
+	if strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) == "__init__" || len(segs) == 0 {
+		return segs
+	}
+	return segs[:len(segs)-1]
+}
+
+// importRefs returns the modules the import statements in lines may load: `import a.b`
+// loads a.b, and `from m import x` loads m and, if x is a submodule, m.x (`from m import *`
+// loads m). Relative imports resolve against pkg.
+func importRefs(lines []logicalLine, pkg []string) []importRef {
+	var refs []importRef
+	for _, ll := range lines {
+		for _, stmt := range strings.Split(ll.text, ";") {
+			kw, rest := firstWord(strings.TrimSpace(stmt))
+			switch kw {
+			case "import":
+				for _, item := range splitImportList(rest) {
+					if path, _ := splitAlias(item); isDottedName(path) {
+						refs = append(refs, importRef{path: path})
+					}
+				}
+			case "from":
+				from, tail, ok := strings.Cut(strings.TrimSpace(rest), " ")
+				kw2, names := firstWord(tail)
+				if !ok || kw2 != "import" {
+					continue
+				}
+				refs = append(refs, fromRefs(from, splitImportList(names), pkg)...)
+			}
+		}
+	}
+	return refs
+}
+
+// fromRefs returns the refs of `from <from> import <names>`.
+func fromRefs(from string, names []string, pkg []string) []importRef {
+	level := len(from) - len(strings.TrimLeft(from, "."))
+	mod := from[level:]
+	if mod != "" && !isDottedName(mod) {
+		return nil
+	}
+	base := mod
+	if level > 0 {
+		if level-1 > len(pkg) {
+			return []importRef{{relative: true, unresolved: true}}
+		}
+		parts := slices.Clone(pkg[:len(pkg)-(level-1)])
+		if mod != "" {
+			parts = append(parts, mod)
+		}
+		base = strings.Join(parts, ".")
+	}
+	join := func(name string) string {
+		if base == "" {
+			return name
+		}
+		return base + "." + name
+	}
+	var refs []importRef
+	if base != "" {
+		refs = append(refs, importRef{path: base, relative: level > 0})
+	}
+	for _, item := range names {
+		name, _ := splitAlias(item)
+		if isDottedName(name) {
+			refs = append(refs, importRef{path: join(name), relative: level > 0})
+		}
+	}
+	return refs
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init

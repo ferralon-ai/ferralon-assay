@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -422,11 +424,15 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 func TestLoadProgram_BuildScripts(t *testing.T) {
 	const setupPy = "from setuptools import setup\nsetup(name='app')\n"
 	const runtime = "def check(t):\n    return t\n"
+	// nsSetupPy sits in the namespace package pkg (no __init__.py), so pkg.setup is importable.
+	const nsSetupPy = "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app')\n"
+	const yamlLoad = "pypi:pyyaml#yaml.load"
 	cases := []struct {
 		name     string
 		files    map[string]string
 		script   string // module of the build-script candidate
 		excluded bool
+		edge     string // boundary edge the kept script's module-init must still have
 	}{
 		{
 			name:     "setup.py importing setuptools is excluded",
@@ -475,6 +481,66 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 			script: "setup",
 		},
 		{
+			name:     "setup.py in a namespace package nothing loads is excluded",
+			files:    map[string]string{"pkg/setup.py": nsSetupPy, "pkg/run.py": runtime},
+			script:   "pkg/setup",
+			excluded: true,
+		},
+		{
+			name:   "dotted import of a namespace-package setup.py keeps it",
+			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "import pkg.setup\n\ndef check(t):\n    return t\n"},
+			script: "pkg/setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "from-import of a namespace-package setup.py keeps it",
+			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "from pkg import setup\n\ndef check(t):\n    return t\n"},
+			script: "pkg/setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "relative import of a sibling setup.py keeps it",
+			files:  map[string]string{"pkg/setup.py": nsSetupPy, "pkg/run.py": "from . import setup\n\ndef check(t):\n    return t\n"},
+			script: "pkg/setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "relative import of a root setup.py keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "from . import setup\n\ndef check(t):\n    return t\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "literal dynamic import of a namespace-package setup.py keeps it",
+			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "import importlib\nmod = importlib.import_module('pkg.setup')\n"},
+			script: "pkg/setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "any other dynamic import keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "import importlib\nmod = importlib.import_module('json')\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "relative import climbing above the build root keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "from .. import helpers\n\ndef check(t):\n    return t\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:   "an entry point naming the script keeps it",
+			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "pyproject.toml": "[project]\nname = \"app\"\n\n[project.scripts]\ntool = \"setup:main\"\n"},
+			script: "setup",
+			edge:   yamlLoad,
+		},
+		{
+			name:     "an entry point naming another module leaves it out",
+			files:    map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "pyproject.toml": "[project]\nname = \"app\"\n\n[project.scripts]\ntool = \"app:check\"\n"},
+			script:   "setup",
+			excluded: true,
+		},
+		{
 			name:   "runtime dynamic import the scanner cannot name keeps it",
 			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"},
 			script: "setup",
@@ -508,7 +574,29 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 			if c.excluded && len(fromScript) != 0 {
 				t.Errorf("excluded build script still contributes boundary edges %v", fromScript)
 			}
+			if c.edge != "" && !slices.Contains(fromScript, c.edge) {
+				t.Errorf("kept build script's boundary edges %v lack %s", fromScript, c.edge)
+			}
 		})
+	}
+}
+
+// TestLoadProgram_UnreadableConfigKeepsBuildScripts: an entry-point config that cannot be
+// read might name the build script, so the script stays in.
+func TestLoadProgram_UnreadableConfigKeepsBuildScripts(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"setup.py": "from setuptools import setup\nsetup(name='app')\n",
+		"app.py":   "def check(t):\n    return t\n",
+	})
+	if err := os.Symlink(filepath.Join(dir, "missing.cfg"), filepath.Join(dir, "setup.cfg")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	prog, err := loadProgram(dir)
+	if err != nil {
+		t.Fatalf("loadProgram: %v", err)
+	}
+	if !slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == "setup" }) {
+		t.Fatal("setup.py left out although setup.cfg could not be read")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -317,7 +318,8 @@ func readInRoot(root, file string, limit int64) ([]byte, bool) {
 	if rel, err := filepath.Rel(realRoot, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil, false
 	}
-	f, err := os.Open(real)
+	// O_NONBLOCK keeps a FIFO from blocking the open; the fstat then rejects it.
+	f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, false
 	}

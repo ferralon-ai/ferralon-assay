@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -669,26 +671,72 @@ func parseExtrasGroup(body string) []string {
 	return out
 }
 
-// joinContinuations splits a requirements file into logical requirement strings, joining
-// backslash-continued physical lines.
+// joinContinuations splits a requirements file into logical lines the way pip's requirement
+// file reader does before it strips comments (req_file.join_lines over str.splitlines). Lines
+// break where Python's str.splitlines breaks them. A line ending in a backslash is joined to the
+// next, with every backslash at either end of it removed and nothing put in their place. The
+// exception is a comment line (first non-blank character '#'), which never continues and gets
+// one leading space. A backslash followed by trailing blanks does not continue a line.
 func joinContinuations(data string) []string {
 	var out []string
 	var cur strings.Builder
-	for _, raw := range strings.Split(data, "\n") {
-		line := strings.TrimRight(raw, "\r")
-		if strings.HasSuffix(strings.TrimRight(line, " \t"), "\\") {
-			cur.WriteString(strings.TrimSuffix(strings.TrimRight(line, " \t"), "\\"))
-			cur.WriteByte(' ')
+	pending := false
+	for _, line := range pySplitLines(data) {
+		comment := strings.HasPrefix(strings.TrimLeftFunc(line, pyIsSpace), "#")
+		if !strings.HasSuffix(line, "\\") || comment {
+			if comment {
+				line = " " + line
+			}
+			if pending {
+				cur.WriteString(line)
+				out = append(out, cur.String())
+				cur.Reset()
+				pending = false
+			} else {
+				out = append(out, line)
+			}
 			continue
 		}
-		cur.WriteString(line)
-		out = append(out, cur.String())
-		cur.Reset()
+		pending = true
+		cur.WriteString(strings.Trim(line, "\\"))
 	}
-	if cur.Len() > 0 {
+	if pending {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+// pySplitLines splits s at every line boundary Python's str.splitlines recognises, dropping the
+// boundaries. A trailing boundary yields no empty last line.
+func pySplitLines(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch r {
+		case '\n', '\v', '\f', 0x1c, 0x1d, 0x1e, 0x85, 0x2028, 0x2029:
+		case '\r':
+			if strings.HasPrefix(s[i+1:], "\n") {
+				n = 2
+			}
+		default:
+			i += n
+			continue
+		}
+		out = append(out, s[start:i])
+		i += n
+		start = i
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+// pyIsSpace reports whether r is whitespace to Python's str.isspace, which a regular expression's
+// \s matches.
+func pyIsSpace(r rune) bool {
+	return unicode.IsSpace(r) || r >= 0x1c && r <= 0x1f
 }
 
 // stripReqComment removes a "# ..." inline comment (a '#' that starts a token).

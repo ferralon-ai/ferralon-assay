@@ -13,6 +13,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"errors"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -66,7 +68,7 @@ func (s *launchScan) agent()      { s.reasons[PartialReasonLaunchAgent] = true }
 // walk visits every file under root at its real path. A symlinked directory is walked at its
 // real path when that lies inside root's real path and outside a skipped directory; links are
 // never followed by the directory walk itself, and each link target directory is walked at
-// most once, so the walk terminates on cycles. It dedupes onto buildtree.Walk after #97 merges.
+// most once, so the walk terminates on cycles.
 func (s *launchScan) walk(root string) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -156,13 +158,24 @@ func launchHasSuffix(lower string, suffixes ...string) bool {
 }
 
 func isCodeArchive(lower string) bool { return launchHasSuffix(lower, ".jar", ".war", ".ear") }
-func isTarArchive(lower string) bool  { return launchHasSuffix(lower, ".tar", ".tgz", ".tar.gz") }
+func isTarArchive(lower string) bool {
+	return launchHasSuffix(lower, ".tar", ".tgz", ".tar.gz", ".tbz2", ".tbz", ".tar.bz2")
+}
+
+// unopenedArchive reports a compressed archive the scanner cannot decompress.
+func unopenedArchive(lower string) bool {
+	return launchHasSuffix(lower, ".tar.xz", ".txz", ".tar.zst", ".tzst", ".tar.lz", ".tar.lzma", ".tar.z", ".7z", ".rar")
+}
 
 // file scans one checkout file. A code archive is read for its manifest only; a distribution
-// archive (.zip, .tar, .tgz) is read entry by entry; anything else is scanned as text.
+// archive (.zip, .tar, gzip or bzip2 tar) is read entry by entry; another compressed archive
+// cannot be read; anything else is scanned as text.
 func (s *launchScan) file(path, rel string) {
 	lower := strings.ToLower(rel)
 	switch {
+	case unopenedArchive(lower):
+		s.unreadable()
+		return
 	case isCodeArchive(lower):
 		zr, err := zip.OpenReader(path)
 		if err != nil {
@@ -189,7 +202,7 @@ func (s *launchScan) file(path, rel string) {
 	}
 	defer f.Close()
 	if isTarArchive(lower) {
-		s.tarEntries(f, !strings.HasSuffix(lower, ".tar"))
+		s.tarEntries(f, lower)
 		return
 	}
 	fi, err := f.Stat()
@@ -208,7 +221,7 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 			s.unreadable()
 			return
 		}
-		s.text(rel, inDist, data)
+		s.text(rel, inDist, decodeUTF16(data))
 		return
 	}
 	buf := make([]byte, launchWindow+launchOverlap)
@@ -227,6 +240,27 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 		}
 		carry = copy(buf, chunk[len(chunk)-launchOverlap:])
 	}
+}
+
+// decodeUTF16 returns a UTF-16 file with a byte-order mark as UTF-8; other data unchanged.
+func decodeUTF16(data []byte) []byte {
+	var le bool
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		le = true
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+	default:
+		return data
+	}
+	units := make([]uint16, 0, len(data)/2)
+	for i := 2; i+1 < len(data); i += 2 {
+		if le {
+			units = append(units, uint16(data[i])|uint16(data[i+1])<<8)
+		} else {
+			units = append(units, uint16(data[i])<<8|uint16(data[i+1]))
+		}
+	}
+	return []byte(string(utf16.Decode(units)))
 }
 
 // manifest reads a JAR's META-INF/MANIFEST.MF: a Launcher-Agent-Class starts an agent when
@@ -281,8 +315,11 @@ func (s *launchScan) zipEntries(zr *zip.Reader) {
 	}
 }
 
-func (s *launchScan) tarEntries(r io.Reader, gz bool) {
-	if gz {
+func (s *launchScan) tarEntries(r io.Reader, lower string) {
+	switch {
+	case launchHasSuffix(lower, ".tbz2", ".tbz", ".tar.bz2"):
+		r = bzip2.NewReader(r)
+	case !strings.HasSuffix(lower, ".tar"):
 		zr, err := gzip.NewReader(r)
 		if err != nil {
 			s.unreadable()
@@ -331,15 +368,16 @@ func (s *launchScan) entry(name string, r io.Reader, size int64) {
 }
 
 // jvmOptionVar reports whether an environment variable carries JVM options for the program:
-// the JVM's and the java launcher's own variables, JAVA_OPTS-style variables, and a Gradle
-// start script's <APP>_OPTS. The build tools' variables configure their own JVM.
+// the JVM's and the java launcher's own variables, JAVA_OPTS-style variables, a Gradle start
+// script's <APP>_OPTS, and MAVEN_OPTS and GRADLE_OPTS, whose JVM runs the program under
+// exec:java or a run task. SBT's and Ant's variables configure their own JVM.
 func isJVMOptionVar(name string) bool {
 	return !buildToolVars[name] && (strings.Contains(name, "JAVA_TOOL_OPTIONS") ||
 		strings.Contains(name, "JAVA_OPTIONS") || strings.Contains(name, "_OPTS"))
 }
 
 // buildToolVars configure a build tool's own JVM, not the program's.
-var buildToolVars = map[string]bool{"GRADLE_OPTS": true, "MAVEN_OPTS": true, "SBT_OPTS": true, "ANT_OPTS": true}
+var buildToolVars = map[string]bool{"SBT_OPTS": true, "ANT_OPTS": true}
 
 // options classifies one option list, token by token.
 func (s *launchScan) options(tokens []string) {
@@ -520,6 +558,9 @@ func leftBoundary(data []byte, i int) bool {
 	if b <= ' ' || strings.IndexByte("\"'`[](){},;=:+|&<>", b) >= 0 {
 		return true
 	}
+	if b == 'J' && i >= 2 && data[i-2] == '-' && leftBoundary(data, i-2) {
+		return true // kotlin, jshell and javac pass -J<option> to their JVM
+	}
 	return b == '-' && i >= 2 && data[i-2] == ':'
 }
 
@@ -545,8 +586,16 @@ func launchOptionTokens(data []byte) []launchToken {
 			pos = h + 1
 			continue
 		}
-		end := h
-		for end < len(data) && !isLaunchDelim(data[end]) {
+		end, joined := h, false
+		for end < len(data) {
+			if n := lineContinuation(data, end); n > 0 {
+				end += n
+				joined = true
+				continue
+			}
+			if isLaunchDelim(data[end]) {
+				break
+			}
 			end++
 		}
 		pos = end
@@ -554,13 +603,33 @@ func launchOptionTokens(data []byte) []launchToken {
 			continue
 		}
 		word := string(data[h:end])
+		if joined {
+			word = strings.NewReplacer("\\\r\n", "", "\\\n", "").Replace(word)
+		}
 		if !utf8.ValidString(word) {
 			continue
 		}
 		switch head {
 		case "-D":
+			quoted, unparsed := false, false
+			if end < len(data) && (data[end] == '"' || data[end] == '\'') && !strings.Contains(word, "=") {
+				// -D"k=v", -D'k', -Dk"ey": the shell joins the quoted segment into the name.
+				quoted = true
+				close := bytes.IndexByte(data[end+1:], data[end])
+				if close < 0 || bytes.IndexByte(data[end+1:end+1+close], '\n') >= 0 {
+					unparsed = true
+				} else {
+					word += string(data[end+1 : end+1+close])
+					end += close + 2
+					pos = end
+					unparsed = end < len(data) && !isLaunchDelim(data[end])
+				}
+			}
 			name, _, _ := strings.Cut(word[2:], "=")
-			if name == "" || !validPropertyName(name) {
+			if unparsed || name == "" || !validPropertyName(name) {
+				if quoted || joined || strings.HasPrefix(word, "-D=") {
+					out = append(out, launchToken{start: h, end: end, word: "-D"})
+				}
 				continue
 			}
 			if strings.HasSuffix(word, "=") && end < len(data) && (data[end] == '"' || data[end] == '\'') {
@@ -586,6 +655,20 @@ func launchOptionTokens(data []byte) []launchToken {
 		out = append(out, launchToken{start: h, end: end, word: word})
 	}
 	return out
+}
+
+// lineContinuation returns the length of a backslash line continuation at i, or 0.
+func lineContinuation(data []byte, i int) int {
+	if data[i] != '\\' {
+		return 0
+	}
+	switch {
+	case i+1 < len(data) && data[i+1] == '\n':
+		return 2
+	case i+2 < len(data) && data[i+1] == '\r' && data[i+2] == '\n':
+		return 3
+	}
+	return 0
 }
 
 // binaryAdjacent reports whether data[a:b] touches a control byte other than whitespace: a
@@ -614,17 +697,20 @@ func isClasspathToken(w string) bool {
 }
 
 // launchName finds the names that carry JVM options without being options themselves: option
-// variables, the Gradle and Maven DSL properties that become launch options, and the JAR
-// manifest attributes that start an agent or extend the classpath.
-var launchName = regexp.MustCompile(`\b[A-Za-z0-9_]*(?:JAVA_TOOL_OPTIONS|JAVA_OPTIONS|_OPTS)[A-Za-z0-9_]*\b|\b(?:applicationDefaultJvmArgs|defaultJvmOpts|jvmFlags?|jvmArguments)\b|\bLauncher-Agent-Class\b|\bClass-Path\b`)
+// variables, the Gradle and Maven DSL properties that become JVM options, the JAR manifest
+// attributes that start an agent or extend the classpath, and the CLASSPATH variable.
+var launchName = regexp.MustCompile(`\b[A-Za-z0-9_]*(?:JAVA_TOOL_OPTIONS|JAVA_OPTIONS|_OPTS)[A-Za-z0-9_]*\b|\b(?:applicationDefaultJvmArgs|defaultJvmOpts|jvmFlags?|jvmArguments|jvmArgs|jvmArgumentProviders|argLine)\b|\bLauncher-Agent-Class\b|\bClass-Path\b|\bCLASSPATH\b`)
 
 // launchNames returns the launch-name occurrences in text. A file with a NUL byte is a binary
 // serialization (a class file, Gradle's execution history) that the launcher reads no options
 // from: a name in it is data, and options embedded in binaries are residue. Option tokens in
 // binaries still classify themselves.
 func launchNames(data []byte) [][]int {
-	if bytes.IndexByte(data, 0) >= 0 {
-		return nil
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		if !bytes.HasPrefix(data, []byte("#!")) {
+			return nil
+		}
+		data = data[:i] // a script with an appended payload: its text is the script
 	}
 	var out [][]int
 	for _, loc := range launchName.FindAllIndex(data, -1) {
@@ -637,13 +723,20 @@ func launchNames(data []byte) [][]int {
 
 var launchDSLNames = map[string]bool{
 	"applicationDefaultJvmArgs": true, "defaultJvmOpts": true, "jvmFlags": true, "jvmFlag": true, "jvmArguments": true,
+	"jvmArgs": true, "argLine": true,
 }
 
 // tokensOnly classifies the tokens of a window of a large file, with no reader context. An
 // occurrence running into the window's end is read whole from the next, overlapping window.
 func (s *launchScan) tokensOnly(data []byte, final bool) {
 	for _, t := range launchOptionTokens(data) {
-		if t.word == "-p" || !final && t.end == len(data) {
+		if !final && t.end == len(data) {
+			if t.start < len(data)-launchOverlap {
+				s.unreadable() // the next window starts inside it
+			}
+			continue
+		}
+		if t.word == "-p" {
 			continue
 		}
 		s.options([]string{t.word})
@@ -668,8 +761,9 @@ const (
 	// spanBuild: a build tool's own JVM or command line. Its -D and -XX options are claimed,
 	// except properties a build plugin turns into launch options (jib.*, spring-boot.*).
 	spanBuild launchSpanKind = iota
-	// spanDev: a Gradle jvmArgs or Maven argLine, which configure test and dev-run JVMs only.
-	spanDev
+	// spanTest: a Gradle jvmArgs in a test task's block, or a Maven argLine in the Surefire or
+	// Failsafe plugin: the test JVM only.
+	spanTest
 )
 
 type launchSpan struct {
@@ -685,6 +779,7 @@ type launchFile struct {
 	gradlew     bool
 	startScript bool
 	spans       []launchSpan
+	testScopes  [][2]int     // Gradle test blocks and Surefire/Failsafe plugin elements
 	yamlLines   map[int]bool // 1-based lines whose name occurrence a YAML reader classified
 	template    map[int]bool // 0-based start-script template comment lines
 }
@@ -697,7 +792,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 		return
 	}
 	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
-	f := &launchFile{s: s, data: data, gradlew: base == "gradlew" || base == "gradlew.bat",
+	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data),
 		startScript: isStartScript(rel, inDist), yamlLines: map[int]bool{}, template: map[int]bool{}}
 	f.lines = append(f.lines, 0)
 	for i, b := range data {
@@ -706,7 +801,7 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 		}
 	}
 	f.buildSpans(rel)
-	f.devSpans()
+	f.testSpans(base)
 	if f.gradlew || f.startScript {
 		for i := range f.lines {
 			if startScriptCommentLines[strings.Join(strings.Fields(f.line(i)), " ")] {
@@ -726,6 +821,13 @@ func (s *launchScan) text(rel string, inDist bool, data []byte) {
 	if javaCtx {
 		f.javaContext()
 	}
+}
+
+// isGradleWrapper reports whether rel is the checkout's Gradle wrapper script: gradlew or
+// gradlew.bat at the root, carrying the template's wrapper entry point.
+func isGradleWrapper(rel string, inDist bool, data []byte) bool {
+	return !inDist && (rel == "gradlew" || rel == "gradlew.bat") &&
+		(bytes.Contains(data, []byte("org.gradle.wrapper.GradleWrapperMain")) || bytes.Contains(data, []byte("gradle-wrapper.jar")))
 }
 
 // isStartScript reports whether rel is a Gradle-generated start script: build/scripts/<name>
@@ -808,12 +910,12 @@ func isJavaCommand(w string) bool {
 	return false
 }
 
-// buildSpans marks the build tools' own option surfaces: the wrapper scripts and .mvn
-// config files whole, a build-tool command up to the next command or java word, and a line
-// that assigns a build tool's option variable or Gradle's daemon JVM arguments.
+// buildSpans marks the build tools' own option surfaces: the wrapper scripts and Maven's
+// command-line config file whole, a build-tool command up to the next command or java word,
+// and a line that assigns SBT's or Ant's option variable or Gradle's daemon JVM arguments.
+// Maven's .mvn/jvm.config, like MAVEN_OPTS, configures the JVM exec:java runs the program in.
 func (f *launchFile) buildSpans(rel string) {
-	if f.gradlew || strings.HasSuffix(rel, ".mvn/jvm.config") || strings.HasSuffix(rel, ".mvn/maven.config") ||
-		rel == ".mvn/jvm.config" || rel == ".mvn/maven.config" {
+	if f.gradlew || strings.HasSuffix(rel, ".mvn/maven.config") || rel == ".mvn/maven.config" {
 		f.spans = append(f.spans, launchSpan{0, len(f.data), spanBuild})
 		return
 	}
@@ -846,17 +948,28 @@ func (f *launchFile) buildSpans(rel string) {
 	}
 }
 
-var devArgs = regexp.MustCompile(`\bjvmArgs\b|<argLine>`)
+var testArgs = regexp.MustCompile(`\bjvmArgs\b|<argLine>`)
 
-// devSpans marks Gradle jvmArgs (Test, JavaExec, bootRun) and Maven argLine (Surefire,
-// Failsafe): JVMs the build starts for tests and dev runs, never the deployed program.
-func (f *launchFile) devSpans() {
-	for _, loc := range devArgs.FindAllIndex(f.data, -1) {
+// testSpans marks the jvmArgs and argLine values that configure only a test JVM: a jvmArgs in
+// a Gradle test task's block, and an argLine in the Surefire or Failsafe plugin. Every other
+// jvmArgs (run, bootRun, any JavaExec) and argLine configures a JVM that may run the program.
+func (f *launchFile) testSpans(base string) {
+	if base != "pom.xml" && !launchHasSuffix(base, ".gradle", ".gradle.kts") {
+		return
+	}
+	f.testScopes = f.findTestScopes()
+	for _, loc := range testArgs.FindAllIndex(f.data, -1) {
+		scopeEnd, ok := rangeEnd(f.testScopes, loc[0])
+		if !ok {
+			continue
+		}
 		end := f.lineEnd(f.lineOf(loc[0]))
 		if string(f.data[loc[0]:loc[1]]) == "<argLine>" {
-			if i := bytes.Index(f.data[loc[1]:], []byte("</argLine>")); i >= 0 {
-				end = max(end, loc[1]+i)
+			i := bytes.Index(f.data[loc[1]:], []byte("</argLine>"))
+			if i < 0 {
+				continue
 			}
+			end = loc[1] + i
 		} else {
 			rest := string(f.data[loc[1]:])
 			trimmed := strings.TrimLeft(rest, " \t")
@@ -867,16 +980,109 @@ func (f *launchFile) devSpans() {
 				}
 			}
 			if expr, ok := bracketedExpr(trimmed); ok {
-				end = max(end, loc[1]+len(rest)-len(trimmed)+len(expr))
+				end = loc[1] + len(rest) - len(trimmed) + len(expr)
 			}
 		}
-		f.spans = append(f.spans, launchSpan{loc[0], end, spanDev})
+		f.spans = append(f.spans, launchSpan{loc[0], min(end, scopeEnd), spanTest})
 	}
+}
+
+// gradleTestBlock matches the opening of a block that configures Gradle test tasks: test { },
+// tasks.test { }, tasks.named("test") { }, and withType<Test> { } or withType(Test) { }, each
+// optionally through .configure or .configureEach.
+var gradleTestBlock = regexp.MustCompile(`(?m)(?:^[ \t]*|\btasks\.)test[ \t]*(?:\.configure[ \t]*)?\{` +
+	`|\btasks\.named(?:<Test>)?\([ \t]*["']test["'][ \t]*(?:,[ \t]*Test(?:::class(?:\.java)?)?[ \t]*)?\)[ \t]*(?:\.configure[ \t]*)?\{` +
+	`|\bwithType(?:<Test>[ \t]*(?:\([ \t]*\))?|\([ \t]*Test(?:::class(?:\.java)?)?[ \t]*\))[ \t]*(?:\.configureEach[ \t]*)?\{`)
+
+var (
+	mavenPlugin     = regexp.MustCompile(`<plugin>`)
+	mavenArtifactID = regexp.MustCompile(`<artifactId>\s*([^<\s]+)\s*</artifactId>`)
+)
+
+// findTestScopes returns the byte ranges of the file's test-task configuration: each Gradle test
+// block's braces, and each Maven Surefire or Failsafe <plugin> element. A block whose end cannot
+// be found is not a test scope.
+func (f *launchFile) findTestScopes() [][2]int {
+	var out [][2]int
+	for _, loc := range gradleTestBlock.FindAllIndex(f.data, -1) {
+		if end, ok := matchBrace(f.data, loc[1]-1); ok {
+			out = append(out, [2]int{loc[1], end})
+		}
+	}
+	for _, loc := range mavenPlugin.FindAllIndex(f.data, -1) {
+		end := bytes.Index(f.data[loc[1]:], []byte("</plugin>"))
+		if end < 0 {
+			continue
+		}
+		body := f.data[loc[1] : loc[1]+end]
+		// The plugin's own coordinates precede its configuration, executions and dependencies.
+		head := body
+		for _, child := range []string{"<configuration>", "<executions>", "<dependencies>"} {
+			if i := bytes.Index(head, []byte(child)); i >= 0 {
+				head = head[:i]
+			}
+		}
+		if m := mavenArtifactID.FindSubmatch(head); m != nil {
+			switch string(m[1]) {
+			case "maven-surefire-plugin", "maven-failsafe-plugin":
+				out = append(out, [2]int{loc[1], loc[1] + end})
+			}
+		}
+	}
+	return out
+}
+
+func inRanges(ranges [][2]int, off int) bool {
+	_, ok := rangeEnd(ranges, off)
+	return ok
+}
+
+// rangeEnd returns the end of the innermost range holding off.
+func rangeEnd(ranges [][2]int, off int) (int, bool) {
+	end, ok := 0, false
+	for _, r := range ranges {
+		if off >= r[0] && off < r[1] && (!ok || r[1] < end) {
+			end, ok = r[1], true
+		}
+	}
+	return end, ok
+}
+
+// matchBrace returns the offset of the brace closing the one at open, skipping string
+// literals and line comments.
+func matchBrace(data []byte, open int) (int, bool) {
+	depth := 0
+	var quote byte
+	for i := open; i < len(data); i++ {
+		c := data[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '/' && i+1 < len(data) && data[i+1] == '/':
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // option classifies one option token.
 func (f *launchFile) option(t launchToken) {
-	if t.word == "-p" || f.inSpan(t.start, spanDev) || f.template[f.lineOf(t.start)] {
+	if t.word == "-p" || f.inSpan(t.start, spanTest) || f.template[f.lineOf(t.start)] {
 		return
 	}
 	if isClasspathToken(t.word) {
@@ -933,8 +1139,11 @@ func (f *launchFile) name(a, b int) {
 		f.s.unreadable()
 		return
 	}
-	if f.inSpan(a, spanDev) || buildToolVars[n] || launchExpansion(f.data, a, b) {
+	if f.inSpan(a, spanTest) || buildToolVars[n] || launchExpansion(f.data, a, b) {
 		return
+	}
+	if n == "argLine" && (a == 0 || f.data[a-1] != '<') {
+		return // Maven's argLine is an element; the name elsewhere is a reference to it
 	}
 	li := f.lineOf(a)
 	line := f.line(li)
@@ -943,6 +1152,20 @@ func (f *launchFile) name(a, b int) {
 	}
 	if launchDSLNames[n] {
 		f.dsl(a, b)
+		return
+	}
+	if n == "CLASSPATH" {
+		// java reads CLASSPATH when no -cp is given: it names the launch's code. The Gradle
+		// templates set it for their own -classpath "$CLASSPATH".
+		if !f.gradlew && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
+			f.s.unreadable()
+		}
+		return
+	}
+	if n == "jvmArgumentProviders" {
+		if !inRanges(f.testScopes, a) {
+			f.s.unreadable() // providers compute options at execution time
+		}
 		return
 	}
 	if f.yamlLines[li+1] {
@@ -1199,7 +1422,7 @@ func (f *launchFile) javaContext() {
 				java = false
 			case isJavaCommand(w):
 				java = true
-			case java && javaContextOption(w) && !f.inSpan(ll[0]+loc[0], spanDev):
+			case java && javaContextOption(w) && !f.inSpan(ll[0]+loc[0], spanTest):
 				f.s.unreadable()
 			}
 		}

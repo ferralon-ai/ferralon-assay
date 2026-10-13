@@ -140,7 +140,10 @@ func (e *Engine) fieldInitOwners(f classfile.FieldRef) []string {
 // resolveField performs field resolution (JVMS §5.4.3.2) over the loaded classes: the
 // class's own fields, then its direct superinterfaces recursively, then its
 // superclass recursively. ok is false when an out-of-classpath class could declare
-// the field; ("", true) means no loaded declaration and nothing unknown.
+// the field; ("", true) means no loaded declaration and nothing unknown. An unloaded
+// platform class declares no application field: its supertypes are platform classes
+// too, so skipping it skips no application declarer, and a field it does declare
+// initializes only platform code.
 func (e *Engine) resolveField(owner, name, desc string, seen map[string]bool) (declarer string, ok bool) {
 	if seen[owner] {
 		return "", true
@@ -148,7 +151,7 @@ func (e *Engine) resolveField(owner, name, desc string, seen map[string]bool) (d
 	seen[owner] = true
 	c := e.classes[owner]
 	if c == nil {
-		return "", false
+		return "", isPlatformClass(owner)
 	}
 	for _, f := range c.Fields {
 		if f.Name == name && f.Descriptor == desc {

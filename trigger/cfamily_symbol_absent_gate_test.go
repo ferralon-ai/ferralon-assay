@@ -161,15 +161,24 @@ func (s cfamilyAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 
 func runCFamilyBaseline(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource, ids ...string) *report.Report {
 	t.Helper()
+	return runCFamilyBaselineTree(t, lane, src, map[string]string{"conanfile.txt": "[requires]\nzlib/1.2.11\n"}, ids...)
+}
+
+// runCFamilyBaselineTree scans a C tree whose dependency manifests are manifests.
+func runCFamilyBaselineTree(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource, manifests map[string]string, ids ...string) *report.Report {
+	t.Helper()
 	if len(ids) == 0 {
 		ids = []string{cfamilyAdvisoryID}
 	}
 	dir := t.TempDir()
-	for name, body := range map[string]string{
-		"conanfile.txt": "[requires]\nzlib/1.2.11\n",
-		"go.mod":        "module example.com/c-target\n\ngo 1.22\n\nrequire " + goAdvisoryModule + " v1.0.0\n",
-		"main.c":        "#include <zlib.h>\nint load(const char *p) { return p != 0; }\nint main(int c, char **v) { return load(v[0]); }\n",
-	} {
+	files := map[string]string{
+		"go.mod": "module example.com/c-target\n\ngo 1.22\n\nrequire " + goAdvisoryModule + " v1.0.0\n",
+		"main.c": "#include <zlib.h>\nint load(const char *p) { return p != 0; }\nint main(int c, char **v) { return load(v[0]); }\n",
+	}
+	for name, body := range manifests {
+		files[name] = body
+	}
+	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -249,4 +258,34 @@ func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
 func TestCFamilyBaseline_UnresolvedThroughDependencyIsUndetermined(t *testing.T) {
 	rep := runCFamilyBaseline(t, cfamilyGatePlugin{unresolved: true}, cfamilyAdvisories{symbols: []string{"inflate_fast", "inflate"}})
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+}
+
+// A conan.lock that pins the host graph makes the C/C++ inventory Complete, so the scan-wide
+// inventory limit no longer holds C/C++ rows. None of them refutes without it: each lane shape the
+// tests above use still lands undetermined, on the lane's own declaration.
+func TestCFamilyBaseline_LockedInventoryAddsNoRefutation(t *testing.T) {
+	const sink = "inflateGetHeader"
+	lock := map[string]string{
+		"conan.lock":    `{"version":"0.5","requires":["zlib/1.2.11#cac0f6daea041b0ccf42934163defb20%1765284699.337"],"build_requires":[],"python_requires":[]}`,
+		"conanfile.txt": "[requires]\nzlib/1.2.11\n",
+	}
+	for _, tc := range []struct {
+		name string
+		lane cfamilyGatePlugin
+		src  cfamilyAdvisories
+	}{
+		{"symbol absent", cfamilyGatePlugin{}, cfamilyAdvisories{}},
+		{"named and unreached", cfamilyGatePlugin{unreached: map[string]bool{sink: true}}, cfamilyAdvisories{symbols: []string{sink}}},
+		{"unresolved through the dependency", cfamilyGatePlugin{unresolved: true}, cfamilyAdvisories{symbols: []string{"inflate_fast", "inflate"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := runCFamilyBaselineTree(t, tc.lane, tc.src, lock, cfamilyAdvisoryID)
+			for _, n := range inventoryLimits(rep.Partiality) {
+				if n.Ecosystem == "cfamily" {
+					t.Errorf("scan still carries a cfamily inventory limit: %+v", n)
+				}
+			}
+			assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+		})
+	}
 }

@@ -91,6 +91,7 @@ func TestResolveVersions_FullyReadSurfacesResolve(t *testing.T) {
 		".git/HEAD":        "ref: refs/heads/main\n",
 		".git/config":      "[core]\n\tbare = false\n",
 		".venv/lib/python3.12/site-packages/PyJWT-2.8.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: PyJWT\nVersion: 2.8.0\n\nbody\n",
+		"lib/site-packages/PyJWT-2.8.0.egg-info/PKG-INFO":                   "Metadata-Version: 1.0\nName: PyJWT\nVersion: 2.8.0\n",
 		"app.py": "import jwt\n",
 	})
 	mustResolvedCompletePy(t, dir, "pyjwt", "2.8.0")

@@ -84,6 +84,15 @@ func TestResolveVersions_SurfaceNameAloneVetoes(t *testing.T) {
 	}
 }
 
+// A package.json in node_modules that cannot be read (here, a directory) is an unread copy.
+func TestResolveVersions_UnreadableCopyVetoes(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json":                     rootLockJSON5,
+		"node_modules/json5/package.json/.keep": "",
+	})
+	mustVetoedJS(t, dir, "json5")
+}
+
 // A package installed in a node_modules directory is another copy of it, in every layout npm,
 // yarn and pnpm install: a copy at another version than the lock's leaves the pin
 // unresolved.

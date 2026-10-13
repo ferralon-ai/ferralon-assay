@@ -45,11 +45,11 @@ func unreadSurfaces(root string, locks []string) bool {
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and
-// bower read.
+// bower read, other than the *.lock and *.lockb names npmSurfaceName matches as a class (yarn,
+// bun, deno).
 var npmSurfaceNames = map[string]bool{
 	"package.json": true, "package-lock.json": true, "npm-shrinkwrap.json": true,
-	"yarn.lock": true, "pnpm-lock.yaml": true, "pnpm-lock.yml": true,
-	"bun.lock": true, "bun.lockb": true, "deno.lock": true, "deno.json": true, "deno.jsonc": true,
+	"pnpm-lock.yaml": true, "pnpm-lock.yml": true, "deno.json": true, "deno.jsonc": true,
 	"bower.json": true, "import_map.json": true,
 }
 

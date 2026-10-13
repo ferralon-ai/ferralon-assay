@@ -117,6 +117,21 @@ func TestEvidenceResult(t *testing.T) {
 	}
 }
 
+// TestModuleRefutation_NamesBuildTags: the refutation holds for the tags govulncheck built with,
+// which GOFLAGS can set.
+func TestModuleRefutation_NamesBuildTags(t *testing.T) {
+	findings := []vulnFinding{{Trace: []vulnFrame{{Module: "golang.org/x/net", Version: "v0.1.0"}}}}
+	for _, tc := range []struct{ goflags, want string }{
+		{"", "default build tags"},
+		{"-tags=prod,netgo", "build tags from GOFLAGS: prod,netgo"},
+	} {
+		r := moduleRefutation(findings, []string{"GOFLAGS=" + tc.goflags})
+		if r == nil || !strings.Contains(r.Detail, tc.want) {
+			t.Errorf("GOFLAGS=%q: refutation %+v, want detail naming %q", tc.goflags, r, tc.want)
+		}
+	}
+}
+
 func TestModuleRefutation_PicksFirstModuleInPathOrder(t *testing.T) {
 	r := moduleRefutation([]vulnFinding{
 		{Trace: []vulnFrame{{Module: "golang.org/x/text", Version: "v0.3.0"}}},

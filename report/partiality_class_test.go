@@ -40,6 +40,11 @@ func TestClassifyPartialityReason(t *testing.T) {
 		// of the method true on every scan.
 		plugin.PartialReasonAdvisorySymbolAbsent: report.PartialityDidNotRun,
 		plugin.PartialReasonIfdefConfigVariance:  report.PartialityDidNotRun,
+		// A Go program's own reflective calls, template execution and plugin loads: properties
+		// of this codebase, not of the method.
+		plugin.PartialReasonReflectiveCall: report.PartialityDidNotRun,
+		plugin.PartialReasonPluginLoad:     report.PartialityDidNotRun,
+		plugin.PartialReasonExcludedFiles:  report.PartialityDidNotRun,
 	} {
 		if got := report.ClassifyPartialityReason(reason); got != want {
 			t.Errorf("ClassifyPartialityReason(%q) = %q, want %q", reason, got, want)

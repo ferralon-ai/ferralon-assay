@@ -79,7 +79,7 @@ func TestMultipleProjects(t *testing.T) {
 		{"settings slashy string", map[string]string{"settings.gradle": "rootProject.name = 'x'\ndef p = /a\\/*/\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
 		{"settings name and include share a line unseparated", map[string]string{"settings.gradle": "rootProject.name = 'x' include 'app'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, true},
 		{"settings include and name share a line unseparated", map[string]string{"settings.gradle": "include 'app' rootProject.name = 'x'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, true},
-		{"settings name and one include stay single",map[string]string{"settings.gradle": "rootProject.name = 'x'\ninclude 'app'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, false},
+		{"settings name and one include stay single", map[string]string{"settings.gradle": "rootProject.name = 'x'\ninclude 'app'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, false},
 		{"settings include before the name stays single", map[string]string{"settings.gradle": "include 'app'\nrootProject.name='x'\n", "app/build.gradle": "", "app/src/main/java/A.java": ""}, false},
 		{"settings statements on one line stay single", map[string]string{"settings.gradle.kts": "rootProject.name = \"x\"; include(\":app\")\n", "app/build.gradle.kts": "", "app/src/main/java/A.java": ""}, false},
 	} {
@@ -144,6 +144,16 @@ func TestMultipleProjects_SymlinksAndUnreadable(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		}, true},
+		{"unreadable root POM", func(t *testing.T, dir string) {
+			pom := filepath.Join(dir, "pom.xml")
+			if err := os.Chmod(pom, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(pom, 0o644) })
+		}, true},
+		{"root POM that does not parse", func(t *testing.T, dir string) {
+			writeFile(t, filepath.Join(dir, "pom.xml"), "<project><modules><module>b</module>")
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

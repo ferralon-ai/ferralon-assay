@@ -181,11 +181,12 @@ func projectWalkSkip(name string) bool {
 }
 
 // pomListsModules reports whether the POM lists any <module>, at the top level or in a
-// profile. A profile's modules join the reactor whenever the profile is active.
+// profile. A profile's modules join the reactor whenever the profile is active. A POM that
+// cannot be read or parsed may list any, so it counts as listing them.
 func pomListsModules(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return true
 	}
 	var x struct {
 		Modules  []string `xml:"modules>module"`
@@ -194,7 +195,7 @@ func pomListsModules(path string) bool {
 		} `xml:"profiles>profile"`
 	}
 	if unmarshalPOM(data, &x) != nil {
-		return false
+		return true
 	}
 	if len(x.Modules) > 0 {
 		return true

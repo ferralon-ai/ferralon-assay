@@ -343,6 +343,10 @@ type ResolvedDependency struct {
 	Version    string `json:"version,omitempty"` // declared version; empty when Resolved=false
 	Resolved   bool   `json:"resolved"`          // true ONLY when a concrete version was determined
 	Source     string `json:"source,omitempty"`  // "pom" | "gradle" (provenance, informational)
+	// Constraint is the declared version specifier (e.g. ">=2.0,<3") when the manifest states a
+	// range rather than an exact pin. It is evidence only: a range never becomes Version, and a
+	// consumer must not derive a resolved version from it. Empty for exact pins and bare names.
+	Constraint string `json:"constraint,omitempty"`
 }
 
 // DependencyVersionResult reports the resolved declared version for the requested
@@ -354,6 +358,14 @@ type DependencyVersionResult struct {
 	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
 	Match      ResolvedDependency   `json:"match"`
 	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
+	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
+	// from All is provably not a dependency. Build-isolation environments are not runtime
+	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
+	// declaration in All, but what the build backend pulls in transitively is not enumerated.
+	// False (the default, and every plugin that does not set it) means absence from All proves
+	// nothing and a consumer must fail open.
+	Exhaustive bool `json:"exhaustive,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.
@@ -370,6 +382,21 @@ type ReachabilityRequest struct {
 	// here. A plugin that cannot honor the request must fall back and say so via
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
+	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
+	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
+	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is
+	// empty when either the PURL or the resolved version is unknown, and a lane MUST NOT emit a
+	// package_not_loaded Refutation then: with no admitted version there is nothing to refute, so
+	// the advisory stays undetermined, never not_exploitable.
+	//
+	// Package carries the name as the advisory spells it (pkg:pypi/pyjwt while the lockfile pins
+	// PyJWT). A lane compares it with installed and loaded names only after canonicalizing both
+	// sides: PyPI by PEP 503 (lowercase, every run of "-", "_" and "." becomes "-"), NuGet by
+	// lowercasing, every other ecosystem exactly (npm `name` or `@scope/name`, Maven
+	// `group:artifact`, Go module path). The gate matches a Refutation's Package on type and name,
+	// never on version, so a lane refutes only when no installed copy of that canonical name loads,
+	// at any version, and refutes nothing when it cannot enumerate the copies.
+	Package string `json:"package,omitempty"`
 }
 
 // --- result payloads ---

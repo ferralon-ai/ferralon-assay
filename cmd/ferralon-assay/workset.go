@@ -92,6 +92,10 @@ const (
 	// not be resolved to facts (digest mismatch, malformed or unrecognized record). They were NOT
 	// evaluated.
 	reasonPolicyAdvisoryUnresolvable = "policy_advisory_unresolvable"
+	// reasonWorkSetDependencyUnresolved: a declared dependency has no resolved version, so OSV.dev
+	// was not asked about it and the advisories against it were NOT assessed. One note per
+	// dependency, scoped by Package. Unclassified, so the report puts it in the loud arm.
+	reasonWorkSetDependencyUnresolved = "work_set_dependency_unresolved"
 )
 
 // workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
@@ -133,6 +137,9 @@ type workSet struct {
 	// policyUnresolvable is every policy id whose corpus record did not resolve to facts, sorted.
 	// Not evaluated; disclosed through the reasonPolicyAdvisoryUnresolvable note and describe().
 	policyUnresolvable []string
+	// unversioned is every declared dependency the OSV query skipped for having no resolved version,
+	// sorted. Disclosed through one reasonWorkSetDependencyUnresolved note each and describe().
+	unversioned []string
 	// ecosystem is the dependency ecosystem the widening queried, for the CLI summary line.
 	ecosystem string
 }
@@ -176,8 +183,11 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 	ws := floorWorkSet(acq.advisories)
 	ws.ecosystem = ecosystemForLanguage(acq.language)
 
-	pkgs, notes := dependencyInventory(ctx, acq)
+	// Admission is by name, so an unresolved dependency is admitted like a resolved one: its
+	// advisories get rows, and with no version to compare the version check fails open downstream.
+	resolved, unresolved, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
+	pkgs := append(resolved, unresolved...)
 	isRoot := rootMatcher(ctx, acq)
 	if len(pkgs) == 0 && isRoot == nil {
 		return ws
@@ -330,8 +340,21 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	ws := floorWorkSet(acq.advisories)
 	ws.ecosystem = ecosystemForLanguage(acq.language)
 
-	pkgs, notes := dependencyInventory(ctx, acq)
+	pkgs, unversioned, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
+	// OSV answers a versionless query with every advisory ever recorded against the package, so an
+	// unresolved dependency is not queried. It is named instead: skipping it silently would read
+	// as OSV having found nothing.
+	purlType := purlTypeForEcosystem(ws.ecosystem)
+	for _, u := range unversioned {
+		ws.unversioned = append(ws.unversioned, u.Name)
+		ws.partiality = append(ws.partiality, report.PartialityNote{
+			Reason:    reasonWorkSetDependencyUnresolved,
+			Ecosystem: ws.ecosystem,
+			Package:   versionlessPURL(purlType, u.Name),
+			Detail:    u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed",
+		})
+	}
 	// The project's own published package is queried too, so OSV answers for advisories against
 	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
 	// advisory ever recorded against the package.
@@ -486,51 +509,78 @@ func aliasIndex() map[string]string {
 // plugin's existing whole-manifest parse: ResolveDependencyVersions already parses every
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.
-func dependencyInventory(ctx context.Context, acq *acquired) ([]report.Package, []report.PartialityNote) {
+//
+// resolved holds every distinct resolved (coordinate, version); unresolved is every coordinate with at
+// least one declaration that carries no resolved version, Version empty (inv.5 — a version is never
+// guessed). A coordinate can sit in both: its resolved versions are still queried, and the unresolved
+// copy is still disclosed, because the pipeline's version match treats any unresolved copy as
+// unresolved. Both are sorted. The inventory is absent only when neither holds anything.
+func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	eco := ecosystemForLanguage(acq.language)
 	if eco == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if acq.language == checkout.LangGo {
-		return goDependencyInventory(acq.buildDir)
+		pkgs, notes := goDependencyInventory(acq.buildDir)
+		return pkgs, nil, notes
 	}
 
 	// No analyzer plugin means no manifest parser for this language. That is an absent inventory,
 	// not a crash: the pass degrades to the floor and discloses it, like every other failure here.
 	if acq.plugin == nil {
-		return nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
+		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
 
 	res, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir})
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
+		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
 
 	seen := make(map[report.Package]struct{}, len(res.All))
-	var pkgs []report.Package
 	for _, d := range res.All {
-		// An UNRESOLVED dependency carries no version by design (inv.5 — a version is never
-		// guessed). OSV needs one to decide whether a range applies, so it is skipped here rather
-		// than queried with an empty version, which OSV would answer with every advisory ever
-		// recorded against the package.
-		if !d.Resolved || d.Version == "" || d.Coordinate == "" {
+		if d.Coordinate == "" {
 			continue
 		}
-		p := report.Package{Ecosystem: eco, Name: d.Coordinate, Version: d.Version}
+		p := report.Package{Ecosystem: eco, Name: d.Coordinate}
+		if d.Resolved && d.Version != "" {
+			p.Version = d.Version
+		}
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		pkgs = append(pkgs, p)
+		if p.Version == "" {
+			unresolved = append(unresolved, p)
+		} else {
+			resolved = append(resolved, p)
+		}
 	}
 
-	var notes []report.PartialityNote
-	if len(pkgs) == 0 {
+	if len(resolved) == 0 && len(unresolved) == 0 {
 		notes = append(notes, report.PartialityNote{Reason: reasonWorkSetNoInventory, Ecosystem: eco})
 	}
-	sortPackages(pkgs)
-	return pkgs, notes
+	sortPackages(resolved)
+	sortPackages(unresolved)
+	return resolved, unresolved, notes
+}
+
+// versionlessPURL renders a dependency coordinate as the versionless PURL a PartialityNote's Package
+// carries, or "" for an ecosystem with no PURL type.
+func versionlessPURL(purlType, name string) string {
+	switch purlType {
+	case "":
+		return ""
+	case "maven":
+		name = strings.Replace(name, ":", "/", 1)
+	case "npm":
+		if rest, ok := strings.CutPrefix(name, "@"); ok {
+			name = "%40" + rest
+		}
+	default:
+		name = pipeline.CanonicalName(purlType, name)
+	}
+	return "pkg:" + purlType + "/" + name
 }
 
 // goDependencyInventory reads every module go.mod requires, plus the Go standard library keyed to
@@ -685,6 +735,9 @@ func (w workSet) describeUnassessed() string {
 	if len(w.policyUnresolvable) > 0 {
 		out += "\n  " + policyUnresolvableDetail(w.policyUnresolvable)
 	}
+	if len(w.unversioned) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) have no resolved version, so OSV.dev was not asked about them and advisories against them were NOT assessed", w.unversioned)
+	}
 	return out
 }
 
@@ -694,6 +747,8 @@ func (w workSet) describeSet() string {
 		return fmt.Sprintf("%d advisories (built-in language set only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetNoInventory), hasNote(w.partiality, plugin.PartialReasonNoManifest):
 		return fmt.Sprintf("%d advisories (built-in language set only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
+	case w.source == report.WorkSetBuiltinLanguageSet && len(w.unversioned) > 0:
+		return fmt.Sprintf("%d advisories (built-in language set only — no dependency has a resolved version, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetPolicyNotEnumerable):
 		return fmt.Sprintf("%d advisories (the advisory corpus cannot list its advisories, so the declared policy did NOT define the work set; this scan is narrower than configured)", len(w.advisories))
 	case w.source == report.WorkSetBuiltinLanguageSet:

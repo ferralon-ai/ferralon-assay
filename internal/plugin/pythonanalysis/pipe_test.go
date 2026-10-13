@@ -103,3 +103,30 @@ func TestLoadSet_ReadsOpenOnlyRegularFiles(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadSet_GroupReadsSkipPipes: the install scan reads the root pyproject.toml for the
+// groups a uv sync or poetry install keeps, after the project-root read has recorded it as a
+// gap; that read too skips a pipe, which still blocks refutation.
+func TestLoadSet_GroupReadsSkipPipes(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"uv sync default groups", docsUV("", "uv sync --no-dev")},
+		{"poetry install groups", docsPoetry(false, "poetry install --only main")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			delete(tt.files, "pyproject.toml")
+			dir := writeTree(t, tt.files)
+			mkfifo(t, dir, "pyproject.toml")
+			var res plugin.ReachabilityResult
+			within(t, "Reachability", func() {
+				res, _ = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/mkdocs@1.5.0"})
+			})
+			if res.Refutation != nil {
+				t.Errorf("a pipe at pyproject.toml must block refutation; got %+v", res.Refutation)
+			}
+		})
+	}
+}

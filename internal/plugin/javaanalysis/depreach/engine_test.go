@@ -430,6 +430,11 @@ func TestIsPlatformClass(t *testing.T) {
 		"com/sun/net/httpserver/HttpServer":          true,
 		"org/w3c/dom/Node":                           true,
 		"[Ljava/lang/Object;":                        true,
+		"[[I":                                        true,
+		"java/lang/invoke/LambdaForm$MH":             true,
+		"javax/swing/JFrame$1":                       true,
+		"XMLConstants":                               false,
+		"sun/Foo":                                    false,
 		"javax/servlet/http/HttpServlet":             false,
 		"javax/persistence/EntityManager":            false,
 		"javax/xml/bind/JAXBContext":                 false,
@@ -437,6 +442,12 @@ func TestIsPlatformClass(t *testing.T) {
 		"com/sun/mail/smtp/SMTPTransport":            false,
 		"kotlin/jvm/internal/Intrinsics":             false,
 		"org/springframework/boot/SpringApplication": false,
+	}
+	for _, name := range jdkClasses {
+		cases[name] = true
+	}
+	for _, name := range jarClasses {
+		cases[name] = false
 	}
 	for name, want := range cases {
 		if got := isPlatformClass(name); got != want {

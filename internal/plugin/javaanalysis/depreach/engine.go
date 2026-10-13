@@ -315,37 +315,21 @@ func (e *Engine) unloadedDependency(names []string) (string, bool) {
 
 // isPlatformClass reports whether an internal class name belongs to the Java
 // platform (the JDK's own modules), whose bodies the engine treats as leaves under
-// the re-entry rule rather than as unseen dependency code. The list is deliberately
-// exact: javax/ and com/sun/ also host widely used Maven artifacts (javax/servlet,
-// javax/persistence, com/sun/jna, com/sun/mail), so only the subpackages the JDK
-// itself ships are named. Misfiling a dependency here would turn its unseen body
-// into a silent leaf, so anything not listed is a dependency.
+// the re-entry rule rather than as unseen dependency code. Misfiling a dependency
+// here would turn its unseen body into a silent leaf, so the test is exact: java/
+// by prefix, since the JVM refuses to define a java/ class from any other loader,
+// and otherwise the class's package must be one platformPackages lists. A prefix
+// would not do: javax/, com/sun/, org/w3c/dom/, sun/ and jdk/ all also host Maven
+// artifacts (javax/servlet, com/sun/mail, com/sun/tools/xjc, org/w3c/dom/svg).
 func isPlatformClass(name string) bool {
-	if strings.HasPrefix(name, "[") { // array pseudo-class (clone, length)
+	if strings.HasPrefix(name, "[") || strings.HasPrefix(name, "java/") { // "[": array pseudo-class (clone, length)
 		return true
 	}
-	for _, p := range platformPrefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
+	if name == "javax/xml/XMLConstants" { // the one class of the JDK's javax/xml package
+		return true
 	}
-	return false
-}
-
-var platformPrefixes = []string{
-	"java/", "jdk/", "sun/",
-	"javax/accessibility/", "javax/annotation/processing/", "javax/crypto/", "javax/imageio/",
-	"javax/lang/model/", "javax/management/", "javax/naming/", "javax/net/", "javax/print/",
-	"javax/rmi/ssl/", "javax/script/", "javax/security/auth/", "javax/security/cert/",
-	"javax/security/sasl/", "javax/smartcardio/", "javax/sound/", "javax/sql/", "javax/swing/",
-	"javax/tools/", "javax/transaction/xa/",
-	"javax/xml/catalog/", "javax/xml/crypto/", "javax/xml/datatype/", "javax/xml/namespace/",
-	"javax/xml/parsers/", "javax/xml/stream/", "javax/xml/transform/", "javax/xml/validation/",
-	"javax/xml/xpath/", "javax/xml/XMLConstants",
-	"com/sun/crypto/provider/", "com/sun/java/", "com/sun/jdi/", "com/sun/jndi/",
-	"com/sun/management/", "com/sun/net/httpserver/", "com/sun/nio/", "com/sun/org/apache/",
-	"com/sun/security/", "com/sun/source/", "com/sun/tools/",
-	"org/ietf/jgss/", "org/w3c/dom/", "org/xml/sax/",
+	i := strings.LastIndexByte(name, '/')
+	return i > 0 && platformPackages[name[:i]]
 }
 
 // resolveTargets returns the concrete in-classpath callees of an edge made from a

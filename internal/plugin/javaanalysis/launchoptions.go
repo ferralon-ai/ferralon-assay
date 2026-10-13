@@ -779,7 +779,9 @@ type launchFile struct {
 	gradlew     bool
 	startScript bool
 	spans       []launchSpan
-	testScopes  [][2]int     // Gradle test blocks and Surefire/Failsafe plugin elements
+	testScopes  [][2]int     // Surefire/Failsafe plugin elements
+	braces      map[int]int  // a Gradle script's code-level braces: open offset to close offset
+	testOpens   map[int]bool // the opening braces of a Gradle script's test-task blocks
 	yamlLines   map[int]bool // 1-based lines whose name occurrence a YAML reader classified
 	template    map[int]bool // 0-based start-script template comment lines
 }
@@ -950,16 +952,25 @@ func (f *launchFile) buildSpans(rel string) {
 
 var testArgs = regexp.MustCompile(`\bjvmArgs\b|<argLine>`)
 
-// testSpans marks the jvmArgs and argLine values that configure only a test JVM: a jvmArgs in
-// a Gradle test task's block, and an argLine in the Surefire or Failsafe plugin. Every other
-// jvmArgs (run, bootRun, any JavaExec) and argLine configures a JVM that may run the program.
+// testSpans marks the jvmArgs and argLine values that configure only a test JVM: a jvmArgs
+// directly in a Gradle test task's block, and an argLine in the Surefire or Failsafe plugin.
+// Every other jvmArgs (run, bootRun, any JavaExec) and argLine configures a JVM that may run
+// the program.
 func (f *launchFile) testSpans(base string) {
-	if base != "pom.xml" && !launchHasSuffix(base, ".gradle", ".gradle.kts") {
+	switch {
+	case base == "pom.xml":
+		f.testScopes = f.surefireScopes()
+	case launchHasSuffix(base, ".gradle", ".gradle.kts"):
+		f.braces = gradleBraces(f.data, strings.HasSuffix(base, ".kts"))
+		f.testOpens = map[int]bool{}
+		for _, loc := range gradleTestBlock.FindAllIndex(f.data, -1) {
+			f.testOpens[loc[1]-1] = true // testScope only asks about code-level braces
+		}
+	default:
 		return
 	}
-	f.testScopes = f.findTestScopes()
 	for _, loc := range testArgs.FindAllIndex(f.data, -1) {
-		scopeEnd, ok := rangeEnd(f.testScopes, loc[0])
+		scopeEnd, ok := f.testScope(loc[0])
 		if !ok {
 			continue
 		}
@@ -999,16 +1010,26 @@ var (
 	mavenArtifactID = regexp.MustCompile(`<artifactId>\s*([^<\s]+)\s*</artifactId>`)
 )
 
-// findTestScopes returns the byte ranges of the file's test-task configuration: each Gradle test
-// block's braces, and each Maven Surefire or Failsafe <plugin> element. A block whose end cannot
-// be found is not a test scope.
-func (f *launchFile) findTestScopes() [][2]int {
-	var out [][2]int
-	for _, loc := range gradleTestBlock.FindAllIndex(f.data, -1) {
-		if end, ok := matchBrace(f.data, loc[1]-1); ok {
-			out = append(out, [2]int{loc[1], end})
+// testScope reports whether off configures only a test task, and where that configuration
+// ends. In a Gradle script the innermost block holding off decides: it must be a test task's
+// block, so a run or bootRun block nested anywhere inside one is not test configuration. In a
+// POM, off must lie in a Surefire or Failsafe plugin element.
+func (f *launchFile) testScope(off int) (int, bool) {
+	if f.braces == nil {
+		return rangeEnd(f.testScopes, off)
+	}
+	open, end := -1, 0
+	for o, c := range f.braces {
+		if o < off && off < c && o > open {
+			open, end = o, c
 		}
 	}
+	return end, open >= 0 && f.testOpens[open]
+}
+
+// surefireScopes returns the byte ranges of a POM's Surefire and Failsafe <plugin> elements.
+func (f *launchFile) surefireScopes() [][2]int {
+	var out [][2]int
 	for _, loc := range mavenPlugin.FindAllIndex(f.data, -1) {
 		end := bytes.Index(f.data[loc[1]:], []byte("</plugin>"))
 		if end < 0 {
@@ -1032,11 +1053,6 @@ func (f *launchFile) findTestScopes() [][2]int {
 	return out
 }
 
-func inRanges(ranges [][2]int, off int) bool {
-	_, ok := rangeEnd(ranges, off)
-	return ok
-}
-
 // rangeEnd returns the end of the innermost range holding off.
 func rangeEnd(ranges [][2]int, off int) (int, bool) {
 	end, ok := 0, false
@@ -1048,36 +1064,136 @@ func rangeEnd(ranges [][2]int, off int) (int, bool) {
 	return end, ok
 }
 
-// matchBrace returns the offset of the brace closing the one at open, skipping string
-// literals and line comments.
-func matchBrace(data []byte, open int) (int, bool) {
-	depth := 0
-	var quote byte
-	for i := open; i < len(data); i++ {
-		c := data[i]
-		switch {
-		case quote != 0:
-			if c == '\\' {
-				i++
-			} else if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'':
-			quote = c
-		case c == '/' && i+1 < len(data) && data[i+1] == '/':
+// gradleBraces returns a Gradle script's code-level braces, each opening brace's offset mapped
+// to its closing brace's. It skips comments (nested in Kotlin), strings, string templates and
+// backtick names. At the first token it cannot classify it stops, and every brace still open
+// there has no match: a lone '/' in Groovy (a slashy or dollar-slashy string, or division), a
+// backtick, '/' or newline inside a template, a newline inside a one-line string, anything
+// unterminated, and a '}' with no '{'. A block it cannot close is not a test task's block.
+func gradleBraces(data []byte, kts bool) map[int]int {
+	pairs := map[int]int{}
+	var open []int
+	for i := 0; i < len(data); {
+		ok := true
+		switch at := data[i:]; {
+		case bytes.HasPrefix(at, []byte("//")):
 			for i < len(data) && data[i] != '\n' {
 				i++
 			}
-		case c == '{':
+		case bytes.HasPrefix(at, []byte("/*")):
+			i, ok = skipBlockComment(data, i, kts)
+		case at[0] == '/':
+			ok = kts // Kotlin has no slashy strings: a lone '/' divides
+			i++
+		case stringQuote(at, kts) != "":
+			i, ok = skipString(data, i, stringQuote(at, kts), kts)
+		case at[0] == '`':
+			j := bytes.IndexAny(at[1:], "`\n")
+			ok = j >= 0 && at[1+j] == '`'
+			i += j + 2
+		case at[0] == '{':
+			open = append(open, i)
+			i++
+		case at[0] == '}':
+			if ok = len(open) > 0; ok {
+				pairs[open[len(open)-1]] = i
+				open = open[:len(open)-1]
+			}
+			i++
+		default:
+			i++
+		}
+		if !ok {
+			break
+		}
+	}
+	return pairs
+}
+
+// skipBlockComment returns the offset after the comment opening at i. Kotlin comments nest;
+// Groovy's end at the first "*/".
+func skipBlockComment(data []byte, i int, kts bool) (int, bool) {
+	depth := 0
+	for i < len(data) {
+		switch at := data[i:]; {
+		case bytes.HasPrefix(at, []byte("/*")) && (kts || depth == 0):
 			depth++
-		case c == '}':
+			i += 2
+		case bytes.HasPrefix(at, []byte("*/")):
 			depth--
+			i += 2
 			if depth == 0 {
 				return i, true
 			}
+		default:
+			i++
 		}
 	}
 	return 0, false
+}
+
+// skipString returns the offset after the string literal opening at i with quote q. Kotlin's
+// raw strings take no escapes; double-quoted strings carry ${} templates.
+func skipString(data []byte, i int, q string, kts bool) (int, bool) {
+	triple := len(q) == 3
+	for i += len(q); i < len(data); {
+		switch at := data[i:]; {
+		case at[0] == '\\' && !(kts && triple):
+			i += 2
+		case bytes.HasPrefix(at, []byte(q)):
+			return i + len(q), true
+		case at[0] == '\n' && !triple:
+			return 0, false
+		case q[0] == '"' && bytes.HasPrefix(at, []byte("${")):
+			var ok bool
+			if i, ok = skipTemplate(data, i+2, kts); !ok {
+				return 0, false
+			}
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+// skipTemplate returns the offset after the template whose body starts at i, counting its
+// braces and skipping the strings inside it. A backtick, '/' or newline inside a template is
+// not classified.
+func skipTemplate(data []byte, i int, kts bool) (int, bool) {
+	for depth := 1; i < len(data); {
+		at := data[i:]
+		switch q := stringQuote(at, kts); {
+		case q != "":
+			var ok bool
+			if i, ok = skipString(data, i, q, kts); !ok {
+				return 0, false
+			}
+		case at[0] == '{':
+			depth++
+			i++
+		case at[0] == '}':
+			if depth--; depth == 0 {
+				return i + 1, true
+			}
+			i++
+		case at[0] == '`' || at[0] == '/' || at[0] == '\n':
+			return 0, false
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+// stringQuote returns the quote opening a string literal at the start of at, or "".
+func stringQuote(at []byte, kts bool) string {
+	switch {
+	case bytes.HasPrefix(at, []byte(`"""`)) || !kts && bytes.HasPrefix(at, []byte("'''")):
+		return string(at[:3])
+	case at[0] == '"' || at[0] == '\'':
+		return string(at[:1])
+	}
+	return ""
 }
 
 // option classifies one option token.
@@ -1163,7 +1279,7 @@ func (f *launchFile) name(a, b int) {
 		return
 	}
 	if n == "jvmArgumentProviders" {
-		if !inRanges(f.testScopes, a) {
+		if _, ok := f.testScope(a); !ok {
 			f.s.unreadable() // providers compute options at execution time
 		}
 		return

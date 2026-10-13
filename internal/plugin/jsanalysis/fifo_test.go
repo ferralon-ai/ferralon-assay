@@ -108,8 +108,13 @@ func TestReaders_FIFO(t *testing.T) {
 		{
 			name: "installedPackage installed package.json", fifo: "node_modules/left-pad/package.json",
 			check: func(t *testing.T, dir, _ string) {
-				pkg := filepath.Join(dir, "node_modules", "left-pad")
-				if installedPackage(pkg, "left-pad", dir, map[string]bool{}, map[string]bool{}) {
+				root, err := filepath.EvalSymlinks(dir)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				pkg := filepath.Join(root, "node_modules", "left-pad")
+				if installedPackage(pkg, "left-pad", root, map[string]bool{}, map[string]bool{}) {
 					t.Error("installedPackage read an installed copy whose package.json is a pipe")
 				}
 			},

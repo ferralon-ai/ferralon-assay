@@ -506,6 +506,7 @@ type docAffectedRange struct {
 	UpperExclusive string `json:"upper_exclusive,omitempty"`
 	LastAffected   string `json:"last_affected,omitempty"`
 	Fixed          string `json:"fixed,omitempty"`
+	Type           string `json:"type,omitempty"`
 }
 
 // affectedPackages returns the multi-package set in the affected_packages shape. A document that
@@ -533,6 +534,7 @@ func (d advisoryDoc) affectedPackages() []docAffectedPackage {
 				Fixed:        r.UpperExclusive,
 				LastAffected: r.LastAffected,
 				FixedVersion: r.Fixed,
+				Type:         r.Type,
 			})
 		}
 		pkgs = append(pkgs, p)
@@ -634,6 +636,7 @@ type docRange struct {
 	Fixed        string `json:"fixed,omitempty"`
 	LastAffected string `json:"last_affected,omitempty"`
 	FixedVersion string `json:"fixed_version,omitempty"`
+	Type         string `json:"type,omitempty"`
 }
 
 type docProv struct {
@@ -910,6 +913,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			Fixed:        r.Fixed,
 			LastAffected: r.LastAffected,
 			FixedVersion: r.FixedVersion,
+			Type:         r.Type,
 		})
 	}
 
@@ -1005,6 +1009,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 				Fixed:        r.Fixed,
 				LastAffected: r.LastAffected,
 				FixedVersion: r.FixedVersion,
+				Type:         r.Type,
 			})
 		}
 		if garbled {

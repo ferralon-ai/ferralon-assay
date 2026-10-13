@@ -107,21 +107,33 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 		},
 		{
 			// The toolchain directive supplies the tighter floor and it reaches the axis — but a
-			// PATCHED 1.20.x build still fails open on a backport, and that is correct. buildAffectedRanges
-			// DISCARDS Range.Introduced, so each branch range is the open-below interval "< Fixed":
-			// "< go1.20.10" and "< go1.21.3". go1.20.14 is outside the first but INSIDE the second, and
-			// versionOutsideRanges disqualifies only when a version is outside EVERY range. So a
-			// branch-aware backport only disqualifies at or past its HIGHEST branch fix. That is the
-			// conservative direction (fail-open, no fabricated not-affected) and it is what ships;
-			// tightening it needs the introduced bound carried through, which is not this cycle's work.
-			name:          "the tighter floor reaches the axis; a patched branch build still fails open",
+			// PATCHED 1.20.x floor still fails open on a backport, and that is correct. go1.20.14 is
+			// past the 1.20 branch fix and below the mainline range's introduced go1.21.0, so as an
+			// exact version it would sit in the gap. As a floor it does not: the true toolchain may be
+			// go1.21.1, inside the mainline range. Being below a lower bound does not carry from a
+			// floor to the versions above it, so a floor is read against upper bounds only.
+			name:          "the tighter floor reaches the axis; a patched branch floor still fails open",
 			vulnID:        "CVE-2023-39325",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantFact:      ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
 			wantVersion:   "go1.20.14",
 			wantDisqual:   false,
 			wantReason:    ReasonInsufficient,
-			wantRationale: "Introduced is dropped, so \"< go1.21.3\" still contains go1.20.14",
+			wantRationale: "a floor in the gap may be any later toolchain, including one inside the mainline range",
+		},
+		{
+			// The same version declared EXACTLY sits in the backport's gap: past go1.20.10 and below
+			// the mainline range's introduced go1.21.0. buildAffectedRanges carries Introduced, so it
+			// is outside both ranges.
+			name:          "an exact patched branch toolchain in the backport gap disqualifies",
+			vulnID:        "CVE-2023-39325",
+			goMod:         "module example.com/target\n\ngo 1.20\n",
+			declared:      "go1.20.14",
+			wantFact:      ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+			wantVersion:   "go1.20.14",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.20.14 >= go1.20.10 and < go1.21.0: outside both branch ranges",
 		},
 		{
 			// An EXACT bound reaches the axis on exactly the same terms — Bound gates reachability

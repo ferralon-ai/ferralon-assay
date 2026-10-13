@@ -68,9 +68,9 @@ func TestBaselineAssessOptions_CarriesSubjectMavenProfiles(t *testing.T) {
 	}
 }
 
-// TestBaselineAssessOptions_CarriesEverySubjectCondition pins baseline to the same subject
-// conditions as run, and keeps run's reachability rollout gate out of it.
-func TestBaselineAssessOptions_CarriesEverySubjectCondition(t *testing.T) {
+// TestBaselineAssessOptions_CarriesTheSharedSubjectConditions pins baseline to the Java version
+// and Maven selection, and keeps the subject Go toolchain and its reachability gate out of it.
+func TestBaselineAssessOptions_CarriesTheSharedSubjectConditions(t *testing.T) {
 	t.Setenv(envAdvisoryCorpusDir, "")
 	t.Setenv(envAdvisoryCorpusPolicy, "")
 	t.Setenv(subjectJavaEnv, "")
@@ -83,9 +83,11 @@ func TestBaselineAssessOptions_CarriesEverySubjectCondition(t *testing.T) {
 		t.Fatalf("baselineAssessOptions: %v", err)
 	}
 	cfg := applyAll(opts)
-	if cfg.SubjectJavaVersion != "17.0.12" || cfg.SubjectMavenProfiles != "release,!docs" || cfg.SubjectGoVersion != "1.22.5" {
-		t.Errorf("subject conditions = java %q, profiles %q, go %q; want 17.0.12, release,!docs, 1.22.5",
-			cfg.SubjectJavaVersion, cfg.SubjectMavenProfiles, cfg.SubjectGoVersion)
+	if cfg.SubjectJavaVersion != "17.0.12" || cfg.SubjectMavenProfiles != "release,!docs" {
+		t.Errorf("subject conditions = java %q, profiles %q; want 17.0.12, release,!docs", cfg.SubjectJavaVersion, cfg.SubjectMavenProfiles)
+	}
+	if cfg.SubjectGoVersion != "" {
+		t.Errorf("baseline took the subject Go toolchain %q", cfg.SubjectGoVersion)
 	}
 	if cfg.SubjectToolchainReachability {
 		t.Error("baseline took the run path's subject-toolchain reachability gate")

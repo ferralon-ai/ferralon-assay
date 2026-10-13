@@ -810,12 +810,11 @@ func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
 	return pipeline.WithSubjectMavenProfiles(v)
 }
 
-// subjectOptions returns every condition the caller states about the subject build: its Go
-// toolchain, its Java version and its Maven profile selection. run and baseline both take the
-// whole list, so a subject condition added here reaches both commands.
+// subjectOptions returns the subject conditions run and baseline both take: the Java version and
+// the Maven profile selection. A condition added here reaches both commands.
 func (f *runFlags) subjectOptions() []pipeline.AssessOption {
 	var opts []pipeline.AssessOption
-	for _, opt := range []pipeline.AssessOption{f.subjectToolchainOption(), f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
+	for _, opt := range []pipeline.AssessOption{f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
 		if opt != nil {
 			opts = append(opts, opt)
 		}
@@ -824,8 +823,8 @@ func (f *runFlags) subjectOptions() []pipeline.AssessOption {
 }
 
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus and every subject condition. The subject-toolchain reachability gate is left out: it is
-// the run path's rollout switch, not a fact about the subject, so baseline measures with it off.
+// corpus and the shared subject conditions. The subject Go toolchain and its reachability gate
+// stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
 	opt, err := f.advisoryCorpusOption()
@@ -839,7 +838,8 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 }
 
 // runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
-// corpus, every subject condition, and the subject-toolchain reachability gate.
+// corpus, the subject Go toolchain, the shared subject conditions, and the subject-toolchain
+// reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
 	opt, err := f.advisoryCorpusOption()
@@ -847,6 +847,9 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 		return nil, err
 	}
 	if opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := f.subjectToolchainOption(); opt != nil {
 		opts = append(opts, opt)
 	}
 	opts = append(opts, f.subjectOptions()...)

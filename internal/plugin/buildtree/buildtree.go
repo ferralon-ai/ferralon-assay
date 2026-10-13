@@ -123,10 +123,12 @@ const HeadSize = 64 << 10
 
 // Candidates walks root and returns, in walk order:
 //
-//   - every regular file, or symlink to a file inside root, that match accepts;
+//   - every regular file, or symlink to a regular file inside root, that match accepts;
 //   - every symlink that escapes root (or does not resolve, a link cycle included), every
-//     directory or file that cannot be read, and every symlinked directory whose target the walk
-//     does not itself read, since what they hold cannot be classified.
+//     symlink inside root to something that is neither a regular file nor a directory (opening a
+//     pipe would block the walk), every directory or file that cannot be read, and every
+//     symlinked directory whose target the walk does not itself read, since what they hold
+//     cannot be classified.
 //
 // A symlinked directory is read in full, and is not a candidate, only when its target resolves
 // inside root's real path to a directory the walk enters at that real path: not a Skipped
@@ -177,6 +179,17 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
 			return nil // a device, socket or pipe declares nothing, and reading a pipe would block
+		}
+		if e.Symlink {
+			fi, err := os.Stat(e.Path)
+			if err != nil {
+				add(e.Path, "unreadable", false)
+				return nil
+			}
+			if !fi.Mode().IsRegular() {
+				add(e.Path, "symlink to a non-regular file", false) // opening a pipe would block
+				return nil
+			}
 		}
 		head, err := Head(e.Path)
 		if err != nil {

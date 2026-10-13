@@ -62,6 +62,10 @@ const loadMode = packages.NeedName |
 type LoadResult struct {
 	Packages   []*packages.Package
 	Partiality plugin.Partiality
+
+	// cgo bounds every cgo boundary in the build (cgoLimits); nil when the build has none or no
+	// bound holds, in which case cgo stays a run-wide reason.
+	cgo []plugin.ScopedReason
 }
 
 // LoadProgram loads the buildable module rooted at buildDir with full type and
@@ -110,49 +114,196 @@ func LoadProgram(ctx context.Context, buildDir string) (*LoadResult, error) {
 	if len(loadErrs) > 0 {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
-	if droppedCgo(pkgs, cfg.Env) {
+	cgo, dropped, bounded := cgoLimits(pkgs, cfg.Env)
+	if dropped && !bounded {
 		reasons = append(reasons, plugin.PartialReasonCgo)
 	}
 	if len(reasons) > 0 {
 		part = plugin.Partial(reasons...)
 	}
+	if !bounded {
+		cgo = nil
+	}
+	if dropped && bounded {
+		part.Complete = false
+		part.Scoped = cgo
+	}
 
-	return &LoadResult{Packages: pkgs, Partiality: part}, nil
+	return &LoadResult{Packages: pkgs, Partiality: part, cgo: cgo}, nil
 }
 
-// droppedCgo reports whether the build left out a cgo file of a non-standard-library package
-// because cgo is disabled (CGO_ENABLED=0, or no C compiler). Such a file is in no package's
-// syntax, so neither the call graph nor govulncheck sees the calls it makes, and runtime/cgo never
-// enters the program to trip the cgo detector. A file the build would leave out with cgo enabled
-// too (another GOOS, a build tag) is not counted.
+// cgoLimits bounds what the cgo boundaries in the build can hide from the analysis, as one
+// scoped limit per module holding cgo code. dropped reports a cgo file of a non-standard-library
+// package that the build left out because cgo is disabled (cgoFilesDropped). bounded is false when
+// no bound holds, and cgo then stays a run-wide limit.
+//
+// Two bounds, by whether C can call back into Go:
+//
+//   - It cannot (no //export, no SWIG, no prebuilt object, no dropped file): C code reaches only C
+//     code, which lives in the cgo modules themselves. The targets are those modules.
+//   - It can: an exported function, or a dropped Go file, is Go code no analysis root reaches, and
+//     it may call any function value it is handed, first-party ones included, which may call
+//     anything. The targets are every module in the build plus first-party code, plus the modules
+//     of the dropped files' imports. A module outside the build has no code in the binary, so it is
+//     the only thing such a limit can exclude. A dropped file importing a package the build did not
+//     load leaves its module unknown, and no bound holds.
+//
+// A compiled standard-library plugin package bounds nothing: plugin.Open loads Go code the build
+// never saw, which may call anything.
+//
+// runtime/cgo itself is not a cgo package here: every cgo package imports it.
+func cgoLimits(pkgs []*packages.Package, env []string) (scoped []plugin.ScopedReason, dropped, bounded bool) {
+	tags := goflagsTags(env)
+	cgoMods := map[string]string{} // module PURL -> one cgo package path in it
+	every := map[string]bool{"": true}
+	callbacks, unreadable, pluginLoad := false, false, false
+	var droppedImports []string
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		every[modulePURL(p)] = true
+		if p.PkgPath == "runtime/cgo" {
+			return
+		}
+		_, compiled := p.Imports["runtime/cgo"]
+		pluginLoad = pluginLoad || (compiled && p.Module == nil && p.PkgPath == "plugin")
+		files := cgoFilesDropped(p, tags)
+		if !compiled && len(files) == 0 {
+			return
+		}
+		if mod := modulePURL(p); cgoMods[mod] == "" || p.PkgPath < cgoMods[mod] {
+			cgoMods[mod] = p.PkgPath
+		}
+		if len(files) > 0 {
+			dropped, callbacks = true, true
+			for _, f := range files {
+				imps, _, err := fileImports(f)
+				unreadable = unreadable || err != nil
+				droppedImports = append(droppedImports, imps...)
+			}
+		}
+		if compiled && (exportsToC(p.GoFiles) || hasForeignObjects(p.OtherFiles)) {
+			callbacks = true
+		}
+	})
+	if len(cgoMods) == 0 {
+		return nil, false, true
+	}
+	if unreadable || pluginLoad {
+		return nil, dropped, false
+	}
+
+	targets := map[string]bool{}
+	for mod := range cgoMods {
+		targets[mod] = true
+	}
+	if callbacks {
+		loaded := map[string]bool{}
+		packages.Visit(pkgs, nil, func(p *packages.Package) { loaded[p.PkgPath] = true })
+		for mod := range every {
+			targets[mod] = true
+		}
+		for _, imp := range droppedImports {
+			switch {
+			case imp == "C" || loaded[imp]:
+			case isStdlibPath(imp, nil):
+				targets[stdlibPURL] = true
+			default:
+				return nil, dropped, false
+			}
+		}
+	}
+	list := sortedKeys(targets)
+	for _, mod := range sortedKeys(mapKeys(cgoMods)) {
+		scoped = append(scoped, plugin.ScopedReason{
+			Reason:  plugin.PartialReasonCgo,
+			Package: mod,
+			Path:    cgoMods[mod],
+			Targets: list,
+		})
+	}
+	return scoped, dropped, true
+}
+
+const stdlibPURL = "pkg:golang/stdlib"
+
+// modulePURL names p's module as a scoped limit does: "" for the module under analysis, the
+// standard library as one package, any other module by its path.
+func modulePURL(p *packages.Package) string {
+	switch {
+	case p.Module == nil:
+		return stdlibPURL
+	case p.Module.Main:
+		return ""
+	}
+	return "pkg:golang/" + p.Module.Path
+}
+
+// cgoFilesDropped lists the cgo files of a non-standard-library package that the build left out
+// because cgo is disabled (CGO_ENABLED=0, or no C compiler). Such a file is in no package's syntax,
+// so neither the call graph nor govulncheck sees the calls it makes, and runtime/cgo never enters
+// the program to trip the cgo detector. A file the build would leave out with cgo enabled too
+// (another GOOS, a build tag) is not counted; a file that cannot be read is, since it may be neither.
+// The files are matched under tags, the build tags GOFLAGS sets for the load.
 //
 // The standard library's own cgo variants (net, os/user) are not checked: their pure-Go
 // fallbacks are what the build compiles, and the analysis reads those.
-//
-// The files are matched under the build tags GOFLAGS sets in env, the tags the load ran with.
-func droppedCgo(pkgs []*packages.Package, env []string) bool {
+func cgoFilesDropped(p *packages.Package, tags []string) []string {
+	if p.Module == nil {
+		return nil
+	}
 	ctx := build.Default
 	ctx.CgoEnabled = true
-	ctx.BuildTags = goflagsTags(env)
-	found := false
-	packages.Visit(pkgs, func(p *packages.Package) bool {
-		if found || p.Module == nil {
-			return !found
+	ctx.BuildTags = tags
+	var files []string
+	for _, path := range p.IgnoredFiles {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			continue
 		}
-		for _, path := range p.IgnoredFiles {
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				continue
+		if importsC(path) {
+			if ok, err := ctx.MatchFile(filepath.Dir(path), filepath.Base(path)); err != nil || ok {
+				files = append(files, path)
 			}
-			if importsC(path) {
-				if ok, err := ctx.MatchFile(filepath.Dir(path), filepath.Base(path)); err == nil && ok {
-					found = true
-					return false
+		}
+	}
+	return files
+}
+
+// exportsToC reports whether any of the Go files exports a function to C (a //export directive).
+// An unreadable file counts: it may.
+func exportsToC(files []string) bool {
+	for _, path := range files {
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+		if err != nil {
+			return true
+		}
+		for _, cg := range f.Comments {
+			for _, c := range cg.List {
+				if strings.HasPrefix(c.Text, "//export ") {
+					return true
 				}
 			}
 		}
-		return true
-	}, nil)
-	return found
+	}
+	return false
+}
+
+// hasForeignObjects reports whether a package carries code the cgo boundary does not describe: a
+// SWIG interface, whose generated wrappers call back into Go, or a prebuilt object linked as is.
+func hasForeignObjects(files []string) bool {
+	for _, f := range files {
+		switch filepath.Ext(f) {
+		case ".swig", ".swigcxx", ".syso":
+			return true
+		}
+	}
+	return false
+}
+
+func mapKeys(m map[string]string) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
 }
 
 // importsC reports whether the Go file at path imports "C". An unreadable file counts: it may.

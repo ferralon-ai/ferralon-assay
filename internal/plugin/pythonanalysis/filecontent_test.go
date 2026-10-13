@@ -85,3 +85,34 @@ func TestLoadSet_BinaryInstallSurface(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadSet_CondaRecipe pins conda recipes read as build manifests: a plain recipe is read
+// (its package name is a project name, and run requirements beyond the interpreter withhold),
+// and one conda renders before reading, or that does not parse, withholds.
+func TestLoadSet_CondaRecipe(t *testing.T) {
+	plain := func(name string) string {
+		return "package:\n  name: " + name + "\n  version: 1.0.0\nrequirements:\n  host:\n    - python\n    - pip\n  run:\n    - python >=3.10\n"
+	}
+	tests := []struct {
+		name, file, content string
+		refute              bool
+	}{
+		{"plain meta.yaml is read", "recipe/meta.yaml", plain("app"), true},
+		{"plain recipe.yaml is read", "recipe/recipe.yaml", plain("app"), true},
+		{"plain recipe naming the package", "recipe/meta.yaml", plain("black"), false},
+		{"Jinja recipe", "recipe/meta.yaml", "{% set version = \"1.0.0\" %}\n" + plain("app"), false},
+		{"rattler-build expression", "recipe/recipe.yaml", strings.Replace(plain("app"), "1.0.0", "${{ version }}", 1), false},
+		{"selector recipe", "recipe/meta.yaml", plain("app") + "    - pywin32  # [win]\n", false},
+		{"control: a run requirement conda resolves", "recipe/meta.yaml", plain("app") + "    - requests\n", false},
+		{"recipe that does not parse", "recipe/meta.yaml", "package: [name\n", false},
+		{"binary recipe", "recipe/meta.yaml", "package:\x00\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := reachFor(t, withLock(map[string]string{tt.file: tt.content}), "pkg:pypi/black@24.4.2")
+			if refuted := res.Refutation != nil; refuted != tt.refute {
+				t.Errorf("refuted = %v, want %v", refuted, tt.refute)
+			}
+		})
+	}
+}

@@ -125,7 +125,7 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		case content == contentBinary:
 			// An image, a font or other data is neither text nor an archive, but one named as
 			// an install surface, or carrying an installer token, is a surface not read.
-			if installSurface(c.file, nil) != "" || installTokens(data) {
+			if installSurface(c.file, nil) != "" || condaRecipeName(base) || installTokens(data) {
 				sc.veto(c, "binary content in an install surface: install commands it holds are not read")
 			}
 			return
@@ -135,6 +135,11 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			sc.veto(c, "conda environment file: conda installs its packages and its pip section, which the lockfile does not describe")
 		} else if manager := environmentManifest(base, data); manager != "" {
 			sc.veto(c, "%s: its environment manager installs the packages it lists, which the lockfile does not describe", manager)
+		}
+		if condaRecipeName(base) {
+			if why := ls.condaRecipe(data); why != "" {
+				sc.veto(c, "conda recipe: %s", why)
+			}
 		}
 		kind := installSurface(c.file, data)
 		if kind == "" {
@@ -525,6 +530,64 @@ func environmentManifest(base string, data []byte) string {
 		return "devbox environment"
 	case path.Ext(base) == ".nix" && nixPythonRe.Match(data):
 		return "Nix expression with Python packages"
+	}
+	return ""
+}
+
+// condaRecipeName reports a conda-build (meta.yaml) or rattler-build (recipe.yaml) recipe.
+func condaRecipeName(base string) bool {
+	return base == "meta.yaml" || base == "recipe.yaml"
+}
+
+var (
+	// jinjaRe is a Jinja expression, statement or comment; rattler-build's ${{ }} included.
+	jinjaRe = regexp.MustCompile(`\{\{|\{%|\{#`)
+	// condaSelectorRe is a conda-build line selector: a trailing # [win], # [py<38].
+	condaSelectorRe = regexp.MustCompile(`(?m)#[ \t]*\[[^\]\n]*\][ \t]*\r?$`)
+	condaReqNameRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*`)
+)
+
+// condaFixedRun are the run requirements whose closure is fixed: the interpreter, and the
+// installers the install scan already exempts.
+var condaFixedRun = setOf("python", "pip", "setuptools", "wheel", "uv")
+
+// condaRecipe reads a conda recipe as a build manifest, like setup.py: it records the
+// package's name as a project name and returns why the recipe withholds every refutation, or
+// "". A recipe conda renders before reading (Jinja, a line selector), one that does not parse
+// into package and requirements, and one with outputs is not read. A run requirement beyond
+// the interpreter installs a closure conda resolves, which no lockfile describes.
+func (ls *loadSet) condaRecipe(data []byte) string {
+	switch {
+	case jinjaRe.Match(data):
+		return "Jinja template: conda renders it before reading what it installs"
+	case condaSelectorRe.Match(data):
+		return "line selector: conda renders it before reading what it installs"
+	}
+	var doc struct {
+		Package struct {
+			Name string `yaml:"name"`
+		} `yaml:"package"`
+		Requirements struct {
+			Run []any `yaml:"run"`
+		} `yaml:"requirements"`
+		Outputs []any `yaml:"outputs"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "does not parse: what it installs is unknown"
+	}
+	if len(doc.Outputs) > 0 {
+		return "outputs: the requirements of each output are not read"
+	}
+	ls.addProjectName(doc.Package.Name)
+	for _, r := range doc.Requirements.Run {
+		req, ok := r.(string)
+		name := strings.ToLower(condaReqNameRe.FindString(strings.TrimSpace(req)))
+		switch {
+		case !ok || name == "":
+			return "a run requirement that is not a plain spec: what it installs is unknown"
+		case !condaFixedRun[name]:
+			return fmt.Sprintf("run requirement %s: conda installs it and the closure it resolves, which the lockfile does not describe", name)
+		}
 	}
 	return ""
 }

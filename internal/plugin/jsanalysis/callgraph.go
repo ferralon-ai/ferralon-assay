@@ -255,6 +255,11 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
 				flags.unreadModule = true
 			}
+			// A literal import() whose resolution meets a condition loadsOutOfTree does not
+			// model keeps the limit a computed import() declares.
+			if ls.dynImport && !flags.dynImport && rs.loadMeetsUnmodeledCondition(f.module, ls.spec) {
+				flags.dynImport = true
+			}
 		}
 		// A static-prefix load whose files are all in-tree modules gets an edge to each.
 		// Its suffix may still traverse out of the prefix (prefixSuffixMayTraverse), so the

@@ -224,6 +224,75 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 	return len(targets) == 0
 }
 
+// loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an
+// exports/imports conditions map with a key outside loadConditions: a `#…` subpath import
+// (and any package it maps to) or a workspace member's exports. Node can select that branch
+// (`node --conditions=development`), and loadsOutOfTree does not look at it, so the load
+// alone does not bound what runs (tracker#184 item 4).
+func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
+	conds := loadConditions(false)
+	switch {
+	case isRelativeSpecifier(spec):
+		return false
+	case strings.HasPrefix(spec, "#"):
+		pkg, _ := rs.governingPackageJSON(fromModule)
+		if pkg == nil || pkg.imports == nil {
+			return false
+		}
+		if subpathHasUnmodeledCondition(pkg.imports, spec, conds) {
+			return true
+		}
+		for _, t := range exportsTargets(pkg.imports, spec, conds) {
+			if !isRelativeSpecifier(t) && !strings.HasPrefix(t, "#") && rs.loadMeetsUnmodeledCondition(fromModule, t) {
+				return true
+			}
+		}
+		return false
+	}
+	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
+		return false
+	}
+	_, mm, sub, ok := rs.workspaceMember(spec)
+	return ok && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+}
+
+// subpathHasUnmodeledCondition reports whether any conditions map exportsTargets would walk
+// for subpath has a key outside conds.
+func subpathHasUnmodeledCondition(field interface{}, subpath string, conds map[string]bool) bool {
+	m, isMap := field.(map[string]interface{})
+	if !isMap || isConditionsMap(m) {
+		return subpath == "." && hasUnmodeledCondition(field, conds)
+	}
+	if node, ok := m[subpath]; ok {
+		return hasUnmodeledCondition(node, conds)
+	}
+	for key, node := range m {
+		prefix, suffix, ok := strings.Cut(key, "*")
+		if ok && len(subpath) >= len(prefix)+len(suffix) && strings.HasPrefix(subpath, prefix) && strings.HasSuffix(subpath, suffix) && hasUnmodeledCondition(node, conds) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnmodeledCondition(node interface{}, conds map[string]bool) bool {
+	switch v := node.(type) {
+	case []interface{}:
+		for _, e := range v {
+			if hasUnmodeledCondition(e, conds) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for k, sub := range v {
+			if !conds[k] || hasUnmodeledCondition(sub, conds) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // loadConditions is the set of exports/imports conditions a load can match under Node's
 // defaults. A require() load matches "require"; any other form may match "require" or
 // "import", because a transpiler can emit ESM syntax as require().

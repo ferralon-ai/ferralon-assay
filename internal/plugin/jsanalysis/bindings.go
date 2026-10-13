@@ -54,6 +54,7 @@ type moduleBindings struct {
 type loadSpec struct {
 	spec       string
 	viaRequire bool
+	dynImport  bool // a literal import()
 }
 
 // prefixLoad is a require(...) or import(...) whose specifier starts with a literal and
@@ -512,7 +513,7 @@ func recordLoad(clean, src []rune, at, a int, dyn bool, mb *moduleBindings) {
 	kind, text := classifyLoadArg(clean, src, a)
 	switch kind {
 	case loadArgLiteral:
-		mb.specifiers = append(mb.specifiers, loadSpec{spec: text, viaRequire: !dyn})
+		mb.specifiers = append(mb.specifiers, loadSpec{spec: text, viaRequire: !dyn, dynImport: dyn})
 	case loadArgPrefix:
 		mb.prefixLoads = append(mb.prefixLoads, prefixLoad{prefix: text, dyn: dyn, pos: at})
 	case loadArgComputed:

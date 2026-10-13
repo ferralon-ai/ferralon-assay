@@ -124,6 +124,44 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 	}
 }
 
+// A conda recipe's run requirements are installed by conda, which no Python lockfile records,
+// and the resolver never reads a recipe, so any recipe withholds Exhaustive.
+func TestResolveVersions_ExhaustiveCondaRecipe(t *testing.T) {
+	const recipe = "package:\n  name: app\n  version: 0.1.0\nrequirements:\n  run:\n    - python\n    - pyjwt\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"control: no recipe", map[string]string{}, true},
+		{"meta.yaml", map[string]string{"meta.yaml": recipe}, false},
+		{"meta.yml", map[string]string{"meta.yml": recipe}, false},
+		{"recipe.yaml", map[string]string{"recipe.yaml": recipe}, false},
+		{"recipe.yml", map[string]string{"recipe.yml": recipe}, false},
+		{"conda.yaml", map[string]string{"conda.yaml": recipe}, false},
+		{"conda.yml", map[string]string{"conda.yml": recipe}, false},
+		{"nested recipe", map[string]string{"conda/recipe/meta.yaml": recipe}, false},
+		{"META.YAML", map[string]string{"META.YAML": recipe}, false},
+		{"Meta.yml", map[string]string{"Meta.yml": recipe}, false},
+		{"Recipe.yaml", map[string]string{"Recipe.yaml": recipe}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"uv.lock": exUVLock, "pyproject.toml": exPyproject}
+			for k, v := range tt.files {
+				files[k] = v
+			}
+			r := resolveVersion(t, writeTree(t, files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+}
+
 // A symlinked directory leaving the build dir is not followed by the walk, so what it holds goes
 // unread.
 func TestResolveVersions_ExhaustiveSymlinkedDir(t *testing.T) {

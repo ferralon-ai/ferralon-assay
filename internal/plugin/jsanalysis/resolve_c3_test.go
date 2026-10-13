@@ -31,6 +31,9 @@ type c3Case struct {
 	fixture string
 	edges   []edgeSpec
 	roots   []string // caller-style SCIPs
+	// boundary lists the edges into package-boundary nodes (boundary.go), as caller and
+	// boundary id; they are diffed apart from the first-party control.
+	boundary [][2]string
 }
 
 // c3Baseline is the C3 control: 38 edges / 37 roots across 9 JS/TS fixtures. A re-run
@@ -103,6 +106,16 @@ var c3Baseline = []c3Case{
 	{
 		fixture: "CVE-2024-29041-installed-unreachable",
 		edges:   nil,
+		boundary: [][2]string{
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#<call>"},
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#<call>.use"},
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#json"},
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#<call>.get"},
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#<call>.post"},
+			{funcSCIP("app", nil, moduleInitFunc, 0), "npm:express#<call>.listen"},
+			{funcSCIP("app", nil, "handleHealth", 2), "npm:express#response.send"},
+			{funcSCIP("app", nil, "handleEcho", 2), "npm:express#response.send"},
+		},
 		roots: []string{
 			funcSCIP("app", nil, "handleEcho", 2),
 			funcSCIP("app", nil, "handleHealth", 2),
@@ -185,7 +198,7 @@ var c3Baseline = []c3Case{
 // carries a non-empty provenance algorithm (C5 tie-in): an edge exists only via a named
 // rule, never a fabricated target.
 func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
-	totalEdges, totalRoots := 0, 0
+	totalEdges, totalRoots, totalBoundary := 0, 0, 0
 	for _, tc := range c3Baseline {
 		dir := "../../../corpus/testdata/repros/" + tc.fixture + "/src"
 		res, prov, err := callGraphInternal(dir)
@@ -194,8 +207,12 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 		}
 
 		got := map[string]bool{}
+		firstParty := 0
 		for _, e := range res.Edges {
 			got[e.Caller.SCIP+" => "+e.Callee.SCIP] = true
+			if !isBoundaryID(e.Callee.SCIP) {
+				firstParty++
+			}
 			// C5: every edge must trace to a named rule.
 			if prov[e].Algo == "" {
 				t.Errorf("%s: edge %s => %s has EMPTY provenance algo (fabricated target?)", tc.fixture, e.Caller.SCIP, e.Callee.SCIP)
@@ -204,6 +221,9 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 		want := map[string]bool{}
 		for _, e := range tc.edges {
 			want[e.caller()+" => "+e.callee()] = true
+		}
+		for _, b := range tc.boundary {
+			want[b[0]+" => "+b[1]] = true
 		}
 		for k := range want {
 			if !got[k] {
@@ -215,8 +235,11 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 				t.Errorf("%s: UNEXPECTED edge added without baseline entry: %s", tc.fixture, k)
 			}
 		}
-		if len(res.Edges) != len(tc.edges) {
-			t.Errorf("%s: edge count = %d, want %d", tc.fixture, len(res.Edges), len(tc.edges))
+		if firstParty != len(tc.edges) {
+			t.Errorf("%s: first-party edge count = %d, want %d", tc.fixture, firstParty, len(tc.edges))
+		}
+		if b := len(res.Edges) - firstParty; b != len(tc.boundary) {
+			t.Errorf("%s: boundary edge count = %d, want %d", tc.fixture, b, len(tc.boundary))
 		}
 
 		gotRoots := map[string]bool{}
@@ -232,11 +255,15 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 			t.Errorf("%s: root count = %d, want %d (%v)", tc.fixture, len(res.Roots), len(tc.roots), res.Roots)
 		}
 
-		totalEdges += len(res.Edges)
+		totalEdges += firstParty
+		totalBoundary += len(res.Edges) - firstParty
 		totalRoots += len(res.Roots)
 	}
 	if totalEdges != 38 {
-		t.Errorf("total edges across corpus = %d, want 38 (baseline control)", totalEdges)
+		t.Errorf("total first-party edges across corpus = %d, want 38 (baseline control)", totalEdges)
+	}
+	if totalBoundary != 8 {
+		t.Errorf("total boundary edges across corpus = %d, want 8", totalBoundary)
 	}
 	if totalRoots != 37 {
 		t.Errorf("total roots across corpus = %d, want 37 (baseline control)", totalRoots)

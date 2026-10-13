@@ -1722,21 +1722,6 @@ func isBareSpecifier(spec string) bool {
 	return !isNodeBuiltin(dir)
 }
 
-func isNodeBuiltin(name string) bool {
-	return nodeBuiltins[strings.TrimPrefix(name, "node:")]
-}
-
-var nodeBuiltins = func() map[string]bool {
-	out := map[string]bool{}
-	for _, n := range strings.Fields(`assert async_hooks buffer child_process cluster console constants crypto dgram
-		diagnostics_channel dns domain events fs http http2 https inspector module net os path perf_hooks process
-		punycode querystring readline repl stream string_decoder sys timers tls trace_events tty url util v8 vm wasi
-		worker_threads zlib test sqlite sea`) {
-		out[n] = true
-	}
-	return out
-}()
-
 // --- refutation ----------------------------------------------------------------------
 
 // npmPackageRef parses "pkg:npm/<name>@<version>" (namespace percent-encoded or not) into

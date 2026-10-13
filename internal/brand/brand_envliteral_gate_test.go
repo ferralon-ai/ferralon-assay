@@ -89,11 +89,13 @@ func TestNoHardcodedBrandEnvLiteral(t *testing.T) {
 // be listed in dynamicEnvReads.
 //
 // Scope: the whole module, non-test .go files, skipping testdata directories (fixture programs
-// read their own environment, not this module's).
+// read their own environment, not this module's). A nested module (plugins/cfamily) is walked
+// too, with its package directories taken relative to its own root, so its cmd/ is an entry point.
 func TestEnvReadsStayAtEntryPoints(t *testing.T) {
 	var violations []string
+	root := moduleRoot(t)
 	walkSources(t, func(rel string, fset *token.FileSet, file *ast.File, consts map[string]string) {
-		dir := filepath.ToSlash(filepath.Dir(rel))
+		dir := moduleRelDir(root, filepath.Dir(rel))
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok || len(call.Args) != 1 {
@@ -146,16 +148,34 @@ func checkEnvRead(dir, key string) string {
 	return "neither an EnvPrefix_ name nor a platformEnv name"
 }
 
-// walkSources parses every non-test .go file outside testdata and hands each to visit with the
-// string constants declared in its package directory.
-func walkSources(t *testing.T, visit func(rel string, fset *token.FileSet, file *ast.File, consts map[string]string)) {
+// moduleRelDir returns dir (relative to root) relative to the root of the module that contains
+// it, in slash form: unchanged for this module, stripped of the nested module's path otherwise.
+func moduleRelDir(root, dir string) string {
+	for d := dir; d != "." && d != string(filepath.Separator); d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(root, d, "go.mod")); err == nil {
+			r, _ := filepath.Rel(d, dir)
+			return filepath.ToSlash(r)
+		}
+	}
+	return filepath.ToSlash(dir)
+}
+
+// moduleRoot returns this module's root directory.
+func moduleRoot(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not determine this test file's own location via runtime.Caller")
 	}
 	// thisFile is <module>/internal/brand/<this file>, so the module root is three levels up.
-	root := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	return filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+}
+
+// walkSources parses every non-test .go file outside testdata and hands each to visit with the
+// string constants declared in its package directory.
+func walkSources(t *testing.T, visit func(rel string, fset *token.FileSet, file *ast.File, consts map[string]string)) {
+	t.Helper()
+	root := moduleRoot(t)
 
 	fset := token.NewFileSet()
 	files := map[string][]*ast.File{} // by package directory

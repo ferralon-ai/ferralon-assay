@@ -159,7 +159,7 @@ func parseCallsAndIngresses(r, raw []rune) ([]callSite, []ingressMarker) {
 		case isIdentStart(c):
 			word, next := readWord(r, i)
 			switch {
-			case typeKeywords[word]:
+			case typeKeywords[word] && !precededByDot(r, i):
 				name, isServlet, openIdx, ok := parseTypeHeaderServlet(r, next)
 				if !ok {
 					i = next

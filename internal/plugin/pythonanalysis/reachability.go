@@ -95,9 +95,11 @@ func firstPartyPaths(cg plugin.CallGraphResult, ing plugin.IngressResult, sinks 
 	return paths, reasons
 }
 
-// reachPathToSink is the reverse BFS from a single sink to the nearest ingress or root,
-// returning one representative ingress→sink ReachPath. It terminates at the ingress∪root
-// frontier over the directed edges, identical to the pipeline's firstPartyReachPaths walk.
+// reachPathToSink is the reverse BFS from a single sink to the nearest ingress, falling
+// back to the nearest root, returning one representative ingress→sink ReachPath. An
+// ingress is preferred over a closer root because module-init roots sit one hop above any
+// helper module-level code also calls, and a root-only path drops the attacker-facing entry
+// the trace would otherwise carry.
 func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]bool, sink string) (plugin.ReachPath, bool) {
 	if sink == "" {
 		return plugin.ReachPath{}, false
@@ -108,24 +110,30 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 		id   string
 		path []string
 	}
+	toPath := func(cur node, ingress bool) plugin.ReachPath {
+		trace := make([]plugin.Symbol, len(cur.path))
+		for i := range cur.path {
+			trace[i] = sym(cur.path[len(cur.path)-1-i])
+		}
+		var in plugin.Symbol
+		if ingress {
+			in = sym(cur.id)
+		}
+		return plugin.ReachPath{Sink: sym(sink), Ingress: in, Trace: trace}
+	}
+	var rootPath *plugin.ReachPath
 	visited := map[string]bool{sink: true}
 	queue := []node{{id: sink, path: []string{sink}}}
 	for len(queue) > 0 {
 		cur := queue[0]
 		queue = queue[1:]
 
-		isIngress := ingressSyms[cur.id]
-		isRoot := roots[cur.id]
-		if isIngress || isRoot {
-			trace := make([]plugin.Symbol, len(cur.path))
-			for i := range cur.path {
-				trace[i] = sym(cur.path[len(cur.path)-1-i])
-			}
-			var ingress plugin.Symbol
-			if isIngress {
-				ingress = sym(cur.id)
-			}
-			return plugin.ReachPath{Sink: sym(sink), Ingress: ingress, Trace: trace}, true
+		if ingressSyms[cur.id] {
+			return toPath(cur, true), true
+		}
+		if roots[cur.id] && rootPath == nil {
+			p := toPath(cur, false)
+			rootPath = &p
 		}
 
 		for _, caller := range callers[cur.id] {
@@ -135,6 +143,9 @@ func reachPathToSink(callers map[string][]string, ingressSyms, roots map[string]
 			visited[caller] = true
 			queue = append(queue, node{id: caller, path: append(append([]string{}, cur.path...), caller)})
 		}
+	}
+	if rootPath != nil {
+		return *rootPath, true
 	}
 	return plugin.ReachPath{}, false
 }

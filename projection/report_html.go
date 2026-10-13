@@ -293,6 +293,16 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonAnalysisDidNotRun:
 		return "The analysis steps that would locate this advisory's code in what this repository " +
 			"builds did not run, so no verdict is reported for it."
+	case report.ReasonPackageVersionUnresolved:
+		return "The installed version of an affected package could not be resolved, so no verdict is " +
+			"reported for its advisories."
+	case report.ReasonAdvisorySymbolAbsent:
+		return "Some advisories name no vulnerable function to search for, so no verdict is reported for them."
+	case report.ReasonVulnerableSymbolUnresolved:
+		return "Some advisories' vulnerable functions were not all located inside the affected package and " +
+			"searched, so no verdict is reported for them."
+	case report.ReasonAdvisoryUnknownToAnalyzer:
+		return "The call-tracing analyzer reported nothing about some advisories, so no verdict is reported for them."
 	default:
 		return reason
 	}

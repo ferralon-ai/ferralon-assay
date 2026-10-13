@@ -3,12 +3,14 @@ package goanalysis
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -430,6 +432,10 @@ func parseFindings(out []byte, vulnID string) ([]vulnFinding, error) {
 // findingsToStacks converts symbol-level findings to ingress->sink CallStacks.
 // A finding's Trace is sink-first, so we reverse it. Module/package-level
 // findings (no Function in any frame) carry no symbol trace and are dropped.
+//
+// The stacks come back in compareStacks order, not stream order: govulncheck emits findings in a
+// different order from run to run, and the report cites the first path, so stream order would make
+// identical scans produce different reports.
 func findingsToStacks(findings []vulnFinding) []CallStack {
 	var stacks []CallStack
 	for _, f := range findings {
@@ -453,7 +459,30 @@ func findingsToStacks(findings []vulnFinding) []CallStack {
 		}
 		stacks = append(stacks, CallStack{Frames: frames})
 	}
+	slices.SortFunc(stacks, compareStacks)
 	return stacks
+}
+
+// compareStacks orders call stacks shortest first, then frame by frame on every field of the frame,
+// a recognized entry before the same frame unrecognized. It compares the whole CallStack value, so
+// stacks it calls equal are identical and their relative order cannot show in any output.
+func compareStacks(a, b CallStack) int {
+	if c := cmp.Compare(len(a.Frames), len(b.Frames)); c != 0 {
+		return c
+	}
+	for i := range a.Frames {
+		fa, fb := a.Frames[i], b.Frames[i]
+		if c := strings.Compare(fa.SCIP, fb.SCIP); c != 0 {
+			return c
+		}
+		if fa.IsEntry != fb.IsEntry {
+			if fa.IsEntry {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 // frameSCIP emits a SCIP id for a govulncheck frame using the SAME grammar as

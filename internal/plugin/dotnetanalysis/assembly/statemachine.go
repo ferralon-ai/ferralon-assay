@@ -194,3 +194,45 @@ func (a *Assembly) enclosingDisplay(td *TypeDef) (string, bool) {
 	}
 	return "", false
 }
+
+// TypePath returns td's namespace and its type chain from the outermost enclosing type
+// down to td itself, walking the NestedClass table. A nested type's own Namespace is
+// empty in metadata; the outermost type carries the namespace for the whole chain. The
+// walk is bounded by the table size, so a malformed cyclic NestedClass table cannot loop.
+func (a *Assembly) TypePath(td *TypeDef) (namespace string, chain []string) {
+	if td == nil {
+		return "", nil
+	}
+	a.nestIndexOnce.Do(a.buildNestIndex)
+	enclosing, byToken := a.nestEnclosing, a.nestTypeByTok
+	cur := td
+	chain = []string{td.Name}
+	for range len(a.NestedTypes) {
+		encTok, nested := enclosing[cur.Token]
+		if !nested {
+			break
+		}
+		enc, ok := byToken[encTok]
+		if !ok {
+			break
+		}
+		chain = append(chain, enc.Name)
+		cur = enc
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return cur.Namespace, chain
+}
+
+// buildNestIndex builds TypePath's lookup tables once per assembly.
+func (a *Assembly) buildNestIndex() {
+	a.nestEnclosing = make(map[Token]Token, len(a.NestedTypes))
+	for _, nc := range a.NestedTypes {
+		a.nestEnclosing[nc.Nested] = nc.Enclosing
+	}
+	a.nestTypeByTok = make(map[Token]*TypeDef, len(a.Types))
+	for i := range a.Types {
+		a.nestTypeByTok[a.Types[i].Token] = &a.Types[i]
+	}
+}

@@ -14,6 +14,7 @@
 package pipeline
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log"
@@ -48,6 +49,10 @@ type AssessConfig struct {
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
 	SubjectToolchainReachability bool
+	// SkipDisqualifiedAnalysis lets symbol_mapping and reachability_ingress return without calling
+	// the plugin when disqualification_discovery already settled the advisory. Off by default. See
+	// WithSkipDisqualifiedAnalysis.
+	SkipDisqualifiedAnalysis bool
 }
 
 // AssessOption customizes the free-stage set built by AssessStages.
@@ -114,6 +119,16 @@ func WithSubjectToolchainReachability(enabled bool) AssessOption {
 	return func(c *AssessConfig) { c.SubjectToolchainReachability = enabled }
 }
 
+// WithSkipDisqualifiedAnalysis lets S4 symbol_mapping and S5 reachability_ingress skip their plugin
+// work for an advisory S3 disqualified, leaving no vulnerable_symbol / reachability / ingress_map /
+// candidate_pair artifact behind. It is only sound for a caller whose verdict for a disqualified
+// advisory reads nothing those stages write — Assay's report builder settles a disqualified row on
+// the discovery artifact alone. A caller that consults the S4/S5 artifacts after a disqualification
+// (a Prove tier weighing a static refutation against it) must leave it off, which is the default.
+func WithSkipDisqualifiedAnalysis(enabled bool) AssessOption {
+	return func(c *AssessConfig) { c.SkipDisqualifiedAnalysis = enabled }
+}
+
 // AssessStages returns the deterministic Assess stages S1–S6 in pipeline order, applying any
 // options. The Service composes the full S1–S10 pipeline as append(AssessStages(opts...),
 // prove.ProveStages(...)...).
@@ -127,8 +142,8 @@ func AssessStages(opts ...AssessOption) []Stage {
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability},
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
 		exposureFootprintStage{},
 	}
 }
@@ -342,6 +357,12 @@ type AdvisoryFacts struct {
 	// per-package block above equals one element), so selection is one uniform match loop.
 	// Empty ⇒ v2/single-package behavior (fail-open, inv.5). Advisory-only framing.
 	AffectedPackages []AffectedPackage
+
+	// DroppedPackages holds the package URL of each affected_packages element that failed
+	// validation and is absent from AffectedPackages ("" when the element had none). The
+	// not_exploitable gate counts each as another package, so a malformed element cannot narrow
+	// the advisory to the one package that was searched.
+	DroppedPackages []string `json:"-"`
 
 	// --- ferralon.normalized_advisory.v4 additions -----------------------------
 	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol
@@ -1374,6 +1395,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		VulnID           string                    `json:"vuln_id"`
 		Source           string                    `json:"source"`
 		Module           string                    `json:"module,omitempty"`
+		Coordinate       string                    `json:"coordinate,omitempty"`
 		Aliases          []string                  `json:"aliases,omitempty"`
 		AffectedRanges   []affectedRange           `json:"affected_ranges,omitempty"`
 		FixedVersion     string                    `json:"fixed_version,omitempty"`
@@ -1388,12 +1410,14 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
 		AffectedPackages []advisoryAffectedPackage `json:"affected_packages,omitempty"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages,omitempty"`
 		MaliciousPackage *advisoryMaliciousPackage `json:"malicious_package,omitempty"` // MAL presence-verdict marker
 		GuardSufficiency []advisoryGuardVariant    `json:"guard_sufficiency,omitempty"` // B-guardsuff: advisory-DECLARED guard sufficiency, read as a candidate-only descriptive annotation on on-path guards (never admission/refute)
 	}{
 		VulnID:           vulnID,
 		Source:           c.Request.Vulnerability.Source,
 		Module:           facts.Module,
+		Coordinate:       facts.Coordinate,
 		Aliases:          facts.Aliases,
 		AffectedRanges:   ranges,
 		FixedVersion:     facts.FixedVersion,
@@ -1408,6 +1432,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		TriggerCondition: facts.TriggerCondition,
 		Prerequisite:     facts.Prerequisite,
 		AffectedPackages: affectedPackages,
+		DroppedPackages:  facts.DroppedPackages,
 		MaliciousPackage: advMalicious,
 		GuardSufficiency: advGuardSuff,
 	}
@@ -2606,15 +2631,35 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	return err
 }
 
+// settledByDisqualification reports whether S3 recorded the advisory as disqualified. An absent or
+// undecodable discovery artifact reads as not disqualified, so the analysis stages still run.
+func settledByDisqualification(store artifact.Store, assessmentID string) (bool, error) {
+	arts, err := store.Query(assessmentID, artifact.TypeDiscovery)
+	if err != nil || len(arts) == 0 {
+		return false, err
+	}
+	var res DisqualResult
+	if json.Unmarshal(arts[0].Payload, &res) != nil {
+		return false, nil
+	}
+	return res.Disqualified, nil
+}
+
 // --- Stage 4: symbol_mapping --------------------------------------------------
 
 type symbolMapping struct {
-	plugin plugin.LanguagePlugin
+	plugin           plugin.LanguagePlugin
+	skipDisqualified bool
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
 func (symbolMapping) Status() assessment.Status { return assessment.StatusAnalysis }
 func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
+	if s.skipDisqualified {
+		if settled, err := settledByDisqualification(store, c.ID); err != nil || settled {
+			return err
+		}
+	}
 	if s.plugin != nil {
 		buildDir, err := InventoryBuildDir(store, c.ID)
 		if err != nil {
@@ -2703,11 +2748,17 @@ type reachabilityIngress struct {
 	// toolchain when it resolved to an exact version (flag-gated, off by default). See
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
+	skipDisqualified bool
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
 func (reachabilityIngress) Status() assessment.Status { return assessment.StatusAnalysis }
 func (s reachabilityIngress) Run(ctx context.Context, c *assessment.Assessment, store artifact.Store) error {
+	if s.skipDisqualified {
+		if settled, err := settledByDisqualification(store, c.ID); err != nil || settled {
+			return err
+		}
+	}
 	var sinkRef artifact.Ref
 	if syms, err := store.Query(c.ID, artifact.TypeVulnerableSymbol); err != nil {
 		return err
@@ -2793,10 +2844,15 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	if err != nil {
 		return err
 	}
+	sinks, err := resolvedSinks(store, c.ID)
+	if err != nil {
+		return err
+	}
 	requestedToolchain := s.requestedToolchain(store, c.ID)
 	reach, err := s.plugin.Reachability(ctx, plugin.ReachabilityRequest{
 		BuildDir:    buildDir,
 		VulnID:      vulnID,
+		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
 	})
 	if err != nil {
@@ -2811,14 +2867,10 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 	paths := reach.Paths
 	firstParty := false
 	if len(paths) == 0 {
-		if sink, err := resolvedSinkSCIP(store, c.ID); err != nil {
-			return err
-		} else if sink != "" {
-			if fp := firstPartyReachPaths(cg, ingresses, sink); len(fp) > 0 {
-				paths = fp
-				firstParty = true
-			}
+		for _, sink := range sinks {
+			paths = append(paths, firstPartyReachPaths(cg, ingresses, sink)...)
 		}
+		firstParty = len(paths) > 0
 	}
 
 	// Persist the RESOLVED paths (not the raw govulncheck reach) so the report builder
@@ -2976,6 +3028,113 @@ type taintDiscovery struct {
 	SchemaVersion string             `json:"schema_version"`
 	Sink          string             `json:"sink"`
 	Result        plugin.TaintResult `json:"result"`
+}
+
+// resolvedSinks returns every resolved sink SCIP id from the upstream vulnerable-symbol artifact,
+// deduplicated, or nil when none resolved (inv.7). Sinks the lane placed in a dependency (an
+// Origin) come first, then first-party ones, each in resolution order. Reachability must be asked
+// about all of them: a lane only declares what it could not search for the sinks it was given.
+func resolvedSinks(store artifact.Store, caseID string) ([]string, error) {
+	res, err := VulnerableSymbols(store, caseID)
+	if err != nil {
+		return nil, err
+	}
+	var deps, firstParty []string
+	seen := make(map[string]struct{}, len(res.Resolved))
+	for _, sym := range res.Resolved {
+		if sym.SCIP == "" {
+			continue
+		}
+		if _, dup := seen[sym.SCIP]; dup {
+			continue
+		}
+		seen[sym.SCIP] = struct{}{}
+		if _, ok := res.Origins[sym.SCIP]; ok {
+			deps = append(deps, sym.SCIP)
+		} else {
+			firstParty = append(firstParty, sym.SCIP)
+		}
+	}
+	return append(deps, firstParty...), nil
+}
+
+// VulnerableSymbols reads the symbol-mapping stage's resolution. A missing artifact, or the
+// pluginless stub payload, yields an empty result.
+func VulnerableSymbols(store artifact.Store, caseID string) (plugin.SymbolResolutionResult, error) {
+	arts, err := store.Query(caseID, artifact.TypeVulnerableSymbol)
+	if err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
+	if len(arts) == 0 {
+		return plugin.SymbolResolutionResult{}, nil
+	}
+	var res plugin.SymbolResolutionResult
+	if err := json.Unmarshal(arts[0].Payload, &res); err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
+	return res, nil
+}
+
+// AdvisorySymbols returns the vulnerable symbols the advisory names for the package under
+// assessment (the selected package's when the advisory targets a secondary one).
+func AdvisorySymbols(store artifact.Store, caseID string) []string {
+	_, symbols := advisoryPURLAndSymbols(store, caseID)
+	return symbols
+}
+
+// AdvisoryPackage returns the name and package URL of the package the advisory was assessed
+// against: the selected package's when the advisory targets a secondary one, else the advisory's
+// primary. The name is the Go module path, or the ecosystem's own coordinate everywhere else.
+func AdvisoryPackage(store artifact.Store, caseID string) (name, purl string) {
+	if sel, ok := extractSelectedPackage(store, caseID); ok {
+		return cmp.Or(sel.Module, sel.Coordinate), sel.PURL
+	}
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return "", ""
+	}
+	var adv struct {
+		Module     string `json:"module"`
+		Coordinate string `json:"coordinate"`
+		PURL       string `json:"purl"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return "", ""
+	}
+	return cmp.Or(adv.Module, adv.Coordinate), adv.PURL
+}
+
+// AdvisoryPackagePURLs returns the package URL of every package the advisory names: its primary's
+// when it has one, then each affected_packages[] element's, in declaration order. An element without
+// one yields "".
+func AdvisoryPackagePURLs(store artifact.Store, caseID string) []string {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		PURL             string                    `json:"purl"`
+		AffectedPackages []advisoryAffectedPackage `json:"affected_packages"`
+		DroppedPackages  []string                  `json:"dropped_affected_packages"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	var purls []string
+	if adv.PURL != "" {
+		purls = append(purls, adv.PURL)
+	}
+	for _, p := range adv.AffectedPackages {
+		purls = append(purls, p.PURL)
+	}
+	return append(purls, adv.DroppedPackages...)
+}
+
+// AdvisoryPURL returns the package URL the advisory was assessed against: the selected package's
+// when the advisory targets a secondary one, else the advisory's primary.
+func AdvisoryPURL(store artifact.Store, caseID string) string {
+	purl, _ := advisoryPURLAndSymbols(store, caseID)
+	return purl
 }
 
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP

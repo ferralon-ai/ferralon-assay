@@ -104,6 +104,14 @@ func UndeterminedDetail(reason string) string {
 		return "the analysis did not run under this codebase's own Go toolchain version, so no verdict was established for an advisory affecting the toolchain itself"
 	case ReasonAnalysisDidNotRun:
 		return "the analysis steps that would locate this advisory's code in what this repository builds did not run, so no verdict was established: finding no path is a fact about the analysis here, not about this codebase"
+	case ReasonPackageVersionUnresolved:
+		return "the installed version of the affected package could not be resolved, so no verdict was established"
+	case ReasonAdvisorySymbolAbsent:
+		return "the advisory names no vulnerable function to search for, so no verdict was established"
+	case ReasonVulnerableSymbolUnresolved:
+		return "the advisory's vulnerable functions were not all located inside the affected package and searched, so no verdict was established"
+	case ReasonAdvisoryUnknownToAnalyzer:
+		return "the analyzer that traces calls to this advisory's vulnerable functions reported nothing about the advisory, so no verdict was established"
 	case ReasonUnspecifiedLimit:
 		return "no verdict was established for this advisory, and the stored report this row was migrated from did not record which limit prevented it"
 	default:

@@ -28,11 +28,11 @@ func TestFindingsToStacksIgnoresStreamOrder(t *testing.T) {
 		for i, j := range order {
 			stream[i] = lines[j]
 		}
-		findings, err := parseFindings([]byte(strings.Join(stream, "\n")), "GO-2099-0001")
+		scanned, err := parseFindings([]byte(strings.Join(stream, "\n")), "GO-2099-0001")
 		if err != nil {
 			t.Fatalf("order %v: parseFindings: %v", order, err)
 		}
-		got := findingsToStacks(findings)
+		got := findingsToStacks(scanned.findings)
 		if want == nil {
 			want = got
 			continue

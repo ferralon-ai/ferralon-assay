@@ -79,7 +79,7 @@ type bfsItem struct {
 func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string, []plugin.ScopedReason) {
 	em := buildEffectiveModel(pom, reactor, cache, targetEnv, 0)
 	reasons := append([]string{}, em.residue...)
-	scoped := profileScoped(em, "", reactor, cache, targetEnv)
+	scoped := profileScoped(em, "", em.managed, reactor, cache, targetEnv)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
 	var nodes []plugin.DependencyNode
@@ -155,7 +155,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			} else {
 				childEM := buildEffectiveModel(child, reactor, cache, targetEnv, 1)
 				reasons = mergeReasons(reasons, childEM.residue...)
-				scoped = append(scoped, profileScoped(childEM, mavenPackage(it.dep.GroupID, it.dep.ArtifactID), reactor, cache, targetEnv)...)
+				scoped = append(scoped, profileScoped(childEM, mavenPackage(it.dep.GroupID, it.dep.ArtifactID), em.managed, reactor, cache, targetEnv)...)
 				childExcl := unionExclusions(it.exclusions, it.dep.Exclusions)
 				for _, cd := range childEM.deps {
 					if strings.EqualFold(cd.Optional, "true") {

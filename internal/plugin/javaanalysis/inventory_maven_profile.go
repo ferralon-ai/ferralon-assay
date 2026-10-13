@@ -566,13 +566,14 @@ func mavenPackage(group, artifact string) string {
 const closureLimit = 2000
 
 // profileScoped turns a model's undecided profiles into scoped reasons. pkg is the package whose
-// dependency list the profiles belong to ("" for a reactor module).
-func profileScoped(em effectiveModel, pkg string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) []plugin.ScopedReason {
+// dependency list the profiles belong to ("" for a reactor module). rootManaged is the reactor
+// module's dependencyManagement, which also pins the versions of transitive dependencies.
+func profileScoped(em effectiveModel, pkg string, rootManaged map[string]string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) []plugin.ScopedReason {
 	var out []plugin.ScopedReason
 	for _, u := range em.undecided {
 		sr := plugin.ScopedReason{Reason: reasonProfileActivation, Package: pkg, Path: u.path}
 		if u.bounded {
-			if t, ok := cache.closure(reactor, targetEnv, u.touched); ok {
+			if t, ok := cache.closure(reactor, targetEnv, u.touched, rootManaged); ok {
 				sr.Targets = t
 			}
 		}
@@ -634,13 +635,15 @@ func firstPartyClosure(em effectiveModel, reactor map[string]*mvnPOM, cache *mav
 		}
 		roots = append(roots, u.touched...)
 	}
-	return cache.closure(reactor, targetEnv, roots)
+	return cache.closure(reactor, targetEnv, roots, em.managed)
 }
 
 // closure returns every package reachable from roots over the cached POMs, roots included,
 // counting the dependencies undecided profiles can add along the way. ok is false when some
-// POM, version or profile on the way cannot be read, so the set is not a bound.
-func (c *mavenCache) closure(reactor map[string]*mvnPOM, targetEnv map[string]string, roots []mvnDep) ([]string, bool) {
+// POM, version or profile on the way cannot be read, so the set is not a bound. managed is the
+// reactor module's dependencyManagement: Maven resolves a transitive dependency it names at the
+// managed version, so that version's POM is walked as well as the declared one.
+func (c *mavenCache) closure(reactor map[string]*mvnPOM, targetEnv map[string]string, roots []mvnDep, managed map[string]string) ([]string, bool) {
 	pkgs := map[string]bool{}
 	seen := map[string]bool{}
 	queue := append([]mvnDep{}, roots...)
@@ -651,6 +654,11 @@ func (c *mavenCache) closure(reactor map[string]*mvnPOM, targetEnv map[string]st
 			return nil, false
 		}
 		pkgs[mavenPackage(d.GroupID, d.ArtifactID)] = true
+		if mv, ok := managed[d.GroupID+":"+d.ArtifactID]; ok && mv != d.Version {
+			md := d
+			md.Version = mv
+			queue = append(queue, md)
+		}
 		key := gavKey(d.GroupID, d.ArtifactID, d.Version)
 		if seen[key] {
 			continue

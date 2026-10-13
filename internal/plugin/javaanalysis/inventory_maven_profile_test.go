@@ -383,6 +383,9 @@ func TestMavenProfile_UnboundedTouches(t *testing.T) {
 		{
 			name:    "import BOM",
 			profile: `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`,
+			extra: func(t *testing.T, m2 string) {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging></project>`)
+			},
 		},
 		{
 			name:    "closure through an unbounded profile",
@@ -419,6 +422,105 @@ func TestMavenProfile_UnboundedTouches(t *testing.T) {
 				t.Errorf("want the module's scoped reason with nil Targets; got %+v", raw.Partiality.Scoped)
 			}
 		})
+	}
+}
+
+// A test-scoped dependency's POM sits outside first-party reach, so nothing else voids the bound of
+// its profile. A profile that adds one literal dependency beside one it can't resolve has no
+// bound at all: the literal one alone would be a partial closure.
+func TestMavenProfile_PartlyResolvableProfileIsUnbounded(t *testing.T) {
+	dir, m2 := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>
+<dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><scope>test</scope></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></project>`)
+	writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version>
+<profiles><profile><id>tp</id><activation><jdk>11</jdk></activation>
+<dependencies><dependency><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version></dependency>
+<dependency><groupId>org.z</groupId><artifactId>z</artifactId><version>${nope}</version></dependency></dependencies></profile></profiles></project>`)
+	writeCachePOM(t, m2, "org.y", "y", "1.0", `<project><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version></project>`)
+
+	raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil)
+	var mine *plugin.ScopedReason
+	for i := range raw.Partiality.Scoped {
+		if raw.Partiality.Scoped[i].Package == "pkg:maven/org.t/t" {
+			mine = &raw.Partiality.Scoped[i]
+		}
+	}
+	if mine == nil || mine.Targets != nil {
+		t.Errorf("want org.t's scoped reason with nil Targets; got %+v", raw.Partiality.Scoped)
+	}
+}
+
+// The module's dependencyManagement pins a transitive dependency's version, so the closure walks
+// the managed version's POM too: org.x 2.0 brings org.w, which the declared org.x 1.0 doesn't.
+func TestMavenProfile_ClosureFollowsRootManagedVersions(t *testing.T) {
+	dir, m2 := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>2.0</version></dependency></dependencies></dependencyManagement>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>
+<profiles><profile><id>p</id><activation><jdk>11</jdk></activation>
+<dependencies><dependency><groupId>org.p</groupId><artifactId>p</artifactId><version>1.0</version></dependency></dependencies>
+</profile></profiles></project>`)
+	writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.x", "x", "1.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></project>`)
+	writeCachePOM(t, m2, "org.x", "x", "2.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>2.0</version>
+<dependencies><dependency><groupId>org.w</groupId><artifactId>w</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.w", "w", "1.0", `<project><groupId>org.w</groupId><artifactId>w</artifactId><version>1.0</version></project>`)
+	writeCachePOM(t, m2, "org.p", "p", "1.0", `<project><groupId>org.p</groupId><artifactId>p</artifactId><version>1.0</version></project>`)
+
+	raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil)
+	var mine *plugin.ScopedReason
+	for i := range raw.Partiality.Scoped {
+		if raw.Partiality.Scoped[i].Path == "com.example:app:1.0.0 profile p" {
+			mine = &raw.Partiality.Scoped[i]
+		}
+	}
+	if mine == nil {
+		t.Fatalf("want a scoped reason for profile p; got %+v", raw.Partiality.Scoped)
+	}
+	want := []string{"", "pkg:maven/org.base/base", "pkg:maven/org.p/p", "pkg:maven/org.w/w", "pkg:maven/org.x/x"}
+	if !reflect.DeepEqual(mine.Targets, want) {
+		t.Errorf("Targets = %q, want %q", mine.Targets, want)
+	}
+}
+
+// A test-scoped dependency's profile is bounded by its own closure, outside first-party reach, and
+// that closure follows the module's managed versions too: org.v 2.0 brings org.u.
+func TestMavenProfile_TestScopedProfileFollowsRootManagedVersions(t *testing.T) {
+	dir, m2 := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencyManagement><dependencies><dependency><groupId>org.v</groupId><artifactId>v</artifactId><version>2.0</version></dependency></dependencies></dependencyManagement>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>
+<dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><scope>test</scope></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></project>`)
+	writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version>
+<profiles><profile><id>tp</id><activation><jdk>11</jdk></activation>
+<dependencies><dependency><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version></dependency></dependencies></profile></profiles></project>`)
+	writeCachePOM(t, m2, "org.y", "y", "1.0", `<project><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.v</groupId><artifactId>v</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.v", "v", "1.0", `<project><groupId>org.v</groupId><artifactId>v</artifactId><version>1.0</version></project>`)
+	writeCachePOM(t, m2, "org.v", "v", "2.0", `<project><groupId>org.v</groupId><artifactId>v</artifactId><version>2.0</version>
+<dependencies><dependency><groupId>org.u</groupId><artifactId>u</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.u", "u", "1.0", `<project><groupId>org.u</groupId><artifactId>u</artifactId><version>1.0</version></project>`)
+
+	raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil)
+	var mine *plugin.ScopedReason
+	for i := range raw.Partiality.Scoped {
+		if raw.Partiality.Scoped[i].Package == "pkg:maven/org.t/t" {
+			mine = &raw.Partiality.Scoped[i]
+		}
+	}
+	if mine == nil {
+		t.Fatalf("want a scoped reason for org.t's profile; got %+v", raw.Partiality.Scoped)
+	}
+	want := []string{"", "pkg:maven/org.base/base", "pkg:maven/org.u/u", "pkg:maven/org.v/v", "pkg:maven/org.y/y"}
+	if !reflect.DeepEqual(mine.Targets, want) {
+		t.Errorf("Targets = %q, want %q", mine.Targets, want)
 	}
 }
 

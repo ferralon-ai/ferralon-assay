@@ -1,7 +1,6 @@
 package pythonanalysis
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -239,9 +238,10 @@ func firstPartyTops(modules []string) map[string]bool {
 // declares. complete is false when a manifest fails to parse, a file declares dependencies
 // version resolution does not read (the same surfaces that leave a version unresolved), or an
 // install surface is not fully read by the coverage check (ManifestCandidates): a name only
-// that file holds is missing, so an import of it reaches no boundary node.
-func declaredDistributions(buildDir string) (names map[string]bool, complete bool) {
-	names, complete = map[string]bool{}, true
+// that file holds is missing, so an import of it reaches no boundary node. read is false when a
+// manifest cannot be read at all.
+func declaredDistributions(buildDir string) (names map[string]bool, complete, read bool) {
+	names, complete, read = map[string]bool{}, true, true
 	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
 			if n := normalizePyCoordinate(d.Coordinate); n != "" {
@@ -252,20 +252,23 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete boo
 	manifests, unread := versionSurfaces(buildDir)
 	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for _, f := range manifests {
-		deps, _, ok := parseManifest(f)
+		data, err := readRegular(f)
+		if err != nil {
+			complete, read = false, false
+			continue
+		}
+		deps, _, ok := parseManifestData(f, data)
 		if !ok {
 			complete = false
 		}
 		add(deps)
 		if filepath.Base(f) == "pyproject.toml" {
 			// The lexical [project] reader still yields names from a file TOML rejects.
-			if data, err := os.ReadFile(f); err == nil {
-				lexical, _ := parsePyprojectLexical(data)
-				add(lexical)
-			}
+			lexical, _ := parsePyprojectLexical(data)
+			add(lexical)
 		}
 	}
-	return names, complete
+	return names, complete, read
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code

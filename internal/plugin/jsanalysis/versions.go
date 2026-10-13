@@ -260,7 +260,7 @@ func packageManifests(root string) []string {
 // readManifest decodes the package.json at path as a JSON object. ok is false when it
 // cannot be read or is not one.
 func readManifest(path string) (map[string]json.RawMessage, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -333,7 +333,7 @@ func (l *lockInfo) record(project, field, name, spec string) {
 // bool is false when the file cannot be read or is structurally unparseable (the caller
 // degrades partiality).
 func parseLockfile(path string) (lockInfo, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return lockInfo{}, false
 	}

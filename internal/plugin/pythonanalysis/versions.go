@@ -257,11 +257,16 @@ func isRequirementsName(name string) bool {
 // read or is structurally unparseable, or holds an install whose project cannot be known
 // (the caller degrades partiality and leaves every Found match unresolved).
 func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
-	dir, base := filepath.Dir(path), filepath.Base(path)
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, nil, false
 	}
+	return parseManifestData(path, data)
+}
+
+// parseManifestData is parseManifest over contents already read from path.
+func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	dir, base := filepath.Dir(path), filepath.Base(path)
 	var (
 		deps []plugin.ResolvedDependency
 		ok   bool
@@ -1014,7 +1019,7 @@ func coverageExhaustive(root, coordinate string, manifests []string) bool {
 // install-surface classifier (ManifestCandidates). The bool is false when the file cannot be
 // read or does not parse.
 func parseManifestCoverage(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

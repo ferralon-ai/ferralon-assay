@@ -2,7 +2,6 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 )
 
@@ -135,7 +134,7 @@ type defineConflict struct {
 func newBuildContext(dir string) buildContext {
 	bc := buildContext{ModuleMode: moduleModeCJS, Roots: []string{dir}}
 
-	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	data, err := readRegular(filepath.Join(dir, "package.json"))
 	if err != nil {
 		return bc
 	}

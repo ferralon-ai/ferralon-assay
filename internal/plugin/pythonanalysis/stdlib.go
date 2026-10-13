@@ -45,7 +45,10 @@ func releasesFrom(first int) []int {
 // buildInterpreter reads the interpreter range the build at dir declares, through the same
 // requires-python, lockfile, .python-version chain the build manifest reports.
 func buildInterpreter(dir string) interpreterRange {
-	spec := declaredPython(dir)
+	spec, read := declaredPython(dir)
+	if !read {
+		return anyInterpreter
+	}
 	if spec == "" {
 		return assumedInterpreter
 	}

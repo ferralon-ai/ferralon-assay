@@ -214,7 +214,7 @@ func requirementLinesContent(src string) bool {
 // noxfile that never installs. Every other surface, and any of these that cannot be read,
 // declares something.
 func declaresNothing(path string) bool {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return false
 	}
@@ -296,7 +296,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, origins [
 // readDistMetadata returns the Name and Version headers of a core-metadata file. ok is false
 // when it cannot be read or names no project.
 func readDistMetadata(path string) (name, version string, ok bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return "", "", false
 	}

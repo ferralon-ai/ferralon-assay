@@ -193,7 +193,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
 	var readDir func(dir string)
 	readPkg := func(dir string) {
-		data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+		data, err := readRegular(filepath.Join(dir, "package.json"))
 		switch {
 		case err == nil:
 			var p struct {

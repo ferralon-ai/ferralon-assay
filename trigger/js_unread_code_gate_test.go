@@ -470,8 +470,8 @@ go(process.argv[2]);
 		},
 		{
 			// No node_modules on disk: an install at the root still puts zed on app/'s
-			// resolution path. The root package.json declares no workspaces, so only the root
-			// lock vetoes.
+			// resolution path. The root package.json declares no workspaces; its lock and its
+			// dependencies each veto.
 			name: "a lockfile above the governing lock holds every advisory with nothing installed",
 			src:  "require('./app/main.js');\n",
 			files: map[string]string{
@@ -481,6 +481,49 @@ go(process.argv[2]);
 				"app/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
 				"node_modules/.keep":    gateOmit,
 				"app/main.js":           "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
+			// No root lock and nothing installed: npm install at the root needs no lockfile, and
+			// puts zed on app/'s resolution path.
+			name: "a package.json with dependencies above the governing lock holds every advisory",
+			src:  "require('./app/main.js');\n",
+			files: map[string]string{
+				"package.json":          `{"name":"root","dependencies":{"zed":"1.0.0"}}`,
+				"app/package.json":      `{"name":"app","dependencies":{"qs":"6.0.0"}}`,
+				"app/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"node_modules/.keep":    gateOmit,
+				"app/main.js":           "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "a package.json declaring no dependencies above the governing lock lets zed refute",
+			src:  "require('./app/main.js');\n",
+			files: map[string]string{
+				"package.json":          `{"name":"root"}`,
+				"app/package.json":      `{"name":"app","dependencies":{"qs":"6.0.0"}}`,
+				"app/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"node_modules/.keep":    gateOmit,
+				"app/main.js":           "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			},
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			// pnpm's hidden hoist (node_modules/.pnpm/node_modules) makes b's zed resolvable from
+			// a, whose own lock does not list it.
+			name: "a pnpm-workspace.yaml above the governing lock holds every advisory",
+			src:  "require('./packages/a/index.js');\n",
+			files: map[string]string{
+				"package.json":                 `{"name":"root"}`,
+				"pnpm-workspace.yaml":          "packages:\n  - 'packages/*'\n",
+				"packages/a/package.json":      `{"name":"a","dependencies":{"qs":"6.0.0"}}`,
+				"packages/a/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"a","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"packages/b/package.json":      `{"name":"b","dependencies":{"zed":"1.0.0"}}`,
+				"node_modules/.keep":           gateOmit,
+				"packages/a/index.js":          "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
 			},
 			held: []*report.Package{qs, zed},
 		},

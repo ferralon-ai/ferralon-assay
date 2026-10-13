@@ -325,6 +325,27 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 			"package.json": `{"name":`, "app/package-lock.json": lock}},
 		{name: "a package.json without workspaces above the governing lock", from: "app", bounded: true, files: map[string]string{
 			"package.json": `{"name":"root"}`, "app/package-lock.json": lock}},
+		// A package.json declaring dependencies above the governing lock: npm installs it with
+		// no lockfile.
+		{name: "a package.json with dependencies above the governing lock and no root lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","dependencies":{"zed":"1.0.0"}}`, "app/package-lock.json": lock}},
+		{name: "a package.json with devDependencies above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","devDependencies":{"zed":"1.0.0"}}`, "app/package-lock.json": lock}},
+		{name: "a package.json with optionalDependencies above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","optionalDependencies":{"zed":"1.0.0"}}`, "app/package-lock.json": lock}},
+		{name: "a package.json with peerDependencies above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","peerDependencies":{"zed":"1.0.0"}}`, "app/package-lock.json": lock}},
+		{name: "a package.json with bundleDependencies above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","bundleDependencies":["zed"]}`, "app/package-lock.json": lock}},
+		{name: "a package.json with bundledDependencies true above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":"root","bundledDependencies":true}`, "app/package-lock.json": lock}},
+		{name: "a package.json with empty dependency fields above the governing lock", from: "app", bounded: true, files: map[string]string{
+			"package.json": `{"name":"root","dependencies":{},"devDependencies":{},"optionalDependencies":null,"peerDependencies":{},"bundleDependencies":[],"bundledDependencies":false}`,
+			"app/package-lock.json": lock}},
+		{name: "a package.json with dependencies beside the governing lock", from: "app", bounded: true, files: map[string]string{
+			"package.json": `{"name":"root"}`, "app/package.json": `{"name":"app","dependencies":{"qs":"6.0.0"}}`, "app/package-lock.json": lock}},
+		{name: "a pnpm-workspace.yaml above the governing lock", from: "packages/a", files: map[string]string{
+			"pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n", "packages/a/package-lock.json": lock}},
 		{name: "a package.json with empty workspaces above the governing lock", from: "app", bounded: true, files: map[string]string{
 			"package.json": `{"name":"root","workspaces":[]}`, "app/package-lock.json": lock}},
 		{name: "a workspace member the root lock governs", from: "packages/a", bounded: true, files: map[string]string{

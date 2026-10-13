@@ -491,6 +491,30 @@ func TestGradle_LockCheckedPerProject(t *testing.T) {
 	})
 }
 
+// A gradle/dependency-locks that can't be ruled absent counts as present. No whole build
+// isolates this: a gradle directory that can't be searched also hides the wrapper properties,
+// which fails the build's own check first. So it is pinned on gradleLegacyLocks itself.
+func TestGradleLegacyLocks_UnreadIsPresent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if gradleLegacyLocks(dir) {
+		t.Fatal("control: no gradle directory, want false")
+	}
+	gradle := filepath.Join(dir, "gradle")
+	if err := os.Mkdir(gradle, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(gradle, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(gradle, 0o755) })
+	if !gradleLegacyLocks(dir) {
+		t.Error("gradleLegacyLocks = false under an unsearchable gradle directory, want true")
+	}
+}
+
 // R5-B2: Gradle's default lock mode constrains only a configuration that has lock state, so a
 // lock confirms the runtime graph only when it pins runtimeClasspath: an entry for it, or STRICT
 // mode (which fails a configuration with no lock state) with no "empty=" line naming it.

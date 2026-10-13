@@ -476,7 +476,7 @@ func TestResolveDependencySymbols_UnreadableJarIsScopedToolFailure(t *testing.T)
 // both: each version's JAR is looked up, and one missing from every cache is reported.
 func TestResolveDependencySymbols_GradleLockTwoVersions(t *testing.T) {
 	build := t.TempDir()
-	writeFile(t, filepath.Join(build, "build.gradle"), "dependencies { implementation 'com.evil:netkit:1.0.0' }\n")
+	writeFile(t, filepath.Join(build, "build.gradle"), "dependencyLocking { lockAllConfigurations() }\ndependencies { implementation 'com.evil:netkit:1.0.0' }\n")
 	writeFile(t, filepath.Join(build, "src", "main", "java", "A.java"), "class A{}")
 	writeFile(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath\ncom.evil:netkit:2.0.0=runtimeClasspath\nempty=\n")
 	b := &cpb{}

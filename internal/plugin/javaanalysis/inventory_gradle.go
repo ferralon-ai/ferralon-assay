@@ -540,20 +540,19 @@ func splitGA(k string) (g, a string) {
 
 // unconfirmedLocks returns the group:artifacts whose locked versions the build does not
 // confirm. A lock outlives the script edit that stales it, and Gradle reads it only for the
-// configurations locking covers. The projects are root and those the root settings script
-// includes (see gradleProjects); each, with or without a lock, is checked against the scripts
-// that declare for it: its own build script and, for a subproject, the root's, whose
-// allprojects/subprojects blocks reach it. When those scripts or the settings script use a
-// construct that can move a version off what the lock and the declarations say (see
-// gradleVersionConstructs), every GA the project locks is unconfirmed. A project whose lock holds
-// nothing (or that has none) but whose scripts declare anything, or use such a construct, may
-// resolve any GA, transitively too, so it confirms no lock. Otherwise a GA's locked versions stand
-// only when every declaration is consistent with that project's lock: a literal version must be
-// one it holds; a dynamic or interpolated one is consistent only when that project enforces
-// locking (see gradleLockingEnforced), since then Gradle fails any resolution that departs from
-// the lock; and a declaration with no version (a platform or BOM supplies it) never is. A
-// declaration the project's lock lacks leaves the GA unconfirmed too. A settings or build script
-// that cannot be read in full confirms no lock.
+// configurations locking covers. Nothing is confirmed unless every script Gradle would evaluate
+// is made of SAFE statements (gradleBuildSafe): any other statement, unread script, buildSrc,
+// init script or settings construct can move a version, so every locked GA is unconfirmed. The
+// projects are root and those the root settings script includes (see gradleProjects); each,
+// with or without a lock, is checked against the scripts that declare for it: its own build
+// script and, for a subproject, the root's, whose allprojects/subprojects blocks reach it. A
+// project's locked GAs stand only when the project locks every configuration in strict mode
+// (gradleLockingEnforced); a project with no locking statement leaves its lock unread by Gradle.
+// A project whose lock holds nothing (or that has none) but whose scripts declare anything may
+// resolve any GA, transitively too, so it confirms no lock. Otherwise every declaration must be
+// consistent with that project's lock: a literal version must be one it holds, a dynamic one
+// (enforced, so Gradle fails any resolution the lock does not hold) passes, and a declaration
+// with no version, or one the project's lock lacks, leaves the GA unconfirmed.
 func unconfirmedLocks(root string, locked map[string]*lockedEntry) map[string]bool {
 	out := map[string]bool{}
 	all := func() map[string]bool {
@@ -562,11 +561,10 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry) map[string]bo
 		}
 		return out
 	}
-	projects, ok := gradleProjects(root)
-	if !ok {
+	if _, ok := gradleBuildSafe(root); !ok {
 		return all()
 	}
-	settings, ok := readGradleSources(gradleSettingsIn(root))
+	projects, ok := gradleProjects(root)
 	if !ok {
 		return all()
 	}
@@ -599,21 +597,19 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry) map[string]bo
 			}
 			inherited = rootSrcs
 		}
-		scripts := append(append([]string{}, own...), inherited...)
-		if len(gradleVersionConstructs(append(append([]string{}, scripts...), settings...)...)) > 0 {
-			if len(versions) == 0 {
-				return all()
+		declarations := gradleDeclarations(append(append([]string{}, own...), inherited...))
+		if len(versions) == 0 {
+			if len(declarations) > 0 {
+				return all() // what a project that locks nothing resolves, transitively too, is unknown
 			}
+			continue
+		}
+		if !gradleLockingEnforced(own, inherited) {
 			for ga := range versions {
 				out[ga] = true
 			}
 			continue
 		}
-		declarations := gradleDeclarations(scripts)
-		if len(versions) == 0 && len(declarations) > 0 {
-			return all() // what a project that locks nothing resolves, transitively too, is unknown
-		}
-		enforced := gradleLockingEnforced(own, inherited)
 		for ga, declared := range declarations {
 			if !anyLock[ga] {
 				continue // absent from every lock: the caller reports it unresolved
@@ -623,14 +619,7 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry) map[string]bo
 				continue
 			}
 			for _, v := range declared {
-				switch {
-				case exactGradleVersion(v):
-					if !versions[ga][v] {
-						out[ga] = true
-					}
-				case v != "" && enforced:
-					// dynamic or interpolated, and Gradle fails a resolution the lock does not hold
-				default:
+				if v == "" || exactGradleVersion(v) && !versions[ga][v] {
 					out[ga] = true
 				}
 			}

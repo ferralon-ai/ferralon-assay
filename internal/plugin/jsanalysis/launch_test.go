@@ -309,6 +309,50 @@ func TestLaunchReader(t *testing.T) {
 			gap:  "a docker build context (other) the launch reader did not simulate",
 		},
 
+		// Launch surfaces the reader does not model withhold on presence.
+		{
+			name:  "a supervisord config withholds",
+			files: map[string]string{"deploy/supervisord.conf": "[program:web]\ncommand=node_modules/.bin/tool serve\n"},
+			want:  withhold,
+			gap:   "a supervisord config",
+		},
+		{
+			name:  "an ECS task definition withholds",
+			files: map[string]string{"taskdef.json": `{"containerDefinitions":[{"name":"web","image":"x","command":["tool","serve"]}]}`},
+			want:  withhold,
+			gap:   "an ECS task definition",
+		},
+		{
+			name:  "a Terraform ECS task definition withholds",
+			files: map[string]string{"infra/main.tf": "resource \"aws_ecs_task_definition\" \"web\" {\n  container_definitions = file(\"defs.json\")\n}\n"},
+			want:  withhold,
+			gap:   "an ECS task definition",
+		},
+		{
+			name:  "a Nomad job withholds",
+			files: map[string]string{"deploy/web.nomad.hcl": "job \"web\" {}\n"},
+			want:  withhold,
+			gap:   "a Nomad job",
+		},
+		{
+			name:  "a crontab withholds",
+			files: map[string]string{"cron.d/app": "* * * * * root /srv/app/node_modules/.bin/tool sweep\n"},
+			want:  withhold,
+			gap:   "a crontab",
+		},
+		{
+			name:  "an s6 service script withholds",
+			files: map[string]string{"rootfs/etc/services.d/web/run": "#!/bin/sh\nexec tool serve\n"},
+			want:  withhold,
+			gap:   "an s6 or runit service script",
+		},
+		{
+			name:  "a script starting a container with its own command line withholds",
+			files: map[string]string{"deploy.sh": "#!/bin/sh\ndocker run -d myorg/app tool serve\n"},
+			want:  withhold,
+			gap:   "starts a container with a command line",
+		},
+
 		// Controls: a clean parse still refutes.
 		{
 			name:  "control: CMD node index.js refutes",

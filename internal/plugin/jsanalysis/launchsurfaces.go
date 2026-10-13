@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1081,9 +1082,41 @@ func isSystemdUnit(rel string) bool {
 	return strings.HasSuffix(rel, ".service") || strings.HasSuffix(path.Dir(rel), ".service.d") && strings.HasSuffix(rel, ".conf")
 }
 
+// unmodelledLaunchSurface names a process supervisor or scheduler config the reader does not
+// model, or returns "". Each withholds on presence: any of them can launch a dev bin.
+func unmodelledLaunchSurface(rel, name string) string {
+	lower := strings.ToLower(name)
+	dir := path.Base(path.Dir(rel))
+	switch {
+	case strings.HasSuffix(lower, ".nomad") || strings.HasSuffix(lower, ".nomad.hcl"):
+		return "a Nomad job"
+	case lower == "dockerrun.aws.json":
+		return "an Elastic Beanstalk Dockerrun file"
+	case lower == "crontab" || strings.HasSuffix(lower, ".crontab") || dir == "cron.d":
+		return "a crontab"
+	case lower == "supervisord.conf" || (dir == "supervisor" || dir == "supervisor.d" || dir == "supervisord.d") &&
+		(path.Ext(lower) == ".conf" || path.Ext(lower) == ".ini"):
+		return "a supervisord config"
+	case name == "run" && slices.ContainsFunc(strings.Split(path.Dir(rel), "/"), func(seg string) bool {
+		return seg == "services.d" || seg == "s6-rc.d" || seg == "service" || seg == "sv"
+	}):
+		return "an s6 or runit service script"
+	}
+	return ""
+}
+
+// iacContainers reports infrastructure-as-code text that defines a container's command: an
+// ECS task definition in Terraform or CloudFormation.
+func iacContainers(data []byte) bool {
+	return bytes.Contains(data, []byte("container_definitions")) || bytes.Contains(data, []byte("ContainerDefinitions"))
+}
+
+// containerRun matches a command that starts a container with a command line of its own.
+var containerRun = regexp.MustCompile(`\b(?:(?:docker|podman|nerdctl)(?:\s+container)?\s+(?:run|exec)|docker[- ]compose\s+(?:run|exec)|kubectl\s+(?:run|exec))\b`)
+
 // read reads every launch surface in the build dir.
 func (lr *launchReader) read() {
-	var dockerfiles, composes, yamls, jsons, units, platforms, procfiles, hooks []string
+	var dockerfiles, composes, yamls, jsons, units, platforms, procfiles, hooks, runScans, iac []string
 	walkTree(lr.m.buildReal, func(_, rel string, _ fs.DirEntry) error {
 		for _, seg := range strings.Split(path.Dir(rel), "/") {
 			if launchSkipDirs[seg] {
@@ -1096,12 +1129,19 @@ func (lr *launchReader) read() {
 		switch {
 		case isPM2Config(name):
 			lr.ls.gap("%s: a pm2 process file, whose launch commands the reader does not follow", rel)
+		case unmodelledLaunchSurface(rel, name) != "":
+			lr.ls.gap("%s: %s, whose launch commands the reader does not follow", rel, unmodelledLaunchSurface(rel, name))
 		case kind == surfDocker:
 			dockerfiles = append(dockerfiles, rel)
 		case kind == surfCompose:
 			composes = append(composes, rel)
 		case strings.HasPrefix(name, "Procfile"):
 			procfiles = append(procfiles, rel)
+		case strings.HasSuffix(lower, ".tf") || strings.HasSuffix(lower, ".tf.json"):
+			iac = append(iac, rel)
+		case kind == surfMake || lower == "justfile" || lower == ".justfile" ||
+			path.Ext(lower) == ".sh" || path.Ext(lower) == ".bash" || path.Ext(lower) == ".zsh":
+			runScans = append(runScans, rel)
 		case platformFiles[name] || path.Base(path.Dir(rel)) == ".ebextensions" && path.Ext(lower) == ".config":
 			platforms = append(platforms, rel)
 		case isSystemdUnit(rel):
@@ -1151,6 +1191,10 @@ func (lr *launchReader) read() {
 	for _, rel := range yamls {
 		data, ok := read(rel)
 		if !ok {
+			continue
+		}
+		if iacContainers(data) {
+			lr.ls.gap("%s: an ECS task definition, whose launch commands the reader does not follow", rel)
 			continue
 		}
 		docs, err := manifestDocs(data)
@@ -1206,6 +1250,10 @@ func (lr *launchReader) read() {
 	}
 	for _, rel := range jsons {
 		data, ok := read(rel)
+		if ok && (bytes.Contains(data, []byte(`"containerDefinitions"`)) || iacContainers(data)) {
+			lr.ls.gap("%s: an ECS task definition, whose launch commands the reader does not follow", rel)
+			continue
+		}
 		if !ok || !bytes.Contains(data, []byte(`"apiVersion"`)) || !bytes.Contains(data, []byte(`"kind"`)) {
 			continue
 		}
@@ -1242,6 +1290,16 @@ func (lr *launchReader) read() {
 	for _, rel := range hooks {
 		lr.enter(nil)
 		lr.followTree(rel, rel, nil, "", 0, fileShell)
+	}
+	for _, rel := range iac {
+		if data, ok := read(rel); ok && iacContainers(data) {
+			lr.ls.gap("%s: an ECS task definition, whose launch commands the reader does not follow", rel)
+		}
+	}
+	for _, rel := range runScans {
+		if data, ok := read(rel); ok && containerRun.Match(data) {
+			lr.ls.gap("%s: starts a container with a command line the reader does not follow", rel)
+		}
 	}
 	lr.enter(nil)
 }

@@ -37,8 +37,21 @@ import (
 //     not present" and fabricate a not-affected. When there is no package.json either, All
 //     is empty but Partiality is declared-partial, which is what distinguishes it from a
 //     clean scan.
-//   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure); the
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure), and
+//     every Found Match is UNRESOLVED: the broken file may hold another copy of any
+//     coordinate, so the readable lockfiles cannot decide its version. A coordinate no
+//     readable lockfile holds stays not found. A lockfile with an opaque entry (lockInfo.opaque:
+//     a git, tarball or path entry, or bundled packages, whose real package the lock does not
+//     name) takes the same path: that copy is filed under no name this resolver reads.
+//   - Any other install surface under the build dir, matched by name or content anywhere the
+//     shared walk reaches (everything but node_modules and site-packages), takes the same
+//     path: a bun or deno lock, a pnpmfile, a lockfile in a directory lockFiles skips, a
+//     package copy under .yarn or .pnpm-store. See versions_surfaces.go.
+//   - A package installed in a node_modules directory under the build dir is another copy of
+//     it: it takes part in Match like a lockfile entry, without joining All.
+//
+// Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
+// out of several distinct versions. See its doc comment for the rule.
 //
 // Exhaustive is set only when the lockfiles cover every package.json under the build dir
 // (exhaustive.go), so a coordinate absent from All is provably not installed; with no lockfile
@@ -58,15 +71,20 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	locks := lockFiles(req.BuildDir)
+	copies, copiesRead := installedCopies(req.BuildDir)
 
 	var (
-		all         []plugin.ResolvedDependency
-		parsed      = make(map[string]lockInfo, len(locks))
-		parseFailed bool
+		all    []plugin.ResolvedDependency
+		parsed = make(map[string]lockInfo, len(locks))
 	)
+	parseFailed := unreadSurfaces(req.BuildDir, locks) || !copiesRead
+	lockFailed := false // a lock that does not parse; exhaustiveLockSet judges every other surface itself
 	for _, l := range locks {
 		info, ok := parseLockfile(l)
 		if !ok {
+			lockFailed = true
+		}
+		if !ok || info.opaque {
 			parseFailed = true
 		}
 		parsed[l] = info
@@ -88,27 +106,67 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, parseFailed),
+		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed),
 	}
-	want := normalizeNPMCoordinate(req.Coordinate)
-	if want != "" {
-		for _, d := range all {
-			if normalizeNPMCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Matches = append(res.Matches, d)
-				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if !res.Match.Resolved {
-					res.Match = d
-				}
-			}
-		}
+	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...), normalizeNPMCoordinate(req.Coordinate))
+	if parseFailed && res.Found {
+		res.Match.Version = ""
+		res.Match.Resolved = false
 	}
 	return res, nil
 }
 
+// matchCoordinate selects the Match for the normalized coordinate want across every entry in
+// all — every lockfile, nested copies included. A JS tree routinely installs several copies
+// of one package (node_modules/qs next to node_modules/x/node_modules/qs), and the predicate
+// reads a single Match, so the rule is:
+//
+//   - every matching copy resolved to the SAME version (N copies of one version count as one):
+//     Match is that version, Resolved=true;
+//   - two or more distinct resolved versions, or any matching copy whose version is unknown:
+//     Match is UNRESOLVED (Resolved=false, Version empty).
+//
+// Picking one copy would let a range that straddles the installed set rule the advisory
+// not-affected on the copy that happens to sit outside it while a vulnerable copy is still
+// installed. UNRESOLVED makes the predicate fail OPEN instead. Versions compare as exact
+// strings: two spellings of one version read as distinct, which can only fail open.
+func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
+	if want == "" {
+		return plugin.ResolvedDependency{}, false
+	}
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		versions = make(map[string]struct{})
+	)
+	for _, d := range all {
+		if normalizeNPMCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			unknown = true
+			continue
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	if found && (unknown || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
+}
+
 // lockFiles returns every recognized lockfile under root (npm/yarn/pnpm), skipping
 // build-output/VCS/node_modules trees so a nested install does not shadow the project's
-// own top-level lockfile with transitive duplicates.
+// own top-level lockfile with transitive duplicates. A lockfile in a skipped tree other than
+// node_modules is an install surface this does not read, so it vetoes (unreadSurfaces).
 func lockFiles(root string) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -116,8 +174,6 @@ func lockFiles(root string) []string {
 			return nil //nolint:nilerr // an unreadable subtree yields no lockfiles; keep walking.
 		}
 		if d.IsDir() {
-			// skipDir already excludes node_modules/dist/build/VCS, so a nested install's
-			// transitive lockfiles never shadow the project's own top-level lockfile.
 			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
@@ -149,26 +205,10 @@ var declaredDependencyFields = []string{"dependencies", "devDependencies", "opti
 func declaredDependencies(root string) []plugin.ResolvedDependency {
 	seen := make(map[string]struct{})
 	var out []plugin.ResolvedDependency
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree declares no dependencies; keep walking.
-		}
-		if d.IsDir() {
-			if path != root && skipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() != "package.json" {
-			return nil
-		}
-		data, rerr := readRegular(path)
-		if rerr != nil {
-			return nil
-		}
-		var manifest map[string]json.RawMessage
-		if json.Unmarshal(data, &manifest) != nil {
-			return nil
+	for _, path := range packageManifests(root) {
+		manifest, ok := readManifest(path)
+		if !ok {
+			continue
 		}
 		for _, field := range declaredDependencyFields {
 			raw, ok := manifest[field]
@@ -191,9 +231,44 @@ func declaredDependencies(root string) []plugin.ResolvedDependency {
 				out = append(out, npmResolved(name, ""))
 			}
 		}
+	}
+	return out
+}
+
+// packageManifests returns every package.json under root, with the same skip rules as
+// lockFiles.
+func packageManifests(root string) []string {
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
+		}
+		if d.IsDir() {
+			if path != root && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "package.json" {
+			out = append(out, path)
+		}
 		return nil
 	})
 	return out
+}
+
+// readManifest decodes the package.json at path as a JSON object. ok is false when it
+// cannot be read or is not one.
+func readManifest(path string) (map[string]json.RawMessage, bool) {
+	data, err := readRegular(path)
+	if err != nil {
+		return nil, false
+	}
+	var manifest map[string]json.RawMessage
+	if json.Unmarshal(data, &manifest) != nil || manifest == nil {
+		return nil, false
+	}
+	return manifest, true
 }
 
 // lockInfo is what one lockfile records: the installed packages under their real names, and the
@@ -281,6 +356,9 @@ func npmIdentity(key, spec string) (name, version string, ok bool) {
 	if rest, alias := strings.CutPrefix(spec, "npm:"); alias {
 		if i := strings.LastIndexByte(rest, '@'); i > 0 {
 			return rest[:i], rest[i+1:], true
+		}
+		if bareAliasTarget(rest) {
+			return key, "", false
 		}
 		return key, rest, true
 	}
@@ -485,6 +563,17 @@ func splitDescriptor(d string) (name, rng string) {
 	return d[:start+at], d[start+at+1:]
 }
 
+// bareAliasTarget reports whether the part of an "npm:" spec after the prefix, holding no
+// "@version", may name a package ("npm:real", "npm:@scope/real") rather than a range. A dist-tag
+// ("npm:latest") cannot be told apart from a package name and counts as one.
+func bareAliasTarget(rest string) bool {
+	if rest == "" {
+		return false
+	}
+	c := rest[0]
+	return c == '@' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 // yarnIdentity returns the real package a yarn descriptor's range installs: the descriptor's
 // own name for a registry range (classic "^2.2.1", berry "npm:^2.2.1"), a workspace, or a patch
 // of the same package; the target for an "npm:<name>@<range>" alias. ok is false for any other
@@ -497,7 +586,7 @@ func yarnIdentity(name, rng string) (string, bool) {
 		if i := strings.LastIndexByte(rest, '@'); i > 0 {
 			return rest[:i], true
 		}
-		return name, true
+		return name, !bareAliasTarget(rest)
 	case strings.HasPrefix(rng, "workspace:"):
 		return name, true
 	case strings.HasPrefix(rng, "patch:"):

@@ -325,6 +325,306 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 	}
 }
 
+// TestCallGraph_ManifestReadInPartIsToolFailure: the PEP 503 fallback maps an import to a
+// distribution only when a manifest declares it. When a manifest fails to parse, or a file
+// declares dependencies the lane does not read, AND some import resolves to no distribution,
+// the name that would attribute it may be in the part not read, so the call graph carries
+// tool_failure. With every import attributed (declared, curated, standard library or
+// first-party) the unread part changes no boundary node and adds no reason. A pyproject TOML
+// rejects still lends its lexical [project] names to the fallback.
+func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
+	const app = "import acmelib\n\ndef fetch(u):\n    return acmelib.get(u)\n"
+	const edge = "pypi:acmelib#acmelib.get"
+	const setupCfg = "[options]\ninstall_requires =\n    acmelib\n"
+	// interp builds a tree whose Pipfile goes unread, whose only read manifest declares
+	// acmelib, and whose interpreter is declared by the given files.
+	interp := func(imports string, files map[string]string) map[string]string {
+		tree := map[string]string{
+			"requirements.txt": "acmelib==1.0\n",
+			"Pipfile":          "[packages]\npyasyncore = \"*\"\ngraphlib-backport = \"*\"\n",
+			"app.py":           app + "\n" + imports,
+		}
+		for k, v := range files {
+			tree[k] = v
+		}
+		return tree
+	}
+	requires := func(spec string) map[string]string {
+		return map[string]string{"pyproject.toml": "[project]\nname = \"app\"\nrequires-python = \"" + spec + "\"\n"}
+	}
+	cases := []struct {
+		name        string
+		files       map[string]string
+		toolFailure bool
+		boundary    bool
+	}{
+		{
+			name:     "clean requirements",
+			files:    map[string]string{"requirements.txt": "acmelib==1.0\n", "app.py": app},
+			boundary: true,
+		},
+		{
+			name: "unread Pipfile, import declared nowhere read",
+			files: map[string]string{
+				"Pipfile": "[packages]\nacmelib = \"*\"\n",
+				"app.py":  app,
+			},
+			toolFailure: true,
+		},
+		{
+			name: "setup.cfg read, import declared there",
+			files: map[string]string{
+				"setup.cfg": setupCfg,
+				"app.py":    app,
+			},
+			boundary: true,
+		},
+		{
+			name: "unparseable requirements, import declared nowhere read",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\nhttps://example.com/pkg.whl\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "complete manifests, import declared nowhere",
+			files: map[string]string{
+				"requirements.txt": "flask==3.0.0\n",
+				"app.py":           app,
+			},
+		},
+		{
+			name: "unparseable requirements, import declared in the part read",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\nhttps://example.com/pkg.whl\n",
+				"app.py":           app,
+			},
+			boundary: true,
+		},
+		{
+			name: "pyproject TOML rejects, import declared lexically",
+			files: map[string]string{
+				"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"acmelib>=1\"]\n\n[tool.broken\n",
+				"app.py":         app,
+			},
+			boundary: true,
+		},
+		{
+			name: "unread setup.cfg, standard library import",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"app.py":           app + "\nimport os.path\nfrom collections import OrderedDict\n",
+			},
+			boundary: true,
+		},
+		{
+			name: "unread setup.cfg, first-party import",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"helpers.py":       "def h():\n    return 1\n",
+				"app.py":           app + "\nimport helpers\n",
+			},
+			boundary: true,
+		},
+		{
+			name: "unread setup.cfg, curated import",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"setup.cfg":        setupCfg,
+				"app.py":           app + "\nimport jwt\n",
+			},
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, asyncore on 3.12 or later",
+			files:       interp("import asyncore\n", requires(">=3.12")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, graphlib on 3.8",
+			files:       interp("import graphlib\n", requires("==3.8.*")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, undeclared third-party import",
+			files:       interp("import othermod\n", requires(">=3.12")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, asyncore on 3.8 through 3.11",
+			files:    interp("import asyncore\n", requires(">=3.8,<3.12")),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, graphlib on 3.9 or later",
+			files:    interp("import graphlib\n", requires(">=3.9")),
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, asyncore only on releases newer than the tables",
+			files:       interp("import asyncore\n", requires(">=3.15")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, dataclasses on 3.6 or later",
+			files:       interp("import dataclasses\n", requires(">=3.6")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, enum on 2.7 or later",
+			files:       interp("import enum\n", requires(">=2.7")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, no interpreter declared, module 3.8 and later ship",
+			files:    interp("import dataclasses\nimport asyncio\n", nil),
+			boundary: true,
+		},
+		{
+			name:        "unread Pipfile, no interpreter declared, module 3.8 lacks",
+			files:       interp("import tomllib\n", nil),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, no interpreter declared, module 3.12 dropped",
+			files:       interp("import distutils\n", nil),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:        "unread Pipfile, unreadable requires-python",
+			files:       interp("import dataclasses\n", requires("3.8 or newer")),
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name:     "unread Pipfile, .python-version pin",
+			files:    interp("import tomllib\n", map[string]string{".python-version": "3.11\n"}),
+			boundary: true,
+		},
+		{
+			name:     "unread Pipfile, uv.lock requires-python",
+			files:    interp("import asyncore\n", map[string]string{"uv.lock": "version = 1\nrequires-python = \">=3.8, <3.12\"\n"}),
+			boundary: true,
+		},
+		{
+			name: "B2-1 othermod declared only in requirements.lock",
+			files: map[string]string{
+				"requirements.txt":  "acmelib==1.0\n",
+				"requirements.lock": "othermod==1.0\n",
+				"app.py":            app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-2 othermod declared only in pylock.toml",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"pylock.toml":      "lock-version = \"1.0\"\n\n[[packages]]\nname = \"othermod\"\nversion = \"1.0\"\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-3 othermod declared only in tox deps",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"tox.ini":          "[testenv]\ndeps =\n    othermod\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-4 othermod declared only in a conda environment's pip section",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"conda-env.yml":    "channels:\n  - conda-forge\ndependencies:\n  - pip:\n    - othermod\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-5 othermod declared only under build/",
+			files: map[string]string{
+				"requirements.txt":       "acmelib==1.0\n",
+				"build/requirements.txt": "othermod==1.0\n",
+				"app.py":                 app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-6 othermod declared only in a Pipfile (holds before and after the merge)",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"Pipfile":          "[packages]\nothermod = \"*\"\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-7 unread requirements.lock, othermod also declared in the part read",
+			files: map[string]string{
+				"requirements.txt":  "acmelib==1.0\nothermod==1.0\n",
+				"requirements.lock": "othermod==1.0\n",
+				"app.py":            app + "\nimport othermod\n",
+			},
+			boundary: true,
+		},
+		{
+			name: "B2-8 build hook the install-surface classifier never reads in full",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"hatch_build.py":   "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\nclass H(BuildHookInterface):\n    pass\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-9 dynamic optional-dependencies with no source read",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"pyproject.toml":   "[project]\nname = \"app\"\ndynamic = [\"dependencies\", \"optional-dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"requirements.txt\"]}\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonToolFailure); got != c.toolFailure {
+				t.Errorf("tool_failure = %v, want %v (reasons %v)", got, c.toolFailure, res.Partiality.Reasons)
+			}
+			caller := funcSCIP("app", nil, "fetch", 1)
+			if got := hasEdge(res.Edges, caller, edge); got != c.boundary {
+				t.Errorf("boundary edge %s -> %s present = %v, want %v\nedges: %+v", caller, edge, got, c.boundary, res.Edges)
+			}
+		})
+	}
+}
+
 // TestCallGraph_ModuleLevelCallsGetModuleInitCaller: calls at module (and class-body)
 // level run at import time; they are attributed to a synthetic module-init caller that
 // is a root, so top-level `app = create_app()` and `jwt.decode(...)` produce edges.

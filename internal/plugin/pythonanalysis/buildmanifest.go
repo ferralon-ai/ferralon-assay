@@ -41,20 +41,9 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		return plugin.BuildManifestResult{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	meta, metaRead := readPyprojectMeta(req.BuildDir)
-
-	// Interpreter version: declared requires-python, falling back to a lockfile-declared
-	// python constraint (uv.lock / pdm.lock), then a .python-version pin. Never probed by
-	// launching an interpreter (§3.3); undetermined stays "" and is NOT guessed.
-	pin, pinRead := readPythonVersionPin(req.BuildDir)
-	version := meta.requiresPython
-	lockRead := true
-	if version == "" {
-		version, lockRead = lockfileRequiresPython(req.BuildDir)
-	}
-	if version == "" {
-		version = pin
-	}
+	meta, _ := readPyprojectMeta(req.BuildDir)
+	pin, _ := readPythonVersionPin(req.BuildDir)
+	version, read := declaredPython(req.BuildDir)
 
 	// Toolchain: the stronger, exact pin when the manifest declares one — a .python-version
 	// file, or an exact "==X.Y.Z" requires-python. A range/minimum requires-python is NOT a
@@ -96,7 +85,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		reasons = append(reasons, plugin.PartialReasonEnvConditionUnresolved+":requires_python")
 	}
 	// A declared source that exists but could not be read may name a different interpreter.
-	if !metaRead || !pinRead || !lockRead {
+	if !read {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if len(reasons) == 0 {
@@ -105,6 +94,25 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		res.Partiality = plugin.Partial(reasons...)
 	}
 	return res, nil
+}
+
+// declaredPython returns the interpreter the build at dir declares: requires-python, falling
+// back to a lockfile-declared python constraint (uv.lock / pdm.lock), then a .python-version
+// pin. Never probed by launching an interpreter (§3.3); undetermined stays "" and is NOT
+// guessed. read is false when a declared source that exists cannot be read: it may name a
+// different interpreter.
+func declaredPython(dir string) (version string, read bool) {
+	meta, metaRead := readPyprojectMeta(dir)
+	pin, pinRead := readPythonVersionPin(dir)
+	version, read = meta.requiresPython, metaRead && pinRead
+	if version == "" {
+		v, lockRead := lockfileRequiresPython(dir)
+		version, read = v, read && lockRead
+	}
+	if version == "" {
+		version = pin
+	}
+	return version, read
 }
 
 // pyprojectMeta is the declared build-context read from a project's pyproject.toml.

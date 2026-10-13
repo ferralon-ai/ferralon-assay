@@ -284,9 +284,8 @@ func coordinateReferences(data []byte, want string) (coordinateRefs, bool) {
 			if raw == "" {
 				raw = strings.TrimSpace(pr.VersionElem)
 			}
-			bracketed := strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]")
-			_, pin := exactNuGetPin(raw)
-			if pr.Update != "" || strings.TrimSpace(ig.Condition) != "" || strings.TrimSpace(pr.Condition) != "" || !bracketed || !pin {
+			_, pin := packageReferencePin(raw)
+			if pr.Update != "" || strings.TrimSpace(ig.Condition) != "" || strings.TrimSpace(pr.Condition) != "" || !pin {
 				exact = false
 			}
 		}

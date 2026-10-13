@@ -250,6 +250,11 @@ const (
 	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
 	// them, so its refutation does not cover the builds that compile them.
 	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
+	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
+	// type outside the search) may call into the module it found no path to, so its refutation does
+	// not cover them.
+	PartialReasonUnsearchedMethods = "unsearched_methods"
 	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
 	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
 	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this

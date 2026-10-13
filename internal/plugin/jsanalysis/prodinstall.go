@@ -11,7 +11,9 @@ package jsanalysis
 // does not count. An install
 // (npm install/ci, yarn [install], pnpm install) keeps dev dependencies unless it passes a
 // production flag, runs under NODE_ENV=production, or is followed in the same Dockerfile stage
-// or script by a production prune or reinstall. Unreadable or unparseable files count as
+// or script by a production prune or reinstall. Forcing dev dependencies in (--include=dev,
+// --also=dev, --production=false, or NPM_CONFIG_PRODUCTION=false / NPM_CONFIG_INCLUDE=dev in the
+// environment) outranks every production signal. Unreadable or unparseable files count as
 // evidence: the check fails closed.
 
 import (
@@ -29,6 +31,7 @@ var (
 	deployWord    = regexp.MustCompile(`(?i)deploy|release|publish|docker`)
 	deployAction  = regexp.MustCompile(`(?i)deploy|publish`)
 	prodEnvLine   = regexp.MustCompile(`(?i)^\s*(?:ENV|export|ARG)\b.*\bNODE_ENV[=\s]+["']?production\b`)
+	keepDevLine   = regexp.MustCompile(`(?i)^\s*(?:ENV|export|ARG)\b.*\bNPM_CONFIG_(?:PRODUCTION[=\s]+["']?false|(?:INCLUDE|ALSO)[=\s]+["']?dev)`)
 	segmentSplit  = regexp.MustCompile(`&&|\|\||;|\|`)
 	envAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 	procLabel     = regexp.MustCompile(`^[A-Za-z][\w-]*:$`) // "run:", a Procfile "release:"
@@ -195,25 +198,30 @@ func sortedJobIDs(jobs map[string]ghJob) []string {
 // keepsDevInstall returns the first install command in text that leaves dev dependencies
 // installed. A Dockerfile is judged stage by stage (FROM starts a stage); other text is one
 // stage. Within a stage, NODE_ENV=production set before an install, or a later production
-// prune or production install, clears it.
+// prune or production install, clears it. An environment line that forces dev dependencies in
+// (NPM_CONFIG_PRODUCTION=false, NPM_CONFIG_INCLUDE=dev) outranks NODE_ENV=production for the
+// rest of the stage, including on the same line.
 func keepsDevInstall(text string, docker bool) string {
 	text = strings.ReplaceAll(text, "\\\r\n", " ")
 	text = strings.ReplaceAll(text, "\\\n", " ")
-	pending, prodEnv := "", false
+	pending, prodEnv, keepDevEnv := "", false, false
 	for _, line := range strings.Split(text, "\n") {
 		if docker {
 			if f := strings.Fields(line); len(f) > 0 && strings.EqualFold(f[0], "FROM") {
 				if pending != "" {
 					return pending
 				}
-				prodEnv = false
+				prodEnv, keepDevEnv = false, false
 			}
 		}
 		if prodEnvLine.MatchString(line) {
 			prodEnv = true
 		}
+		if keepDevLine.MatchString(line) {
+			keepDevEnv = true
+		}
 		for _, seg := range segmentSplit.Split(line, -1) {
-			switch classifyInstall(seg, prodEnv) {
+			switch classifyInstall(seg, prodEnv, keepDevEnv) {
 			case installKeepsDev:
 				if pending == "" {
 					pending = strings.Join(strings.Fields(seg), " ")
@@ -234,9 +242,10 @@ const (
 	installProdOnly // a production install or prune: dev dependencies are absent afterwards
 )
 
-func classifyInstall(seg string, prodEnv bool) installKind {
-	toks, envProd, keepDevEnv := stripCommandPrefix(strings.Fields(seg))
+func classifyInstall(seg string, prodEnv, keepDevEnv bool) installKind {
+	toks, envProd, envKeepDev := stripCommandPrefix(strings.Fields(seg))
 	prodEnv = prodEnv || envProd
+	keepDevEnv = keepDevEnv || envKeepDev
 	if len(toks) == 0 {
 		return installNone
 	}
@@ -274,9 +283,9 @@ func classifyInstall(seg string, prodEnv bool) installKind {
 		if f == "-g" || f == "--global" {
 			return installNone
 		}
-		if f == "--production=false" {
-			return installKeepsDev
-		}
+	}
+	if keepDevFlag(flags, args) {
+		return installKeepsDev
 	}
 	if !keepDevEnv && (prodEnv || prodFlag(tool, flags, args)) {
 		return installProdOnly
@@ -287,7 +296,7 @@ func classifyInstall(seg string, prodEnv bool) installKind {
 // stripCommandPrefix drops a segment's leading RUN/sudo/env words, `name:` labels, Makefile `@`, and
 // environment assignments, reporting whether those assignments select a production install
 // (NODE_ENV=production, NPM_CONFIG_PRODUCTION=true) or force dev dependencies in
-// (NPM_CONFIG_PRODUCTION=false).
+// (NPM_CONFIG_PRODUCTION=false, NPM_CONFIG_INCLUDE=dev).
 func stripCommandPrefix(toks []string) (rest []string, prodEnv, keepDev bool) {
 	for len(toks) > 0 {
 		t := strings.TrimPrefix(toks[0], "@")
@@ -300,7 +309,8 @@ func stripCommandPrefix(toks []string) (rest []string, prodEnv, keepDev bool) {
 			switch {
 			case k == "NODE_ENV" && v == "production", strings.EqualFold(k, "NPM_CONFIG_PRODUCTION") && v == "true":
 				prodEnv = true
-			case strings.EqualFold(k, "NPM_CONFIG_PRODUCTION") && v == "false":
+			case strings.EqualFold(k, "NPM_CONFIG_PRODUCTION") && v == "false",
+				(strings.EqualFold(k, "NPM_CONFIG_INCLUDE") || strings.EqualFold(k, "NPM_CONFIG_ALSO")) && v == "dev":
 				keepDev = true
 			}
 		default:
@@ -310,6 +320,23 @@ func stripCommandPrefix(toks []string) (rest []string, prodEnv, keepDev bool) {
 		toks = toks[1:]
 	}
 	return nil, prodEnv, keepDev
+}
+
+// keepDevFlag reports whether an install's flags force dev dependencies in, whatever NODE_ENV
+// says: npm's --include=dev and --also=dev, and --production=false.
+func keepDevFlag(flags, args []string) bool {
+	for _, f := range flags {
+		switch f {
+		case "--include=dev", "--also=dev", "--also=development", "--production=false":
+			return true
+		}
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if (args[i] == "--include" || args[i] == "--also") && strings.HasPrefix(args[i+1], "dev") {
+			return true
+		}
+	}
+	return false
 }
 
 func prodFlag(tool string, flags, args []string) bool {

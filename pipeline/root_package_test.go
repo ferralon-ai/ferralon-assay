@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -94,13 +95,13 @@ func TestReadRootPackage(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:     "maven inherits group and version from the parent",
+			name:     "maven inherits the group from a parent outside the checkout, but not its version",
 			language: checkout.LangJava,
 			files: map[string]string{"pom.xml": `<project>
   <parent><groupId>org.springframework</groupId><version>5.3.20.RELEASE</version></parent>
   <artifactId>spring-web</artifactId>
 </project>`},
-			want:   RootPackage{PURLType: "maven", Name: "org.springframework:spring-web", Version: "5.3.20.RELEASE"},
+			want:   RootPackage{PURLType: "maven", Name: "org.springframework:spring-web"},
 			wantOK: true,
 		},
 		{
@@ -260,69 +261,11 @@ func TestReadRootPackage(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:     "nuget package id",
+			name:     "nuget literal version is never established",
 			language: checkout.LangDotNet,
 			files:    map[string]string{"Newtonsoft.Json.csproj": "<Project><PropertyGroup><PackageId>Newtonsoft.Json</PackageId><Version>13.0.1</Version></PropertyGroup></Project>"},
-			want:     RootPackage{PURLType: "nuget", Name: "Newtonsoft.Json", Version: "13.0.1"},
+			want:     RootPackage{PURLType: "nuget", Name: "Newtonsoft.Json"},
 			wantOK:   true,
-		},
-		{
-			name:     "nuget version prefix alone takes a suffix the build can pass",
-			language: checkout.LangDotNet,
-			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><VersionPrefix>13.0.1</VersionPrefix></PropertyGroup></Project>"},
-			want:     RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK:   true,
-		},
-		{
-			name:     "nuget version under a Choose",
-			language: checkout.LangDotNet,
-			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup><Choose><When Condition=\"'$(Configuration)' == 'Release'\"><PropertyGroup><Version>2.0.0</Version></PropertyGroup></When></Choose></Project>"},
-			want:     RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK:   true,
-		},
-		{
-			name:     "nuget version an Import can override",
-			language: checkout.LangDotNet,
-			files: map[string]string{
-				"N.csproj":      "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup><Import Project=\"version.props\"/></Project>",
-				"version.props": "<Project><PropertyGroup><Version>2.0.0</Version></PropertyGroup></Project>",
-			},
-			want:   RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK: true,
-		},
-		{
-			name:     "nuget version a Directory.Build.props can override",
-			language: checkout.LangDotNet,
-			files: map[string]string{
-				"N.csproj":              "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup></Project>",
-				"Directory.Build.props": "<Project><PropertyGroup><VersionSuffix>beta.1</VersionSuffix></PropertyGroup></Project>",
-			},
-			want:   RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK: true,
-		},
-		{
-			name:     "nuget version suffix makes a pre-release",
-			language: checkout.LangDotNet,
-			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><VersionPrefix>13.0.1</VersionPrefix><VersionSuffix>beta1</VersionSuffix></PropertyGroup></Project>"},
-			want:     RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK:   true,
-		},
-		{
-			name:     "nuget conditional version",
-			language: checkout.LangDotNet,
-			files:    map[string]string{"N.csproj": "<Project><PropertyGroup><PackageId>N</PackageId><Version Condition=\"'$(CI)' == 'true'\">13.0.1</Version></PropertyGroup></Project>"},
-			want:     RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK:   true,
-		},
-		{
-			name:     "nuget version a Directory.Build.targets can override",
-			language: checkout.LangDotNet,
-			files: map[string]string{
-				"N.csproj":                "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup></Project>",
-				"Directory.Build.targets": "<Project/>",
-			},
-			want:   RootPackage{PURLType: "nuget", Name: "N"},
-			wantOK: true,
 		},
 		{
 			name:     "gradle settings configuring every project before its script",
@@ -511,19 +454,121 @@ func TestGoPathOwner_ModulesOutsideTheRootGoMod(t *testing.T) {
 	}
 }
 
-// TestNugetRootPackage_DirectoryFilesAboveTheProject: MSBuild imports Directory.Build.props and
-// Directory.Build.targets from any directory above the project, so one there leaves the version
-// unknown.
-func TestNugetRootPackage_DirectoryFilesAboveTheProject(t *testing.T) {
-	const proj = "<Project><PropertyGroup><PackageId>N</PackageId><Version>13.0.1</Version></PropertyGroup></Project>"
-	for _, name := range []string{"Directory.Build.props", "Directory.Build.targets"} {
-		t.Run(name, func(t *testing.T) {
-			dir := writeTree(t, map[string]string{"src/N/N.csproj": proj, name: "<Project/>"})
-			got, ok := ReadRootPackage(context.Background(), filepath.Join(dir, "src", "N"), checkout.LangDotNet)
-			if want := (RootPackage{PURLType: "nuget", Name: "N"}); !ok || got != want {
+// TestGradleRootPackage_VersionAllowlist: the version is read only when every statement that runs
+// before publishing is on the allowlist: settings holds only rootProject.name, and the root script
+// only literal group and version assignments and plain dependencies and repositories blocks.
+func TestGradleRootPackage_VersionAllowlist(t *testing.T) {
+	const (
+		settings = "rootProject.name = 'lib'\n"
+		script   = "group = 'com.example'\nversion = '1.2.3'\n"
+		stock    = "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n"
+	)
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"only the assignments", nil, "1.2.3"},
+		{"plain dependencies and repositories blocks", map[string]string{"build.gradle": script + "\nrepositories {\n  mavenCentral()\n}\ndependencies {\n  implementation 'org.slf4j:slf4j-api:2.0.9'\n  testImplementation(\"junit:junit:4.13.2\")\n}\n"}, "1.2.3"},
+		{"comments beside the name", map[string]string{"settings.gradle": "// the library\nrootProject.name = 'lib' // its name\n"}, "1.2.3"},
+		{"a stock wrapper", map[string]string{"gradle/wrapper/gradle-wrapper.properties": stock}, "1.2.3"},
+		{"a stock wrapper with CRLF line endings", map[string]string{"gradle/wrapper/gradle-wrapper.properties": strings.ReplaceAll(stock, "\n", "\r\n")}, "1.2.3"},
+		{"settings including a project", map[string]string{"settings.gradle": settings + "include 'sub'\n"}, ""},
+		{"settings applying a script", map[string]string{"settings.gradle": settings + "apply from: 'version.gradle'\n"}, ""},
+		{"settings with a plugins block", map[string]string{"settings.gradle": "plugins {\n  id 'com.example.versioning' version '1.0'\n}\n" + settings}, ""},
+		{"settings with a projectsEvaluated hook", map[string]string{"settings.gradle": settings + "gradle.projectsEvaluated { rootProject.version = '2.0.0' }\n"}, ""},
+		{"another top-level statement in the script", map[string]string{"build.gradle": script + "tasks.register('x') {}\n"}, ""},
+		{"a dependencies block calling setVersion", map[string]string{"build.gradle": script + "dependencies {\n  setVersion '2.0.0'\n}\n"}, ""},
+		{"an interpolated dependency", map[string]string{"build.gradle": script + "dependencies {\n  implementation \"org.slf4j:slf4j-api:$slf4j\"\n}\n"}, ""},
+		{"a dependency with a closure", map[string]string{"build.gradle": script + "dependencies {\n  implementation('org.slf4j:slf4j-api:2.0.9') { transitive = false }\n}\n"}, ""},
+		{"a repository other than a stock one", map[string]string{"build.gradle": script + "repositories {\n  maven { url 'https://repo.example.com' }\n}\n"}, ""},
+		{"a buildSrc", map[string]string{"buildSrc/build.gradle": ""}, ""},
+		{"a wrapper fetching a custom distribution", map[string]string{"gradle/wrapper/gradle-wrapper.properties": "distributionUrl=https\\://repo.example.com/gradle-8.5-custom.zip\n"}, ""},
+		{"a wrapper naming two distributions", map[string]string{"gradle/wrapper/gradle-wrapper.properties": stock + stock}, ""},
+		{"both build scripts", map[string]string{"build.gradle.kts": "group = \"com.example\"\nversion = \"1.2.3\"\n"}, ""},
+		{"both settings files", map[string]string{"settings.gradle.kts": "rootProject.name = \"lib\"\n"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"settings.gradle": settings, "build.gradle": script}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			got, ok := ReadRootPackage(context.Background(), writeTree(t, files), checkout.LangJava)
+			if want := (RootPackage{PURLType: "maven", Name: "com.example:lib", Version: tc.want}); !ok || got != want {
 				t.Fatalf("got %+v, %v; want %+v", got, ok, want)
 			}
 		})
+	}
+}
+
+func TestGradleRootPackage_NameOnlyInACommentPublishesNothing(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"settings.gradle": "// rootProject.name = 'lib'\n",
+		"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n",
+	})
+	if got, ok := ReadRootPackage(context.Background(), dir, checkout.LangJava); ok {
+		t.Fatalf("got %+v, want no root", got)
+	}
+}
+
+// TestMavenRootPackage_VersionWriters: the version is read only when every writer of it is in the
+// checkout: no core extension from .mvn, no <extensions> in the POM or any parent, and every parent
+// a POM in the checkout whose coordinates match the declared ones.
+func TestMavenRootPackage_VersionWriters(t *testing.T) {
+	const (
+		child  = "<project><parent><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></parent><artifactId>a</artifactId></project>"
+		parent = "<project><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></project>"
+		single = "<project><groupId>g</groupId><artifactId>a</artifactId><version>1.2.3</version></project>"
+	)
+	cases := []struct {
+		name  string
+		files map[string]string
+		dir   string
+		want  string
+	}{
+		{"no parent", map[string]string{"pom.xml": single}, "", "1.2.3"},
+		{"a parent in the checkout", map[string]string{"pom.xml": parent, "a/pom.xml": child}, "a", "1.2.3"},
+		{"a parent at a relativePath directory", map[string]string{"build/parent/pom.xml": parent, "a/pom.xml": strings.Replace(child, "</parent>", "<relativePath>../build/parent</relativePath></parent>", 1)}, "a", "1.2.3"},
+		{"an unrelated .mvn/maven.config", map[string]string{"pom.xml": single, ".mvn/maven.config": "-T 4\n"}, "", "1.2.3"},
+		{"a parent in the checkout with extensions", map[string]string{"pom.xml": strings.Replace(parent, "</project>", "<build><extensions><extension><groupId>x</groupId><artifactId>y</artifactId><version>1</version></extension></extensions></build></project>", 1), "a/pom.xml": child}, "a", ""},
+		{"a grandparent in the checkout with a plugin's extensions", map[string]string{
+			"pom.xml":     "<project><groupId>g</groupId><artifactId>top</artifactId><version>1.2.3</version><build><plugins><plugin><artifactId>p</artifactId><extensions>true</extensions></plugin></plugins></build></project>",
+			"m/pom.xml":   "<project><parent><groupId>g</groupId><artifactId>top</artifactId><version>1.2.3</version></parent><artifactId>parent</artifactId></project>",
+			"m/a/pom.xml": child,
+		}, "m/a", ""},
+		{"a parent outside the checkout", map[string]string{"a/pom.xml": child}, "a", ""},
+		{"a parent the POM takes from a repository", map[string]string{"pom.xml": parent, "a/pom.xml": strings.Replace(child, "</parent>", "<relativePath/></parent>", 1)}, "a", ""},
+		{"a parent in the checkout with other coordinates", map[string]string{"pom.xml": strings.Replace(parent, "1.2.3", "1.2.4", 1), "a/pom.xml": child}, "a", ""},
+		{"extensions in the POM itself", map[string]string{"pom.xml": strings.Replace(single, "</project>", "<build><extensions/></build></project>", 1)}, "", ""},
+		{"a core extension in .mvn/extensions.xml", map[string]string{"pom.xml": single, ".mvn/extensions.xml": "<extensions/>"}, "", ""},
+		{"a core extension named in .mvn/maven.config", map[string]string{"pom.xml": single, ".mvn/maven.config": "-Dmaven.ext.class.path=ext.jar\n"}, "", ""},
+		{"a core extension named in .mvn/jvm.config", map[string]string{"pom.xml": single, ".mvn/jvm.config": "-Dmaven.ext.class.path=ext.jar\n"}, "", ""},
+		{"a core extension in a .mvn above the project", map[string]string{"a/pom.xml": single, ".mvn/extensions.xml": "<extensions/>"}, "a", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, tc.files)
+			gitTree(t, dir)
+			got, ok := ReadRootPackage(context.Background(), filepath.Join(dir, tc.dir), checkout.LangJava)
+			if !ok || got.Version != tc.want {
+				t.Fatalf("got %+v, %v; want version %q", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestMavenRootPackage_ParentOutsideTheRepository: a parent at ../pom.xml that lies above the
+// repository is not in the checkout, even though the file exists.
+func TestMavenRootPackage_ParentOutsideTheRepository(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pom.xml":      "<project><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></project>",
+		"repo/pom.xml": "<project><parent><groupId>g</groupId><artifactId>parent</artifactId><version>1.2.3</version></parent><artifactId>a</artifactId></project>",
+	})
+	gitTree(t, filepath.Join(dir, "repo"))
+	got, ok := ReadRootPackage(context.Background(), filepath.Join(dir, "repo"), checkout.LangJava)
+	if !ok || got.Version != "" {
+		t.Fatalf("got %+v, %v; want no version", got, ok)
 	}
 }
 
@@ -547,20 +592,36 @@ func gitTree(t *testing.T, dir string, tags ...string) {
 	}
 }
 
+// TestGoRootPackage_VersionIsTheModuleTagAtHead: the version is the one full semver tag at HEAD for
+// the module. Tags that disagree leave it unknown, since the reader cannot tell which one the build
+// publishes.
 func TestGoRootPackage_VersionIsTheModuleTagAtHead(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"go.mod":         "module example.com/app\n",
-		"sub/go.mod":     "module example.com/app/sub\n",
-		"sub/sub.go":     "package sub\n",
-		"cmd/app/app.go": "package main\n",
-	})
-	gitTree(t, dir, "v1.2.0", "v1.10.0", "sub/v0.3.0", "nightly")
-
-	if got, _ := ReadRootPackage(context.Background(), dir, checkout.LangGo); got.Version != "v1.10.0" {
-		t.Fatalf("root module version = %q, want v1.10.0", got.Version)
+	cases := []struct {
+		name, dir string
+		tags      []string
+		want      string
+	}{
+		{"one version beside a non-version tag", "", []string{"v1.2.0", "nightly"}, "v1.2.0"},
+		{"a nested module's prefixed tag", "sub", []string{"v1.2.0", "sub/v0.3.0"}, "v0.3.0"},
+		{"two versions", "", []string{"v1.2.0", "v1.10.0"}, ""},
+		{"two versions of a nested module", "sub", []string{"sub/v0.3.0", "sub/v0.4.0"}, ""},
+		{"a shorthand tag beside its full version", "", []string{"v1.3", "v1.3.0"}, "v1.3.0"},
+		{"a shorthand tag alone", "", []string{"v1.3"}, ""},
+		{"a tag with build metadata", "", []string{"v1.3.0+meta"}, ""},
 	}
-	if got, _ := ReadRootPackage(context.Background(), filepath.Join(dir, "sub"), checkout.LangGo); got.Version != "v0.3.0" {
-		t.Fatalf("nested module version = %q, want v0.3.0", got.Version)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"go.mod":         "module example.com/app\n",
+				"sub/go.mod":     "module example.com/app/sub\n",
+				"sub/sub.go":     "package sub\n",
+				"cmd/app/app.go": "package main\n",
+			})
+			gitTree(t, dir, tc.tags...)
+			if got, _ := ReadRootPackage(context.Background(), filepath.Join(dir, tc.dir), checkout.LangGo); got.Version != tc.want {
+				t.Fatalf("version = %q, want %q", got.Version, tc.want)
+			}
+		})
 	}
 }
 

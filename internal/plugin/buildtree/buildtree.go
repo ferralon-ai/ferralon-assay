@@ -14,11 +14,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf16"
 )
 
@@ -245,12 +247,34 @@ func rawHead(path string) ([]byte, error) {
 	return rawHeadN(path, HeadSize)
 }
 
+// errNotRegular is returned for a path that names a pipe, socket, device or directory, or a
+// symlink to one.
+var errNotRegular = errors.New("not a regular file")
+
+// rawHeadN reads up to size bytes of the file at path, following symlinks, only when it is a
+// regular file. A non-regular target is refused without being opened, since opening a pipe with
+// no writer blocks; the open itself does not block, and the opened descriptor must be the same
+// regular file. Every refusal is an error, which callers treat as a file they could not read.
 func rawHeadN(path string, size int) ([]byte, error) {
-	f, err := os.Open(path)
+	want, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !want.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: %w", path, errNotRegular)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	got, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !got.Mode().IsRegular() || !os.SameFile(want, got) {
+		return nil, fmt.Errorf("%s: changed while it was opened", path)
+	}
 	buf := make([]byte, size)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {

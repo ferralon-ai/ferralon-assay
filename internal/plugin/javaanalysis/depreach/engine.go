@@ -21,18 +21,20 @@ import (
 // precision lever and is deliberately deferred — it lowers the undetermined rate,
 // it does not change soundness.
 type Engine struct {
-	classes  map[string]*classfile.Class
-	declared map[string]*classfile.Method // key: MethodRef.String() -> declaring method
-	subtypes map[string][]string          // supertype -> direct subclasses/implementors
+	classes     map[string]*classfile.Class
+	declared    map[string]*classfile.Method // key: MethodRef.String() -> declaring method
+	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
+	overridable map[string]bool              // hasOverridable cache
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
 // retained by pointer, so callers must not mutate it afterwards.
 func NewEngine(classes []classfile.Class) *Engine {
 	e := &Engine{
-		classes:  make(map[string]*classfile.Class, len(classes)),
-		declared: map[string]*classfile.Method{},
-		subtypes: map[string][]string{},
+		classes:     make(map[string]*classfile.Class, len(classes)),
+		declared:    map[string]*classfile.Method{},
+		subtypes:    map[string][]string{},
+		overridable: map[string]bool{},
 	}
 	for i := range classes {
 		c := &classes[i]
@@ -219,14 +221,18 @@ var platformPrefixes = []string{
 
 // resolveTargets returns the concrete in-classpath callees of an edge under CHA,
 // plus whether the edge is a completeness HAZARD — a call whose real target the
-// static graph cannot enumerate — and a human-readable reason when it is.
+// static graph cannot enumerate — and a human-readable reason when it is. from is
+// the class whose method holds the call site: an invokespecial's receiver is an
+// instance of it.
 //
 // The hazard rules are the soundness of the whole analysis; each is the seam where a
 // missed edge would produce a false not_exploitable:
-//   - invokedynamic and reflection: the target is decided at runtime (a lambda's
-//     metafactory, Class.forName) and is invisible to a static graph.
+//   - invokedynamic, except the two bootstraps whose behaviour is fixed by the JDK
+//     (resolveDynamic), and reflection: the target is decided at runtime.
 //   - a virtual/interface call whose receiver type is out of classpath: real
-//     dispatch could land on anything, including the sink.
+//     dispatch could land on anything, including the sink. The exceptions are an
+//     array receiver and a final JDK value class (finalValueClasses), whose bodies
+//     hold no application object to call back into.
 //   - a call whose body lives in an UNLOADED DEPENDENCY (not loaded, not platform):
 //     the dependency's bytecode was never opened, so the sink could be anywhere
 //     beneath it. Covers a direct static/special call, a method inherited from such
@@ -236,9 +242,12 @@ var platformPrefixes = []string{
 //     Collections.sort, a Runnable to an executor). The callback is invoked inside
 //     the out-of-classpath method the graph does not traverse, so it is caught here,
 //     caller-side, rather than silently dropped at the leaf.
-func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
+//   - a platform body that runs with an application object as `this` (an inherited
+//     or super-called JDK method): it can call back any method the application class
+//     overrides (platformBodyOn).
+func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
 	if edge.Kind == classfile.EdgeDynamic {
-		return nil, true, "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+		return e.resolveDynamic(from, edge)
 	}
 	if isReflection(edge.To) {
 		return nil, true, "reflection: " + edge.To.String()
@@ -257,9 +266,29 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 		if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
 			return nil, true, "higher-order re-entry: out-of-classpath call takes app-implemented " + cb
 		}
+		if edge.Kind == classfile.EdgeSpecial {
+			if receivers := e.specialReceivers(from, edge.To); receivers != nil {
+				return e.platformBodyOn(edge.To, e.isObjectBody(edge.To.Owner, edge.To.Name, edge.To.Descriptor), receivers)
+			}
+		}
 		return nil, false, ""
 	case classfile.EdgeVirtual, classfile.EdgeInterface:
 		if _, known := e.classes[edge.To.Owner]; !known {
+			switch {
+			case strings.HasPrefix(edge.To.Owner, "["):
+				// An array's methods are Object's plus clone; none calls back.
+				return nil, false, ""
+			case finalValueClasses[edge.To.Owner]:
+				// The receiver is exactly this final class, whose body holds no
+				// application object; only a callback argument can re-enter.
+				if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
+					return nil, true, "higher-order re-entry: out-of-classpath call takes app-implemented " + cb
+				}
+				return nil, false, ""
+			}
+			// Any other platform receiver can be a JDK object holding application
+			// objects (an ArrayList whose hashCode calls each element's hashCode),
+			// which no rule here can bound without a model of the JDK's bodies.
 			return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
 		}
 		// CHA: every class in the receiver's subtype closure dispatches to the method
@@ -267,11 +296,14 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 		// declarations in the closure. A class that inherits the body from outside the
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
-		var outside []string
+		var outside, platformExits []string
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
 			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
 			if m == nil {
 				outside = append(outside, unloaded...)
+				if e.isConcrete(c) {
+					platformExits = append(platformExits, c)
+				}
 				continue
 			}
 			if !m.Abstract && !seen[m] {
@@ -291,9 +323,293 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes app-implemented " + cb
 			}
 		}
+		// The inherited platform body also runs with the receiver as `this`.
+		for _, c := range platformExits {
+			ts, h, w := e.platformBodyOn(edge.To, e.isObjectBody(c, edge.To.Name, edge.To.Descriptor), []string{c})
+			for _, t := range ts {
+				if !seen[t] {
+					seen[t] = true
+					targets = append(targets, t)
+				}
+			}
+			if h {
+				return targets, true, w
+			}
+		}
 		return targets, false, ""
 	}
 	return nil, false, ""
+}
+
+// finalValueClasses are final JDK classes whose instances hold only characters and
+// primitives, so a method called on one cannot reach an application object except
+// through its own arguments. A hand-listed JDK fact: adding a class that can hold
+// application objects (a collection, Optional, Thread) would turn a hazard into a
+// silent leaf. java/lang/Class is excluded: newInstance and getMethod reach code.
+var finalValueClasses = map[string]bool{
+	"java/lang/String":        true,
+	"java/lang/StringBuilder": true,
+	"java/lang/StringBuffer":  true,
+	"java/lang/Integer":       true,
+	"java/lang/Long":          true,
+	"java/lang/Short":         true,
+	"java/lang/Byte":          true,
+	"java/lang/Character":     true,
+	"java/lang/Boolean":       true,
+	"java/lang/Float":         true,
+	"java/lang/Double":        true,
+}
+
+// objectMethods are java/lang/Object's methods (JDK fact). Their bodies call back
+// into the receiver only in toString, which calls this.hashCode().
+var objectMethods = map[string]bool{
+	"<init>()V":                    true,
+	"toString()Ljava/lang/String;": true,
+	"hashCode()I":                  true,
+	"equals(Ljava/lang/Object;)Z":  true,
+	"clone()Ljava/lang/Object;":    true,
+	"finalize()V":                  true,
+	"getClass()Ljava/lang/Class;":  true,
+	"notify()V":                    true,
+	"notifyAll()V":                 true,
+	"wait()V":                      true,
+	"wait(J)V":                     true,
+	"wait(JI)V":                    true,
+}
+
+const (
+	objectToString = "toString()Ljava/lang/String;"
+	objectClass    = "java/lang/Object"
+)
+
+// isConcrete reports whether c is a loaded class an object can have as its exact
+// class.
+func (e *Engine) isConcrete(c string) bool {
+	cls := e.classes[c]
+	return cls != nil && !cls.Abstract
+}
+
+// chainExit returns the first class on owner's superclass chain that is not loaded:
+// where resolution of a method no loaded class declares leaves the loaded set.
+func (e *Engine) chainExit(owner string) string {
+	cur := owner
+	for {
+		c := e.classes[cur]
+		if c == nil || c.Super == "" {
+			return cur
+		}
+		cur = c.Super
+	}
+}
+
+// isObjectBody reports whether resolving name+desc on owner, when nothing loaded
+// declares it, lands in java/lang/Object's own body. Resolution searches the whole
+// superclass chain before any superinterface (JVMS §5.4.3.3), so a chain leaving
+// the loaded set at Object binds Object's methods there whatever interfaces the
+// class adds.
+func (e *Engine) isObjectBody(owner, name, desc string) bool {
+	return objectMethods[name+desc] && e.chainExit(owner) == objectClass
+}
+
+// specialReceivers returns the classes whose instances can be `this` when an
+// invokespecial from class from runs the platform body ref resolves to, or nil when
+// the receiver is a fresh object of a platform class (a leaf). An <init> call binds
+// `this` only as from's super(...) call, which names its direct superclass (JVMS
+// §4.10.1.9); every other invokespecial needs a receiver of from's type.
+func (e *Engine) specialReceivers(from string, ref classfile.MethodRef) []string {
+	c := e.classes[from]
+	if c == nil {
+		return nil
+	}
+	if ref.Name == "<init>" && c.Super != ref.Owner {
+		return nil
+	}
+	return e.subtypeClosure(from)
+}
+
+// platformBodyOn resolves a platform method body that runs with `this` bound to an
+// instance of each concrete class in receivers. Object's bodies are known: only
+// toString calls back, into this.hashCode(). Any other platform body can call every
+// method the receiver overrides, and can hand back objects it then calls into, so a
+// receiver with an overridable loaded method is a hazard.
+func (e *Engine) platformBodyOn(body classfile.MethodRef, objectBody bool, receivers []string) (targets []*classfile.Method, hazard bool, why string) {
+	for _, c := range receivers {
+		if !e.isConcrete(c) {
+			continue
+		}
+		if objectBody {
+			if body.Name+body.Descriptor != objectToString {
+				continue
+			}
+			ts, h, w := e.dispatchOn(c, "hashCode", "()I")
+			targets = append(targets, ts...)
+			if h && !hazard {
+				hazard, why = true, w
+			}
+			continue
+		}
+		if e.hasOverridable(c) {
+			return targets, true, "higher-order re-entry: inherited platform body " + body.String() + " runs on " + c + ", which overrides methods it may call"
+		}
+	}
+	return targets, hazard, why
+}
+
+// dispatchOn resolves a virtual call on a receiver whose exact class is the loaded
+// concrete class c.
+func (e *Engine) dispatchOn(c, name, desc string) ([]*classfile.Method, bool, string) {
+	m, unloaded := e.resolveMethod(c, name, desc)
+	if m != nil {
+		if m.Abstract {
+			return nil, false, ""
+		}
+		return []*classfile.Method{m}, false, ""
+	}
+	ref := classfile.MethodRef{Owner: c, Name: name, Descriptor: desc}
+	if dep, ok := e.unloadedDependency(unloaded); ok {
+		return nil, true, "unloaded_dependency: " + ref.String() + " inherits from unopened " + dep
+	}
+	return e.platformBodyOn(ref, e.isObjectBody(c, name, desc), []string{c})
+}
+
+// hasOverridable reports whether c, its loaded superclasses, or their loaded
+// superinterfaces declare a method a platform body could dispatch to on a c
+// receiver: an instance method with a body that is neither private nor a
+// constructor or initializer.
+func (e *Engine) hasOverridable(c string) bool {
+	if v, ok := e.overridable[c]; ok {
+		return v
+	}
+	found := false
+	seen := map[string]bool{}
+	stack := []string{c}
+	for len(stack) > 0 && !found {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cls := e.classes[cur]
+		if seen[cur] || cls == nil {
+			continue
+		}
+		seen[cur] = true
+		for _, m := range cls.Methods {
+			if !m.Static && !m.Private && !m.Abstract && m.Ref.Name != "<init>" && m.Ref.Name != "<clinit>" {
+				found = true
+				break
+			}
+		}
+		if cls.Super != "" {
+			stack = append(stack, cls.Super)
+		}
+		stack = append(stack, cls.Interfaces...)
+	}
+	e.overridable[c] = found
+	return found
+}
+
+// The bootstrap methods whose call sites the engine resolves (JDK API facts).
+var (
+	lambdaBootstraps = map[string]bool{
+		"java/lang/invoke/LambdaMetafactory.metafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;": true,
+		"java/lang/invoke/LambdaMetafactory.altMetafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;":                                                                    true,
+	}
+	concatBootstraps = map[string]bool{
+		"java/lang/invoke/StringConcatFactory.makeConcat(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;":                                                   true,
+		"java/lang/invoke/StringConcatFactory.makeConcatWithConstants(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;": true,
+	}
+)
+
+// resolveDynamic resolves an invokedynamic site by its bootstrap method. Two are
+// fixed by the JDK and resolved:
+//   - LambdaMetafactory builds an object whose functional method calls the
+//     implementation handle (bootstrap argument 1). The implementation counts as
+//     reached where the lambda is created, which covers every later call wherever
+//     the object travels — the analogue of .NET's ldftn.
+//   - StringConcatFactory calls String.valueOf, hence toString(), on each dynamic
+//     argument and nothing else; each toString is resolved as a virtual call.
+//
+// Every other bootstrap, or a site with no bootstrap entry, stays a hazard.
+func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.Method, bool, string) {
+	opaque := "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+	b := edge.Bootstrap
+	if b == nil || b.Method.Kind != classfile.RefInvokeStatic {
+		return nil, true, opaque
+	}
+	switch boot := b.Method.Ref.String(); {
+	case lambdaBootstraps[boot]:
+		if len(b.Args) < 2 || b.Args[1].Handle == nil {
+			return nil, true, opaque
+		}
+		ts, h, w := e.resolveHandle(from, *b.Args[1].Handle)
+		switch {
+		case h && w == "":
+			w = opaque
+		case h:
+			w += " (lambda implementation)"
+		}
+		return ts, h, w
+	case concatBootstraps[boot]:
+		var targets []*classfile.Method
+		hazard, why := false, ""
+		for _, p := range paramTypes(edge.To.Descriptor) {
+			ts, h, w := e.resolveTargets(from, classfile.Edge{To: classfile.MethodRef{Owner: p, Name: "toString", Descriptor: "()Ljava/lang/String;"}, Kind: classfile.EdgeVirtual})
+			targets = append(targets, ts...)
+			if h && !hazard {
+				hazard, why = true, w+" (string concatenation toString)"
+			}
+		}
+		return targets, hazard, why
+	}
+	return nil, true, opaque
+}
+
+// resolveHandle resolves the call a lambda's implementation method handle makes,
+// by its reference kind (JVMS §5.4.3.5). Invoking a static or constructor handle
+// initializes its class (JVMS §5.5), so those also reach the class's static
+// initializers. A field handle or unknown kind returns a hazard with an empty reason
+// for the caller to fill.
+func (e *Engine) resolveHandle(from string, h classfile.MethodHandle) ([]*classfile.Method, bool, string) {
+	var kind classfile.EdgeKind
+	switch h.Kind {
+	case classfile.RefInvokeVirtual:
+		kind = classfile.EdgeVirtual
+	case classfile.RefInvokeInterface:
+		kind = classfile.EdgeInterface
+	case classfile.RefInvokeSpecial:
+		kind = classfile.EdgeSpecial
+	case classfile.RefInvokeStatic:
+		kind = classfile.EdgeStatic
+	case classfile.RefNewInvokeSpecial:
+		// A constructor reference makes a fresh object, never `this` of from.
+		from, kind = "", classfile.EdgeSpecial
+	default:
+		return nil, true, ""
+	}
+	targets, hazard, why := e.resolveTargets(from, classfile.Edge{To: h.Ref, Kind: kind})
+	if h.Kind == classfile.RefInvokeStatic || h.Kind == classfile.RefNewInvokeSpecial {
+		ts, ih, iw := e.initTargets(h.Ref.Owner)
+		targets = append(targets, ts...)
+		if ih && !hazard {
+			hazard, why = true, iw
+		}
+	}
+	return targets, hazard, why
+}
+
+// initTargets returns the static initializers initializing owner runs, and a hazard
+// when one belongs to an unopened dependency (as Reach does for an InitTrigger).
+func (e *Engine) initTargets(owner string) (targets []*classfile.Method, hazard bool, why string) {
+	for _, cls := range e.initClosure(owner) {
+		if dep, ok := e.unloadedDependency([]string{cls}); ok {
+			if !hazard {
+				hazard, why = true, "unloaded_dependency: static initializer of unopened "+dep
+			}
+			continue
+		}
+		if m := e.declared[(classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}).String()]; m != nil {
+			targets = append(targets, m)
+		}
+	}
+	return targets, hazard, why
 }
 
 // reentryCallback reports the first descriptor parameter type that an in-classpath
@@ -418,7 +734,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 			res.hazard("native method on frontier: " + cur.String())
 		}
 		for _, edge := range m.Edges {
-			targets, hazard, why := e.resolveTargets(edge)
+			targets, hazard, why := e.resolveTargets(cur.Owner, edge)
 			if hazard {
 				res.hazard(why)
 			}

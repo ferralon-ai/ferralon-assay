@@ -1067,12 +1067,20 @@ func TestResolveVersions_RequirementFileDirectives(t *testing.T) {
 	}{
 		{"setup.cfg install_requires file:", map[string]string{
 			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
-			"deps.txt":  "# runtime\nflask>=3\npyjwt>=2.8  # tokens\n",
+			"deps.txt":  "# runtime\nflask>=3\npyjwt>=2.8\n",
 		}, true, ">=2.8", false},
+		// setuptools reads file lines verbatim: an inline comment is part of the requirement,
+		// which then fails to parse.
+		{"setup.cfg file: line with an inline comment", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
+			"deps.txt":  "flask>=3\npyjwt>=2.8  # tokens\n",
+		}, false, "", true},
+		// "file:" is a directive only at the start of the value; a dangling list holds the
+		// literal requirement "file: base.txt,", which fails to parse.
 		{"setup.cfg dangling file: list", map[string]string{
 			"setup.cfg": "[options]\ninstall_requires =\n    file: base.txt,\n          extra.txt\n",
 			"base.txt":  "flask>=3\n", "extra.txt": "pyjwt==2.8.0\n",
-		}, true, "", false},
+		}, false, "", true},
 		{"setup.cfg extras_require file:", map[string]string{
 			"setup.cfg": "[options.extras_require]\njwt = file: jwt.txt\n",
 			"jwt.txt":   "pyjwt<3\n",

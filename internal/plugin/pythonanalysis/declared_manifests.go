@@ -8,6 +8,8 @@ package pythonanalysis
 import (
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -36,102 +38,293 @@ type setupCfgScan struct {
 	ok         bool
 }
 
-// scanSetupCfg reads the dependency lists of a setup.cfg. Values are setuptools list fields: a
-// dangling list (one requirement per indented continuation line) or a single-line
-// ';'-separated string. An install_requires or extras_require value that starts with "file:"
-// names comma-separated requirement files relative to setup.cfg, which are read in its place
-// (readRequirementSpecs). ok is false when a referenced file cannot be read, is not local to
-// setup.cfg's directory, or holds a line that is not a well-formed requirement, and when "file:"
-// appears anywhere but at the start of a value (setuptools rejects that).
+// scanSetupCfg reads the dependency lists of a setup.cfg as setuptools does: readCfg parses the
+// file under configparser's rules, and each install_requires, setup_requires and tests_require
+// option of [options], and every option of [options.extras_require], is a setuptools
+// requirement list (setupCfgList). An install_requires or extras_require value that starts with
+// "file:" names comma-separated requirement files relative to setup.cfg, whose text is read as
+// the list in its place (readCfgFiles). ok is false when readCfg's, readCfgFiles's or
+// setupCfgList's is.
 func scanSetupCfg(path string, data []byte) setupCfgScan {
-	var (
-		scan    = setupCfgScan{ok: true}
-		section string
-		key     string
-		inList  bool     // inside a dependency-list value's continuation lines
-		head    string   // the value text on the key line
-		cont    []string // the value's continuation lines
-	)
-	build := func() bool { return key == "setup_requires" || key == "tests_require" }
-	add := func(spec string) {
-		spec = strings.TrimSpace(stripCfgInlineComment(spec))
-		if spec == "" {
-			return
-		}
-		if strings.HasPrefix(spec, "file:") {
-			scan.ok = false
-			return
-		}
-		if build() {
-			scan.buildSpecs = append(scan.buildSpecs, spec)
-		} else {
-			scan.specs = append(scan.specs, spec)
-		}
+	sections, ok := readCfg(data)
+	if !ok {
+		return setupCfgScan{}
 	}
-	flush := func() {
-		if !inList {
-			return
-		}
-		inList = false
-		whole := strings.TrimSpace(strings.Join(append([]string{head}, cont...), "\n"))
-		if spec, isFile := strings.CutPrefix(whole, "file:"); isFile && !build() {
-			specs, files, fileOK := readRequirementSpecs(filepath.Dir(path), spec)
-			for _, s := range specs {
-				if _, valid := parsePEP508(s); !valid {
-					fileOK = false
+	scan := setupCfgScan{ok: true}
+	for _, sec := range sections {
+		for _, o := range sec.options {
+			runtime := sec.name == "options.extras_require"
+			if sec.name == "options" {
+				switch cfgOptionID(sec.name, o.key) {
+				case "install_requires":
+					runtime = true
+				case "setup_requires", "tests_require":
+				default:
+					continue
 				}
+			} else if !runtime {
+				continue
 			}
-			scan.specs = append(scan.specs, specs...)
-			scan.files = append(scan.files, files...)
-			scan.ok = scan.ok && fileOK
-			return
-		}
-		if head != "" {
-			for _, part := range splitCfgSemicolons(head) {
-				add(part)
+			value := o.value()
+			if spec, isFile := strings.CutPrefix(value, "file:"); isFile && runtime {
+				text, files, fileOK := readCfgFiles(filepath.Dir(path), spec)
+				scan.files = append(scan.files, files...)
+				if !fileOK {
+					scan.ok = false
+					continue
+				}
+				value = text
 			}
-		}
-		for _, c := range cont {
-			add(c)
+			specs, listOK := setupCfgList(value, runtime)
+			if runtime {
+				scan.specs = append(scan.specs, specs...)
+			} else {
+				scan.buildSpecs = append(scan.buildSpecs, specs...)
+			}
+			scan.ok = scan.ok && listOK
 		}
 	}
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimRight(raw, "\r")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
-			continue
-		}
-		indented := line[0] == ' ' || line[0] == '\t'
-		if indented && inList {
-			cont = append(cont, trimmed)
-			continue
-		}
-		flush()
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			section = strings.ToLower(strings.TrimSpace(trimmed[1 : len(trimmed)-1]))
-			continue
-		}
-		if indented {
-			continue // continuation of a value we do not read
-		}
-		k := strings.IndexAny(trimmed, "=:")
-		if k < 0 {
-			continue
-		}
-		key = strings.ToLower(strings.TrimSpace(trimmed[:k]))
-		if section == "options" {
-			// setuptools accepts install-requires for install_requires (with a deprecation
-			// warning), so a dashed option key names the same option.
-			key = strings.ReplaceAll(key, "-", "_")
-		}
-		switch {
-		case section == "options" && (key == "install_requires" || key == "setup_requires" || key == "tests_require"),
-			section == "options.extras_require":
-			inList, head, cont = true, strings.TrimSpace(trimmed[k+1:]), nil
-		}
-	}
-	flush()
 	return scan
+}
+
+// cfgSection is one setup.cfg section as configparser reads it, options in file order.
+type cfgSection struct {
+	name    string
+	options []cfgOption
+}
+
+// cfgOption is one option: its key as written (right-trimmed) and its value lines, the text
+// after the delimiter first and each continuation or blank line after it.
+type cfgOption struct {
+	key   string
+	lines []string
+}
+
+// value is the option's value as configparser returns it: lines joined with "\n", trailing
+// whitespace trimmed.
+func (o cfgOption) value() string {
+	return strings.TrimRight(strings.Join(o.lines, "\n"), " \t\n")
+}
+
+// cfgOptionID is the name setuptools files an option under: in [options] it lowercases the key
+// and replaces '-' with '_'; it leaves extras_require keys as written.
+func cfgOptionID(section, key string) string {
+	if section != "options" {
+		return key
+	}
+	return strings.ReplaceAll(strings.ToLower(key), "-", "_")
+}
+
+// setupCfgSections are the setuptools sections whose names contain "options". setuptools
+// matches that word case-sensitively and drops dots after it ("[options..extras_require]" is
+// read as extras), so any other section whose name contains it, in any case, is not read.
+var setupCfgSections = map[string]bool{
+	"options":                      true,
+	"options.extras_require":       true,
+	"options.packages.find":        true,
+	"options.entry_points":         true,
+	"options.package_data":         true,
+	"options.exclude_package_data": true,
+	"options.data_files":           true,
+}
+
+// readCfg parses a setup.cfg as setuptools' ConfigParser does (strict, optionxform=str,
+// BasicInterpolation, "#" and ";" full-line comments only, empty lines kept in values). Every
+// line is exactly one of: a full-line comment, which changes no state; a blank line, which
+// adds an empty line to an open value; a continuation, indented deeper than the line that
+// opened the current option; a section header; or a "key = value" or "key: value" option,
+// split at the first '=' or ':'. ok is false, and nothing is read, for any line that is none
+// of these, and for every form setuptools rejects or may read differently: text cfgTextOK
+// refuses, a '%' outside a comment (interpolation), a duplicate section, a key repeated in a
+// section under cfgOptionID, a DEFAULT section (its options join every section), a non-ASCII
+// key (Python and Go lowercase it differently), a header with text after its ']', and a
+// section named for options that setupCfgSections does not list.
+func readCfg(data []byte) (sections []cfgSection, ok bool) {
+	if !cfgTextOK(data) {
+		return nil, false
+	}
+	var (
+		open   bool // an option is open: deeper-indented lines continue its value
+		indent int  // indentation of the last header or option line
+		seen   = map[string]bool{}
+		keys   map[string]bool
+	)
+	addLine := func(s string) {
+		opts := sections[len(sections)-1].options
+		opts[len(opts)-1].lines = append(opts[len(opts)-1].lines, s)
+	}
+	for _, line := range strings.Split(universalNewlines(string(data)), "\n") {
+		text := strings.Trim(line, " \t")
+		if strings.HasPrefix(text, "#") || strings.HasPrefix(text, ";") {
+			continue
+		}
+		if text == "" {
+			if open {
+				addLine("")
+			}
+			continue
+		}
+		if strings.Contains(text, "%") {
+			return nil, false
+		}
+		lead := len(line) - len(strings.TrimLeft(line, " \t"))
+		if open && lead > indent {
+			addLine(text)
+			continue
+		}
+		indent = lead
+		if strings.HasPrefix(text, "[") {
+			name, header := cfgHeader(text)
+			if !header || seen[name] || strings.EqualFold(name, "DEFAULT") ||
+				strings.Contains(strings.ToLower(name), "options") && !setupCfgSections[name] {
+				return nil, false
+			}
+			seen[name] = true
+			sections = append(sections, cfgSection{name: name})
+			keys, open = map[string]bool{}, false
+			continue
+		}
+		k := strings.IndexAny(text, "=:")
+		if len(sections) == 0 || k < 0 {
+			return nil, false
+		}
+		sec := &sections[len(sections)-1]
+		key := strings.TrimRight(text[:k], " \t")
+		id := cfgOptionID(sec.name, key)
+		if key == "" || !cfgASCII(key) || keys[id] {
+			return nil, false
+		}
+		keys[id] = true
+		sec.options = append(sec.options, cfgOption{key: key, lines: []string{strings.Trim(text[k+1:], " \t")}})
+		open = true
+	}
+	return sections, true
+}
+
+// cfgHeader returns the name of a "[name]" header line: everything between the first '[' and
+// the last ']', as configparser takes it. ok is false when the name is empty or text follows
+// the ']' (configparser ignores that text).
+func cfgHeader(text string) (string, bool) {
+	if len(text) < 3 || !strings.HasSuffix(text, "]") {
+		return "", false
+	}
+	return text[1 : len(text)-1], true
+}
+
+// cfgTextOK reports whether data is text setuptools reads as this package does: valid UTF-8
+// (setuptools fails on anything else), with no control character or whitespace beyond tab,
+// space and line breaks. Python strips and splits lines on the others (form feed, NEL, no-break space, ...),
+// where Go's line handling here does not.
+func cfgTextOK(data []byte) bool {
+	if !utf8.Valid(data) {
+		return false
+	}
+	for _, r := range string(data) {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+		case r < 0x20 || r == 0x7f || r > 0x7f && unicode.IsSpace(r):
+			return false
+		}
+	}
+	return true
+}
+
+// cfgASCII reports whether s is all ASCII, where Python's and Go's lowercasing agree.
+func cfgASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// universalNewlines converts "\r\n" and lone "\r" line breaks to "\n", as Python's text-mode
+// open does.
+func universalNewlines(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+// setupCfgList returns the entries of a setuptools requirement list value: split into lines
+// when it holds a line break, else on ';', each entry trimmed and empty ones dropped. For
+// install_requires and extras_require (dropComments) setuptools also drops entries that start
+// with '#'. ok is false when an entry is not a well-formed PEP 508 requirement or has a marker
+// that is not strictly well formed (strictMarker): setuptools fails on both.
+func setupCfgList(value string, dropComments bool) (specs []string, ok bool) {
+	sep := ";"
+	if strings.Contains(value, "\n") {
+		sep = "\n"
+	}
+	ok = true
+	for _, e := range strings.Split(value, sep) {
+		e = strings.Trim(e, " \t")
+		if e == "" || dropComments && strings.HasPrefix(e, "#") {
+			continue
+		}
+		r, valid := parsePEP508(e)
+		if !valid || r.Marker != "" && !strictMarker(r.Marker) {
+			ok = false
+			continue
+		}
+		specs = append(specs, e)
+	}
+	return specs, ok
+}
+
+// markerEnvVars are the PEP 508 environment marker variables.
+var markerEnvVars = map[string]bool{
+	"os_name":                        true,
+	"sys_platform":                   true,
+	"platform_machine":               true,
+	"platform_python_implementation": true,
+	"platform_release":               true,
+	"platform_system":                true,
+	"platform_version":               true,
+	"python_version":                 true,
+	"python_full_version":            true,
+	"implementation_name":            true,
+	"implementation_version":         true,
+	"extra":                          true,
+}
+
+// strictMarker reports whether m is a well-formed PEP 508 marker naming only marker variables,
+// so a ';'-joined second requirement ("six;pyjwt==2.10.0") is never taken for a marker.
+func strictMarker(m string) bool {
+	toks, err := lexMarker(m)
+	if err != nil {
+		return false
+	}
+	for _, t := range toks {
+		if t.kind == tokVar && !markerEnvVars[t.text] {
+			return false
+		}
+	}
+	p := &markerParser{toks: toks}
+	_, err = p.parseOr()
+	return err == nil && p.pos == len(toks)
+}
+
+// readCfgFiles returns the text setuptools reads for a "file:" value naming the comma-separated
+// files in spec relative to dir: their contents joined with "\n". ok is false when a path is
+// not local to dir (localFile), a file cannot be read, or its text is one cfgTextOK refuses.
+func readCfgFiles(dir, spec string) (text string, files []string, ok bool) {
+	var parts []string
+	for _, p := range strings.Split(spec, ",") {
+		target, local := localFile(dir, strings.TrimSpace(p))
+		if !local {
+			return "", files, false
+		}
+		data, err := readRegular(target)
+		if err != nil {
+			return "", files, false
+		}
+		files = append(files, filepath.Clean(target))
+		if !cfgTextOK(data) {
+			return "", files, false
+		}
+		parts = append(parts, universalNewlines(string(data)))
+	}
+	return strings.Join(parts, "\n"), files, true
 }
 
 // readRequirementFiles reads the comma-separated requirement files a setuptools "file:"
@@ -203,28 +396,8 @@ func localFile(dir, p string) (string, bool) {
 	return target, true
 }
 
-// splitCfgSemicolons splits a single-line setuptools list value on ';'. A segment that does
-// not parse as a requirement is rejoined to the previous one, so "pkg; python_version<'3.8'"
-// keeps its marker instead of producing a junk "python_version" entry.
-func splitCfgSemicolons(val string) []string {
-	var out []string
-	for _, seg := range strings.Split(val, ";") {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			continue
-		}
-		if _, ok := parsePEP508(seg); !ok && len(out) > 0 {
-			out[len(out)-1] += "; " + seg
-			continue
-		}
-		out = append(out, seg)
-	}
-	return out
-}
-
-// stripCfgInlineComment drops a " #"/" ;" inline comment. A requirement never contains a
-// whitespace-preceded '#', and a marker's ';' is never whitespace-preceded in practice; a
-// marker written "pkg ; marker" survives because splitCfgSemicolons rejoins it.
+// stripCfgInlineComment drops a whitespace-preceded "#" inline comment, which a requirement
+// never contains.
 func stripCfgInlineComment(s string) string {
 	for i := 1; i < len(s); i++ {
 		if s[i] == '#' && (s[i-1] == ' ' || s[i-1] == '\t') {

@@ -417,7 +417,7 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 	top := map[*types.Package]bool{}
 	for _, p := range pkgs {
-		if p.Types != nil && p.Name != "main" {
+		if p.Types != nil && !isMain(p) {
 			top[p.Types] = true
 		}
 	}

@@ -12,12 +12,17 @@ package buildtree
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Skipped reports whether Walk visits a directory with this name without entering it.
@@ -124,6 +129,7 @@ const HeadSize = 64 << 10
 // Candidates walks root and returns, in walk order:
 //
 //   - every regular file, or symlink to a regular file inside root, that match accepts;
+//   - every device, socket or pipe that match accepts by name alone (it is never opened);
 //   - every symlink that escapes root (or does not resolve, a link cycle included), every
 //     symlink inside root to something that is neither a regular file nor a directory (opening a
 //     pipe would block the walk), every directory or file that cannot be read, and every
@@ -135,10 +141,11 @@ const HeadSize = 64 << 10
 // directory or anything under one, and not one it could not list. The walk never follows the
 // link, so whatever the target holds is classified once, at its real path.
 //
-// match sees the path and up to HeadSize bytes of the file's content (nil when the content
-// looks binary or the file is empty). fullyRead is asked only about a regular file match
-// accepted; every other candidate is not fully read. Skipped directories yield nothing, unless
-// they are symlinks leaving root.
+// match sees the path and the file's Head: up to HeadSize bytes of its content, as UTF-8 when
+// it starts with a byte-order mark, and nil when that content looks binary or is empty, or the
+// file is not a regular file. fullyRead is asked only about a regular file match accepted;
+// every other candidate is not fully read. Skipped directories yield nothing, unless they are
+// symlinks leaving root.
 func Candidates(root string, match func(path string, head []byte) (why string, ok bool), fullyRead func(path string) bool) []Candidate {
 	var out []Candidate
 	add := func(path, why string, read bool) {
@@ -178,7 +185,12 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 			return nil
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
-			return nil // a device, socket or pipe declares nothing, and reading a pipe would block
+			// A device, socket or pipe is not opened here (opening a pipe would block): match gets a
+			// nil head, and a content rule that re-reads it is refused.
+			if why, ok := match(e.Path, nil); ok {
+				add(e.Path, why, false)
+			}
+			return nil
 		}
 		if e.Symlink {
 			fi, err := os.Stat(e.Path)
@@ -212,24 +224,183 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 	return out
 }
 
-// Head returns up to HeadSize bytes of the file at path, or nil when they look binary (contain
-// a NUL byte).
+// Head returns the file's content head (rawHead), or nil when it looks binary (contains a NUL
+// byte) or is empty.
 func Head(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	buf, err := rawHead(path)
+	if err != nil || len(buf) == 0 || bytes.IndexByte(buf, 0) >= 0 {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// errNotRegular is returned for a path that names a pipe, socket, device or directory, or a
+// symlink to one.
+var errNotRegular = errors.New("not a regular file")
+
+// betweenStatAndOpen, when set (by tests only), runs in rawHead after the path is found to be a
+// regular file and before it is opened, where a swap of the file would land.
+var betweenStatAndOpen func(path string)
+
+// rawHead returns the first HeadSize bytes of the file's canonical content, following symlinks,
+// only when it is a regular file. A file's canonical content is its bytes, except when it starts
+// with a byte-order mark and the text behind the mark decodes: then it is that text in UTF-8
+// with the mark and one more U+FEFF trimmed (canonical), the bytes of the file's twin without
+// the mark. pip decodes a requirements file by its BOM (Windows PowerShell 5 writes
+// `pip freeze >` as UTF-16LE with one), so every rule judges a marked file exactly as it judges
+// that twin.
+//
+// A non-regular target is refused without being opened, since opening a pipe with no writer
+// blocks; the open itself does not block, and the opened descriptor must be the same regular
+// file. Every refusal is an error, which callers treat as a file they could not read.
+func rawHead(path string) ([]byte, error) {
+	want, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !want.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: %w", path, errNotRegular)
+	}
+	if betweenStatAndOpen != nil {
+		betweenStatAndOpen(path)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	buf := make([]byte, HeadSize)
-	n, err := io.ReadFull(f, buf)
+	got, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !got.Mode().IsRegular() || !os.SameFile(want, got) {
+		return nil, fmt.Errorf("%s: changed while it was opened", path)
+	}
+	buf, err := readUpTo(f, nil, HeadSize)
+	if err != nil {
+		return nil, err
+	}
+	enc, ok := bomOf(buf)
+	if !ok {
+		return buf, nil
+	}
+	if len(buf) == HeadSize {
+		// Every code unit past the trimmed marks yields at least one UTF-8 byte, so this many
+		// raw bytes hold HeadSize canonical bytes, or the whole file. The extra four bytes hold
+		// a second mark and, in UTF-16, the low half of a surrogate pair the read would split.
+		if buf, err = readUpTo(f, buf, enc.mark+enc.unit*HeadSize+4); err != nil {
+			return nil, err
+		}
+	}
+	text, ok := canonical(enc, buf)
+	if !ok {
+		return buf[:min(len(buf), HeadSize)], nil
+	}
+	return text[:min(len(text), HeadSize)], nil
+}
+
+// readUpTo reads from f onto buf until buf holds size bytes or f ends.
+func readUpTo(f *os.File, buf []byte, size int) ([]byte, error) {
+	n := len(buf)
+	buf = append(buf, make([]byte, size-n)...)
+	m, err := io.ReadFull(f, buf[n:])
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	buf = buf[:n]
-	if n == 0 || bytes.IndexByte(buf, 0) >= 0 {
-		return nil, nil
+	return buf[:n+m], nil
+}
+
+// NULHeadMatch is a content rule's fallback for a file whose Head was nil. A NUL does not stop
+// every installer (pip and yarn v1 read past one in a comment), so it re-reads the head (rawHead,
+// canonical for a marked file) and runs content on it twice: with every NUL removed, and with
+// every NUL turned into a newline. A re-read that fails matches as "unreadable": the file went
+// unread, which never proves anything absent. An empty file does not match.
+func NULHeadMatch(path string, content func(path string, head []byte) (string, bool)) (string, bool) {
+	raw, err := rawHead(path)
+	if err != nil {
+		return "unreadable", true
 	}
-	return buf, nil
+	for _, head := range [][]byte{
+		bytes.ReplaceAll(raw, []byte{0}, nil),
+		bytes.ReplaceAll(raw, []byte{0}, []byte{'\n'}),
+	} {
+		if len(head) == 0 {
+			continue
+		}
+		if why, ok := content(path, head); ok {
+			return why + " (NUL in head)", true
+		}
+	}
+	return "", false
+}
+
+type bomEncoding struct {
+	mark, unit int
+	order      binary.ByteOrder // nil for UTF-8
+}
+
+// bomOf reads the byte-order mark raw starts with. A UTF-32 mark is checked before UTF-16,
+// whose little-endian mark it begins with.
+func bomOf(raw []byte) (bomEncoding, bool) {
+	switch {
+	case bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF}):
+		return bomEncoding{3, 1, nil}, true
+	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE, 0, 0}):
+		return bomEncoding{4, 4, binary.LittleEndian}, true
+	case bytes.HasPrefix(raw, []byte{0, 0, 0xFE, 0xFF}):
+		return bomEncoding{4, 4, binary.BigEndian}, true
+	case bytes.HasPrefix(raw, []byte{0xFF, 0xFE}):
+		return bomEncoding{2, 2, binary.LittleEndian}, true
+	case bytes.HasPrefix(raw, []byte{0xFE, 0xFF}):
+		return bomEncoding{2, 2, binary.BigEndian}, true
+	}
+	return bomEncoding{}, false
+}
+
+// canonical returns raw, which starts with enc's mark, as UTF-8 text without the mark and
+// without one U+FEFF after it (pip's UTF-16 decoder consumes a second mark). A trailing partial
+// code unit, or a high surrogate with its pair cut off, is where the read stopped, and is dropped.
+// ok is false when the UTF-16 or UTF-32 text does not decode (an unpaired surrogate, a code point
+// past U+10FFFF): the file is not text in that encoding, and its bytes are its content.
+func canonical(enc bomEncoding, raw []byte) (text []byte, ok bool) {
+	body := raw[enc.mark:]
+	if enc.order == nil {
+		return bytes.TrimPrefix(body, []byte("\ufeff")), true
+	}
+	var runes []rune
+	switch enc.unit {
+	case 2:
+		units := make([]uint16, len(body)/2)
+		for i := range units {
+			units[i] = enc.order.Uint16(body[2*i:])
+		}
+		for i := 0; i < len(units); i++ {
+			u := rune(units[i])
+			switch {
+			case utf16.IsSurrogate(u) && u < 0xDC00 && i+1 == len(units):
+				// cut off by the read
+			case utf16.IsSurrogate(u) && u < 0xDC00 && units[i+1] >= 0xDC00 && units[i+1] <= 0xDFFF:
+				runes = append(runes, utf16.DecodeRune(u, rune(units[i+1])))
+				i++
+			case utf16.IsSurrogate(u):
+				return nil, false
+			default:
+				runes = append(runes, u)
+			}
+		}
+	case 4:
+		for i := 0; i+4 <= len(body); i += 4 {
+			r := rune(enc.order.Uint32(body[i:]))
+			if !utf8.ValidRune(r) {
+				return nil, false
+			}
+			runes = append(runes, r)
+		}
+	}
+	if len(runes) > 0 && runes[0] == '\ufeff' {
+		runes = runes[1:]
+	}
+	return []byte(string(runes)), true
 }
 
 // AllFullyRead reports whether every candidate is fully read.

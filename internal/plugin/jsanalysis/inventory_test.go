@@ -535,6 +535,37 @@ func TestInventory_C6_Deterministic(t *testing.T) {
 	}
 }
 
+// TestInventory_NpmDuplicateMergeOrderDeterministic: two same-(name,version) copies with
+// identical closures collapse to one node whose artifact fields fill from the first copy
+// walked. The packages map is walked in sorted key order, so the hoisted copy fills them on
+// every run (this lockfile's copies disagree on integrity, which would otherwise flip).
+func TestInventory_NpmDuplicateMergeOrderDeterministic(t *testing.T) {
+	dir := t.TempDir()
+	writeJSON(t, filepath.Join(dir, "package.json"), map[string]any{
+		"name": "app", "version": "1.0.0", "dependencies": map[string]string{"qs": "^6.5.0", "x": "1.0.0"},
+	})
+	writeJSON(t, filepath.Join(dir, "package-lock.json"), map[string]any{
+		"lockfileVersion": 3,
+		"packages": map[string]any{
+			"":                               map[string]any{"name": "app", "version": "1.0.0"},
+			"node_modules/qs":                map[string]any{"version": "6.5.2", "integrity": "sha512-hoisted"},
+			"node_modules/x":                 map[string]any{"version": "1.0.0"},
+			"node_modules/x/node_modules/qs": map[string]any{"version": "6.5.2", "integrity": "sha512-nested"},
+		},
+	})
+	want := mapIntegrity("sha512-hoisted")
+	for i := 0; i < 50; i++ {
+		inv := resolveDir(t, dir)
+		n, ok := findNode(inv, makePURL("qs", "6.5.2"))
+		if !ok {
+			t.Fatalf("qs@6.5.2 node missing; nodes=%v", nodeIDs(inv))
+		}
+		if n.Artifact.Digest != want {
+			t.Fatalf("run %d: merged digest = %q, want the hoisted copy's %q", i, n.Artifact.Digest, want)
+		}
+	}
+}
+
 // TestInventory_C6_SortedOutput asserts the explicit sort order (nodes by ID, edges by
 // (Parent,Child)) that underpins determinism.
 func TestInventory_C6_SortedOutput(t *testing.T) {

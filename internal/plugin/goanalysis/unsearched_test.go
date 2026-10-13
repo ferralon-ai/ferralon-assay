@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -168,6 +169,15 @@ func TestScanResult_WithholdsForLibraryEscape(t *testing.T) {
 		{"a main package beside only internal packages that reach the module", map[string]string{
 			"internal/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
 			"cmd/x/main.go":       "package main\n\nimport \"example.com/m/internal/lib\"\n\nfunc main() { _ = lib.Get() }\n",
+		}, moduleFinding, false},
+		{"a module whose own path has an internal element", map[string]string{
+			"go.mod":     strings.Replace(base["go.mod"], "module example.com/m\n", "module example.com/internal/m\n", 1),
+			"lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
+		}, moduleFinding, true},
+		{"an internal package of a module whose own path has an internal element", map[string]string{
+			"go.mod":              strings.Replace(base["go.mod"], "module example.com/m\n", "module example.com/internal/m\n", 1),
+			"internal/lib/lib.go": lib + "func Get() func() { return vulnmod.Bad }\n",
+			"cmd/x/main.go":       "package main\n\nimport \"example.com/internal/m/internal/lib\"\n\nfunc main() { _ = lib.Get() }\n",
 		}, moduleFinding, false},
 		{"a main package that reaches the module itself", map[string]string{
 			"cmd/x/main.go": "package main\n\nimport \"example.com/vulnmod\"\n\nfunc main() { _ = vulnmod.T{} }\n",

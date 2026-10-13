@@ -3,7 +3,9 @@ package jsanalysis
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -81,6 +83,15 @@ func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
 	lockDir := lc.governingLock(fromDir)
 	if lockDir == lockNoGovern {
 		return nil
+	}
+	// A lockfile or a workspaces root above the governing lock means an install there puts a
+	// node_modules on every resolution path from it, whether or not one is on disk now, and
+	// npm installs a workspace member from the root's lock, not its own.
+	for d := lockDir; d != ""; {
+		d = lockParent(d)
+		if lc.hasLock(d) || lc.declaresWorkspaces(d) {
+			return nil
+		}
 	}
 	// Node walks every ancestor node_modules, so one above the lockfile's directory is on
 	// every installed package's resolution path, and the lock does not describe it.
@@ -257,6 +268,23 @@ func (lc *lockClosures) governingLock(dir string) string {
 	}
 	lc.govern[dir] = found
 	return found
+}
+
+// declaresWorkspaces reports whether dir's package.json declares workspaces. One that cannot
+// be read or decoded counts, since npm would not install from it as this lane reads it.
+func (lc *lockClosures) declaresWorkspaces(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	var m struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err != nil || json.Unmarshal(data, &m) != nil {
+		return true
+	}
+	w := strings.TrimSpace(string(m.Workspaces))
+	return w != "" && w != "null" && w != "[]" && w != "{}"
 }
 
 func (lc *lockClosures) hasLock(dir string) bool {

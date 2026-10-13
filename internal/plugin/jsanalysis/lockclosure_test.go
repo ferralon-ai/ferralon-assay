@@ -28,18 +28,10 @@ func TestLockClosures(t *testing.T) {
 "sub/node_modules/sub-only":{}
 }}`
 	dir := writeProgram(t, map[string]string{
-		"package-lock.json":                                 lock,
-		"v1/package-lock.json":                              `{"lockfileVersion":1,"dependencies":{"qs":{"version":"6.0.0"}}}`,
-		"broken/package-lock.json":                          `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/broken":{"dependencies":{"gone":"1"}}}}`,
-		"peer/package-lock.json":                            `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/needs-peer":{"peerDependencies":{"gone":"*"}}}}`,
-		"disk/package-lock.json":                            `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/@s/p":{},"node_modules/ok/node_modules/inner":{}}}`,
-		"disk/node_modules/.bin/ok":                         "",
-		"disk/node_modules/ok/package.json":                 `{"name":"ok"}`,
-		"disk/node_modules/@s/p/package.json":               `{"name":"@s/p"}`,
-		"disk/node_modules/ok/node_modules/inner/index.js":  "",
-		"stale/package-lock.json":                           `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{}}}`,
-		"stale/node_modules/ok/package.json":                `{"name":"ok"}`,
-		"stale/node_modules/ok/node_modules/extra/index.js": "",
+		"package-lock.json":        lock,
+		"v1/package-lock.json":     `{"lockfileVersion":1,"dependencies":{"qs":{"version":"6.0.0"}}}`,
+		"broken/package-lock.json": `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/broken":{"dependencies":{"gone":"1"}}}}`,
+		"peer/package-lock.json":   `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/needs-peer":{"peerDependencies":{"gone":"*"}}}}`,
 	})
 	// Every package installed at the top level is reachable from any package by name,
 	// declared or not, and so is everything those packages reach: the link into
@@ -71,14 +63,38 @@ func TestLockClosures(t *testing.T) {
 		{"a reachable package missing a required peer is unbounded", "peer", "ok", nil},
 		{"a package the lock does not list is unbounded", "", "not-installed", nil},
 		{"a v1 lock is unbounded", "v1", "qs", nil},
-		{"a node_modules on disk that matches the lock is bounded", "disk", "ok", []string{"ok", "@s/p", "inner"}},
-		{"a node_modules on disk holding a package the lock does not list is unbounded", "stale", "ok", nil},
 	}
 	lc := newLockClosures(dir)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := lc.closureOf(tc.from, tc.pkg); !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("closureOf(%q, %q) = %#v, want %#v", tc.from, tc.pkg, got, tc.want)
+			}
+		})
+	}
+	// The disk/lock comparison, each in a tree of its own, since a lock above another one
+	// leaves the lower one unbounded.
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{"a node_modules on disk that matches the lock is bounded", map[string]string{
+			"package-lock.json":                           `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{},"node_modules/@s/p":{},"node_modules/ok/node_modules/inner":{}}}`,
+			"node_modules/.bin/ok":                        "",
+			"node_modules/ok/package.json":                `{"name":"ok"}`,
+			"node_modules/@s/p/package.json":              `{"name":"@s/p"}`,
+			"node_modules/ok/node_modules/inner/index.js": "",
+		}, []string{"ok", "@s/p", "inner"}},
+		{"a node_modules on disk holding a package the lock does not list is unbounded", map[string]string{
+			"package-lock.json":                           `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{}}}`,
+			"node_modules/ok/package.json":                `{"name":"ok"}`,
+			"node_modules/ok/node_modules/extra/index.js": "",
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newLockClosures(writeProgram(t, tc.files)).closureOf("", "ok"); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("closureOf = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -175,11 +191,11 @@ func TestLockClosures_LaunchTokens(t *testing.T) {
 }
 
 // TestLockClosures_TreeVetoes: the lock bounds a reach only when it describes every package
-// Node can resolve from the importing file. A node_modules above the governing lock, a
-// node_modules under its governance holding an entry it does not list at that key, another
-// installer's lockfile, runtime or install state anywhere in the tree, a file: link above the
-// lock, a symlink that leaves the tree or dangles, a symlinked node_modules, or a file the
-// walk cannot read each leave the closure unbounded.
+// Node can resolve from the importing file. A lockfile, a workspaces root or a node_modules
+// above the governing lock, a node_modules under its governance holding an entry it does not
+// list at that key, another installer's lockfile, runtime or install state anywhere in the
+// tree, a file: link above the lock, a symlink that leaves the tree or dangles, a symlinked
+// node_modules, or a file the walk cannot read each leave the closure unbounded.
 func TestLockClosures_TreeVetoes(t *testing.T) {
 	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
 	const lockSrcNM = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"src/node_modules/util":{}}}`
@@ -224,6 +240,24 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 		{name: ".yarnrc.yml with the default linker", files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "yarnPath: .yarn/releases/yarn-4.1.0.cjs\n"}},
 		{name: ".yarnrc.yml with the node_modules linker", bounded: true, files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "nodeLinker: node-modules\n"}},
 		{name: "npm's own node_modules/.package-lock.json", bounded: true, files: map[string]string{"package-lock.json": lock, "node_modules/.package-lock.json": "{}"}},
+
+		// A lockfile or a workspaces root above the governing lock: an install there puts a
+		// node_modules on every resolution path, on disk or not, and npm installs a workspace
+		// member from the root's lock.
+		{name: "a lockfile above the governing lock with no node_modules on disk", from: "app", files: map[string]string{
+			"package.json": `{"name":"root"}`, "package-lock.json": lock, "app/package.json": `{"name":"app"}`, "app/package-lock.json": lock}},
+		{name: "a member lock under a workspaces root with no root lock", from: "packages/a", files: map[string]string{
+			"package.json": `{"name":"root","workspaces":["packages/*"]}`, "packages/a/package-lock.json": lock}},
+		{name: "a member lock under a workspaces root and its lock", from: "packages/a", files: map[string]string{
+			"package.json": `{"name":"root","workspaces":{"packages":["packages/*"]}}`, "package-lock.json": lock, "packages/a/package-lock.json": lock}},
+		{name: "an undecodable package.json above the governing lock", from: "app", files: map[string]string{
+			"package.json": `{"name":`, "app/package-lock.json": lock}},
+		{name: "a package.json without workspaces above the governing lock", from: "app", bounded: true, files: map[string]string{
+			"package.json": `{"name":"root"}`, "app/package-lock.json": lock}},
+		{name: "a package.json with empty workspaces above the governing lock", from: "app", bounded: true, files: map[string]string{
+			"package.json": `{"name":"root","workspaces":[]}`, "app/package-lock.json": lock}},
+		{name: "a workspace member the root lock governs", from: "packages/a", bounded: true, files: map[string]string{
+			"package.json": `{"name":"root","workspaces":["packages/*"]}`, "package-lock.json": lock, "packages/a/package.json": `{"name":"a"}`}},
 
 		{name: "a file: link to a directory above the lock", from: "app", files: map[string]string{
 			"app/package-lock.json": lockAbove, "shared/package.json": `{"name":"shared"}`}},

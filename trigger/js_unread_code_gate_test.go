@@ -469,6 +469,37 @@ go(process.argv[2]);
 			held: []*report.Package{qs, zed},
 		},
 		{
+			// No node_modules on disk: an install at the root still puts zed on app/'s
+			// resolution path. The root package.json declares no workspaces, so only the root
+			// lock vetoes.
+			name: "a lockfile above the governing lock holds every advisory with nothing installed",
+			src:  "require('./app/main.js');\n",
+			files: map[string]string{
+				"package.json":          `{"name":"root","dependencies":{"zed":"1.0.0"}}`,
+				"package-lock.json":     `{"lockfileVersion":3,"packages":{"":{"name":"root","dependencies":{"zed":"1.0.0"}},"node_modules/zed":{"version":"1.0.0"}}}`,
+				"app/package.json":      `{"name":"app","dependencies":{"qs":"6.0.0"}}`,
+				"app/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"node_modules/.keep":    gateOmit,
+				"app/main.js":           "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
+			// npm installs packages/a from the root lock, which hoists b's zed beside qs; a's own
+			// lock is stale.
+			name: "a stale member lock under a workspaces root holds every advisory",
+			src:  "require('./packages/a/index.js');\n",
+			files: map[string]string{
+				"package.json":                 `{"name":"root","workspaces":["packages/*"]}`,
+				"package-lock.json":            `{"lockfileVersion":3,"packages":{"":{"name":"root","workspaces":["packages/*"]},"node_modules/a":{"link":true,"resolved":"packages/a"},"node_modules/b":{"link":true,"resolved":"packages/b"},"packages/a":{"name":"a","dependencies":{"qs":"6.0.0"}},"packages/b":{"name":"b","dependencies":{"zed":"1.0.0"}},"node_modules/qs":{"version":"6.0.0"},"node_modules/zed":{"version":"1.0.0"}}}`,
+				"packages/a/package.json":      `{"name":"a","dependencies":{"qs":"6.0.0"}}`,
+				"packages/a/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"a","dependencies":{"qs":"6.0.0"}},"node_modules/qs":{"version":"6.0.0"}}}`,
+				"node_modules/.keep":           gateOmit,
+				"packages/a/index.js":          "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
 			name: "a yarn.lock beside the npm lock holds every advisory",
 			src: `const qs = require('qs');
 function go(u) { return qs.parse(u); }
@@ -569,6 +600,9 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 }
 
 // gateFromJS is gateStoreFromJS returning the call graph itself.
+// gateOmit, as a file's body, leaves out a file gateFromJS writes by default.
+const gateOmit = "\x00omit"
+
 func gateFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, plugin.CallGraphResult) {
 	t.Helper()
 	dir := t.TempDir()
@@ -581,6 +615,9 @@ func gateFromJS(t *testing.T, src string, files map[string]string) (*artifact.Me
 	}
 	maps.Copy(tree, files)
 	for name, body := range tree {
+		if body == gateOmit {
+			continue
+		}
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)

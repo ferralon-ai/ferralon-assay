@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -36,13 +37,13 @@ func unreadSurfaces(root string, locks []string) bool {
 			read[m] = true
 		}
 	}
-	veto := newScriptVeto(root, func(path string) bool { return read[path] })
-	for _, c := range buildtree.Candidates(root, veto.classify(npmInstallSurface), veto.fullyRead) {
+	veto := scriptsurface.New(root, func(path string) bool { return read[path] }, scriptSpec)
+	for _, c := range buildtree.Candidates(root, veto.Classify(npmInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			return true
 		}
 	}
-	return veto.rebound()
+	return veto.Rebound()
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and

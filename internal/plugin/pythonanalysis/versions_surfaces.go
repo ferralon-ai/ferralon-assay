@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -51,13 +52,13 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	veto := newScriptVeto(root, read)
-	for _, c := range buildtree.Candidates(root, veto.classify(pyInstallSurface), veto.fullyRead) {
+	veto := scriptsurface.New(root, read, scriptSpec)
+	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
-	if veto.rebound() {
+	if veto.Rebound() {
 		unread = true
 	}
 	return manifests, unread

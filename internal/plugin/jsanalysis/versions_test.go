@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -405,4 +406,187 @@ func TestResolveVersions_CoordinateNotDeclaredNotFound(t *testing.T) {
 	if !res.Partiality.Complete {
 		t.Fatal("a clean parse with a missing coordinate is still Complete (the absence is known)")
 	}
+}
+
+// --- multiple installed copies -----------------------------------------------
+
+// resolveRuns is how many times a multi-copy row re-resolves. Go randomizes map iteration on
+// every range, so a resolver whose answer depends on map order flips across these runs.
+const resolveRuns = 50
+
+func mustUnresolved(t *testing.T, res plugin.DependencyVersionResult) {
+	t.Helper()
+	if !res.Found {
+		t.Fatalf("coordinate not found; all=%+v", res.All)
+	}
+	if res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match must be UNRESOLVED with no version; match=%+v", res.Match)
+	}
+}
+
+// qs installed at 6.5.2 (hoisted) and 6.5.1 (nested under x): an advisory whose range covers
+// only one of them must not be ruled on the other.
+const packageLockStraddleV3 = `{
+  "lockfileVersion": 3,
+  "packages": {
+    "": { "name": "app", "version": "1.0.0" },
+    "node_modules/qs": { "version": "6.5.2" },
+    "node_modules/x": { "version": "1.0.0" },
+    "node_modules/x/node_modules/qs": { "version": "6.5.1" }
+  }
+}`
+
+func TestResolveVersions_V2StraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV3})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+	mustMatch(t, resolveJS(t, dir, "x"), "1.0.0")
+}
+
+const packageLockStraddleV1 = `{
+  "lockfileVersion": 1,
+  "dependencies": {
+    "qs": { "version": "6.5.2" },
+    "x": {
+      "version": "1.0.0",
+      "dependencies": {
+        "qs": { "version": "6.5.1" }
+      }
+    }
+  }
+}`
+
+func TestResolveVersions_V1NestedStraddlingCopiesUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{"package-lock.json": packageLockStraddleV1})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+func TestResolveVersions_LockfilesDisagreeUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/yarn.lock":     "qs@^6.5.0:\n  version \"6.5.1\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+// A lockfile that fails to parse may hold another copy of any coordinate, so a readable
+// lockfile's pin must not decide the version on its own. A coordinate no readable lockfile
+// holds stays not found.
+func TestResolveVersions_CorruptSecondLockfileUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json":     `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/package-lock.json": `{"lockfileVersion": 3, "packages": {`,
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+	if r := resolveJS(t, dir, "left-pad"); r.Found {
+		t.Fatalf("coordinate in no readable lockfile must stay not found; got %+v", r.Match)
+	}
+}
+
+func TestResolveVersions_YarnTwoVersionsUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "qs@6.5.1:\n  version \"6.5.1\"\n\nqs@^6.5.2:\n  version \"6.5.2\"\n",
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+}
+
+func TestResolveVersions_SameVersionCopiesResolve(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {"version": "6.5.2"}
+}}`,
+		"svc/yarn.lock": "qs@^6.5.0:\n  version \"6.5.2\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustMatch(t, resolveJS(t, dir, "qs"), "6.5.2")
+	}
+}
+
+func TestResolveVersions_UnknownCopyNextToResolvedUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json": `{"lockfileVersion": 3, "packages": {
+  "node_modules/qs": {"version": "6.5.2"},
+  "node_modules/x/node_modules/qs": {}
+}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolved(t, resolveJS(t, dir, "qs"))
+	}
+}
+
+// All is built in sorted key order for every map the npm parser walks (v2/v3 packages, v1
+// dependencies and their nested children), so its order is the same on every run.
+func TestResolveVersions_AllOrderDeterministic(t *testing.T) {
+	cases := []struct {
+		name string
+		lock string
+		want []string
+	}{
+		{"v3 packages", packageLockStraddleV3, []string{"qs@6.5.2", "x@1.0.0", "qs@6.5.1"}},
+		{"v1 dependencies", packageLockV1, []string{"express@4.17.1", "cookie@0.4.0", "left-pad@1.2.0"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{"package-lock.json": tc.lock})
+			for i := 0; i < resolveRuns; i++ {
+				all := resolveJS(t, dir, "qs").All
+				got := make([]string, 0, len(all))
+				for _, d := range all {
+					got = append(got, d.Coordinate+"@"+d.Version)
+				}
+				if !slices.Equal(got, tc.want) {
+					t.Fatalf("run %d: All order = %v, want %v", i, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// --- npm alias entries ---------------------------------------------------------
+
+// An npm alias ("qs-old": "npm:qs@6.5.1") installs a real package under another name. A v1
+// package-lock and yarn.lock key the entry by the alias; the lock readers file it under the
+// real package's name, so the real package's two distinct copies cannot decide its version.
+func TestResolveVersions_NpmAliasCopiesVeto(t *testing.T) {
+	cases := []struct{ name, file, lock, want string }{
+		{"package-lock v1", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "qs-old": {"version": "npm:qs@6.5.1"}
+}}`, "qs"},
+		{"package-lock v1 nested", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "x": {"version": "1.0.0", "dependencies": {"qs-old": {"version": "npm:qs@6.5.1"}}}
+}}`, "qs"},
+		{"yarn classic", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic second descriptor", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\nqs-old@^1.0.0, \"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic bare alias", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn berry", "yarn.lock", "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:qs@npm:6.5.1\":\n  version: 6.5.1\n", "qs"},
+		{"yarn berry scoped target", "yarn.lock", "__metadata:\n  version: 6\n\n\"@s/qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:@s/qs@npm:6.5.1\":\n  version: 6.5.1\n", "@s/qs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{tc.file: tc.lock})
+			res := resolveJS(t, dir, tc.want)
+			mustUnresolved(t, res)
+		})
+	}
+}
+
+// Berry writes every ordinary registry range as "name@npm:<range>"; those are not aliases.
+func TestResolveVersions_BerryNpmRangeIsNotAlias(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2, qs@npm:6.5.2\":\n  version: 6.5.2\n\n\"left-pad@npm:*\":\n  version: 1.3.0\n",
+	})
+	res := resolveJS(t, dir, "qs")
+	mustMatch(t, res, "6.5.2")
+	if !res.Partiality.Complete {
+		t.Fatalf("berry npm: ranges must not degrade partiality; got %+v", res.Partiality)
+	}
+	mustMatch(t, resolveJS(t, dir, "left-pad"), "1.3.0")
 }

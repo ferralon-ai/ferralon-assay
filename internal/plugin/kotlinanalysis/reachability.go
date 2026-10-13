@@ -20,8 +20,8 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 // trace follows calls into the exact dependency bytecode the build resolved.
 //
 // Roots and what each may license:
-//   - `main` (every mainMethodRefs entry, plus the launch main a Gradle start script names) is
-//     the whole-program root and the ONLY root that licenses a cleared sink. A sink is listed
+//   - `main` (every mainMethodRefs entry, plus the launch main a Gradle start script names,
+//     plus each main owner's companion initializers) is the whole-program root and the ONLY root that licenses a cleared sink. A sink is listed
 //     in Searched only when at least one main exists, the sink is a concrete method in loaded
 //     bytecode, and every root's search (main and framework) was a hazard-free empty search.
 //   - framework ingress roots (frameworkIngressRefs) add a candidate path or undetermined,
@@ -85,6 +85,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			mains = append(mains, classfile.MethodRef{Owner: cls, Name: "main", Descriptor: "([Ljava/lang/String;)V"})
 		}
 	}
+	mains = append(mains, companionInitRoots(all, mains)...)
 	frameworks := frameworkIngressRefs(prog.classes)
 
 	var paths []plugin.ReachPath
@@ -136,6 +137,33 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		Paths:      paths,
 		Searched:   searched,
 	}, nil
+}
+
+// companionInitRoots returns the initializers of each main owner's companion object: its
+// declared <clinit> and every <init>. The JVM initializes the launch class before main runs
+// (the engine enqueues that closure), and Kotlin builds a class's companion from the class's
+// static initializer, so a companion's init block or property initializer runs before main.
+// Rooting them directly keeps that true when the outer <clinit> is absent from loaded code.
+func companionInitRoots(classes []classfile.Class, mains []classfile.MethodRef) []classfile.MethodRef {
+	byName := make(map[string]*classfile.Class, len(classes))
+	for i := range classes {
+		byName[classes[i].Name] = &classes[i]
+	}
+	seen := map[string]bool{}
+	var out []classfile.MethodRef
+	for _, m := range mains {
+		c := byName[m.Owner+"$Companion"]
+		if c == nil || seen[c.Name] {
+			continue
+		}
+		seen[c.Name] = true
+		for _, meth := range c.Methods {
+			if meth.Ref.Name == "<clinit>" || meth.Ref.Name == "<init>" {
+				out = append(out, meth.Ref)
+			}
+		}
+	}
+	return out
 }
 
 // sinkSearch is the combined outcome of searching one sink from every root.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -86,9 +87,35 @@ func jacksonJar() map[string][]byte {
 	return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
 }
 
-// gradleJacksonBuild declares jackson-databind (and any extra lines) in build.gradle.kts and
-// caches the jackson JAR.
+// gradleJacksonBuild declares jackson-databind (and any extra implementation lines) in
+// build.gradle.kts, locks every declared coordinate on runtimeClasspath with its POM cached, and
+// caches the jackson JAR. The lock is what lets an empty search be Searched: without one the
+// inventory declares gradle_transitive and the op withholds Searched.
 func gradleJacksonBuild(t *testing.T, extra string) string {
+	t.Helper()
+	dir := unlockedJacksonBuild(t, extra)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	coords := []string{jacksonGroup + ":" + jacksonArtifact + ":" + jacksonVersion}
+	for _, m := range regexp.MustCompile(`implementation\("([^"]+)"\)`).FindAllStringSubmatch(extra, -1) {
+		coords = append(coords, m[1])
+	}
+	var lock strings.Builder
+	for _, c := range coords {
+		gav := strings.Split(c, ":")
+		lock.WriteString(c + "=runtimeClasspath\n")
+		pom := filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1", gav[0], gav[1], gav[2], "feed", gav[1]+"-"+gav[2]+".pom")
+		writeFileAt(t, filepath.Dir(pom), filepath.Base(pom),
+			"<project><groupId>"+gav[0]+"</groupId><artifactId>"+gav[1]+"</artifactId><version>"+gav[2]+"</version></project>")
+	}
+	lock.WriteString("empty=\n")
+	writeBuildFile(t, dir, "gradle.lockfile", lock.String())
+	return dir
+}
+
+// unlockedJacksonBuild is gradleJacksonBuild without a lockfile: the inventory carries the
+// declared-direct coordinates only and declares gradle_transitive.
+func unlockedJacksonBuild(t *testing.T, extra string) string {
 	t.Helper()
 	dir := t.TempDir()
 	writeBuildFile(t, dir, "build.gradle.kts", `
@@ -456,10 +483,16 @@ func TestReachability_MissingJarScopedTargets(t *testing.T) {
 			if len(tt.want) > 0 && res.Partiality.Complete {
 				t.Error("a result carrying scoped reasons must not be Complete")
 			}
-			// b was loaded and main never calls it: the sink is searched either way. The scoped
-			// reasons are the gate's to apply per advisory.
-			if !reflect.DeepEqual(res.Searched, []string{"org/b/B.sink()V"}) {
-				t.Errorf("Searched = %v, want the loaded sink", res.Searched)
+			// b was loaded and main never calls it. A missing JAR alone leaves the sink searched:
+			// the scoped reasons are the gate's to apply per advisory. A missing POM leaves a
+			// subtree the inventory cannot see (maven_uncached_subtree), and the op withholds
+			// Searched under it.
+			var want []string
+			if !tt.withNoPOM {
+				want = []string{"org/b/B.sink()V"}
+			}
+			if !reflect.DeepEqual(res.Searched, want) {
+				t.Errorf("Searched = %v, want %v (%v)", res.Searched, want, res.Partiality.Reasons)
 			}
 		})
 	}
@@ -682,13 +715,25 @@ func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
 				"gradle/dependency-locks/runtimeClasspath.lockfile": ga + ":2.9.9=runtimeClasspath\n",
 			},
 			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtimeClasspath locks 2.9.8, 2.9.9", Targets: bounded}},
+				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9", Targets: bounded}},
+		},
+		{
+			// Spring Boot's bootJar packages productionRuntimeClasspath.
+			name:      "kapt version and productionRuntimeClasspath version: production runtime loads",
+			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.9.9=productionRuntimeClasspath\nempty=\n"},
+			wantPath:  true,
+		},
+		{
+			name:      "runtimeClasspath and productionRuntimeClasspath disagree: named miss",
+			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\n" + ga + ":2.9.9=productionRuntimeClasspath\nempty=\n"},
+			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
+				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9", Targets: bounded}},
 		},
 		{
 			name:      "runtime version not concrete: named miss",
 			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.+=runtimeClasspath\nempty=\n"},
 			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtimeClasspath locks 2.+", Targets: bounded}},
+				Path: ga + ": runtime classpaths lock 2.+", Targets: bounded}},
 		},
 	}
 	for _, tt := range tests {
@@ -878,6 +923,78 @@ func TestLocateDependencyJar_CopiesAcrossCaches(t *testing.T) {
 			}
 			if _, ok := LocateDependencyJar(dir, jacksonGroup+":"+jacksonArtifact, jacksonVersion); ok != tt.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestReachability_InventoryGraphReasonsWithholdSearched: the op itself withholds Searched under
+// every graph reason the inventory declares, so a library consumer that never applies the
+// gate's inventory limits still cannot read an empty search as complete. Each row's main never
+// calls the loaded sink.
+func TestReachability_InventoryGraphReasonsWithholdSearched(t *testing.T) {
+	mavenBuild := func(t *testing.T, childPOM bool) string {
+		dir := t.TempDir()
+		writeBuildFile(t, dir, "pom.xml", `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version></dependency></dependencies></project>`)
+		pom := func(g, a, v, body string) {
+			p := m2Path(dir, g, a, v, "pom")
+			writeFileAt(t, filepath.Dir(p), filepath.Base(p), body)
+		}
+		pom("org.a", "a", "1.0", `<project><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></dependency></dependencies></project>`)
+		if childPOM {
+			pom("org.b", "b", "2.0", `<project><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></project>`)
+		}
+		for _, j := range []struct{ g, a, v, class string }{{"org.a", "a", "1.0", "org/a/A"}, {"org.b", "b", "2.0", "org/b/B"}} {
+			b := newKClassBuilder()
+			b.addMethod("sink", "()V", []byte{opReturn})
+			writeJar(t, m2Path(dir, j.g, j.a, j.v, "jar"), map[string][]byte{j.class: b.build(j.class, "java/lang/Object")})
+		}
+		mb := newKClassBuilder()
+		mb.addMethod("main", mainStringsDesc, []byte{opReturn})
+		writeFileAt(t, filepath.Join(dir, "target", "classes", "com", "example"), "Main.class", string(mb.build("com/example/Main", "java/lang/Object")))
+		return dir
+	}
+	gradle := func(locked bool) func(t *testing.T) (string, string) {
+		return func(t *testing.T) (string, string) {
+			var dir string
+			if locked {
+				dir = gradleJacksonBuild(t, "")
+			} else {
+				t.Setenv("HOME", t.TempDir())
+				dir = unlockedJacksonBuild(t, "")
+			}
+			writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+			return dir, readValueSink
+		}
+	}
+	maven := func(childPOM bool) func(t *testing.T) (string, string) {
+		return func(t *testing.T) (string, string) { return mavenBuild(t, childPOM), "org/a/A.sink()V" }
+	}
+	tests := []struct {
+		name     string
+		build    func(t *testing.T) (string, string)
+		reason   string // the graph reason the row declares, "" for none
+		searched bool
+	}{
+		{"gradle, locked: searched", gradle(true), "", true},
+		{"gradle, no lockfile: gradle_transitive withholds Searched", gradle(false), "relationship_unexpressed:gradle_transitive", false},
+		{"maven, child POM cached: searched", maven(true), "", true},
+		{"maven, child POM uncached: maven_uncached_subtree withholds Searched", maven(false), "relationship_unexpressed:maven_uncached_subtree", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, sink := tt.build(t)
+			res := reach(t, dir, sink)
+			if got := len(res.Searched) > 0; got != tt.searched {
+				t.Errorf("Searched = %v, want searched %v (%+v)", res.Searched, tt.searched, res.Partiality)
+			}
+			if tt.reason != "" && !hasReason(res.Partiality, tt.reason) {
+				t.Errorf("reasons %v must carry %q", res.Partiality.Reasons, tt.reason)
+			}
+			if len(res.Paths) > 0 {
+				t.Errorf("main never calls the sink, got paths %v", res.Paths)
 			}
 		})
 	}

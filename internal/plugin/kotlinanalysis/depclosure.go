@@ -61,11 +61,6 @@ const partialReasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed 
 // Loading any one candidate could trace bytes that never run, so none is loaded.
 const partialReasonRuntimeVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":runtime_version_ambiguous"
 
-// partialReasonLaunchAgent is the run-wide reason for a start script whose DEFAULT_JVM_OPTS
-// load a Java agent or extend the boot classpath: code outside the classpath runs, and an agent
-// can rewrite any loaded class.
-const partialReasonLaunchAgent = plugin.PartialReasonRelationshipUnexpressed + ":launch_jvm_agent"
-
 // depClosure is the loaded dependency bytecode plus the scoped blind spots loading it incurred.
 type depClosure struct {
 	classes []classfile.Class
@@ -77,9 +72,8 @@ type depClosure struct {
 	// closure came from the inventory.
 	mainClasses []string
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: the inventory's graph-level reasons that leave the version it
-	// names for a node unknown (an uncached BOM or parent, an unresolved property, an unevaluable
-	// profile), or a start script that launches the JVM with an agent or a boot classpath.
+	// no empty search is Searched: the inventory's graph reasons (inventoryReasons), or a
+	// JVM launch option the lanes do not model (javaanalysis.LaunchOptionReasons).
 	reasons []string
 }
 
@@ -98,6 +92,17 @@ func (n depNode) gav() string        { return n.coordinate() + ":" + n.version }
 // locate. firstParty names classes already loaded from the build output; a dependency class
 // with the same binary name is skipped (the build output is what the build packaged).
 func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[string]bool) (*depClosure, error) {
+	dc, err := loadClasspath(ctx, buildDir, firstParty)
+	if err != nil {
+		return nil, err
+	}
+	dc.reasons = append(dc.reasons, javaanalysis.LaunchOptionReasons(buildDir)...)
+	return dc, nil
+}
+
+// loadClasspath loads the start-script classpath when a start script parses, and the
+// inventory's otherwise.
+func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]bool) (*depClosure, error) {
 	if rc, ok := findRuntimeClasspath(buildDir); ok {
 		return loadRuntimeClasspath(buildDir, rc, firstParty), nil
 	}
@@ -108,7 +113,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 	g := newInventoryGraph(inv)
 	program := g.programClosure()
 	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
-	dc := &depClosure{loaded: map[string]string{}, reasons: versionSelectionReasons(inv)}
+	dc := &depClosure{loaded: map[string]string{}, reasons: inventoryReasons(inv)}
 
 	var locks *runtimeLocks
 	if fromLockfile(inv) {
@@ -198,9 +203,6 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[string]bool) *depClosure {
 	index := gradleCacheIndex(buildDir)
 	dc := &depClosure{loaded: map[string]string{}, mainClasses: rc.mainClasses}
-	if len(rc.launchAgents) > 0 {
-		dc.reasons = append(dc.reasons, partialReasonLaunchAgent)
-	}
 	projectJars := map[string]bool{}
 	for _, name := range rc.entries {
 		if fileExists(filepath.Join(buildDir, firstPartyJarDir, name)) {
@@ -378,12 +380,17 @@ func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, 
 	return load, misses
 }
 
-// versionSelectionReasons returns the inventory's graph-level reasons under which a node's
-// version may not be the one the build selects.
-func versionSelectionReasons(inv plugin.DependencyInventory) []string {
+// inventoryReasons returns the inventory's run-wide graph reasons: every reason under which its
+// node set or a node's version may fall short of what the build runs (no lockfile, an uncached
+// subtree or POM, a substitution, an uncached BOM or parent, an unresolved property, an
+// unevaluable profile). The op withholds Searched under any of them itself rather than leaning
+// on a caller's inventory limits, because the op is consumed as a library.
+func inventoryReasons(inv plugin.DependencyInventory) []string {
 	var out []string
 	for _, r := range inv.Partiality.Reasons {
-		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) || strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) {
+		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) ||
+			strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) ||
+			strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed) {
 			out = append(out, r)
 		}
 	}

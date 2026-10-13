@@ -33,14 +33,14 @@ func msbuild(items string) string {
 }
 
 const (
-	newtonsoftRef12 = `<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup>`
+	newtonsoftRef12 = `<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[12.0.1]" /></ItemGroup>`
 	otherRef        = `<ItemGroup><PackageReference Include="Other" Version="1.0.0" /></ItemGroup>`
 )
 
 // Every surface that can change which copy of a package a project installs is read, or the
 // project's copy is unknown. Each row fails if its surface is ignored.
 func TestVersions_UnreadSurfaces(t *testing.T) {
-	pinA := csproj("Newtonsoft.Json", "13.0.3")
+	pinA := csproj("Newtonsoft.Json", "[13.0.3]")
 	cases := []struct {
 		name    string
 		files   map[string]string
@@ -54,6 +54,27 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 				"A/obj/project.assets.json": assetsJSON(map[string]string{"Newtonsoft.Json/13.0.3": "package"}),
 			},
 			version: "13.0.3",
+		},
+		{
+			name: "a plain Version is a minimum when no lock covers it",
+			files: map[string]string{
+				"A/A.csproj": csproj("Newtonsoft.Json", "13.0.3"),
+			},
+		},
+		{
+			name: "a plain GlobalPackageReference Version is a minimum when no lock covers it",
+			files: map[string]string{
+				"Directory.Packages.props": msbuild(`<ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup>`),
+				"A/A.csproj":               csproj("Other", "[1.0.0]"),
+			},
+		},
+		{
+			name: "a plain Version a current lock covers",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "13.0.3"),
+				"A/packages.lock.json": lockEntries("Direct", "[13.0.3, )", map[string]string{"net8.0": "13.0.4"}),
+			},
+			version: "13.0.4",
 		},
 		{
 			name: "restore output overrides a stale lockfile",
@@ -219,7 +240,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 		{
 			name: "a project file's toolset import declares nothing",
 			files: map[string]string{
-				"A/A.csproj": `<Project><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj": `<Project><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.3]" /></ItemGroup></Project>`,
 			},
 			version: "13.0.3",
 		},
@@ -267,14 +288,14 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 		{
 			name: "a commented-out PackageReference is not a declaration",
 			files: map[string]string{
-				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><!-- <PackageReference Include="Newtonsoft.Json" Version="12.0.1" /> --><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><!-- <PackageReference Include="Newtonsoft.Json" Version="12.0.1" /> --><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.3]" /></ItemGroup></Project>`,
 			},
 			version: "13.0.3",
 		},
 		{
 			name: "a GlobalPackageReference in Directory.Build.targets is declared",
 			files: map[string]string{
-				"Directory.Build.targets": msbuild(`<ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup>`),
+				"Directory.Build.targets": msbuild(`<ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="[13.0.3]" /></ItemGroup>`),
 				"A/A.csproj":              msbuild(otherRef),
 			},
 			version: "13.0.3",
@@ -282,7 +303,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 		{
 			name: "a GlobalPackageReference makes a lock that lacks it stale",
 			files: map[string]string{
-				"Directory.Packages.props": msbuild(`<ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup>`),
+				"Directory.Packages.props": msbuild(`<ItemGroup><GlobalPackageReference Include="Newtonsoft.Json" Version="[13.0.3]" /></ItemGroup>`),
 				"A/A.csproj":               msbuild(otherRef),
 				"A/packages.lock.json":     lockEntries("Direct", "[12.0.1, )", map[string]string{"net8.0": "12.0.1"}),
 			},
@@ -501,7 +522,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'"><DebugType>full</DebugType></PropertyGroup>
   <ItemGroup><Compile Remove="wwwroot\**" /><None Update="appsettings.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None></ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'"><ProjectReference Include="..\Lib\Lib.csproj" /></ItemGroup>
-  <ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" PrivateAssets="all" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.3]" PrivateAssets="all" /></ItemGroup>
   <Target Name="Stamp" AfterTargets="Build"><Exec Command="echo built" /></Target>
 </Project>`,
 			},
@@ -516,7 +537,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'"><DebugType>full</DebugType></PropertyGroup>
   <ItemGroup><Compile Remove="wwwroot\**" /><None Update="appsettings.json"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None></ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'"><Content Include="data\*.json" /></ItemGroup>
-  <ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" PrivateAssets="all" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.3]" PrivateAssets="all" /></ItemGroup>
   <Target Name="Stamp" AfterTargets="Build"><Exec Command="echo built" /></Target>
 </Project>`,
 			},

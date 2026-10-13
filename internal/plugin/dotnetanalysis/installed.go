@@ -618,7 +618,7 @@ func (it *msbuildPkgItem) entry(source string) (manifestEntry, bool) {
 	if n := len(it.overrides); n > 0 {
 		override = it.overrides[n-1]
 	}
-	ver, resolved := exactNuGetPin(raw)
+	ver, resolved := packageReferencePin(raw)
 	spec := raw
 	if spec == "" {
 		spec = override

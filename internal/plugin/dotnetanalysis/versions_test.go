@@ -656,7 +656,7 @@ func TestVersions_MultipleCopies(t *testing.T) {
 		{
 			name: "a Version element is the project's pin",
 			files: map[string]string{
-				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><Version>13.0.3</Version></PackageReference></ItemGroup></Project>`,
+				"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json"><Version>[13.0.3]</Version></PackageReference></ItemGroup></Project>`,
 			},
 			version: "13.0.3",
 		},
@@ -679,7 +679,7 @@ func TestVersions_MultipleCopies(t *testing.T) {
 			files: map[string]string{
 				"A/A.csproj":             csproj("Newtonsoft.Json", "13.0.3"),
 				"A/packages.lock.json":   lockJSON(map[string]string{"net6.0": "13.0.3", "net8.0": "13.0.3"}),
-				"B/B.csproj":             csproj("newtonsoft.json", "13.0.3"),
+				"B/B.csproj":             csproj("newtonsoft.json", "[13.0.3]"),
 				"Legacy/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.3" /></packages>`,
 			},
 			version: "13.0.3",

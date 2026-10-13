@@ -415,3 +415,123 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadProgram_BuildScripts: a packaging build script's imports are build-time, so the
+// script is left out of the program (no module, no boundary edge from its module-init),
+// while it stays first-party. Every way runtime code could still load the script keeps it.
+func TestLoadProgram_BuildScripts(t *testing.T) {
+	const setupPy = "from setuptools import setup\nsetup(name='app')\n"
+	const runtime = "def check(t):\n    return t\n"
+	cases := []struct {
+		name     string
+		files    map[string]string
+		script   string // module of the build-script candidate
+		excluded bool
+	}{
+		{
+			name:     "setup.py importing setuptools is excluded",
+			files:    map[string]string{"setup.py": setupPy, "app.py": runtime},
+			script:   "setup",
+			excluded: true,
+		},
+		{
+			name:     "setup.py importing distutils is excluded",
+			files:    map[string]string{"setup.py": "from distutils.core import setup\nsetup(name='app')\n", "app.py": runtime},
+			script:   "setup",
+			excluded: true,
+		},
+		{
+			name: "hatch_build.py importing hatchling is excluded",
+			files: map[string]string{
+				"hatch_build.py": "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\n\nclass Hook(BuildHookInterface):\n    def initialize(self, version, data):\n        return data\n",
+				"app.py":         runtime,
+			},
+			script:   "hatch_build",
+			excluded: true,
+		},
+		{
+			name:   "setup.py importing no build backend stays",
+			files:  map[string]string{"setup.py": "import click\n\ndef setup(cfg):\n    return click.echo(cfg)\n", "app.py": runtime},
+			script: "setup",
+		},
+		{
+			name:   "setup.py inside a regular package stays",
+			files:  map[string]string{"pkg/__init__.py": "", "pkg/setup.py": setupPy, "app.py": runtime},
+			script: "pkg/setup",
+		},
+		{
+			name:   "runtime import of the script's module keeps it",
+			files:  map[string]string{"setup.py": setupPy, "app.py": "import setup\n\ndef check(t):\n    return t\n"},
+			script: "setup",
+		},
+		{
+			name:   "runtime star import of the script's module keeps it",
+			files:  map[string]string{"setup.py": setupPy, "app.py": "from setup import *\n\ndef check(t):\n    return t\n"},
+			script: "setup",
+		},
+		{
+			name:   "runtime literal dynamic import of the script's module keeps it",
+			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\nmod = importlib.import_module('setup')\n"},
+			script: "setup",
+		},
+		{
+			name:   "runtime dynamic import the scanner cannot name keeps it",
+			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"},
+			script: "setup",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			c.files["requirements.txt"] = "setuptools\nhatchling\nclick\n"
+			prog, err := loadProgram(writeTree(t, c.files))
+			if err != nil {
+				t.Fatalf("loadProgram: %v", err)
+			}
+			var present bool
+			for _, f := range prog.files {
+				present = present || f.module == c.script
+			}
+			if present == c.excluded {
+				t.Fatalf("build script %s in program = %v, want %v", c.script, present, !c.excluded)
+			}
+			top, _, _ := strings.Cut(c.script, "/")
+			if !prog.dists.firstParty[top] {
+				t.Errorf("first-party tops %v lost %s", prog.dists.firstParty, top)
+			}
+			init := moduleInitSCIP(c.script)
+			var fromScript []string
+			for _, e := range callGraphOf(prog).Edges {
+				if e.Caller.SCIP == init && strings.HasPrefix(e.Callee.SCIP, boundaryPrefix) {
+					fromScript = append(fromScript, e.Callee.SCIP)
+				}
+			}
+			if c.excluded && len(fromScript) != 0 {
+				t.Errorf("excluded build script still contributes boundary edges %v", fromScript)
+			}
+		})
+	}
+}
+
+// TestLoadProgram_RuntimeSetuptoolsStillCounts is the control for build-script exclusion:
+// a runtime module importing setuptools keeps its import and boundary edge while the
+// project's setup.py beside it is left out.
+func TestLoadProgram_RuntimeSetuptoolsStillCounts(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt": "setuptools\n",
+		"setup.py":         "from setuptools import setup\nsetup(name='app')\n",
+		"app.py":           "import setuptools\n\ndef pkgs(d):\n    return setuptools.find_packages(d)\n",
+	})
+	prog, err := loadProgram(dir)
+	if err != nil {
+		t.Fatalf("loadProgram: %v", err)
+	}
+	for _, f := range prog.files {
+		if f.module == "setup" {
+			t.Fatal("setup.py should be left out of the program")
+		}
+	}
+	res := callGraphOf(prog)
+	if !hasEdge(res.Edges, funcSCIP("app", nil, "pkgs", 1), "pypi:setuptools#setuptools.find_packages") {
+		t.Fatalf("runtime setuptools edge missing; edges: %+v", res.Edges)
+	}
+}

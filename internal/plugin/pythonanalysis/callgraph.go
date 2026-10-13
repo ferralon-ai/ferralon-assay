@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -96,7 +98,9 @@ func funcSCIP(module string, enclosing []string, name string, arity int) string 
 func sym(s string) plugin.Symbol { return plugin.Symbol{SCIP: s, DisplayName: s} }
 
 // loadProgram parses every Python file under buildDir into a whole-program view and builds
-// the (name, arity) → SCIP resolution index. A missing/empty build dir is a hard error
+// the (name, arity) → SCIP resolution index. Packaging build scripts (buildScripts) are
+// parsed but left out of the program, so their imports never read as runtime loads. A
+// missing/empty build dir is a hard error
 // (inv.4), matching IndexSymbols; read failures and skipped constructs degrade partiality.
 func loadProgram(buildDir string) (*program, error) {
 	info, err := os.Stat(buildDir)
@@ -115,6 +119,7 @@ func loadProgram(buildDir string) (*program, error) {
 	}
 
 	prog := &program{funcsByName: map[string][]funcDecl{}}
+	var parsed []parsedFile
 	for _, p := range paths {
 		data, readErr := os.ReadFile(p)
 		if readErr != nil {
@@ -125,32 +130,44 @@ func loadProgram(buildDir string) (*program, error) {
 		clean, lits := stripPythonLiterals(string(data))
 		lines := logicalLines(clean)
 
-		decls := parseDecls(lines)
+		var funcs []funcDecl
+		for _, d := range parseDecls(lines) {
+			if d.kind == kindFunc {
+				funcs = append(funcs, funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity})
+			}
+		}
 		scan := parseCallsAndIngresses(lines)
 		roots, opaque := dynamicImports(clean, lits)
-		if opaque {
-			prog.dynamicImportOpaque = true
-		}
-
-		for _, d := range decls {
-			if d.kind != kindFunc {
-				continue
-			}
-			fd := funcDecl{module: module, enclosing: d.enclosing, name: d.name, arity: d.arity}
-			prog.funcsByName[d.name] = append(prog.funcsByName[d.name], fd)
-		}
-		prog.files = append(prog.files, fileParse{
-			module:    module,
-			calls:     scan.calls,
-			ingresses: scan.ingresses,
-			bindings:  indexBindings(scan.bindings),
-			loadRoots: roots,
+		parsed = append(parsed, parsedFile{
+			path:    p,
+			funcs:   funcs,
+			opaque:  opaque,
+			imports: importedTops(lines),
+			parse: fileParse{
+				module:    module,
+				calls:     scan.calls,
+				ingresses: scan.ingresses,
+				bindings:  indexBindings(scan.bindings),
+				loadRoots: roots,
+			},
 		})
 	}
 
-	modules := make([]string, 0, len(prog.files))
-	for _, f := range prog.files {
-		modules = append(modules, f.module)
+	build := buildScripts(parsed)
+	modules := make([]string, 0, len(parsed))
+	for i, pf := range parsed {
+		// A build script is still the project's own code, so its module stays first-party.
+		modules = append(modules, pf.parse.module)
+		if build[i] {
+			continue
+		}
+		if pf.opaque {
+			prog.dynamicImportOpaque = true
+		}
+		for _, fd := range pf.funcs {
+			prog.funcsByName[fd.name] = append(prog.funcsByName[fd.name], fd)
+		}
+		prog.files = append(prog.files, pf.parse)
 	}
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
@@ -158,6 +175,100 @@ func loadProgram(buildDir string) (*program, error) {
 		firstParty: firstPartyTops(modules),
 	}
 	return prog, nil
+}
+
+// parsedFile is one file's parse before loadProgram decides whether it is runtime code.
+type parsedFile struct {
+	path    string
+	funcs   []funcDecl
+	opaque  bool            // a dynamic import whose module the scanner cannot name
+	imports map[string]bool // top-level modules its absolute import statements name
+	parse   fileParse
+}
+
+// buildScriptBackends maps a packaging build script's file name to the build backends one
+// of which it must import to count as that script.
+var buildScriptBackends = map[string][]string{
+	"setup.py":       {"setuptools", "distutils"},
+	"hatch_build.py": {"hatchling"},
+}
+
+// buildScripts returns the indexes of the parsed files that are packaging build scripts:
+// a file named in buildScriptBackends that imports one of its backends and does not sit in
+// a regular package (no __init__.py beside it). Build scripts run when the project is
+// built, not when it runs, so their imports and calls are not runtime code.
+//
+// Leaving a file out can only make the program look like it loads less, so a script stays
+// in whenever runtime code could still load it: another file imports its module name (by
+// statement or literal dynamic import), or any other file has a dynamic import the scanner
+// cannot name.
+func buildScripts(parsed []parsedFile) map[int]bool {
+	build := map[int]bool{}
+	for i, pf := range parsed {
+		backends, ok := buildScriptBackends[filepath.Base(pf.path)]
+		if !ok {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(pf.path), "__init__.py")); err == nil {
+			continue
+		}
+		for _, b := range backends {
+			if pf.imports[b] {
+				build[i] = true
+			}
+		}
+	}
+	if len(build) == 0 {
+		return nil
+	}
+	for i, pf := range parsed {
+		if !build[i] && pf.opaque {
+			return nil
+		}
+	}
+	for i := range build {
+		stem := strings.TrimSuffix(filepath.Base(parsed[i].path), ".py")
+		for j, pf := range parsed {
+			if j != i && (pf.imports[stem] || slices.ContainsFunc(pf.parse.loadRoots, func(r string) bool {
+				top, _, _ := strings.Cut(r, ".")
+				return top == stem
+			})) {
+				delete(build, i)
+				break
+			}
+		}
+	}
+	return build
+}
+
+// importedTops returns the top-level module of every absolute import statement in lines,
+// star imports included (`from m import *` names m though it binds nothing listable).
+func importedTops(lines []logicalLine) map[string]bool {
+	tops := map[string]bool{}
+	for _, ll := range lines {
+		for _, stmt := range strings.Split(ll.text, ";") {
+			kw, rest := firstWord(strings.TrimSpace(stmt))
+			var paths []string
+			switch kw {
+			case "import":
+				for _, item := range splitImportList(rest) {
+					path, _ := splitAlias(item)
+					paths = append(paths, path)
+				}
+			case "from":
+				from, _, ok := strings.Cut(strings.TrimSpace(rest), " ")
+				if ok {
+					paths = append(paths, from)
+				}
+			}
+			for _, p := range paths {
+				if top, _, _ := strings.Cut(p, "."); isDottedName(p) && top != "" {
+					tops[top] = true
+				}
+			}
+		}
+	}
+	return tops
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init

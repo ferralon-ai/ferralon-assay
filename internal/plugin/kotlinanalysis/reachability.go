@@ -24,6 +24,8 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 //     plus each main owner's companion initializers) is the whole-program root and the ONLY root that licenses a cleared sink. A sink is listed
 //     in Searched only when at least one main exists, the sink is a concrete method in loaded
 //     bytecode, and every root's search (main and framework) was a hazard-free empty search.
+//     Every first-party class root and build/libs JAR must also have been listed and read in
+//     full (program.loadFailed): code that was not read may call any sink.
 //   - framework ingress roots (frameworkIngressRefs) add a candidate path or undetermined,
 //     never a cleared sink on their own.
 //   - no main → no_whole_program_root + reachability_undetermined for any sink not found;
@@ -73,7 +75,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	all := make([]classfile.Class, 0, len(prog.classes)+len(deps.classes))
 	all = append(all, prog.classes...)
 	all = append(all, deps.classes...)
-	engine := depreach.NewEngine(all)
+	cp := prog.cp
+	cp.Merge(deps.cp)
+	engine := depreach.NewEngineOn(all, cp)
 	concrete := concreteMethods(all)
 
 	// Roots are first-party mains plus the launch main class a start script names. Any other
@@ -110,7 +114,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		case len(mains) == 0:
 			prog.reasons[partialReasonNoWholeProgramRoot] = true
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
-		case out.undetermined || !concrete[sink.String()] || multiProject || len(deps.reasons) > 0:
+		case out.undetermined || !concrete[sink.String()] || multiProject || len(deps.reasons) > 0 || prog.loadFailed:
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true

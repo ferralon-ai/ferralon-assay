@@ -10,7 +10,7 @@ import (
 
 // Engine is a class-hierarchy (CHA) call graph over a set of parsed classes: the
 // application code plus every dependency JAR whose bytecode was loaded. Classes
-// outside this set split two ways (isPlatformClass): JDK platform classes are
+// outside this set split two ways (platform): JDK platform classes are
 // out-of-classpath leaves guarded by the re-entry rule, and every other unloaded
 // class — a dependency whose bytecode was never opened — is a completeness hazard,
 // because its body could reach the sink. Both are handled in resolveTargets.
@@ -27,6 +27,8 @@ type Engine struct {
 	overridable map[string]bool              // hasOverridable cache
 	loadable    map[string]bool              // platformLoadable cache
 	lambdas     map[string][]lambdaSite      // interface a lambda object implements -> its sites
+	defined     map[string]bool              // packages a classpath entry defines a class in
+	unlisted    bool                         // a classpath entry could not be listed
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -38,9 +40,24 @@ type lambdaSite struct {
 	handle classfile.MethodHandle
 }
 
+// Classpath is what the analysed classpath defines beyond the classes handed to the engine.
+type Classpath struct {
+	// Packages holds every package some classpath entry (a JAR or class directory, opened or
+	// not) defines a class in.
+	Packages map[string]bool
+	// Unlisted is set when some entry could not be listed: it may define any package.
+	Unlisted bool
+}
+
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
 // retained by pointer, so callers must not mutate it afterwards.
 func NewEngine(classes []classfile.Class) *Engine {
+	return NewEngineOn(classes, Classpath{})
+}
+
+// NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The
+// packages of the classes themselves always count as defined by the classpath.
+func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 	e := &Engine{
 		classes:     make(map[string]*classfile.Class, len(classes)),
 		declared:    map[string]*classfile.Method{},
@@ -48,10 +65,18 @@ func NewEngine(classes []classfile.Class) *Engine {
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
+		defined:     map[string]bool{},
+		unlisted:    cp.Unlisted,
+	}
+	for p := range cp.Packages {
+		e.defined[p] = true
 	}
 	for i := range classes {
 		c := &classes[i]
 		e.classes[c.Name] = c
+		if j := strings.LastIndexByte(c.Name, '/'); j > 0 {
+			e.defined[c.Name[:j]] = true
+		}
 		for j := range c.Methods {
 			e.declared[c.Methods[j].Ref.String()] = &c.Methods[j]
 			for _, edge := range c.Methods[j].Edges {
@@ -168,7 +193,7 @@ func (e *Engine) resolveField(owner, name, desc string, seen map[string]bool) (d
 	seen[owner] = true
 	c := e.classes[owner]
 	if c == nil {
-		return "", isPlatformClass(owner)
+		return "", e.platform(owner)
 	}
 	for _, f := range c.Fields {
 		if f.Name == name && f.Descriptor == desc {
@@ -306,11 +331,31 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 // platform class — an opened-never dependency whose bytecode could hide the sink.
 func (e *Engine) unloadedDependency(names []string) (string, bool) {
 	for _, n := range names {
-		if _, loaded := e.classes[n]; !loaded && !isPlatformClass(n) {
+		if _, loaded := e.classes[n]; !loaded && !e.platform(n) {
 			return n, true
 		}
 	}
 	return "", false
+}
+
+// platform reports whether class name is the runtime's own. java/ always is, since the JVM
+// refuses to define a java/ class from any other loader, and so are array pseudo-classes.
+// Any other class is the platform's only when isPlatformClass lists its package and nothing
+// on the analysed classpath defines a class in that package. A runtime image without the
+// module (a JRE lacks jdk.compiler, and JDK 8 has no modules) loads the package from the
+// class path, as errorprone's javac jar shipping com/sun/tools/javac shows, and a classpath
+// that could not be listed in full may define any package.
+func (e *Engine) platform(name string) bool {
+	if strings.HasPrefix(name, "[") || strings.HasPrefix(name, "java/") {
+		return true
+	}
+	if e.unlisted {
+		return false
+	}
+	if i := strings.LastIndexByte(name, '/'); i > 0 && e.defined[name[:i]] {
+		return false
+	}
+	return isPlatformClass(name)
 }
 
 // isPlatformClass reports whether an internal class name belongs to the Java
@@ -1060,7 +1105,7 @@ func (e *Engine) loadableType(t string) bool {
 	if _, ok := e.classes[t]; ok {
 		return e.platformLoadable(t)
 	}
-	if !isPlatformClass(t) {
+	if !e.platform(t) {
 		return true
 	}
 	simple := t[strings.LastIndex(t, "/")+1:]
@@ -1123,7 +1168,7 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 	}
 	o := edge.To.Owner
 	if _, ok := e.classes[o]; !ok {
-		return platformBody(o)
+		return e.platformBody(o)
 	}
 	owners := []string{o}
 	if edge.Kind == classfile.EdgeVirtual || edge.Kind == classfile.EdgeInterface {
@@ -1132,7 +1177,7 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 	for _, c := range owners {
 		if m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor); m == nil {
 			for _, u := range unloaded {
-				if platformBody(u) {
+				if e.platformBody(u) {
 					return true
 				}
 			}
@@ -1143,8 +1188,8 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 
 // platformBody reports whether a body owned by unloaded class o is JDK code other
 // than java/lang/Object's or an array pseudo-class's.
-func platformBody(o string) bool {
-	return isPlatformClass(o) && o != objectClass && !strings.HasPrefix(o, "[")
+func (e *Engine) platformBody(o string) bool {
+	return e.platform(o) && o != objectClass && !strings.HasPrefix(o, "[")
 }
 
 // Verdict is the three-valued reachability outcome. Its meaning is exactly the Go
@@ -1253,7 +1298,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	// every <clinit> in its init closure. A platform class's initializer is a JDK body;
 	// an unloaded dependency's is unseen code and a hazard.
 	initialize := func(from classfile.MethodRef, owner string) {
-		if !rooted && platformBody(owner) {
+		if !rooted && e.platformBody(owner) {
 			root(from)
 		}
 		for _, cls := range e.initClosure(owner) {
@@ -1431,4 +1476,25 @@ func PathString(path []classfile.MethodRef) string {
 		parts[i] = fmt.Sprintf("%s.%s%s", owner, m.Name, m.Descriptor)
 	}
 	return strings.Join(parts, " -> ")
+}
+
+// Add records one classpath entry's listing (classfile.ClasspathPackages): its packages, or,
+// when it could not be listed, that the classpath may define any package.
+func (cp *Classpath) Add(pkgs map[string]bool, listed bool) {
+	if !listed {
+		cp.Unlisted = true
+		return
+	}
+	if cp.Packages == nil {
+		cp.Packages = map[string]bool{}
+	}
+	for p := range pkgs {
+		cp.Packages[p] = true
+	}
+}
+
+// Merge adds everything other records.
+func (cp *Classpath) Merge(other Classpath) {
+	cp.Add(other.Packages, true)
+	cp.Unlisted = cp.Unlisted || other.Unlisted
 }

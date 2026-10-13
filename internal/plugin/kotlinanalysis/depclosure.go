@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -71,6 +72,9 @@ type depClosure struct {
 	// mainClasses are the launch main classes the start scripts name; empty when the
 	// closure came from the inventory.
 	mainClasses []string
+	// cp lists what every classpath JAR defines, opened or not; a JAR that is missing or
+	// cannot be listed leaves it unlisted.
+	cp depreach.Classpath
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
 	// no empty search is Searched: the inventory's graph reasons (inventoryReasons), or a
 	// JVM launch option the lanes do not model (javaanalysis.LaunchOptionReasons).
@@ -123,6 +127,7 @@ func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]b
 	}
 	load, misses := g.runtimeSelection(locks)
 	for _, m := range misses {
+		dc.cp.Unlisted = true // no version is selected, so no JAR is listed
 		dc.scoped = append(dc.scoped, plugin.ScopedReason{
 			Reason:  partialReasonRuntimeVersionAmbiguous,
 			Package: m.node.packageURL(),
@@ -140,8 +145,20 @@ func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]b
 			jarPath, ok = LocateDependencyJar(buildDir, n.coordinate(), n.version)
 		}
 		if !ok {
+			dc.cp.Unlisted = true
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{
 				Reason:  partialReasonMissingJar,
+				Package: n.packageURL(),
+				Path:    n.gav(),
+				Targets: targets(n),
+			})
+			continue
+		}
+		pkgs, listed := classfile.ClasspathPackages(jarPath, buildDir)
+		dc.cp.Add(pkgs, listed)
+		if !listed {
+			dc.scoped = append(dc.scoped, plugin.ScopedReason{
+				Reason:  plugin.PartialReasonToolFailure,
 				Package: n.packageURL(),
 				Path:    n.gav(),
 				Targets: targets(n),
@@ -218,10 +235,17 @@ func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[s
 		}
 		jar, ok := locateClasspathJar(buildDir, rc, index, name)
 		if !ok {
+			dc.cp.Unlisted = true
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: partialReasonMissingJar, Package: cacheOnlyPackage(index[name]), Path: "classpath: " + name})
 			continue
 		}
 		pkg := jar.packageURL()
+		pkgs, listed := classfile.ClasspathPackages(jar.path, buildDir)
+		dc.cp.Add(pkgs, listed)
+		if !listed {
+			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonToolFailure, Package: pkg, Path: "classpath: " + name})
+			continue
+		}
 		jr, err := classfile.LoadJar(jar.path)
 		if err != nil {
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonToolFailure, Package: pkg, Path: "classpath: " + name})

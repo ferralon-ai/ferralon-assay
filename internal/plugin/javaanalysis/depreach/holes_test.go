@@ -17,6 +17,7 @@ type holeCase struct {
 	kind    string // a hazard kind the frontier must meet (Undetermined rows)
 	why     string // a substring of some hazard reason the row pins (optional)
 	via     string // a method the found path must pass through (ReachableCandidate rows)
+	cp      Classpath
 }
 
 const holeMain = "com/acme/Main"
@@ -51,7 +52,7 @@ func runHoleCases(t *testing.T, cases []holeCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewEngine(append(tc.classes, urlFetcherDep())).Reach(holeIngress, holeSink)
+			r := NewEngineOn(append(tc.classes, urlFetcherDep()), tc.cp).Reach(holeIngress, holeSink)
 			if r.Verdict != tc.want {
 				t.Fatalf("verdict = %s, want %s (hazard=%q kinds=%v path=%s)", r.Verdict, tc.want, r.HazardWhy, r.HazardKinds, PathString(r.Path))
 			}

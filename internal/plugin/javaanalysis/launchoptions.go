@@ -1012,8 +1012,9 @@ var (
 
 // testScope reports whether off configures only a test task, and where that configuration
 // ends. In a Gradle script the innermost block holding off decides: it must be a test task's
-// block, so a run or bootRun block nested anywhere inside one is not test configuration. In a
-// POM, off must lie in a Surefire or Failsafe plugin element.
+// block, so a run or bootRun block nested anywhere inside one is not test configuration, and
+// the setting must be the test task's own (see testReceiver). In a POM, off must lie in a
+// Surefire or Failsafe plugin element.
 func (f *launchFile) testScope(off int) (int, bool) {
 	if f.braces == nil {
 		return rangeEnd(f.testScopes, off)
@@ -1024,8 +1025,52 @@ func (f *launchFile) testScope(off int) (int, bool) {
 			open, end = o, c
 		}
 	}
-	return end, open >= 0 && f.testOpens[open]
+	return end, open >= 0 && f.testOpens[open] && testReceiver(f.data, off)
 }
+
+// testReceiver reports whether the setting named at off is called on the enclosing task: bare,
+// or through it. or this. Any other receiver (tasks.run.get(), run, tasks.getByName("run"),
+// project.tasks.findByName("bootRun"), foo) configures a different task from inside the
+// block, whatever its name.
+func testReceiver(data []byte, off int) bool {
+	i := off
+	for i > 0 && isGradleSpace(data[i-1]) {
+		i--
+	}
+	if i == 0 || data[i-1] != '.' {
+		return statementStart(data, off)
+	}
+	for _, r := range []string{"it", "this"} {
+		if k := i - 1 - len(r); k >= 0 && string(data[k:i-1]) == r && statementStart(data, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// statementStart reports whether an expression starting at i begins a statement: only
+// whitespace separates it from an opening or closing brace or a semicolon, or from the end
+// of a line whose last character can end a statement.
+func statementStart(data []byte, i int) bool {
+	newline := false
+	for i > 0 && isGradleSpace(data[i-1]) {
+		newline = newline || data[i-1] == '\n'
+		i--
+	}
+	if i == 0 {
+		return true
+	}
+	switch c := data[i-1]; {
+	case c == '{' || c == '}' || c == ';':
+		return true
+	case c == ')' || c == ']' || c == '"' || c == '\'' || c == '`' || c == '_' || c == '$' || c >= 0x80 ||
+		'0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z':
+		return newline
+	}
+	return false
+}
+
+func isGradleSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
 // surefireScopes returns the byte ranges of a POM's Surefire and Failsafe <plugin> elements.
 func (f *launchFile) surefireScopes() [][2]int {

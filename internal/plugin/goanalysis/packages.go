@@ -200,53 +200,18 @@ func goflagsTags(env []string) []string {
 // scan's own GOOS and the common ports, and counts when no port lists it cleanly; an unloaded
 // import from any module counts outright.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, buildDir string, env []string) bool {
-	loaded := map[string]*packages.Package{}
-	modules := map[string]bool{}
-	packages.Visit(pkgs, nil, func(p *packages.Package) {
-		loaded[p.PkgPath] = p
-		if p.Module != nil {
-			modules[p.Module.Path] = true
-		}
-	})
+	reach := newModuleReach(pkgs, module, vulnerable)
 	stdlib := module == "stdlib"
-	// inModule reports whether the package at path, loaded as p or not loaded (nil), is one of the
-	// refuted module's packages that count.
-	inModule := func(path string, p *packages.Package) bool {
-		if !stdlib {
-			return underModule(path, module) || (p != nil && p.Module != nil && p.Module.Path == module)
-		}
-		if (p != nil && p.Module != nil) || !isStdlibPath(path, modules) {
-			return false
-		}
-		return len(vulnerable) == 0 || slices.Contains(vulnerable, path)
-	}
-	reaches := map[*packages.Package]bool{}
-	var reachesModule func(p *packages.Package) bool
-	reachesModule = func(p *packages.Package) bool {
-		if v, ok := reaches[p]; ok {
-			return v
-		}
-		reaches[p] = false
-		v := inModule(p.PkgPath, p)
-		for _, imp := range p.Imports {
-			if v {
-				break
-			}
-			v = reachesModule(imp)
-		}
-		reaches[p] = v
-		return v
-	}
 	var graph modGraph
 	var graphErr error
 	graphRead := false
 	deps := importGraph{}
 	listed := map[string]bool{}
 	mayCall := func(imp string) bool {
-		if p, ok := loaded[imp]; ok {
-			return reachesModule(p)
+		if p, ok := reach.loaded[imp]; ok {
+			return reach.reachesModule(p)
 		}
-		if inModule(imp, nil) {
+		if reach.inModule(imp, nil) {
 			return true
 		}
 		if imp == "C" {
@@ -255,7 +220,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if stdlib {
 			// Which imports a module's package resolves turns on the left-out file's own tags and
 			// GOOS, which no listing here reproduces, so any module the build did not load counts.
-			if !isStdlibPath(imp, modules) {
+			if !isStdlibPath(imp, reach.modules) {
 				return true
 			}
 			clean, ok := listed[imp]
@@ -263,9 +228,9 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 				clean = deps.list(ctx, buildDir, env, imp)
 				listed[imp] = clean
 			}
-			return !clean || deps.reaches(imp, func(path string) bool { return inModule(path, loaded[path]) })
+			return !clean || deps.reaches(imp, func(path string) bool { return reach.inModule(path, reach.loaded[path]) })
 		}
-		if isStdlibPath(imp, modules) {
+		if isStdlibPath(imp, reach.modules) {
 			return false
 		}
 		if !graphRead {
@@ -275,7 +240,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		if graphErr != nil {
 			return true
 		}
-		owner := graph.owner(imp, modules)
+		owner := graph.owner(imp, reach.modules)
 		return owner == "" || underModule(module, owner) || graph.requires(owner, module)
 	}
 
@@ -316,6 +281,63 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 		mainDir = buildDir
 	}
 	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+}
+
+// moduleReach answers, over the load's own import graph, whether a package is or imports one of a
+// refuted module's packages that count. For the standard library those are its vulnerable packages
+// (vulnerable, or every standard-library package when that is empty).
+type moduleReach struct {
+	module     string
+	vulnerable []string
+	loaded     map[string]*packages.Package
+	modules    map[string]bool
+	reaches    map[*packages.Package]bool
+}
+
+func newModuleReach(pkgs []*packages.Package, module string, vulnerable []string) *moduleReach {
+	r := &moduleReach{
+		module:     module,
+		vulnerable: vulnerable,
+		loaded:     map[string]*packages.Package{},
+		modules:    map[string]bool{},
+		reaches:    map[*packages.Package]bool{},
+	}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		r.loaded[p.PkgPath] = p
+		if p.Module != nil {
+			r.modules[p.Module.Path] = true
+		}
+	})
+	return r
+}
+
+// inModule reports whether the package at path, loaded as p or not loaded (nil), is one of the
+// refuted module's packages that count.
+func (r *moduleReach) inModule(path string, p *packages.Package) bool {
+	if r.module != "stdlib" {
+		return underModule(path, r.module) || (p != nil && p.Module != nil && p.Module.Path == r.module)
+	}
+	if (p != nil && p.Module != nil) || !isStdlibPath(path, r.modules) {
+		return false
+	}
+	return len(r.vulnerable) == 0 || slices.Contains(r.vulnerable, path)
+}
+
+// reachesModule reports whether p, or a package it imports directly or through others, counts.
+func (r *moduleReach) reachesModule(p *packages.Package) bool {
+	if v, ok := r.reaches[p]; ok {
+		return v
+	}
+	r.reaches[p] = false
+	v := r.inModule(p.PkgPath, p)
+	for _, imp := range p.Imports {
+		if v {
+			break
+		}
+		v = r.reachesModule(imp)
+	}
+	r.reaches[p] = v
+	return v
 }
 
 // importGraph is a package import graph `go list -deps` resolves, unioned over every port it ran for.

@@ -141,6 +141,9 @@ func TestResolveVersions_ExhaustiveCondaRecipe(t *testing.T) {
 		{"conda.yaml", map[string]string{"conda.yaml": recipe}, false},
 		{"conda.yml", map[string]string{"conda.yml": recipe}, false},
 		{"nested recipe", map[string]string{"conda/recipe/meta.yaml": recipe}, false},
+		{"META.YAML", map[string]string{"META.YAML": recipe}, false},
+		{"Meta.yml", map[string]string{"Meta.yml": recipe}, false},
+		{"Recipe.yaml", map[string]string{"Recipe.yaml": recipe}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

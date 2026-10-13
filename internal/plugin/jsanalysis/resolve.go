@@ -2,10 +2,12 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -76,7 +78,8 @@ func unresolvedWith(reason string) resolution {
 
 // Resolver resolves lexical names in a module's scope to concrete in-tree declarations,
 // using that module's bindings + the CJS/ESM/exports/imports/paths algorithm over the
-// whole-program index. It never opens node_modules and never executes source.
+// whole-program index. It never opens node_modules source (it reads an installed
+// package.json for its exports map) and never executes source.
 type Resolver interface {
 	// ResolveCall resolves a bare call `name(arity)` occurring in fromModule.
 	ResolveCall(fromModule string, name string, arity int) resolution
@@ -222,6 +225,155 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		}
 	}
 	return len(targets) == 0
+}
+
+// loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an
+// exports/imports conditions map with a key outside loadConditions: a `#…` subpath import
+// (and any package it maps to), or the exports of the package a bare specifier names (a
+// workspace member, the governing package itself, or the installed package Node's
+// node_modules walk finds). Node can select that branch (`node --conditions=development`),
+// loading a file whose calls the lane did not follow, so the load alone does not bound what
+// runs (tracker#184 item 4). A tsconfig `paths` alias does not end the check: tsc does not
+// rewrite the specifier, so at run time Node resolves it itself. Only the manifest is read;
+// an uninstalled package has none, and one that cannot be read safely keeps the limit.
+func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
+	conds := loadConditions(false)
+	switch {
+	case isRelativeSpecifier(spec):
+		return false
+	case strings.HasPrefix(spec, "#"):
+		pkg, _ := rs.governingPackageJSON(fromModule)
+		if pkg == nil || pkg.imports == nil {
+			return false
+		}
+		if subpathHasUnmodeledCondition(pkg.imports, spec, conds) {
+			return true
+		}
+		for _, t := range exportsTargets(pkg.imports, spec, conds) {
+			if !isRelativeSpecifier(t) && !strings.HasPrefix(t, "#") && rs.loadMeetsUnmodeledCondition(fromModule, t) {
+				return true
+			}
+		}
+		return false
+	}
+	if _, mm, sub, ok := rs.workspaceMember(spec); ok {
+		return mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+	}
+	name, sub := splitBareSpecifier(spec)
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
+		return subpathHasUnmodeledCondition(self.exports, sub, conds)
+	}
+	mm, unsafe := rs.installedManifest(fromModule, name)
+	if unsafe {
+		return true
+	}
+	return mm != nil && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+}
+
+// maxInstalledManifest bounds the read of an installed package.json.
+const maxInstalledManifest = 1 << 20
+
+// installedManifest returns the package.json of npm package name that Node's node_modules
+// walk from fromModule's directory finds, or nil when none is installed. unsafe reports a
+// candidate it will not read: one whose real path leaves the build root, that is not a
+// regular file, or that exceeds maxInstalledManifest, and one whose stat fails with an error
+// other than a missing path.
+func (rs *resolver) installedManifest(fromModule, name string) (mm *pkgManifest, unsafe bool) {
+	if name == "" || strings.ContainsAny(name, `\:`) || strings.Count(name, "/") > 1 || strings.Contains(name, "..") ||
+		(strings.Contains(name, "/") && !strings.HasPrefix(name, "@")) {
+		return nil, false
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if path.Base(dir) != "node_modules" {
+			full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name), "package.json")
+			_, err := os.Lstat(full)
+			switch {
+			case err == nil:
+				data, ok := readInRoot(rs.prog.root, full, maxInstalledManifest)
+				if !ok {
+					return nil, true
+				}
+				return parsePkgManifest(data), false
+			case !absent(err):
+				return nil, true
+			}
+		}
+		if dir == "" {
+			return nil, false
+		}
+		dir = path.Dir(dir)
+	}
+}
+
+// readInRoot reads file when its real path lies under root's real path, it is a regular
+// file, and it holds at most limit bytes; otherwise it reports false.
+func readInRoot(root, file string, limit int64) ([]byte, bool) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, false
+	}
+	real, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return nil, false
+	}
+	if rel, err := filepath.Rel(realRoot, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, false
+	}
+	// O_NONBLOCK keeps a FIFO from blocking the open; the fstat then rejects it.
+	f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil, false
+	}
+	return data, true
+}
+
+// subpathHasUnmodeledCondition reports whether any conditions map exportsTargets would walk
+// for subpath has a key outside conds.
+func subpathHasUnmodeledCondition(field interface{}, subpath string, conds map[string]bool) bool {
+	m, isMap := field.(map[string]interface{})
+	if !isMap || isConditionsMap(m) {
+		return subpath == "." && hasUnmodeledCondition(field, conds)
+	}
+	if node, ok := m[subpath]; ok {
+		return hasUnmodeledCondition(node, conds)
+	}
+	for key, node := range m {
+		prefix, suffix, ok := strings.Cut(key, "*")
+		if ok && len(subpath) >= len(prefix)+len(suffix) && strings.HasPrefix(subpath, prefix) && strings.HasSuffix(subpath, suffix) && hasUnmodeledCondition(node, conds) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUnmodeledCondition(node interface{}, conds map[string]bool) bool {
+	switch v := node.(type) {
+	case []interface{}:
+		for _, e := range v {
+			if hasUnmodeledCondition(e, conds) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for k, sub := range v {
+			if !conds[k] || hasUnmodeledCondition(sub, conds) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // loadConditions is the set of exports/imports conditions a load can match under Node's
@@ -589,7 +741,8 @@ func stripJSExt(p string) string {
 	return p
 }
 
-// --- package.json / tsconfig loading (metadata only; never node_modules) ---
+// --- package.json / tsconfig loading (metadata only; never node_modules source, which
+// installedManifest reads only for an installed package.json's exports map) ---
 
 // pkgManifest is the resolver's view of a package.json: identity, module type, and the
 // raw exports/imports maps (interpreted by resolveExportsField).

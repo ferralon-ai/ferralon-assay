@@ -78,6 +78,68 @@ load(process.argv[2]);
 			"packages/m/package.json": `{"name":"m","exports":{".":{"import":"./src/index.js","require":"./lib/index.cjs"}}}`,
 			"packages/m/src/index.js": "export function parse(s) { return s; }\n",
 		}},
+		{"literal import() of an imports entry with a development branch to a package", `
+async function load(s) { const m = await import('#cfg'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","dependencies":{"json5":"2.2.1"},"imports":{"#cfg":{"development":"json5","default":"./plugins/index.js"}}}`,
+		}},
+		{"literal import() of a workspace member with a development export", `
+async function load(s) { const m = await import('m'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":            `{"name":"fixture","workspaces":["packages/*"],"dependencies":{"json5":"2.2.1"}}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dev.js","default":"./src/index.js"}}}`,
+			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+		}},
+		{"literal import() of an installed package whose development export reaches the symbol", `
+async function load(s) { const m = await import('cfg'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":                  `{"name":"fixture","dependencies":{"cfg":"1.0.0","json5":"2.2.1"}}`,
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
+			"node_modules/cfg/dev.js":       "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+			"node_modules/cfg/prod.js":      "exports.parse = (s) => s;\n",
+		}},
+		{"literal import() of a self-reference with a development export", `
+async function load(s) { const m = await import('fixture'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","dependencies":{"json5":"2.2.1"},"exports":{".":{"development":"./dev.js","default":"./plugins/index.js"}}}`,
+		}},
+		{"literal import() of a workspace member a tsconfig paths alias shadows", `
+async function load(s) { const m = await import('m'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":            `{"name":"fixture","workspaces":["packages/*"],"dependencies":{"json5":"2.2.1"}}`,
+			"tsconfig.json":           `{"compilerOptions":{"baseUrl":".","paths":{"m":["packages/m/src/index.js"]}}}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dist/dev.js","default":"./src/index.js"}}}`,
+			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+		}},
+		{"literal import() of an installed package a tsconfig paths alias shadows", `
+async function load(s) { const m = await import('cfg'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"tsconfig.json":                 `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["plugins/index.js"]}}}`,
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
+			"node_modules/cfg/dev.js":       "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+		}},
+		{"literal import() of a self-reference a tsconfig paths alias shadows", `
+async function load(s) { const m = await import('fixture'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":  `{"name":"fixture","dependencies":{"json5":"2.2.1"},"exports":{".":{"development":"./dist/dev.js","default":"./plugins/index.js"}}}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"fixture":["plugins/index.js"]}}}`,
+		}},
+		{"literal import() of an imports entry mapped to a workspace member a tsconfig paths alias shadows", `
+async function load(s) { const m = await import('#m'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":            `{"name":"fixture","workspaces":["packages/*"],"dependencies":{"json5":"2.2.1"},"imports":{"#m":"m"}}`,
+			"tsconfig.json":           `{"compilerOptions":{"baseUrl":".","paths":{"m":["packages/m/src/index.js"]}}}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dist/dev.js","default":"./src/index.js"}}}`,
+			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+		}},
 		{"require reached by a string key", `
 const j = module['require']('json5');
 function load(s) { return j.parse(s); }

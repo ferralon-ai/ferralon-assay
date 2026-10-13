@@ -83,7 +83,24 @@ type handlerExpr struct {
 // function passed to a route method or server factory gets its own frame, an ingress,
 // and an edge from the frame that registered it.
 func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
+	calls, ingresses, _ := parseCallsAndIngressesProbing(r, nil)
+	return calls, ingresses
+}
+
+// frameRef names one scanned frame: a declared function, an inline handler, or the
+// module's top-level frame.
+type frameRef struct {
+	enclosing []string
+	name      string
+	arity     int
+}
+
+// parseCallsAndIngressesProbing is parseCallsAndIngresses that also reports, for each
+// position in probes (ascending rune indexes), the frame the scan was in when it reached
+// that position.
+func parseCallsAndIngressesProbing(r []rune, probes []int) ([]callSite, []ingressMarker, []frameRef) {
 	n := len(r)
+	var probed []frameRef
 	var stack []bodyFrame
 	var calls []callSite
 	var ingresses []ingressMarker
@@ -161,6 +178,10 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 	for i < n {
 		for len(stack) > 0 && stack[len(stack)-1].end > 0 && i >= stack[len(stack)-1].end {
 			stack = stack[:len(stack)-1]
+		}
+		for len(probed) < len(probes) && probes[len(probed)] <= i {
+			m := innermostFunc()
+			probed = append(probed, frameRef{enclosing: append([]string(nil), m.enclosing...), name: m.funcName, arity: m.funcArity})
 		}
 		if h, ok := pending[i]; ok {
 			delete(pending, i)
@@ -305,7 +326,11 @@ func parseCallsAndIngresses(r []rune) ([]callSite, []ingressMarker) {
 			i++
 		}
 	}
-	return calls, ingresses
+	for len(probed) < len(probes) {
+		m := innermostFunc()
+		probed = append(probed, frameRef{enclosing: append([]string(nil), m.enclosing...), name: m.funcName, arity: m.funcArity})
+	}
+	return calls, ingresses, probed
 }
 
 // skipImportStatement advances past an `import` statement's remainder, starting just

@@ -477,3 +477,25 @@ func TestValidatorInvariants(t *testing.T) {
 		})
 	}
 }
+
+// TestCurated_NamespaceRootsAreAmbiguous: azure and botframework are PEP 420 roots several
+// published wheels share, so the curated rows name leaves and the bare root reverses to every
+// distribution under it (ambiguous, attributes nothing) while each leaf names exactly one.
+func TestCurated_NamespaceRootsAreAmbiguous(t *testing.T) {
+	m := NewDistImportMap(CuratedContributions()...)
+	cases := []struct {
+		pkg  string
+		want []string
+	}{
+		{"azure", []string{"azure-core", "azure-identity", "azure-search-documents"}},
+		{"azure.identity", []string{"azure-identity"}},
+		{"azure.search.documents", []string{"azure-search-documents"}},
+		{"botframework", []string{"botframework-connector", "botframework-streaming"}},
+		{"botframework.connector", []string{"botframework-connector"}},
+	}
+	for _, c := range cases {
+		if got := m.Reverse(c.pkg); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Reverse(%q) = %v, want %v", c.pkg, got, c.want)
+		}
+	}
+}

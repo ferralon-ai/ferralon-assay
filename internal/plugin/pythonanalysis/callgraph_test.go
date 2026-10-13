@@ -292,6 +292,34 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 			boundary: "pypi:pyjwt#jwt.decode",
 		},
 		{
+			name:     "curated non-identity python-dotenv",
+			files:    map[string]string{"app.py": "from dotenv import load_dotenv\n\ndef boot(p):\n    return load_dotenv(p)\n"},
+			caller:   funcSCIP("app", nil, "boot", 1),
+			boundary: "pypi:python-dotenv#dotenv.load_dotenv",
+		},
+		{
+			name:     "curated non-identity teams-ai",
+			files:    map[string]string{"app.py": "import teams\n\ndef boot(o):\n    return teams.Application(o)\n"},
+			caller:   funcSCIP("app", nil, "boot", 1),
+			boundary: "pypi:teams-ai#teams.Application",
+		},
+		{
+			name: "azure namespace root names no single distribution",
+			files: map[string]string{
+				"requirements.txt": "azure-identity==1.26.0\n",
+				"app.py":           "from azure.identity import DefaultAzureCredential\n\ndef cred(o):\n    return DefaultAzureCredential(o)\n",
+			},
+			caller: funcSCIP("app", nil, "cred", 1),
+		},
+		{
+			name: "botframework namespace root names no single distribution",
+			files: map[string]string{
+				"requirements.txt": "botframework-connector==4.17.1\n",
+				"app.py":           "from botframework.connector import ConnectorClient\n\ndef client(o):\n    return ConnectorClient(o)\n",
+			},
+			caller: funcSCIP("app", nil, "client", 1),
+		},
+		{
 			name: "first-party module shadows the distribution",
 			files: map[string]string{
 				"jwt.py": "def decode(t):\n    return t\n",

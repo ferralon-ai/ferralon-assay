@@ -122,6 +122,58 @@ func CuratedContributions() []Contribution {
 			Source:        "python_jose-3.5.0-py2.py3-none-any.whl from pypi.org: sole top-level package jose/",
 			Date:          importBindingTableDate,
 		},
+		{
+			Distribution:  "python-dotenv",
+			ImportPackage: "dotenv",
+			Provenance:    ProvenanceCurated,
+			Source:        "python_dotenv-1.2.4-py3-none-any.whl from pypi.org: sole top-level package dotenv/ (RECORD, top_level.txt)",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "teams-ai",
+			ImportPackage: "teams",
+			Provenance:    ProvenanceCurated,
+			Source:        "teams_ai-1.8.2-py3-none-any.whl from pypi.org: RECORD top-level packages teams/ and tests/ (no top_level.txt); only teams/ is mapped, since tests/ is a name projects commonly use for their own code",
+			Date:          importBindingTableDate,
+		},
+		// azure and botframework are PEP 420 namespaces shared by several distributions, so
+		// each row names its leaf; Reverse on the bare root returns every distribution under
+		// it, which attributes nothing on its own.
+		{
+			Distribution:  "azure-core",
+			ImportPackage: "azure.core",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_core-1.41.0-py3-none-any.whl from pypi.org: RECORD top-level azure/ with no azure/__init__.py (namespace); package azure/core/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "azure-identity",
+			ImportPackage: "azure.identity",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_identity-1.26.0-py3-none-any.whl from pypi.org: RECORD top-level azure/ with no azure/__init__.py (namespace); package azure/identity/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "azure-search-documents",
+			ImportPackage: "azure.search.documents",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_search_documents-12.0.0-py3-none-any.whl from pypi.org: RECORD top-level azure/ with no azure/__init__.py (namespace); package azure/search/documents/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "botframework-connector",
+			ImportPackage: "botframework.connector",
+			Provenance:    ProvenanceCurated,
+			Source:        "botframework_connector-4.17.1-py2.py3-none-any.whl from pypi.org: RECORD top-level botframework/ with no botframework/__init__.py (namespace); package botframework/connector/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "botframework-streaming",
+			ImportPackage: "botframework.streaming",
+			Provenance:    ProvenanceCurated,
+			Source:        "botframework_streaming-4.17.1-py3-none-any.whl from pypi.org: RECORD top-level botframework/ with no botframework/__init__.py (namespace); package botframework/streaming/",
+			Date:          importBindingTableDate,
+		},
 	}
 }
 

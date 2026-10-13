@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,7 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 		"BUN.LOCKB case":        {"svc/BUN.LOCKB", "\x00bun"},
 		"Deno.JSON case":        {"svc/Deno.JSON", `{"imports": {}}`},
 		"templated name only":   {"svc/yarn.lock.tmpl", "{{ .Lock }}\n"},
+		"templated name case":   {"svc/PACKAGE-LOCK.JSON.tmpl", "{{ .Lock }}\n"},
 		"yarn v1 content":       {"svc/frozen-yarn", "# yarn lockfile v1\n\njson5@^2:\n  version \"2.2.3\"\n"},
 		"yarn berry content":    {"svc/frozen-berry", "__metadata:\n  version: 8\n"},
 	} {
@@ -90,20 +92,22 @@ func TestResolveVersions_ManifestCandidateVetoes(t *testing.T) {
 	}
 }
 
-// Each install surface name vetoes by its name alone, holding nothing its content would be
-// recognised by, in a directory the resolver's own walk does not enter.
+// Each install surface name vetoes by its name alone, in any case, holding nothing its content
+// would be recognised by, in a directory the resolver's own walk does not enter.
 func TestResolveVersions_SurfaceNameAloneVetoes(t *testing.T) {
 	for _, name := range []string{
 		"package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
 		"pnpm-lock.yml", "bun.lock", "bun.lockb", "deno.lock", "deno.json", "deno.jsonc",
 		"bower.json", "import_map.json",
 	} {
-		t.Run(name, func(t *testing.T) {
-			mustVetoedJS(t, writeLockTree(t, map[string]string{
-				"package-lock.json": rootLockJSON5,
-				"build/" + name:     "{}\n",
-			}), "json5")
-		})
+		for _, file := range []string{name, strings.ToUpper(name)} {
+			t.Run(file, func(t *testing.T) {
+				mustVetoedJS(t, writeLockTree(t, map[string]string{
+					"package-lock.json": rootLockJSON5,
+					"build/" + file:     "{}\n",
+				}), "json5")
+			})
+		}
 	}
 }
 

@@ -58,6 +58,8 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 		"build dir pyproject":   {"build/pyproject.toml", "[tool.ruff]\nline-length = 100\n"},
 		"requirements dir bare": {"requirements/prod.pip", "pyjwt\n"},
 		"templated tox":         {"svc/tox.ini.j2", "[testenv]\ndeps = {{ deps }}\n"},
+		"templated TOX.INI":     {"svc/TOX.INI.j2", "[testenv]\ndeps = {{ deps }}\n"},
+		"Pipfile tables":        {"svc/deps.toml", "[packages]\npyjwt = \"==2.10.0\"\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mustVetoedPy(t, writeTree(t, map[string]string{

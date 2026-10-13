@@ -19,6 +19,7 @@ func TestAdvisoryRangeAbsent_Projection(t *testing.T) {
 		{name: "fixed", ranges: []Range{{Introduced: "0", Fixed: "2.0.0"}}},
 		{name: "introduced above zero with a fix", ranges: []Range{{Introduced: "1.0.0", Fixed: "2.0.0"}}},
 		{name: "introduced zero only: every version", ranges: []Range{{Introduced: "0"}}},
+		{name: "introduced 0.0.0 only: every version", ranges: []Range{{Introduced: "0.0.0"}}},
 		{name: "scalar upper bound only", upper: "2.0.0"},
 		{name: "last_affected only", ranges: []Range{{Introduced: "0", LastAffected: "1.4.0"}}, wantAbsent: true},
 		{name: "introduced above zero only", ranges: []Range{{Introduced: "2.0.0"}}, wantAbsent: true},

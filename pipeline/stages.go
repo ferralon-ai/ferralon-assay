@@ -2019,7 +2019,8 @@ func buildAffectedRanges(ranges []Range, upperExclusive, scheme string) []affect
 		out := make([]affectedRange, 0, len(ranges))
 		for _, r := range ranges {
 			ar := affectedRange{UpperExclusive: r.Fixed, Scheme: scheme, LastAffected: r.LastAffected}
-			if r.Introduced != "0" {
+			// OSV writes an unbounded start as "0"; some feeds spell it "0.0.0".
+			if r.Introduced != "0" && r.Introduced != "0.0.0" {
 				ar.LowerInclusive = r.Introduced
 			}
 			out = append(out, ar)

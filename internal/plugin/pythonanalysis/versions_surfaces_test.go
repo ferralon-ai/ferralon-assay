@@ -68,6 +68,25 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 	}
 }
 
+// A file only the ManifestCandidates classifier (pyCandidate) recognises is an install surface
+// too: a lock name in another case than the ecosystem that owns it writes, a MANIFEST.in in
+// another case, and requirement lines pip's parser accepts. Each vetoes the root pin.
+func TestResolveVersions_ManifestCandidateVetoes(t *testing.T) {
+	for name, tc := range map[string]struct{ file, body string }{
+		"lowercase cargo.lock": {"svc/cargo.lock", "version = 3\n"},
+		"Yarn.lock case":       {"svc/Yarn.lock", "x\n"},
+		"Manifest.in case":     {"svc/Manifest.in", "include README.md\n"},
+		"requirement lines":    {"svc/deps", "foo= =1\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustVetoedPy(t, writeTree(t, map[string]string{
+				"requirements.txt": "pyjwt==2.8.0\n",
+				tc.file:            tc.body,
+			}), "pyjwt")
+		})
+	}
+}
+
 // Surfaces the resolver reads in full do not veto: the root pin resolves, complete, beside a
 // pyproject.toml, a setup.py and setup.cfg with no *_require keyword, an empty Pipfile, a conda
 // environment of only the interpreter and pip, tox.ini without deps, a noxfile that never

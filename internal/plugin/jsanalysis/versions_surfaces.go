@@ -75,8 +75,15 @@ var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", 
 
 // npmInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
 // content head (nil when binary or empty), names or holds a JavaScript install surface, and
-// the rule that matched.
+// the rule that matched. Every file ManifestCandidates classifies (jsCandidate) is one too.
 func npmInstallSurface(path string, head []byte) (string, bool) {
+	if why, ok := npmSurface(path, head); ok {
+		return why, true
+	}
+	return jsCandidate(path, head)
+}
+
+func npmSurface(path string, head []byte) (string, bool) {
 	if why, ok := npmSurfaceName(path); ok {
 		return why, true
 	}

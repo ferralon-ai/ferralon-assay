@@ -67,6 +67,29 @@ func TestResolveVersions_UnreadInstallSurfaceVetoes(t *testing.T) {
 	}
 }
 
+// A file only the ManifestCandidates classifier (jsCandidate) recognises is an install surface
+// too: installer configuration naming a catalog, config dependencies or plugins, or one with no
+// readable content; an import map under any name; and a lock name in another case than the
+// ecosystem that owns it writes. Each vetoes the root lock's pin.
+func TestResolveVersions_ManifestCandidateVetoes(t *testing.T) {
+	for name, tc := range map[string]struct{ file, body string }{
+		"yarnrc plugins":          {".yarnrc.yml", "plugins:\n  - path: .yarn/plugins/p.cjs\n"},
+		"pnpm catalog":            {"pnpm-workspace.yaml", "catalog:\n  json5: 2.2.3\n"},
+		"pnpm configDependencies": {"pnpm-workspace.yaml", "configDependencies:\n  p: 1.0.0+sha512-abc\n"},
+		"empty yarnrc":            {".yarnrc.yml", ""},
+		"import map any name":     {"svc/deps.json", `{"imports":{"json5":"npm:json5@2.2.3"}}`},
+		"lowercase cargo.lock":    {"svc/cargo.lock", "x\n"},
+		"Poetry.lock case":        {"svc/Poetry.lock", "x\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustVetoedJS(t, writeLockTree(t, map[string]string{
+				"package-lock.json": rootLockJSON5,
+				tc.file:             tc.body,
+			}), "json5")
+		})
+	}
+}
+
 // Each install surface name vetoes by its name alone, holding nothing its content would be
 // recognised by, in a directory the resolver's own walk does not enter.
 func TestResolveVersions_SurfaceNameAloneVetoes(t *testing.T) {

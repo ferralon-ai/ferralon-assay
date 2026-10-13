@@ -57,12 +57,15 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 
 // pyInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
 // content head (nil when binary or empty), names or holds a Python install surface, and the
-// rule that matched.
+// rule that matched. Every file ManifestCandidates classifies (pyCandidate) is one too.
 func pyInstallSurface(path string, head []byte) (string, bool) {
 	if why, ok := pySurfaceName(path); ok {
 		return why, true
 	}
-	return pySurfaceContent(path, head)
+	if why, ok := pySurfaceContent(path, head); ok {
+		return why, true
+	}
+	return pyCandidate(path, head)
 }
 
 // pyForeignLocks are lowercased *.lock and *.lockb names other ecosystems own; every other one

@@ -150,6 +150,9 @@ type Package struct {
 	// written before this field decodes to false and is regenerated as direct/transitive
 	// on its next baseline run.
 	Direct bool `json:"direct"`
+	// Root marks the scanned project itself: an advisory against the repository's own package
+	// (grafana's advisory in the grafana repository), whose vulnerable code is first-party.
+	Root bool `json:"root,omitempty"`
 	// PartialReason discloses a limit on THIS package's own resolution using the open
 	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
 	// acquired in a no-acquisition scan, a version range that could not be pinned). It is

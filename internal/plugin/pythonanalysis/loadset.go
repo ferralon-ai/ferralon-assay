@@ -913,8 +913,8 @@ func (ls *loadSet) unpinnedExport(data []byte) string {
 		}
 		pinned[n] = true
 	}
-	for n := range pinned {
-		for c := range ls.locks.edges[n] {
+	for _, n := range sortedKeys(pinned) {
+		for _, c := range sortedKeys(ls.locks.edges[n]) {
 			if !pinned[c] && !ls.locks.members[c] {
 				return n + " depends on " + c + ", which the file does not pin"
 			}

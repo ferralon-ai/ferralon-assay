@@ -716,6 +716,27 @@ func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
 
 // TestCallGraph_ScopedSitesStayRunWide pins that the CallGraph op alone (no load set) keeps
 // the run-wide dynamic_import reason for a scoped site; only Reachability narrows it.
+func TestLoadSet_UnpinnedExportReasonIsStable(t *testing.T) {
+	ls := &loadSet{locks: &lockModel{
+		versions: map[string]map[string]bool{
+			"alpha": {"1.0": true}, "bravo": {"1.0": true}, "charlie": {"1.0": true},
+			"delta": {"1.0": true}, "echo": {"1.0": true}, "foxtrot": {"1.0": true},
+		},
+		edges: map[string]map[string]bool{
+			"alpha": {"zulu": true, "yankee": true}, "bravo": {"xray": true},
+			"charlie": {"whiskey": true}, "delta": {"victor": true},
+			"echo": {"uniform": true}, "foxtrot": {"tango": true},
+		},
+	}}
+	data := []byte("foxtrot==1.0\necho==1.0\ndelta==1.0\ncharlie==1.0\nbravo==1.0\nalpha==1.0\n")
+	const want = "alpha depends on yankee, which the file does not pin"
+	for i := 0; i < 50; i++ {
+		if got := ls.unpinnedExport(data); got != want {
+			t.Fatalf("run %d: unpinnedExport = %q, want %q", i, got, want)
+		}
+	}
+}
+
 func TestCallGraph_ScopedSitesStayRunWide(t *testing.T) {
 	dir := writeTree(t, withLock(map[string]string{"app/plug.py": "from requests import *\n"}))
 	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})

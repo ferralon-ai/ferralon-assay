@@ -104,6 +104,8 @@ func TestLoadSet_CondaRecipe(t *testing.T) {
 		{"rattler-build expression", "recipe/recipe.yaml", strings.Replace(plain("app"), "1.0.0", "${{ version }}", 1), false},
 		{"selector recipe", "recipe/meta.yaml", plain("app") + "    - pywin32  # [win]\n", false},
 		{"control: a run requirement conda resolves", "recipe/meta.yaml", plain("app") + "    - requests\n", false},
+		{"rattler-build conditional run requirement", "recipe/recipe.yaml", plain("app") + "    - if: win\n      then: pywin32\n", false},
+		{"recipe with outputs", "recipe/meta.yaml", plain("app") + "outputs:\n  - name: app-extra\n    requirements:\n      run:\n        - requests\n", false},
 		{"recipe that does not parse", "recipe/meta.yaml", "package: [name\n", false},
 		{"binary recipe", "recipe/meta.yaml", "package:\x00\n", false},
 	}

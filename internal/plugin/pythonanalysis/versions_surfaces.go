@@ -31,7 +31,22 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 	for _, m := range manifests {
 		discovered[m] = true
 	}
-	read := func(path string) bool { return discovered[path] || declaresNothing(path) }
+	// A requirement file a pyproject.toml or setup.cfg names in a file directive is read by
+	// that manifest's reader; when the manifest cannot read it, the manifest fails instead.
+	via := map[string]bool{}
+	for _, m := range manifests {
+		if base := filepath.Base(m); base != "pyproject.toml" && base != "setup.cfg" {
+			continue
+		}
+		if decls, ok := manifestDecls(m); ok {
+			for _, f := range decls.files {
+				via[filepath.Clean(f)] = true
+			}
+		}
+	}
+	read := func(path string) bool {
+		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
+	}
 	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
 		if !c.FullyRead {
 			unread = true
@@ -71,8 +86,7 @@ func pySurfaceName(path string) (string, bool) {
 	switch {
 	case isManifest(lower):
 		return "manifest name", true
-	case strings.HasPrefix(lower, "pipfile"), lower == "setup.py", lower == "setup.cfg", lower == "hatch_build.py",
-		lower == "pixi.toml", strings.HasPrefix(lower, "pylock.") && ext == ".toml",
+	case strings.HasPrefix(lower, "pipfile"), lower == "pixi.toml", strings.HasPrefix(lower, "pylock.") && ext == ".toml",
 		lower == "tox.ini", lower == "noxfile.py":
 		return "install surface name", true
 	case isCondaEnvName(lower), strings.HasPrefix(lower, "conda-lock") && (ext == ".yml" || ext == ".yaml"):
@@ -195,10 +209,9 @@ func requirementLinesContent(src string) bool {
 }
 
 // declaresNothing reports whether a surface version resolution does not parse was read here
-// and found to declare no dependency: a Pipfile with no package category, setup.py or
-// setup.cfg with no *_require keyword, hatch_build.py that never mentions dependencies, a
-// conda environment that installs only the interpreter and pip, tox.ini with no deps key, or
-// a noxfile that never installs. Every other surface, and any of these that cannot be read,
+// and found to declare no dependency: a Pipfile with no package category, a conda
+// environment that installs only the interpreter and pip, tox.ini with no deps key, or a
+// noxfile that never installs. Every other surface, and any of these that cannot be read,
 // declares something.
 func declaresNothing(path string) bool {
 	data, err := os.ReadFile(path)
@@ -209,10 +222,6 @@ func declaresNothing(path string) bool {
 	switch {
 	case strings.HasPrefix(lower, "pipfile") && !strings.HasSuffix(lower, ".lock"):
 		return !pipfileDeclares(data)
-	case lower == "setup.py", lower == "setup.cfg":
-		return !bytes.Contains(data, []byte("_require"))
-	case lower == "hatch_build.py":
-		return !bytes.Contains(data, []byte("dependencies"))
 	case isCondaEnvName(lower):
 		return !condaDeclares(data)
 	case lower == "tox.ini":

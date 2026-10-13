@@ -364,12 +364,20 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 			boundary: true,
 		},
 		{
-			name: "unread setup.cfg, import declared nowhere read",
+			name: "unread Pipfile, import declared nowhere read",
+			files: map[string]string{
+				"Pipfile": "[packages]\nacmelib = \"*\"\n",
+				"app.py":  app,
+			},
+			toolFailure: true,
+		},
+		{
+			name: "setup.cfg read, import declared there",
 			files: map[string]string{
 				"setup.cfg": setupCfg,
 				"app.py":    app,
 			},
-			toolFailure: true,
+			boundary: true,
 		},
 		{
 			name: "unparseable requirements, import declared nowhere read",
@@ -509,6 +517,95 @@ func TestCallGraph_ManifestReadInPartIsToolFailure(t *testing.T) {
 			name:     "unread Pipfile, uv.lock requires-python",
 			files:    interp("import asyncore\n", map[string]string{"uv.lock": "version = 1\nrequires-python = \">=3.8, <3.12\"\n"}),
 			boundary: true,
+		},
+		{
+			name: "B2-1 othermod declared only in requirements.lock",
+			files: map[string]string{
+				"requirements.txt":  "acmelib==1.0\n",
+				"requirements.lock": "othermod==1.0\n",
+				"app.py":            app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-2 othermod declared only in pylock.toml",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"pylock.toml":      "lock-version = \"1.0\"\n\n[[packages]]\nname = \"othermod\"\nversion = \"1.0\"\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-3 othermod declared only in tox deps",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"tox.ini":          "[testenv]\ndeps =\n    othermod\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-4 othermod declared only in a conda environment's pip section",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"conda-env.yml":    "channels:\n  - conda-forge\ndependencies:\n  - pip:\n    - othermod\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-5 othermod declared only under build/",
+			files: map[string]string{
+				"requirements.txt":       "acmelib==1.0\n",
+				"build/requirements.txt": "othermod==1.0\n",
+				"app.py":                 app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-6 othermod declared only in a Pipfile (holds before and after the merge)",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"Pipfile":          "[packages]\nothermod = \"*\"\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-7 unread requirements.lock, othermod also declared in the part read",
+			files: map[string]string{
+				"requirements.txt":  "acmelib==1.0\nothermod==1.0\n",
+				"requirements.lock": "othermod==1.0\n",
+				"app.py":            app + "\nimport othermod\n",
+			},
+			boundary: true,
+		},
+		{
+			name: "B2-8 build hook the install-surface classifier never reads in full",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"hatch_build.py":   "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\nclass H(BuildHookInterface):\n    pass\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
+		},
+		{
+			name: "B2-9 dynamic optional-dependencies with no source read",
+			files: map[string]string{
+				"requirements.txt": "acmelib==1.0\n",
+				"pyproject.toml":   "[project]\nname = \"app\"\ndynamic = [\"dependencies\", \"optional-dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"requirements.txt\"]}\n",
+				"app.py":           app + "\nimport othermod\n",
+			},
+			toolFailure: true,
+			boundary:    true,
 		},
 	}
 	for _, c := range cases {

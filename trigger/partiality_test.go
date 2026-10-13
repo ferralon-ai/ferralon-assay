@@ -40,6 +40,24 @@ func TestPartialityNotes_MapsLanguageToEcosystem(t *testing.T) {
 	}
 }
 
+// A scoped limit is disclosed with the package and location it names, whether or not it counted
+// against the advisory.
+func TestPartialityNotes_DisclosesScopedLimits(t *testing.T) {
+	store := artifact.NewMemStore()
+	seedInventory(t, store, "a1", map[string]any{"language": "go"})
+	putJSON(t, store, "a1", artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{
+		ScopedPartiality: []artifact.ScopedPartialityFlag{{
+			Reason: plugin.PartialReasonCgo, Path: "example.com/app/native", Targets: []string{""},
+		}},
+	})
+
+	got := partialityNotes(store, "a1")
+	want := []report.PartialityNote{{Reason: plugin.PartialReasonCgo, Ecosystem: "Go", Path: "example.com/app/native"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("partialityNotes = %+v, want %+v", got, want)
+	}
+}
+
 // A fully-resolved assessment discloses nothing — the silence-when-clean guarantee at
 // the mapping layer.
 func TestPartialityNotes_SilentWhenComplete(t *testing.T) {

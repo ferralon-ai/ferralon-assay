@@ -551,10 +551,9 @@ func TestResolveVersions_AllOrderDeterministic(t *testing.T) {
 // --- npm alias entries ---------------------------------------------------------
 
 // An npm alias ("qs-old": "npm:qs@6.5.1") installs a real package under another name. A v1
-// package-lock and yarn.lock key the entry by the alias, so the real package's copy is
-// filed under no name the resolver reads: the alias entry is UNRESOLVED, the lockfile reads
-// as unparseable, and the real package's other copy cannot decide its version alone.
-func TestResolveVersions_NpmAliasEntriesVeto(t *testing.T) {
+// package-lock and yarn.lock key the entry by the alias; the lock readers file it under the
+// real package's name, so the real package's two distinct copies cannot decide its version.
+func TestResolveVersions_NpmAliasCopiesVeto(t *testing.T) {
 	cases := []struct{ name, file, lock, want string }{
 		{"package-lock v1", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
   "qs": {"version": "6.5.2"},
@@ -575,11 +574,6 @@ func TestResolveVersions_NpmAliasEntriesVeto(t *testing.T) {
 			dir := writeLockTree(t, map[string]string{tc.file: tc.lock})
 			res := resolveJS(t, dir, tc.want)
 			mustUnresolved(t, res)
-			if res.Partiality.Complete {
-				t.Fatal("a lockfile holding an npm alias must read as partial")
-			}
-			alias := resolveJS(t, dir, "qs-old")
-			mustUnresolved(t, alias)
 		})
 	}
 }

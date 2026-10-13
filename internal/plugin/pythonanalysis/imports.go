@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -235,10 +236,10 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares. complete is false when a manifest fails to parse or a file declares
-// dependencies version resolution does not read (the same surfaces that leave a version
-// unresolved): a name only that file holds is missing, so an import of it reaches no
-// boundary node.
+// declares. complete is false when a manifest fails to parse, a file declares dependencies
+// version resolution does not read (the same surfaces that leave a version unresolved), or an
+// install surface is not fully read by the coverage check (ManifestCandidates): a name only
+// that file holds is missing, so an import of it reaches no boundary node.
 func declaredDistributions(buildDir string) (names map[string]bool, complete bool) {
 	names, complete = map[string]bool{}, true
 	add := func(deps []plugin.ResolvedDependency) {
@@ -249,7 +250,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete boo
 		}
 	}
 	manifests, unread := versionSurfaces(buildDir)
-	complete = !unread
+	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
 	for _, f := range manifests {
 		deps, _, ok := parseManifest(f)
 		if !ok {
@@ -259,7 +260,7 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete boo
 		if filepath.Base(f) == "pyproject.toml" {
 			// The lexical [project] reader still yields names from a file TOML rejects.
 			if data, err := os.ReadFile(f); err == nil {
-				lexical, _ := parsePyproject(data)
+				lexical, _ := parsePyprojectLexical(data)
 				add(lexical)
 			}
 		}

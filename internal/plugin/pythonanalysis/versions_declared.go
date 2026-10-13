@@ -1,6 +1,9 @@
 package pythonanalysis
 
 import (
+	"maps"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -77,9 +80,9 @@ type pyprojectDoc struct {
 		Requires []string `toml:"requires"`
 	} `toml:"build-system"`
 	Project struct {
-		Dependencies         []string       `toml:"dependencies"`
-		OptionalDependencies map[string]any `toml:"optional-dependencies"`
-		Dynamic              []string       `toml:"dynamic"`
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+		Dynamic              []string            `toml:"dynamic"`
 	} `toml:"project"`
 	DependencyGroups map[string]any `toml:"dependency-groups"`
 	Tool             struct {
@@ -99,14 +102,16 @@ type pyprojectDoc struct {
 	} `toml:"tool"`
 }
 
-// parsePyprojectVersions reads pyproject.toml's [project].dependencies, each entry with the
-// specifier a same-directory lock's pin must satisfy to cover it, and [build-system].requires,
-// which no lock covers. The bool is false when the file does not decode, when an entry
-// installs a local path other than the project itself, or when the file declares
-// dependencies anywhere version resolution does not read: [project] optional-dependencies or
-// dynamic dependencies, [dependency-groups], [tool.poetry] dependencies, dev-dependencies or
-// groups, [tool.uv] dev-dependencies, or [tool.pdm] dev-dependencies.
-func parsePyprojectVersions(data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+// parsePyprojectVersions reads pyproject.toml's [project] dependencies and
+// optional-dependencies, each entry with the specifier a same-directory lock's pin must
+// satisfy to cover it, dynamic dependencies from the requirement files a dynamic-metadata
+// table names, and [build-system].requires, which no lock covers. The bool is false when the
+// file does not decode, when an entry installs a local path other than the project itself,
+// when dynamic dependencies name no file this reader can read, or when the file declares
+// dependencies anywhere version resolution does not read: [dependency-groups],
+// [tool.poetry] dependencies, dev-dependencies or groups, [tool.uv] dev-dependencies, or
+// [tool.pdm] dev-dependencies.
+func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
 		return nil, nil, false
@@ -116,12 +121,39 @@ func parsePyprojectVersions(data []byte, dir string) ([]plugin.ResolvedDependenc
 		origins  []manifestOrigin
 		readable = !pyprojectHasUnreadTables(doc)
 	)
-	for _, spec := range doc.Project.Dependencies {
+	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)
 		readable = readable && ok
 		if keep {
 			deps = append(deps, d)
 			origins = append(origins, o)
+		}
+	}
+	for _, spec := range doc.Project.Dependencies {
+		addSpec(spec)
+	}
+	for _, g := range slices.Sorted(maps.Keys(doc.Project.OptionalDependencies)) {
+		for _, spec := range doc.Project.OptionalDependencies[g] {
+			addSpec(spec)
+		}
+	}
+	if pyprojectDynamicDeps(doc) {
+		// Dynamic dependencies are read only from the requirement files a dynamic-metadata
+		// table names; with none named, nothing here can say what the build backend will
+		// declare.
+		var pp pyprojectDeps
+		if err := toml.Unmarshal(data, &pp); err != nil {
+			return deps, origins, false
+		}
+		files, ok := pyprojectDynamicFiles(pp)
+		if !ok || len(files) == 0 {
+			return deps, origins, false
+		}
+		for _, f := range files {
+			fdeps, fileOK := readRequirementFiles(filepath.Dir(path), f, "pyproject.toml")
+			deps = append(deps, fdeps...)
+			origins = append(origins, originsFor(fdeps, manifestOrigin{dir: dir})...)
+			readable = readable && fileOK
 		}
 	}
 	for _, spec := range doc.BuildSystem.Requires {
@@ -136,12 +168,18 @@ func parsePyprojectVersions(data []byte, dir string) ([]plugin.ResolvedDependenc
 	return deps, origins, readable
 }
 
-func pyprojectHasUnreadTables(doc pyprojectDoc) bool {
+// pyprojectDynamicDeps reports whether [project].dynamic lists dependencies or
+// optional-dependencies.
+func pyprojectDynamicDeps(doc pyprojectDoc) bool {
 	for _, f := range doc.Project.Dynamic {
 		if f == "dependencies" || f == "optional-dependencies" {
 			return true
 		}
 	}
+	return false
+}
+
+func pyprojectHasUnreadTables(doc pyprojectDoc) bool {
 	p := doc.Tool.Poetry
 	for name := range p.Dependencies {
 		if !strings.EqualFold(name, "python") { // the interpreter constraint, not a package
@@ -153,7 +191,7 @@ func pyprojectHasUnreadTables(doc pyprojectDoc) bool {
 			return true
 		}
 	}
-	return len(doc.Project.OptionalDependencies) > 0 || len(doc.DependencyGroups) > 0 ||
+	return len(doc.DependencyGroups) > 0 ||
 		len(p.DevDependencies) > 0 || len(doc.Tool.UV.DevDependencies) > 0 || len(doc.Tool.PDM.DevDependencies) > 0
 }
 
@@ -185,7 +223,11 @@ func pep508Entry(spec, dir string) (d plugin.ResolvedDependency, o manifestOrigi
 		}
 	}
 	o.spec = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(rest, "("), ")"))
-	return pyResolved(name, version, resolved, "pyproject.toml"), o, true, true
+	d = pyResolved(name, version, resolved, "pyproject.toml")
+	if !d.Resolved {
+		d.Constraint = requirementConstraint(s)
+	}
+	return d, o, true, true
 }
 
 // isSelfPath reports whether a local install path names the project's own directory.

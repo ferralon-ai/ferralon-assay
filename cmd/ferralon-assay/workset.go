@@ -276,10 +276,13 @@ func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) b
 		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
 			return false
 		}
+		var ok bool
 		if root.PURLType == "golang" {
-			return root.Matches(acq.buildDir, k.Name, "", "")
+			_, ok = root.Matches(acq.buildDir, k.Name, "", "")
+		} else {
+			_, ok = root.Matches(acq.buildDir, "", k.Name, "")
 		}
-		return root.Matches(acq.buildDir, "", k.Name, "")
+		return ok
 	}
 }
 

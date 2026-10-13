@@ -3,6 +3,8 @@
 package buildtree
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"syscall"
@@ -63,5 +65,80 @@ func TestCandidates_PipeNamedLikeACandidate(t *testing.T) {
 	}
 	if slices.ContainsFunc(heads, func(h []byte) bool { return h != nil }) {
 		t.Errorf("match saw content %q for a pipe", heads)
+	}
+}
+
+// The head readers refuse a pipe without opening it, so a caller handed one (a name-matched entry
+// another walk passes on with a nil head) gets an error, never a block, and a content fallback
+// takes the pipe as a file it could not read.
+func TestHeadReaders_Pipe(t *testing.T) {
+	dir := t.TempDir()
+	pipe := filepath.Join(dir, "pylock.toml")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	symlink(t, "pylock.toml", filepath.Join(dir, "link"))
+	never := func(string, []byte) (string, bool) { return "rule", false }
+	for _, p := range []string{pipe, filepath.Join(dir, "link")} {
+		calls := map[string]func() string{
+			"Head":         func() string { _, err := Head(p); return fmt.Sprint(err != nil) },
+			"rawHead":      func() string { _, err := rawHead(p); return fmt.Sprint(err != nil) },
+			"NULHeadMatch": func() string { why, ok := NULHeadMatch(p, never); return fmt.Sprint(why, " ", ok) },
+		}
+		want := map[string]string{"Head": "true", "rawHead": "true", "NULHeadMatch": "unreadable true"}
+		for name, call := range calls {
+			t.Run(filepath.Base(p)+"/"+name, func(t *testing.T) {
+				done := make(chan string, 1)
+				go func() { done <- call() }()
+				select {
+				case got := <-done:
+					if got != want[name] {
+						t.Errorf("%s(pipe) = %s, want %s", name, got, want[name])
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatalf("%s blocked opening the pipe", name)
+				}
+			})
+		}
+	}
+}
+
+// TestRawHead_SwappedForPipeAfterStat: a regular file replaced by a pipe between rawHead's stat
+// and its open is refused once opened, as a file that changed, and the content fallback takes it
+// as a file it could not read. The open does not block, and reading the swapped-in pipe would
+// find it empty.
+func TestRawHead_SwappedForPipeAfterStat(t *testing.T) {
+	never := func(string, []byte) (string, bool) { return "rule", false }
+	calls := map[string]func(p string) string{
+		"rawHead":      func(p string) string { _, err := rawHead(p); return fmt.Sprint(err != nil) },
+		"NULHeadMatch": func(p string) string { why, ok := NULHeadMatch(p, never); return fmt.Sprint(why, " ", ok) },
+	}
+	want := map[string]string{"rawHead": "true", "NULHeadMatch": "unreadable true"}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "deps.pins")
+			if err := os.WriteFile(p, []byte("pyjwt==2.10.0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			betweenStatAndOpen = func(path string) {
+				if err := os.Remove(path); err != nil {
+					t.Error(err)
+				}
+				if err := syscall.Mkfifo(path, 0o644); err != nil {
+					t.Errorf("mkfifo: %v", err)
+				}
+			}
+			t.Cleanup(func() { betweenStatAndOpen = nil })
+			done := make(chan string, 1)
+			go func() { done <- call(p) }()
+			select {
+			case got := <-done:
+				if got != want[name] {
+					t.Errorf("%s(file swapped for a pipe) = %s, want %s", name, got, want[name])
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s blocked opening the swapped-in pipe", name)
+			}
+		})
 	}
 }

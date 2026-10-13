@@ -235,22 +235,27 @@ func TestReaders_FIFO(t *testing.T) {
 	}
 }
 
-// TestResolveVersions_PipeNamedLikeASurfaceVetoes: a pipe named like an install surface, in a
-// directory the manifest discovery does not read, is an unread surface. It vetoes the root pin
-// without being opened (the 3 s guard fails a resolve that blocks on it).
+// TestResolveVersions_PipeNamedLikeASurfaceVetoes: a pipe where an install surface could be, in a
+// directory the manifest discovery does not read, is an unread surface, whether its name marks
+// it or only its content could. It vetoes the root pin without being opened (the 3 s guard
+// fails a resolve that blocks on it).
 func TestResolveVersions_PipeNamedLikeASurfaceVetoes(t *testing.T) {
-	dir := t.TempDir()
-	placeFiles(t, dir, map[string]string{"requirements.txt": "pyjwt==2.8.0\n"})
-	mkfifo(t, dir, "svc/pylock.toml")
-	done := make(chan plugin.DependencyVersionResult, 1)
-	go func() { done <- resolveVersion(t, dir, "pyjwt") }()
-	select {
-	case res := <-done:
-		mustUnresolvedPy(t, res)
-		if res.Partiality.Complete {
-			t.Fatal("result must be partial")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("blocked opening the pipe at svc/pylock.toml")
+	for _, pipe := range []string{"svc/pylock.toml", "svc/deps.pins"} {
+		t.Run(pipe, func(t *testing.T) {
+			dir := t.TempDir()
+			placeFiles(t, dir, map[string]string{"requirements.txt": "pyjwt==2.8.0\n"})
+			mkfifo(t, dir, pipe)
+			done := make(chan plugin.DependencyVersionResult, 1)
+			go func() { done <- resolveVersion(t, dir, "pyjwt") }()
+			select {
+			case res := <-done:
+				mustUnresolvedPy(t, res)
+				if res.Partiality.Complete {
+					t.Fatal("result must be partial")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("blocked opening the pipe at %s", pipe)
+			}
+		})
 	}
 }

@@ -242,3 +242,44 @@ func TestRequirementLinesContent(t *testing.T) {
 		}
 	}
 }
+
+// A NUL in a file's head makes buildtree.Head report it binary, but pip reads past one in a
+// comment, so a surface only its content marks is judged with the NUL removed or made a
+// newline (buildtree.NULHeadMatch), and vetoes the root pin. A binary file that holds no
+// surface does not.
+func TestResolveVersions_NULHeadSurfaceVetoes(t *testing.T) {
+	for name, tc := range map[string]struct{ file, body string }{
+		"Pipfile tables":    {"svc/deps.toml", "# pinned deps for the worker svc...\n#\x00\n[packages]\npyjwt = \"==2.10.0\"\n"},
+		"requirement lines": {"svc/deps.pins", "# pinned deps for the worker svc...\n#\x00\npyjwt==2.10.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mustVetoedPy(t, writeTree(t, map[string]string{
+				"requirements.txt": "pyjwt==2.8.0\n",
+				tc.file:            tc.body,
+			}), "pyjwt")
+		})
+	}
+	t.Run("binary control", func(t *testing.T) {
+		res := resolveVersion(t, writeTree(t, map[string]string{
+			"requirements.txt": "pyjwt==2.8.0\n",
+			"svc/blob.bin":     "\x00\x01\x02\x03",
+		}), "pyjwt")
+		if !res.Match.Resolved || res.Match.Version != "2.8.0" || !res.Partiality.Complete {
+			t.Fatalf("got %+v, %+v; want 2.8.0, complete", res.Match, res.Partiality)
+		}
+	})
+}
+
+// A manifest in UTF-16 or UTF-32 behind its byte-order mark, which pip decodes, is not read by
+// readers that take its bytes as UTF-8, so it vetoes the pin another manifest records rather
+// than leave that pin standing.
+func TestResolveVersions_WideMarkedManifestVetoes(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"UTF-16LE requirements.txt beside uv.lock": {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements.txt": encodeBOM("UTF-16LE", "flask==2.0.0\r\n")},
+		"UTF-16BE requirements.txt beside uv.lock": {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements.txt": encodeBOM("UTF-16BE", "flask==2.0.0\n")},
+		"UTF-32BE requirements.txt beside uv.lock": {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "requirements.txt": encodeBOM("UTF-32BE", "flask==2.0.0\n")},
+		"UTF-16LE tox.ini":                         {"uv.lock": exUVLock, "pyproject.toml": exPyproject, "tox.ini": encodeBOM("UTF-16LE", "[testenv]\ndeps = flask==2.0.0\n")},
+	} {
+		t.Run(name, func(t *testing.T) { mustVetoedPy(t, writeTree(t, files), "flask") })
+	}
+}

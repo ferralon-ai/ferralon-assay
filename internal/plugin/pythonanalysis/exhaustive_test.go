@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,40 @@ source = { registry = "https://pypi.org/simple" }
 // the coordinate each withholds it. Every row keeps a uv.lock that would otherwise prove PyJWT
 // absent.
 func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
+	// nulAt pads a comment so a NUL lands at byte off, then puts rest on the next line.
+	nulAt := func(off int, rest string) string { return "# " + strings.Repeat("x", off-2) + "\x00\n" + rest }
+	// utf16 encodes ASCII s as UTF-16 behind its byte-order mark.
+	utf16 := func(bigEndian bool, s string) string {
+		var b strings.Builder
+		if bigEndian {
+			b.WriteString("\xfe\xff")
+		} else {
+			b.WriteString("\xff\xfe")
+		}
+		for _, c := range []byte(s) {
+			if bigEndian {
+				b.WriteByte(0)
+				b.WriteByte(c)
+			} else {
+				b.WriteByte(c)
+				b.WriteByte(0)
+			}
+		}
+		return b.String()
+	}
+	// utf32LE encodes ASCII s as UTF-32LE behind its byte-order mark.
+	utf32LE := func(s string) string {
+		b := []byte("\xff\xfe\x00\x00")
+		for _, c := range []byte(s) {
+			b = append(b, c, 0, 0, 0)
+		}
+		return string(b)
+	}
+	// commentsTo is comment lines filling n characters.
+	commentsTo := func(n int) string {
+		line := "# " + strings.Repeat("x", 61) + "\r\n"
+		return strings.Repeat(line, n/len(line)) + "#" + strings.Repeat("x", n%len(line)-2) + "\r\n"
+	}
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -106,6 +141,30 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"setup.py literal extras_require, locked", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", extras_require={\"web\": [\"jinja2\"], \"all\": [\"flask\", \"jinja2\"]})\n"}, true},
 		{"setup.py computed extras_require", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", extras_require=EXTRAS)\n"}, false},
 		{"hatch_build.py", map[string]string{"hatch_build.py": "from hatchling.metadata.plugin.interface import MetadataHookInterface\n"}, false},
+
+		// A NUL makes buildtree.Head report a file binary, but pip reads past one in a comment, so
+		// requirement lines found by content are judged with the NUL removed or made a newline.
+		{"requirement lines by content", map[string]string{"deps.pins": "pyjwt==2.8.0\n"}, false},
+		{"requirement lines by content, NUL at byte 40", map[string]string{"deps.pins": nulAt(40, "pyjwt==2.8.0\n")}, false},
+		{"requirement lines by content, NUL past byte 8000", map[string]string{"deps.pins": nulAt(8100, "pyjwt==2.8.0\n")}, false},
+		{"requirement lines by content, NUL splitting the requirement", map[string]string{"deps.pins": "pyjwt\x00==2.8.0\n"}, false},
+		{"requirement lines by content, NUL ending a comment", map[string]string{"deps.pins": "# pins\x00pyjwt==2.8.0\n"}, false},
+		// pip decodes a requirements file by its byte-order mark; Windows PowerShell 5 writes
+		// `pip freeze >` as UTF-16LE with one.
+		{"requirement lines by content, UTF-16LE with a BOM", map[string]string{"deps.pins": utf16(false, "# pins\r\npyjwt==2.8.0\r\n")}, false},
+		{"requirement lines by content, UTF-16BE with a BOM", map[string]string{"deps.pins": utf16(true, "pyjwt==2.8.0\n")}, false},
+		{"requirement lines by content, UTF-8 BOM", map[string]string{"deps.pins": "\xef\xbb\xbfpyjwt==2.8.0\n"}, false},
+		{"UTF-16LE text file without requirement lines", map[string]string{"notes": utf16(false, "pyjwt is not used here\n")}, true},
+		// pip's UTF-16 decoder consumes a second byte-order mark.
+		{"requirement lines by content, UTF-16LE with a doubled BOM", map[string]string{"deps.pins": "\xff\xfe" + utf16(false, "pyjwt==2.8.0\n")}, false},
+		// A marked file is judged over its UTF-8 twin's head: HeadSize bytes of UTF-8 text, which
+		// UTF-16 and UTF-32 spend more raw bytes on.
+		{"requirement lines by content, UTF-16LE, first requirement at character 40000", map[string]string{"deps.pins": utf16(false, commentsTo(40000)+"pyjwt==2.8.0\r\n")}, false},
+		{"requirement lines by content, UTF-32LE, first requirement at character 40000", map[string]string{"deps.pins": utf32LE(commentsTo(40000) + "pyjwt==2.8.0\r\n")}, false},
+		{"UTF-8 BOM text file without requirement lines", map[string]string{"notes": "\xef\xbb\xbfpyjwt is not used here\n"}, true},
+		{"binary file without requirement lines", map[string]string{"assets/logo.png": "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00"}, true},
+		{"text file without requirement lines", map[string]string{"notes": "pyjwt is not used here\n"}, true},
+		{"empty file", map[string]string{"deps.pins": ""}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

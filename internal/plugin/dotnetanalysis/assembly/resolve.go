@@ -42,6 +42,11 @@ import (
 //     The "_._" placeholder key means "no assembly here": a runtime block holding
 //     only "_._" over a compile dll says the framework supplies the implementation,
 //     so the package's lib bytes are not what runs (FrameworkSupplied).
+//   - targets[<target>][<id>/<ver>].runtimeTargets: implementations under
+//     runtimes/<rid>/lib/... that replace the runtime block on a matching runtime.
+//     In a portable target (no RID in the key) their presence means the bytes that run
+//     depend on the machine (RIDSpecific); a "<tfm>/<rid>" target records the asset
+//     restore resolved for that runtime in its runtime block.
 //
 // The authoritative resolved path is: packageFolder / library.path / <dll-key>.
 type AssetsLocator struct {
@@ -49,6 +54,7 @@ type AssetsLocator struct {
 	libPath        map[string]string              // "<id>/<ver>" -> "<id-lower>/<ver>"
 	dlls           map[string]map[string][]string // target -> "<id>/<ver>" -> rel dlls (runtime, else compile); nil => only _._/none
 	framework      map[string]map[string][]string // target -> "<id>/<ver>" whose runtime is "_._" over compile dlls -> those compile dlls
+	ridSpecific    map[string]map[string]bool     // target -> "<id>/<ver>" with a runtimeTargets runtime asset
 }
 
 // assetsLocatorFile is the minimal unmarshal target. runtime/compile stay
@@ -60,8 +66,11 @@ type assetsLocatorFile struct {
 		Path string `json:"path"`
 	} `json:"libraries"`
 	Targets map[string]map[string]struct {
-		Runtime json.RawMessage `json:"runtime"`
-		Compile json.RawMessage `json:"compile"`
+		Runtime        json.RawMessage `json:"runtime"`
+		Compile        json.RawMessage `json:"compile"`
+		RuntimeTargets map[string]struct {
+			AssetType string `json:"assetType"`
+		} `json:"runtimeTargets"`
 	} `json:"targets"`
 }
 
@@ -80,6 +89,7 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 		libPath:        make(map[string]string, len(af.Libraries)),
 		dlls:           make(map[string]map[string][]string, len(af.Targets)),
 		framework:      make(map[string]map[string][]string),
+		ridSpecific:    make(map[string]map[string]bool),
 	}
 	for key, lib := range af.Libraries {
 		if p := strings.TrimSpace(lib.Path); p != "" {
@@ -102,6 +112,15 @@ func ParseAssetsLocator(data []byte) (*AssetsLocator, bool) {
 				}
 			}
 			m[pkgKey] = dlls
+			for _, rt := range tl.RuntimeTargets {
+				if strings.EqualFold(rt.AssetType, "runtime") {
+					if a.ridSpecific[target] == nil {
+						a.ridSpecific[target] = map[string]bool{}
+					}
+					a.ridSpecific[target][pkgKey] = true
+					break
+				}
+			}
 		}
 		a.dlls[target] = m
 	}
@@ -161,6 +180,22 @@ func assemblyNames(dlls []string) []string {
 		out = append(out, base[:len(base)-len(path.Ext(base))])
 	}
 	return out
+}
+
+// RIDSpecific reports whether restore recorded, for this package in target, an
+// implementation under runtimes/<rid>/ that replaces its runtime block on a matching
+// runtime: which bytes run depends on the runtime the build was produced for.
+func (a *AssetsLocator) RIDSpecific(target, pkgKey string) bool {
+	return a != nil && a.ridSpecific[target][pkgKey]
+}
+
+// HasPackage reports whether restore recorded pkgKey in target.
+func (a *AssetsLocator) HasPackage(target, pkgKey string) bool {
+	if a == nil {
+		return false
+	}
+	_, ok := a.dlls[target][pkgKey]
+	return ok
 }
 
 // HasNoAssemblies reports whether restore recorded this package in target as

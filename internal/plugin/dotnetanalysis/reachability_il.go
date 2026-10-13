@@ -51,6 +51,9 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 			locator = loc
 		}
 		deps = depRefsFrom(build.assets, build.target)
+		for i := range deps {
+			deps[i].Runtime = build.runtime
+		}
 		graph = parseAssetsGraph(build.assets)
 	}
 
@@ -203,10 +206,16 @@ func missScopes(misses []assembly.DepMiss, graph *assetsGraph) []plugin.ScopedRe
 
 // missReason maps a spanning-set miss to its partiality code: code that was not on disk
 // (or only as a stub reference assembly) is an unavailable artifact; bytes that did not
-// parse are a reader failure.
+// parse are a reader failure; a per-runtime implementation the build's runtime does not
+// pick out is named for why.
 func missReason(miss string) string {
-	if miss == assembly.MissUnreadable {
+	switch miss {
+	case assembly.MissUnreadable:
 		return plugin.PartialReasonToolFailure
+	case assembly.MissRIDUnknown:
+		return partialReasonRIDUnknown
+	case assembly.MissRIDAmbiguous:
+		return partialReasonRIDAmbiguous
 	}
 	return partialReasonNoDependencyArtifact
 }

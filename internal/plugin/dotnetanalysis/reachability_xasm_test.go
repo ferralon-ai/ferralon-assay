@@ -10,12 +10,16 @@ import (
 	"testing"
 )
 
-const xInterfaceImpl = 0x09
+const (
+	xInterfaceImpl = 0x09
+	xTypeSpec      = 0x1B
+)
 
 // depCrossAsm builds Dep.dll: D.Arg, D.Other, D.Sink.boom() with D.Sink.take(class D.Arg)
 // calling it, a class D.Base.Run(class D.Arg) overridden by D.Impl, and an interface
 // D.IRun.Run(class D.Arg) implemented by D.IImpl. Both overrides call boom, as does the
-// second of the overloads D.Sink.pick(class D.Arg) and D.Sink.pick(class D.Other).
+// second of the overloads D.Sink.pick(class D.Arg) and D.Sink.pick(class D.Other), and the
+// int32-returning one of the conversions D.Sink.op_Explicit(class D.Arg) to string and to int32.
 func depCrossAsm() []byte {
 	db := scaffold()
 	dObj := cTypeDefOrRef(xTypeRef, db.extTypeRef("System", "Object"))
@@ -34,6 +38,8 @@ func depCrossAsm() []byte {
 		{name: "take", flags: 0x16, sig: []byte{0x00, 0x01, 0x01, 0x12, argParam}, il: body(ilCall(mtok(xMethodDef, 1)))}, // boom: the first MethodDef
 		{name: "pick", flags: 0x16, sig: []byte{0x00, 0x01, 0x01, 0x12, argParam}, il: body()},
 		{name: "pick", flags: 0x16, sig: []byte{0x00, 0x01, 0x01, 0x12, otherParam}, il: body(ilCall(mtok(xMethodDef, 1)))},
+		{name: "op_Explicit", flags: 0x896, sig: []byte{0x00, 0x01, 0x0E, 0x12, argParam}, il: body()},
+		{name: "op_Explicit", flags: 0x896, sig: []byte{0x00, 0x01, 0x08, 0x12, argParam}, il: body(ilCall(mtok(xMethodDef, 1)))},
 	})
 	callBoom := body(ilCall(mtok(xMethodDef, sinkM[0])))
 	baseRID, _ := db.addType(0, "Base", "D", dObj, []mspec{{name: "Run", flags: 0x1C6, sig: runSig, il: body()}})
@@ -67,28 +73,87 @@ func appCrossAsm(callvirt bool, owner, method, argType string) []byte {
 	return ab.bytesNamed("App")
 }
 
+// appCast builds App.dll whose Main converts a D.Arg through D.Sink::op_Explicit, returning
+// the element type ret (0x0E string, 0x08 int32).
+func appCast(ret byte) []byte {
+	ab := scaffold()
+	aObj := cTypeDefOrRef(xTypeRef, ab.extTypeRef("System", "Object"))
+	dep := ab.asmRef("Dep")
+	sinkRef := ab.extTypeRefScoped(dep, "D", "Sink")
+	arg := byte(cTypeDefOrRef(xTypeRef, ab.extTypeRefScoped(dep, "D", "Arg")))
+	m := ab.memberRef(sinkRef, "op_Explicit", []byte{0x00, 0x01, ret, 0x12, arg})
+	ab.addType(0, "<Module>", "", 0, nil)
+	_, inM := ab.addType(0, "Program", "App", aObj, []mspec{{name: "Main", flags: 0x16, sig: sigStaticVoid, il: body(ilCall(m))}})
+	ab.entry = mtok(xMethodDef, inM[0])
+	return ab.bytesNamed("App")
+}
+
+// depGenericOverride builds Dep.dll with a generic class D.GBase`1 whose Run(!0) is virtual
+// and whose own Go() calls it, and D.GImpl : GBase<D.Arg> overriding Run(class D.Arg) to
+// call D.Sink.boom. D.Sink.start() calls Go. The override spells !0 as its concrete argument
+// and derives from a TypeSpec, so it is a candidate only when the hierarchy links a generic
+// instantiation to its generic type and a generic parameter matches any argument.
+func depGenericOverride() []byte {
+	db := scaffold()
+	dObj := cTypeDefOrRef(xTypeRef, db.extTypeRef("System", "Object"))
+	db.addType(0, "<Module>", "", 0, nil)
+	argRID, _ := db.addType(0, "Arg", "D", dObj, nil)
+	_, sinkM := db.addType(0, "Sink", "D", dObj, []mspec{
+		{name: "boom", flags: 0x16, sig: sigStaticVoid, il: body()},
+		{name: "start", flags: 0x16, sig: sigStaticVoid, il: nil}, // body set below, once Go's token exists
+	})
+	// GBase`1: Run is MethodDef sinkM[1]+1, Go is sinkM[1]+2.
+	runTok, goTok := mtok(xMethodDef, sinkM[1]+1), mtok(xMethodDef, sinkM[1]+2)
+	db.bodies = append(db.bodies, mbody{sinkM[1], body(ilCall(goTok))})
+	gbaseRID, _ := db.addType(0x1, "GBase`1", "D", dObj, []mspec{
+		{name: "Run", flags: 0x1C6, sig: []byte{0x20, 0x01, 0x01, 0x13, 0x00}, il: body()},
+		{name: "Go", flags: 0x86, sig: sigInstVoid, il: body(ilCallvirt(runTok))},
+	})
+	spec := []byte{0x15, 0x12, byte(cTypeDefOrRef(xTypeDef, gbaseRID)), 0x01, 0x12, byte(cTypeDefOrRef(xTypeDef, argRID))}
+	specRID := db.row(xTypeSpec, db.blob(spec))
+	db.addType(0x1, "GImpl", "D", specRID<<2|2, []mspec{
+		{name: "Run", flags: 0xC6, sig: []byte{0x20, 0x01, 0x01, 0x12, byte(cTypeDefOrRef(xTypeDef, argRID))},
+			il: body(ilCall(mtok(xMethodDef, sinkM[0])))},
+	})
+	return db.bytesNamed("Dep")
+}
+
+// appCallsStart builds App.dll whose Main calls D.Sink::start() in Dep.
+func appCallsStart() []byte {
+	ab := scaffold()
+	aObj := cTypeDefOrRef(xTypeRef, ab.extTypeRef("System", "Object"))
+	start := ab.memberRef(ab.extTypeRefScoped(ab.asmRef("Dep"), "D", "Sink"), "start", sigStaticVoid)
+	ab.addType(0, "<Module>", "", 0, nil)
+	_, inM := ab.addType(0, "Program", "App", aObj, []mspec{{name: "Main", flags: 0x16, sig: sigStaticVoid, il: body(ilCall(start))}})
+	ab.entry = mtok(xMethodDef, inM[0])
+	return ab.bytesNamed("App")
+}
+
 func TestReachability_CrossAssemblySignatures(t *testing.T) {
 	sink := funcSCIP("D", []string{"Sink"}, "boom", 0)
 	cases := []struct {
-		name     string
-		app      []byte
-		wantPath bool
+		name         string
+		app, dep     []byte
+		wantPath     bool
+		wantSearched bool
 	}{
-		{"class virtual reaches the override", appCrossAsm(true, "Base", "Run", "Arg"), true},
-		{"interface call reaches the implementation", appCrossAsm(true, "IRun", "Run", "Arg"), true},
-		{"direct call binds the declared method", appCrossAsm(false, "Sink", "take", "Arg"), true},
-		{"a parameter naming another type binds nothing", appCrossAsm(false, "Sink", "take", "Other"), false},
-		{"an undecoded parameter binds every overload of that arity", appCrossAsm(false, "Sink", "pick", ""), true},
+		{"class virtual reaches the override", appCrossAsm(true, "Base", "Run", "Arg"), depCrossAsm(), true, false},
+		{"interface call reaches the implementation", appCrossAsm(true, "IRun", "Run", "Arg"), depCrossAsm(), true, false},
+		{"direct call binds the declared method", appCrossAsm(false, "Sink", "take", "Arg"), depCrossAsm(), true, false},
+		{"a parameter naming another type binds nothing", appCrossAsm(false, "Sink", "take", "Other"), depCrossAsm(), false, false},
+		{"an undecoded parameter binds every overload of that arity", appCrossAsm(false, "Sink", "pick", ""), depCrossAsm(), true, false},
+		{"a generic base's virtual call reaches the override in a closed subclass", appCallsStart(), depGenericOverride(), true, false},
+		{"a conversion binds the overload of its return type", appCast(0x08), depCrossAsm(), true, false},
+		{"a conversion does not bind an overload of another return type", appCast(0x0E), depCrossAsm(), false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			res := runReachSet(t, c.app, depCrossAsm(), sink)
+			res := runReachSet(t, c.app, c.dep, sink)
 			if got := len(res.Paths) > 0; got != c.wantPath {
 				t.Fatalf("path = %v, want %v (Searched=%v, partiality=%+v)", got, c.wantPath, res.Searched, res.Partiality)
 			}
-			// Neither a reached sink nor an unbound call is ever a searched one.
-			if slices.Contains(res.Searched, sink) {
-				t.Fatalf("Searched = %v, want %s unsettled", res.Searched, sink)
+			if got := slices.Contains(res.Searched, sink); got != c.wantSearched {
+				t.Fatalf("searched = %v, want %v (Searched=%v, partiality=%+v)", got, c.wantSearched, res.Searched, res.Partiality)
 			}
 		})
 	}

@@ -318,3 +318,69 @@ func TestFrameworkSupplied(t *testing.T) {
 		t.Fatalf("ReadDependency miss = %q, want %q", why, MissFrameworkSupplied)
 	}
 }
+
+// TestDependencyDlls_RuntimeSpecificAssets: a package that ships its implementation under
+// runtimes/<rid>/lib/ beside a lib/ dll (often a PlatformNotSupported stub) is read from the
+// target restore resolved for the build's runtime, and only from there. With the runtime
+// unknown, ambiguous, or not restored, the package is a named miss; the lib/ dll, which both
+// the assets runtime block and the cache convention path name, is never read in its place.
+func TestDependencyDlls_RuntimeSpecificAssets(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("NUGET_PACKAGES", cache)
+	stub := writeDll(t, cache, "rid", "1.0.0", "lib", "net8.0", "Rid.dll")
+	win := writeDll(t, cache, "rid", "1.0.0", "runtimes", "win", "lib", "net8.0", "Rid.dll")
+	plain := writeDll(t, cache, "plain", "1.0.0", "lib", "net8.0", "Plain.dll")
+	writeDll(t, cache, "gone", "1.0.0", "lib", "net8.0", "Gone.dll")
+	ridRow := func(runtimeDll string) string {
+		return `"Rid/1.0.0":{"type":"package","compile":{"lib/net8.0/Rid.dll":{}},"runtime":{"` + runtimeDll + `":{}},` +
+			`"runtimeTargets":{"runtimes/win/lib/net8.0/Rid.dll":{"assetType":"runtime","rid":"win"}}}`
+	}
+	data := []byte(`{"version":3,"targets":{` +
+		`"net8.0":{` + ridRow("lib/net8.0/Rid.dll") + `,` +
+		`"Plain/1.0.0":{"type":"package","runtime":{"lib/net8.0/Plain.dll":{}},` +
+		`"runtimeTargets":{"runtimes/linux-x64/native/libplain.so":{"assetType":"native","rid":"linux-x64"}}},` +
+		`"Gone/1.0.0":{"type":"package","runtime":{"lib/net8.0/Gone.dll":{}},` +
+		`"runtimeTargets":{"runtimes/win/lib/net8.0/Gone.dll":{"assetType":"runtime","rid":"win"}}}},` +
+		`"net8.0/win-x64":{"Rid/1.0.0":{"type":"package","runtime":{"runtimes/win/lib/net8.0/Rid.dll":{}}},` +
+		`"Gone/1.0.0":{"type":"package","runtime":{"runtimes/win/lib/net8.0/Gone.dll":{}}}},` +
+		`"net8.0/linux-x64":{"Rid/1.0.0":{"type":"package","runtime":{"lib/net8.0/Rid.dll":{}}}}},` +
+		`"libraries":{"Rid/1.0.0":{"type":"package","path":"rid/1.0.0"},"Plain/1.0.0":{"type":"package","path":"plain/1.0.0"},` +
+		`"Gone/1.0.0":{"type":"package","path":"gone/1.0.0"}},` +
+		`"packageFolders":{` + jsonStr(cache) + `:{}}}`)
+	a, ok := ParseAssetsLocator(data)
+	if !ok {
+		t.Fatal("ParseAssetsLocator ok=false")
+	}
+	cases := []struct {
+		name     string
+		pkg      string
+		runtime  Runtime
+		want     string // located path; "" when a miss
+		wantMiss string
+	}{
+		{"RID resolved: the runtime's implementation", "Rid/1.0.0", Runtime{RID: "win-x64"}, win, ""},
+		{"RID resolved to lib/ by restore", "Rid/1.0.0", Runtime{RID: "linux-x64"}, stub, ""},
+		{"RID unknown (portable build)", "Rid/1.0.0", Runtime{}, "", MissRIDUnknown},
+		{"RID ambiguous", "Rid/1.0.0", Runtime{Ambiguous: true}, "", MissRIDAmbiguous},
+		{"RID the restore did not resolve", "Rid/1.0.0", Runtime{RID: "osx-arm64"}, "", MissRIDUnknown},
+		{"RID resolved, its asset missing: no fallback to lib/", "Gone/1.0.0", Runtime{RID: "win-x64"}, "", MissNotLocated},
+		{"native-only runtimeTargets do not make a package runtime-specific", "Plain/1.0.0", Runtime{}, plain, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			paths, miss := dependencyDlls(t.TempDir(), DepRef{Target: "net8.0", PkgKey: c.pkg, Runtime: c.runtime}, a)
+			if miss != c.wantMiss {
+				t.Fatalf("miss = %q, want %q (paths %v)", miss, c.wantMiss, paths)
+			}
+			if c.want == "" {
+				if len(paths) != 0 {
+					t.Fatalf("paths = %v, want none", paths)
+				}
+				return
+			}
+			if len(paths) != 1 || paths[0] != c.want {
+				t.Fatalf("paths = %v, want [%s]", paths, c.want)
+			}
+		})
+	}
+}

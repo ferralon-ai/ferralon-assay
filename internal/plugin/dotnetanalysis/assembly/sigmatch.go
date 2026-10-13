@@ -50,6 +50,7 @@ type sigType struct {
 type methodSigShape struct {
 	hasThis  bool
 	genArity uint32
+	ret      sigType
 	params   []sigType
 	ok       bool
 }
@@ -65,7 +66,7 @@ func decodeMethodSigShape(asm *Assembly, blob []byte) methodSigShape {
 	if !ok || r.err != nil || int(n) > len(blob) {
 		return methodSigShape{}
 	}
-	decodeSigType(asm, r) // return type
+	s.ret = decodeSigType(asm, r)
 	for i := uint32(0); i < n && r.err == nil; i++ {
 		s.params = append(s.params, decodeSigType(asm, r))
 	}
@@ -160,11 +161,23 @@ func (a sigType) matches(b sigType) bool {
 }
 
 // sigCompatible reports whether the signature sigA (read in asmA) can name the method
-// whose signature is sigB (read in asmB). Calling convention, generic arity and parameter
-// count must agree, and parameter types must agree by name where both sides are concrete.
-// Return types are not compared: a covariant override returns a narrower type. A blob that
-// does not decode is compatible with anything.
+// whose signature is sigB (read in asmB), as a virtual call names an override. Calling
+// convention, generic arity and parameter count must agree, and parameter types must agree
+// by name where both sides are concrete. Return types are not compared: a covariant
+// override returns a narrower type. A blob that does not decode is compatible with
+// anything.
 func sigCompatible(asmA *Assembly, sigA []byte, asmB *Assembly, sigB []byte) bool {
+	return sigMatch(asmA, sigA, asmB, sigB, false)
+}
+
+// sigExact is sigCompatible for a direct bind (call, newobj, ldftn), where the call site
+// names one declared method and its return type is part of that name: overloads that
+// differ only in return type (op_Explicit, op_Implicit) are told apart.
+func sigExact(asmA *Assembly, sigA []byte, asmB *Assembly, sigB []byte) bool {
+	return sigMatch(asmA, sigA, asmB, sigB, true)
+}
+
+func sigMatch(asmA *Assembly, sigA []byte, asmB *Assembly, sigB []byte, withReturn bool) bool {
 	if asmA == asmB && bytesEqual(sigA, sigB) {
 		return true
 	}
@@ -173,6 +186,9 @@ func sigCompatible(asmA *Assembly, sigA []byte, asmB *Assembly, sigB []byte) boo
 		return true
 	}
 	if a.hasThis != b.hasThis || a.genArity != b.genArity || len(a.params) != len(b.params) {
+		return false
+	}
+	if withReturn && !a.ret.matches(b.ret) {
 		return false
 	}
 	for i := range a.params {

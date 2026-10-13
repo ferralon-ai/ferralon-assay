@@ -33,43 +33,72 @@ type c3Case struct {
 	roots   []string // caller-style SCIPs
 }
 
-// c3Baseline is the frozen C3 control: 17 edges / 10 roots across 9 JS/TS fixtures,
-// captured BEFORE the rewrite. A post-rewrite re-run must reproduce it EXACTLY — every
-// edge preserved (or a removal explained), and every ADDED edge rule-attributed. There
-// are no additions or removals expected: import-scoped resolution reproduces the same
-// first-party edges the sound global resolver produced on this corpus.
+// c3Baseline is the C3 control: 38 edges / 37 roots across 9 JS/TS fixtures. A re-run
+// must reproduce it EXACTLY — every edge preserved (or a removal explained), and every
+// ADDED edge rule-attributed. Besides the import-scoped first-party edges, it carries
+// each module's top-level frame as a root (with edges to what top-level code calls),
+// inline handler frames passed to get/createServer, and calls nested in callback
+// arguments (fetchUrl → resolveTarget inside a Promise executor).
 var c3Baseline = []c3Case{
 	{
 		fixture: "CVE-2022-24999-tool-unavailable",
 		edges: []edgeSpec{
 			{"app", nil, "handleSearch", 2, "app", nil, "parseQuery", 1},
 			{"app", nil, "parseQuery", 1, "qs", nil, "parse", 1},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(29, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleSearch", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleSearch", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("qs", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(29, 46), 2),
+		},
 	},
 	{
 		fixture: "CVE-2022-46175-outofrange",
 		edges: []edgeSpec{
 			{"app", nil, "handleConfig", 2, "app", nil, "loadConfig", 1},
 			{"app", nil, "loadConfig", 1, "json5", nil, "parse", 1},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(22, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleConfig", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleConfig", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("json5", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(22, 46), 2),
+		},
 	},
 	{
 		fixture: "CVE-2022-46175-reachable-direct",
 		edges: []edgeSpec{
 			{"app", nil, "handleConfig", 2, "app", nil, "loadConfig", 1},
 			{"app", nil, "loadConfig", 1, "json5", nil, "parse", 1},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(22, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleConfig", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleConfig", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("json5", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(22, 46), 2),
+		},
 	},
 	{
 		fixture: "CVE-2023-26136-reachable-transitive",
 		edges: []edgeSpec{
 			{"app", nil, "handleLogin", 2, "app", nil, "storeSession", 1},
 			{"app", nil, "storeSession", 1, "cookie", []string{"CookieJar"}, "setCookie", 2},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(24, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleLogin", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleLogin", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("cookie", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(24, 46), 2),
+		},
 	},
 	{
 		fixture: "CVE-2024-29041-installed-unreachable",
@@ -77,6 +106,7 @@ var c3Baseline = []c3Case{
 		roots: []string{
 			funcSCIP("app", nil, "handleEcho", 2),
 			funcSCIP("app", nil, "handleHealth", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
 		},
 	},
 	{
@@ -84,8 +114,16 @@ var c3Baseline = []c3Case{
 		edges: []edgeSpec{
 			{"server", nil, "handleRender", 2, "server", nil, "render", 1},
 			{"server", nil, "render", 1, "require", nil, "requirePage", 2},
+			{"require", nil, "requirePage", 2, "require", nil, "getPagePath", 2},
+			{"server", nil, moduleInitFunc, 0, "server", nil, "makeApp", 0},
+			{"server", nil, "makeApp", 0, "server", nil, anonHandlerFunc(22, 46), 2},
 		},
-		roots: []string{funcSCIP("server", nil, "handleRender", 2)},
+		roots: []string{
+			funcSCIP("server", nil, "handleRender", 2),
+			funcSCIP("server", nil, moduleInitFunc, 0),
+			funcSCIP("require", nil, moduleInitFunc, 0),
+			funcSCIP("server", nil, anonHandlerFunc(22, 46), 2),
+		},
 	},
 	{
 		fixture: "FERRALON-JS-NEXTRCE-0001-vulnerable",
@@ -93,30 +131,56 @@ var c3Baseline = []c3Case{
 			{"require", nil, "requireModule", 1, "require", nil, "resolvePath", 1},
 			{"server", nil, "handleRender", 2, "server", nil, "render", 1},
 			{"server", nil, "render", 1, "require", nil, "requireModule", 1},
+			{"server", nil, moduleInitFunc, 0, "server", nil, "makeApp", 0},
+			{"server", nil, "makeApp", 0, "server", nil, anonHandlerFunc(30, 46), 2},
 		},
-		roots: []string{funcSCIP("server", nil, "handleRender", 2)},
+		roots: []string{
+			funcSCIP("server", nil, "handleRender", 2),
+			funcSCIP("server", nil, moduleInitFunc, 0),
+			funcSCIP("require", nil, moduleInitFunc, 0),
+			funcSCIP("server", nil, anonHandlerFunc(30, 46), 2),
+		},
 	},
 	{
 		fixture: "FERRALON-JS-SSRF-0001-patched",
 		edges: []edgeSpec{
 			{"app", nil, "handle", 1, "fetcher", nil, "fetchUrl", 1},
 			{"app", nil, "handleFetch", 2, "app", nil, "handle", 1},
+			{"fetcher", nil, "fetchUrl", 1, "fetcher", nil, "resolveTarget", 1},
+			{"fetcher", nil, "fetchUrl", 1, "fetcher", nil, anonHandlerFunc(54, 42), 1},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(25, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleFetch", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleFetch", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("fetcher", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(25, 46), 2),
+			funcSCIP("fetcher", nil, anonHandlerFunc(54, 42), 1),
+		},
 	},
 	{
 		fixture: "FERRALON-JS-SSRF-0001-vulnerable",
 		edges: []edgeSpec{
 			{"app", nil, "handle", 1, "fetcher", nil, "fetchUrl", 1},
 			{"app", nil, "handleFetch", 2, "app", nil, "handle", 1},
+			{"fetcher", nil, "fetchUrl", 1, "fetcher", nil, "resolveTarget", 1},
+			{"fetcher", nil, "fetchUrl", 1, "fetcher", nil, anonHandlerFunc(51, 42), 1},
+			{"app", nil, moduleInitFunc, 0, "app", nil, "makeApp", 0},
+			{"app", nil, "makeApp", 0, "app", nil, anonHandlerFunc(25, 46), 2},
 		},
-		roots: []string{funcSCIP("app", nil, "handleFetch", 2)},
+		roots: []string{
+			funcSCIP("app", nil, "handleFetch", 2),
+			funcSCIP("app", nil, moduleInitFunc, 0),
+			funcSCIP("fetcher", nil, moduleInitFunc, 0),
+			funcSCIP("app", nil, anonHandlerFunc(25, 46), 2),
+			funcSCIP("fetcher", nil, anonHandlerFunc(51, 42), 1),
+		},
 	},
 }
 
 // TestC3_BaselineDiffPreservedWithProvenance is the C3(a) gate: re-run the import-scoped
-// call graph over every baseline fixture and diff against the frozen 17-edge/10-root
-// control. It asserts NO baseline edge silently vanishes, NO unexpected edge is added,
+// call graph over every baseline fixture and diff against the 38-edge/37-root control. It asserts NO baseline edge silently vanishes, NO unexpected edge is added,
 // every root is preserved, and — the precision bar made structural — EVERY emitted edge
 // carries a non-empty provenance algorithm (C5 tie-in): an edge exists only via a named
 // rule, never a fabricated target.
@@ -171,12 +235,11 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 		totalEdges += len(res.Edges)
 		totalRoots += len(res.Roots)
 	}
-	// The corpus totals the researcher captured: 17 edges, 10 roots.
-	if totalEdges != 17 {
-		t.Errorf("total edges across corpus = %d, want 17 (baseline control)", totalEdges)
+	if totalEdges != 38 {
+		t.Errorf("total edges across corpus = %d, want 38 (baseline control)", totalEdges)
 	}
-	if totalRoots != 10 {
-		t.Errorf("total roots across corpus = %d, want 10 (baseline control)", totalRoots)
+	if totalRoots != 37 {
+		t.Errorf("total roots across corpus = %d, want 37 (baseline control)", totalRoots)
 	}
 }
 

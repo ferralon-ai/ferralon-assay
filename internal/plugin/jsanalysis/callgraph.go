@@ -172,8 +172,12 @@ func (prog *program) indexModule(fp fileParse) {
 // binding lookup in the referencing module subsumes the former "exactly one declared
 // function program-wide" gate, and the handlerRefArity sentinel is retired. An
 // unresolved/ambiguous handler yields "" (no ingress symbol — honest absence, never a
-// fabricated node).
+// fabricated node). An inline handler frame is minted by the scanner, so its id is
+// built directly rather than resolved.
 func (p *program) resolveIngressSymbol(module string, in ingressMarker) string {
+	if in.frame {
+		return funcSCIP(module, in.enclosing, in.name, in.arity)
+	}
 	target, _ := p.resolver().ResolveRef(module, in.name).edge()
 	return target
 }
@@ -197,6 +201,8 @@ type partialFlags struct {
 	uninspectable bool // a bare specifier into a package this cycle cannot open (uninspectable_package)
 	dynImport     bool // a runtime-computed ESM target import(expr) (dynamic_import_specifier)
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
+	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
+	evaluated     bool // eval or the Function constructor (evaluated_code)
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -225,8 +231,38 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		if f.bindings.computedReq {
 			flags.computedReq = true
 		}
+		if f.bindings.nativeLoad {
+			flags.unreadModule = true
+		}
+		if f.bindings.evaluated {
+			flags.evaluated = true
+		}
+		// A module that loads an out-of-tree package runs that package's code, whatever it
+		// later does with the binding, so the run executed code this lane did not open.
+		for _, ls := range f.bindings.specifiers {
+			if !flags.uninspectable && rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
+				flags.uninspectable = true
+			}
+			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
+				flags.unreadModule = true
+			}
+		}
+		// Module code runs when the module is loaded, and any first-party module may be
+		// loaded, so every module's top-level frame is a root.
+		rootsSet[moduleInitSCIP(f.module)] = true
 		for _, cs := range f.calls {
 			caller := sym(funcSCIP(f.module, cs.callerEnclosing, cs.callerName, cs.callerArity))
+			if cs.calleeFrame {
+				// The frame that registers an inline handler reaches it: the scanner minted
+				// both ends in this file, so there is nothing to resolve.
+				e := plugin.CallEdge{Caller: caller, Callee: sym(funcSCIP(f.module, cs.calleeEnclosing, cs.calleeName, cs.calleeArity))}
+				if !seen[e] {
+					seen[e] = true
+					edges = append(edges, e)
+					provByEdge[e] = provenance{Algo: algoLocal}
+				}
+				continue
+			}
 			r := rs.resolveCallSite(f.module, cs)
 			if target, ok := r.edge(); ok {
 				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
@@ -318,6 +354,12 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	}
 	if flags.computedReq {
 		reasons = append(reasons, plugin.PartialReasonComputedRequireSpecifier)
+	}
+	if flags.unreadModule {
+		reasons = append(reasons, plugin.PartialReasonUnresolvedModule)
+	}
+	if flags.evaluated {
+		reasons = append(reasons, plugin.PartialReasonEvaluatedCode)
 	}
 	if len(reasons) == 0 {
 		return plugin.Complete()

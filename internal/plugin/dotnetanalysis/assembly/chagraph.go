@@ -500,13 +500,13 @@ func (c *CHA) matchMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte
 	return out
 }
 
-// declaredMethod returns t's methods named name whose signature sig can name, regardless
-// of abstractness (used for an exact direct-call bind, where an abstract target is still
-// the name).
+// declaredMethod returns t's methods named name whose signature sig names, return type
+// included, regardless of abstractness (used for an exact direct-call bind, where an
+// abstract target is still the name).
 func (c *CHA) declaredMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte) []*MethodDef {
 	var out []*MethodDef
 	for _, m := range t.def.Methods {
-		if m.Name == name && sigCompatible(sigAsm, sig, t.asm, m.SigBlob) {
+		if m.Name == name && sigExact(sigAsm, sig, t.asm, m.SigBlob) {
 			out = append(out, m)
 		}
 	}

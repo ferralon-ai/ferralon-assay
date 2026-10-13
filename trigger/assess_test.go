@@ -16,6 +16,8 @@ type groundsFixture struct {
 	pkg             *report.Package
 	advisoryPURL    string
 	advisorySymbols []string
+	affected        []string // affected_packages[] PURLs
+	dropped         []string // dropped_affected_packages: elements that failed validation
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
@@ -25,8 +27,13 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	t.Helper()
 	store := artifact.NewMemStore()
 	const aid = "grounds"
+	affected := make([]map[string]string, 0, len(fx.affected))
+	for _, p := range fx.affected {
+		affected = append(affected, map[string]string{"purl": p})
+	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
-		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols,
+		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
+		"dropped_affected_packages": fx.dropped,
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
@@ -178,7 +185,50 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 				fx.reach.Searched = nil
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 			},
-			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it",
+			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it (package_not_loaded)",
+		},
+		{
+			name: "multi-package: the admitted package listed again grounds as before",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/PyYAML"}
+			},
+			wantDetail: "yaml.load in PyYAML@5.3",
+		},
+		{
+			// Tracker's probe: symbols in two packages, only the admitted one's were searched.
+			name: "multi-package: arm A on the admitted package alone does not ground",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", "pkg:pypi/ruamel.yaml"}
+				fx.advisorySymbols = []string{"yaml.load", "ruamel.yaml.load"}
+				fx.resolution.Matched["ruamel.yaml.load"] = nil
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "multi-package: a refutation of the admitted package does not ground",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", "pkg:pypi/ruamel.yaml"}
+				fx.reach.Searched = nil
+				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "multi-package: an element without a package URL is another package",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml", ""}
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			// CVE-2023-39325's shape: the second element failed validation and left the
+			// multi-package set, but the advisory still names it.
+			name: "multi-package: an element dropped at decode is another package",
+			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/pyyaml"}
+				fx.dropped = []string{"pkg:pypi/ruamel.yaml"}
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},
 		{
 			name: "arm B: refutation of another package",
@@ -272,5 +322,76 @@ func TestPurlKey(t *testing.T) {
 		if _, ok := purlKey(bad); ok {
 			t.Errorf("purlKey(%q) parsed; want rejected", bad)
 		}
+	}
+}
+
+// TestWithInventoryLimits: a scan-wide inventory limit of the did_not_run class (stethoscope's
+// tool_failure:lockfile_ambiguous) blocks not_exploitable for findings of its ecosystem.
+func TestWithInventoryLimits(t *testing.T) {
+	ne := report.AdvisoryFinding{
+		Package:  &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.5.2"},
+		Verdict:  report.VerdictNotExploitable,
+		Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: "grounds"},
+	}
+	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		blocked bool
+	}{
+		{"lockfile ambiguous blocks NE of its ecosystem", ne, ambiguous, true},
+		{"no inventory limit", ne, nil, false},
+		{"limit of another ecosystem", ne, inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"inherent inventory limit", ne, inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
+		{"read back from a prior report's notes", ne, inventoryLimits(append(ambiguous, report.PartialityNote{Reason: plugin.PartialReasonNoIngress, Ecosystem: "npm"})), true},
+		{"other scan notes are not inventory limits", ne, inventoryLimits([]report.PartialityNote{{Reason: plugin.PartialReasonNoIngress, Ecosystem: "npm"}}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits)
+			if !tc.blocked {
+				if got.Verdict != report.VerdictNotExploitable {
+					t.Fatalf("verdict = %s/%q, want not_exploitable", got.Verdict, got.UndeterminedReason)
+				}
+				return
+			}
+			if got.Verdict != report.VerdictUndetermined || got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" {
+				t.Fatalf("got %s/%q basis %q, want undetermined/%s with no basis", got.Verdict, got.UndeterminedReason, got.Evidence.Basis, report.ReasonAnalysisDidNotRun)
+			}
+		})
+	}
+	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictDisqualified, report.VerdictUndetermined} {
+		f := ne
+		f.Verdict = v
+		if got := withInventoryLimits(f, ambiguous); got.Verdict != v {
+			t.Errorf("%s changed to %s", v, got.Verdict)
+		}
+	}
+}
+
+// TestFinding_AliasedDependencyCallIsNotGrounds pins the shape #79 briefly let through on main:
+// `const p = require('json5'); function load(s){ return p.parse(s) }`. The JS lane drew one edge,
+// declared only the inherent dynamic_dispatch, and resolved json5.parse to a boundary node whose
+// code it never loaded. That defeats analysisDidNotRun's zero-edge arm, so the gate alone must
+// refuse not_exploitable: the sink is not Searched and no lane refuted json5.
+func TestFinding_AliasedDependencyCallIsNotGrounds(t *testing.T) {
+	const boundary = "npm:json5#parse"
+	fx := groundsFixture{
+		pkg:             &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"},
+		advisoryPURL:    "pkg:npm/json5",
+		advisorySymbols: []string{"json5.parse"},
+		resolution: plugin.SymbolResolutionResult{
+			Partiality: plugin.Complete(),
+			Resolved:   []plugin.Symbol{{SCIP: boundary}},
+			Origins:    map[string]string{boundary: "pkg:npm/json5"},
+			Matched:    map[string][]string{"json5.parse": {boundary}},
+		},
+		reach:     plugin.ReachabilityResult{Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch)},
+		footprint: []string{plugin.PartialReasonDynamicDispatch},
+	}
+	f := fx.finding(t)
+	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonVulnerableSymbolUnresolved {
+		t.Fatalf("got %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonVulnerableSymbolUnresolved)
 	}
 }

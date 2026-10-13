@@ -10,6 +10,7 @@ package dotnetanalysis
 // sink is searched: the others were never traced.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,12 +28,21 @@ const partialReasonMultipleProjects = "multiple_projects_unsupported"
 // restore target, so the dependency bytes read may not be the ones it runs against.
 const partialReasonTargetUnbound = "reachability_undetermined:restore_target_unbound"
 
+// partialReasonRIDUnknown: a dependency ships a separate implementation per runtime and the
+// build records no runtime restore resolved, so the bytes that run are not known.
+const partialReasonRIDUnknown = "reachability_undetermined:runtime_identifier_unknown"
+
+// partialReasonRIDAmbiguous: a dependency ships a separate implementation per runtime and the
+// build's outputs record more than one runtime.
+const partialReasonRIDAmbiguous = "reachability_undetermined:runtime_identifier_ambiguous"
+
 // firstPartyBuild is the first-party program a run analyzes.
 type firstPartyBuild struct {
 	project string             // project file; "" when the build has none
 	fp      *assembly.Assembly // the built assembly; nil when not located or unreadable
 	assets  []byte             // project.assets.json; nil when absent
 	target  string             // the assets targets key fp binds to; "" when unbound or no assets
+	runtime assembly.Runtime   // the runtime fp's copies were built for
 	reasons []string           // run-wide limits from the layout
 }
 
@@ -50,6 +60,8 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 	name := strings.TrimSuffix(filepath.Base(b.project), filepath.Ext(b.project))
 	var fpTFM string
 	entries := map[string]bool{}
+	ridOf := map[string]string{} // path -> RID, for each readable program copy
+	tfmOf := map[string]string{}
 	for _, path := range builtAssemblies(buildDir, name) {
 		a, ok := assembly.ReadAssembly(path)
 		if !ok || a == nil || a.Failed {
@@ -61,12 +73,25 @@ func locateFirstPartyBuild(buildDir string) firstPartyBuild {
 		}
 		tfm := assemblyTFM(a, path)
 		entries[tfm] = true
+		tfmOf[path], ridOf[path] = tfm, builtRID(path, name)
 		if b.fp == nil {
 			b.fp, fpTFM = a, tfm
 		}
 	}
 	if len(entries) > 1 {
 		multiple = true
+	}
+	rids := map[string]bool{}
+	for path, tfm := range tfmOf {
+		if b.fp != nil && tfm == fpTFM {
+			rids[ridOf[path]] = true
+		}
+	}
+	for rid := range rids {
+		b.runtime.RID = rid
+	}
+	if len(rids) > 1 {
+		b.runtime = assembly.Runtime{Ambiguous: true}
 	}
 	if multiple {
 		b.reasons = append(b.reasons, partialReasonMultipleProjects)
@@ -128,6 +153,44 @@ func builtAssemblies(buildDir, name string) []string {
 		})
 	}
 	return out
+}
+
+// builtRID is the runtime identifier a program copy was built for, from the <name>.deps.json
+// the SDK writes beside it: its runtimeTarget.name is ".NETCoreApp,Version=v8.0/linux-x64"
+// for a runtime-specific build and has no "/<rid>" for a portable one. "" when the file is
+// absent, unreadable, or portable.
+func builtRID(path, name string) string {
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(path), name+".deps.json"))
+	if err != nil {
+		return ""
+	}
+	var deps struct {
+		RuntimeTarget struct {
+			Name string `json:"name"`
+		} `json:"runtimeTarget"`
+	}
+	if json.Unmarshal(data, &deps) != nil {
+		return ""
+	}
+	_, rid, _ := strings.Cut(deps.RuntimeTarget.Name, "/")
+	if !validRID(rid) {
+		return ""
+	}
+	return rid
+}
+
+// validRID admits a runtime identifier as a single assets-key segment ("linux-x64",
+// "win10-x64", "linux-musl-arm64").
+func validRID(rid string) bool {
+	if rid == "" {
+		return false
+	}
+	for _, r := range rid {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '.' || r == '_') {
+			return false
+		}
+	}
+	return !strings.Contains(rid, "..")
 }
 
 // assemblyTFM is the canonical framework a built assembly targets: its TargetFramework

@@ -743,8 +743,6 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		return adv, nil
 	}
 	var raw struct {
-		Module  string   `json:"module"`
-		PURL    string   `json:"purl"`
 		Aliases []string `json:"aliases"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &raw); err != nil {
@@ -752,12 +750,13 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 	}
 	adv.Aliases = raw.Aliases
 
+	name, purl := pipeline.AdvisoryPackage(store, assessmentID)
 	inv, ok := inventory(store, assessmentID)
-	if !ok || raw.Module == "" || inv.ResolvedVersion == "" {
+	if !ok || name == "" || inv.ResolvedVersion == "" {
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
-	// toolchain, resolved_version is a go1.x.y toolchain release (M3) while raw.Module is the
+	// toolchain, resolved_version is a go1.x.y toolchain release (M3) while the package name is the
 	// advisory's top-level MODULE — pairing them would emit an SBOM entry like
 	// golang.org/x/net@go1.21.0, a coordinate that does not exist.
 	if pipeline.ToolchainSubject(store, assessmentID) {
@@ -765,9 +764,9 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 	}
 	return adv, &report.Package{
 		Ecosystem: ecosystemFor(inv.Language),
-		Name:      raw.Module,
+		Name:      name,
 		Version:   inv.ResolvedVersion,
-		PURL:      raw.PURL,
+		PURL:      purl,
 	}
 }
 

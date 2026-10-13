@@ -75,6 +75,7 @@ func resolveInDependency(buildDir, id, version string, wanted []string) plugin.S
 	var occurrences []assembly.DepRef
 	for _, d := range graph.occurrences(id, version) {
 		if build.target == "" || d.Target == build.target {
+			d.Runtime = build.runtime
 			occurrences = append(occurrences, d)
 		}
 	}

@@ -472,6 +472,24 @@ func TestResolveDependencySymbols_GradleLockTwoVersions(t *testing.T) {
 	}
 }
 
+// A lock the build script contradicts binds no bytes: build.gradle declares netkit 2.0.0, the
+// lock still says 1.0.0, and only 1.0.0's JAR is cached. Nothing resolves on those bytes and the
+// result is partial.
+func TestResolveDependencySymbols_StaleGradleLock(t *testing.T) {
+	build := t.TempDir()
+	writeFile(t, filepath.Join(build, "build.gradle"), "dependencies { implementation 'com.evil:netkit:2.0.0' }\n")
+	writeFile(t, filepath.Join(build, "src", "main", "java", "A.java"), "class A{}")
+	writeFile(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath,runtimeClasspath\nempty=\n")
+	b := &cpb{}
+	writeJar(t, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b", "netkit-1.0.0.jar"),
+		"com/evil/netkit/UrlFetcher.class", emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
+
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+	if len(res.Resolved) != 0 || res.Partiality.Complete {
+		t.Errorf("a stale lock bound netkit 1.0.0's bytes: resolved %v, partiality %+v", scips(res.Resolved), res.Partiality)
+	}
+}
+
 // A symbol short of the full binary name resolves nothing, even when the JAR holds exactly
 // one method it could mean: the JAR can also hold a lookalike, and a partial form cannot tell
 // the two apart. The miss is reported, so the advisory is never cleared on it.

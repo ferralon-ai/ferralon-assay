@@ -26,18 +26,42 @@ func writeBuildFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// TestResolveDependencyVersions_KotlinDSLLiterals proves the delegated shared parser
-// resolves the Kotlin-DSL parenthesized, double-quoted configuration forms to concrete
-// versions (row 1: declared versions match the native resolver's for the literal case).
+// gradleLocking turns on dependency locking for every configuration in a build script. A
+// declared version is only a request (Gradle selects the highest version asked for anywhere in
+// the graph), so a test that needs a resolved version locks it.
+const gradleLocking = `
+dependencyLocking {
+    lockAllConfigurations()
+}
+`
+
+// gradleLockAll returns lock lines pinning each "g:a:v" in every resolvable configuration an
+// implementation or api declaration feeds, as Gradle writes them.
+func gradleLockAll(gavs ...string) string {
+	var out string
+	for _, gav := range gavs {
+		out += gav + "=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath\n"
+	}
+	return out + "empty=annotationProcessor,testAnnotationProcessor\n"
+}
+
+// TestResolveDependencyVersions_KotlinDSLLiterals proves the delegated shared parser reads the
+// Kotlin-DSL parenthesized, double-quoted configuration forms: a declared literal alone is
+// found but not resolved, and under an enforced lock each resolves to the locked version.
 func TestResolveDependencyVersions_KotlinDSLLiterals(t *testing.T) {
-	dir := t.TempDir()
-	writeBuildFile(t, dir, "build.gradle.kts", `
+	const script = `
 dependencies {
     implementation("com.example:widget:1.2.3")
     api("com.example:api-lib:4.5.6")
     testImplementation("org.jetbrains:annotations:24.0.0")
 }
-`)
+`
+	declared := t.TempDir()
+	writeBuildFile(t, declared, "build.gradle.kts", script)
+	dir := t.TempDir()
+	writeBuildFile(t, dir, "build.gradle.kts", gradleLocking+script)
+	writeBuildFile(t, dir, "gradle.lockfile", gradleLockAll("com.example:api-lib:4.5.6", "com.example:widget:1.2.3")+
+		"org.jetbrains:annotations:24.0.0=testCompileClasspath,testRuntimeClasspath\n")
 
 	cases := []struct {
 		coordinate string
@@ -62,6 +86,16 @@ dependencies {
 		}
 		if res.Match.Version != tc.version {
 			t.Errorf("%q: version = %q, want %q", tc.coordinate, res.Match.Version, tc.version)
+		}
+
+		res, err = ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{
+			BuildDir: declared, Coordinate: tc.coordinate,
+		})
+		if err != nil {
+			t.Fatalf("ResolveDependencyVersions(%q), no lock: %v", tc.coordinate, err)
+		}
+		if !res.Found || res.Match.Resolved || res.Match.Constraint != tc.version {
+			t.Errorf("%q, no lock: match %+v (found %v), want found, not resolved, constraint %q", tc.coordinate, res.Match, res.Found, tc.version)
 		}
 	}
 }
@@ -168,7 +202,7 @@ func vulnClass() []byte {
 }
 
 // TestResolveDependencySymbols_ResolvesAgainstDependencyJar is the row-4 happy path: the
-// build declares the vulnerable dependency's version, its JAR sits in the local Gradle
+// build's enforced lock fixes the vulnerable dependency's version, its JAR sits in the local Gradle
 // cache, and the advisory names the sink by its package-qualified form. The op locates the
 // JAR, indexes it through the real parser, and resolves the advisory symbol to a concrete
 // bytecode-canonical plugin.Symbol — Complete, no partiality.
@@ -176,11 +210,12 @@ func TestResolveDependencySymbols_ResolvesAgainstDependencyJar(t *testing.T) {
 	build := writeGradleJarFixture(t, "com.example", "vuln", "1.2.3", map[string][]byte{
 		"com/example/net/UrlFetcher": vulnClass(),
 	})
-	writeBuildFile(t, build, "build.gradle.kts", `
+	writeBuildFile(t, build, "build.gradle.kts", gradleLocking+`
 dependencies {
     implementation("com.example:vuln:1.2.3")
 }
 `)
+	writeBuildFile(t, build, "gradle.lockfile", gradleLockAll("com.example:vuln:1.2.3"))
 
 	for _, advisory := range []string{
 		"com.example.net.UrlFetcher.fetch",
@@ -232,11 +267,12 @@ func TestResolveDependencySymbols_PURLPinnedVersion(t *testing.T) {
 // an empty resolution — never a fabricated match, never a clean empty.
 func TestResolveDependencySymbols_JarAbsentIsHonestPartiality(t *testing.T) {
 	build := t.TempDir()
-	writeBuildFile(t, build, "build.gradle.kts", `
+	writeBuildFile(t, build, "build.gradle.kts", gradleLocking+`
 dependencies {
     implementation("com.example:vuln:1.2.3")
 }
 `)
+	writeBuildFile(t, build, "gradle.lockfile", gradleLockAll("com.example:vuln:1.2.3"))
 	res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 		BuildDir:        build,
 		PURL:            "pkg:maven/com.example/vuln",
@@ -294,11 +330,12 @@ func TestResolveDependencySymbols_SymbolAbsentIsHonestPartiality(t *testing.T) {
 	build := writeGradleJarFixture(t, "com.example", "vuln", "1.2.3", map[string][]byte{
 		"com/example/net/UrlFetcher": vulnClass(),
 	})
-	writeBuildFile(t, build, "build.gradle.kts", `
+	writeBuildFile(t, build, "build.gradle.kts", gradleLocking+`
 dependencies {
     implementation("com.example:vuln:1.2.3")
 }
 `)
+	writeBuildFile(t, build, "gradle.lockfile", gradleLockAll("com.example:vuln:1.2.3"))
 	res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 		BuildDir:        build,
 		PURL:            "pkg:maven/com.example/vuln",

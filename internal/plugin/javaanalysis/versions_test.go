@@ -141,15 +141,21 @@ const gradleStringNotationFile = `dependencies {
     implementation "interp:olated:$libVersion" // interpolated → UNRESOLVED
 }`
 
+// wantDeclaredOnly fails unless res found a Gradle declaration that is not Resolved: with no lock
+// binding it, a declared literal is only a request (Gradle selects the highest version asked for
+// anywhere in the graph), so it is kept as the Constraint and never as the Version.
+func wantDeclaredOnly(t *testing.T, res plugin.DependencyVersionResult, constraint string) {
+	t.Helper()
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" || res.Match.Constraint != constraint {
+		t.Fatalf("match = %+v (found %v), want found, not resolved, constraint %q", res.Match, res.Found, constraint)
+	}
+}
+
 func TestParseGradle_StringNotation(t *testing.T) {
 	dir := writeTree(t, map[string]string{"build.gradle": gradleStringNotationFile})
 
-	if res := resolve(t, dir, "com.example.lib:widget"); !res.Match.Resolved || res.Match.Version != "1.4.0" {
-		t.Fatalf("widget = %+v, want 1.4.0", res.Match)
-	}
-	if res := resolve(t, dir, "com.test:helper"); !res.Match.Resolved || res.Match.Version != "3.0.0" {
-		t.Fatalf("helper = %+v, want 3.0.0", res.Match)
-	}
+	wantDeclaredOnly(t, resolve(t, dir, "com.example.lib:widget"), "1.4.0")
+	wantDeclaredOnly(t, resolve(t, dir, "com.test:helper"), "3.0.0")
 	if res := resolve(t, dir, "no.version:dep"); !res.Found || res.Match.Resolved {
 		t.Fatalf("versionless dep must be Found but UNRESOLVED, got %+v", res.Match)
 	}
@@ -165,9 +171,7 @@ const gradleMapNotationFile = `dependencies {
 
 func TestParseGradle_MapNotation(t *testing.T) {
 	dir := writeTree(t, map[string]string{"build.gradle": gradleMapNotationFile})
-	if res := resolve(t, dir, "com.example.lib:widget"); !res.Match.Resolved || res.Match.Version != "1.4.0" {
-		t.Fatalf("map-notation widget = %+v, want 1.4.0", res.Match)
-	}
+	wantDeclaredOnly(t, resolve(t, dir, "com.example.lib:widget"), "1.4.0")
 	if res := resolve(t, dir, "no.ver:thing"); !res.Found || res.Match.Resolved {
 		t.Fatalf("map-notation no-version must be Found but UNRESOLVED, got %+v", res.Match)
 	}
@@ -177,9 +181,7 @@ func TestParseGradle_KotlinDSL(t *testing.T) {
 	dir := writeTree(t, map[string]string{"build.gradle.kts": `dependencies {
     implementation("com.example.lib:widget:1.4.0")
 }`})
-	if res := resolve(t, dir, "com.example.lib:widget"); !res.Match.Resolved || res.Match.Version != "1.4.0" {
-		t.Fatalf("kotlin-dsl widget = %+v, want 1.4.0", res.Match)
-	}
+	wantDeclaredOnly(t, resolve(t, dir, "com.example.lib:widget"), "1.4.0")
 }
 
 // --- no build files: declared-partial degrade / hard errors ------------------
@@ -245,10 +247,11 @@ func TestResolveVersions_CorpusRepros(t *testing.T) {
 // A resolved match for a coordinate that ALSO appears versionless elsewhere must win (the
 // resolver prefers a Resolved match over an UNRESOLVED one for the same coordinate).
 func TestResolveVersions_ResolvedMatchWinsOverUnresolved(t *testing.T) {
-	dir := writeTree(t, map[string]string{"build.gradle": `dependencies {
-    implementation 'com.example.lib:widget'          // UNRESOLVED, appears first
-    implementation 'com.example.lib:widget:1.4.0'    // RESOLVED
-}`})
+	dir := writeTree(t, map[string]string{
+		// UNRESOLVED (managed, no inline version), walked first.
+		"a/pom.xml": `<project><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId></dependency></dependencies></project>`,
+		"b/pom.xml": pomLiteral, // RESOLVED
+	})
 	res := resolve(t, dir, "com.example.lib:widget")
 	if !res.Match.Resolved || res.Match.Version != "1.4.0" {
 		t.Fatalf("resolved match must win, got %+v", res.Match)

@@ -137,9 +137,9 @@ const HeadSize = 64 << 10
 // link, so whatever the target holds is classified once, at its real path.
 //
 // match sees the path and up to HeadSize bytes of the file's content (nil when the content
-// looks binary, the file is empty, or it is not a regular file). fullyRead is asked only about a regular file match
-// accepted; every other candidate is not fully read. Skipped directories yield nothing, unless
-// they are symlinks leaving root.
+// looks binary, the file is empty, or it is not a regular file). fullyRead is asked only about
+// a regular file match accepted; every other candidate is not fully read. Skipped directories
+// yield nothing, unless they are symlinks leaving root.
 func Candidates(root string, match func(path string, head []byte) (why string, ok bool), fullyRead func(path string) bool) []Candidate {
 	var out []Candidate
 	add := func(path, why string, read bool) {

@@ -22,8 +22,8 @@ func versionsOf(t *testing.T, dir, coordinate string) plugin.DependencyVersionRe
 	return res
 }
 
-// A .csproj exact PackageReference pin resolves; a range and a floating version stay
-// UNRESOLVED (the predicate fails open on them, never a false not-affected).
+// A .csproj exact-bracket PackageReference pin resolves; a plain minimum, a range and a floating
+// version stay UNRESOLVED (the predicate fails open on them, never a false not-affected).
 func TestVersions_CsprojPinsAndRanges(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"App.csproj": `
@@ -36,24 +36,29 @@ func TestVersions_CsprojPinsAndRanges(t *testing.T) {
     <PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" />
     <PackageReference Include="RangePkg" Version="[1.0,2.0)" />
     <PackageReference Include="FloatPkg" Version="1.2.*" />
-    <PackageReference Include="ElemVer"><Version>4.5.6</Version></PackageReference>
+    <PackageReference Include="ElemVer"><Version>[4.5.6]</Version></PackageReference>
+    <PackageReference Include="ElemMin"><Version>4.5.6</Version></PackageReference>
     <PackageReference Include="NoVersionPkg" />
   </ItemGroup>
 </Project>
 `,
 	})
 
-	// Exact attr pin.
-	if r := versionsOf(t, dir, "DotNetZip"); !r.Found || !r.Match.Resolved || r.Match.Version != "1.16.0" {
-		t.Errorf("DotNetZip must resolve to 1.16.0; got %+v", r)
+	// A plain Version is a minimum: restore takes the lowest available version at or above it,
+	// which need not be 1.16.0 (NU1603). FOUND but UNRESOLVED.
+	if r := versionsOf(t, dir, "DotNetZip"); !r.Found || r.Match.Resolved {
+		t.Errorf("DotNetZip plain 1.16.0 must be Found+UNRESOLVED; got %+v", r)
+	}
+	if r := versionsOf(t, dir, "ElemMin"); !r.Found || r.Match.Resolved {
+		t.Errorf("ElemMin plain child <Version> must be Found+UNRESOLVED; got %+v", r)
 	}
 	// Exact-bracket "[13.0.1]" unwraps to an exact pin.
 	if r := versionsOf(t, dir, "Newtonsoft.Json"); !r.Found || !r.Match.Resolved || r.Match.Version != "13.0.1" {
 		t.Errorf("Newtonsoft.Json [13.0.1] must resolve to 13.0.1; got %+v", r)
 	}
-	// Child-element version.
+	// Child-element exact-bracket version.
 	if r := versionsOf(t, dir, "ElemVer"); !r.Found || !r.Match.Resolved || r.Match.Version != "4.5.6" {
-		t.Errorf("ElemVer child <Version> must resolve to 4.5.6; got %+v", r)
+		t.Errorf("ElemVer child <Version>[4.5.6]</Version> must resolve to 4.5.6; got %+v", r)
 	}
 	// A range is FOUND but UNRESOLVED (fail open).
 	if r := versionsOf(t, dir, "RangePkg"); !r.Found || r.Match.Resolved {
@@ -69,7 +74,7 @@ func TestVersions_CsprojPinsAndRanges(t *testing.T) {
 		t.Errorf("version-less PackageReference must be Found+UNRESOLVED; got %+v", r)
 	}
 	// Coordinate matching is case-insensitive.
-	if r := versionsOf(t, dir, "dotnetzip"); !r.Found || r.Match.Version != "1.16.0" {
+	if r := versionsOf(t, dir, "newtonsoft.json"); !r.Found || r.Match.Version != "13.0.1" {
 		t.Errorf("coordinate match must be case-insensitive; got %+v", r)
 	}
 }

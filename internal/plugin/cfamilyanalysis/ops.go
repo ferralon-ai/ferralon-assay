@@ -1,58 +1,46 @@
 // Package cfamilyanalysis is the C/C++ (C-family) language lane's analysis surface.
 //
-// The front half is live: compiledb parses compile_commands.json into per-TU build context
-// (file, c or c++, std, target, compiler), deriveBuildContext turns that into the lane's
-// toolchains and generators, and ResolveDependencyVersions reads Conan and vcpkg manifests. C++
-// TUs are carried through all of it exactly as C TUs are.
+// compiledb parses compile_commands.json into per-TU build context (file, c or c++, std, target,
+// compiler), deriveBuildContext turns that into the lane's toolchains and generators, and
+// ResolveDependencyVersions reads Conan and vcpkg manifests. C++ TUs are carried through all of
+// it exactly as C TUs are.
 //
-// The graph operations (IndexSymbols, CallGraph, FindIngresses, Reachability, ComputeTaint,
-// ResolveDependencySymbols, ResolveInventory) are contract-present and return declared
-// partiality (Unsupported), never an empty-but-complete result and never a fabricated one: the
-// inv.5 fail-open posture. Any C/C++ analysis toolchain links ONLY into the
-// cmd/assay-plugin-cfamily subprocess binary (inv.8), never into the host binary.
+// The graph operations (IndexSymbols, CallGraph, FindIngresses, Reachability, ComputeTaint, and
+// ResolveDependencySymbols for a named symbol) are served by the cgx lane, which links only into
+// the assay-plugin-cfamily subprocess binary (inv.8), never into the host binary. This package
+// hands that lane its inputs (ReadGraphSources) and declares the C/C++ norm, an advisory that
+// names no vulnerable symbol, without consulting any engine. GenerateHarness and
+// ResolveInventory return declared partiality (Unsupported), never an empty-but-complete result
+// (inv.5).
 package cfamilyanalysis
 
 import (
 	"context"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// IndexSymbols is contract-present but unimplemented at Phase 0: no C/C++ symbol index exists
-// yet (Phase 1: scip-clang over compile_commands.json). Honest absence, never a fabricated index.
-func IndexSymbols(_ context.Context, _ plugin.IndexSymbolsRequest) (plugin.SymbolIndexResult, error) {
-	return plugin.SymbolIndexResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// ResolveDependencySymbols is contract-present but unimplemented at Phase 0. C/C++ advisories
-// name a version range, not a vulnerable symbol, so symbol resolution is deferred to Phase 3
-// (patch-diff derivation); declared absent here, never a guessed symbol.
-func ResolveDependencySymbols(_ context.Context, _ plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+// ResolveDependencySymbols declares advisory_symbol_absent when the request names no vulnerable
+// symbol, which is the norm for C/C++ advisories: they carry a version range only, so there is
+// nothing to search the graph for and symbol-level reachability is never attempted. A request
+// that names a symbol is the graph engine's to resolve; here it is Unsupported.
+func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+	if !NamesSymbol(req) {
+		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonAdvisorySymbolAbsent), Resolved: []plugin.Symbol{}}, nil
+	}
 	return plugin.SymbolResolutionResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// CallGraph is contract-present but unimplemented at Phase 0 (Phase 1: clang/scip-clang direct-call
-// graph). Honest absence, never a fabricated graph.
-func CallGraph(_ context.Context, _ plugin.CallGraphRequest) (plugin.CallGraphResult, error) {
-	return plugin.CallGraphResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// FindIngresses is contract-present but unimplemented at Phase 0. Honest absence, never invented
-// entry points.
-func FindIngresses(_ context.Context, _ plugin.FindIngressesRequest) (plugin.IngressResult, error) {
-	return plugin.IngressResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// Reachability is contract-present but unimplemented at Phase 0. The operation itself is a stub,
-// so it declares Unsupported — never confident-unreachable (inv.5).
-func Reachability(_ context.Context, _ plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	return plugin.ReachabilityResult{Partiality: plugin.Unsupported()}, nil
-}
-
-// ComputeTaint is contract-present but unimplemented at Phase 0. Honest absence.
-func ComputeTaint(_ context.Context, _ plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	return plugin.TaintResult{Partiality: plugin.Unsupported()}, nil
+// NamesSymbol reports whether req names at least one non-blank advisory symbol.
+func NamesSymbol(req plugin.ResolveSymbolsRequest) bool {
+	for _, s := range req.AdvisorySymbols {
+		if strings.TrimSpace(s) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateHarness is contract-present but unimplemented, mirroring every other lane: the effect
@@ -70,21 +58,24 @@ func ResolveInventory(_ context.Context, _ plugin.ResolveInventoryRequest) (plug
 
 // manifestContentVersion is the C-family capability manifest's content version; it bumps when a
 // later increment adds a supported axis.
-const manifestContentVersion = "1.0.0"
+const manifestContentVersion = "1.1.0"
 
-// CapabilityManifest returns the C-family lane's capability manifest, C profile. Every listed axis
-// is one the lane does today; all slices are pre-sorted. It is a static fact and takes no input.
+// CapabilityManifest returns the C-family lane's capability manifest. Every listed axis is one
+// the lane does today; all slices are pre-sorted. It is a static fact and takes no input.
 //
 //   - Resolvers: the files the lane reads. compile_commands.json and CMakeCache.txt give the
 //     build context; conan.lock, conanfile.txt and vcpkg.json give dependency versions (exact
 //     pins only, everything else fails open).
-//   - Runtimes: c, the language mode whose toolchains the build context reports for this
-//     profile. C++ TUs are parsed and carried too; the C++ profile is authored with its graph
-//     semantics.
-//   - Analyzers: the lane's own parsers.
+//   - Runtimes: c and c++. Both run through the same cgx tree-sitter graph; C++ is a stepping
+//     stone (no template, overload or exception precision) and declares its residue.
+//   - GraphSemantics: direct, cgx's resolved direct calls; fn_ptr_candidate, cgx's possible-tier
+//     candidate edges at a call through a function-pointer parameter; virtual_candidate, cgx's
+//     C++ virtual calls, which go to every override. A call through a struct member gets no
+//     edge, so the function-pointer site stays a declared boundary as well.
+//   - DynamicBoundaries: the residue the lane names on every graph result that crosses it.
+//   - Analyzers: the lane's own parsers and the cgx engine.
 //
-// GraphSemantics and DynamicBoundaries are left empty because they belong to the graph engine,
-// which is not wired yet. Frameworks is empty because C has no dominant ingress framework.
+// Frameworks is empty because C has no dominant ingress framework.
 func CapabilityManifest() capability.Manifest {
 	return capability.Manifest{
 		Version:   manifestContentVersion,
@@ -97,10 +88,18 @@ func CapabilityManifest() capability.Manifest {
 			"conanfile.txt",
 			"vcpkg.json",
 		},
-		Runtimes: []string{"c"},
+		Runtimes:       []string{"c", "c++"},
+		GraphSemantics: []string{"direct", "fn_ptr_candidate", "virtual_candidate"},
+		DynamicBoundaries: []string{
+			"fn_ptr",
+			"macro_expansion",
+			"native_link_boundary",
+			"vtable",
+		},
 		Analyzers: []string{
 			"cfamilyanalysis/compiledb",
 			"cfamilyanalysis/versions",
+			"cfamilycgx/cgx",
 		},
 	}
 }

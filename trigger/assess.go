@@ -41,6 +41,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 		return nil, "", fmt.Errorf("trigger: create assessment: %w", err)
 	}
 
+	// finding() settles a disqualified advisory on the discovery artifact alone, so the symbol and
+	// reach work S4/S5 would do for it is never read; skip it.
+	opts = append(opts[:len(opts):len(opts)], pipeline.WithSkipDisqualifiedAnalysis(true))
 	orch := pipeline.NewOrchestrator(assessments, store, pipeline.AssessStages(opts...))
 	if err := orch.Run(ctx, a.ID); err != nil {
 		return nil, "", fmt.Errorf("trigger: assess %s: %w", req.Vulnerability.ID, err)

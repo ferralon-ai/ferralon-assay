@@ -3,6 +3,7 @@ package kotlinanalysis
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -36,7 +37,8 @@ import (
 // When the build has Gradle start scripts (runtimeclasspath.go), their classpath replaces the
 // inventory: it lists every JAR the JVM is launched with, transitive ones included, in launch
 // order. A classpath JAR that cannot be found or read has no known closure, so its scoped
-// reason is unbounded.
+// reason is unbounded. A dependency class that redefines a first-party class shadows it unless
+// the project's own JAR precedes it on the classpath.
 //
 // A dependency the inventory does not list at all is never silently trusted: depreach treats
 // any call into a class that is neither loaded nor platform as an unloaded_dependency hazard,
@@ -59,6 +61,11 @@ const partialReasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed 
 // Loading any one candidate could trace bytes that never run, so none is loaded.
 const partialReasonRuntimeVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":runtime_version_ambiguous"
 
+// partialReasonLaunchAgent is the run-wide reason for a start script whose DEFAULT_JVM_OPTS
+// load a Java agent or extend the boot classpath: code outside the classpath runs, and an agent
+// can rewrite any loaded class.
+const partialReasonLaunchAgent = plugin.PartialReasonRelationshipUnexpressed + ":launch_jvm_agent"
+
 // depClosure is the loaded dependency bytecode plus the scoped blind spots loading it incurred.
 type depClosure struct {
 	classes []classfile.Class
@@ -72,7 +79,7 @@ type depClosure struct {
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
 	// no empty search is Searched: the inventory's graph-level reasons that leave the version it
 	// names for a node unknown (an uncached BOM or parent, an unresolved property, an unevaluable
-	// profile).
+	// profile), or a start script that launches the JVM with an agent or a boot classpath.
 	reasons []string
 }
 
@@ -182,15 +189,31 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 }
 
 // loadRuntimeClasspath loads the start-script classpath. On an ordered classpath a class
-// already defined by an earlier JAR (or by first-party output) is skipped silently: the JVM
-// loads the first definition, so the later copy never runs. On an unordered union of
-// differing classpaths that is unknown, and the duplicate is a scoped reason.
+// already defined by an earlier JAR is skipped silently: the JVM loads the first definition, so
+// the later copy never runs. On an unordered union of differing classpaths that is unknown, and
+// the duplicate is a scoped reason. The engine keeps first-party output's copy of a class; a
+// dependency JAR defining the same name is silent only when the project JAR precedes it on an
+// ordered classpath, and otherwise a scoped duplicate_class (the dependency's copy may be the
+// one that runs).
 func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[string]bool) *depClosure {
 	index := gradleCacheIndex(buildDir)
 	dc := &depClosure{loaded: map[string]string{}, mainClasses: rc.mainClasses}
+	if len(rc.launchAgents) > 0 {
+		dc.reasons = append(dc.reasons, partialReasonLaunchAgent)
+	}
+	projectJars := map[string]bool{}
+	for _, name := range rc.entries {
+		if fileExists(filepath.Join(buildDir, firstPartyJarDir, name)) {
+			projectJars[name] = true
+		}
+	}
+	projectSeen := false // a project JAR precedes the current entry
 	definedBy := map[string]string{}
 	shadowed := map[string]bool{}
 	for _, name := range rc.entries {
+		if projectJars[name] {
+			projectSeen = true
+		}
 		jar, ok := locateClasspathJar(buildDir, rc, index, name)
 		if !ok {
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: partialReasonMissingJar, Package: cacheOnlyPackage(index[name]), Path: "classpath: " + name})
@@ -208,6 +231,14 @@ func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[s
 		dc.loaded[name] = jar.path
 		for _, c := range jr.Classes {
 			if firstParty[c.Name] {
+				if !projectJars[name] && !(rc.ordered && projectSeen) && !shadowed["|"+name] {
+					shadowed["|"+name] = true
+					dc.scoped = append(dc.scoped, plugin.ScopedReason{
+						Reason:  partialReasonDuplicateClass,
+						Package: pkg,
+						Path:    fmt.Sprintf("classpath: %s may shadow first-party %s", name, c.Name),
+					})
+				}
 				continue
 			}
 			if prev, dup := definedBy[c.Name]; dup {

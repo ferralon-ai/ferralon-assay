@@ -71,6 +71,41 @@ func emptyGradleBuild(t *testing.T) string {
 
 const jacksonJarName = jacksonArtifact + "-" + jacksonVersion + ".jar"
 
+// jvmOptsBuild is a start-script build whose main never calls the sink, with the script's
+// DEFAULT_JVM_OPTS line set to opts (as Gradle quotes it).
+func jvmOptsBuild(t *testing.T, opts string) string {
+	t.Helper()
+	dir := emptyGradleBuild(t)
+	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, jacksonVersion, jacksonJar())
+	writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+	writeStartScript(t, dir, "scripts/app", []string{jacksonJarName}, "com.example.MainKt")
+	p := filepath.Join(dir, "build", "scripts", "app")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.Replace(string(data), "\nCLASSPATH=", "\nDEFAULT_JVM_OPTS="+opts+"\n\nCLASSPATH=", 1)
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// firstPartyShadowBuild is a start-script build with the project JAR (build/libs/app.jar) and a
+// dependency JAR that also defines first-party com/example/MainKt, in the given classpath order.
+// Neither main calls the sink.
+func firstPartyShadowBuild(t *testing.T, classpath []string) string {
+	t.Helper()
+	dir := emptyGradleBuild(t)
+	writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, jacksonVersion, jacksonJar())
+	writeMain(t, dir, func(b *kclassBuilder) []byte { return nil })
+	main := classCalling("com/example/MainKt", "main", mainStringsDesc, nil)
+	writeJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{"com/example/MainKt": main})
+	writeGradleCacheJar(t, dir, "org.dup", "dup", "1.0", map[string][]byte{"com/example/MainKt": main})
+	writeStartScript(t, dir, "scripts/app", classpath, "com.example.MainKt")
+	return dir
+}
+
 // TestReachability_RuntimeClasspath: each row names the rule it pins; loosening the rule flips
 // the row.
 func TestReachability_RuntimeClasspath(t *testing.T) {
@@ -194,6 +229,56 @@ func TestReachability_RuntimeClasspath(t *testing.T) {
 				Reason:  partialReasonDuplicateClass,
 				Package: "pkg:maven/org.two/two",
 				Path:    "classpath: two-1.0.jar shadowed by one-1.0.jar: org/shared/Dup",
+			}},
+		},
+		{
+			// Control for the next row: Gradle's ordinary heap options load no code.
+			name: "DEFAULT_JVM_OPTS without an agent: searched",
+			setup: func(t *testing.T) string {
+				return jvmOptsBuild(t, `'"-Xmx64m" "-Dfile.encoding=UTF-8"'`)
+			},
+			wantSearched: true,
+			denyReasons:  []string{partialReasonLaunchAgent},
+		},
+		{
+			// An agent (or a boot classpath) runs code outside the classpath and can rewrite
+			// any class, so the empty search proves nothing: fail closed, declared run-wide.
+			name: "DEFAULT_JVM_OPTS loads a javaagent: not searched, declared",
+			setup: func(t *testing.T) string {
+				return jvmOptsBuild(t, `'"-Xmx64m" "-javaagent:$APP_HOME/lib/agent.jar"'`)
+			},
+			wantReasons: []string{partialReasonLaunchAgent},
+		},
+		{
+			name: "DEFAULT_JVM_OPTS extends the boot classpath: not searched, declared",
+			setup: func(t *testing.T) string {
+				return jvmOptsBuild(t, `'"-Xbootclasspath/a:$APP_HOME/lib/boot.jar"'`)
+			},
+			wantReasons: []string{partialReasonLaunchAgent},
+		},
+		{
+			// The project JAR comes first: the JVM loads first-party output's copy, the one the
+			// engine keeps, and the dependency's copy never runs.
+			name: "project jar precedes a dependency defining a first-party class: silent",
+			setup: func(t *testing.T) string {
+				return firstPartyShadowBuild(t, []string{"app.jar", "dup-1.0.jar", jacksonJarName})
+			},
+			wantSearched: true,
+			denyReasons:  []string{partialReasonDuplicateClass},
+		},
+		{
+			// The dependency comes first: its copy of the class is the one that runs, and the
+			// engine traced first-party output's instead.
+			name: "dependency defining a first-party class precedes the project jar: scoped",
+			setup: func(t *testing.T) string {
+				return firstPartyShadowBuild(t, []string{"dup-1.0.jar", "app.jar", jacksonJarName})
+			},
+			wantSearched: true,
+			wantReasons:  []string{partialReasonDuplicateClass},
+			wantScoped: []plugin.ScopedReason{{
+				Reason:  partialReasonDuplicateClass,
+				Package: "pkg:maven/org.dup/dup",
+				Path:    "classpath: dup-1.0.jar may shadow first-party com/example/MainKt",
 			}},
 		},
 		{

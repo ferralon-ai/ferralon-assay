@@ -21,18 +21,22 @@ import (
 // precision lever and is deliberately deferred — it lowers the undetermined rate,
 // it does not change soundness.
 type Engine struct {
-	classes  map[string]*classfile.Class
-	declared map[string]*classfile.Method // key: MethodRef.String() -> declaring method
-	subtypes map[string][]string          // supertype -> direct subclasses/implementors
+	classes     map[string]*classfile.Class
+	declared    map[string]*classfile.Method // key: MethodRef.String() -> declaring method
+	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
+	overridable map[string]bool              // hasOverridable cache
+	loadable    map[string]bool              // platformLoadable cache
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
 // retained by pointer, so callers must not mutate it afterwards.
 func NewEngine(classes []classfile.Class) *Engine {
 	e := &Engine{
-		classes:  make(map[string]*classfile.Class, len(classes)),
-		declared: map[string]*classfile.Method{},
-		subtypes: map[string][]string{},
+		classes:     make(map[string]*classfile.Class, len(classes)),
+		declared:    map[string]*classfile.Method{},
+		subtypes:    map[string][]string{},
+		overridable: map[string]bool{},
+		loadable:    map[string]bool{},
 	}
 	for i := range classes {
 		c := &classes[i]
@@ -107,9 +111,10 @@ func (e *Engine) initClosure(owner string) []string {
 	return out
 }
 
-// hasAppSubtype reports whether some in-classpath class other than typ is a subtype
-// of typ — i.e. an application object of the (possibly JDK) type could exist and be
-// passed as a callback. Used by the re-entry hazard rule.
+// hasAppSubtype reports whether some in-classpath class other than typ is a direct
+// subtype of typ — i.e. an application object of the (possibly JDK) type could exist
+// and be passed as a callback. The re-entry rule names it as the witness; it does not
+// gate the hazard, since an app class can reach typ through a platform intermediate.
 //
 // Every name in e.subtypes is a loaded class, so a direct subtype other than typ itself
 // is exactly the witness; walking the whole closure (all loaded classes, for
@@ -145,6 +150,13 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		c := e.classes[cur]
 		if c == nil {
 			unloaded = append(unloaded, cur)
+			// The whole superclass chain is searched before any superinterface, so a
+			// body declared on cur or its ancestors wins over every loaded default.
+			// Only java/lang/Object's declarations are known (objectMethods); any
+			// other unloaded superclass may declare name+desc itself.
+			if cur != objectClass || objectMethods[name+desc] {
+				return nil, unloaded
+			}
 			break
 		}
 		ifaces = append(ifaces, c.Interfaces...)
@@ -217,26 +229,30 @@ var platformPrefixes = []string{
 	"org/ietf/jgss/", "org/w3c/dom/", "org/xml/sax/",
 }
 
-// resolveTargets returns the concrete in-classpath callees of an edge under CHA,
-// plus whether the edge is a completeness HAZARD — a call whose real target the
-// static graph cannot enumerate — and a human-readable reason when it is.
+// resolveTargets returns the concrete in-classpath callees of an edge made from a
+// method of class from under CHA, plus whether the edge is a completeness HAZARD — a
+// call whose real target the static graph cannot enumerate — and a human-readable
+// reason when it is.
 //
 // The hazard rules are the soundness of the whole analysis; each is the seam where a
 // missed edge would produce a false not_exploitable:
-//   - invokedynamic and reflection: the target is decided at runtime (a lambda's
-//     metafactory, Class.forName) and is invisible to a static graph.
+//   - invokedynamic and reflection (isReflection): the target is decided at runtime
+//     (a lambda's metafactory, Class.forName, a deserialized object's hooks) and is
+//     invisible to a static graph.
 //   - a virtual/interface call whose receiver type is out of classpath: real
 //     dispatch could land on anything, including the sink.
 //   - a call whose body lives in an UNLOADED DEPENDENCY (not loaded, not platform):
 //     the dependency's bytecode was never opened, so the sink could be anywhere
 //     beneath it. Covers a direct static/special call, a method inherited from such
 //     an ancestor, and (in Reach) a static initializer that ancestor would run.
-//   - a call INTO an out-of-classpath platform method that takes a callback an
-//     application class implements: higher-order re-entry (a Comparator handed to
-//     Collections.sort, a Runnable to an executor). The callback is invoked inside
-//     the out-of-classpath method the graph does not traverse, so it is caught here,
-//     caller-side, rather than silently dropped at the leaf.
-func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
+//   - a call INTO an out-of-classpath platform method that takes a reference argument
+//     other than a value class (reentryCallback): the argument can be, or hold, an
+//     application object the platform body calls back (a Comparator handed to
+//     Collections.sort, a Runnable to an executor, a List of Comparables to sort).
+//   - a platform body that runs with an application object as `this` (an inherited
+//     or super-called JDK method): it can call back any method the application class
+//     overrides, or objects it holds (platformBodyOn).
+func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
 	if edge.Kind == classfile.EdgeDynamic {
 		return nil, true, "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
 	}
@@ -253,9 +269,16 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 			return nil, true, "unloaded_dependency: " + edge.To.String() + " resolves into unopened " + dep
 		}
 		// Target in the JDK platform. A direct call there is a leaf UNLESS it can
-		// re-enter application code through a callback argument — the C8 re-entry seam.
-		if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-			return nil, true, "higher-order re-entry: out-of-classpath call takes app-implemented " + cb
+		// re-enter application code through an argument — the C8 re-entry seam — or
+		// runs on an application `this`. Object's own bodies never call an argument.
+		objectBody := e.isObjectBody(edge.To.Owner, edge.To.Name, edge.To.Descriptor)
+		if cb, ok := e.reentryCallback(edge.To.Descriptor); ok && !objectBody {
+			return nil, true, "higher-order re-entry: out-of-classpath call takes " + cb
+		}
+		if edge.Kind == classfile.EdgeSpecial {
+			if receivers := e.specialReceivers(from, edge.To); receivers != nil {
+				return e.platformBodyOn(edge.To, objectBody, receivers)
+			}
 		}
 		return nil, false, ""
 	case classfile.EdgeVirtual, classfile.EdgeInterface:
@@ -267,11 +290,18 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 		// declarations in the closure. A class that inherits the body from outside the
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
-		var outside []string
+		var outside, platformExits []string
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
 			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
 			if m == nil {
-				outside = append(outside, unloaded...)
+				// An Object body (unloaded is exactly [Object]) never calls an
+				// argument; it still runs on c.
+				if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
+					outside = append(outside, unloaded...)
+				}
+				if e.isConcrete(c) {
+					platformExits = append(platformExits, c)
+				}
 				continue
 			}
 			if !m.Abstract && !seen[m] {
@@ -285,10 +315,23 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 		if len(outside) > 0 {
 			// Some receiver inherits the body from an out-of-classpath platform
 			// supertype (e.g. MyList extends ArrayList; forEach(...)). Exactly as the
-			// static/special leaf, a callback argument can re-enter application code
-			// (C8 re-entry seam).
+			// static/special leaf, an argument can re-enter application code (C8
+			// re-entry seam).
 			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes app-implemented " + cb
+				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+			}
+		}
+		// The inherited platform body also runs with the receiver as `this`.
+		for _, c := range platformExits {
+			ts, h, w := e.platformBodyOn(edge.To, e.isObjectBody(c, edge.To.Name, edge.To.Descriptor), []string{c})
+			for _, t := range ts {
+				if !seen[t] {
+					seen[t] = true
+					targets = append(targets, t)
+				}
+			}
+			if h {
+				return targets, true, w
 			}
 		}
 		return targets, false, ""
@@ -296,41 +339,420 @@ func (e *Engine) resolveTargets(edge classfile.Edge) (targets []*classfile.Metho
 	return nil, false, ""
 }
 
-// reentryCallback reports the first descriptor parameter type that an in-classpath
-// application class implements — the callback that could re-enter through an
-// out-of-classpath higher-order method — and whether any such parameter exists.
+// valueClasses are final JDK classes whose instances hold only characters and
+// primitives (JDK fact): handing one to a platform method gives the method no
+// application object to call. A hand-listed fact; adding a class that can hold
+// application objects (a collection, Optional, Thread) would turn a hazard into a
+// silent leaf. java/lang/Class is excluded: newInstance and getMethod reach code.
+var valueClasses = map[string]bool{
+	"java/lang/String":        true,
+	"java/lang/StringBuilder": true,
+	"java/lang/StringBuffer":  true,
+	"java/lang/Integer":       true,
+	"java/lang/Long":          true,
+	"java/lang/Short":         true,
+	"java/lang/Byte":          true,
+	"java/lang/Character":     true,
+	"java/lang/Boolean":       true,
+	"java/lang/Float":         true,
+	"java/lang/Double":        true,
+}
+
+// reentryCallback reports the argument through which an out-of-classpath platform
+// method could call back into application code, and whether one exists. Every
+// reference parameter (array element types included) except a value class
+// qualifies: the argument can be an application object, or a platform object
+// holding them (a List of Comparables handed to Collections.sort, a TimerTask
+// subclass reaching Runnable through a platform intermediate). When a loaded class
+// directly implements the parameter type, the reason names it as the witness.
 func (e *Engine) reentryCallback(desc string) (string, bool) {
-	for _, p := range parseParamRefTypes(desc) {
+	refs := parseParamRefTypes(desc)
+	for _, p := range refs {
 		if e.hasAppSubtype(p) {
-			return p, true
+			return "app-implemented " + p, true
+		}
+	}
+	for _, p := range refs {
+		if !valueClasses[p] {
+			return "reference argument " + p + ", which can carry application objects", true
 		}
 	}
 	return "", false
 }
 
-// isReflection reports whether a call target is a dynamic-resolution entry point
-// whose real callee is a string/handle/loaded-class decided at runtime, and which
-// can therefore reach code the static graph cannot enumerate. It covers reflection
-// proper (Class.forName/newInstance, java/lang/reflect/* including Proxy, MethodHandle)
-// and the adjacent dynamic-loading channels (ClassLoader.loadClass, ServiceLoader.load,
-// JNDI Context.lookup) that instantiate arbitrary classes by name. Each is a
+// objectMethods are java/lang/Object's methods (JDK fact). Their bodies call back
+// into the receiver only in toString, which calls this.hashCode().
+var objectMethods = map[string]bool{
+	"<init>()V":                    true,
+	"toString()Ljava/lang/String;": true,
+	"hashCode()I":                  true,
+	"equals(Ljava/lang/Object;)Z":  true,
+	"clone()Ljava/lang/Object;":    true,
+	"finalize()V":                  true,
+	"getClass()Ljava/lang/Class;":  true,
+	"notify()V":                    true,
+	"notifyAll()V":                 true,
+	"wait()V":                      true,
+	"wait(J)V":                     true,
+	"wait(JI)V":                    true,
+}
+
+const (
+	objectToString = "toString()Ljava/lang/String;"
+	objectClass    = "java/lang/Object"
+)
+
+// statelessBases are platform superclasses whose bodies neither call a method an
+// application subclass can override nor hold application objects (JDK fact):
+// java/lang/Enum keeps a name and an ordinal, and its overridable-looking methods
+// are final or return those fields. A subclass that adds no overridable method
+// runs their bodies as leaves.
+var statelessBases = map[string]bool{
+	"java/lang/Enum": true,
+}
+
+// isConcrete reports whether c is a loaded class an object can have as its exact
+// class.
+func (e *Engine) isConcrete(c string) bool {
+	cls := e.classes[c]
+	return cls != nil && !cls.Abstract
+}
+
+// chainExit returns the first class on owner's superclass chain that is not loaded:
+// where resolution of a method no loaded class declares leaves the loaded set.
+func (e *Engine) chainExit(owner string) string {
+	cur := owner
+	for {
+		c := e.classes[cur]
+		if c == nil || c.Super == "" {
+			return cur
+		}
+		cur = c.Super
+	}
+}
+
+// isObjectBody reports whether resolving name+desc on owner, when nothing loaded
+// declares it, lands in java/lang/Object's own body. Resolution searches the whole
+// superclass chain before any superinterface (JVMS §5.4.3.3), so a chain leaving
+// the loaded set at Object binds Object's methods there whatever interfaces the
+// class adds.
+func (e *Engine) isObjectBody(owner, name, desc string) bool {
+	return objectMethods[name+desc] && e.chainExit(owner) == objectClass
+}
+
+// specialReceivers returns the classes whose instances can be `this` when an
+// invokespecial from class from runs the platform body ref resolves to, or nil when
+// the receiver is a fresh object of a platform class (a leaf). An <init> call binds
+// `this` only as from's super(...) call, which names its direct superclass (JVMS
+// §4.10.1.9); every other invokespecial needs a receiver of from's type.
+func (e *Engine) specialReceivers(from string, ref classfile.MethodRef) []string {
+	c := e.classes[from]
+	if c == nil {
+		return nil
+	}
+	if ref.Name == "<init>" && c.Super != ref.Owner {
+		return nil
+	}
+	return e.subtypeClosure(from)
+}
+
+// platformBodyOn resolves a platform method body that runs with `this` bound to an
+// instance of each concrete class in receivers. Object's bodies are known: only
+// toString calls back, into this.hashCode(). Any other platform body can call every
+// method the receiver overrides and every object its inherited state holds (an
+// ArrayList subclass's hashCode calls each element's hashCode), so it is a hazard
+// unless the class sits directly on a stateless base and overrides nothing.
+func (e *Engine) platformBodyOn(body classfile.MethodRef, objectBody bool, receivers []string) (targets []*classfile.Method, hazard bool, why string) {
+	for _, c := range receivers {
+		if !e.isConcrete(c) {
+			continue
+		}
+		if objectBody {
+			if body.Name+body.Descriptor != objectToString {
+				continue
+			}
+			ts, h, w := e.dispatchOn(c, "hashCode", "()I")
+			targets = append(targets, ts...)
+			if h && !hazard {
+				hazard, why = true, w
+			}
+			continue
+		}
+		if statelessBases[e.chainExit(c)] && !e.hasOverridable(c) {
+			continue
+		}
+		return targets, true, "higher-order re-entry: inherited platform body " + body.String() + " runs on " + c + ", which it can call back or whose held objects it can call"
+	}
+	return targets, hazard, why
+}
+
+// dispatchOn resolves a virtual call on a receiver whose exact class is the loaded
+// concrete class c.
+func (e *Engine) dispatchOn(c, name, desc string) ([]*classfile.Method, bool, string) {
+	m, unloaded := e.resolveMethod(c, name, desc)
+	if m != nil {
+		if m.Abstract {
+			return nil, false, ""
+		}
+		return []*classfile.Method{m}, false, ""
+	}
+	ref := classfile.MethodRef{Owner: c, Name: name, Descriptor: desc}
+	if dep, ok := e.unloadedDependency(unloaded); ok {
+		return nil, true, "unloaded_dependency: " + ref.String() + " inherits from unopened " + dep
+	}
+	return e.platformBodyOn(ref, e.isObjectBody(c, name, desc), []string{c})
+}
+
+// isOverridable reports whether m is an instance method with a body that virtual
+// dispatch can select: neither static, private, abstract, a constructor nor an
+// initializer.
+func isOverridable(m *classfile.Method) bool {
+	return !m.Static && !m.Private && !m.Abstract && m.Ref.Name != "<init>" && m.Ref.Name != "<clinit>"
+}
+
+// hasOverridable reports whether c, its loaded superclasses, or their loaded
+// superinterfaces declare a method a platform body could dispatch to on a c
+// receiver.
+func (e *Engine) hasOverridable(c string) bool {
+	if v, ok := e.overridable[c]; ok {
+		return v
+	}
+	found := false
+	seen := map[string]bool{}
+	stack := []string{c}
+	for len(stack) > 0 && !found {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cls := e.classes[cur]
+		if seen[cur] || cls == nil {
+			continue
+		}
+		seen[cur] = true
+		for i := range cls.Methods {
+			if isOverridable(&cls.Methods[i]) {
+				found = true
+				break
+			}
+		}
+		if cls.Super != "" {
+			stack = append(stack, cls.Super)
+		}
+		stack = append(stack, cls.Interfaces...)
+	}
+	e.overridable[c] = found
+	return found
+}
+
+// isReflection reports whether a call target is a dynamic-resolution entry point:
+// its real callee is a string, handle, loaded class or byte stream decided at
+// runtime, so it can reach code the static graph cannot enumerate. Each is a
 // completeness hazard: erring toward undetermined over a false not_exploitable.
+// The channels are JDK API facts:
+//   - reflection proper: Class.forName/newInstance, java/lang/reflect/* (Method.invoke,
+//     Constructor.newInstance, Proxy), java/lang/invoke/* (method handles, hidden
+//     classes), sun/misc/Unsafe, the internal reflection factories.
+//   - loading by name: any platform method that defines or loads a class
+//     (ClassLoader.loadClass/findClass/defineClass, Lookup.defineHiddenClass), all of
+//     ServiceLoader, JNDI, java/beans (Beans.instantiate, XMLDecoder, EventHandler),
+//     javax/management (MBean server, MLet), javax/script, java/lang/instrument.
+//   - deserialization: ObjectInputStream/ObjectOutputStream run readObject,
+//     readResolve, writeReplace and a serializable lambda's $deserializeLambda$ on
+//     classes the stream names; java/rmi lookups and calls deserialize results.
+//   - process-global inputs: System/Runtime load/loadLibrary (a native library's
+//     JNI_OnLoad can call any Java method) and System.setProperty/setProperties
+//     (platform factories instantiate classes their properties name).
 func isReflection(r classfile.MethodRef) bool {
 	switch {
 	case r.Owner == "java/lang/Class" && (r.Name == "forName" || r.Name == "newInstance"):
 		return true
-	case r.Owner == "java/lang/ClassLoader" && r.Name == "loadClass":
+	case r.Owner == "java/util/ServiceLoader" || strings.HasPrefix(r.Owner, "java/util/ServiceLoader$"):
 		return true
-	case r.Owner == "java/util/ServiceLoader" && r.Name == "load":
+	case r.Owner == "java/io/ObjectInputStream" || r.Owner == "java/io/ObjectOutputStream":
 		return true
-	case strings.HasPrefix(r.Owner, "java/lang/reflect/"): // Method.invoke, Constructor.newInstance, Proxy.newProxyInstance
+	case (r.Owner == "java/lang/System" || r.Owner == "java/lang/Runtime") && (r.Name == "load" || r.Name == "loadLibrary"):
 		return true
-	case r.Owner == "java/lang/invoke/MethodHandle" || r.Owner == "java/lang/invoke/MethodHandles":
+	case r.Owner == "java/lang/System" && (r.Name == "setProperty" || r.Name == "setProperties"):
 		return true
-	case strings.HasPrefix(r.Owner, "javax/naming/") && r.Name == "lookup": // JNDI dynamic resolution
+	case isPlatformClass(r.Owner) && classLoadingMethods[r.Name]:
 		return true
 	}
+	for _, p := range reflectionPrefixes {
+		if strings.HasPrefix(r.Owner, p) {
+			return true
+		}
+	}
 	return false
+}
+
+// classLoadingMethods are platform method names that define or load a class by name
+// or from bytes (ClassLoader, SecureClassLoader, URLClassLoader, MethodHandles.Lookup,
+// Unsafe).
+var classLoadingMethods = map[string]bool{
+	"loadClass": true, "findClass": true, "findSystemClass": true, "defineClass": true,
+	"defineHiddenClass": true, "defineHiddenClassWithClassData": true, "defineAnonymousClass": true,
+}
+
+var reflectionPrefixes = []string{
+	"java/lang/reflect/", "java/lang/invoke/", "java/lang/instrument/",
+	"sun/misc/Unsafe", "jdk/internal/misc/Unsafe", "sun/reflect/", "jdk/internal/reflect/",
+	"javax/naming/", "java/beans/", "javax/management/", "javax/script/", "java/rmi/",
+}
+
+// deniedLoadable are platform types the JDK never instantiates by name through a
+// provider lookup (they are not service types or factory types, JDK fact), and
+// whose own platform supertypes are all likewise denied, so a class that reaches
+// the platform only through them cannot be loaded by the JDK from a
+// META-INF/services entry. Throwables and java/util/function are denied by name
+// (loadableType).
+var deniedLoadable = map[string]bool{
+	"java/lang/Object": true, "java/lang/Comparable": true, "java/lang/Iterable": true,
+	"java/lang/Runnable": true, "java/lang/AutoCloseable": true, "java/lang/Cloneable": true,
+	"java/lang/CharSequence": true, "java/lang/Appendable": true, "java/lang/Readable": true,
+	"java/lang/Enum": true, "java/lang/Record": true, "java/lang/Number": true, "java/lang/Thread": true,
+	"java/lang/ThreadLocal": true, "java/lang/InheritableThreadLocal": true,
+	"java/lang/constant/Constable": true, "java/lang/constant/ConstantDesc": true,
+	"java/lang/ref/Reference": true, "java/lang/ref/WeakReference": true,
+	"java/lang/ref/SoftReference": true, "java/lang/ref/PhantomReference": true,
+	"java/io/Serializable": true, "java/io/Externalizable": true, "java/io/Closeable": true,
+	"java/io/Flushable": true, "java/io/InputStream": true, "java/io/OutputStream": true,
+	"java/io/Reader": true, "java/io/Writer": true, "java/io/FilterInputStream": true,
+	"java/io/FilterOutputStream": true, "java/io/FilterReader": true, "java/io/FilterWriter": true,
+	"java/util/Collection": true, "java/util/List": true, "java/util/Set": true, "java/util/Map": true,
+	"java/util/Map$Entry": true, "java/util/Queue": true, "java/util/Deque": true,
+	"java/util/SortedMap": true, "java/util/SortedSet": true, "java/util/NavigableMap": true,
+	"java/util/NavigableSet": true, "java/util/SequencedCollection": true, "java/util/SequencedMap": true,
+	"java/util/SequencedSet": true, "java/util/Iterator": true, "java/util/ListIterator": true,
+	"java/util/Enumeration": true, "java/util/RandomAccess": true, "java/util/Comparator": true,
+	"java/util/EventListener": true, "java/util/EventObject": true, "java/util/Spliterator": true,
+	"java/util/AbstractCollection": true, "java/util/AbstractList": true,
+	"java/util/AbstractSequentialList": true, "java/util/AbstractSet": true, "java/util/AbstractMap": true,
+	"java/util/AbstractQueue": true, "java/util/ArrayList": true, "java/util/LinkedList": true,
+	"java/util/HashMap": true, "java/util/LinkedHashMap": true, "java/util/HashSet": true,
+	"java/util/LinkedHashSet": true, "java/util/TreeMap": true, "java/util/TreeSet": true,
+	"java/util/ArrayDeque": true, "java/util/TimerTask": true, "java/util/Observer": true,
+	"java/util/Observable": true, "java/util/AbstractMap$SimpleEntry": true,
+	"java/util/AbstractMap$SimpleImmutableEntry": true, "java/lang/ClassValue": true,
+	"java/util/concurrent/Callable": true, "java/util/concurrent/Future": true,
+	"java/util/concurrent/RunnableFuture": true, "java/util/concurrent/Delayed": true,
+	"java/util/concurrent/ScheduledFuture": true, "java/util/concurrent/CompletionStage": true,
+	"java/util/concurrent/Executor": true, "java/util/concurrent/ExecutorService": true,
+	"java/util/concurrent/ThreadFactory": true,
+}
+
+// platformLoadable reports whether the JDK could instantiate loaded class c by name
+// from a provider lookup, or hold one and call its methods: c reaches a platform
+// supertype outside deniedLoadable, or an unopened dependency supertype (whose own
+// supertypes are unknown).
+func (e *Engine) platformLoadable(c string) bool {
+	if v, ok := e.loadable[c]; ok {
+		return v
+	}
+	e.loadable[c] = false // cycle guard
+	found := false
+	if cls := e.classes[c]; cls != nil {
+		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
+			if s != "" && e.loadableType(s) {
+				found = true
+				break
+			}
+		}
+	}
+	e.loadable[c] = found
+	return found
+}
+
+// loadableType reports whether type t can be the static type under which the JDK
+// holds an object it may call: a loaded class that is platformLoadable, an unopened
+// dependency type, or a platform type outside deniedLoadable and the Throwables.
+func (e *Engine) loadableType(t string) bool {
+	if _, ok := e.classes[t]; ok {
+		return e.platformLoadable(t)
+	}
+	if !isPlatformClass(t) {
+		return true
+	}
+	simple := t[strings.LastIndex(t, "/")+1:]
+	if simple == "Throwable" || strings.HasSuffix(simple, "Exception") || strings.HasSuffix(simple, "Error") {
+		return false
+	}
+	return !deniedLoadable[t] && !strings.HasPrefix(t, "java/util/function/")
+}
+
+// providerRoots returns the methods the JDK itself can call on loaded classes it
+// finds or holds without the searched code handing them over: for each
+// platformLoadable class, its overridable methods, and when it is a public concrete
+// class, its public constructors, public static provider() and the static
+// initializers instantiating it runs (ServiceLoader, DriverManager and the factory
+// lookups load providers named in META-INF/services). A root method that returns an
+// object the JDK then calls is a hazard when the object's type is not itself
+// covered (a denied or unopened type, such as Object or Iterator), because the
+// object's class need not be platformLoadable.
+func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
+	names := make([]string, 0, len(e.classes))
+	for n := range e.classes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !e.platformLoadable(n) {
+			continue
+		}
+		cls := e.classes[n]
+		byName := cls.Public && !cls.Abstract
+		for i := range cls.Methods {
+			m := &cls.Methods[i]
+			switch {
+			case isOverridable(m):
+				roots = append(roots, m)
+				if rt, ok := returnRefType(m.Ref.Descriptor); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
+					hazard = "higher-order re-entry: platform-callable " + m.Ref.String() + " returns " + rt + ", which can carry application objects"
+				}
+			case byName && m.Public && (m.Ref.Name == "<init>" || (m.Static && m.Ref.Name == "provider")):
+				roots = append(roots, m)
+			}
+		}
+		if byName {
+			for _, c := range e.initClosure(n) {
+				if m := e.declared[(classfile.MethodRef{Owner: c, Name: "<clinit>", Descriptor: "()V"}).String()]; m != nil {
+					roots = append(roots, m)
+				}
+			}
+		}
+	}
+	return roots, hazard
+}
+
+// touchesPlatform reports whether edge can run a JDK body other than
+// java/lang/Object's own or an array's: the point from which the JDK can load and
+// call providers (providerRoots).
+func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
+	if edge.Kind == classfile.EdgeDynamic {
+		return true
+	}
+	o := edge.To.Owner
+	if _, ok := e.classes[o]; !ok {
+		return platformBody(o)
+	}
+	owners := []string{o}
+	if edge.Kind == classfile.EdgeVirtual || edge.Kind == classfile.EdgeInterface {
+		owners = e.subtypeClosure(o)
+	}
+	for _, c := range owners {
+		if m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor); m == nil {
+			for _, u := range unloaded {
+				if platformBody(u) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// platformBody reports whether a body owned by unloaded class o is JDK code other
+// than java/lang/Object's or an array pseudo-class's.
+func platformBody(o string) bool {
+	return isPlatformClass(o) && o != objectClass && !strings.HasPrefix(o, "[")
 }
 
 // Verdict is the three-valued reachability outcome. Its meaning is exactly the Go
@@ -367,6 +789,11 @@ type Result struct {
 // but a hazard could have hidden one ⇒ undetermined (sound abstention). A sink that
 // trace 1 did not find is undetermined outright: the search cannot reach a method it
 // never loaded, so its empty result says nothing about the program.
+//
+// Two kinds of call have no edge in the bytecode and are added here: the collector's
+// finalize() on every constructed concrete class, and the JDK's own calls into
+// provider classes (providerRoots) once the search runs any JDK body. A path through
+// a provider root is reported from the JDK call site that opened it.
 func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	res := Result{SinkPresent: e.declared[sink.String()] != nil}
 	if !res.SinkPresent {
@@ -406,6 +833,25 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		}
 	}
 
+	// Once the search runs any JDK body, the JDK can load and call application
+	// providers on its own (a JDBC driver from DriverManager, a CharsetProvider from
+	// Charset.forName): every providerRoots method joins the frontier, reached from
+	// the first such site.
+	rooted := false
+	root := func(from classfile.MethodRef) {
+		if rooted {
+			return
+		}
+		rooted = true
+		roots, why := e.providerRoots()
+		if why != "" {
+			res.hazard(why)
+		}
+		for _, r := range roots {
+			enqueue(from, r)
+		}
+	}
+
 	for len(queue) > 0 && !found {
 		cur := queue[0]
 		queue = queue[1:]
@@ -417,8 +863,22 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 			// A native method body is invisible bytecode: it could reach anything.
 			res.hazard("native method on frontier: " + cur.String())
 		}
+		if cur.Name == "<init>" && e.isConcrete(cur.Owner) {
+			// A constructed object can be finalized: the collector calls its
+			// finalize() with no edge in the program.
+			targets, hazard, why := e.dispatchOn(cur.Owner, "finalize", "()V")
+			if hazard {
+				res.hazard(why)
+			}
+			for _, t := range targets {
+				enqueue(cur, t)
+			}
+		}
 		for _, edge := range m.Edges {
-			targets, hazard, why := e.resolveTargets(edge)
+			if !rooted && e.touchesPlatform(edge) {
+				root(cur)
+			}
+			targets, hazard, why := e.resolveTargets(cur.Owner, edge)
 			if hazard {
 				res.hazard(why)
 			}
@@ -436,6 +896,9 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		// A platform class in the closure has no parsed <clinit> (nil -> leaf); an
 		// unloaded dependency's <clinit> is unseen code and a hazard.
 		for _, owner := range m.InitTriggers {
+			if !rooted && platformBody(owner) {
+				root(cur)
+			}
 			for _, cls := range e.initClosure(owner) {
 				if dep, ok := e.unloadedDependency([]string{cls}); ok {
 					res.hazard("unloaded_dependency: static initializer of unopened " + dep)

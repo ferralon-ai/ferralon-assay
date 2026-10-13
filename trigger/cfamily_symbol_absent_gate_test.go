@@ -17,16 +17,24 @@ import (
 // symbol-absent paths are the real cfamilyanalysis ones; the graph ops stand in for the cgx lane
 // (which links only into the plugin subprocess) with the shape it returns for a searched C tree:
 // edges present, quiet residue only, no path to the advisory's code. A named symbol resolves, as
-// the cgx lane resolves one it finds in the graph; with unresolved set, none does, and the
-// result carries what the cgx lane declares for a symbol defined only in the dependency.
+// the cgx lane resolves one it finds in the graph. With unresolved set, none does, and the result
+// carries what the cgx lane declares for a symbol defined only in the dependency. A symbol in
+// unreached resolves, and every op handed it (resolve, and the path ops when the request names it)
+// declares what the cgx lane declares for a node no ingress reaches. Ops handed no such symbol
+// declare nothing, as the lane's tree-wide ops never do.
 type cfamilyGatePlugin struct {
 	plugin.StubPlugin
 	unresolved bool
+	unreached  map[string]bool
 }
 
-// cfamilySinkUnresolved is the cgx lane's loud code for an advisory symbol with no definition in
-// the graph (the lane links only into the plugin subprocess, so the code is spelled here).
-const cfamilySinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
+// The cgx lane's loud codes, spelled here because the lane links only into the plugin
+// subprocess: an advisory symbol with no definition in the graph, and a sink that is a node no
+// ingress reaches.
+const (
+	cfamilySinkUnresolved = plugin.PartialReasonToolFailure + ":cgx_sink_unresolved"
+	cfamilySinkUnreached  = plugin.PartialReasonToolFailure + ":cgx_sink_unreached"
+)
 
 func (cfamilyGatePlugin) Language() string { return "cfamily" }
 
@@ -52,7 +60,7 @@ func (p cfamilyGatePlugin) ResolveDependencySymbols(ctx context.Context, req plu
 			Resolved:   []plugin.Symbol{},
 		}, nil
 	}
-	res := plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonMacroExpansion)}
+	res := plugin.SymbolResolutionResult{Partiality: p.symbolPartiality(req.AdvisorySymbols)}
 	for _, s := range req.AdvisorySymbols {
 		res.Resolved = append(res.Resolved, plugin.Symbol{SCIP: s})
 	}
@@ -78,57 +86,89 @@ func (cfamilyGatePlugin) FindIngresses(context.Context, plugin.FindIngressesRequ
 	}, nil
 }
 
-func (p cfamilyGatePlugin) Reachability(context.Context, plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
-	return plugin.ReachabilityResult{Partiality: p.pathPartiality()}, nil
+func (p cfamilyGatePlugin) Reachability(_ context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+	return plugin.ReachabilityResult{Partiality: p.symbolPartiality(req.Symbols)}, nil
 }
 
-func (p cfamilyGatePlugin) ComputeTaint(context.Context, plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
-	return plugin.TaintResult{Partiality: p.pathPartiality()}, nil
+func (p cfamilyGatePlugin) ComputeTaint(_ context.Context, req plugin.ComputeTaintRequest) (plugin.TaintResult, error) {
+	return plugin.TaintResult{Partiality: p.symbolPartiality(req.Sinks)}, nil
 }
 
-func (p cfamilyGatePlugin) pathPartiality() plugin.Partiality {
+func (p cfamilyGatePlugin) symbolPartiality(symbols []string) plugin.Partiality {
+	reasons := []string{plugin.PartialReasonMacroExpansion}
 	if p.unresolved {
-		return plugin.Partial(plugin.PartialReasonMacroExpansion, cfamilySinkUnresolved)
+		reasons = append(reasons, cfamilySinkUnresolved)
 	}
-	return plugin.Partial(plugin.PartialReasonMacroExpansion)
+	for _, s := range symbols {
+		if p.unreached[s] {
+			reasons = append(reasons, cfamilySinkUnreached)
+			break
+		}
+	}
+	return plugin.Partial(reasons...)
 }
 
 // cfamilyAdvisories serves one zlib advisory whose affected range contains the tree's pinned
-// version, from a first-party source so trust cannot be what withholds the refutation.
+// version, and one Go module advisory whose range contains the go.mod's required version, both
+// from a first-party source so trust cannot be what withholds a refutation.
 type cfamilyAdvisories struct{ symbols []string }
 
-const cfamilyAdvisoryID = "CVE-2022-37434"
+const (
+	cfamilyAdvisoryID = "CVE-2022-37434"
+	goAdvisoryID      = "GO-2099-0001"
+	goAdvisoryModule  = "example.com/lib"
+	goAdvisorySymbol  = "example.com/lib.Decode"
+)
 
 func (s cfamilyAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
-	if id != cfamilyAdvisoryID {
-		return pipeline.AdvisoryFacts{}, false
+	switch id {
+	case cfamilyAdvisoryID:
+		return pipeline.AdvisoryFacts{
+			Coordinate:     "zlib",
+			PURL:           "pkg:conan/zlib",
+			UpperExclusive: "1.2.13",
+			FixedVersion:   "1.2.13",
+			AffectedRanges: []pipeline.Range{{Fixed: "1.2.13"}},
+			Symbols:        s.symbols,
+			Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
+		}, true
+	case goAdvisoryID:
+		return pipeline.AdvisoryFacts{
+			Module:         goAdvisoryModule,
+			PURL:           "pkg:golang/" + goAdvisoryModule,
+			UpperExclusive: "v1.2.0",
+			FixedVersion:   "v1.2.0",
+			AffectedRanges: []pipeline.Range{{Fixed: "v1.2.0"}},
+			Symbols:        []string{goAdvisorySymbol},
+			Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
+		}, true
 	}
-	return pipeline.AdvisoryFacts{
-		Coordinate:     "zlib",
-		PURL:           "pkg:conan/zlib",
-		UpperExclusive: "1.2.13",
-		FixedVersion:   "1.2.13",
-		AffectedRanges: []pipeline.Range{{Fixed: "1.2.13"}},
-		Symbols:        s.symbols,
-		Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
-	}, true
+	return pipeline.AdvisoryFacts{}, false
 }
 
-func runCFamilyBaseline(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource) *report.Report {
+func runCFamilyBaseline(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource, ids ...string) *report.Report {
 	t.Helper()
+	if len(ids) == 0 {
+		ids = []string{cfamilyAdvisoryID}
+	}
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"conanfile.txt": "[requires]\nzlib/1.2.11\n",
+		"go.mod":        "module example.com/c-target\n\ngo 1.22\n\nrequire " + goAdvisoryModule + " v1.0.0\n",
 		"main.c":        "#include <zlib.h>\nint load(const char *p) { return p != 0; }\nint main(int c, char **v) { return load(v[0]); }\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	refs := make([]assessment.VulnRef, 0, len(ids))
+	for _, id := range ids {
+		refs = append(refs, assessment.VulnRef{ID: id, Source: "corpus"})
+	}
 	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 		Subject:    Subject{Repo: "example.com/c-target", Revision: "main", ResolvedCommit: "deadbeef"},
 		Codebase:   assessment.CodebaseRef{Repo: "example.com/c-target", Revision: "main"},
-		Advisories: []assessment.VulnRef{{ID: cfamilyAdvisoryID, Source: "corpus"}},
+		Advisories: refs,
 		AssessOptions: []pipeline.AssessOption{
 			pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "cfamily"}),
 			pipeline.WithPlugin(lane),
@@ -159,20 +199,38 @@ func TestCFamilyBaseline_SymbolAbsentAdvisoryIsUndetermined(t *testing.T) {
 	assertUndetermined(t, runCFamilyBaseline(t, cfamilyGatePlugin{}, cfamilyAdvisories{}), cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
 }
 
-// The control: the same advisory naming a symbol the graph resolves and does not reach is
-// refuted, so the test above is detecting the symbol-absent gate and not some other hold.
-func TestCFamilyBaseline_NamedUnreachedSymbolRefutes(t *testing.T) {
-	f := cfamilyRow(t, runCFamilyBaseline(t, cfamilyGatePlugin{}, cfamilyAdvisories{symbols: []string{"inflateGetHeader"}}))
-	if f.Verdict != report.VerdictNotExploitable {
-		t.Errorf("verdict = %q (undetermined_reason %q), want %q", f.Verdict, f.UndeterminedReason, report.VerdictNotExploitable)
+// A C advisory naming a symbol the graph resolves and does not reach is undetermined, never
+// not_exploitable: the lane declares cgx_sink_unreached (did_not_run), because the graph can lose
+// the call that reaches it (a parse error inside a body, a call through a macro alias or a
+// function pointer). C/C++ does not refute on a missing path.
+func TestCFamilyBaseline_NamedUnreachedSymbolIsUndetermined(t *testing.T) {
+	const sink = "inflateGetHeader"
+	lane := cfamilyGatePlugin{unreached: map[string]bool{sink: true}}
+	assertUndetermined(t, runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}), cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+	if got := report.ClassifyPartialityReason(cfamilySinkUnreached); got != report.PartialityDidNotRun {
+		t.Errorf("%s classes as %q, want %q", cfamilySinkUnreached, got, report.PartialityDidNotRun)
+	}
+}
+
+// cgx_sink_unreached is scoped to the advisory whose sink it is. One scan carries a C advisory
+// whose sink is resolved and unreached and a Go module advisory whose symbol resolves and is
+// unreached on a graph that declares nothing loud for it. The C row is undetermined; the Go row
+// keeps not_exploitable. A run-wide declaration would hold both, so the second row is what fails
+// if the code ever leaks out of the C advisory's own ops.
+func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
+	const sink = "inflateGetHeader"
+	lane := cfamilyGatePlugin{unreached: map[string]bool{sink: true}}
+	rep := runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}, cfamilyAdvisoryID, goAdvisoryID)
+	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+	if got := verdictByID(rep)[goAdvisoryID]; got != report.VerdictNotExploitable {
+		t.Errorf("%s verdict = %q, want %q (the C advisory's did_not_run leaked to it)", goAdvisoryID, got, report.VerdictNotExploitable)
 	}
 }
 
 // A tree that reaches the vulnerable code only through the dependency (it calls uncompress, which
 // calls inflate inside zlib) while the advisory names inflate_fast and inflate: neither is defined
 // in the tree, so the lane resolves nothing and declares it loud, and the verdict is undetermined,
-// never not_exploitable, though the graph has edges and no path was found. The control is
-// TestCFamilyBaseline_NamedUnreachedSymbolRefutes: a symbol that resolves and is unreached refutes.
+// never not_exploitable, though the graph has edges and no path was found.
 func TestCFamilyBaseline_UnresolvedThroughDependencyIsUndetermined(t *testing.T) {
 	rep := runCFamilyBaseline(t, cfamilyGatePlugin{unresolved: true}, cfamilyAdvisories{symbols: []string{"inflate_fast", "inflate"}})
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)

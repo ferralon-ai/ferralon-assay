@@ -173,11 +173,18 @@ func (p Package) Label() string {
 	switch {
 	case p.Version == "":
 		return p.Name
-	case strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned):
+	case p.PinUnresolved():
 		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
 	default:
 		return p.Name + "@" + p.Version
 	}
+}
+
+// PinUnresolved reports whether Version is an inventory observation rather than a resolved
+// version (PartialReason source_unpinned). Such a version must never be presented as
+// name@version, in a label or in an identifier.
+func (p Package) PinUnresolved() bool {
+	return p.Version != "" && strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned)
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the

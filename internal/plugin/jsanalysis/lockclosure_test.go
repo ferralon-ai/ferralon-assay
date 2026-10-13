@@ -248,6 +248,30 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 				treeSymlink(t, filepath.Join(dir, "node_modules", ".hooks", "start"), filepath.Join(dir, "start"))
 			}},
 
+		// A symlinked directory is never followed. One inside the tree is read in full only when
+		// the walk enters its target at the target's real path.
+		{name: "an in-tree symlinked directory the walk reads at its target", bounded: true, files: map[string]string{
+			"package-lock.json": lock, "conf/base.yml": "port: 80\n"},
+			setup: func(t *testing.T, dir string) { treeSymlink(t, "conf", filepath.Join(dir, "cfg")) }},
+		{name: "an in-tree symlinked directory into node_modules", files: map[string]string{
+			"package-lock.json": lock, "node_modules/qs/package.json": `{"name":"qs"}`},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, filepath.Join(dir, "node_modules", "qs"), filepath.Join(dir, "vendored"))
+			}},
+		{name: "an in-tree symlinked directory into site-packages", files: map[string]string{
+			"package-lock.json": lock, "py/lib/site-packages/x/a.txt": "port: 80\n"},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, filepath.Join(dir, "py", "lib", "site-packages", "x"), filepath.Join(dir, "x"))
+			}},
+		{name: "a symlinked directory cycle through an ancestor terminates", bounded: true, files: map[string]string{
+			"package-lock.json": lock, "a/b/base.yml": "port: 80\n"},
+			setup: func(t *testing.T, dir string) { treeSymlink(t, "..", filepath.Join(dir, "a", "b", "up")) }},
+		{name: "a symlink loop", files: map[string]string{"package-lock.json": lock},
+			setup: func(t *testing.T, dir string) {
+				treeSymlink(t, "y", filepath.Join(dir, "x"))
+				treeSymlink(t, "x", filepath.Join(dir, "y"))
+			}},
+
 		{name: "a file the walk cannot read", files: map[string]string{"package-lock.json": lock, "secret.env": "PORT=80\n"},
 			setup: func(t *testing.T, dir string) {
 				if os.Geteuid() == 0 {

@@ -10,7 +10,7 @@ import (
 // buildTreeSkipped reports whether walkBuildTree visits a directory with this name without
 // entering it: node_modules and site-packages hold installed packages, not the build's own
 // files. Nothing else is skipped, .git included. This is the shared build-tree walker rule;
-// keep it identical to the dependency-version resolvers' walker.
+// keep it identical to internal/plugin/buildtree's walker.
 func buildTreeSkipped(name string) bool {
 	return name == "node_modules" || name == "site-packages"
 }

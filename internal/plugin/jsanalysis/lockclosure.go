@@ -512,7 +512,11 @@ var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modu
 //   - an installerMarker, a .yarnrc.yml that does not select the node_modules linker, or a
 //     node_modules holding pnpm's or yarn's state;
 //   - a symlink that leaves the build tree or does not resolve, a symlinked node_modules, or
-//     anything it cannot read.
+//     anything it cannot read;
+//   - a symlinked directory whose target the walk does not itself read. One inside the tree is
+//     read in full only when its target resolves inside the tree's real path to a directory the
+//     walk enters at that real path: not node_modules, site-packages or anything under one. The
+//     walk never follows the link, so a link cycle cannot make it loop.
 func (lc *lockClosures) resolutionOverridden() bool {
 	if lc.scanned {
 		return lc.overridden
@@ -522,6 +526,18 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		lc.overridden = true
 		return filepath.SkipAll
 	}
+	realRoot, rootErr := filepath.EvalSymlinks(lc.root)
+	// walked holds the real path of every directory the walk entered and listed. The walk never
+	// follows a symlink, so a walked path is root's real path joined with its path under root.
+	walked := map[string]bool{}
+	realOf := func(path string) string {
+		rel, err := filepath.Rel(lc.root, path)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(realRoot, rel)
+	}
+	var linkedDirs []string
 	_ = walkBuildTree(lc.root, func(e buildTreeEntry, err error) error {
 		if err != nil || e.Escapes {
 			return veto()
@@ -549,8 +565,12 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		if installerMarkers[name] {
 			return veto()
 		}
-		if e.D.IsDir() || (e.Symlink && buildTreeIsDir(e.Path)) {
-			// A symlinked directory inside the tree is walked where it lives.
+		if e.Symlink && buildTreeIsDir(e.Path) {
+			linkedDirs = append(linkedDirs, e.Path)
+			return nil
+		}
+		if e.D.IsDir() {
+			walked[realOf(e.Path)] = true
 			return nil
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
@@ -564,6 +584,15 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		}
 		return nil
 	})
+	for _, link := range linkedDirs {
+		if lc.overridden {
+			break
+		}
+		target, err := filepath.EvalSymlinks(link)
+		if rootErr != nil || err != nil || !walked[target] {
+			lc.overridden = true
+		}
+	}
 	return lc.overridden
 }
 

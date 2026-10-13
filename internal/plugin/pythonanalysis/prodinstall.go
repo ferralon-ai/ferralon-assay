@@ -535,10 +535,6 @@ func environmentManifest(base string, data []byte) string {
 }
 
 // condaRecipeName reports a conda-build (meta.yaml) or rattler-build (recipe.yaml) recipe.
-func condaRecipeName(base string) bool {
-	return base == "meta.yaml" || base == "recipe.yaml"
-}
-
 var (
 	// jinjaRe is a Jinja expression, statement or comment; rattler-build's ${{ }} included.
 	jinjaRe = regexp.MustCompile(`\{\{|\{%|\{#`)

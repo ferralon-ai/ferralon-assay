@@ -42,6 +42,12 @@ import (
 //     readable lockfile holds stays not found. A v1 package-lock or yarn.lock that holds an
 //     npm alias entry takes the same path: the entry is keyed by the alias, so the real
 //     package's copy is filed under no name this resolver reads.
+//   - Any other install surface under the build dir, matched by name or content anywhere the
+//     shared walk reaches (everything but node_modules and site-packages), takes the same
+//     path: a bun or deno lock, a pnpmfile, a lockfile in a directory lockFiles skips, a
+//     package copy under .yarn or .pnpm-store. See versions_surfaces.go.
+//   - A package installed in a node_modules directory under the build dir is another copy of
+//     it: it takes part in Match like a lockfile entry, without joining All.
 //
 // Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
 // out of several distinct versions. See its doc comment for the rule.
@@ -60,11 +66,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	locks := lockFiles(req.BuildDir)
+	copies, copiesRead := installedCopies(req.BuildDir)
 
-	var (
-		all         []plugin.ResolvedDependency
-		parseFailed bool
-	)
+	var all []plugin.ResolvedDependency
+	parseFailed := unreadSurfaces(req.BuildDir, locks) || !copiesRead
 	for _, l := range locks {
 		deps, ok := parseLockfile(l)
 		if !ok {
@@ -86,7 +91,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchCoordinate(all, normalizeNPMCoordinate(req.Coordinate))
+	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...), normalizeNPMCoordinate(req.Coordinate))
 	if parseFailed && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
@@ -143,7 +148,8 @@ func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.Resol
 
 // lockFiles returns every recognized lockfile under root (npm/yarn/pnpm), skipping
 // build-output/VCS/node_modules trees so a nested install does not shadow the project's
-// own top-level lockfile with transitive duplicates.
+// own top-level lockfile with transitive duplicates. A lockfile in a skipped tree other than
+// node_modules is an install surface this does not read, so it vetoes (unreadSurfaces).
 func lockFiles(root string) []string {
 	var out []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -151,8 +157,6 @@ func lockFiles(root string) []string {
 			return nil //nolint:nilerr // an unreadable subtree yields no lockfiles; keep walking.
 		}
 		if d.IsDir() {
-			// skipDir already excludes node_modules/dist/build/VCS, so a nested install's
-			// transitive lockfiles never shadow the project's own top-level lockfile.
 			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
@@ -184,26 +188,10 @@ var declaredDependencyFields = []string{"dependencies", "devDependencies", "opti
 func declaredDependencies(root string) []plugin.ResolvedDependency {
 	seen := make(map[string]struct{})
 	var out []plugin.ResolvedDependency
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree declares no dependencies; keep walking.
-		}
-		if d.IsDir() {
-			if path != root && skipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() != "package.json" {
-			return nil
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return nil
-		}
-		var manifest map[string]json.RawMessage
-		if json.Unmarshal(data, &manifest) != nil {
-			return nil
+	for _, path := range packageManifests(root) {
+		manifest, ok := readManifest(path)
+		if !ok {
+			continue
 		}
 		for _, field := range declaredDependencyFields {
 			raw, ok := manifest[field]
@@ -226,9 +214,44 @@ func declaredDependencies(root string) []plugin.ResolvedDependency {
 				out = append(out, npmResolved(name, ""))
 			}
 		}
+	}
+	return out
+}
+
+// packageManifests returns every package.json under root, with the same skip rules as
+// lockFiles.
+func packageManifests(root string) []string {
+	var out []string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
+		}
+		if d.IsDir() {
+			if path != root && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "package.json" {
+			out = append(out, path)
+		}
 		return nil
 	})
 	return out
+}
+
+// readManifest decodes the package.json at path as a JSON object. ok is false when it
+// cannot be read or is not one.
+func readManifest(path string) (map[string]json.RawMessage, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var manifest map[string]json.RawMessage
+	if json.Unmarshal(data, &manifest) != nil || manifest == nil {
+		return nil, false
+	}
+	return manifest, true
 }
 
 // parseLockfile dispatches on the lockfile's name to the format-specific parser. The

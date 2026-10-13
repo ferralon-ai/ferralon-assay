@@ -678,12 +678,12 @@ func TestResolveVersions_NonStandardRequirementsNameVetoes(t *testing.T) {
 	mustVetoedPy(t, beside, "flask")
 }
 
-// A requirements-*.txt name is read, and a .txt elsewhere that is not a requirements file
-// is ignored.
+// A requirements-*.txt name is read, and a .txt elsewhere that neither is named nor reads as
+// a requirements file is ignored.
 func TestResolveVersions_StandardRequirementsNamesRead(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"requirements-dev.txt": "flask==2.3.0\n",
-		"docs/notes.txt":       "flask>=2.0\n",
+		"docs/notes.txt":       "Install flask 2.0 or later.\n",
 		"LICENSE.txt":          "MIT\n",
 	})
 	mustResolvedCompletePy(t, dir, "flask", "2.3.0")

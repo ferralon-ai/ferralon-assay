@@ -248,13 +248,9 @@ func declaredDistributions(buildDir string) (names map[string]bool, complete boo
 			}
 		}
 	}
-	for _, f := range walkManifests(buildDir, isVersionCandidate) {
-		if !isManifest(filepath.Base(f)) {
-			if unreadSurfaceVetoes(f) {
-				complete = false
-			}
-			continue
-		}
+	manifests, unread := versionSurfaces(buildDir)
+	complete = !unread
+	for _, f := range manifests {
 		deps, _, ok := parseManifest(f)
 		if !ok {
 			complete = false

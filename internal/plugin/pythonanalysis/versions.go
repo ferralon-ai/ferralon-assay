@@ -41,11 +41,13 @@ import (
 //     every Found Match is UNRESOLVED: the broken file may hold another copy of any
 //     coordinate, so the readable manifests cannot decide its version. A coordinate no
 //     readable manifest holds stays not found.
-//   - A file that declares dependencies where this does not read them (a Pipfile, a
-//     requirements include, setup.py/setup.cfg/hatch_build.py, a conda environment, a
-//     non-standard requirements file, or a pyproject.toml table other than
-//     [project].dependencies) is treated exactly like an unparseable manifest. See
-//     versions_declared.go.
+//   - Any other install surface under the build dir, matched by name or content anywhere the
+//     shared walk reaches (everything but node_modules and site-packages), is treated exactly
+//     like an unparseable manifest unless it is read and found to declare nothing; so is a
+//     pyproject.toml table other than [project].dependencies and [build-system].requires.
+//     See versions_surfaces.go and versions_declared.go.
+//   - A distribution installed in a site-packages directory under the build dir is another
+//     copy of its project: it takes part in Match like a pin, without joining All.
 //
 // Several pinned versions of one project: Match is chosen by matchCoordinate, which never
 // picks one pin out of several distinct versions. See its doc comment for the rule.
@@ -63,18 +65,12 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	var (
-		manifests   []string
-		all         []plugin.ResolvedDependency
-		origins     []manifestOrigin
-		parseFailed bool
+		all     []plugin.ResolvedDependency
+		origins []manifestOrigin
 	)
-	for _, f := range walkManifests(req.BuildDir, isVersionCandidate) {
-		if isManifest(filepath.Base(f)) {
-			manifests = append(manifests, f)
-		} else if unreadSurfaceVetoes(f) {
-			parseFailed = true
-		}
-	}
+	manifests, parseFailed := versionSurfaces(req.BuildDir)
+	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
+	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
 		deps, o, ok := parseManifest(m)
 		if !ok {
@@ -93,7 +89,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchCoordinate(all, origins, normalizePyCoordinate(req.Coordinate))
+	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
+		append(origins[:len(origins):len(origins)], copyOrigins...), normalizePyCoordinate(req.Coordinate))
 	if parseFailed && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
@@ -204,12 +201,6 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 // project's own top-level manifest.
 func manifestFiles(root string) []string {
 	return walkManifests(root, func(path string) bool { return isManifest(filepath.Base(path)) })
-}
-
-// isVersionCandidate is what version resolution walks: every manifest, plus every file
-// that may be an install surface it does not read.
-func isVersionCandidate(path string) bool {
-	return isManifest(filepath.Base(path)) || isUnreadSurfaceCandidate(path)
 }
 
 // walkManifests returns every file under root whose path satisfies match, skipping the

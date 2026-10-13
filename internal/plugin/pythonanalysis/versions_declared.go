@@ -1,9 +1,6 @@
 package pythonanalysis
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -13,58 +10,12 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// --- unread install surfaces ---------------------------------------------------
+// --- surfaces read only to see that they declare nothing ------------------------
 //
-// A file that declares Python dependencies in a form version resolution does not read can
-// install any coordinate at any version. Each one takes the parse-failure path: the result
-// is declared-partial and every Found match is UNRESOLVED, even when that surface's own
-// lock sits beside it, since an installer re-resolves a stale lock.
-
-// isUnreadSurfaceCandidate reports whether path may be an unread install surface; the
-// content check is unreadSurfaceVetoes.
-func isUnreadSurfaceCandidate(path string) bool {
-	switch filepath.Base(path) {
-	case "Pipfile", "setup.py", "setup.cfg", "hatch_build.py", "environment.yml", "environment.yaml":
-		return true
-	}
-	return isNonStandardRequirementsName(path)
-}
-
-// isNonStandardRequirementsName reports whether path is a requirements file version
-// resolution does not read: a .txt whose name mentions "requirements" without starting
-// with it ("dev-requirements.txt"), any .txt under a requirements/ directory, or a pip-tools
-// .in source of either kind ("requirements.in").
-func isNonStandardRequirementsName(path string) bool {
-	base := filepath.Base(path)
-	if isRequirementsName(base) {
-		return false
-	}
-	if ext := filepath.Ext(base); ext != ".txt" && ext != ".in" {
-		return false
-	}
-	return strings.Contains(strings.ToLower(base), "requirements") ||
-		strings.EqualFold(filepath.Base(filepath.Dir(path)), "requirements")
-}
-
-// unreadSurfaceVetoes reports whether the candidate at path declares dependencies version
-// resolution does not read. A file that cannot be read or decoded vetoes.
-func unreadSurfaceVetoes(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return true
-	}
-	switch filepath.Base(path) {
-	case "Pipfile":
-		return pipfileDeclares(data)
-	case "setup.py", "setup.cfg":
-		return bytes.Contains(data, []byte("install_requires")) || bytes.Contains(data, []byte("extras_require"))
-	case "hatch_build.py":
-		return bytes.Contains(data, []byte("dependencies"))
-	case "environment.yml", "environment.yaml":
-		return condaDeclares(data)
-	}
-	return true // a non-standard requirements file
-}
+// See declaresNothing (versions_surfaces.go). A surface that does declare dependencies takes
+// the parse-failure path: the result is declared-partial and every Found match is
+// UNRESOLVED, even when that surface's own lock sits beside it, since an installer
+// re-resolves a stale lock.
 
 // pipfileNonPackageTables are the Pipfile tables that are not package categories. Every
 // other table ([packages], [dev-packages], and any custom pipenv category) declares
@@ -119,8 +70,12 @@ func isCondaToolPackage(spec string) bool {
 // --- pyproject.toml ----------------------------------------------------------------
 
 // pyprojectDoc is the subset of pyproject.toml version resolution reads ([project]
-// dependencies) plus the tables it recognizes as unread install surfaces.
+// dependencies and [build-system] requires) plus the tables it recognizes as unread install
+// surfaces.
 type pyprojectDoc struct {
+	BuildSystem struct {
+		Requires []string `toml:"requires"`
+	} `toml:"build-system"`
 	Project struct {
 		Dependencies         []string       `toml:"dependencies"`
 		OptionalDependencies map[string]any `toml:"optional-dependencies"`
@@ -145,12 +100,12 @@ type pyprojectDoc struct {
 }
 
 // parsePyprojectVersions reads pyproject.toml's [project].dependencies, each entry with the
-// specifier a same-directory lock's pin must satisfy to cover it. The bool is false when the
-// file does not decode, when an entry installs a local path other than the project itself,
-// or when the file declares dependencies anywhere version resolution does not read:
-// [project] optional-dependencies or dynamic dependencies, [dependency-groups],
-// [tool.poetry] dependencies, dev-dependencies or groups, [tool.uv] dev-dependencies, or
-// [tool.pdm] dev-dependencies.
+// specifier a same-directory lock's pin must satisfy to cover it, and [build-system].requires,
+// which no lock covers. The bool is false when the file does not decode, when an entry
+// installs a local path other than the project itself, or when the file declares
+// dependencies anywhere version resolution does not read: [project] optional-dependencies or
+// dynamic dependencies, [dependency-groups], [tool.poetry] dependencies, dev-dependencies or
+// groups, [tool.uv] dev-dependencies, or [tool.pdm] dev-dependencies.
 func parsePyprojectVersions(data []byte, dir string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	var doc pyprojectDoc
 	if err := toml.Unmarshal(data, &doc); err != nil {
@@ -165,6 +120,15 @@ func parsePyprojectVersions(data []byte, dir string) ([]plugin.ResolvedDependenc
 		d, o, keep, ok := pep508Entry(spec, dir)
 		readable = readable && ok
 		if keep {
+			deps = append(deps, d)
+			origins = append(origins, o)
+		}
+	}
+	for _, spec := range doc.BuildSystem.Requires {
+		d, o, keep, ok := pep508Entry(spec, dir)
+		readable = readable && ok
+		if keep {
+			o.lockedBy = nil // a build frontend resolves build requirements on its own, not from the project's lock
 			deps = append(deps, d)
 			origins = append(origins, o)
 		}

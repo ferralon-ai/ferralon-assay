@@ -36,12 +36,13 @@ func unreadSurfaces(root string, locks []string) bool {
 			read[m] = true
 		}
 	}
-	for _, c := range buildtree.Candidates(root, npmInstallSurface, func(path string) bool { return read[path] }) {
+	veto := newScriptVeto(root, func(path string) bool { return read[path] })
+	for _, c := range buildtree.Candidates(root, veto.classify(npmInstallSurface), veto.fullyRead) {
 		if !c.FullyRead {
 			return true
 		}
 	}
-	return false
+	return veto.rebound()
 }
 
 // npmSurfaceNames are the lowercased manifests and lockfiles npm, yarn, pnpm, bun, deno and

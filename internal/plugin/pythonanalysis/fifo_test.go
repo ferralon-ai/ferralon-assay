@@ -6,7 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -14,103 +14,213 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-func mkfifo(t *testing.T, path string) {
+// mkfifo places a named pipe at rel under dir. Opening it for reading blocks until a writer
+// appears, and none ever does.
+func mkfifo(t *testing.T, dir, rel string) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(path, 0o644); err != nil {
+	if err := syscall.Mkfifo(p, 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
+	return p
 }
 
-// within runs f and fails the test if it has not returned in 3s: opening a pipe with no
-// writer blocks, so a read that reaches one fails here instead of hanging the run.
-func within(t *testing.T, what string, f func()) {
+func placeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		f()
-	}()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("%s blocked opening a pipe", what)
+	for rel, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
-// TestLoadSet_LinkToPipe: in both scans a symlink to a pipe blocks every refutation, and the
-// pipe behind it is never opened. A pipe itself runs nothing.
-func TestLoadSet_LinkToPipe(t *testing.T) {
-	tests := []struct {
-		name      string
-		link      string
-		committed bool
-		veto      string
-	}{
-		{"install scan", "deploy/run.sh", false, "deploy/run.sh: symlink to a non-regular file: install commands behind it are unknown"},
-		{"committed-install scan", "vendor/black", true, "vendor/black: symlink to a non-regular file: installed copies behind it are unknown"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := writeTree(t, withLock(map[string]string{"deploy/README": "x\n", "vendor/README": "x\n"}))
-			mkfifo(t, filepath.Join(dir, "pipe"))
-			btSymlink(t, "../pipe", filepath.Join(dir, filepath.FromSlash(tt.link)))
-			var markerless []string
-			within(t, "the scan", func() {
-				ls := &loadSet{complete: true, reqRuntime: map[string]bool{}, installed: map[string]bool{}, projectNames: map[string]bool{}}
-				ls.locks = loadLocks(dir, ls)
-				if tt.committed {
-					ls.committedInstalls(dir)
-				} else {
-					ls.scanInstalls(dir)
-				}
-				markerless = ls.markerless
-			})
-			if !strings.Contains(strings.Join(markerless, "\n"), tt.veto) {
-				t.Errorf("vetoes %v, want one containing %q", markerless, tt.veto)
-			}
-			var res plugin.ReachabilityResult
-			within(t, "Reachability", func() {
-				res, _ = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/black@24.4.2"})
-			})
-			if res.Refutation != nil {
-				t.Errorf("a symlink to a pipe must block refutation; got %+v", res.Refutation)
-			}
-		})
-	}
+func hasToolFailure(p plugin.Partiality) bool {
+	return !p.Complete && slices.Contains(p.Reasons, plugin.PartialReasonToolFailure)
 }
 
-// TestLoadSet_ReadsOpenOnlyRegularFiles: every read outside the install walk (a requirements
-// file named by -r or found by name, installed metadata, a config file, a nested project, a
-// lockfile, a source file) skips a pipe instead of opening it, and the pipe still blocks refutation.
-func TestLoadSet_ReadsOpenOnlyRegularFiles(t *testing.T) {
-	tests := []struct {
+// TestReaders_FIFO places a named pipe where each reader looks for a file. Every reader must
+// return without opening it (a reader that blocks fails the 3 s guard rather than hanging the
+// run) and treat it as a file it could not read.
+func TestReaders_FIFO(t *testing.T) {
+	const py = "def a():\n    pass\n"
+	ctx := context.Background()
+	buildManifestPartial := func(t *testing.T, dir, _ string) {
+		res, err := BuildManifest(ctx, plugin.BuildManifestRequest{BuildDir: dir})
+		if err != nil || !hasToolFailure(res.Partiality) {
+			t.Errorf("BuildManifest partiality = %+v, %v; want tool_failure", res.Partiality, err)
+		}
+	}
+	callGraphPartial := func(t *testing.T, dir, _ string) {
+		res, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
+		if err != nil || !hasToolFailure(res.Partiality) {
+			t.Errorf("CallGraph partiality = %+v, %v; want tool_failure", res.Partiality, err)
+		}
+	}
+	rows := []struct {
 		name  string
 		files map[string]string
-		pipe  string
+		fifo  string
+		check func(t *testing.T, dir, pipe string)
 	}{
-		{"a requirements file named by -r", map[string]string{"deploy/run.sh": "pip install -r reqs.txt\n"}, "reqs.txt"},
-		{"a dist-info's METADATA", map[string]string{"lib/README": "x\n"}, "lib/black-24.4.2.dist-info/METADATA"},
-		{"a config file", map[string]string{}, "app/settings.yaml"},
-		{"a nested project's pyproject.toml", map[string]string{}, "services/worker/pyproject.toml"},
-		{"a nested lockfile", map[string]string{}, "services/worker/poetry.lock"},
-		{"a nested project's setup.cfg", map[string]string{}, "services/worker/setup.cfg"},
-		{"a nested project's setup.py", map[string]string{}, "services/worker/setup.py"},
-		{"a requirements file", map[string]string{}, "services/worker/requirements.txt"},
-		{"a source file", map[string]string{}, "app/worker.py"},
+		{name: "readPyprojectMeta pyproject.toml", fifo: "pyproject.toml", check: buildManifestPartial},
+		{name: "lockfileRequiresPython uv.lock", fifo: "uv.lock", check: buildManifestPartial},
+		{name: "lockfileRequiresPython pdm.lock", fifo: "pdm.lock", check: buildManifestPartial},
+		{
+			name:  "readPythonVersionPin .python-version",
+			files: map[string]string{"pyproject.toml": "[project]\nrequires-python = \">=3.9\"\n"},
+			fifo:  ".python-version", check: buildManifestPartial,
+		},
+		{
+			name: "pyCandidateName tox.ini", fifo: "tox.ini",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := pyCandidateName(pipe); !ok {
+					t.Error("an unread tox.ini was not taken as an install surface")
+				}
+			},
+		},
+		{
+			name: "pyCandidateName noxfile.py", fifo: "noxfile.py",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := pyCandidateName(pipe); !ok {
+					t.Error("an unread noxfile.py was not taken as an install surface")
+				}
+			},
+		},
+		{
+			name: "manifestDecls pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := manifestDecls(pipe); ok {
+					t.Error("manifestDecls read a pipe")
+				}
+			},
+		},
+		{
+			name: "readPyLock uv.lock", fifo: "uv.lock",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := readPyLock(pipe); ok {
+					t.Error("readPyLock read a pipe")
+				}
+			},
+		},
+		{name: "loadProgram source file", files: map[string]string{"b.py": py}, fifo: "a.py", check: callGraphPartial},
+		{
+			name:  "loadProgram declared manifest",
+			files: map[string]string{"a.py": "import requests\n\ndef a():\n    requests.get(1)\n"},
+			fifo:  "requirements.txt", check: callGraphPartial,
+		},
+		{
+			name: "readRequirementSpecs requirement file", fifo: "reqs.txt",
+			check: func(t *testing.T, dir, _ string) {
+				if _, _, ok := readRequirementSpecs(dir, "reqs.txt"); ok {
+					t.Error("readRequirementSpecs read a pipe")
+				}
+			},
+		},
+		{
+			name: "poetryLockConsistent poetry.lock", fifo: "poetry.lock",
+			check: func(t *testing.T, _, pipe string) {
+				if poetryLockConsistent(pipe, nil) {
+					t.Error("poetryLockConsistent accepted a pipe")
+				}
+			},
+		},
+		{
+			name: "firstPartyNames pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := firstPartyNames([]string{pipe}); ok {
+					t.Error("firstPartyNames ruled out first-party names from a pipe")
+				}
+			},
+		},
+		{
+			name: "firstPartyNames setup.cfg", fifo: "setup.cfg",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := firstPartyNames([]string{pipe}); ok {
+					t.Error("firstPartyNames ruled out first-party names from a pipe")
+				}
+			},
+		},
+		{
+			name: "firstPartyNames setup.py", fifo: "setup.py",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := firstPartyNames([]string{pipe}); ok {
+					t.Error("firstPartyNames ruled out first-party names from a pipe")
+				}
+			},
+		},
+		{
+			name: "firstPartyNames uv.lock", fifo: "uv.lock",
+			check: func(t *testing.T, _, pipe string) {
+				if _, ok := firstPartyNames([]string{pipe}); ok {
+					t.Error("firstPartyNames ruled out first-party names from a pipe")
+				}
+			},
+		},
+		{
+			name: "setupCfgNamed setup.cfg", fifo: "setup.cfg",
+			check: func(t *testing.T, dir, pipe string) {
+				if setupCfgNamed([]string{pipe}, filepath.Join(dir, "setup.py")) {
+					t.Error("setupCfgNamed found a name in a pipe")
+				}
+			},
+		},
+		{
+			name: "pyprojectDynamicCovered pyproject.toml", fifo: "pyproject.toml",
+			check: func(t *testing.T, _, pipe string) {
+				if pyprojectDynamicCovered(pipe, []string{pipe}) {
+					t.Error("pyprojectDynamicCovered accepted a pipe")
+				}
+			},
+		},
+		{
+			name: "loadFiles source file", files: map[string]string{"b.py": py}, fifo: "a.py",
+			check: func(t *testing.T, dir, _ string) {
+				res, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: dir})
+				if err != nil || !hasToolFailure(res.Partiality) {
+					t.Errorf("IndexSymbols partiality = %+v, %v; want tool_failure", res.Partiality, err)
+				}
+			},
+		},
+		{
+			name: "manifestToPyReqs requirements.txt", fifo: "requirements.txt",
+			check: func(t *testing.T, dir, _ string) {
+				inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: dir})
+				if err != nil || !hasToolFailure(inv.Partiality) {
+					t.Errorf("inventory partiality = %+v, %v; want tool_failure", inv.Partiality, err)
+				}
+			},
+		},
+		{
+			name: "parseManifest requirements.txt", fifo: "requirements.txt",
+			check: func(t *testing.T, dir, _ string) {
+				res, err := ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: "requests"})
+				if err != nil || !hasToolFailure(res.Partiality) || res.Exhaustive {
+					t.Errorf("versions = %+v, %v; want tool_failure and not exhaustive", res, err)
+				}
+			},
+		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := writeTree(t, withLock(tt.files))
-			mkfifo(t, filepath.Join(dir, filepath.FromSlash(tt.pipe)))
-			var res plugin.ReachabilityResult
-			within(t, "Reachability", func() {
-				res, _ = Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/black@24.4.2"})
-			})
-			if res.Refutation != nil {
-				t.Errorf("a pipe at %s must block refutation; got %+v", tt.pipe, res.Refutation)
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			placeFiles(t, dir, row.files)
+			pipe := mkfifo(t, dir, row.fifo)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				row.check(t, dir, pipe)
+			}()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatalf("blocked opening the pipe at %s", row.fifo)
 			}
 		})
 	}

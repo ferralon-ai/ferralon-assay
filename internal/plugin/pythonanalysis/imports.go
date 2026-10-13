@@ -221,18 +221,24 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares.
-func declaredDistributions(buildDir string) map[string]bool {
-	out := map[string]bool{}
+// declares. read is false when a manifest cannot be read: it may declare a distribution an
+// import maps to.
+func declaredDistributions(buildDir string) (out map[string]bool, read bool) {
+	out, read = map[string]bool{}, true
 	for _, m := range manifestFiles(buildDir) {
-		deps, _ := parseManifest(m)
+		data, err := readRegular(m)
+		if err != nil {
+			read = false
+			continue
+		}
+		deps, _ := parseManifestData(m, data)
 		for _, d := range deps {
 			if n := normalizePyCoordinate(d.Coordinate); n != "" {
 				out[n] = true
 			}
 		}
 	}
-	return out
+	return out, read
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code

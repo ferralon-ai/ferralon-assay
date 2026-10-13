@@ -169,9 +169,13 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
+	declared, read := declaredDistributions(buildDir)
+	if !read {
+		prog.readFailed = true
+	}
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
-		declared:   declaredDistributions(buildDir),
+		declared:   declared,
 		firstParty: firstPartyTops(modules),
 	}
 	return prog, nil

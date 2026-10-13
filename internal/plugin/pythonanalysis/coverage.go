@@ -6,7 +6,6 @@ package pythonanalysis
 
 import (
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -44,7 +43,7 @@ type pyDecls struct {
 // URL requirements line, an unreadable entry, a pyproject that does not decode or configures
 // pixi, a computed setup.py, any hatch_build.py.
 func manifestDecls(path string) (pyDecls, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return pyDecls{}, false
 	}
@@ -448,7 +447,7 @@ type pyLock struct {
 
 // readPyLock decodes a uv.lock, poetry.lock or pdm.lock. ok is false when it does not decode.
 func readPyLock(path string) (*pyLock, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

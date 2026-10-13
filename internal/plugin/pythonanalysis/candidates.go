@@ -177,11 +177,11 @@ func pyCandidateName(path string) (string, bool) {
 	case (ext == ".lock" || ext == ".lockb") && !foreignLocks[name]:
 		return "lockfile name", true
 	case name == "tox.ini":
-		if data, err := os.ReadFile(path); err != nil || toxHasDeps(string(data)) {
+		if data, err := readRegular(path); err != nil || toxHasDeps(string(data)) {
 			return "tox deps", true
 		}
 	case name == "noxfile.py":
-		if data, err := os.ReadFile(path); err != nil || strings.Contains(string(data), ".install(") {
+		if data, err := readRegular(path); err != nil || strings.Contains(string(data), ".install(") {
 			return "nox install", true
 		}
 	}

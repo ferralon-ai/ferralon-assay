@@ -111,7 +111,11 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 			graphPart = mergePartiality(graphPart, plugin.Partial(plugin.PartialReasonToolFailure))
 			continue
 		}
-		n, e, p := ad.Parse(sel, manifestsUnder(root))
+		manifests, read := manifestsUnder(root)
+		if !read {
+			graphPart = mergePartiality(graphPart, plugin.Partial(plugin.PartialReasonToolFailure))
+		}
+		n, e, p := ad.Parse(sel, manifests)
 		allNodes = append(allNodes, n...)
 		allEdges = append(allEdges, e...)
 		graphPart = mergePartiality(graphPart, p)
@@ -175,7 +179,14 @@ func selectLockfile(root string) (selectedLock, plugin.Partiality) {
 	var locks []lockCand
 	for _, name := range recognizedLockNames {
 		p := filepath.Join(root, name)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(p)
+		switch {
+		case os.IsNotExist(err) || (err == nil && fi.IsDir()):
+		case err != nil || !fi.Mode().IsRegular():
+			// A lock that cannot be read (a pipe, socket or device) may be the authoritative
+			// one, so no other lock is selected in its place.
+			return selectedLock{}, plugin.Partial(plugin.PartialReasonToolFailure)
+		default:
 			locks = append(locks, lockCand{path: p, dialect: dialectForLock(name)})
 		}
 	}
@@ -183,7 +194,12 @@ func selectLockfile(root string) (selectedLock, plugin.Partiality) {
 		return selectedLock{}, plugin.Partial(plugin.PartialReasonNoManifest)
 	}
 
-	if pm := packageManagerDialect(root); pm != "" {
+	pm, ok := packageManagerDialect(root)
+	if !ok {
+		// An unread package.json may name a package manager that overrides the pick.
+		return selectedLock{}, plugin.Partial(plugin.PartialReasonToolFailure)
+	}
+	if pm != "" {
 		for _, l := range locks {
 			if l.dialect == pm {
 				return selectedLock{dialect: pm, path: l.path, root: root}, plugin.Complete()
@@ -218,18 +234,21 @@ func dialectForLock(name string) string {
 }
 
 // packageManagerDialect reads the corepack "packageManager" field (e.g. "pnpm@9.0.0") from
-// the root package.json and returns the dialect, or "" when absent/unreadable. Metadata read
-// only — corepack is never invoked.
-func packageManagerDialect(root string) string {
-	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+// the root package.json and returns the dialect, or "" when absent or unparseable. ok is false
+// when a package.json exists but cannot be read. Metadata read only — corepack is never invoked.
+func packageManagerDialect(root string) (dialect string, ok bool) {
+	data, err := readRegular(filepath.Join(root, "package.json"))
+	if os.IsNotExist(err) {
+		return "", true
+	}
 	if err != nil {
-		return ""
+		return "", false
 	}
 	var m struct {
 		PackageManager string `json:"packageManager"`
 	}
 	if json.Unmarshal(data, &m) != nil || m.PackageManager == "" {
-		return ""
+		return "", true
 	}
 	pm := m.PackageManager
 	if i := strings.IndexByte(pm, '@'); i >= 0 {
@@ -237,9 +256,9 @@ func packageManagerDialect(root string) string {
 	}
 	switch pm {
 	case "npm", "yarn", "pnpm":
-		return pm
+		return pm, true
 	}
-	return ""
+	return "", true
 }
 
 // adapterFor returns the adapter for a dialect. The yarn adapter carries both Classic and
@@ -257,9 +276,10 @@ func adapterFor(dialect string) inventoryAdapter {
 }
 
 // manifestsUnder reads every package.json under root (same skip rules as the walkers), parsed
-// into the invManifest subset for the membership/direct join.
-func manifestsUnder(root string) []manifestFile {
-	var out []manifestFile
+// into the invManifest subset for the membership/direct join. complete is false when a
+// package.json exists that cannot be read.
+func manifestsUnder(root string) (out []manifestFile, complete bool) {
+	complete = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable subtree contributes no manifests.
@@ -273,8 +293,9 @@ func manifestsUnder(root string) []manifestFile {
 		if d.Name() != "package.json" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := readRegular(path)
 		if rerr != nil {
+			complete = complete && os.IsNotExist(rerr)
 			return nil
 		}
 		var pkg invManifest
@@ -284,7 +305,7 @@ func manifestsUnder(root string) []manifestFile {
 		out = append(out, manifestFile{path: path, dir: filepath.Dir(path), pkg: pkg})
 		return nil
 	})
-	return out
+	return out, complete
 }
 
 // --- shared assembly: dedup + sort ------------------------------------------

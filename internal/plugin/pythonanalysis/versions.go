@@ -145,6 +145,11 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 	if err != nil {
 		return nil, false
 	}
+	return parseManifestData(path, data)
+}
+
+// parseManifestData is parseManifest over contents already read from path.
+func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
 	base := filepath.Base(path)
 	switch {
 	case base == "poetry.lock":

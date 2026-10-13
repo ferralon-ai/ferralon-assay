@@ -23,6 +23,11 @@ package pythonanalysis
 //     pinned one whose locked closure is not pinned in the same install, extras, and every
 //     isolated tool install (pipx, uvx, uv tool, uv run --with). Only pip, setuptools, wheel
 //     and uv, whose closures are fixed, are exempt.
+//   - An index or find-links value (option, requirement-file line, environment setting or
+//     project config) that is not a remote https index: a directory, a file: URL, a relative
+//     or loopback location, or a value the scanner cannot resolve is an install source the
+//     lockfile does not describe. A remote https index only changes where locked
+//     distributions are fetched from.
 //   - A pip configuration file anywhere, a PIP_* setting that changes what pip installs, an
 //     installer setting naming groups or extras, a requirement file that cannot be placed (in a
 //     Dockerfile: through WORKDIR, COPY and ADD), a COPY --from or RUN --mount from an image the
@@ -35,6 +40,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -135,6 +142,7 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		if binary {
 			return nil
 		}
+		sc.configIndexes(c, base, data)
 		kind := installSurface(rel, data)
 		if kind == "" {
 			return nil
@@ -202,12 +210,15 @@ var installCommandRe = regexp.MustCompile(`(?:^|[^\w.-])(?:[\w.-]*/)*(?:` +
 var (
 	pipEnvRe       = regexp.MustCompile(`\bPIP_([A-Z][A-Z0-9_]*)`)
 	installerEnvRe = regexp.MustCompile(`\b(?:UV|POETRY|PDM|PIPENV)_[A-Z0-9_]*(?:GROUP|DEV|EXTRA|WITH|ONLY|CATEGOR|OPTIONAL)[A-Z0-9_]*`)
+	// indexEnvRe matches an installer setting naming an index or find-links location, with
+	// the value that follows it (=, : or whitespace), if any.
+	indexEnvRe = regexp.MustCompile(`\b((?:PIP|UV)_(?:FIND_LINKS|INDEX_URL|EXTRA_INDEX_URL|INDEX|DEFAULT_INDEX)|PIPENV_PYPI_MIRROR)\b(?:[ \t]*[=:][ \t]*|[ \t]+)?("[^"\n]*"|'[^'\n]*'|[^\s"'#]+)?`)
 )
 
 // pipEnvHarmless are PIP_* settings that change how pip fetches or reports, never which
 // requirements it installs.
 var pipEnvHarmless = setOf("NO_CACHE_DIR", "DISABLE_PIP_VERSION_CHECK", "DEFAULT_TIMEOUT", "TIMEOUT", "RETRIES",
-	"INDEX_URL", "EXTRA_INDEX_URL", "TRUSTED_HOST", "FIND_LINKS", "ROOT_USER_ACTION", "NO_INPUT", "PROGRESS_BAR",
+	"TRUSTED_HOST", "ROOT_USER_ACTION", "NO_INPUT", "PROGRESS_BAR",
 	"BREAK_SYSTEM_PACKAGES", "PREFER_BINARY", "NO_COLOR", "QUIET", "VERBOSE", "CERT", "CLIENT_CERT", "PROXY",
 	"CACHE_DIR", "NO_WARN_SCRIPT_LOCATION", "REQUIRE_VIRTUALENV", "NO_PYTHON_VERSION_WARNING", "KEYRING_PROVIDER",
 	"ONLY_BINARY", "NO_BINARY", "NO_BUILD_ISOLATION", "COMPILE", "NO_COMPILE")
@@ -216,7 +227,7 @@ func (sc *installScan) envVetoes(c scanCtx, data []byte) {
 	seen := map[string]bool{}
 	for _, m := range pipEnvRe.FindAllSubmatch(data, -1) {
 		name := string(m[1])
-		if pipEnvHarmless[name] || seen[name] {
+		if pipEnvHarmless[name] || seen[name] || indexEnvNames[name] {
 			continue
 		}
 		seen[name] = true
@@ -226,6 +237,144 @@ func (sc *installScan) envVetoes(c scanCtx, data []byte) {
 		if name := string(m); !seen[name] {
 			seen[name] = true
 			sc.veto(c, "sets %s, an installer setting that selects groups or extras", name)
+		}
+	}
+	for _, m := range indexEnvRe.FindAllSubmatch(data, -1) {
+		name, v := string(m[1]), strings.Trim(string(m[2]), `"'`)
+		vals := strings.Fields(v)
+		if len(vals) == 0 {
+			vals = []string{""}
+		}
+		for _, v := range vals {
+			if !sc.indexValue(c, name, v) {
+				break
+			}
+		}
+	}
+}
+
+// indexEnvNames are the PIP_* settings envVetoes reads through indexEnvRe.
+var indexEnvNames = setOf("FIND_LINKS", "INDEX_URL", "EXTRA_INDEX_URL", "INDEX", "DEFAULT_INDEX")
+
+// indexOptions are the installer options whose value is an index or find-links location.
+var indexOptions = setOf("-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--index", "--default-index",
+	"--pypi-mirror")
+
+// indexValue vetoes, and returns false, when v is not a remote https index. what names the
+// option or setting. A uv `--index name=https://…` value is read past its name.
+func (sc *installScan) indexValue(c scanCtx, what, v string) bool {
+	if remoteIndex(v) {
+		return true
+	}
+	sc.veto(c, "%s %q is not a remote https index: what it serves is an install source the lockfile does not describe", what, v)
+	return false
+}
+
+// remoteIndex reports whether v is a remote https index location.
+func remoteIndex(v string) bool {
+	u := v
+	if name, rest, ok := strings.Cut(v, "="); ok && !strings.ContainsAny(name, ":/") {
+		u = rest
+	}
+	p, err := url.Parse(u)
+	return err == nil && p.Scheme == "https" && p.Host != "" && !loopbackHost(p.Hostname())
+}
+
+func loopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") || strings.HasSuffix(strings.ToLower(h), ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+// configIndexes vetoes an index or find-links location in a project or installer config
+// file that is not a remote https index: uv.toml, pyproject [tool.uv], [[tool.poetry.source]]
+// and [[tool.pdm.source]], and a Pipfile [[source]].
+func (sc *installScan) configIndexes(c scanCtx, base string, data []byte) {
+	if base != "pyproject.toml" && base != "uv.toml" && base != "pipfile" {
+		return
+	}
+	var doc map[string]any
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		sc.veto(c, "could not be parsed for index settings")
+		return
+	}
+	table := func(m map[string]any, keys ...string) map[string]any {
+		for _, k := range keys {
+			next, _ := m[k].(map[string]any)
+			if next == nil {
+				return nil
+			}
+			m = next
+		}
+		return m
+	}
+	// tables reads an array of tables, which the decoder returns as []map[string]any.
+	tables := func(what string, v any) ([]map[string]any, bool) {
+		switch v := v.(type) {
+		case nil:
+			return nil, true
+		case []map[string]any:
+			return v, true
+		}
+		sc.veto(c, "%s is not an array of tables the scanner reads", what)
+		return nil, false
+	}
+	var uv map[string]any
+	var sources []map[string]any
+	switch base {
+	case "uv.toml":
+		uv = doc
+	case "pipfile":
+		src, ok := tables("source", doc["source"])
+		if !ok {
+			return
+		}
+		sources = src
+	default:
+		uv = table(doc, "tool", "uv")
+		for _, tool := range []string{"poetry", "pdm"} {
+			src, ok := tables("tool."+tool+".source", table(doc, "tool", tool)["source"])
+			if !ok {
+				return
+			}
+			sources = append(sources, src...)
+		}
+	}
+	var check func(what string, v any) bool
+	check = func(what string, v any) bool {
+		switch v := v.(type) {
+		case nil:
+			return true
+		case string:
+			return sc.indexValue(c, what, v)
+		case []any:
+			for _, x := range v {
+				if !check(what, x) {
+					return false
+				}
+			}
+			return true
+		}
+		sc.veto(c, "%s is not a location the scanner reads", what)
+		return false
+	}
+	for _, k := range []string{"find-links", "index-url", "extra-index-url"} {
+		if uv != nil && !check(k, uv[k]) {
+			return
+		}
+	}
+	if uv != nil {
+		idx, ok := tables("index", uv["index"])
+		if !ok {
+			return
+		}
+		sources = append(sources, idx...)
+	}
+	for _, m := range sources {
+		if !check("source url", m["url"]) {
+			return
 		}
 	}
 }
@@ -260,7 +409,7 @@ func installSurface(rel string, data []byte) string {
 	case base == "railway.json":
 		return "json"
 	}
-	if !installCommandRe.Match(data) && !pipEnvRe.Match(data) && !installerEnvRe.Match(data) {
+	if !installCommandRe.Match(data) && !pipEnvRe.Match(data) && !installerEnvRe.Match(data) && !indexEnvRe.Match(data) {
 		return ""
 	}
 	if hasDisallowedEnvOnly(data) {
@@ -769,8 +918,12 @@ func (sc *installScan) pipInstall(c scanCtx, args []string) {
 			}
 		case pipInstallFlags[opt] && !eq:
 		case pipInstallValues[opt]:
-			if _, ok := next(); !ok {
+			v, ok := next()
+			if !ok {
 				sc.veto(c, "pip install option %s has no value", opt)
+				return
+			}
+			if indexOptions[opt] && !sc.indexValue(c, opt, v) {
 				return
 			}
 		default:
@@ -942,6 +1095,9 @@ func (sc *installScan) reqFile(c scanCtx, p string, set *pipSet, constraint bool
 				sc.veto(rc, "%s installs a project whose dependencies are not read", opt)
 				return false
 			case reqFileOptions[opt]:
+				if indexOptions[opt] && !sc.indexValue(rc, opt, val) {
+					return false
+				}
 			default:
 				sc.veto(rc, "option %s is not parsed", opt)
 				return false
@@ -1077,6 +1233,12 @@ func (sc *installScan) syncFiles(c scanCtx, args []string) {
 		case pipInstallValues[opt]:
 			if !eq {
 				i++
+				if i < len(args) {
+					val = args[i]
+				}
+			}
+			if indexOptions[opt] && !sc.indexValue(c, opt, val) {
+				return
 			}
 		default:
 			sc.veto(c, "sync option %s is not parsed", opt)
@@ -1097,6 +1259,25 @@ type opts struct {
 	vals map[string][]string
 	pos  []string
 	rest []string
+}
+
+// indexOpts checks every index or find-links value o carries; see indexValue.
+func (sc *installScan) indexOpts(c scanCtx, o opts) bool {
+	names := make([]string, 0, len(o.vals))
+	for n := range o.vals {
+		if indexOptions[n] {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		for _, v := range o.vals[n] {
+			if !sc.indexValue(c, n, v) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (o opts) has(names ...string) bool {
@@ -1400,11 +1581,17 @@ func (sc *installScan) uv(c scanCtx, sub string, args []string) {
 			sc.veto(c, "uv sync option %s is not parsed", strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
 			return
 		}
+		if !sc.indexOpts(c, o) {
+			return
+		}
 		sc.uvKeep(c, "uv sync", o)
 	case "export":
 		o, bad := parseOpts(args, uvExport, false)
 		if bad != "" || len(o.pos) > 0 {
 			sc.veto(c, "uv export option %s is not parsed", strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
+			return
+		}
+		if !sc.indexOpts(c, o) {
 			return
 		}
 		sc.uvKeep(c, "uv export", o)
@@ -1416,6 +1603,9 @@ func (sc *installScan) uv(c scanCtx, sub string, args []string) {
 		}
 		if o.has("--with", "--with-requirements", "--with-editable") {
 			sc.veto(c, "uv run --with installs into an environment outside the lockfile")
+			return
+		}
+		if !sc.indexOpts(c, o) {
 			return
 		}
 		if !o.has("--no-sync") && !o.has("--no-project") && !o.has("--isolated") {
@@ -1770,6 +1960,9 @@ func (sc *installScan) pipenvKeep(c scanCtx, what string, args []string) {
 	}
 	if len(o.pos) > 0 {
 		sc.veto(c, "%s with packages changes dependencies the committed lockfile records", what)
+		return
+	}
+	if !sc.indexOpts(c, o) {
 		return
 	}
 	if !c.prod {

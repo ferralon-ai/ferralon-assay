@@ -714,6 +714,12 @@ func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
 }
 
 // dockerRun is the uv workspace plus a Dockerfile that runs cmd.
+// appendFile returns files with extra appended to the named file.
+func appendFile(files map[string]string, name, extra string) map[string]string {
+	files[name] += extra
+	return files
+}
+
 func dockerRun(cmd string) map[string]string {
 	return withLock(map[string]string{"Dockerfile": "FROM python:3.12\nRUN " + cmd + "\n"})
 }
@@ -892,6 +898,40 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		// pip configuration.
 		{name: "ENV PIP_REQUIREMENT", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "Dockerfile": "FROM python:3.12\nENV PIP_REQUIREMENT=requirements-dev.txt\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "PIP_REQUIREMENT"},
 		{name: "a committed pip.conf", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "pip.conf": "[install]\nrequirement = requirements-dev.txt\n", "Dockerfile": "FROM python:3.12\nCOPY pip.conf /etc/pip.conf\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pip configuration file"},
+
+		// Index and find-links locations: a remote https index is a fetch option; anything else
+		// (a directory, file: URL, relative, loopback or unresolvable value) is an install
+		// source the lockfile does not describe, and blocks every refutation.
+		{name: "pip install --find-links into the repository", files: dockerRun("pip install -U --find-links ./wheels pip setuptools wheel"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--find-links "./wheels" is not a remote https index`},
+		{name: "pip install -f with a directory", files: dockerRun("pip install -U -f vendor/ pip"), pkg: "pkg:pypi/pytest@8.2.0", veto: `-f "vendor/" is not a remote https index`},
+		{name: "pip install --find-links=file: URL", files: dockerRun("pip install -U --find-links=file:///app/wheels pip"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--find-links "file:///app/wheels"`},
+		{name: "pip install --extra-index-url on loopback", files: dockerRun("pip install -U --extra-index-url https://127.0.0.1:8080/simple pip"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--extra-index-url "https://127.0.0.1:8080/simple"`},
+		{name: "pip install --index-url over plain http", files: dockerRun("pip install -U -i http://mirror.example.com/simple pip"), pkg: "pkg:pypi/pytest@8.2.0", veto: `-i "http://mirror.example.com/simple"`},
+		{name: "a remote https index and find-links stay fetch options", files: dockerRun("pip install -U --index-url https://mirror.example.com/simple --extra-index-url=https://pypi.org/simple -f https://wheels.example.com/ pip setuptools wheel"), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "--find-links in a requirements file", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nCOPY deploy/ deploy/\nRUN pip install -r deploy/base.txt\n", "deploy/base.txt": "--find-links ./wheels\nblack==24.4.2\npathspec==0.12.1\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `--find-links "./wheels"`},
+		{name: "a remote --index-url in a requirements file stays a fetch option", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nCOPY deploy/ deploy/\nRUN pip install -r deploy/base.txt\n", "deploy/base.txt": "--index-url https://mirror.example.com/simple\nblack==24.4.2\npathspec==0.12.1\n"}), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "uv pip sync --find-links", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "Dockerfile": "FROM python:3.12\nCOPY requirements.txt .\nRUN uv pip sync --find-links ./wheels requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: `--find-links "./wheels"`},
+		{name: "uv sync --find-links", files: dockerRun("uv sync --frozen --no-dev --find-links ./wheels"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--find-links "./wheels"`},
+		{name: "uv sync with a named remote index stays a fetch option", files: dockerRun("uv sync --frozen --no-dev --index mirror=https://mirror.example.com/simple"), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "uv run --default-index into the repository", files: dockerRun("uv run --no-dev --default-index ./simple python -m app"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--default-index "./simple"`},
+		{name: "pipenv --pypi-mirror into the repository", files: dockerRun("pipenv sync --pypi-mirror ./mirror"), pkg: "pkg:pypi/pytest@8.2.0", veto: `--pypi-mirror "./mirror"`},
+		{name: "ENV PIP_FIND_LINKS into the image", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_FIND_LINKS=/app/wheels\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `PIP_FIND_LINKS "/app/wheels"`},
+		{name: "legacy ENV PIP_FIND_LINKS form", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_FIND_LINKS ./wheels\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `PIP_FIND_LINKS "./wheels"`},
+		{name: "PIP_FIND_LINKS list with one local entry", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_FIND_LINKS=\"https://wheels.example.com/ ./wheels\"\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `PIP_FIND_LINKS "./wheels"`},
+		{name: "workflow env UV_FIND_LINKS", files: withLock(map[string]string{".github/workflows/cd.yml": "name: CD\non: push\nenv:\n  UV_FIND_LINKS: ./wheels\njobs:\n  ship:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `UV_FIND_LINKS "./wheels"`},
+		{name: "an index setting alone makes a file an install surface", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nRUN uv sync --frozen --no-dev\n", "deploy/uv.env": "UV_DEFAULT_INDEX=file:///srv/simple\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `UV_DEFAULT_INDEX "file:///srv/simple"`},
+		{name: "an index setting with an unresolved value", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_INDEX_URL=$MIRROR\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `PIP_INDEX_URL "$MIRROR"`},
+		{name: "remote https index settings stay fetch options", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_INDEX_URL=https://mirror.example.com/simple UV_INDEX_URL=https://mirror.example.com/simple\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "a committed pip.conf with find-links", files: withLock(map[string]string{"pip.conf": "[global]\nfind-links = ./wheels\n", "Dockerfile": "FROM python:3.12\nCOPY pip.conf /etc/pip.conf\nRUN pip install -U pip setuptools wheel\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "pip configuration file"},
+		{name: "pip config set find-links", files: dockerRun("pip config set global.find-links /app/wheels && pip install -U pip"), pkg: "pkg:pypi/pytest@8.2.0", veto: "pip config changes"},
+		{name: "PIP_CONFIG_FILE", files: withLock(map[string]string{"Dockerfile": "FROM python:3.12\nENV PIP_CONFIG_FILE=/app/pip.conf\nRUN pip install -U pip\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "PIP_CONFIG_FILE"},
+		{name: "uv.toml find-links", files: withLock(map[string]string{"uv.toml": "find-links = [\"./wheels\"]\n", "Dockerfile": "FROM python:3.12\nRUN uv sync --frozen --no-dev\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `find-links "./wheels"`},
+		{name: "[tool.uv.index] into the repository", files: docsUV("default-groups = [\"dev\", \"docs\"]\n\n[[tool.uv.index]]\nname = \"local\"\nurl = \"./simple\"", "uv sync --no-dev --no-group docs"), pkg: "pkg:pypi/mkdocs@1.5.0", veto: `source url "./simple"`},
+		{name: "a remote [tool.uv.index] stays a fetch option", files: docsUV("default-groups = [\"dev\", \"docs\"]\n\n[[tool.uv.index]]\nname = \"mirror\"\nurl = \"https://mirror.example.com/simple\"", "uv sync --no-dev --no-group docs"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "a poetry source on a file: URL", files: appendFile(docsPoetry(true, "poetry install --without dev"), "pyproject.toml", "\n[[tool.poetry.source]]\nname = \"local\"\nurl = \"file:///srv/wheels\"\n"), pkg: "pkg:pypi/mkdocs@1.5.0", veto: `source url "file:///srv/wheels"`},
+		{name: "a remote poetry source stays a fetch option", files: appendFile(docsPoetry(true, "poetry install --without dev"), "pyproject.toml", "\n[[tool.poetry.source]]\nname = \"mirror\"\nurl = \"https://mirror.example.com/simple\"\n"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "a pdm source into the repository", files: map[string]string{"pdm.lock": devPDMLock, "app.py": "import requests\n", "Dockerfile": "RUN pdm install --prod\n", "pyproject.toml": "[project]\nname = \"app\"\n\n[[tool.pdm.source]]\nname = \"local\"\nurl = \"./simple\"\n"}, pkg: "pkg:pypi/black@24.4.2", veto: `source url "./simple"`},
+		{name: "a Pipfile source into the repository", files: withLock(map[string]string{"Pipfile": "[[source]]\nname = \"local\"\nurl = \"./simple\"\nverify_ssl = false\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: `source url "./simple"`},
 		{name: "a pinned runtime export installs the runtime set only", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "Dockerfile": "FROM python:3.12\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
 
 		// Build-to-deploy job graphs.
@@ -1096,6 +1136,22 @@ func TestCallGraph_ScopedSitesStayRunWide(t *testing.T) {
 
 // TestLoadSet_UnpinnedExportReasonIsStable pins that the requirements-export reason names the
 // first unpinned edge in sorted order, whatever the map order.
+// TestLoadSet_ExportIndexOption pins that a requirements export pointing pip at an index that
+// is not a remote https index is not an export of locked copies, and a remote one still is.
+func TestLoadSet_ExportIndexOption(t *testing.T) {
+	ls := &loadSet{locks: &lockModel{versions: map[string]map[string]bool{"alpha": {"1.0": true}}}}
+	for opt, want := range map[string]string{
+		"--index-url ./simple":                          "option --index-url is not a remote https index",
+		"-i file:///srv/simple":                         "option -i is not a remote https index",
+		"--extra-index-url=http://mirror.example.com":   "option --extra-index-url is not a remote https index",
+		"--index-url https://mirror.example.com/simple": "",
+	} {
+		if got := ls.unpinnedExport([]byte(opt + "\nalpha==1.0\n")); got != want {
+			t.Errorf("%s: unpinnedExport = %q, want %q", opt, got, want)
+		}
+	}
+}
+
 func TestLoadSet_UnpinnedExportReasonIsStable(t *testing.T) {
 	ls := &loadSet{locks: &lockModel{
 		versions: map[string]map[string]bool{

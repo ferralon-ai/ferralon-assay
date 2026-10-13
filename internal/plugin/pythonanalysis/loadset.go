@@ -899,9 +899,16 @@ func (ls *loadSet) unpinnedExport(data []byte) string {
 			continue
 		}
 		if strings.HasPrefix(line, "-") {
-			opt, _, _ := strings.Cut(strings.Fields(line)[0], "=")
+			f := strings.Fields(line)
+			opt, val, eq := strings.Cut(f[0], "=")
 			if !containsString(reqOptionsKept, opt) {
 				return "option " + opt + " is not resolved against the lockfile"
+			}
+			if !eq && len(f) > 1 {
+				val = f[1]
+			}
+			if indexOptions[opt] && !remoteIndex(val) {
+				return "option " + opt + " is not a remote https index"
 			}
 			continue
 		}

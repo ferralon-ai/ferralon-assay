@@ -63,6 +63,17 @@ func writeTree(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// wsLock is a v3 workspace-root lockfile that installs a dev-only tool@toolVersion (with one
+// dependency edge) under packages/x.
+func wsLock(toolVersion string) string {
+	return `{"name":"app","lockfileVersion":3,"packages":{
+	"":{"name":"app","workspaces":["packages/x"]},
+	"node_modules/x":{"resolved":"packages/x","link":true},
+	"packages/x":{"name":"x","devDependencies":{"tool":"*"}},
+	"packages/x/node_modules/tool":{"version":"` + toolVersion + `","dev":true,"dependencies":{"leaf":"*"}},
+	"packages/x/node_modules/leaf":{"version":"1.0.0","dev":true}}}`
+}
+
 // v1DevLock is an npm v1 lockfile whose dev-marked tool carries a nested glob.
 const v1DevLock = `{"name":"app","lockfileVersion":1,"dependencies":{
 	"a":{"version":"1.0.0"},
@@ -542,6 +553,44 @@ func TestLoadSet(t *testing.T) {
 			complete:    true,
 			loadedPaths: []string{"node_modules/@sveltejs/kit", "node_modules/devalue"},
 			checks:      []check{{pkg: "devalue", version: "4.3.0", refuted: false}},
+		},
+		{
+			// The workspace root's lockfile and packages/x's own both describe
+			// packages/x/node_modules/tool: one installed copy, not two.
+			name: "two lockfiles describing one install path count one copy",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json":            `{"name":"app","workspaces":["packages/x"]}`,
+					"package-lock.json":       wsLock("1.0.0"),
+					"packages/x/package.json": `{"name":"x","devDependencies":{"tool":"*"}}`,
+					"packages/x/package-lock.json": `{"name":"x","lockfileVersion":3,"packages":{
+						"":{"name":"x","devDependencies":{"tool":"*"}},
+						"node_modules/tool":{"version":"1.0.0","dev":true,"dependencies":{"leaf":"*"}},
+						"node_modules/leaf":{"version":"1.0.0","dev":true}}}`,
+					"packages/x/index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: true,
+			unloaded: []string{"packages/x/node_modules/tool"},
+			checks: []check{{pkg: "tool", version: "1.0.0", refuted: true,
+				detail: "1 installed copies of tool (1 at this version)"}},
+		},
+		{
+			name: "two lockfiles disagreeing on one install path leave the load set incomplete",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json":            `{"name":"app","workspaces":["packages/x"]}`,
+					"package-lock.json":       wsLock("1.0.0"),
+					"packages/x/package.json": `{"name":"x","devDependencies":{"tool":"*"}}`,
+					"packages/x/package-lock.json": `{"name":"x","lockfileVersion":3,"packages":{
+						"":{"name":"x","devDependencies":{"tool":"*"}},
+						"node_modules/tool":{"version":"2.0.0","dev":true,"dependencies":{"leaf":"*"}},
+						"node_modules/leaf":{"version":"1.0.0","dev":true}}}`,
+					"packages/x/index.js": "module.exports = 1;\n",
+				}
+			},
+			complete: false,
+			checks:   []check{{pkg: "tool", version: "1.0.0", refuted: false}},
 		},
 		{
 			// test/ is dev tooling, but runtime code imports this helper, so its computed

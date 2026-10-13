@@ -52,6 +52,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -304,8 +305,26 @@ func buildInstallModel(buildDir string, ls *loadSet) (*installModel, error) {
 	return m, nil
 }
 
-// add registers an instance and indexes it.
-func (m *installModel) add(in *pkgInstance) {
+// add registers an instance and indexes it once per install path. Two lockfiles can both
+// describe one path (a workspace root's lockfile and a nested package's own); the same
+// package there merges its edges, since extra edges only grow the closures. A different
+// package or version at one path is a contradiction add reports instead of indexing.
+func (m *installModel) add(in *pkgInstance) (conflict bool) {
+	if prev, ok := m.inst[in.path]; ok {
+		if prev.name != in.name || prev.version != in.version {
+			return true
+		}
+		prev.deps = unionSorted(prev.deps, in.deps)
+		prev.optional = unionSorted(prev.optional, in.optional)
+		prev.peers = unionSorted(prev.peers, in.peers)
+		for _, b := range in.bins {
+			if !slices.Contains(prev.bins, b) {
+				prev.bins = append(prev.bins, b)
+				m.byBin[b] = append(m.byBin[b], prev)
+			}
+		}
+		return false
+	}
 	m.inst[in.path] = in
 	m.byDir[in.dirName] = append(m.byDir[in.dirName], in)
 	key := canonicalNpmName(in.name)
@@ -314,6 +333,18 @@ func (m *installModel) add(in *pkgInstance) {
 		m.byBin[b] = append(m.byBin[b], in)
 	}
 	m.sorted = nil
+	return false
+}
+
+func unionSorted(a, b []string) []string {
+	out := slices.Clone(a)
+	for _, x := range b {
+		if !slices.Contains(out, x) {
+			out = append(out, x)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // sortedPaths returns every install path in order (cached until the next add).
@@ -424,7 +455,9 @@ func (m *installModel) loadNpmLock(lockPath, root string, ls *loadSet) bool {
 			deps: sortedKeysOf(p.Dependencies), optional: sortedKeysOf(p.OptionalDependencies),
 			peers: sortedKeysOf(p.PeerDependencies), bins: binNames(p.Bin, name), root: root,
 		}
-		m.add(in)
+		if m.add(in) {
+			ls.gap("lockfiles disagree on the package installed at %s", ip)
+		}
 		count++
 		edges += len(in.deps) + len(in.optional) + len(in.peers)
 	}

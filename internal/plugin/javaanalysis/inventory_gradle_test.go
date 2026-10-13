@@ -190,6 +190,7 @@ func TestGradle_UnreadableLockfileIsReasoned(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "gradle.lockfile"), "org.top:top:1.0=runtimeClasspath\n")
 	writeFile(t, filepath.Join(dir, "sub", "build.gradle"), "")
 	writeFile(t, filepath.Join(dir, "sub", "gradle.lockfile"), "org.x:x:1.0=runtimeClasspath\n")
+	writeFile(t, filepath.Join(dir, "settings.gradle"), "include 'sub'\n")
 	lock := filepath.Join(dir, "sub", "gradle.lockfile")
 	if err := os.Chmod(lock, 0); err != nil {
 		t.Fatal(err)
@@ -202,8 +203,9 @@ func TestGradle_UnreadableLockfileIsReasoned(t *testing.T) {
 }
 
 // Only the lock state Gradle itself reads counts: gradle.lockfile in a project directory, or
-// gradle/dependency-locks/<configuration>.lockfile under one. A *.lockfile in test resources,
-// or a gradle.lockfile in a directory with no build script, is no lock of this build.
+// gradle/dependency-locks/<configuration>.lockfile under one, where a project is root or one the
+// settings script includes. A *.lockfile in test resources, or a gradle.lockfile in a directory
+// the settings script does not include, is no lock of this build.
 func TestGradle_LockReadOnlyWhereGradleKeepsIt(t *testing.T) {
 	for _, tt := range []struct {
 		name, path string
@@ -212,6 +214,7 @@ func TestGradle_LockReadOnlyWhereGradleKeepsIt(t *testing.T) {
 		{"root gradle.lockfile", "gradle.lockfile", true},
 		{"root per-configuration lock", "gradle/dependency-locks/runtimeClasspath.lockfile", true},
 		{"subproject gradle.lockfile", "sub/gradle.lockfile", true},
+		{"lock in a directory the settings script does not include", "other/gradle.lockfile", false},
 		{"stray *.lockfile in test resources", "src/test/resources/fixture.lockfile", false},
 		{"stray gradle.lockfile in test resources", "src/test/resources/gradle.lockfile", false},
 		{"per-configuration lock outside a project", "src/test/resources/gradle/dependency-locks/runtimeClasspath.lockfile", false},
@@ -222,6 +225,8 @@ func TestGradle_LockReadOnlyWhereGradleKeepsIt(t *testing.T) {
 			dir := t.TempDir()
 			writeFile(t, filepath.Join(dir, "build.gradle"), "dependencies {\n    implementation 'org.top:top:1.0'\n}\n")
 			writeFile(t, filepath.Join(dir, "sub", "build.gradle"), "")
+			writeFile(t, filepath.Join(dir, "other", "build.gradle"), "")
+			writeFile(t, filepath.Join(dir, "settings.gradle"), "include 'sub'\n")
 			writeFile(t, filepath.Join(dir, filepath.FromSlash(tt.path)), "org.top:top:1.0=runtimeClasspath\norg.x:x:1.0=runtimeClasspath\n")
 			_, files, haveLock, _ := readLockfiles(dir)
 			if haveLock != tt.read {
@@ -241,9 +246,10 @@ func TestGradle_LockReadOnlyWhereGradleKeepsIt(t *testing.T) {
 }
 
 // The locked versions of a GA stand only when every declaration of it agrees with them. A
-// literal declared version the lock does not hold, a coordinate the lock lacks, and (unless
-// Gradle enforces every lock) a dynamic or version-less declaration leave the GA present but
-// unresolved, so no single version's bytes are bound to it.
+// literal declared version the lock does not hold, a coordinate the lock lacks, a version-less
+// declaration, and (unless the project's own top-level dependencyLocking { lockAllConfigurations() }
+// enforces every lock) a dynamic or interpolated one leave the GA present but unresolved, so no
+// single version's bytes are bound to it.
 func TestGradle_LockMustAgreeWithDeclarations(t *testing.T) {
 	const enforced = "dependencyLocking {\n    lockAllConfigurations()\n}\n"
 	const lenient = "dependencyLocking {\n    lockAllConfigurations()\n    lockMode = LockMode.LENIENT\n}\n"
@@ -262,8 +268,26 @@ func TestGradle_LockMustAgreeWithDeclarations(t *testing.T) {
 		{"interpolated", "", `"com.evil:netkit:${v}"`, false},
 		{"interpolated, enforced", enforced, `"com.evil:netkit:${v}"`, true},
 		{"version-less", "", "'com.evil:netkit'", false},
-		{"version-less, enforced", enforced, "'com.evil:netkit'", true},
-		{"enforcement only in a comment", "/* " + enforced + " */", "'com.evil:netkit'", false},
+		{"version-less, enforced", enforced, "'com.evil:netkit'", false},
+		{"version-less under a platform, enforced", enforced, "platform('com.evil:bom:1.0')\n    implementation 'com.evil:netkit'", false},
+		{"enforcement only in a comment", "/* " + enforced + " */", "'com.evil:netkit:1.+'", false},
+		{"enforcement inside buildscript", "buildscript {\n" + enforced + "}\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement under if", "if (false) {\n" + enforced + "}\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement under a braceless if", "if (false)\n" + enforced, "'com.evil:netkit:1.+'", false},
+		{"enforcement after else", "if (true) { }\nelse " + enforced, "'com.evil:netkit:1.+'", false},
+		{"enforcement inside a call's closure", "afterEvaluate {\n" + enforced + "}\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement block holds more", "dependencyLocking {\n    lockAllConfigurations()\n    lockFile = file('x')\n}\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement with a second locking block", enforced + "dependencyLocking { unlockAllConfigurations() }\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement after a call statement", "java.toolchain.languageVersion = JavaLanguageVersion.of(17)\n" + enforced, "'com.evil:netkit:1.+'", true},
+		{"enforcement after a string statement", "group = 'com.example'\n" + enforced, "'com.evil:netkit:1.+'", true},
+		{"enforcement with a triple-quoted string", "def s = \"\"\"\n}\n\"\"\"\n" + enforced, "'com.evil:netkit:1.+'", false},
+		{"enforcement only inside a triple-quoted string", "def s = \"\"\"\n" + enforced + "\"\"\"\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement after a statement inside a closure", "afterEvaluate {\n    group = 'x'\n" + enforced + "}\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement beside braces the reader can't balance", enforced + "def re = /\\{/\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement with a call chained on the block", "dependencyLocking { lockAllConfigurations() }.with { lockFile = file('x') }\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement with a lock mode named elsewhere", enforced + "ext.lockMode = 'STRICT'\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement with LENIENT named elsewhere", enforced + "ext.lockingMode = 'LENIENT'\n", "'com.evil:netkit:1.+'", false},
+		{"enforcement in a script with an unterminated comment", enforced, "'com.evil:netkit:1.+'\n}\n/* unterminated", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -305,10 +329,13 @@ func TestGradle_LockMustAgreeWithDeclarations(t *testing.T) {
 }
 
 // Gradle keeps a lock per project, so each lock answers to the scripts that declare for its
-// project: its own, and the root's for a subproject. Another project's script neither confirms
-// nor stales it.
+// project: its own, and the root's for a subproject. The projects are root and those the settings
+// script includes. Another project's script neither confirms nor stales a lock, but a project
+// that locks nothing yet declares dependencies may resolve any of them at another version, and a
+// lock in a directory the settings script does not include is no lock of this build.
 func TestGradle_LockCheckedPerProject(t *testing.T) {
 	const lock = "com.evil:netkit:1.0.0=runtimeClasspath\norg.other:other:2.0=runtimeClasspath\n"
+	const enforced = "dependencyLocking {\n    lockAllConfigurations()\n}\n"
 	netkit := mavenPURL("com.evil", "netkit", "1.0.0")
 	for _, tt := range []struct {
 		name     string
@@ -316,23 +343,82 @@ func TestGradle_LockCheckedPerProject(t *testing.T) {
 		resolved bool
 	}{
 		{"a sibling's other version does not stale it", map[string]string{
+			"settings.gradle":   "include 'a', 'b'\n",
 			"a/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
 			"a/gradle.lockfile": lock,
 			"b/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:2.0.0'\n}\n",
+			"b/gradle.lockfile": "com.evil:netkit:2.0.0=runtimeClasspath\n",
 		}, true},
 		{"the root script declares for the subproject", map[string]string{
+			"settings.gradle":   "include 'a'\n",
 			"build.gradle":      "subprojects {\n    dependencies { implementation 'com.evil:netkit:2.0.0' }\n}\n",
+			"gradle.lockfile":   "com.evil:netkit:2.0.0=runtimeClasspath\n",
 			"a/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
 			"a/gradle.lockfile": lock,
 		}, false},
 		{"the project's lock lacks what it declares", map[string]string{
+			"settings.gradle":   "include 'a', 'b', 'c'\n",
 			"a/build.gradle":    "dependencies {\n    implementation 'org.other:other:2.0'\n}\n",
 			"a/gradle.lockfile": "org.other:other:2.0=runtimeClasspath\n",
 			"b/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
-			"b/gradle.lockfile": "empty=\n",
+			"b/gradle.lockfile": "org.other:other:2.0=runtimeClasspath\n",
 			"c/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
 			"c/gradle.lockfile": "com.evil:netkit:1.0.0=runtimeClasspath\n",
 		}, false},
+		{"an included project without a lock declares another version", map[string]string{
+			"settings.gradle":          "include 'app'\n",
+			"build.gradle":             "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
+			"gradle.lockfile":          lock,
+			"app/build.gradle":         "dependencies {\n    implementation 'com.evil:netkit:2.0.0'\n}\n",
+			"app/src/main/java/A.java": "class A {}\n",
+		}, false},
+		{"an included project without a lock declares something else", map[string]string{
+			"settings.gradle":  "include 'app'\n",
+			"build.gradle":     "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
+			"gradle.lockfile":  lock,
+			"app/build.gradle": "dependencies {\n    implementation 'org.pulls:netkit-2:1.0'\n}\n",
+		}, false},
+		{"an included project without a lock declares something, the root nothing", map[string]string{
+			"settings.gradle":  "include 'app'\n",
+			"build.gradle":     "group = 'com.example'\n",
+			"gradle.lockfile":  lock,
+			"app/build.gradle": "dependencies {\n    implementation 'org.pulls:netkit-2:1.0'\n}\n",
+		}, false},
+		{"a lock in a directory the settings script does not include", map[string]string{
+			"settings.gradle":       "include 'app'\n",
+			"app/build.gradle":      "dependencies {\n    implementation 'com.evil:netkit:2.0.0'\n}\n",
+			"other/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
+			"other/gradle.lockfile": lock,
+		}, false},
+		{"root enforcement is not the subproject's", map[string]string{
+			"settings.gradle":     "include 'app'\n",
+			"build.gradle":        enforced,
+			"app/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"app/gradle.lockfile": lock,
+		}, false},
+		{"root allprojects enforcement is not credited", map[string]string{
+			"settings.gradle":     "include 'app'\n",
+			"build.gradle":        "allprojects {\n" + enforced + "}\n",
+			"app/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"app/gradle.lockfile": lock,
+		}, false},
+		{"the subproject's own enforcement", map[string]string{
+			"settings.gradle":     "include 'app'\n",
+			"build.gradle":        enforced,
+			"app/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"app/gradle.lockfile": lock,
+		}, true},
+		{"the root's lenient mode overrides the subproject's own enforcement", map[string]string{
+			"settings.gradle":     "include 'app'\n",
+			"build.gradle":        "allprojects {\n    dependencyLocking { lockMode = LockMode.LENIENT }\n}\n",
+			"app/build.gradle":    enforced + "dependencies {\n    implementation 'com.evil:netkit:1.+'\n}\n",
+			"app/gradle.lockfile": lock,
+		}, false},
+		{"a nested project path", map[string]string{
+			"settings.gradle":           "include ':libs:core'\n",
+			"libs/core/build.gradle":    "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n",
+			"libs/core/gradle.lockfile": lock,
+		}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -346,12 +432,24 @@ func TestGradle_LockCheckedPerProject(t *testing.T) {
 		})
 	}
 
+	t.Run("a settings script not read in full confirms nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "settings.gradle"), "rootProject.name = 'x'\nincludeFlat 'app'\n")
+		writeFile(t, filepath.Join(dir, "build.gradle"), "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n")
+		writeFile(t, filepath.Join(dir, "gradle.lockfile"), lock)
+		inv := toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir())))
+		if findNode(t, inv, netkit) != nil {
+			t.Errorf("netkit must not resolve when the project set is unknown; nodes %+v", inv.Nodes)
+		}
+	})
+
 	t.Run("an unreadable script confirms nothing", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root reads a mode-000 file")
 		}
 		dir := t.TempDir()
 		script := filepath.Join(dir, "a", "build.gradle")
+		writeFile(t, filepath.Join(dir, "settings.gradle"), "include 'a'\n")
 		writeFile(t, script, "dependencies {\n    implementation 'com.evil:netkit:1.0.0'\n}\n")
 		writeFile(t, filepath.Join(dir, "a", "gradle.lockfile"), lock)
 		if err := os.Chmod(script, 0); err != nil {

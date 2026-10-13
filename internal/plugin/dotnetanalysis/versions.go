@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -43,6 +45,10 @@ import (
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (NuGet interval ordering) is applied by the
 // pipeline disqualification predicate (pipeline/nuget_version.go), never here.
+//
+// Several copies of one package (two projects, two target frameworks, a lockfile beside a
+// project file): Match is chosen by matchNuGet, which never picks one copy out of several
+// distinct versions. See its doc comment for the rule.
 func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
@@ -56,6 +62,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 	var (
 		all         []plugin.ResolvedDependency
+		copies      []nugetCopy
 		parseFailed bool
 	)
 	for _, m := range manifests {
@@ -64,6 +71,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		kind := manifestKind(filepath.Base(m))
+		for _, d := range deps {
+			copies = append(copies, nugetCopy{dep: d, dir: filepath.Dir(m), kind: kind})
+		}
 	}
 
 	part := plugin.Complete()
@@ -75,21 +86,94 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizeNuGetCoordinate(req.Coordinate)
-	if want != "" {
-		for _, d := range all {
-			if normalizeNuGetCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Match = d
-				// A resolved match wins over an UNRESOLVED one for the same coordinate — this
-				// is how packages.lock.json's exact pin is preferred over a .csproj range.
-				if d.Resolved {
-					break
-				}
-			}
+	res.Match, res.Found = matchNuGet(copies, normalizeNuGetCoordinate(req.Coordinate))
+	return res, nil
+}
+
+// nugetCopy is one manifest entry together with where it came from, which matchNuGet needs
+// to tell a project file's own lockfile from another project's.
+type nugetCopy struct {
+	dep  plugin.ResolvedDependency
+	dir  string
+	kind string
+}
+
+const (
+	kindLock    = "lock"
+	kindProject = "project"
+	kindConfig  = "config"
+)
+
+func manifestKind(base string) string {
+	switch base {
+	case "packages.lock.json":
+		return kindLock
+	case "packages.config":
+		return kindConfig
+	default:
+		return kindProject
+	}
+}
+
+// matchNuGet selects the Match for the normalized coordinate want across every manifest
+// entry: every project, every target framework of every packages.lock.json. The predicate
+// reads a single Match, so the rule is:
+//
+//   - every matching copy resolved to the SAME version (N copies of one version count as one):
+//     Match is that version, Resolved=true;
+//   - two or more distinct resolved versions, or any matching copy whose version is unknown:
+//     Match is UNRESOLVED (Resolved=false, Version empty).
+//
+// One exception to "any unknown copy": a project file's range, float or version-less
+// (Central Package Management) PackageReference is covered when the packages.lock.json in
+// the same directory pins the same id, because that lockfile is restore's resolution of that
+// project. A lockfile anywhere else does not cover it.
+//
+// Picking one copy would let a range that straddles the installed set rule the advisory
+// not-affected on the copy that happens to sit outside it while a vulnerable copy still
+// ships. UNRESOLVED makes the predicate fail OPEN instead. Versions compare as exact strings:
+// two spellings of one version ("12.0" and "12.0.0") read as distinct, which can only fail
+// open.
+func matchNuGet(copies []nugetCopy, want string) (plugin.ResolvedDependency, bool) {
+	if want == "" {
+		return plugin.ResolvedDependency{}, false
+	}
+	locked := make(map[string]bool)
+	for _, c := range copies {
+		if c.kind == kindLock && c.dep.Resolved && normalizeNuGetCoordinate(c.dep.Coordinate) == want {
+			locked[c.dir] = true
 		}
 	}
-	return res, nil
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		versions = make(map[string]struct{})
+	)
+	for _, c := range copies {
+		if normalizeNuGetCoordinate(c.dep.Coordinate) != want {
+			continue
+		}
+		if !found {
+			match, found = c.dep, true
+		}
+		if !c.dep.Resolved {
+			if c.kind == kindProject && locked[c.dir] {
+				continue
+			}
+			unknown = true
+			continue
+		}
+		if len(versions) == 0 {
+			match = c.dep
+		}
+		versions[c.dep.Version] = struct{}{}
+	}
+	if found && (unknown || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
 }
 
 // manifestFiles returns every recognized .NET manifest under root, skipping build-output /
@@ -159,24 +243,33 @@ type packagesLockEntry struct {
 // exact "resolved" version, so a present resolved field resolves; a missing one is
 // UNRESOLVED. A "Project" reference (a sibling project, not a NuGet package) has no resolved
 // version and is skipped.
+//
+// Each target framework (and each <tfm>/<rid> target) is its own resolution, and they can
+// disagree (net6.0 → 13.0.1, net8.0 → 13.0.3). Every distinct (id, version) across them is
+// kept so matchNuGet sees the split; only exact repeats collapse. Frameworks and ids are
+// walked in sorted order so All is identical across runs.
 func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var pl packagesLock
 	if err := json.Unmarshal(data, &pl); err != nil {
 		return nil, false
 	}
-	seen := make(map[string]bool)
+	type idVersion struct{ id, version string }
+	seen := make(map[idVersion]bool)
 	var out []plugin.ResolvedDependency
-	for _, pkgs := range pl.Dependencies {
-		for name, e := range pkgs {
+	for _, tfm := range slices.Sorted(maps.Keys(pl.Dependencies)) {
+		pkgs := pl.Dependencies[tfm]
+		for _, name := range slices.Sorted(maps.Keys(pkgs)) {
+			e := pkgs[name]
 			if strings.EqualFold(e.Type, "Project") {
 				continue
 			}
-			key := normalizeNuGetCoordinate(name)
-			if seen[key] {
-				continue // the same package across target frameworks — one entry suffices.
+			d := nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json")
+			k := idVersion{normalizeNuGetCoordinate(name), d.Version}
+			if seen[k] {
+				continue
 			}
-			seen[key] = true
-			out = append(out, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))
+			seen[k] = true
+			out = append(out, d)
 		}
 	}
 	return out, true

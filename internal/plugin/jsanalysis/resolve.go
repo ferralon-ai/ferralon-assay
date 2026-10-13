@@ -458,13 +458,16 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 // loadsUnreadModule reports whether a relative specifier names no in-tree source module: a
 // native addon, a file generated at build time, anything outside the parsed source set. Its
 // code runs on load and can itself load packages, yet this lane never reads it. A JSON file
-// is data and runs nothing.
+// is data and runs nothing, and so, under stock tooling, is a stylesheet in the build tree.
 func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
 	if !isRelativeSpecifier(spec) || rs.resolveRelative(fromModule, spec) != "" {
 		return false
 	}
 	ext := path.Ext(spec)
 	if ext == ".json" {
+		return false
+	}
+	if rs.stylesheetRunsNoCode(path.Join(path.Dir(fromModule), spec)) {
 		return false
 	}
 	// TS sources import siblings by their emitted name ("./util.js" for util.ts).

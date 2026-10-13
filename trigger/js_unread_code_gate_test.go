@@ -92,6 +92,21 @@ load(process.argv[2]);
 			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dev.js","default":"./src/index.js"}}}`,
 			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 		}},
+		{"literal import() of an installed package whose development export reaches the symbol", `
+async function load(s) { const m = await import('cfg'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":                  `{"name":"fixture","dependencies":{"cfg":"1.0.0","json5":"2.2.1"}}`,
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
+			"node_modules/cfg/dev.js":       "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+			"node_modules/cfg/prod.js":      "exports.parse = (s) => s;\n",
+		}},
+		{"literal import() of a self-reference with a development export", `
+async function load(s) { const m = await import('fixture'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","dependencies":{"json5":"2.2.1"},"exports":{".":{"development":"./dev.js","default":"./plugins/index.js"}}}`,
+		}},
 		{"require reached by a string key", `
 const j = module['require']('json5');
 function load(s) { return j.parse(s); }

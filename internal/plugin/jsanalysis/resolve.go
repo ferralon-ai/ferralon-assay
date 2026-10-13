@@ -226,9 +226,11 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 
 // loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an
 // exports/imports conditions map with a key outside loadConditions: a `#…` subpath import
-// (and any package it maps to) or a workspace member's exports. Node can select that branch
-// (`node --conditions=development`), and loadsOutOfTree does not look at it, so the load
-// alone does not bound what runs (tracker#184 item 4).
+// (and any package it maps to), or the exports of the package a bare specifier names (a
+// workspace member, the governing package itself, or the installed package Node's
+// node_modules walk finds). Node can select that branch (`node --conditions=development`),
+// loading a file whose calls the lane did not follow, so the load alone does not bound what
+// runs (tracker#184 item 4). Only the manifest is read; an uninstalled package has none.
 func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	conds := loadConditions(false)
 	switch {
@@ -252,8 +254,40 @@ func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
 		return false
 	}
-	_, mm, sub, ok := rs.workspaceMember(spec)
-	return ok && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+	if _, mm, sub, ok := rs.workspaceMember(spec); ok {
+		return mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+	}
+	name, sub := splitBareSpecifier(spec)
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
+		return subpathHasUnmodeledCondition(self.exports, sub, conds)
+	}
+	mm := rs.installedManifest(fromModule, name)
+	return mm != nil && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
+}
+
+// installedManifest returns the package.json of npm package name that Node's node_modules
+// walk from fromModule's directory finds, or nil when none is installed.
+func (rs *resolver) installedManifest(fromModule, name string) *pkgManifest {
+	if name == "" || strings.ContainsAny(name, `\:`) || strings.Count(name, "/") > 1 || strings.Contains(name, "..") ||
+		(strings.Contains(name, "/") && !strings.HasPrefix(name, "@")) {
+		return nil
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if path.Base(dir) != "node_modules" {
+			full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name), "package.json")
+			if data, err := os.ReadFile(full); err == nil {
+				return parsePkgManifest(data)
+			}
+		}
+		if dir == "" {
+			return nil
+		}
+		dir = path.Dir(dir)
+	}
 }
 
 // subpathHasUnmodeledCondition reports whether any conditions map exportsTargets would walk

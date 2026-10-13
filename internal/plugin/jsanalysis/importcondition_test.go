@@ -49,6 +49,40 @@ func TestCallGraph_LiteralImportUnmodeledConditionKeepsLimit(t *testing.T) {
 			"packages/m/x.js":         "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 			"app.js":                  fmt.Sprintf(load, "m/x"),
 		}, true},
+		{"installed package with a development export", map[string]string{
+			"package.json":                    `{"name":"app","dependencies":{"json5":"2.2.1"}}`,
+			"node_modules/json5/package.json": `{"name":"json5","exports":{".":{"development":"./dev.js","default":"./lib/index.js"}}}`,
+			"app.js":                          fmt.Sprintf(load, "json5"),
+		}, true},
+		{"installed package subpath with a types branch", map[string]string{
+			"package.json":                  `{"name":"app","dependencies":{"pkg":"1.0.0"}}`,
+			"node_modules/pkg/package.json": `{"name":"pkg","exports":{"./x":{"types":"./x.d.ts","default":"./x.js"}}}`,
+			"app.js":                        fmt.Sprintf(load, "pkg/x"),
+		}, true},
+		{"scoped package installed above the importing file", map[string]string{
+			"package.json":                   `{"name":"app","dependencies":{"@s/p":"1.0.0"}}`,
+			"node_modules/@s/p/package.json": `{"name":"@s/p","exports":{"edge-light":"./edge.js","default":"./index.js"}}`,
+			"src/app.js":                     fmt.Sprintf(load, "@s/p"),
+		}, true},
+		{"self-reference through its own exports with a development branch", map[string]string{
+			"package.json": `{"name":"app","exports":{".":{"development":"./dev.js","default":"./src/index.js"}}}`,
+			"src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":       fmt.Sprintf(load, "app"),
+		}, true},
+		{"control: installed package with default keys only", map[string]string{
+			"package.json":                    `{"name":"app","dependencies":{"json5":"2.2.1"}}`,
+			"node_modules/json5/package.json": `{"name":"json5","exports":{".":{"import":"./dist/index.mjs","require":"./lib/index.js"}}}`,
+			"app.js":                          fmt.Sprintf(load, "json5"),
+		}, false},
+		{"control: package not installed", map[string]string{
+			"package.json": `{"name":"app","dependencies":{"json5":"2.2.1"}}`,
+			"app.js":       fmt.Sprintf(load, "json5"),
+		}, false},
+		{"control: self-reference with default keys only", map[string]string{
+			"package.json": `{"name":"app","exports":{".":{"import":"./src/index.js","default":"./src/index.js"}}}`,
+			"src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":       fmt.Sprintf(load, "app"),
+		}, false},
 		{"control: #-subpath with default keys only", map[string]string{
 			"package.json":     `{"name":"app","imports":{"#cfg":{"import":"./plugins/index.js","require":"./plugins/index.js","default":"./plugins/index.js"}}}`,
 			"plugins/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",

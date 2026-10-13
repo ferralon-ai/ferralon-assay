@@ -253,10 +253,10 @@ const (
 	// type outside the search) may call into the module it found no path to, so its refutation does
 	// not cover them.
 	PartialReasonUnsearchedMethods = "unsearched_methods"
-	// PartialReasonLibraryEscape (loud): the build is a library, with no main package, and reaches
-	// the module an analyzer found no path to. A value the library hands its caller (a function, an
-	// interface value, a struct carrying either) can run the module's code from the caller, outside
-	// the analyzer's search, so its refutation does not cover the library's callers.
+	// PartialReasonLibraryEscape (loud): a package code outside the build can import reaches the
+	// module an analyzer found no path to. A value the package hands its importer (a function, an
+	// interface value, a struct carrying either) can run the module's code from the importer,
+	// outside the analyzer's search, so its refutation does not cover the package's importers.
 	PartialReasonLibraryEscape = "library_escape"
 	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
 	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph

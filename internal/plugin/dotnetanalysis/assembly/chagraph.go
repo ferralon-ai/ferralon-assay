@@ -69,6 +69,23 @@ type DispatchResult struct {
 	Targets      []Target
 	Conservative bool
 	Reason       string // set for DispatchBoundary and for the delegate/value-type notes
+
+	// OutOfSetBases are the out-of-set base types a conservative dispatch inherits its
+	// implementation from: an in-set receiver type that neither declares nor inherits an
+	// in-set body for the slot runs the base's body, which the set cannot read.
+	OutOfSetBases []OutOfSetBase
+}
+
+// OutOfSetBase is an out-of-set base type, as the TypeRef Asm reads it.
+type OutOfSetBase struct {
+	Asm *Assembly
+	Ref TypeRef
+}
+
+// SigCompatible reports whether signature sigA (read in asmA) can name the method whose
+// signature is sigB (read in asmB); see sigCompatible.
+func SigCompatible(asmA *Assembly, sigA []byte, asmB *Assembly, sigB []byte) bool {
+	return sigCompatible(asmA, sigA, asmB, sigB)
 }
 
 // typeNode is a type in the hierarchy graph with resolved base/interface links and
@@ -118,7 +135,7 @@ func NewCHA(asms ...*Assembly) *CHA {
 			n := &typeNode{
 				asm:     a,
 				def:     td,
-				key:     typeKey(td.Namespace, td.Name),
+				key:     a.QualifiedName(td),
 				isValue: td.Extends.Namespace == "System" && (td.Extends.Name == "ValueType" || td.Extends.Name == "Enum"),
 			}
 			c.byKey[n.key] = append(c.byKey[n.key], n)
@@ -130,12 +147,12 @@ func NewCHA(asms ...*Assembly) *CHA {
 	// Pass 2: resolve base + interfaces, wire reverse edges.
 	for _, nodes := range c.byKey {
 		for _, n := range nodes {
-			if b := c.lookup(n.def.Extends); b != nil {
+			if b := c.lookup(n.asm, n.def.Extends); b != nil {
 				n.base = b
 				b.derived = append(b.derived, n)
 			}
 			for _, ifaceRef := range n.def.Interfaces {
-				if iface := c.lookup(ifaceRef); iface != nil {
+				if iface := c.lookup(n.asm, ifaceRef); iface != nil {
 					n.ifaces = append(n.ifaces, iface)
 					iface.derived = append(iface.derived, n)
 				}
@@ -145,25 +162,35 @@ func NewCHA(asms ...*Assembly) *CHA {
 	return c
 }
 
-// lookup resolves a TypeRef to an in-set node, or nil if the type is out-of-set
-// (a different, unloaded assembly) or a TypeSpec (generic instantiation — CHA runs
-// over the open type, so a raw spec at a call owner is a boundary here).
-func (c *CHA) lookup(tr TypeRef) *typeNode {
-	if tr.Token.IsNull() || tr.IsSpec {
+// lookup resolves a TypeRef read in asm to an in-set node, or nil if the type is
+// out-of-set (a different, unloaded assembly). A generic instantiation resolves to its
+// generic type: CHA runs over open types. Types are keyed by their nesting-qualified name;
+// on a collision across assemblies, a TypeDef token picks asm's own type and a TypeRef
+// picks the assembly its scope chain names.
+func (c *CHA) lookup(asm *Assembly, tr TypeRef) *typeNode {
+	if tr.IsSpec {
+		if tr.Def == nil {
+			return nil
+		}
+		tr = *tr.Def
+	}
+	if tr.Token.IsNull() {
 		return nil
 	}
-	nodes := c.byKey[typeKey(tr.Namespace, tr.Name)]
+	nodes := c.byKey[tr.Qualified()]
 	switch len(nodes) {
 	case 0:
 		return nil
 	case 1:
 		return nodes[0]
 	}
-	if tr.Scope != "" {
-		for _, n := range nodes {
-			if n.asm.Name == tr.Scope {
-				return n
-			}
+	want := tr.ScopeAssembly()
+	if tr.Token.Table() == tTypeDef && asm != nil {
+		want = asm.Name
+	}
+	for _, n := range nodes {
+		if n.asm.Name == want {
+			return n
 		}
 	}
 	return nodes[0]
@@ -178,18 +205,6 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 	case EdgeJmp:
 		return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
 			Reason: "jmp_tail_transfer: method-body tail-transfers to another method; a hidden call, not a normal edge"}
-	case EdgeLdftn, EdgeLdvirtftn:
-		owner, name, sig, disp, ok := c.methodRef(asm, e.Token)
-		if !ok {
-			return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "ldftn: unresolvable target token"}
-		}
-		tgts := c.exactTargets(owner, asm, e.Token, name, sig, disp, nil)
-		if tgts[0].Method == nil {
-			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
-				Reason: "ldftn target " + disp + " outside loaded assembly set; delegate Invoke wiring deferred to barrier-2"}
-		}
-		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: tgts,
-			Reason: "delegate target capture; Invoke wiring deferred to barrier-2"}
 	}
 
 	// Generics (caveat 2): unwrap a MethodSpec to its OPEN method; CARRY the instantiation.
@@ -199,6 +214,33 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 		ms := asm.MethodSpecs[token.RID()]
 		inst = ms.InstantiationBlob
 		token = ms.Method
+	}
+
+	switch e.Kind {
+	case EdgeLdftn:
+		owner, name, sig, disp, ok := c.methodRef(asm, token)
+		if !ok {
+			return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "ldftn: unresolvable target token"}
+		}
+		tgts := c.exactTargets(owner, asm, token, name, sig, disp, inst)
+		if tgts[0].Method == nil {
+			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
+				Reason: "ldftn target " + disp + " outside loaded assembly set"}
+		}
+		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: tgts, Reason: "delegate target capture"}
+	case EdgeLdvirtftn:
+		// ldvirtftn binds the receiver's override of the slot, exactly as callvirt does.
+		owner, name, sig, disp, ok := c.methodRef(asm, token)
+		if !ok {
+			return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "ldvirtftn: unresolvable target token"}
+		}
+		if owner == nil {
+			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
+				Reason: "ldvirtftn owner " + disp + " outside loaded assembly set (open-world receiver)"}
+		}
+		targets, bases := c.candidateSet(owner, name, asm, sig, inst)
+		return DispatchResult{State: DispatchConservative, Kind: e.Kind, Targets: targets, Conservative: true,
+			OutOfSetBases: bases, Reason: "delegate target capture (virtual)"}
 	}
 
 	owner, name, sig, disp, ok := c.methodRef(asm, token)
@@ -218,7 +260,7 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 	case EdgeCallvirt:
 		// Caveat 3: constrained. on a value type flips callvirt to a STATIC resolution.
 		if !e.Constrained.IsNull() {
-			if cn := c.lookup(asm.TypeRefFor(e.Constrained)); cn != nil && cn.isValue {
+			if cn := c.lookup(asm, asm.TypeRefFor(e.Constrained)); cn != nil && cn.isValue {
 				var tgts []Target
 				for _, m := range c.matchMethod(cn, name, asm, sig) {
 					tgts = append(tgts, Target{Asm: cn.asm, Type: cn.def, Method: m, OwnerDisplay: cn.key, Name: name, Instantiation: inst})
@@ -235,8 +277,8 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
 				Reason: "callvirt owner " + disp + " outside loaded assembly set (open-world receiver)"}
 		}
-		targets := c.candidateSet(owner, name, asm, sig, inst)
-		return DispatchResult{State: DispatchConservative, Kind: e.Kind, Targets: targets, Conservative: true}
+		targets, bases := c.candidateSet(owner, name, asm, sig, inst)
+		return DispatchResult{State: DispatchConservative, Kind: e.Kind, Targets: targets, Conservative: true, OutOfSetBases: bases}
 	}
 	return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "unhandled edge kind"}
 }
@@ -262,7 +304,7 @@ func (c *CHA) methodRef(asm *Assembly, t Token) (owner *typeNode, name string, s
 			return nil, "", nil, "", false
 		}
 		tr := asm.TypeRefFor(mr.ParentToken)
-		owner = c.lookup(tr)
+		owner = c.lookup(asm, tr)
 		disp = typeDisplay(tr)
 		if disp == "" && owner != nil {
 			disp = owner.key
@@ -303,10 +345,63 @@ func (c *CHA) exactTargets(owner *typeNode, asm *Assembly, t Token, name string,
 // type that derives from / implements the declared owner AND has a runnable matching
 // override. Interface members are resolved through MethodImpl (explicit impl) as well
 // as by implicit name+sig — the caveat-1 correctness point.
-func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig []byte, inst []byte) []Target {
+//
+// A visited class that declares no body for the slot runs the one it inherits, so its
+// Extends chain is walked up to the first ancestor that supplies one (an interface
+// implemented through a base-class method, or a virtual the owner itself only inherits).
+// When the chain leaves the set before supplying one, the base it leaves through is
+// returned: the body that runs there is unreadable, and dropping it would be a silent
+// empty target set.
+func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig []byte, inst []byte) ([]Target, []OutOfSetBase) {
 	ownerIsIface := owner.isInterface()
 	var targets []Target
+	var bases []OutOfSetBase
 	seen := map[*MethodDef]bool{}
+	slotBodies := func(t *typeNode) []*MethodDef {
+		// Interface members resolve through interfaceTarget (explicit MethodImpl, then
+		// implicit name+sig). A class virtual resolves by implicit name+sig override AND —
+		// the FIX 1 point — by an explicit MethodImpl whose Declaration names the owner's
+		// slot up the Extends chain, catching a differently/privately-named override body
+		// that name-only matching drops. Both are collected (deduped by seen): a genuine
+		// override joins the conservative set, never fabricating a target.
+		if ownerIsIface {
+			return c.interfaceTarget(t, owner, name, sigAsm, sig)
+		}
+		return append(c.matchMethod(t, name, sigAsm, sig),
+			c.explicitImpl(t, name, sigAsm, sig, func(o *typeNode) bool { return c.extendsRelated(o, owner) })...)
+	}
+	add := func(t *typeNode, ms []*MethodDef) {
+		for _, m := range ms {
+			if !seen[m] {
+				seen[m] = true
+				targets = append(targets, Target{Asm: t.asm, Type: t.def, Method: m, OwnerDisplay: t.key, Name: name, Instantiation: inst})
+			}
+		}
+	}
+	// walked marks classes whose inherited body is already accounted for: the first body
+	// at or above a node is the same whichever descendant the walk started from.
+	walked := map[*typeNode]bool{}
+	inherit := func(t *typeNode) {
+		for n := t; ; {
+			if walked[n] {
+				return
+			}
+			walked[n] = true
+			if n != t {
+				if ms := slotBodies(n); len(ms) > 0 {
+					add(n, ms)
+					return
+				}
+			}
+			if n.base == nil {
+				if !n.def.Extends.Token.IsNull() && (!isRootBase(n.def.Extends) || objectVirtual(name)) {
+					bases = append(bases, OutOfSetBase{Asm: n.asm, Ref: n.def.Extends})
+				}
+				return
+			}
+			n = n.base
+		}
+	}
 
 	// BFS the reverse edges: owner + all transitive subclasses/implementers.
 	queue := []*typeNode{owner}
@@ -314,26 +409,12 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 	for len(queue) > 0 {
 		t := queue[0]
 		queue = queue[1:]
-
-		// Collect t's runnable target(s) for this slot. Interface members resolve
-		// through interfaceTarget (explicit MethodImpl, then implicit name+sig). A
-		// class virtual resolves by implicit name+sig override AND — the FIX 1 point —
-		// by an explicit MethodImpl whose Declaration names the owner's slot up the
-		// Extends chain, catching a differently/privately-named override body that
-		// name-only matching drops. Both are collected (deduped by seen): a genuine
-		// override joins the conservative set, never fabricating a target.
-		var ms []*MethodDef
-		if ownerIsIface {
-			ms = c.interfaceTarget(t, owner, name, sigAsm, sig)
-		} else {
-			ms = append(c.matchMethod(t, name, sigAsm, sig),
-				c.explicitImpl(t, name, sigAsm, sig, func(o *typeNode) bool { return c.extendsRelated(o, owner) })...)
-		}
-		for _, m := range ms {
-			if !seen[m] {
-				seen[m] = true
-				targets = append(targets, Target{Asm: t.asm, Type: t.def, Method: m, OwnerDisplay: t.key, Name: name, Instantiation: inst})
-			}
+		ms := slotBodies(t)
+		add(t, ms)
+		// An abstract class is never the runtime receiver; its concrete subclasses walk
+		// their own chains.
+		if len(ms) == 0 && !t.isInterface() && t.def.Flags&typeAbstract == 0 {
+			inherit(t)
 		}
 		for _, d := range t.derived {
 			if !visited[d] {
@@ -342,7 +423,7 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig [
 			}
 		}
 	}
-	return targets
+	return targets, bases
 }
 
 // interfaceTarget resolves how type t satisfies interface member iface.name/sig:
@@ -458,4 +539,26 @@ func (c *CHA) lookupType(display string) *TypeDef {
 		}
 	}
 	return nil
+}
+
+const typeAbstract = 0x80 // TypeAttributes.Abstract
+
+// isRootBase reports whether tr is System.Object, System.ValueType or System.Enum: bases
+// whose only virtuals are Object's.
+func isRootBase(tr TypeRef) bool {
+	switch tr.Qualified() {
+	case "System.Object", "System.ValueType", "System.Enum":
+		return true
+	}
+	return false
+}
+
+// objectVirtual reports whether name is one of System.Object's virtual methods, the only
+// slots a root base can fill.
+func objectVirtual(name string) bool {
+	switch name {
+	case "ToString", "Equals", "GetHashCode", "Finalize":
+		return true
+	}
+	return false
 }

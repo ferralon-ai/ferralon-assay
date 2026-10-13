@@ -61,6 +61,17 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	set := assembly.LoadSpanningSet(req.BuildDir, fp, locator, deps)
 	engine := depreach.NewEngine(set.Assemblies)
 	idx := buildReconcileIndex(set.Assemblies)
+	// Calls into the shared framework are leaves except where it can run application code
+	// the graph does not show (framework.go, depreach/framework.go). A package restore marks
+	// as supplied by that framework is then not a missing dependency.
+	fw := frameworkNames(build, locator, set.Assemblies)
+	engine.SetFramework(fw)
+	var misses []assembly.DepMiss
+	for _, m := range set.Misses {
+		if !frameworkSuppliedMiss(m, locator, fw) {
+			misses = append(misses, m)
+		}
+	}
 	// Two root classes. MAIN is the confident, PRECISE two-trace root and the ONLY root that
 	// can license a clean not_exploitable: a hazard-free hit or miss from Main is the EARNED
 	// confident verdict (reachable path / clean NE). The RUNTIME roots (module initializer +
@@ -69,12 +80,16 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 	// ADD reachable/undetermined, never license an NE on their own.
 	mainKey, mainOK := idx.entryKey(fp)
 	runtimeRoots := idx.runtimeRootKeys(set.Assemblies)
+	if mainOK {
+		// The types these roots can instantiate bound what framework code can call back into.
+		engine.SetProgramRoots(append([]depreach.MethodKey{mainKey}, runtimeRoots...))
+	}
 
 	reasons := map[string]bool{}
 	for _, r := range build.reasons {
 		reasons[r] = true
 	}
-	for _, m := range set.Misses {
+	for _, m := range misses {
 		reasons[missReason(m.Reason)] = true
 	}
 	var paths []plugin.ReachPath
@@ -115,6 +130,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 			continue
 		case depreach.Undetermined:
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			reasons[hazardReason(res.HazardWhy)] = true
 			continue
 		case depreach.NotExploitable:
 			// fall through to the runtime roots
@@ -158,7 +174,7 @@ func ilReachability(req plugin.ReachabilityRequest) (plugin.ReachabilityResult, 
 		searched = nil
 	}
 	return plugin.ReachabilityResult{
-		Partiality: ilPartiality(reasons, missScopes(set.Misses, graph)),
+		Partiality: ilPartiality(reasons, missScopes(misses, graph)),
 		Paths:      paths,
 		Searched:   searched,
 	}, true

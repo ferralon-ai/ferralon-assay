@@ -18,11 +18,17 @@ import (
 // LoadSpanningSet loads it) and runs the op for one sink SCIP.
 func runReachSet(t *testing.T, appDLL, depDLL []byte, sinkSCIP string) plugin.ReachabilityResult {
 	t.Helper()
+	return runReachSetAssets(t, appDLL, depDLL, depAssetsJSON("Dep/1.0.0"), sinkSCIP)
+}
+
+// runReachSetAssets is runReachSet with the restore output given explicitly.
+func runReachSetAssets(t *testing.T, appDLL, depDLL, assets []byte, sinkSCIP string) plugin.ReachabilityResult {
+	t.Helper()
 	dir := composeILBuildDir(t, map[string][]byte{
 		"App.csproj":              []byte("<Project></Project>"),
 		"bin/App.dll":             appDLL,
 		"bin/Dep.dll":             depDLL,
-		"obj/project.assets.json": depAssetsJSON("Dep/1.0.0"),
+		"obj/project.assets.json": assets,
 	})
 	res, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: dir, Symbols: []string{sinkSCIP}})
 	if err != nil {

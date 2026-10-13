@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -25,8 +26,12 @@ import (
 // into first-party code included (unloadedJarTargets; nil when that closure cannot be
 // bounded):
 //   - a node whose resolved version's JAR no cache holds → maven_uncached_subtree;
-//   - a node with no resolved version, or that the build declares with a classifier or
-//     non-jar type → tool_failure:no_dependency_artifact;
+//   - a node with no resolved version, a Gradle dependency no lockfile pins, a JAR whose
+//     cached copies differ, or one the build declares with a classifier or non-jar type →
+//     tool_failure:no_dependency_artifact;
+//   - a package the runtime classpath holds at more than one version →
+//     relationship_unexpressed:dependency_version_ambiguous (searching one pick would be a
+//     guess at which body runs);
 //   - a JAR that cannot be opened, or classes in it that fail to parse → tool_failure;
 //   - a class two JARs define → relationship_unexpressed:duplicate_class (the engine keeps
 //     one body per binary name, so the other body's calls are unseen).
@@ -39,7 +44,10 @@ import (
 // the two lanes read first-party code differently (Java from source plus compiled output,
 // Kotlin from bytecode only), and the shared part is the loop below.
 
-const reasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed + ":duplicate_class"
+const (
+	reasonDuplicateClass             = plugin.PartialReasonRelationshipUnexpressed + ":duplicate_class"
+	reasonDependencyVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":dependency_version_ambiguous"
+)
 
 // reachClosure is the engine over first-party plus dependency bytecode and the scoped blind
 // spots loading the dependencies incurred.
@@ -105,12 +113,13 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	}
 	var jars []opened
 	fp := sha256.New()
-	for _, n := range distinctGAVs(ix, reactor) {
-		switch {
-		case n.version == "":
-			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.coordinate))
-			continue
-		case ix.variantAt(n.coordinate, n.version):
+	locks, _ := GradleLockEntries(buildDir)
+	sel := selectRuntimeGAVs(ix, reactor, locks)
+	for _, m := range sel.miss {
+		rc.Scoped = append(rc.Scoped, scoped(m.reason, m.coordinate, m.detail))
+	}
+	for _, n := range sel.load {
+		if ix.variantAt(n.coordinate, n.version) {
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": artifact variant declared"))
 			continue
 		}
@@ -224,31 +233,94 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	return ok && !m.Abstract && !m.Native
 }
 
-// distinctGAVs returns one entry per distinct (coordinate, version) the inventory holds,
-// sorted so the load order (and so which JAR wins a duplicate class) is deterministic. The
-// build's own reactor modules are left out: their code is the first-party build output.
-func distinctGAVs(ix inventoryIndex, reactor map[string]bool) []gav {
-	seen := map[gav]bool{}
-	var out []gav
-	for coord, nodes := range ix.byCoordinate {
-		if reactor[coord] {
-			continue
-		}
-		for _, n := range nodes {
-			g := gav{coordinate: coord, version: n.Version}
-			if !seen[g] {
-				seen[g] = true
-				out = append(out, g)
-			}
+// gradleRuntimeConfig is the one Gradle configuration whose locked versions are the
+// classpath the application runs with. compileClasspath can differ from it (compileOnly,
+// constraints), and test*, annotationProcessor and kapt* classpaths never run in production.
+const gradleRuntimeConfig = "runtimeClasspath"
+
+// runtimeSelection is, per dependency coordinate, either the one version the build runs or
+// the named reason no version could be chosen.
+type runtimeSelection struct {
+	load []gav
+	miss []selectionMiss
+}
+
+type selectionMiss struct{ coordinate, reason, detail string }
+
+// selectRuntimeGAVs picks the dependency versions the search loads: only those on the
+// classpath the application runs with, and only when that is a single resolved version.
+//
+//   - A Maven node counts when its scope is compile, runtime, provided (the container
+//     supplies it at run time) or system; a test node never does.
+//   - A Gradle lockfile node counts at each version a lockfile line pins in
+//     runtimeClasspath. The inventory keeps one version per coordinate, so the lockfile
+//     lines are read directly.
+//   - A Gradle dependency with no lockfile has no known configuration or resolved
+//     version, so it is a miss.
+//
+// A coordinate left with two or more distinct versions, or any unresolved one, is a miss
+// rather than a pick. Leaving a coordinate out is sound on its own: a call into a class
+// nothing loaded is an unloaded_dependency hazard, and a sink in it has no concrete body.
+// The build's own reactor modules are skipped, since their code is the first-party output.
+// Output is sorted by coordinate so the load order (and so which JAR wins a duplicate class)
+// is deterministic.
+func selectRuntimeGAVs(ix inventoryIndex, reactor map[string]bool, locks []GradleLockEntry) runtimeSelection {
+	lockedRuntime := map[string][]string{}
+	for _, e := range locks {
+		if slices.Contains(e.Configs, gradleRuntimeConfig) {
+			c := e.Group + ":" + e.Artifact
+			lockedRuntime[c] = append(lockedRuntime[c], e.Version)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].coordinate != out[j].coordinate {
-			return out[i].coordinate < out[j].coordinate
+	coords := make([]string, 0, len(ix.byCoordinate))
+	for c := range ix.byCoordinate {
+		if !reactor[c] {
+			coords = append(coords, c)
 		}
-		return out[i].version < out[j].version
-	})
-	return out
+	}
+	sort.Strings(coords)
+
+	var sel runtimeSelection
+	for _, coord := range coords {
+		var versions []string
+		unlocked := false
+		for _, n := range ix.byCoordinate[coord] {
+			switch n.Provenance.Resolver {
+			case "gradle-lockfile":
+				versions = append(versions, lockedRuntime[coord]...)
+			case "gradle-script", "gradle-catalog":
+				unlocked = true
+			default:
+				if mavenRuntimeScope(n.Membership.Target) {
+					versions = append(versions, n.Version)
+				}
+			}
+		}
+		slices.Sort(versions)
+		versions = slices.Compact(versions)
+		switch {
+		case unlocked:
+			sel.miss = append(sel.miss, selectionMiss{coord, reasonNoDependencyArtifact, coord + ": no lockfile pins its configuration or version"})
+		case len(versions) == 0:
+		case slices.Contains(versions, ""):
+			sel.miss = append(sel.miss, selectionMiss{coord, reasonNoDependencyArtifact, coord + ": no resolved version"})
+		case len(versions) > 1:
+			sel.miss = append(sel.miss, selectionMiss{coord, reasonDependencyVersionAmbiguous, coord + ": runtime versions " + strings.Join(versions, ", ")})
+		default:
+			sel.load = append(sel.load, gav{coordinate: coord, version: versions[0]})
+		}
+	}
+	return sel
+}
+
+// mavenRuntimeScope reports whether a Maven dependency scope puts the JAR on the classpath
+// the application runs with.
+func mavenRuntimeScope(scope string) bool {
+	switch scope {
+	case "compile", "runtime", "provided", "system":
+		return true
+	}
+	return false
 }
 
 // reactorCoordinates returns the "group:artifact" of every Maven module under buildDir.

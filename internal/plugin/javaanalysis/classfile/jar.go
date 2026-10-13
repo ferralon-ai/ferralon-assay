@@ -2,6 +2,7 @@ package classfile
 
 import (
 	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +45,16 @@ func LoadJarWithResources(path string, wantResource func(name string) bool) (Jar
 	}
 	defer zr.Close()
 	return loadZip(&zr.Reader, wantResource)
+}
+
+// LoadJarBytes is LoadJar over a JAR already read into memory, so a caller that checked those
+// bytes parses exactly them.
+func LoadJarBytes(data []byte) (JarResult, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return JarResult{}, fmt.Errorf("classfile: open jar: %w", err)
+	}
+	return loadZip(zr, nil)
 }
 
 // loadZip parses classes from an already-open zip.Reader — the shared core of

@@ -2,7 +2,6 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -188,7 +187,7 @@ func readBundlerConfigs(dir string) ([]bundlerConfig, plugin.Partiality) {
 	for _, c := range bundlerCandidates {
 		full := filepath.Join(dir, c.name)
 		data, err := readRegular(full)
-		if os.IsNotExist(err) {
+		if absent(err) {
 			continue // not present
 		}
 		if err != nil {

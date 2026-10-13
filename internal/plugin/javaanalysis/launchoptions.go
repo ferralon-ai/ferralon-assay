@@ -1075,20 +1075,20 @@ func testReceiver(data []byte, off int) bool {
 		i--
 	}
 	if i == 0 || data[i-1] != '.' {
-		return statementStart(data, off)
+		return optionStatementStart(data, off)
 	}
 	for _, r := range []string{"it", "this"} {
-		if k := i - 1 - len(r); k >= 0 && string(data[k:i-1]) == r && statementStart(data, k) {
+		if k := i - 1 - len(r); k >= 0 && string(data[k:i-1]) == r && optionStatementStart(data, k) {
 			return true
 		}
 	}
 	return false
 }
 
-// statementStart reports whether an expression starting at i begins a statement: only
+// optionStatementStart reports whether an expression starting at i begins a statement: only
 // whitespace separates it from an opening or closing brace or a semicolon, or from the end
 // of a line whose last character can end a statement.
-func statementStart(data []byte, i int) bool {
+func optionStatementStart(data []byte, i int) bool {
 	newline := false
 	for i > 0 && isGradleSpace(data[i-1]) {
 		newline = newline || data[i-1] == '\n'

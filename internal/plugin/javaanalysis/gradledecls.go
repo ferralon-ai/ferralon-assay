@@ -232,7 +232,7 @@ func gradleDeclFindings(data []byte, kts bool, local func(target string, fromRoo
 	if !ok {
 		return []string{"0: unlexable"}
 	}
-	match, ok := gradleMatch(toks)
+	match, ok := gradleDeclMatch(toks)
 	if !ok {
 		return []string{"0: unbalanced brackets"}
 	}
@@ -257,9 +257,9 @@ func gradleDeclFindings(data []byte, kts bool, local func(target string, fromRoo
 	return p.out
 }
 
-// gradleMatch pairs every opening bracket with its closing one. ok is false when they do not
+// gradleDeclMatch pairs every opening bracket with its closing one. ok is false when they do not
 // balance.
-func gradleMatch(toks []gradleTok) (map[int]int, bool) {
+func gradleDeclMatch(toks []gradleTok) (map[int]int, bool) {
 	match := map[int]int{}
 	var open []int
 	pair := map[string]string{")": "(", "]": "[", "}": "{"}

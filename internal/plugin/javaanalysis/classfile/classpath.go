@@ -3,6 +3,7 @@ package classfile
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -61,14 +62,28 @@ func within(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// JarBytesPackages is ClasspathPackages for a JAR already read into memory, so the caller lists
+// the same bytes it parses.
+func JarBytesPackages(data []byte) (pkgs map[string]bool, ok, closed bool) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, false, false
+	}
+	return zipPackages(zr.File)
+}
+
 func jarPackages(path string) (map[string]bool, bool, bool) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		return nil, false, false
 	}
 	defer zr.Close()
+	return zipPackages(zr.File)
+}
+
+func zipPackages(files []*zip.File) (map[string]bool, bool, bool) {
 	pkgs, closed := map[string]bool{}, true
-	for _, f := range zr.File {
+	for _, f := range files {
 		closed = addClassPackage(pkgs, f.Name) && closed && !nestedArchive(f.Name)
 		if strings.EqualFold(f.Name, "META-INF/MANIFEST.MF") {
 			cp, ok := manifestClassPath(f)

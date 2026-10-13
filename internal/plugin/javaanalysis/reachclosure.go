@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -109,7 +107,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	rc := &reachClosure{Loaded: map[string]string{}}
 	type opened struct {
 		gav gav
-		jar string
+		jar artifactJar
 	}
 	var jars []opened
 	fp := sha256.New()
@@ -123,7 +121,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": artifact variant declared"))
 			continue
 		}
-		jarPath, found := locateArtifactJar(buildDir, n.coordinate, n.version)
+		jar, found := locateArtifactJar(buildDir, n.coordinate, n.version)
 		switch found {
 		case jarCopiesDiffer:
 			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": cached copies differ"))
@@ -135,13 +133,8 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			rc.Scoped = append(rc.Scoped, scoped(reasonMavenUncachedSubtree, n.coordinate, n.String()))
 			continue
 		}
-		key, err := jarKey(jarPath)
-		if err != nil {
-			rc.Scoped = append(rc.Scoped, scoped(plugin.PartialReasonToolFailure, n.coordinate, n.String()+": "+err.Error()))
-			continue
-		}
-		fmt.Fprintln(fp, key)
-		jars = append(jars, opened{n, jarPath})
+		fmt.Fprintln(fp, jarKey(jar.data))
+		jars = append(jars, opened{n, jar})
 	}
 	fmt.Fprintln(fp, firstPartyFingerprint(firstParty))
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
@@ -172,7 +165,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 		if len(jr.Failed) > 0 {
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
 		}
-		built.Loaded[j.gav.String()] = j.jar
+		built.Loaded[j.gav.String()] = j.jar.path
 		for _, c := range jr.Classes {
 			if isFirstParty[c.Name] {
 				continue
@@ -339,33 +332,28 @@ func reactorCoordinates(buildDir string) map[string]bool {
 	return out
 }
 
-// jarCache keeps each parsed JAR for the life of the plugin process, keyed by path, size
-// and modification time, so a rewritten JAR is re-read.
+// jarCache keeps each parsed JAR for the life of the plugin process, keyed by the digest of
+// the bytes locateArtifactJar read, so a rewritten JAR is re-read and what is parsed is what
+// was compared.
 var jarCache = struct {
 	sync.Mutex
 	m map[string]classfile.JarResult
 }{m: map[string]classfile.JarResult{}}
 
-func jarKey(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s\x00%d\x00%d", filepath.Clean(path), info.Size(), info.ModTime().UnixNano()), nil
+func jarKey(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
-func loadJarCached(path string) (classfile.JarResult, error) {
-	key, err := jarKey(path)
-	if err != nil {
-		return classfile.JarResult{}, err
-	}
+func loadJarCached(jar artifactJar) (classfile.JarResult, error) {
+	key := jarKey(jar.data)
 	jarCache.Lock()
 	jr, ok := jarCache.m[key]
 	jarCache.Unlock()
 	if ok {
 		return jr, nil
 	}
-	jr, err = classfile.LoadJar(path)
+	jr, err := classfile.LoadJarBytes(jar.data)
 	if err != nil {
 		return classfile.JarResult{}, err
 	}

@@ -372,6 +372,43 @@ func TestBytecodeReach_RecompiledClassesAreReread(t *testing.T) {
 	}
 }
 
+// A dependency JAR rewritten in place, same size and same modification time, is re-read: the
+// cache is keyed by the bytes the lookup compared, not by what the file system says about them.
+func TestBytecodeReach_RewrittenJarIsReread(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(callFetch))
+	if res := a.reach(netkitSinkID); len(res.Paths) != 1 {
+		t.Fatalf("first run: Paths %v", res.Paths)
+	}
+	jarPath := filepath.Join(a.build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
+	before, err := os.Stat(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deflate output varies by a byte or so with the name; take the first rename that keeps the size.
+	for _, name := range []string{"fetcx", "fetcy", "fetcz", "fetca", "xetch", "fxtch", "fexch", "fetxh"} {
+		renamed := emitClassX(&cpb{}, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{name, fetchDesc, accPublic, ret}})
+		writeJar(t, jarPath, "com/evil/netkit/UrlFetcher.class", renamed)
+		if st, err := os.Stat(jarPath); err == nil && st.Size() == before.Size() {
+			break
+		}
+	}
+	if err := os.Chtimes(jarPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(jarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("setup: rewrite changed size or time (%d,%v -> %d,%v)", before.Size(), before.ModTime(), after.Size(), after.ModTime())
+	}
+	if res := a.reach(netkitSinkID); len(res.Paths) != 0 {
+		t.Fatalf("after rewriting the JAR without fetch: Paths %v", res.Paths)
+	}
+}
+
 func TestHazardReason(t *testing.T) {
 	for why, want := range map[string]string{
 		"reflection: java/lang/reflect/Method.invoke":                plugin.PartialReasonReflection,

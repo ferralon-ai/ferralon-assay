@@ -25,6 +25,9 @@ const (
 	reasonEngineUnverified = plugin.PartialReasonToolFailure + ":cgx_engine_unverified"
 	// The engine and the SDK are not the pinned pair from one cgx commit, so it was not run.
 	reasonEngineMismatch = plugin.PartialReasonToolFailure + ":cgx_engine_mismatch"
+	// The engine reported a different ABI or session protocol at Open, distinguishing a
+	// module/SDK mismatch caught there from the pin check above.
+	reasonEngineABIMismatch = plugin.PartialReasonToolFailure + ":cgx_abi_mismatch"
 	// The cgx engine failed while indexing the tree (IndexFailure, a hard error).
 	reasonIndexFailed = plugin.PartialReasonToolFailure + ":cgx_index_failed"
 	// The call graph omits edges below a raised confidence floor; the suffix names it.
@@ -104,6 +107,8 @@ func Unavailable(cfg Config, err error) *Lane {
 // engineReason is the reason an engine-state error declares, or "" for any other error.
 func engineReason(err error) string {
 	switch {
+	case errors.Is(err, ErrEngineABIMismatch):
+		return reasonEngineABIMismatch
 	case errors.Is(err, ErrEngineMismatch):
 		return reasonEngineMismatch
 	case errors.Is(err, ErrEngineUnverified):

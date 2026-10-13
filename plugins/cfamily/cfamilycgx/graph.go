@@ -59,6 +59,11 @@ var (
 	// module is not the one pinned beside the SDK version, the SDK in the build is not the pinned
 	// version, or the engine reports another ABI or schema), so it was not run.
 	ErrEngineMismatch = errors.New(reasonEngineMismatch)
+	// ErrEngineABIMismatch: the engine reports a different ABI or session protocol than this
+	// SDK speaks (cgx.ErrABIMismatch at Open) — a module built from another cgx commit than the
+	// SDK, surfaced at instantiation rather than by the pin check. It satisfies
+	// errors.Is(err, ErrEngineMismatch).
+	ErrEngineABIMismatch = fmt.Errorf("%w: cgx engine speaks a different ABI or session protocol", ErrEngineMismatch)
 )
 
 // EngineFailureKind classifies an EngineFailure.

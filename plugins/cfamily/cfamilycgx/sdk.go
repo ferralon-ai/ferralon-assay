@@ -15,20 +15,26 @@ import (
 	"github.com/ferralon-ai/cgx/sdk/go/cgx"
 )
 
-// OpenSDK is the Opener backed by the cgx Go SDK. The SDK's compile cache lives under
-// cfg.CacheDir so the plugin writes nowhere else.
+// OpenSDK is the Opener backed by the cgx Go SDK. The wasm compile cache lives at
+// cfg.WasmCacheDir, when the operator set one; with none set, the SDK is told explicitly to
+// cache in memory only (WithCacheDir("")) rather than falling back to its own on-disk default,
+// so the plugin never writes to a shared cache dir unasked.
 //
 // The engine is verified again here, in the bytes the SDK is handed: the wasm module must be
 // the one pinned beside the SDK version (PinnedWasmSHA256) and the native binary must match its
 // configured pin. The native binary runs from a private copy hashed as it was written, so the
 // bytes checked are the bytes run. The native process gets the SDK's minimal environment and nothing else of
 // this process's. Engine-state failures come back wrapping ErrEngineUnconfigured,
-// ErrEngineUnverified or ErrEngineMismatch so the lane declares them rather than failing.
+// ErrEngineUnverified, ErrEngineMismatch or ErrEngineABIMismatch so the lane declares them
+// rather than failing.
 func OpenSDK(ctx context.Context, repo string, cfg Config) (Graph, error) {
 	if err := checkSDKBuild(); err != nil {
 		return nil, err
 	}
-	opts := []cgx.Option{cgx.WithCacheDir(filepath.Join(cfg.CacheDir, "wazero"))}
+	if err := checkWasmCacheDir(cfg); err != nil {
+		return nil, err
+	}
+	opts := []cgx.Option{cgx.WithCacheDir(cfg.WasmCacheDir)}
 	release := func() {}
 	switch cfg.Transport {
 	case TransportNative:
@@ -71,7 +77,9 @@ func engineStateError(err error) error {
 	switch {
 	case errors.Is(err, cgx.ErrNoEmbeddedModule):
 		return fmt.Errorf("%w: %v", ErrEngineUnconfigured, err)
-	case errors.Is(err, cgx.ErrABIMismatch), errors.Is(err, cgx.ErrSchemaMismatch):
+	case errors.Is(err, cgx.ErrABIMismatch):
+		return fmt.Errorf("%w: %v", ErrEngineABIMismatch, err)
+	case errors.Is(err, cgx.ErrSchemaMismatch):
 		return fmt.Errorf("%w: %v", ErrEngineMismatch, err)
 	}
 	return err
@@ -171,6 +179,39 @@ func CacheKey(cfg Config) (string, error) {
 func embeddedKey() string {
 	sum := sha256.Sum256([]byte(SDKModule + "@" + PinnedSDKVersion))
 	return "wasm-embedded-" + hex.EncodeToString(sum[:8])
+}
+
+// checkWasmCacheDir refuses a configured wasm compile cache dir that is not absolute, or that
+// group or other can write or read: the cache holds compiled machine code the SDK runs
+// in-process, so a shared or loosely permissioned directory is never used. An unset dir (the
+// default) passes untouched; OpenSDK then caches in memory only for the life of the process. A
+// dir that does not yet exist is created private to this user; one that exists is checked, never
+// relaxed.
+func checkWasmCacheDir(cfg Config) error {
+	dir := cfg.WasmCacheDir
+	if dir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("%w: the cgx wasm compile cache dir must be given by absolute path, got %q", ErrEngineUnconfigured, dir)
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("%w: create cgx wasm compile cache dir: %v", ErrEngineUnconfigured, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: stat cgx wasm compile cache dir: %v", ErrEngineUnconfigured, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: cgx wasm compile cache dir %q is not a directory", ErrEngineUnconfigured, dir)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("%w: cgx wasm compile cache dir %q is readable or writable by group or other (mode %s); it holds machine code run in-process", ErrEngineUnconfigured, dir, info.Mode().Perm())
+	}
+	return nil
 }
 
 // checkWasmPath refuses a module not given by absolute path, and a configured expectation that

@@ -2,10 +2,13 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -104,6 +107,60 @@ func TestLockClosures(t *testing.T) {
 	}
 	if got := newLockClosures(t.TempDir()).closureOf("", "qs"); got != nil {
 		t.Errorf("no lockfile must be unbounded; got %#v", got)
+	}
+}
+
+// TestLockClosures_NodeModulesReadErrors: a node_modules the disk check cannot list is unread,
+// not absent. Node loads from a directory it can search but not read, so only a node_modules
+// that does not exist (ENOENT) or whose path is not a directory (ENOTDIR) is skipped; any
+// other error leaves the closure unbounded. Each row checks that listing its node_modules
+// fails with the error class it names.
+func TestLockClosures_NodeModulesReadErrors(t *testing.T) {
+	const lock = `{"lockfileVersion":3,"packages":{"":{},"node_modules/ok":{}}}`
+	cases := []struct {
+		name    string
+		files   map[string]string
+		chmod   bool
+		mode    fs.FileMode // applied to node_modules when chmod is set
+		wantErr error
+		want    []string
+	}{
+		{name: "a searchable, unlistable node_modules holding a package the lock does not list",
+			files: map[string]string{"package-lock.json": lock, "node_modules/ok/package.json": `{"name":"ok"}`, "node_modules/zed/package.json": `{"name":"zed"}`},
+			chmod: true, mode: 0o111, wantErr: syscall.EACCES},
+		{name: "a searchable, unlistable node_modules holding only what the lock lists",
+			files: map[string]string{"package-lock.json": lock, "node_modules/ok/package.json": `{"name":"ok"}`},
+			chmod: true, mode: 0o111, wantErr: syscall.EACCES},
+		{name: "a node_modules with no permissions at all",
+			files: map[string]string{"package-lock.json": lock, "node_modules/ok/package.json": `{"name":"ok"}`},
+			chmod: true, mode: 0, wantErr: syscall.EACCES},
+		{name: "no node_modules on disk is skipped",
+			files:   map[string]string{"package-lock.json": lock},
+			wantErr: fs.ErrNotExist, want: []string{"ok"}},
+		{name: "a node_modules that is a regular file is skipped",
+			files:   map[string]string{"package-lock.json": lock, "node_modules": ""},
+			wantErr: syscall.ENOTDIR, want: []string{"ok"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeProgram(t, tc.files)
+			nm := filepath.Join(dir, "node_modules")
+			if tc.chmod {
+				if os.Geteuid() == 0 {
+					t.Skip("permission bits do not restrict root")
+				}
+				if err := os.Chmod(nm, tc.mode); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(nm, 0o755) })
+			}
+			if _, err := os.ReadDir(nm); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("listing node_modules: err = %v, want %v", err, tc.wantErr)
+			}
+			if got := newLockClosures(dir).closureOf("", "ok"); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("closureOf = %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }
 

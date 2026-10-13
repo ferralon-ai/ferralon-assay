@@ -2,12 +2,14 @@ package pythonanalysis
 
 // The walk of a build directory that the install scan and the committed-install scan share
 // with the other lanes' manifest classifiers, copied from internal/plugin/buildtree at
-// 444cd8f until that package lands. The skip rule is fixed (see buildTreeSkipped): a directory
+// bc0233d until that package lands. The skip rule is fixed (see buildTreeSkipped): a directory
 // named node_modules or site-packages holds installed packages, not the build's own
 // declarations, and is not entered. Nothing else is skipped, .git included. The walk never
 // follows a symlink; a symlink that leaves the build dir is reported so the caller fails
 // closed on it. A symlinked directory inside the build dir is read in full only through its
-// target, when the walk itself enters that target at its real path (see buildTreeLinks).
+// target, when the walk itself enters that target at its real path (see buildTreeLinks). A
+// symlink inside the build dir to anything but a regular file or a directory is never opened
+// (see buildTreeLinkedFile).
 
 import (
 	"io/fs"
@@ -75,6 +77,21 @@ func buildTreeInside(realRoot, path string) bool {
 	}
 	rel, err := filepath.Rel(realRoot, target)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// buildTreeLinkedFile is buildtree.Candidates' check on a symlink inside root that is not a
+// directory: why what it links cannot be read ("unreadable", or "symlink to a non-regular
+// file" for a pipe, socket or device), or "" for a regular file. It never opens the target,
+// since opening a pipe would block the walk.
+func buildTreeLinkedFile(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "unreadable"
+	}
+	if !fi.Mode().IsRegular() {
+		return "symlink to a non-regular file"
+	}
+	return ""
 }
 
 func buildTreeIsDir(path string) bool {

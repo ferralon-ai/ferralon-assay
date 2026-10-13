@@ -20,7 +20,6 @@ package pythonanalysis
 
 import (
 	"encoding/json"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -77,7 +76,7 @@ func loadLocks(buildDir string, ls *loadSet) *lockModel {
 		if !lockfileNames[base] {
 			return
 		}
-		data, err := os.ReadFile(abs)
+		data, err := readRegular(abs)
 		if err != nil {
 			ls.gap("%s could not be read", rel)
 			return

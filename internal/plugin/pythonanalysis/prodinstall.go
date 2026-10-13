@@ -126,6 +126,16 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		case !e.D.Type().IsRegular():
 			return nil // a device, socket or pipe runs nothing, and reading a pipe would block
 		}
+		if e.Symlink {
+			switch buildTreeLinkedFile(e.Path) {
+			case "unreadable":
+				sc.veto(c, "could not be read")
+				return nil
+			case "symlink to a non-regular file":
+				sc.veto(c, "symlink to a non-regular file: install commands behind it are unknown")
+				return nil
+			}
+		}
 		base := strings.ToLower(path.Base(rel))
 		if base == "pip.conf" || base == "pip.ini" {
 			sc.veto(c, "pip configuration file: it can add requirements and options the scanner does not read")
@@ -1200,7 +1210,7 @@ func (sc *installScan) reqFile(c scanCtx, p string, set *pipSet, constraint bool
 		return true
 	}
 	sc.reqSeen[key] = true
-	data, err := os.ReadFile(filepath.Join(sc.root, filepath.FromSlash(rel)))
+	data, err := readRegular(filepath.Join(sc.root, filepath.FromSlash(rel)))
 	if err != nil {
 		sc.veto(c, "requirement file %s could not be read", rel)
 		return false
@@ -1314,7 +1324,7 @@ func (sc *installScan) pickRepoFile(c scanCtx, p string, srcs, bases []string) (
 			if err != nil || info.IsDir() || underSkipped(sc.root, mustEval(abs)) {
 				continue
 			}
-			data, err := os.ReadFile(abs)
+			data, err := readRegular(abs)
 			if err != nil {
 				sc.veto(c, "requirement file %s could not be read", cand)
 				return "", false
@@ -1924,7 +1934,7 @@ func oddSelectors(o opts, names ...string) string {
 func (sc *installScan) uvDefaultGroups() map[string]bool {
 	out := map[string]bool{}
 	for _, dir := range sc.ls.locks.lockDirs["uv"] {
-		data, err := os.ReadFile(filepath.Join(sc.root, filepath.FromSlash(dir), "pyproject.toml"))
+		data, err := readRegular(filepath.Join(sc.root, filepath.FromSlash(dir), "pyproject.toml"))
 		if os.IsNotExist(err) {
 			out["dev"] = true
 			continue
@@ -2033,7 +2043,7 @@ func (sc *installScan) poetryGroups() (base, optional map[string]bool, ok bool) 
 	base, optional = map[string]bool{}, map[string]bool{}
 	declared := map[string]bool{}
 	for _, dir := range sc.ls.locks.lockDirs["poetry"] {
-		data, err := os.ReadFile(filepath.Join(sc.root, filepath.FromSlash(dir), "pyproject.toml"))
+		data, err := readRegular(filepath.Join(sc.root, filepath.FromSlash(dir), "pyproject.toml"))
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -2559,6 +2569,10 @@ func (ls *loadSet) committedInstalls(buildDir string) {
 		name, isDir := e.D.Name(), e.D.IsDir()
 		if e.Symlink {
 			isDir = buildTreeIsDir(e.Path)
+			if why := buildTreeLinkedFile(e.Path); !isDir && why != "" {
+				ls.noMarkers("%s: %s: installed copies behind it are unknown", rel, why)
+				return nil
+			}
 		}
 		if e.Skipped {
 			if name == "site-packages" {
@@ -2642,7 +2656,7 @@ func (ls *loadSet) committedDist(p, name string, dir bool) {
 		files = []string{filepath.Join(p, "METADATA"), filepath.Join(p, "PKG-INFO")}
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := readRegular(f)
 		if err != nil {
 			continue
 		}

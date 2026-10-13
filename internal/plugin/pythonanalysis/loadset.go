@@ -423,7 +423,7 @@ func (ls *loadSet) projectRoots(buildDir string) {
 		switch base {
 		case "pyproject.toml":
 			ls.scanned++
-			data, err := os.ReadFile(abs)
+			data, err := readRegular(abs)
 			if err != nil {
 				ls.gap("%s could not be read", rel)
 				return
@@ -479,7 +479,7 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			}
 		case "setup.cfg":
 			ls.scanned++
-			data, err := os.ReadFile(abs)
+			data, err := readRegular(abs)
 			if err != nil {
 				ls.gap("%s could not be read", rel)
 				return
@@ -500,7 +500,7 @@ func (ls *loadSet) projectRoots(buildDir string) {
 				}
 			}
 		case "setup.py":
-			data, err := os.ReadFile(abs)
+			data, err := readRegular(abs)
 			if err != nil {
 				ls.gap("%s could not be read", rel)
 				return
@@ -596,7 +596,7 @@ func (ls *loadSet) configRoots(buildDir string) {
 		if err != nil || info.Size() > 256<<10 {
 			return
 		}
-		data, err := os.ReadFile(abs)
+		data, err := readRegular(abs)
 		if err != nil {
 			ls.gap("%s could not be read", rel)
 			return
@@ -869,7 +869,7 @@ func (ls *loadSet) runtimeManifestNames(buildDir string) {
 		if devManifestPath(rel) {
 			continue
 		}
-		data, err := os.ReadFile(m)
+		data, err := readRegular(m)
 		if err != nil {
 			ls.gap("%s could not be read", rel)
 			continue

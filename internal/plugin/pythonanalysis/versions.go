@@ -126,7 +126,7 @@ func isManifest(name string) bool {
 // bool is false when the file cannot be read or is structurally unparseable (the caller
 // degrades partiality).
 func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

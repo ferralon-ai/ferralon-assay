@@ -11,11 +11,12 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// The walk in buildwalk.go is a copy of internal/plugin/buildtree at 444cd8f (buildtree.go blob
-// 43f93477755565bdfa3fd0dabf8a313a22deb9b1). TestBuildTreeSkipped, TestBuildTreeWalk_Parity
+// The walk in buildwalk.go is a copy of internal/plugin/buildtree at bc0233d (buildtree.go blob
+// 0219ca2d925dae344581fe87d7774381431c7e62). TestBuildTreeSkipped, TestBuildTreeWalk_Parity
 // and TestBuildTreeLinks_SymlinkedDirs carry that package's own tables (TestSkipped,
-// TestWalk_SkipRuleAndSymlinks, TestCandidates_SymlinkedDirs) over unchanged, so a drift from
-// it fails here.
+// TestWalk_SkipRuleAndSymlinks, TestCandidates_SymlinkedDirs) over unchanged, and
+// TestLoadSet_LinkToPipe carries TestCandidates_LinkToPipe into both scans, so a drift from it
+// fails here.
 
 // TestBuildTreeSkipped pins the skip rule: exactly node_modules and site-packages,
 // case-sensitive, and nothing else.

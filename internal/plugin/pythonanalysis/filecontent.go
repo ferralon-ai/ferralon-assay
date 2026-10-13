@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path"
 	"strings"
@@ -61,10 +63,26 @@ var executableMagic = [][]byte{
 	[]byte("MZ"),             // PE
 }
 
+// errNotRegular is readRegular's error for a path that is not a regular file.
+var errNotRegular = errors.New("not a regular file")
+
+// readRegular reads the file at path, following symlinks, only when it resolves to a regular
+// file. It never opens a pipe, socket or device, since opening a pipe with no writer blocks.
+func readRegular(path string) ([]byte, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &fs.PathError{Op: "read", Path: path, Err: errNotRegular}
+	}
+	return os.ReadFile(path)
+}
+
 // readInstallFile reads the file at p and reports what it is. Text comes back decoded; any
 // other kind comes back with no data.
 func readInstallFile(p string) ([]byte, fileContent, error) {
-	data, err := os.ReadFile(p)
+	data, err := readRegular(p)
 	if err != nil {
 		return nil, contentText, err
 	}

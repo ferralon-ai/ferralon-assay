@@ -29,6 +29,9 @@ type program struct {
 	// provenance) the resolver injection point exposes; nil until the first resolver()
 	// call computes it once. It reads the static bundler configs and executes nothing (C4).
 	buildCtx *buildContext
+	// styleTooling caches whether the tree holds a bundler or transform config that can change
+	// what a stylesheet import loads; nil until first use.
+	styleTooling *bool
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the

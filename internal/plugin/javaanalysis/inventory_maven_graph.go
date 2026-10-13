@@ -109,6 +109,9 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		}
 
 		version := strings.TrimSpace(it.dep.Version)
+		if it.dep.unresolvedBy != "" {
+			version = ""
+		}
 		purl := mavenPURL(it.dep.GroupID, it.dep.ArtifactID, version)
 		nodeID := moduleRel + "|" + it.scope + "|" + purl
 		selected[ga] = nodeID
@@ -117,8 +120,12 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		if version == "" || !isLiteralVersion(version) {
 			// Present-but-unresolved: emitted with a declared reason, NEVER dropped, NEVER guessed.
 			version = ""
-			nodeReasons = append(nodeReasons, reasonPropertyUnresolved)
-			reasons = mergeReasons(reasons, reasonPropertyUnresolved)
+			why := reasonPropertyUnresolved
+			if it.dep.unresolvedBy != "" {
+				why = it.dep.unresolvedBy
+			}
+			nodeReasons = append(nodeReasons, why)
+			reasons = mergeReasons(reasons, why)
 		}
 
 		node := plugin.DependencyNode{

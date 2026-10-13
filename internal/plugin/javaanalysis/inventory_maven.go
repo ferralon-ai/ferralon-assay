@@ -120,6 +120,9 @@ type mvnDep struct {
 	GroupID, ArtifactID, Version string
 	Scope, Type, Optional        string
 	Exclusions                   []mvnGA
+	// unresolvedBy, when set, makes the graph emit this dependency with no version, for that
+	// reason. Version keeps the value without the profile, for closures that walk every candidate.
+	unresolvedBy string
 }
 
 func (d mvnDep) ga() string { return d.GroupID + ":" + d.ArtifactID }
@@ -450,8 +453,31 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 				bounded: bounded,
 			})
 		}
+		unresolveReversioned(&em)
 	}
 	return em
+}
+
+// unresolveReversioned marks every dependency an undecided profile could re-version as
+// unresolved. The build may run either version, so the one without the profile isn't taken.
+func unresolveReversioned(em *effectiveModel) {
+	alt := map[string][]string{}
+	for _, u := range em.undecided {
+		for _, d := range u.touched {
+			alt[d.ga()] = append(alt[d.ga()], d.Version)
+		}
+	}
+	for i, d := range em.deps {
+		if d.Version == "" {
+			continue
+		}
+		for _, v := range alt[d.ga()] {
+			if v != d.Version {
+				em.deps[i].unresolvedBy = reasonProfileActivation
+				break
+			}
+		}
+	}
 }
 
 type chainResult struct {

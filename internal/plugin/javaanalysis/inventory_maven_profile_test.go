@@ -365,6 +365,14 @@ func TestMavenProfile_PropertyReferencedVersionIsTouched(t *testing.T) {
 		t.Errorf("Targets = %v, want %v (both candidate versions' closures)", got, want)
 	}
 
+	undecided := toJSON(t, raw)
+	if findNode(t, undecided, "pkg:maven/org.x/x@3.0") != nil {
+		t.Error("x must not take the version it has without the undecided profile")
+	}
+	if n := findNode(t, undecided, "pkg:maven/org.x/x@"); n == nil || n.Version != "" || !hasStr(n.Partiality.Reasons, reasonProfileActivation) {
+		t.Errorf("x must be emitted unresolved for profile_activation; got %+v", n)
+	}
+
 	decided := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), map[string]string{targetEnvJavaVersion: "11.0.2"}))
 	if findNode(t, decided, "pkg:maven/org.x/x@4.0") == nil || !decided.Partiality.Complete {
 		t.Errorf("with java 11 the profile applies and re-versions x to 4.0; got %+v", decided)

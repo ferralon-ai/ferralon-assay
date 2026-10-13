@@ -10,7 +10,8 @@ package javaanalysis
 //     env.*, ...) missing from TargetEnv is undecided, never assumed absent;
 //   - <os> and any activation element this reader does not know are always undecided.
 //
-// An undecided profile is never applied. It costs a profile_activation reason only when it could
+// An undecided profile is never applied, and a dependency it could re-version is left with an
+// unresolved version rather than the one it has without the profile. It costs a profile_activation reason only when it could
 // change the resolved graph: it declares a dependency or managed version the graph consumes, or
 // sets a property such a declaration's coordinates reference. The reason is scoped to the
 // dependencies the profile can add or re-version plus their closure, and to first-party code and

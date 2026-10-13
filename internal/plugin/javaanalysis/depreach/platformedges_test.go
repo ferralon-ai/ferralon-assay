@@ -147,6 +147,8 @@ func TestReach_NoLoadedImplementor(t *testing.T) {
 			iface("com/acme/PaymentClient", abstractMeth("com/acme/PaymentClient", "charge", handleD))}},
 		{name: "loaded implementor answers", ingress: handle, want: NotExploitable, classes: []classfile.Class{
 			controller(callSink), extending(sink, consumer), sinkImpl()}},
+		{name: "loaded implementor of an interface over an unopened dependency answers", ingress: handle, want: NotExploitable, classes: []classfile.Class{
+			controller(callSink), extending(sink, "com/lib/Listener"), sinkImpl()}},
 		{name: "loaded implementor reaches the sink", ingress: handle, want: ReachableCandidate, classes: []classfile.Class{
 			controller(callSink), extending(sink, consumer), sinkImpl(sinkCall()...)}},
 		{name: "loaded implementor of an abstract subclass answers", ingress: handle, want: NotExploitable, classes: []classfile.Class{

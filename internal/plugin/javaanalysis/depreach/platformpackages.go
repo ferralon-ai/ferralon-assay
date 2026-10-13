@@ -2,15 +2,23 @@ package depreach
 
 // platformPackages lists the packages of the modules in the JDK 21 boot layer that
 // a class-path application gets by default: the JEP 261 root modules, what they
-// require, and what service binding adds, read from the Module and ModulePackages
-// attributes of each module-info.class in Temurin 21.0.12.1+1's jmods. java/ is
-// left to isPlatformClass, and only the packages under the
-// javax/, com/sun/, org/, jdk/ and sun/ families the engine has always treated as
-// platform are listed. A package of a resolved module hides any class-path copy of
-// it, so a class here is the JDK's own. A class under the same prefix in a package
+// require, and what service binding adds. A package of a resolved module hides any
+// class-path copy of it, so a class here is the JDK's own unless the analysed classpath
+// defines its package too (Engine.platform). A class under the same prefix in a package
 // not listed (jaxb-xjc's com/sun/tools/xjc, batik's org/w3c/dom/svg, a
 // sun/net/www/protocol/<scheme> URL handler, the unresolved jdk.hotspot.agent's
 // sun/jvm/hotspot) comes from a jar.
+//
+// Generated from the module-info.class of each of the 69 jmods in Temurin 21.0.12.1+1
+// (macOS aarch64), reading only the Module, ModulePackages and ModuleResolution
+// attributes: the roots are the modules with an unqualified export that ModuleResolution
+// does not mark do-not-resolve; the boot layer adds java.base, the transitive closure of
+// every requires that is not static, and every module providing a service a resolved
+// module uses, to a fixed point (62 modules). Each listed key is a ModulePackages entry of
+// a boot-layer module under the javax/, com/sun/, org/, jdk/ and sun/ families the engine
+// has always treated as platform; java/ is left to isPlatformClass. Packages only a Linux
+// image defines (sun/awt/X11, com/sun/java/swing/plaf/gtk, ...) are absent, which costs
+// precision only.
 var platformPackages = map[string]bool{
 	// java.base
 	"com/sun/crypto/provider":                      true,

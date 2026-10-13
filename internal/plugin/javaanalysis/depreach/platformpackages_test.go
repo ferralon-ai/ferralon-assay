@@ -55,6 +55,37 @@ func TestPlatformPackages_AreModulePackageNames(t *testing.T) {
 	}
 }
 
+// TestPlatformPackages_Pinned pins the generated list: its size, packages each boot-layer
+// family must keep, and names that are not packages of a JDK 21 boot-layer module (javadoc
+// snippet-files and doclets parent directories in src.zip, and packages removed from the
+// JDK) which must stay out.
+func TestPlatformPackages_Pinned(t *testing.T) {
+	if n := len(platformPackages); n != 647 {
+		t.Errorf("len(platformPackages) = %d, want 647", n)
+	}
+	for _, p := range []string{
+		"com/sun/crypto/provider", "javax/net/ssl", "jdk/internal/misc", "sun/misc", "sun/nio/cs",
+		"javax/xml/parsers", "org/w3c/dom", "org/xml/sax", "javax/swing", "javax/annotation/processing",
+		"javax/transaction/xa", "com/sun/net/httpserver", "com/sun/tools/javac/main", "com/sun/source/tree",
+		"com/sun/jdi", "jdk/jfr", "jdk/internal/vm/annotation", "sun/net/www/protocol/http/spnego",
+	} {
+		if !platformPackages[p] {
+			t.Errorf("%s missing", p)
+		}
+	}
+	for _, p := range []string{
+		"jdk/internal/classfile/components/snippet-files", "jdk/internal/classfile/snippet-files",
+		"javax/tools/snippet-files", "jdk/jfr/consumer/snippet-files", "jdk/jfr/snippet-files",
+		"jdk/javadoc/internal/doclets", "jdk/javadoc/internal/doclets/formats",
+		"javax/activation", "javax/annotation", "org/omg/CORBA", "jdk/nashorn/api/scripting",
+		"javax/xml/bind", "javax/xml/ws", "javax/jws", "javax/transaction", "javax/rmi/CORBA",
+	} {
+		if platformPackages[p] {
+			t.Errorf("%s listed: no JDK 21 boot-layer module defines it", p)
+		}
+	}
+}
+
 // TestReach_PlatformIsExactPackages: a class the predicate files as the JDK's ends a
 // call or a static-field lookup at the platform; one in a jar under the same prefix
 // is an unopened dependency, whether it is called, inherited, or searched for a
@@ -150,4 +181,93 @@ func TestReach_JarClassesUnderJDKPrefixes(t *testing.T) {
 		{name: "JDK control: a class extending a JDK exception is not", want: NotExploitable,
 			classes: extendsException("javax/xml/parsers/ParserConfigurationException")},
 	})
+}
+
+// TestReach_SplitPackages: a package is the JDK's only while no classpath JAR or class
+// directory defines a class in it, since the class path then supplies classes the JDK
+// image never had (errorprone's javac on JDK 8, a JRE without jdk.compiler, a jlink image).
+// A classpath entry that cannot be listed may define anything, so only java/ and arrays
+// stay platform; the class loader refuses java/ from the class path.
+func TestReach_SplitPackages(t *testing.T) {
+	const (
+		d       = "com/acme/D"
+		option  = "com/sun/tools/javac/main/Option"
+		javac   = "com/sun/tools/javac/main"
+		parsers = "javax/xml/parsers/SAXParserFactory"
+	)
+	provider := classfile.Class{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+		clinitCallingSink(d),
+	}}
+	initializes := func(owner, name, desc string) classfile.Class {
+		return classfile.Class{Name: holeMain, Super: objectClass, Public: true, Methods: []classfile.Method{
+			{Ref: holeIngress, Static: true, Public: true, InitTriggers: []string{owner}, Edges: []classfile.Edge{edge(classfile.EdgeStatic, owner, name, desc)}}}}
+	}
+	callOption := initializes(option, "lookup", "(Ljava/lang/String;)Lcom/sun/tools/javac/main/Option;")
+	callParsers := initializes(parsers, "newDefaultInstance", "()Ljavax/xml/parsers/SAXParserFactory;")
+	callCharacter := initializes("java/lang/Character", "isDigit", "(C)Z")
+	sibling := classfile.Class{Name: javac + "/Main", Super: objectClass, Public: true}
+	unlisted := Classpath{Unlisted: true}
+	runHoleCases(t, []holeCase{
+		{name: "errorprone javac: a dependency JAR defines com/sun/tools/javac/main, so Option is unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why: "unopened " + option, cp: Classpath{Packages: map[string]bool{javac: true}},
+			classes: []classfile.Class{callOption, provider}},
+		{name: "errorprone javac: a loaded class in com/sun/tools/javac/main defines it, so Option is unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why:     "unopened " + option,
+			classes: []classfile.Class{callOption, sibling, provider}},
+		{name: "control: nothing on the classpath defines com/sun/tools/javac/main, so Option is the JDK's", want: ReachableCandidate, via: "D.<clinit>",
+			cp:      Classpath{Packages: map[string]bool{"com/acme/other": true}},
+			classes: []classfile.Class{callOption, provider}},
+		{name: "an unlisted classpath entry may define javax/xml/parsers: unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why: "unopened " + parsers, cp: unlisted,
+			classes: []classfile.Class{callParsers, provider}},
+		{name: "control: javax/xml/parsers is the JDK's while every entry is listed", want: ReachableCandidate, via: "D.<clinit>",
+			cp:      Classpath{Packages: map[string]bool{"com/acme/other": true}},
+			classes: []classfile.Class{callParsers, provider}},
+		{name: "an unlisted classpath entry leaves java/ the JDK's", want: ReachableCandidate, via: "D.<clinit>",
+			cp:      unlisted,
+			classes: []classfile.Class{callCharacter, provider}},
+		{name: "a classpath entry defining java/lang leaves java/ the JDK's", want: ReachableCandidate, via: "D.<clinit>",
+			cp:      Classpath{Packages: map[string]bool{"java/lang": true}},
+			classes: []classfile.Class{callCharacter, provider}},
+	})
+}
+
+// TestEngine_Platform: the predicate each call site asks, under each classpath shape.
+func TestEngine_Platform(t *testing.T) {
+	loaded := []classfile.Class{{Name: "com/sun/tools/javac/main/Main", Super: objectClass}}
+	for _, tc := range []struct {
+		cp    Classpath
+		class string
+		want  bool
+	}{
+		{Classpath{}, "javax/xml/parsers/SAXParserFactory", true},
+		{Classpath{}, "com/sun/tools/javac/main/Option", false},
+		{Classpath{}, "com/sun/tools/javac/api/JavacTool", true},
+		{Classpath{Packages: map[string]bool{"javax/xml/parsers": true}}, "javax/xml/parsers/SAXParserFactory", false},
+		{Classpath{Packages: map[string]bool{"java/lang": true}}, "java/lang/Character", true},
+		{Classpath{Unlisted: true}, "javax/xml/parsers/SAXParserFactory", false},
+		{Classpath{Unlisted: true}, "java/lang/Character", true},
+		{Classpath{Unlisted: true}, "[Lcom/acme/Thing;", true},
+		{Classpath{Unlisted: true}, "[I", true},
+	} {
+		if got := NewEngineOn(loaded, tc.cp).platform(tc.class); got != tc.want {
+			t.Errorf("platform(%s) under %+v = %v, want %v", tc.class, tc.cp, got, tc.want)
+		}
+	}
+}
+
+// TestClasspath_AddAndMerge: an entry that could not be listed marks the classpath
+// unlisted, and merging keeps both sides' packages and that mark.
+func TestClasspath_AddAndMerge(t *testing.T) {
+	var a, b Classpath
+	a.Add(map[string]bool{"com/a": true}, true)
+	b.Add(map[string]bool{"com/b": true}, true)
+	b.Add(map[string]bool{"com/c": true}, false)
+	if a.Unlisted || !b.Unlisted || b.Packages["com/c"] {
+		t.Fatalf("Add: a=%+v b=%+v", a, b)
+	}
+	a.Merge(b)
+	if !a.Unlisted || !a.Packages["com/a"] || !a.Packages["com/b"] {
+		t.Fatalf("Merge: %+v", a)
+	}
 }

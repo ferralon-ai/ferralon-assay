@@ -98,8 +98,9 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 	if !cg.Partiality.Complete {
 		// A call graph that is itself partial cannot fully corroborate any trace.
 		// Carry its incompleteness even when it listed no explicit reasons — the
-		// cause is unknown, which is exactly what the undetermined code says.
-		if len(cg.Partiality.Reasons) == 0 {
+		// cause is unknown, which is exactly what the undetermined code says. Scoped
+		// limits are a stated cause, carried below.
+		if len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		}
 	}
@@ -125,10 +126,12 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return part
 }
 
 // Reachability runs govulncheck as a LIBRARY (golang.org/x/vuln/scan) over
@@ -378,7 +381,9 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	}
 	reasons := append(append([]string(nil), p.Reasons...), reason)
 	slices.Sort(reasons)
-	return plugin.Partial(reasons...)
+	out := plugin.Partial(reasons...)
+	out.Scoped = p.Scoped
+	return out
 }
 
 // envOr returns the last value env assigns to key, else def.

@@ -19,10 +19,13 @@ import (
 // .m2) and parsed by the shared classfile reader.
 //
 // A dependency that is in the inventory but whose JAR cannot be opened is a blind spot bounded
-// by what it could reach: a ScopedReason whose Targets are the JAR's package plus its
-// transitive dependency closure (contract §4). Targets is nil (unbounded) when that closure is
-// not fully known — the node or a descendant carries a relationship_unexpressed reason, so its
-// out-edges were never read.
+// by what it could reach (contract §4): a ScopedReason whose Targets are the JAR's package, its
+// transitive dependency closure, first-party code ("") and first-party code's own dependency
+// closure. The unseen code can hold first-party objects and call back into them through any type
+// it knows, or load first-party classes reflectively, and first-party code reaches whatever it
+// depends on. Targets is nil (unbounded) when either closure is not fully known: a node in it
+// carries a relationship_unexpressed reason, so its out-edges were never read, or the inventory
+// itself is partial.
 //
 // When the build has Gradle start scripts (runtimeclasspath.go), their classpath replaces the
 // inventory: it lists every JAR the JVM is launched with, transitive ones included, in launch
@@ -78,6 +81,8 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 		return nil, err
 	}
 	g := newInventoryGraph(inv)
+	program := g.programClosure()
+	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
 	dc := &depClosure{loaded: map[string]string{}}
 
 	definedBy := map[string]depNode{} // class binary name -> the dependency that defined it
@@ -93,7 +98,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 				Reason:  partialReasonMissingJar,
 				Package: n.packageURL(),
 				Path:    n.gav(),
-				Targets: g.targets(n),
+				Targets: targets(n),
 			})
 			continue
 		}
@@ -103,7 +108,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 				Reason:  plugin.PartialReasonToolFailure,
 				Package: n.packageURL(),
 				Path:    n.gav(),
-				Targets: g.targets(n),
+				Targets: targets(n),
 			})
 			continue
 		}
@@ -114,7 +119,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 				Reason:  plugin.PartialReasonToolFailure,
 				Package: n.packageURL(),
 				Path:    n.gav() + ": " + jr.Failed[0],
-				Targets: g.targets(n),
+				Targets: targets(n),
 			})
 		}
 		dc.loaded[n.gav()] = jarPath
@@ -130,7 +135,7 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 						Reason:  partialReasonDuplicateClass,
 						Package: n.packageURL(),
 						Path:    fmt.Sprintf("%s shadowed by %s: %s", n.gav(), prev.gav(), c.Name),
-						Targets: g.targets(n),
+						Targets: targets(n),
 					})
 				}
 				continue
@@ -198,15 +203,38 @@ func cacheOnlyPackage(paths []string) string {
 	return ""
 }
 
+// blindSpotTargets is the §4 bound for an unloaded dependency: its own closure plus first-party
+// code ("") and first-party code's dependency closure. nil when either closure is unknown.
+func blindSpotTargets(own, program []string) []string {
+	if own == nil || program == nil {
+		return nil
+	}
+	set := map[string]bool{"": true}
+	for _, p := range own {
+		set[p] = true
+	}
+	for _, p := range program {
+		set[p] = true
+	}
+	return sortedKeys(set)
+}
+
 // inventoryGraph indexes a DependencyInventory for closure queries.
 type inventoryGraph struct {
 	byID     map[string]plugin.DependencyNode
 	children map[string][]string
 	nodes    []depNode
+	// complete is false when the inventory declared graph-level partiality: packages it could
+	// not name may be on the classpath.
+	complete bool
 }
 
 func newInventoryGraph(inv plugin.DependencyInventory) *inventoryGraph {
-	g := &inventoryGraph{byID: map[string]plugin.DependencyNode{}, children: map[string][]string{}}
+	g := &inventoryGraph{
+		byID:     map[string]plugin.DependencyNode{},
+		children: map[string][]string{},
+		complete: len(inv.Partiality.Reasons) == 0 && len(inv.Partiality.Scoped) == 0,
+	}
 	byGAV := map[string]*depNode{}
 	var order []string
 	for _, n := range inv.Nodes {
@@ -270,6 +298,31 @@ func (g *inventoryGraph) targets(n depNode) []string {
 		}
 		out["pkg:maven/"+group+"/"+artifact] = true
 		stack = append(stack, g.children[id]...)
+	}
+	return sortedKeys(out)
+}
+
+// programClosure returns the packages first-party code could reach: the dependency closure of the
+// whole program, taken as every node in the inventory. nil when that is not fully known.
+func (g *inventoryGraph) programClosure() []string {
+	if !g.complete {
+		return nil
+	}
+	for _, n := range g.byID {
+		// A node distinctNodes skipped (not a Maven package) has an unknown closure.
+		if _, _, _, ok := splitMavenNodePURL(n.PURL); !ok {
+			return nil
+		}
+	}
+	out := map[string]bool{}
+	for _, n := range g.nodes {
+		ts := g.targets(n)
+		if ts == nil {
+			return nil
+		}
+		for _, t := range ts {
+			out[t] = true
+		}
 	}
 	return sortedKeys(out)
 }

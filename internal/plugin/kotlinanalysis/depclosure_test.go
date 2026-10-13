@@ -359,62 +359,160 @@ func buildAbstractMethodClass(b *kclassBuilder, name string) []byte {
 	return out
 }
 
-// TestReachability_MissingJarIsScopedToItsClosure: an inventory node whose JAR is absent from
-// every cache is a ScopedReason bounded by the node plus its transitive closure (read from the
-// cached POMs), and nil when that closure is not known.
-func TestReachability_MissingJarIsScopedToItsClosure(t *testing.T) {
-	dir := t.TempDir()
-	writeBuildFile(t, dir, "pom.xml", `<project>
+// TestReachability_MissingJarScopedTargets: an inventory dependency whose JAR is not cached is a
+// scoped blind spot. Its Targets are the JAR's package, its closure, first-party code ("") and
+// first-party code's dependency closure (every inventory node), or nil when either closure is
+// unknown. Each scoped reason is also declared run-wide.
+//
+// The fixture inventory: app depends on a, c and optionally nopom; a depends on b. b and c are
+// fully cached; a's POM is cached, its JAR only when the row says so; nopom has neither.
+func TestReachability_MissingJarScopedTargets(t *testing.T) {
+	tests := []struct {
+		name      string
+		cacheA    bool // a's JAR is cached
+		withNoPOM bool // the app also depends on nopom (no POM, no JAR)
+		want      []plugin.ScopedReason
+	}{
+		{name: "jar present: no reason", cacheA: true},
+		{
+			name: "jar missing, closures known: own closure, first party and its closure",
+			want: []plugin.ScopedReason{{
+				Reason: partialReasonMissingJar, Package: "pkg:maven/org.a/a", Path: "org.a:a:1.0",
+				Targets: []string{"", "pkg:maven/org.a/a", "pkg:maven/org.b/b", "pkg:maven/org.c/c"},
+			}},
+		},
+		{
+			name:   "jar and metadata missing: unbounded",
+			cacheA: true, withNoPOM: true,
+			want: []plugin.ScopedReason{{Reason: partialReasonMissingJar, Package: "pkg:maven/org.nopom/nopom", Path: "org.nopom:nopom:3.0"}},
+		},
+		{
+			name:      "jar missing, first-party closure unknown: unbounded",
+			withNoPOM: true,
+			want: []plugin.ScopedReason{
+				{Reason: partialReasonMissingJar, Package: "pkg:maven/org.a/a", Path: "org.a:a:1.0"},
+				{Reason: partialReasonMissingJar, Package: "pkg:maven/org.nopom/nopom", Path: "org.nopom:nopom:3.0"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			deps := `<dependency><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version></dependency>
+<dependency><groupId>org.c</groupId><artifactId>c</artifactId><version>1.0</version></dependency>`
+			if tt.withNoPOM {
+				deps += `
+<dependency><groupId>org.nopom</groupId><artifactId>nopom</artifactId><version>3.0</version></dependency>`
+			}
+			writeBuildFile(t, dir, "pom.xml", `<project>
 <groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
 <dependencies>
-<dependency><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version></dependency>
-<dependency><groupId>org.nopom</groupId><artifactId>nopom</artifactId><version>3.0</version></dependency>
+`+deps+`
 </dependencies></project>`)
-	writePOM := func(group, artifact, version, body string) {
-		p := m2Path(dir, group, artifact, version, "pom")
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// a → b. a's POM is cached but its JAR is not; b is fully cached. nopom has neither.
-	writePOM("org.a", "a", "1.0", `<project><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version>
+			writePOM := func(group, artifact, version, body string) {
+				p := m2Path(dir, group, artifact, version, "pom")
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writePOM("org.a", "a", "1.0", `<project><groupId>org.a</groupId><artifactId>a</artifactId><version>1.0</version>
 <dependencies><dependency><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></dependency></dependencies></project>`)
-	writePOM("org.b", "b", "2.0", `<project><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></project>`)
-	bb := newKClassBuilder()
-	bb.addMethod("sink", "()V", []byte{opReturn})
-	writeJar(t, m2Path(dir, "org.b", "b", "2.0", "jar"), map[string][]byte{"org/b/B": bb.build("org/b/B", "java/lang/Object")})
+			writePOM("org.b", "b", "2.0", `<project><groupId>org.b</groupId><artifactId>b</artifactId><version>2.0</version></project>`)
+			writePOM("org.c", "c", "1.0", `<project><groupId>org.c</groupId><artifactId>c</artifactId><version>1.0</version></project>`)
+			jar := func(group, artifact, version, class string) {
+				b := newKClassBuilder()
+				b.addMethod("sink", "()V", []byte{opReturn})
+				writeJar(t, m2Path(dir, group, artifact, version, "jar"), map[string][]byte{class: b.build(class, "java/lang/Object")})
+			}
+			jar("org.b", "b", "2.0", "org/b/B")
+			jar("org.c", "c", "1.0", "org/c/C")
+			if tt.cacheA {
+				jar("org.a", "a", "1.0", "org/a/A")
+			}
 
-	mb := newKClassBuilder()
-	mb.addMethod("main", mainStringsDesc, []byte{opReturn})
-	path := filepath.Join(dir, "target", "classes", "com", "example", "Main.class")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, mb.build("com/example/Main", "java/lang/Object"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			mb := newKClassBuilder()
+			mb.addMethod("main", mainStringsDesc, []byte{opReturn})
+			path := filepath.Join(dir, "target", "classes", "com", "example", "Main.class")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, mb.build("com/example/Main", "java/lang/Object"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	res := reach(t, dir, "org/b/B.sink()V")
-	want := []plugin.ScopedReason{
-		{Reason: partialReasonMissingJar, Package: "pkg:maven/org.a/a", Path: "org.a:a:1.0", Targets: []string{"pkg:maven/org.a/a", "pkg:maven/org.b/b"}},
-		{Reason: partialReasonMissingJar, Package: "pkg:maven/org.nopom/nopom", Path: "org.nopom:nopom:3.0", Targets: nil},
+			res := reach(t, dir, "org/b/B.sink()V")
+			if !reflect.DeepEqual(res.Partiality.Scoped, tt.want) {
+				t.Fatalf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, tt.want)
+			}
+			if mirrored := hasReason(res.Partiality, partialReasonMissingJar); mirrored != (len(tt.want) > 0) {
+				t.Errorf("run-wide %s declared = %v, want %v (every scoped reason is mirrored run-wide): %v",
+					partialReasonMissingJar, mirrored, len(tt.want) > 0, res.Partiality.Reasons)
+			}
+			if len(tt.want) > 0 && res.Partiality.Complete {
+				t.Error("a result carrying scoped reasons must not be Complete")
+			}
+			// b was loaded and main never calls it: the sink is searched either way. The scoped
+			// reasons are the gate's to apply per advisory.
+			if !reflect.DeepEqual(res.Searched, []string{"org/b/B.sink()V"}) {
+				t.Errorf("Searched = %v, want the loaded sink", res.Searched)
+			}
+		})
 	}
-	if !reflect.DeepEqual(res.Partiality.Scoped, want) {
-		t.Fatalf("Scoped = %+v\nwant     %+v", res.Partiality.Scoped, want)
+}
+
+// TestProgramClosure: first-party code's dependency closure is every inventory node, and it is
+// unknown (nil) as soon as any part of the graph is: a graph-level limit, a node whose out-edges
+// were not read, a node that is not a Maven package, or an edge to a node the inventory lacks.
+func TestProgramClosure(t *testing.T) {
+	node := func(id, purl string, reasons ...string) plugin.DependencyNode {
+		return plugin.DependencyNode{ID: id, PURL: purl, Partiality: plugin.Partiality{Complete: len(reasons) == 0, Reasons: reasons}}
 	}
-	if res.Partiality.Complete {
-		t.Error("a result carrying scoped reasons must not be Complete")
+	a := node("a", "pkg:maven/org.a/a@1.0")
+	b := node("b", "pkg:maven/org.b/b@2.0")
+	c := node("c", "pkg:maven/org.c/c@1.0")
+	ab := []plugin.DependencyEdge{{Parent: "a", Child: "b"}}
+	tests := []struct {
+		name string
+		inv  plugin.DependencyInventory
+		want []string
+	}{
+		{
+			name: "complete graph: every node",
+			inv:  plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c}, Edges: ab},
+			want: []string{"pkg:maven/org.a/a", "pkg:maven/org.b/b", "pkg:maven/org.c/c"},
+		},
+		{
+			name: "graph-level limit",
+			inv: plugin.DependencyInventory{
+				Partiality: plugin.Partiality{Reasons: []string{plugin.PartialReasonRelationshipUnexpressed + ":property_unresolved"}},
+				Nodes:      []plugin.DependencyNode{a, b, c}, Edges: ab,
+			},
+		},
+		{
+			name: "a node whose out-edges were not read",
+			inv: plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{
+				a, b, node("c", "pkg:maven/org.c/c@1.0", partialReasonMissingJar),
+			}, Edges: ab},
+		},
+		{
+			name: "a node that is not a Maven package",
+			inv:  plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c, node("x", "pkg:generic/x@1")}, Edges: ab},
+		},
+		{
+			name: "an edge to a node the inventory lacks",
+			inv: plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c},
+				Edges: append([]plugin.DependencyEdge{{Parent: "c", Child: "gone"}}, ab...)},
+		},
 	}
-	if !hasReason(res.Partiality, partialReasonMissingJar) {
-		t.Errorf("a scoped miss must also be declared run-wide, got %v", res.Partiality.Reasons)
-	}
-	// b was loaded, main never calls it: the sink is still searched. The scoped reasons are
-	// the gate's to apply per advisory.
-	if !reflect.DeepEqual(res.Searched, []string{"org/b/B.sink()V"}) {
-		t.Errorf("Searched = %v, want the loaded sink", res.Searched)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := newInventoryGraph(tt.inv).programClosure(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("programClosure = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

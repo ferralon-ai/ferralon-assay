@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -217,7 +218,9 @@ func isConanRange(version string) bool { return strings.HasPrefix(version, "[") 
 // parseVcpkgManifest reads a vcpkg.json. An overrides[] entry pins an exact version; a
 // dependencies[] entry is a name with at most a "version>=" minimum, UNRESOLVED unless an override
 // pins it. builtin-baseline is a registry commit, not a per-package pin, and is not read as one.
-// A port-version is vcpkg's packaging revision, not the upstream version, and is not appended.
+// A port-version is vcpkg's packaging revision of the upstream version; a non-zero one stays on the
+// pin in vcpkg's own "version#port-version" form, since two port-versions of one upstream version
+// are different builds.
 func parseVcpkgManifest(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var m struct {
 		Dependencies []json.RawMessage `json:"dependencies"`
@@ -227,6 +230,7 @@ func parseVcpkgManifest(data []byte) ([]plugin.ResolvedDependency, bool) {
 			VersionSemver string `json:"version-semver"`
 			VersionDate   string `json:"version-date"`
 			VersionString string `json:"version-string"`
+			PortVersion   int    `json:"port-version"`
 		} `json:"overrides"`
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -237,12 +241,12 @@ func parseVcpkgManifest(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
 	for _, o := range m.Overrides {
 		v := firstNonEmpty(o.Version, o.VersionSemver, o.VersionDate, o.VersionString)
-		if o.Name == "" || v == "" {
+		if o.Name == "" || v == "" || o.PortVersion < 0 {
 			ok = false
 			continue
 		}
 		pinned[strings.ToLower(o.Name)] = true
-		out = append(out, plugin.ResolvedDependency{Coordinate: o.Name, Version: v, Resolved: true, Source: vcpkgFile})
+		out = append(out, plugin.ResolvedDependency{Coordinate: o.Name, Version: vcpkgVersion(v, o.PortVersion), Resolved: true, Source: vcpkgFile})
 	}
 	for _, raw := range m.Dependencies {
 		var name string
@@ -262,6 +266,14 @@ func parseVcpkgManifest(data []byte) ([]plugin.ResolvedDependency, bool) {
 		out = append(out, plugin.ResolvedDependency{Coordinate: name, Source: vcpkgFile})
 	}
 	return out, ok
+}
+
+// vcpkgVersion renders an upstream version and its port-version the way vcpkg writes them.
+func vcpkgVersion(version string, portVersion int) string {
+	if portVersion == 0 {
+		return version
+	}
+	return version + "#" + strconv.Itoa(portVersion)
 }
 
 func firstNonEmpty(vs ...string) string {

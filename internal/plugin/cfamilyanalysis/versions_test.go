@@ -126,11 +126,19 @@ func TestResolveDependencyVersions(t *testing.T) {
 			wantPart:   plugin.Complete(),
 		},
 		{
-			name:       "vcpkg override pins, port-version not appended",
+			name:       "vcpkg override pins and keeps its port-version",
 			files:      map[string]string{vcpkgFile: vcpkgJSON},
 			coordinate: "FMT",
 			wantFound:  true,
-			wantMatch:  pinned("fmt", "10.1.1", vcpkgFile),
+			wantMatch:  pinned("fmt", "10.1.1#2", vcpkgFile),
+			wantPart:   plugin.Complete(),
+		},
+		{
+			name:       "vcpkg override with no port-version is the upstream version",
+			files:      map[string]string{vcpkgFile: `{"overrides":[{"name":"zlib","version":"1.3.1","port-version":0}]}`},
+			coordinate: "zlib",
+			wantFound:  true,
+			wantMatch:  pinned("zlib", "1.3.1", vcpkgFile),
 			wantPart:   plugin.Complete(),
 		},
 		{

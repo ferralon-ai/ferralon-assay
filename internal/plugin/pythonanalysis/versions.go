@@ -156,16 +156,52 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 	case base == "uv.lock":
 		return parseUVLockAdvisory(data)
 	case base == "pyproject.toml":
-		return parsePyproject(path, data)
+		deps, ok := parsePyproject(path, data)
+		return append(deps, buildRequires(path, data)...), ok
 	case base == "setup.cfg":
-		return parseSetupCfg(path, data)
+		deps, ok := parseSetupCfg(path, data)
+		return append(deps, buildRequires(path, data)...), ok
 	case base == "setup.py":
-		return parseSetupPy(data)
+		deps, ok := parseSetupPy(data)
+		return append(deps, buildRequires(path, data)...), ok
 	case base == "hatch_build.py":
 		return parseHatchBuild(data)
 	default: // requirements*.txt
 		return parseRequirementsTxt(data)
 	}
+}
+
+// buildRequires returns the build-time requirements a build definition declares
+// ([build-system].requires in pyproject.toml, setup_requires in setup.cfg and setup.py) as
+// declared dependencies of the advisory path, so a coordinate a build installs is found rather
+// than read as absent. They are not runtime installs: the inventory does not carry them and no
+// lockfile is expected to cover them (exhaustive.go). Entries that are not well-formed PEP 508
+// requirements, and a setup_requires value that is not literal, are skipped.
+func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
+	var specs []string
+	source := filepath.Base(path)
+	switch source {
+	case "pyproject.toml":
+		var pp struct {
+			BuildSystem struct {
+				Requires []string `toml:"requires"`
+			} `toml:"build-system"`
+		}
+		if toml.Unmarshal(data, &pp) == nil {
+			specs = pp.BuildSystem.Requires
+		}
+	case "setup.cfg":
+		specs = scanSetupCfg(path, data).buildSpecs
+	case "setup.py":
+		specs, _ = scanSetupPyKeys(string(data), setupPyBuildKeys)
+	}
+	var out []plugin.ResolvedDependency
+	for _, spec := range specs {
+		if d, ok := declaredDependency(spec, source); ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // --- requirements.txt --------------------------------------------------------

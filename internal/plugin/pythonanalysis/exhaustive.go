@@ -4,60 +4,59 @@ package pythonanalysis
 //
 // Exhaustive is the claim that a PyPI project absent from All is provably not installed by this
 // build, which lets the pipeline's intake guard disqualify an advisory for a package the
-// codebase does not have. It is claimed only against a complete, edge-bearing lockfile: uv.lock,
-// pdm.lock, or poetry.lock, each of which records the full resolved closure. Anything weaker
-// fails open (Exhaustive=false):
+// codebase does not have. It is claimed only when all of these hold, and fails open otherwise:
 //
-//   - no such lockfile (requirements files, declared-only manifests, Pipfile.lock alone);
-//   - any manifest that failed to parse;
-//   - any manifest outside the directory subtree a lockfile governs (a sibling project the lock
-//     does not cover);
-//   - any name a non-lock manifest declares that no lockfile contains, or an exact pin that
-//     disagrees with every locked version of that name (a stale or partial lock);
-//   - any editable, VCS, or URL requirement in a requirements file (its dependencies are not
-//     enumerated anywhere we read);
-//   - the coordinate names a first-party project (a uv workspace root/member, a pyproject
-//     [project] or [tool.poetry] name, a setup.cfg [metadata] name, a setup.py literal name), or
-//     a setup.py whose name is not a literal: lockfiles omit the project itself, so its absence
-//     from them proves nothing (Go's oracle counts the root module as present for the same
-//     reason);
-//   - a poetry.lock whose lexical advisory read and TOML decode disagree on the package set;
-//   - a pyproject.toml declaring, outside [project], a name no lockfile contains: PEP 735
-//     [dependency-groups], [tool.uv] dev-dependencies, [tool.poetry] dependencies,
-//     dev-dependencies and groups, [tool.pdm] dev-dependencies, [tool.hatch] environment
-//     dependencies (a non-frozen sync re-locks and installs it);
-//   - a requirements file whose -r/-c include is not itself a parsed manifest;
-//   - a setup.py whose dependencies are not all literal (setupPyComplete), or any hatch_build.py
-//     (a build or metadata hook can add dependencies at build time);
-//   - a pyproject.toml listing dependencies or optional-dependencies in [project].dynamic
-//     without a source the resolver reads (pyprojectDynamicCovered);
-//   - anything the walk of the whole build dir (everything but .git; no skip list) finds that
-//     installs packages the parsed manifests do not account for: a manifest the resolver did not
-//     read (one under build/, env/, a dot-dir, ...), an install manifest it never parses
-//     (requirements-style *.txt it does not recognize or any under a requirements*/ directory,
-//     *.in, Pipfile, environment.yml, tox.ini deps, noxfile.py installs), a symlinked
-//     directory, or an installed copy of the coordinate (a site-packages/dist-packages
-//     *.dist-info or *.egg-info, a stray *.dist-info/*.egg-info, a wheel, egg, sdist archive or
-//     .egg-link named for it).
+//   - every manifest the resolver discovers parses, and at least one is a complete,
+//     edge-bearing lockfile (uv.lock, pdm.lock, poetry.lock), each of which records the full
+//     resolved closure; a poetry.lock's lexical advisory read and TOML decode agree on its
+//     package set;
+//   - the coordinate is not a first-party project (a uv workspace root or member, a pyproject
+//     [project] or [tool.poetry] name, a setup.cfg [metadata] name, a setup.py literal name),
+//     and every setup.py names its project literally: lockfiles omit the project itself, so its
+//     absence from them proves nothing;
+//   - every other discovered manifest is governed by the complete lockfiles in the nearest
+//     directory at or above it that has any, and each of those lockfiles covers it on its own,
+//     never through a union with another lock (pyLock.covers): every name it declares for
+//     installation is locked at a version its range admits (every locked version, for a
+//     declaration without an environment marker), each extra it asks for is recorded with all
+//     the packages it pulls in, and a project definition outside the lock's directory is one
+//     the lock resolves (a workspace member or path source);
+//   - every file under the build dir that names or holds a Python install surface is one the
+//     resolver reads fully (ManifestCandidates): an install format it never parses (Pipfile,
+//     pylock.toml, rye's requirements.lock, pixi.toml, a pyproject configuring pixi, conda
+//     environment files, *.in, tox deps, nox installs, a requirement file under any name), a
+//     manifest outside the directories it discovers, a requirements file with an editable,
+//     VCS or URL line or an include it does not read, a computed setup.py, any hatch_build.py,
+//     a dynamic [project] field with no source it reads, a symlink or symlinked directory, or
+//     an unreadable entry each fail open. The walk skips only node_modules and site-packages
+//     (buildtree.Skipped);
+//   - no installed copy of the coordinate is present: a *.dist-info or *.egg-info anywhere
+//     (directly inside a site-packages, or anywhere the walk reaches, a build backend's
+//     vendored copy included), an .egg-link or .egg, or a wheel or sdist archive named for it.
 //
 // Lockfile group/category/dev membership is never consulted: every locked package counts as
 // present whatever group it belongs to.
+//
+// Build-time requirements ([build-system].requires, setup_requires) are declarations, found on
+// the advisory path like any other, but not part of coverage: build-isolation environments are
+// not runtime installs, and no lockfile records them. A package the build backend's own
+// dependency closure brings into that environment, an interpreter-seeded pip, and a
+// Dockerfile RUN pip install are outside what Exhaustive covers.
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// completeLockfiles are the formats whose [[package]] set is the full resolved closure.
-var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true}
-
 // exhaustiveManifestSet reports whether the parsed manifests (found under root) enumerate every
 // installable package. perFile maps each manifest path to what parseManifest returned for it.
+// The cheap manifest checks run before the walks of the build dir.
 func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
@@ -66,15 +65,7 @@ func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile 
 	if names, ok := firstPartyNames(manifests); !ok || names[coord] {
 		return false
 	}
-	parsed := make(map[string]bool, len(manifests))
-	for _, m := range manifests {
-		parsed[filepath.Clean(m)] = true
-	}
-	if !installSurfaceCovered(root, coord, parsed) {
-		return false
-	}
-	var lockDirs []string
-	locked := map[string]map[string]bool{} // normalized name → locked versions
+	locks := map[string][]*pyLock{} // directory → its complete lockfiles
 	for _, m := range manifests {
 		if !completeLockfiles[filepath.Base(m)] {
 			continue
@@ -82,116 +73,104 @@ func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile 
 		if filepath.Base(m) == "poetry.lock" && !poetryLockConsistent(m, perFile[m]) {
 			return false
 		}
-		lockDirs = append(lockDirs, filepath.Dir(m))
-		if filepath.Base(m) == "uv.lock" {
-			// Workspace members are locked as editable/virtual roots, which the advisory path does
-			// not emit as dependencies; a pyproject naming a sibling member is still covered.
-			for _, n := range uvRootNames(m) {
-				if locked[n] == nil {
-					locked[n] = map[string]bool{}
-				}
-			}
+		l, ok := readPyLock(m)
+		if !ok {
+			return false
 		}
-		for _, d := range perFile[m] {
-			n := normalizePyCoordinate(d.Coordinate)
-			if locked[n] == nil {
-				locked[n] = map[string]bool{}
-			}
-			if d.Resolved {
-				locked[n][d.Version] = true
-			}
-		}
+		locks[l.dir] = append(locks[l.dir], l)
 	}
-	if len(lockDirs) == 0 {
+	if len(locks) == 0 {
 		return false
 	}
 	for _, m := range manifests {
-		if !underAny(filepath.Dir(m), lockDirs) {
-			return false
-		}
 		if completeLockfiles[filepath.Base(m)] {
 			continue
 		}
-		if isRequirementsFile(filepath.Base(m)) && (requirementsHasUnenumeratedSource(m) || !includesParsed(m, parsed)) {
+		governing := governingLocks(filepath.Dir(m), root, locks)
+		if len(governing) == 0 {
 			return false
 		}
-		switch filepath.Base(m) {
-		case "hatch_build.py":
+		decls, ok := manifestDecls(m)
+		if !ok {
 			return false
-		case "setup.py":
-			data, err := os.ReadFile(m)
-			if err != nil || !setupPyComplete(data) {
+		}
+		for _, l := range governing {
+			if !l.covers(m, decls) {
 				return false
 			}
-		case "pyproject.toml":
-			if !pyprojectDynamicCovered(m, manifests) {
-				return false
+		}
+	}
+	if !buildtree.AllFullyRead(newPySurface(root).candidates()) {
+		return false
+	}
+	return !installedCopyPresent(root, coord)
+}
+
+// governingLocks returns the complete lockfiles in the nearest directory at or above dir (and
+// not above root) that has any.
+func governingLocks(dir, root string, locks map[string][]*pyLock) []*pyLock {
+	root = filepath.Clean(root)
+	for d := filepath.Clean(dir); ; {
+		if ls := locks[d]; len(ls) > 0 {
+			return ls
+		}
+		if d == root {
+			return nil
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return nil
+		}
+		d = parent
+	}
+}
+
+// installedCopyPresent walks root and reports whether an installed copy of coord may be in it:
+// installed metadata (*.dist-info, *.egg-info, .egg-link, .egg) or a distribution archive named
+// for it. A site-packages directory is not entered, so its entries are checked one level deep.
+// An entry the walk cannot read counts as present.
+func installedCopyPresent(root, coord string) bool {
+	found := false
+	hit := func() error {
+		found = true
+		return filepath.SkipAll
+	}
+	_ = buildtree.Walk(root, func(e buildtree.Entry, err error) error {
+		if err != nil {
+			return hit()
+		}
+		if e.Symlink {
+			return nil // a candidate that is never fully read; ManifestCandidates fails open on it
+		}
+		name := e.D.Name()
+		if e.Skipped {
+			if name != "site-packages" {
+				return nil
 			}
-			names, ok := pyprojectGroupNames(m)
-			if !ok {
-				return false
+			entries, err := os.ReadDir(e.Path)
+			if err != nil {
+				return hit()
 			}
-			for _, n := range names {
-				if _, isLocked := locked[n]; !isLocked {
-					return false
+			for _, x := range entries {
+				if n, ok := installedDistName(x.Name()); ok && n == coord {
+					return hit()
 				}
 			}
+			return nil
 		}
-		for _, d := range perFile[m] {
-			versions, ok := locked[normalizePyCoordinate(d.Coordinate)]
-			if !ok {
-				return false
-			}
-			if d.Resolved && !versions[d.Version] {
-				return false
-			}
+		if n, ok := installedDistName(name); ok && n == coord {
+			return hit()
 		}
-	}
-	return true
+		if !e.D.IsDir() && archiveNames(name, coord) {
+			return hit()
+		}
+		return nil
+	})
+	return found
 }
 
-func isRequirementsFile(base string) bool {
-	return strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt")
-}
-
-// underAny reports whether dir is one of roots or nested beneath one.
-func underAny(dir string, roots []string) bool {
-	for _, r := range roots {
-		rel, err := filepath.Rel(r, dir)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
-}
-
-// requirementsHasUnenumeratedSource reports whether a requirements file declares an editable,
-// VCS, or direct-URL requirement, whose own dependencies no lockfile we read enumerates.
-func requirementsHasUnenumeratedSource(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return true
-	}
-	for _, raw := range joinContinuations(string(data)) {
-		line := strings.TrimSpace(stripReqCommentSafe(raw))
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "-") {
-			if kind, ok := optionKind(line); ok && kind == reqEditable {
-				return true
-			}
-			continue
-		}
-		if _, ok := urlKind(line); ok {
-			return true
-		}
-		if r, ok := parsePEP508(line); ok && r.URL != "" {
-			return true
-		}
-	}
-	return false
-}
+// completeLockfiles are the formats whose [[package]] set is the full resolved closure.
+var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true}
 
 // poetryLockConsistent reports whether poetry.lock decodes as TOML and the lexical advisory
 // read (lexical) found exactly the package names the decode does. The advisory path's Found is
@@ -361,67 +340,6 @@ func uvRootNames(path string) []string {
 	return out
 }
 
-// installSurfaceCovered walks root (everything but .git) and reports whether every install
-// surface in it is a manifest the resolver parsed (parsed holds their cleaned paths), and no
-// installed copy of coord is present.
-func installSurfaceCovered(root, coord string, parsed map[string]bool) bool {
-	covered := true
-	fail := func() error {
-		covered = false
-		return filepath.SkipAll
-	}
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return fail()
-		}
-		name := d.Name()
-		if d.Type()&fs.ModeSymlink != 0 {
-			info, err := os.Stat(path)
-			if err != nil || info.IsDir() {
-				return fail() // WalkDir does not follow it, so what it holds goes unread
-			}
-		}
-		if d.IsDir() {
-			switch {
-			case name == ".git" && path != root:
-				return filepath.SkipDir
-			case name == "site-packages" || name == "dist-packages":
-				entries, err := os.ReadDir(path)
-				if err != nil {
-					return fail()
-				}
-				for _, e := range entries {
-					if n, ok := installedDistName(e.Name()); ok && n == coord {
-						return fail()
-					}
-				}
-				return filepath.SkipDir
-			}
-			if n, ok := installedDistName(name); ok {
-				if n == coord {
-					return fail()
-				}
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if isManifest(name) {
-			if !parsed[filepath.Clean(path)] {
-				return fail()
-			}
-			return nil
-		}
-		if n, ok := installedDistName(name); ok && n == coord {
-			return fail()
-		}
-		if archiveNames(name, coord) || unparsedInstallManifest(path, name) {
-			return fail()
-		}
-		return nil
-	})
-	return covered
-}
-
 // installedDistName returns the normalized distribution name of an installed-metadata entry
 // (Name-1.0.dist-info, Name.egg-info, Name-1.0-py3.11.egg-info, Name.egg-link, Name-1.0.egg).
 // Installers escape '-' in the name to '_', so the name ends at the first '-'.
@@ -449,64 +367,6 @@ func archiveNames(file, coord string) bool {
 	return false
 }
 
-// unparsedInstallManifest reports whether path is an install manifest the resolver never parses.
-// The recognized requirements*.txt family is a manifest (isManifest) and is handled by the caller.
-func unparsedInstallManifest(path, name string) bool {
-	lower := strings.ToLower(name)
-	ext := filepath.Ext(lower)
-	switch {
-	case name == "Pipfile":
-		return true
-	case (ext == ".yml" || ext == ".yaml") && (strings.HasPrefix(lower, "environment") || strings.HasPrefix(lower, "conda")):
-		return true
-	case ext == ".in":
-		return name != "MANIFEST.in"
-	case ext == ".txt":
-		return strings.Contains(lower, "requirements") || strings.Contains(lower, "constraints") ||
-			strings.HasPrefix(strings.ToLower(filepath.Base(filepath.Dir(path))), "requirements")
-	case name == "tox.ini":
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return true
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			if k, _, ok := strings.Cut(line, "="); ok && strings.TrimSpace(k) == "deps" {
-				return true
-			}
-		}
-	case name == "noxfile.py":
-		data, err := os.ReadFile(path)
-		return err != nil || strings.Contains(string(data), ".install(")
-	}
-	return false
-}
-
-// includesParsed reports whether every -r/--requirement and -c/--constraint include in the
-// requirements file at path names a manifest the resolver parsed.
-func includesParsed(path string, parsed map[string]bool) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	for _, raw := range joinContinuations(string(data)) {
-		line := strings.TrimSpace(stripReqCommentSafe(raw))
-		target, isInclude := includeTarget(line)
-		if !isInclude {
-			continue
-		}
-		if target == "" || strings.Contains(target, "://") {
-			return false
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
-		}
-		if !parsed[filepath.Clean(target)] {
-			return false
-		}
-	}
-	return true
-}
-
 // includeTarget returns the file an include line names, in any of pip's spellings
 // (-r f, -rf, -r=f, --requirement f, --requirement=f, and the -c/--constraint equivalents).
 func includeTarget(line string) (string, bool) {
@@ -526,7 +386,7 @@ func includeTarget(line string) (string, bool) {
 // pyprojectDynamicCovered reports whether a pyproject.toml that lists dependencies or
 // optional-dependencies in [project].dynamic names a source for them that the resolver reads:
 // a [tool.setuptools.dynamic] or hatch-requirements-txt file list (parsePyproject reads those
-// files), [tool.poetry] dependencies (pyprojectGroupNames checks them against the lock), or,
+// files), [tool.poetry] dependencies (manifestDecls reads them for coverage), or,
 // under the setuptools backend (named or defaulted), a setup.py / setup.cfg beside it (each a
 // parsed manifest; setup.py must also be complete).
 // Any other backend computes the field from something never read (a hatch_build.py metadata
@@ -577,84 +437,4 @@ func pyprojectDynamicCovered(path string, manifests []string) bool {
 		}
 	}
 	return true
-}
-
-// pyprojectGroupNames returns the normalized names a pyproject.toml declares outside [project]
-// for a sync or environment to install. ok is false when the file does not decode into the
-// expected shapes or an entry is not a readable requirement.
-func pyprojectGroupNames(path string) (names []string, ok bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	type poetryDeps map[string]any
-	var pp struct {
-		DependencyGroups map[string][]any `toml:"dependency-groups"`
-		Tool             struct {
-			UV struct {
-				DevDependencies []string `toml:"dev-dependencies"`
-			} `toml:"uv"`
-			Poetry struct {
-				Dependencies    poetryDeps `toml:"dependencies"`
-				DevDependencies poetryDeps `toml:"dev-dependencies"`
-				Group           map[string]struct {
-					Dependencies poetryDeps `toml:"dependencies"`
-				} `toml:"group"`
-			} `toml:"poetry"`
-			PDM struct {
-				DevDependencies map[string][]string `toml:"dev-dependencies"`
-			} `toml:"pdm"`
-			Hatch struct {
-				Envs map[string]struct {
-					Dependencies      []string `toml:"dependencies"`
-					ExtraDependencies []string `toml:"extra-dependencies"`
-				} `toml:"envs"`
-			} `toml:"hatch"`
-		} `toml:"tool"`
-	}
-	if toml.Unmarshal(data, &pp) != nil {
-		return nil, false
-	}
-	var reqs []string
-	for _, group := range pp.DependencyGroups {
-		for _, e := range group {
-			switch v := e.(type) {
-			case string:
-				reqs = append(reqs, v)
-			case map[string]any:
-				if _, inc := v["include-group"]; !inc || len(v) != 1 {
-					return nil, false
-				}
-			default:
-				return nil, false
-			}
-		}
-	}
-	reqs = append(reqs, pp.Tool.UV.DevDependencies...)
-	for _, group := range pp.Tool.PDM.DevDependencies {
-		reqs = append(reqs, group...)
-	}
-	for _, env := range pp.Tool.Hatch.Envs {
-		reqs = append(reqs, env.Dependencies...)
-		reqs = append(reqs, env.ExtraDependencies...)
-	}
-	for _, r := range reqs {
-		req, ok := parsePEP508(r)
-		if !ok {
-			return nil, false
-		}
-		names = append(names, normalizePyCoordinate(req.Name))
-	}
-	poetry := []poetryDeps{pp.Tool.Poetry.Dependencies, pp.Tool.Poetry.DevDependencies}
-	for _, g := range pp.Tool.Poetry.Group {
-		poetry = append(poetry, g.Dependencies)
-	}
-	for _, deps := range poetry {
-		for n := range deps {
-			if n != "python" {
-				names = append(names, normalizePyCoordinate(n))
-			}
-		}
-	}
-	return names, true
 }

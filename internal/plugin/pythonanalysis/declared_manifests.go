@@ -16,33 +16,57 @@ import (
 // --- setup.cfg ---------------------------------------------------------------
 
 // parseSetupCfg reads setup.cfg's "[options] install_requires" and every key of
-// "[options.extras_require]". Values are setuptools list fields: a dangling list (one
-// requirement per indented continuation line) or a single-line ';'-separated string. A value
-// that starts with "file:" names comma-separated requirement files relative to setup.cfg, which
-// are read in its place (readRequirementFiles). Entries that are not well-formed PEP 508
-// requirements are skipped. ok is false when a referenced file cannot be read, is not local to
-// setup.cfg's directory, or holds a line that is not a plain requirement, and when "file:"
-// appears anywhere but at the start of a value (setuptools rejects that).
+// "[options.extras_require]" (scanSetupCfg). Entries that are not well-formed PEP 508
+// requirements are skipped. ok is false when scanSetupCfg's is.
 func parseSetupCfg(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
+	scan := scanSetupCfg(path, data)
+	var out []plugin.ResolvedDependency
+	for _, spec := range scan.specs {
+		if d, valid := declaredDependency(spec, "setup.cfg"); valid {
+			out = append(out, d)
+		}
+	}
+	return out, scan.ok
+}
+
+// setupCfgScan is what scanSetupCfg read from one setup.cfg.
+type setupCfgScan struct {
+	specs      []string // install_requires and extras_require entries, "file:" lists expanded
+	buildSpecs []string // setup_requires entries: build-time only
+	files      []string // requirement files a "file:" value named, each read in full
+	ok         bool
+}
+
+// scanSetupCfg reads the dependency lists of a setup.cfg. Values are setuptools list fields: a
+// dangling list (one requirement per indented continuation line) or a single-line
+// ';'-separated string. An install_requires or extras_require value that starts with "file:"
+// names comma-separated requirement files relative to setup.cfg, which are read in its place
+// (readRequirementSpecs). ok is false when a referenced file cannot be read, is not local to
+// setup.cfg's directory, or holds a line that is not a well-formed requirement, and when "file:"
+// appears anywhere but at the start of a value (setuptools rejects that).
+func scanSetupCfg(path string, data []byte) setupCfgScan {
 	var (
-		out     []plugin.ResolvedDependency
-		ok      = true
+		scan    = setupCfgScan{ok: true}
 		section string
+		key     string
 		inList  bool     // inside a dependency-list value's continuation lines
 		head    string   // the value text on the key line
 		cont    []string // the value's continuation lines
 	)
+	build := func() bool { return key == "setup_requires" }
 	add := func(spec string) {
 		spec = strings.TrimSpace(stripCfgInlineComment(spec))
 		if spec == "" {
 			return
 		}
 		if strings.HasPrefix(spec, "file:") {
-			ok = false
+			scan.ok = false
 			return
 		}
-		if d, valid := declaredDependency(spec, "setup.cfg"); valid {
-			out = append(out, d)
+		if build() {
+			scan.buildSpecs = append(scan.buildSpecs, spec)
+		} else {
+			scan.specs = append(scan.specs, spec)
 		}
 	}
 	flush := func() {
@@ -51,10 +75,16 @@ func parseSetupCfg(path string, data []byte) ([]plugin.ResolvedDependency, bool)
 		}
 		inList = false
 		whole := strings.TrimSpace(strings.Join(append([]string{head}, cont...), "\n"))
-		if spec, isFile := strings.CutPrefix(whole, "file:"); isFile {
-			deps, fileOK := readRequirementFiles(filepath.Dir(path), spec, "setup.cfg")
-			out = append(out, deps...)
-			ok = ok && fileOK
+		if spec, isFile := strings.CutPrefix(whole, "file:"); isFile && !build() {
+			specs, files, fileOK := readRequirementSpecs(filepath.Dir(path), spec)
+			for _, s := range specs {
+				if _, valid := parsePEP508(s); !valid {
+					fileOK = false
+				}
+			}
+			scan.specs = append(scan.specs, specs...)
+			scan.files = append(scan.files, files...)
+			scan.ok = scan.ok && fileOK
 			return
 		}
 		if head != "" {
@@ -89,47 +119,61 @@ func parseSetupCfg(path string, data []byte) ([]plugin.ResolvedDependency, bool)
 		if k < 0 {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(trimmed[:k]))
-		if (section == "options" && key == "install_requires") || section == "options.extras_require" {
+		key = strings.ToLower(strings.TrimSpace(trimmed[:k]))
+		switch {
+		case section == "options" && (key == "install_requires" || key == "setup_requires"),
+			section == "options.extras_require":
 			inList, head, cont = true, strings.TrimSpace(trimmed[k+1:]), nil
 		}
 	}
 	flush()
-	return out, ok
+	return scan
 }
 
 // readRequirementFiles reads the comma-separated requirement files a setuptools "file:"
-// directive (or a pyproject "file" key) names, relative to dir. ok is false when a path is
-// empty, absolute, a URL, or resolves (symlinks included) outside dir, when a file cannot be
-// read, or when a line is not a plain PEP 508 requirement: setuptools does not follow pip
-// options (-r, -c, -e, --hash), so their presence means the file is not what it is read as.
+// directive (or a pyproject "file" key) names, relative to dir, as declared dependencies. ok is
+// false when readRequirementSpecs's is, or a line is not a well-formed PEP 508 requirement.
 func readRequirementFiles(dir, spec, source string) ([]plugin.ResolvedDependency, bool) {
+	specs, _, ok := readRequirementSpecs(dir, spec)
 	var out []plugin.ResolvedDependency
+	for _, s := range specs {
+		d, valid := declaredDependency(s, source)
+		if !valid {
+			return out, false
+		}
+		out = append(out, d)
+	}
+	return out, ok
+}
+
+// readRequirementSpecs returns the requirement lines of the comma-separated requirement files
+// spec names relative to dir, and the files it read. ok is false when a path is empty,
+// absolute, a URL, or resolves (symlinks included) outside dir, when a file cannot be read, or
+// when a line is a pip option (-r, -c, -e, --hash): setuptools does not follow them, so their
+// presence means the file is not what it is read as.
+func readRequirementSpecs(dir, spec string) (specs, files []string, ok bool) {
 	for _, p := range strings.Split(spec, ",") {
 		target, local := localFile(dir, strings.TrimSpace(p))
 		if !local {
-			return out, false
+			return specs, files, false
 		}
 		data, err := os.ReadFile(target)
 		if err != nil {
-			return out, false
+			return specs, files, false
 		}
+		files = append(files, filepath.Clean(target))
 		for _, raw := range strings.Split(string(data), "\n") {
 			line := strings.TrimSpace(stripCfgInlineComment(strings.TrimRight(raw, "\r")))
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
 			if strings.HasPrefix(line, "-") {
-				return out, false
+				return specs, files, false
 			}
-			d, valid := declaredDependency(line, source)
-			if !valid {
-				return out, false
-			}
-			out = append(out, d)
+			specs = append(specs, line)
 		}
 	}
-	return out, true
+	return specs, files, true
 }
 
 // localFile resolves p against dir and returns it when it names a file inside dir, symlinks
@@ -215,12 +259,27 @@ func setupPyComplete(data []byte) bool {
 	return complete
 }
 
+// setupPyRuntimeKeys are the setup() keywords that declare what installing the project
+// installs; setupPyBuildKeys declare what only building it installs.
+var (
+	setupPyRuntimeKeys = []string{"install_requires", "extras_require"}
+	setupPyBuildKeys   = []string{"setup_requires"}
+)
+
 // scanSetupPy returns the requirement strings of every literal install_requires list and
 // extras_require dict in src, and whether every occurrence of either name was such a literal
 // and src holds no "**" outside string literals and comments.
 func scanSetupPy(src string) (specs []string, complete bool) {
-	complete = !hasPySplat(src)
-	for _, key := range []string{"install_requires", "extras_require"} {
+	specs, complete = scanSetupPyKeys(src, setupPyRuntimeKeys)
+	return specs, complete && !hasPySplat(src)
+}
+
+// scanSetupPyKeys returns the requirement strings of every literal value assigned to one of
+// keys in src (a list, or a dict of lists for extras_require), and whether every occurrence of
+// those names was such a literal.
+func scanSetupPyKeys(src string, keys []string) (specs []string, complete bool) {
+	complete = true
+	for _, key := range keys {
 		for i := 0; ; {
 			k := strings.Index(src[i:], key)
 			if k < 0 {
@@ -242,10 +301,10 @@ func scanSetupPy(src string) (specs []string, complete bool) {
 				ok    bool
 			)
 			switch {
-			case key == "install_requires" && j < len(src) && src[j] == '[':
-				elems, i, ok = literalStringList(src, j+1)
 			case key == "extras_require" && j < len(src) && src[j] == '{':
 				elems, i, ok = literalStringListDict(src, j+1)
+			case key != "extras_require" && j < len(src) && src[j] == '[':
+				elems, i, ok = literalStringList(src, j+1)
 			}
 			if !ok {
 				complete = false

@@ -315,8 +315,11 @@ type DependencyVersionResult struct {
 	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
 	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
-	// from All is provably not a dependency. False (the default, and every plugin that does not
-	// set it) means absence from All proves nothing and a consumer must fail open.
+	// from All is provably not a dependency. Build-isolation environments are not runtime
+	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
+	// declaration in All, but what the build backend pulls in transitively is not enumerated.
+	// False (the default, and every plugin that does not set it) means absence from All proves
+	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`
 }
 

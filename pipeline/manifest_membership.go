@@ -7,7 +7,8 @@ package pipeline
 // provable when the plugin vouches that its read is exhaustive: a complete, edge-bearing lockfile
 // covers every manifest it found (plugin.DependencyVersionResult.Exhaustive). Declared-only
 // manifests, requirements files, or no lockfile at all leave Exhaustive false and the guard
-// fails open.
+// fails open. Build-isolation environments are not runtime installs, so a package only a build
+// backend pulls in is outside what Exhaustive vouches for.
 //
 // codebase_inventory records the fact (it already holds the plugin and the advisory facts);
 // disqualification_discovery reads it back, the same artifact hand-off every other intake input

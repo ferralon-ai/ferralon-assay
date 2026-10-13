@@ -10,9 +10,11 @@ package jsanalysis
 //   - at least one lockfile exists, every lockfile parsed, and every entry in each names the
 //     package it installs (an alias resolves to its target; a git, tarball or path entry the lock
 //     records only under its declared key does not);
-//   - the walk of the whole build dir (everything but .git; no skip list) finds no lockfile the
-//     resolver did not read, no symlinked directory, and no installed copy of the coordinate in a
-//     node_modules tree or a yarn cache;
+//   - every install surface the classifier finds under the build dir (ManifestCandidates: the
+//     whole tree but node_modules and site-packages, by name or by content) is fully read, so a
+//     bun.lock, deno.lock, deno.json, a lockfile outside the directories lockFiles walks, a
+//     templated or symlinked package.json, a symlink leaving the build dir, a symlinked
+//     directory or an unreadable one withholds;
 //   - every package.json that declares a dependency is a project its governing lockfiles (those
 //     in the nearest directory at or above it holding any) record: the lock's own root, or a
 //     workspace the lock (or, for classic yarn, the root package.json's "workspaces") names;
@@ -25,7 +27,9 @@ package jsanalysis
 //     provides it), so its absence here proves nothing;
 //   - the coordinate is not the name of any package.json under the build dir: a lockfile does
 //     not list the project (or a workspace package) as its own dependency, so its absence from
-//     the lock proves nothing about a first-party advisory.
+//     the lock proves nothing about a first-party advisory;
+//   - no node_modules tree holds an installed copy of the coordinate, none links to a package
+//     outside the build dir, and no yarn cache archive could be the coordinate's.
 //
 // The lockfile "dev"/"optional" flags are never consulted: every locked package counts as
 // present whatever its flags say.
@@ -35,18 +39,17 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
 var lockedDependencyFields = []string{"dependencies", "devDependencies", "optionalDependencies", "peerDependencies"}
 
 // rangedDependencyFields are the fields a lockfile installs from and records the spec of.
 var rangedDependencyFields = []string{"dependencies", "devDependencies", "optionalDependencies"}
-
-var lockfileNames = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.json": true, "yarn.lock": true, "pnpm-lock.yaml": true}
 
 // exhaustiveLockSet reports whether the parsed lockfiles (path → what parseLockfile read)
 // enumerate every installable package for every package.json under root.
@@ -62,87 +65,59 @@ func exhaustiveLockSet(root, coordinate string, locks map[string]lockInfo, parse
 		byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], l)
 	}
 	coord := normalizeNPMCoordinate(coordinate)
-	exhaustive := true
-	fail := func() error {
-		exhaustive = false
-		return filepath.SkipAll
+	candidates := manifestCandidates(root, locks)
+	if !buildtree.AllFullyRead(candidates) {
+		return false
 	}
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return fail()
+	for _, c := range candidates {
+		if filepath.Base(c.Path) == "package.json" && !projectCovered(c.Path, coord, byDir) {
+			return false
 		}
-		name := d.Name()
-		if d.Type()&fs.ModeSymlink != 0 {
-			info, err := os.Stat(path)
-			if err != nil {
-				return fail()
-			}
-			if !info.IsDir() {
+	}
+	return !installedCopyPresent(root, coord)
+}
+
+// installedCopyPresent reports whether a node_modules tree or a yarn cache under root could hold
+// the coordinate. Anything it cannot read counts as holding it.
+func installedCopyPresent(root, coord string) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return true
+	}
+	present := false
+	visited := map[string]bool{}
+	_ = buildtree.Walk(root, func(e buildtree.Entry, err error) error {
+		switch {
+		case err != nil:
+			present = true
+		case e.Skipped:
+			if filepath.Base(e.Path) != "node_modules" {
 				return nil
 			}
-			if name != "node_modules" {
-				return fail() // WalkDir does not follow it, so what it holds goes unread
-			}
-		} else if !d.IsDir() {
-			switch {
-			case lockfileNames[name]:
-				if _, read := locks[path]; !read {
-					return fail()
-				}
-			case name == "package.json":
-				if !projectCovered(path, coord, byDir) {
-					return fail()
-				}
-			case yarnCacheHolds(path, coord):
-				return fail()
-			}
-			return nil
-		}
-		switch {
-		case name == ".git" && path != root:
-			return filepath.SkipDir
-		case name == "node_modules":
 			installed := map[string]bool{}
-			if !installedPackages(path, installed, map[string]bool{}) || installed[coord] {
-				return fail()
-			}
-			return filepath.SkipDir
+			present = !installedPackages(e.Path, realRoot, installed, visited) || installed[coord]
+		case !e.Symlink && !e.D.IsDir():
+			present = yarnCacheHolds(e.Path, coord)
+		}
+		if present {
+			return filepath.SkipAll
 		}
 		return nil
 	})
-	return exhaustive
+	return present
 }
 
 // projectCovered reports whether the package.json at path is covered by its governing lockfiles
 // and does not itself define the coordinate. An unreadable or malformed package.json is not
 // covered; one that declares no dependency installs nothing and is.
 func projectCovered(path, coord string, byDir map[string][]lockInfo) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	manifest, ok := readPackageJSON(path)
+	if !ok || manifest.hasName && normalizeNPMCoordinate(manifest.name) == coord {
 		return false
 	}
-	var manifest map[string]json.RawMessage
-	if json.Unmarshal(data, &manifest) != nil {
-		return false
-	}
-	if raw, ok := manifest["name"]; ok {
-		var name string
-		if json.Unmarshal(raw, &name) != nil || normalizeNPMCoordinate(name) == coord {
-			return false
-		}
-	}
-	declared := map[string]map[string]string{}
+	declared := manifest.declared
 	declares := false
-	for _, field := range lockedDependencyFields {
-		raw, ok := manifest[field]
-		if !ok {
-			continue
-		}
-		var deps map[string]string
-		if json.Unmarshal(raw, &deps) != nil {
-			return false
-		}
-		declared[field] = deps
+	for _, deps := range declared {
 		declares = declares || len(deps) > 0
 	}
 	if !declares {
@@ -271,10 +246,11 @@ func yarnWorkspace(lockDir, rel string) bool {
 
 // installedPackages adds to into every package installed in the node_modules tree nm, by its
 // install name and its package.json name, descending into nested node_modules and pnpm's .pnpm
-// store. It reports false when a directory in the tree cannot be read.
-func installedPackages(nm string, into, visited map[string]bool) bool {
+// store. It reports false when a directory in the tree cannot be read or resolves outside
+// realRoot (an npm link, a global store): what it installs is not part of the build dir.
+func installedPackages(nm, realRoot string, into, visited map[string]bool) bool {
 	real, err := filepath.EvalSymlinks(nm)
-	if err != nil {
+	if err != nil || !buildtree.Inside(realRoot, nm) {
 		return false
 	}
 	if visited[real] {
@@ -299,7 +275,7 @@ func installedPackages(nm string, into, visited map[string]bool) bool {
 				if s.Name() != "node_modules" {
 					inner = filepath.Join(inner, "node_modules")
 				}
-				if isDir(inner) && !installedPackages(inner, into, visited) {
+				if isDir(inner) && !installedPackages(inner, realRoot, into, visited) {
 					return false
 				}
 			}
@@ -311,12 +287,12 @@ func installedPackages(nm string, into, visited map[string]bool) bool {
 				return false
 			}
 			for _, s := range scope {
-				if !installedPackage(filepath.Join(dir, s.Name()), n+"/"+s.Name(), into, visited) {
+				if !installedPackage(filepath.Join(dir, s.Name()), n+"/"+s.Name(), realRoot, into, visited) {
 					return false
 				}
 			}
 		default:
-			if !installedPackage(dir, n, into, visited) {
+			if !installedPackage(dir, n, realRoot, into, visited) {
 				return false
 			}
 		}
@@ -324,9 +300,12 @@ func installedPackages(nm string, into, visited map[string]bool) bool {
 	return true
 }
 
-func installedPackage(dir, installName string, into, visited map[string]bool) bool {
+func installedPackage(dir, installName, realRoot string, into, visited map[string]bool) bool {
 	if !isDir(dir) {
 		return true
+	}
+	if !buildtree.Inside(realRoot, dir) {
+		return false
 	}
 	into[normalizeNPMCoordinate(installName)] = true
 	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
@@ -338,7 +317,7 @@ func installedPackage(dir, installName string, into, visited map[string]bool) bo
 		}
 	}
 	if nested := filepath.Join(dir, "node_modules"); isDir(nested) {
-		return installedPackages(nested, into, visited)
+		return installedPackages(nested, realRoot, into, visited)
 	}
 	return true
 }

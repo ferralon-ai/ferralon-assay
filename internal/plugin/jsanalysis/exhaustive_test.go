@@ -92,6 +92,22 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"S1 classic yarn workspace named by the root", map[string]string{"package.json": yarnWorkspaces, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, true},
 		{"S1 classic yarn project not a workspace", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, "tools/package.json": toolJSON}, false},
 		{"S1 stale lock beside a covering one", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "yarn.lock": yarnStale}, false},
+
+		// B6: every file that looks like a JS manifest or lockfile, by name or content, is read
+		// in full or withholds.
+		{"B6 bun.lock", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "bun.lock": "{\n  \"lockfileVersion\": 1,\n  \"workspaces\": {},\n}\n"}, false},
+		{"B6 bun.lockb", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "bun.lockb": "#!/usr/bin/env bun\nbun-lockfile-format-v0\n\x00\x01"}, false},
+		{"B6 deno.lock", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "deno.lock": `{"version":"4","npm":{"absent-package@2.2.1":{}}}`}, false},
+		{"B6 deno.json", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "deno.json": `{"imports":{"x":"npm:absent-package@^2"}}`}, false},
+		{"B6 import map naming npm under another name", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "web/imports.json": `{"imports":{"x":"npm:absent-package@^2"}}`}, false},
+		{"B6 unknown lockfile name", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "deps.lock": "absent-package 2.2.1\n"}, false},
+		{"B6 templated package.json", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "templates/package.json.hbs": `{"name":"{{name}}","dependencies":{"absent-package":"^2"}}`}, false},
+		{"B6 manifest by content under another name", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "deploy/app.json": `{"name":"svc","dependencies":{"absent-package":"^2"}}`}, false},
+		{"B6 lockfile by content under another name", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "ci/lock.yaml": exPnpmV9}, false},
+		{"B6 tsconfig is not a manifest", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tsconfig.json": `{"compilerOptions":{"strict":true}}`}, true},
+		{"B6 NuGet packages.lock.json is not a manifest", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "svc/packages.lock.json": `{"version":1,"dependencies":{"net8.0":{"Serilog":{"type":"Direct","resolved":"3.1.1"}}}}`}, true},
+		{"B6 Python lock is not a JS candidate", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "uv.lock": "version = 1\n"}, true},
+		{"B6 manifest quoted in docs", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "docs/setup.md": `{"dependencies":{"absent-package":"^2"}}`}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,14 +122,103 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	}
 }
 
-// B2: WalkDir does not follow a symlinked directory, so whatever it holds is unread.
-func TestResolveVersions_ExhaustiveSymlinkedDir(t *testing.T) {
-	dir := writeLockTree(t, map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3})
-	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "linked")); err != nil {
-		t.Skipf("symlink: %v", err)
+// B2, B6: the walk never follows a symlink. A symlinked directory or manifest, or an installed
+// package linked from outside the build dir, is not fully read; an in-tree workspace link is.
+func TestResolveVersions_ExhaustiveSymlinks(t *testing.T) {
+	const lockV3Tools = `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"express":"^4.18.0"},"devDependencies":{"left-pad":"^1.3.0"}},
+  "tools": {"name":"tool","dependencies":{"express":"^4.18.0"}},
+  "node_modules/express": {"version":"4.18.2"},
+  "node_modules/left-pad": {"version":"1.3.0"},
+  "node_modules/tool": {"resolved":"tools","link":true}}}`
+	files := func() map[string]string {
+		return map[string]string{
+			"package.json":                      exPkgJSON,
+			"package-lock.json":                 lockV3Tools,
+			"tools/package.json":                `{"name":"tool","dependencies":{"express":"^4.18.0"}}`,
+			"node_modules/express/package.json": `{"name":"express"}`,
+		}
 	}
-	if r := resolveJS(t, dir, "absent-package"); r.Exhaustive {
-		t.Fatalf("Exhaustive = true with a symlinked directory in the build dir")
+	tests := []struct {
+		name string
+		link func(t *testing.T, dir string) (target, link string)
+		want bool
+	}{
+		{"in-tree workspace link", func(t *testing.T, dir string) (string, string) {
+			return filepath.Join("..", "tools"), filepath.Join(dir, "node_modules", "tool")
+		}, true},
+		{"symlinked directory", func(t *testing.T, dir string) (string, string) {
+			return t.TempDir(), filepath.Join(dir, "linked")
+		}, false},
+		{"symlinked package.json", func(t *testing.T, dir string) (string, string) {
+			return filepath.Join("..", "tools", "package.json"), filepath.Join(dir, "web", "package.json")
+		}, false},
+		{"installed package linked from outside", func(t *testing.T, dir string) (string, string) {
+			out := t.TempDir()
+			if err := os.WriteFile(filepath.Join(out, "package.json"), []byte(`{"name":"other"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return out, filepath.Join(dir, "node_modules", "other")
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeLockTree(t, files())
+			if r := resolveJS(t, dir, "absent-package"); !r.Exhaustive {
+				t.Fatalf("baseline Exhaustive = false, want true (partiality %+v)", r.Partiality)
+			}
+			target, link := tt.link(t, dir)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+			if r := resolveJS(t, dir, "absent-package"); r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v", r.Exhaustive, tt.want)
+			}
+		})
+	}
+}
+
+// TestManifestCandidates pins the JS classifier's contract: every file whose name or content
+// looks like a JS manifest or lockfile is a candidate, and FullyRead is true only for a
+// package.json that decodes or a lockfile the resolver discovers and reads without opaque entries.
+func TestManifestCandidates(t *testing.T) {
+	root := writeLockTree(t, map[string]string{
+		"package.json":                      exPkgJSON,
+		"package-lock.json":                 exLockV3,
+		"bun.lock":                          "{\"lockfileVersion\": 1}\n",
+		"deno.json":                         `{"imports":{}}`,
+		"build/package-lock.json":           exLockV3,
+		"broken/package.json":               `{"dependencies":{"x":1}}`,
+		"deploy/app.json":                   `{"dependencies":{"absent-package":"^2"}}`,
+		"templates/package.json.hbs":        `{"name":"{{name}}"}`,
+		"tsconfig.json":                     `{"compilerOptions":{}}`,
+		"uv.lock":                           "version = 1\n",
+		"node_modules/express/package.json": `{"name":"express","dependencies":{"x":"1"}}`,
+	})
+	type row struct {
+		Path      string
+		FullyRead bool
+	}
+	var got []row
+	for _, c := range ManifestCandidates(root) {
+		rel, _ := filepath.Rel(root, c.Path)
+		got = append(got, row{filepath.ToSlash(rel), c.FullyRead})
+	}
+	want := []row{
+		{"broken/package.json", false},     // a dependency map that is not all strings
+		{"build/package-lock.json", false}, // outside the directories lockFiles walks
+		{"bun.lock", false},                // a format the resolver never parses
+		{"deno.json", false},               // likewise
+		{"deploy/app.json", false},         // a manifest by content, never parsed
+		{"package-lock.json", true},
+		{"package.json", true},
+		{"templates/package.json.hbs", false}, // a template of a manifest
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates:\n%v\nwant:\n%v", got, want)
 	}
 }
 

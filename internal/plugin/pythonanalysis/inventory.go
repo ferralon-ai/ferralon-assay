@@ -115,7 +115,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // advisory resolution so their packages are still inventoried (never silently dropped),
 // classified relUnexpressed so no edge is inferred that was not read.
 func manifestToPyReqs(path string, env map[string]string, selection []string) ([]pyReq, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

@@ -716,6 +716,20 @@ func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
 }
 
 // dockerRun is the uv workspace plus a Dockerfile that runs cmd.
+// k8sArgs is a Kubernetes deployment whose container command is the given vector.
+func k8sArgs(vector string) string {
+	return "apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n        - name: web\n          image: app\n          command: [" + vector + "]\n"
+}
+
+// k8sPoetry is the docsPoetry project installed by a Kubernetes container command instead of
+// a Dockerfile.
+func k8sPoetry(vector string) map[string]string {
+	f := docsPoetry(false, "true")
+	delete(f, "Dockerfile")
+	f["deploy/k8s/deployment.yaml"] = k8sArgs(vector)
+	return f
+}
+
 // utf16Text encodes s as UTF-16, big- or little-endian, with or without a byte-order mark.
 func utf16Text(s string, bigEndian, bom bool) string {
 	var b bytes.Buffer
@@ -943,6 +957,16 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		// pip configuration.
 		{name: "ENV PIP_REQUIREMENT", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "Dockerfile": "FROM python:3.12\nENV PIP_REQUIREMENT=requirements-dev.txt\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "PIP_REQUIREMENT"},
 		{name: "a committed pip.conf", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "pip.conf": "[install]\nrequirement = requirements-dev.txt\n", "Dockerfile": "FROM python:3.12\nCOPY pip.conf /etc/pip.conf\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pip configuration file"},
+
+		// Global options between the family word and the subcommand (R3-B2), in a file that is a
+		// candidate only by content.
+		{name: "k8s args: pip --no-cache-dir install", files: withLock(map[string]string{"deploy/k8s/deployment.yaml": k8sArgs(`"pip", "--no-cache-dir", "install", "black==24.4.2"`)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "pathspec, in the locked closure"},
+		{name: "k8s command: python -m pip -q install", files: withLock(map[string]string{"deploy/k8s/deployment.yaml": k8sArgs(`"sh", "-c", "python -m pip -q install black==24.4.2"`)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "pathspec, in the locked closure"},
+		{name: "k8s command: uv --no-cache sync --frozen", files: withLock(map[string]string{"deploy/k8s/deployment.yaml": k8sArgs(`"sh", "-c", "uv --no-cache sync --frozen"`)}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "k8s command: poetry -C . install", files: k8sPoetry(`"sh", "-c", "poetry -C . install"`), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "k8s command: poetry --no-interaction install", files: k8sPoetry(`"sh", "-c", "poetry --no-interaction install"`), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "k8s command: pipenv --python 3.12 install --dev", files: withLock(map[string]string{"deploy/k8s/deployment.yaml": k8sArgs(`"sh", "-c", "pipenv --python 3.12 install --dev"`)}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "k8s command: a variable before install", files: withLock(map[string]string{"deploy/k8s/deployment.yaml": k8sArgs(`"sh", "-c", "pip $EXTRA install black==24.4.2"`)}), pkg: "pkg:pypi/pytest@8.2.0"},
 
 		// Files the scan cannot read as text (R3-B1): text in any Unicode encoding is decoded and
 		// read; an archive or executable can bundle distributions and blocks every refutation.

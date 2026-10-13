@@ -196,20 +196,28 @@ func underSkipped(root, target string) bool {
 	return false
 }
 
+// familyGap is what may sit between an install family word and its subcommand: separators,
+// and any global options with their values or variables (pip --no-cache-dir install, poetry
+// -C . install, uv $UV_FLAGS sync).
+const familyGap = `(?:[\s"',\\]+[-$][^\s"',]*(?:[\s"',\\]+[^\s"',\\-][^\s"',]*)?)*[\s"',\\]+`
+
 // installCommandRe matches an installer token: an install family word (with any directory
-// prefix) followed by a subcommand that installs, or an installer that always installs.
-var installCommandRe = regexp.MustCompile(`(?:^|[^\w.-])(?:[\w.-]*/)*(?:` +
-	`pip[0-9.]*[\s"',]+(?:install|config)\b|pip-sync\b|` +
-	`uv[\s"',]+(?:pip|sync|add|run|tool|export|lock)\b|uvx\b|` +
-	`pipx[\s"',]+(?:install|run|inject|upgrade|reinstall|install-all|runpip|upgrade-all|reinstall-all)\b|` +
-	`poetry[\s"',]+(?:install|sync|add|update|export|self|lock)\b|` +
-	`pdm[\s"',]+(?:install|sync|add|update|export|self|lock|plugin|import)\b|` +
-	`pipenv[\s"',]+(?:install|sync|update|upgrade|lock)\b|` +
-	`micropipenv\b|pex\b|shiv\b|flit[\s"',]+install\b|` +
-	`rye[\s"',]+(?:sync|add|install|tools?)\b|hatch[\s"',]+(?:env|run|shell|test|fmt)\b|` +
-	`pixi[\s"',]+(?:install|add|run|global|shell|exec)\b|` +
-	`(?:conda|mamba|micromamba)[\s"',]+(?:install|create|env|update|upgrade)\b|` +
-	`easy_install\b|setup\.py[\s"',]+(?:install|develop)\b)`)
+// prefix) followed, past any global options, by a subcommand that installs, or an installer
+// that always installs. In installCommandPattern, ~ stands for familyGap.
+var installCommandRe = regexp.MustCompile(strings.ReplaceAll(installCommandPattern, "~", familyGap))
+
+const installCommandPattern = `(?:^|[^\w.-])(?:[\w.-]*/)*(?:` +
+	`pip[0-9.]*~(?:install|config)\b|pip-sync\b|` +
+	`uv~(?:pip|sync|add|run|tool|export|lock)\b|uvx\b|` +
+	`pipx~(?:install|run|inject|upgrade|reinstall|install-all|runpip|upgrade-all|reinstall-all)\b|` +
+	`poetry~(?:install|sync|add|update|export|self|lock)\b|` +
+	`pdm~(?:install|sync|add|update|export|self|lock|plugin|import)\b|` +
+	`pipenv~(?:install|sync|update|upgrade|lock)\b|` +
+	`micropipenv\b|pex\b|shiv\b|flit~install\b|` +
+	`rye~(?:sync|add|install|tools?)\b|hatch~(?:env|run|shell|test|fmt)\b|` +
+	`pixi~(?:install|add|run|global|shell|exec)\b|` +
+	`(?:conda|mamba|micromamba)~(?:install|create|env|update|upgrade)\b|` +
+	`easy_install\b|setup\.py~(?:install|develop)\b)`
 
 // pipEnvRe matches a pip setting by environment variable; installerEnvRe matches an installer
 // setting whose name selects groups or extras.

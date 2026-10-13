@@ -179,7 +179,11 @@ func runCFamilyBaselineTree(t *testing.T, lane cfamilyGatePlugin, src pipeline.A
 		files[name] = body
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -260,9 +264,9 @@ func TestCFamilyBaseline_UnresolvedThroughDependencyIsUndetermined(t *testing.T)
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
 }
 
-// A conan.lock that pins the host graph makes the C/C++ inventory Complete, so the scan-wide
-// inventory limit no longer holds C/C++ rows. None of them refutes without it: each lane shape the
-// tests above use still lands undetermined, on the lane's own declaration.
+// A conan.lock that pins the host graph makes the C/C++ inventory Complete, so the scan carries no
+// cfamily inventory limit. No C/C++ row refutes: each lane shape the tests above use lands
+// undetermined, on the lane's own declaration.
 func TestCFamilyBaseline_LockedInventoryAddsNoRefutation(t *testing.T) {
 	const sink = "inflateGetHeader"
 	lock := map[string]string{
@@ -286,6 +290,68 @@ func TestCFamilyBaseline_LockedInventoryAddsNoRefutation(t *testing.T) {
 				}
 			}
 			assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+		})
+	}
+}
+
+// libfooAdvisories serves one first-party advisory against libfoo, fixed at fixed.
+type libfooAdvisories struct{ fixed string }
+
+func (s libfooAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
+	if id != cfamilyAdvisoryID {
+		return pipeline.AdvisoryFacts{}, false
+	}
+	return pipeline.AdvisoryFacts{
+		Coordinate:     "libfoo",
+		PURL:           "pkg:conan/libfoo",
+		UpperExclusive: s.fixed,
+		FixedVersion:   s.fixed,
+		AffectedRanges: []pipeline.Range{{Fixed: s.fixed}},
+		Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
+	}, true
+}
+
+// A package manager's pin outside the advisory's range does not disqualify a C/C++ advisory: the
+// tree also vendors an affected copy of the library, and no manifest records which copy is linked.
+// The row is undetermined and carries no package version, since the version never reached the
+// comparison; the pin stays in the SBOM. The rows run with and without a v prefix: the version
+// comparison accepts only semver, so a plain C version never compares, and the v-prefixed rows are
+// the ones that disqualify if a C/C++ version ever resolves.
+func TestCFamilyBaseline_PinOutsideRangeBesideVendoredCopyIsUndetermined(t *testing.T) {
+	const vendored = "#define FOO_VERSION \"1.0.0\"\nint foo_parse(const char *p) { return p != 0; }\n"
+	vcpkgStatus := func(v string) string {
+		return "Package: libfoo\nVersion: " + v + "\nArchitecture: x64-linux\nStatus: install ok installed\n"
+	}
+	for _, tc := range []struct {
+		name, fixed, pin string
+		manifests        map[string]string
+	}{
+		{"vcpkg status, v-prefixed", "v1.1.0", "v2.0.0", map[string]string{
+			"vcpkg_installed/vcpkg/status": vcpkgStatus("v2.0.0"),
+		}},
+		{"vcpkg status, plain", "1.1.0", "2.0.0", map[string]string{
+			"vcpkg_installed/vcpkg/status": vcpkgStatus("2.0.0"),
+		}},
+		{"conan.lock, v-prefixed", "v1.1.0", "v2.0.0", map[string]string{
+			"conan.lock": `{"version":"0.5","requires":["libfoo/v2.0.0"]}`,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.manifests["third_party/libfoo/foo.c"] = vendored
+			rep := runCFamilyBaselineTree(t, cfamilyGatePlugin{}, libfooAdvisories{fixed: tc.fixed}, tc.manifests, cfamilyAdvisoryID)
+			assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+			if f := cfamilyRow(t, rep); f.Package != nil {
+				t.Errorf("row carries package %+v: a C/C++ version reached the version comparison", *f.Package)
+			}
+			var inSBOM bool
+			for _, p := range rep.SBOM.Packages {
+				if p.Name == "libfoo" && p.Version == tc.pin {
+					inSBOM = true
+				}
+			}
+			if !inSBOM {
+				t.Errorf("SBOM %+v does not carry libfoo at %s", rep.SBOM.Packages, tc.pin)
+			}
 		})
 	}
 }

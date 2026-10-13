@@ -910,6 +910,52 @@ func TestLoadSet_UnreadableRequirementFile(t *testing.T) {
 	}
 }
 
+// TestLoadSet_UnreadableDirectory pins that a directory the walks cannot read blocks every
+// refutation: it may hold install commands or an installed copy.
+func TestLoadSet_UnreadableDirectory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode-000 directory")
+	}
+	cases := []struct {
+		name, dir, veto string
+		committed       bool
+	}{
+		{name: "a build directory", dir: "deploy", veto: "deploy: could not be read: install commands"},
+		{name: "the workflows directory", dir: ".github/workflows", veto: ".github/workflows: could not be read: install commands"},
+		{name: "a vendor directory", dir: "lib", veto: "lib: could not be read: installed copies", committed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, withLock(map[string]string{tc.dir + "/README": "x\n"}))
+			d := filepath.Join(dir, filepath.FromSlash(tc.dir))
+			if err := os.Chmod(d, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(d, 0o755) })
+			// The source walk errors on a non-hidden unreadable directory, which refutes nothing
+			// either; the scan's own veto is pinned below.
+			res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/pytest@8.2.0"})
+			if err == nil && res.Refutation != nil {
+				t.Fatalf("an unreadable directory must block refutation; got %+v", res.Refutation)
+			}
+			ls := &loadSet{complete: true, reqRuntime: map[string]bool{}, installed: map[string]bool{}, projectNames: map[string]bool{}}
+			ls.locks = loadLocks(dir, ls)
+			if tc.committed {
+				ls.committedInstalls(dir)
+			} else {
+				ls.scanInstalls(dir)
+			}
+			found := false
+			for _, m := range ls.markerless {
+				found = found || strings.Contains(m, tc.veto)
+			}
+			if !found {
+				t.Errorf("vetoes %v, want one containing %q", ls.markerless, tc.veto)
+			}
+		})
+	}
+}
+
 // TestLoadSet_RequirementFileOutsideRepo pins that a requirement file outside the repository
 // blocks every refutation even when it exists on the build host.
 func TestLoadSet_RequirementFileOutsideRepo(t *testing.T) {

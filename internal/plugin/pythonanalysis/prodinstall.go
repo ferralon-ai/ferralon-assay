@@ -17,7 +17,8 @@ package pythonanalysis
 //     sdist, a URL or a VCS reference; -e; a requirement file it cannot read, from a URL, or
 //     outside the repository; a name the lockfile does not lock; an unknown option or pip
 //     subcommand; `--no-deps` alongside another pip install; a lockfile install with no
-//     lockfile of its format; a scanned file that does not parse; and every install family it
+//     lockfile of its format; a scanned file that does not parse or a directory the walk cannot
+//     read; and every install family it
 //     does not parse (conda, mamba, uv/poetry/pdm add, pipenv install <pkgs>, easy_install,
 //     setup.py install).
 //
@@ -30,7 +31,9 @@ package pythonanalysis
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -69,23 +72,32 @@ func (sc *installScan) veto(c scanCtx, format string, args ...any) {
 func (ls *loadSet) scanInstalls(buildDir string) {
 	sc := &installScan{ls: ls, root: buildDir, keep: map[string]string{}, reqSeen: map[string]bool{}}
 	ls.scan = sc
-	walkProjectFiles(buildDir, func(rel, abs string) {
+	unreadable := func(rel string) {
+		sc.veto(scanCtx{where: rel}, "could not be read: install commands under it are unknown")
+	}
+	walkProjectTree(buildDir, func(rel, abs string) {
 		if kind := installSurface(rel); kind != "" {
 			sc.scanFile(rel, abs, kind)
 		}
-	})
+	}, unreadable)
 	// walkProjectFiles skips hidden trees; CI configuration lives in some.
 	for _, dir := range []string{".github", ".circleci", ".buildkite"} {
 		top := filepath.Join(buildDir, dir)
 		_ = filepath.WalkDir(top, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil //nolint:nilerr // an unreadable subtree is not an install surface.
-			}
 			rel, rerr := filepath.Rel(buildDir, p)
 			if rerr != nil {
 				return nil //nolint:nilerr // outside the build dir.
 			}
 			rel = filepath.ToSlash(rel)
+			if err != nil {
+				if !(p == top && errors.Is(err, fs.ErrNotExist)) {
+					unreadable(rel)
+				}
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
 			if kind := hiddenInstallSurface(rel); kind != "" {
 				sc.scanFile(rel, p, kind)
 			}
@@ -1327,8 +1339,14 @@ var vendorDirs = setOf("lib", "vendor", "_vendor", "vendored", "third_party", "s
 // and the like.
 func (ls *loadSet) committedInstalls(buildDir string) {
 	_ = filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || p == buildDir {
-			return nil //nolint:nilerr // an unreadable subtree contributes nothing; keep walking.
+		if err != nil {
+			if rel, rerr := filepath.Rel(buildDir, p); rerr == nil {
+				ls.noMarkers("%s: could not be read: installed copies under it are unknown", filepath.ToSlash(rel))
+			}
+			return nil
+		}
+		if p == buildDir {
+			return nil
 		}
 		name := d.Name()
 		if d.IsDir() && committedSkip[name] {

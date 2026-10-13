@@ -608,8 +608,19 @@ func (ls *loadSet) configRoots(buildDir string) {
 // walkProjectFiles calls fn for every file under buildDir outside skipped trees and test
 // directories, with its slash-separated relative path.
 func walkProjectFiles(buildDir string, fn func(rel, abs string)) {
+	walkProjectTree(buildDir, fn, nil)
+}
+
+// walkProjectTree is walkProjectFiles that also reports each path it could not read to
+// unreadable, when set.
+func walkProjectTree(buildDir string, fn func(rel, abs string), unreadable func(rel string)) {
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if unreadable != nil {
+				if rel, rerr := filepath.Rel(buildDir, path); rerr == nil {
+					unreadable(filepath.ToSlash(rel))
+				}
+			}
 			return nil //nolint:nilerr // an unreadable subtree contributes nothing; keep walking.
 		}
 		if d.IsDir() {

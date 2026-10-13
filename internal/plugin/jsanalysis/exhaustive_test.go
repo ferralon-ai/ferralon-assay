@@ -51,6 +51,12 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 	// catalogLock is exPnpmV9 as pnpm writes it for a left-pad declared as catalog:.
 	catalogLock := strings.Replace(exPnpmV9, "left-pad:\n        specifier: ^1.3.0", "left-pad:\n        specifier: 'catalog:'", 1) +
 		"\ncatalogs:\n\n  default:\n    left-pad:\n      specifier: ^1.3.0\n      version: 1.3.0\n"
+	// yarnNULAt is a yarn v1 lock locking the coordinate, with a comment padded so a NUL lands at
+	// byte off.
+	yarnNULAt := func(off int) string {
+		const marker = "# yarn lockfile v1\n# "
+		return marker + strings.Repeat("x", off-len(marker)) + "\x00\n\nabsent-package@^2:\n  version \"2.2.1\"\n"
+	}
 	const pnpmfileAdds = "module.exports = {hooks: {readPackage(pkg) { pkg.dependencies['absent-package'] = '^2'; return pkg }}}\n"
 	tests := []struct {
 		name  string
@@ -138,12 +144,26 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"B12 pnpm package bundling the coordinate, flow list", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": strings.Replace(exPnpmV9, "sha512-x}\n", "sha512-x}\n    bundledDependencies: [absent-package]\n", 1)}, false},
 		{"B13 dependency-free package.json and a pnpmfile without a lock", map[string]string{"package.json": `{"name":"app"}`, ".pnpmfile.cjs": pnpmfileAdds}, false},
 		{"B13 dependency-free package.json without a lock", map[string]string{"package.json": `{"name":"app"}`}, false},
+		// A NUL makes buildtree.Head report a file binary, but yarn v1 reads past one in a
+		// comment, so a lockfile found by content is judged with the NUL removed or made a newline.
+		{"lockfile by content, NUL at byte 40", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "ci/deps": yarnNULAt(40)}, false},
+		{"lockfile by content, NUL past byte 8000", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "ci/deps": yarnNULAt(8100)}, false},
+		{"lockfile by content, NUL splitting the marker", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "ci/deps": "# yarn\x00 lockfile v1\n\nabsent-package@^2:\n  version \"2.2.1\"\n"}, false},
+		{"lockfile by content, NUL ending a comment", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "ci/deps": "#\x00__metadata:\n  version: 6\n\n\"absent-package@npm:^2\":\n  version: 2.2.1\n"}, false},
+		{"binary file without a lockfile shape", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "assets/logo.png": "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00"}, true},
+		{"text file without a lockfile shape", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "notes": "absent-package is not used here\n"}, true},
 		{"B6 manifest quoted in docs", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "docs/setup.md": `{"dependencies":{"absent-package":"^2"}}`}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := resolveJS(t, writeLockTree(t, tt.files), "absent-package")
-			if r.Found {
+			// A copy installed under node_modules is a found match of its own (installedCopies);
+			// no lock or manifest in any row holds absent-package.
+			installed := false
+			for f := range tt.files {
+				installed = installed || strings.Contains(f, "node_modules/")
+			}
+			if r.Found && !installed {
 				t.Fatalf("absent-package unexpectedly found")
 			}
 			if r.Exhaustive != tt.want {

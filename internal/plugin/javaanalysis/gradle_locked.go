@@ -129,7 +129,7 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 			return versions, false, relToBase(root, dir) + " does not lock every configuration"
 		}
 		for _, c := range confs {
-			if !gradleConfigPinned(state[dir], strict, c) {
+			if !gradleConfigPinned(dir, state[dir], strict, c) {
 				return versions, false, relToBase(root, dir) + "'s " + c + " is not pinned by its lock"
 			}
 		}

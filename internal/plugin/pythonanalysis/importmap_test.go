@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -473,6 +474,212 @@ func TestValidatorInvariants(t *testing.T) {
 			err := DistImportMap{Contributions: []Contribution{tc.contrib}}.Validate()
 			if tc.wantErr != (err != nil) {
 				t.Fatalf("Validate err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestCurated_SharedImportPackages: the curated rows name the exact package each wheel
+// ships. Under the azure and botframework PEP 420 roots each package has its own
+// distribution, the bare roots have none, and dotenv, teams, jwt and PIL are each shipped
+// by several distributions.
+func TestCurated_SharedImportPackages(t *testing.T) {
+	m := NewDistImportMap(CuratedContributions()...)
+	cases := []struct {
+		pkg  string
+		want []string
+	}{
+		{"azure", nil},
+		{"azure.core", []string{"azure-core"}},
+		{"azure.core.experimental", []string{"azure-core-experimental"}},
+		{"azure.core.tracing.ext.opentelemetry_span", []string{"azure-core-tracing-opentelemetry"}},
+		{"azure.core.tracing.ext.opencensus_span", []string{"azure-core-tracing-opencensus"}},
+		{"azure.identity", []string{"azure-identity"}},
+		{"azure.identity.broker", []string{"azure-identity-broker"}},
+		{"azure.search.documents", []string{"azure-search-documents"}},
+		{"botframework", nil},
+		{"botframework.connector", []string{"botframework-connector"}},
+		{"botframework.streaming", []string{"botframework-streaming"}},
+		{"dotenv", []string{"django-dotenv", "python-dotenv", "python-dotenv-yaml"}},
+		{"teams", []string{"teams", "teams-ai", "teams-ai-azml-model"}},
+		{"jwt", []string{"jwt", "pyjwt"}},
+		{"PIL", []string{"pillow", "pillow-simd"}}, {"jose", []string{"jose", "python-jose", "python-jose-cryptodome"}},
+		{"dateutil", []string{"py-dateutil", "python-dateutil"}},
+		{"airflow", []string{"apache-airflow", "apache-airflow-core"}},
+		{"airflow.sdk", []string{"apache-airflow-task-sdk"}},
+	}
+	for _, c := range cases {
+		if got := m.Owners(c.pkg); !slices.Equal(got, c.want) {
+			t.Errorf("Owners(%q) = %v, want %v", c.pkg, got, c.want)
+		}
+	}
+	for _, root := range []string{"azure", "botframework"} {
+		if got := m.Reverse(root); len(got) < 2 {
+			t.Errorf("Reverse(%q) = %v, want several distributions under the namespace", root, got)
+		}
+	}
+}
+
+// TestDistResolver_SharedPackages: distsFor (the load set) names every curated distribution
+// shipping the longest curated package on the import path, declared or not, plus a declared
+// distribution of the import's own name; importDeclared (the unattributed-import trigger)
+// holds when one of them is declared, and a declared distribution shipping a different
+// package never covers the import.
+func TestDistResolver_SharedPackages(t *testing.T) {
+	cases := []struct {
+		name         string
+		declared     []string
+		path         string
+		wantDists    []string
+		wantDeclared bool
+	}{
+		{
+			name:         "one of several shippers declared",
+			declared:     []string{"teams-ai"},
+			path:         "teams.Application",
+			wantDists:    []string{"teams", "teams-ai", "teams-ai-azml-model"},
+			wantDeclared: true,
+		},
+		{
+			name:         "two shippers declared",
+			declared:     []string{"teams-ai", "teams-ai-azml-model"},
+			path:         "teams.Application",
+			wantDists:    []string{"teams", "teams-ai", "teams-ai-azml-model"},
+			wantDeclared: true,
+		},
+		{
+			name:      "no shipper declared",
+			path:      "teams.Application",
+			wantDists: []string{"teams", "teams-ai", "teams-ai-azml-model"},
+		},
+		{
+			name:         "undeclared co-shipper stays in the load set",
+			declared:     []string{"python-dotenv"},
+			path:         "dotenv.load_dotenv",
+			wantDists:    []string{"django-dotenv", "python-dotenv", "python-dotenv-yaml"},
+			wantDeclared: true,
+		},
+		{
+			name:      "nested package goes to its own shipper, not the declared parent's",
+			declared:  []string{"azure-identity"},
+			path:      "azure.identity.broker.InteractiveBrowserBrokerCredential",
+			wantDists: []string{"azure-identity-broker"},
+		},
+		{
+			name:         "declared shipper of the nested package",
+			declared:     []string{"azure-identity-broker"},
+			path:         "azure.identity.broker.InteractiveBrowserBrokerCredential",
+			wantDists:    []string{"azure-identity-broker"},
+			wantDeclared: true,
+		},
+		{
+			name:      "declared sibling does not cover another package",
+			declared:  []string{"azure-core"},
+			path:      "azure.identity.DefaultAzureCredential",
+			wantDists: []string{"azure-identity"},
+		},
+		{
+			name:     "uncurated package under a shared namespace",
+			declared: []string{"azure-core"},
+			path:     "azure.keyvault.secrets.SecretClient",
+		},
+		{
+			name:     "bare shared namespace root",
+			declared: []string{"azure-core"},
+			path:     "azure",
+		},
+		{
+			name:     "whole segments only",
+			declared: []string{"azure-identity"},
+			path:     "azure.identityx.Credential",
+		},
+		{
+			name:         "airflow 3 declaring only the core distribution",
+			declared:     []string{"apache-airflow-core"},
+			path:         "airflow.models.DAG",
+			wantDists:    []string{"apache-airflow", "apache-airflow-core"},
+			wantDeclared: true,
+		},
+		{
+			name:      "airflow task sdk goes to its own shipper",
+			declared:  []string{"apache-airflow-core"},
+			path:      "airflow.sdk.DAG",
+			wantDists: []string{"apache-airflow-task-sdk"},
+		},
+		{
+			name:         "jose through a co-shipper",
+			declared:     []string{"python-jose-cryptodome"},
+			path:         "jose.jwt.decode",
+			wantDists:    []string{"jose", "python-jose", "python-jose-cryptodome"},
+			wantDeclared: true,
+		},
+		{
+			name:         "dateutil through a co-shipper",
+			declared:     []string{"py-dateutil"},
+			path:         "dateutil.parser.parse",
+			wantDists:    []string{"py-dateutil", "python-dateutil"},
+			wantDeclared: true,
+		},
+		{
+			name:         "single curated shipper decides on its own",
+			path:         "yaml.safe_load",
+			wantDists:    []string{"pyyaml"},
+			wantDeclared: true,
+		},
+		{
+			name:         "declared distribution of the import's own name beside curated shippers",
+			declared:     []string{"dotenv"},
+			path:         "dotenv.get_key",
+			wantDists:    []string{"django-dotenv", "dotenv", "python-dotenv", "python-dotenv-yaml"},
+			wantDeclared: true,
+		},
+		{
+			name:         "legacy azure monolith declared, uncurated package",
+			declared:     []string{"azure"},
+			path:         "azure.storage.BlobService",
+			wantDists:    []string{"azure"},
+			wantDeclared: true,
+		},
+		{
+			name:         "legacy azure monolith declared, curated package",
+			declared:     []string{"azure"},
+			path:         "azure.identity.DefaultAzureCredential",
+			wantDists:    []string{"azure", "azure-identity"},
+			wantDeclared: true,
+		},
+		{
+			name:         "PEP 503 fallback declared",
+			declared:     []string{"requests"},
+			path:         "requests.get",
+			wantDists:    []string{"requests"},
+			wantDeclared: true,
+		},
+		{
+			name: "PEP 503 fallback undeclared",
+			path: "requests.get",
+		},
+		{
+			name:         "first-party import",
+			path:         "app.views.index",
+			wantDeclared: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			declared := map[string]bool{}
+			for _, d := range c.declared {
+				declared[d] = true
+			}
+			d := distResolver{
+				curated:    NewDistImportMap(CuratedContributions()...),
+				declared:   declared,
+				firstParty: map[string]bool{"app": true},
+			}
+			if got := d.distsFor(c.path); !slices.Equal(got, c.wantDists) {
+				t.Errorf("distsFor(%q) = %v, want %v", c.path, got, c.wantDists)
+			}
+			if got := d.importDeclared(c.path); got != c.wantDeclared {
+				t.Errorf("importDeclared(%q) = %v, want %v", c.path, got, c.wantDeclared)
 			}
 		})
 	}

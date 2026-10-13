@@ -294,3 +294,27 @@ func mustLoad(t *testing.T, dir string) *program {
 	}
 	return prog
 }
+
+// TestResolveVersions_PipeNamedLikeASurfaceVetoes: a pipe where an install surface could be, in a
+// directory the lockfile discovery does not read, is an unread surface, whether its name marks
+// it or only its content could. It vetoes the root lock's pin without being opened (the 3 s
+// guard fails a resolve that blocks on it).
+func TestResolveVersions_PipeNamedLikeASurfaceVetoes(t *testing.T) {
+	for _, pipe := range []string{"svc/bun.lock", "svc/frozen-yarn"} {
+		t.Run(pipe, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{"package-lock.json": rootLockJSON5})
+			mkfifo(t, dir, pipe)
+			done := make(chan plugin.DependencyVersionResult, 1)
+			go func() { done <- resolveJS(t, dir, "json5") }()
+			select {
+			case res := <-done:
+				mustUnresolved(t, res)
+				if res.Partiality.Complete {
+					t.Fatalf("result must be partial; got %+v", res.Partiality)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("blocked opening the pipe at %s", pipe)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -451,6 +452,20 @@ func TestGradleBuildSafe(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
 		}, false},
+		{"a wrapper directory that can't be searched", func(t *testing.T, dir string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root searches a mode-000 directory")
+			}
+			writeFile(t, filepath.Join(dir, "build.gradle"), safe)
+			wrapper := filepath.Join(dir, "gradle", "wrapper")
+			if err := os.MkdirAll(wrapper, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(wrapper, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(wrapper, 0o755) })
+		}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -573,6 +588,23 @@ func TestGradle_AncestorBuild(t *testing.T) {
 		}
 	})
 
+	// The same rule at the ancestor search. No build can witness it end to end: every directory
+	// gradleFilesIn looks in above the build directory is on the path the build directory was
+	// reached through, so Lstat there can't fail with EACCES unless the build directory's own
+	// checks fail first. So the classification is pinned on gradleFilesIn itself.
+	t.Run("R6-N1 a name in an unsearchable directory counts as present", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		dir := t.TempDir()
+		chmod(t, dir, 0)
+		t.Cleanup(func() { chmod(t, dir, 0o755) })
+		want := filepath.Join(dir, "settings.gradle")
+		if got := gradleFilesIn(dir, "settings.gradle"); len(got) != 1 || got[0] != want {
+			t.Errorf("gradleFilesIn = %v, want [%s]", got, want)
+		}
+	})
+
 	// Maven never reads a Gradle settings script, so one above a Maven-only build costs nothing.
 	t.Run("a Maven build directory under a Gradle settings script", func(t *testing.T) {
 		checkout := t.TempDir()
@@ -587,18 +619,44 @@ func TestGradle_AncestorBuild(t *testing.T) {
 
 // A wrapper distribution is a Gradle home whose init.d runs on every build it starts, so only
 // Gradle's own distributions are SAFE (gradlewrapper.StockGradleWrapper, which pipeline's root
-// admission uses too): exactly one distributionUrl, naming an https services.gradle.org
-// distribution in the form Gradle publishes. Anything else is not, whether or not Gradle would
-// read it as Gradle's own.
+// admission uses too). The wrapper reads its properties with java.util.Properties, so they are
+// read default-deny: every line key=value exactly, keys gradle init writes, no backslash but \:
+// or \= in a value, no repeated key, bases in the Gradle user home, and one distributionUrl
+// naming an https services.gradle.org distribution in the form Gradle publishes. Anything else is
+// not, whether or not Gradle would read it as Gradle's own.
 func TestGradleWrapperSafe(t *testing.T) {
 	const own = "https\\://services.gradle.org/distributions/gradle-8.5-bin.zip"
+	const stock = "distributionUrl=" + own + "\n"
+	const written = "distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\n" + stock +
+		"networkTimeout=10000\nvalidateDistributionUrl=true\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\n"
 	for _, tt := range []struct {
 		name  string
 		props string
 		safe  bool
 	}{
 		{"Gradle's own distribution", "distributionUrl=" + own + "\n", true},
-		{"colon separator and spaces", "  distributionUrl : " + own + "\n", true},
+		{"the file gradle wrapper writes", written, true},
+		{"with a checksum", written + "distributionSha256Sum=" + strings.Repeat("ab", 32) + "\n", true},
+		{"a blank line", "\n" + stock + "\n", true},
+		{"colon separator and spaces", "  distributionUrl : " + own + "\n", false},
+		{"colon separator", "distributionUrl:" + own + "\n", false},
+		{"leading whitespace", " " + stock, false},
+		{"a whitespace-only line", stock + " \n", false},
+		{"a key gradle init doesn't write", stock + "org.gradle.jvmargs=-Xmx1g\n", false},
+		{"a backslash in a comment", "# a \\ b\n" + stock, false},
+		// R6-B1: the last of a repeated key wins, whatever separates it or however it is spelled.
+		{"WA a stock line, then a second key separated by whitespace", stock + "distributionUrl https\\://gradle.example.com/gradle-8.5-bin.zip\n", false},
+		{"WB a stock line, then a \\u-escaped key", stock + "distributionUr\\u006c=https\\://gradle.example.com/gradle-8.5-bin.zip\n", false},
+		{"WC a stock line, then a key with a plain escape", stock + "distribution\\Url=https\\://gradle.example.com/gradle-8.5-bin.zip\n", false},
+		{"WD the distribution kept in the project", "distributionBase=PROJECT\ndistributionPath=wrapper/dists\n" + stock + "zipStoreBase=PROJECT\nzipStorePath=wrapper/dists\n", false},
+		{"distributionBase in the project", "distributionBase=PROJECT\n" + stock, false},
+		{"zipStoreBase in the project", "zipStoreBase=PROJECT\n" + stock, false},
+		{"a distributionPath reaching out of the user home", "distributionPath=../../work/repo/dists\n" + stock, false},
+		{"an absolute zipStorePath", "zipStorePath=/opt/dists\n" + stock, false},
+		{"a stock line ending in a continuation", "distributionUrl=" + own + "\\\n#.example.com/gradle-8.5-bin.zip\n", false},
+		{"whitespace before =", "distributionUrl =" + own + "\n", false},
+		{"a tab before =, after a stock line", stock + "distributionUrl\t=https\\://gradle.example.com/gradle-8.5-bin.zip\n", false},
+		{"a lone CR inside a comment hides a second entry", stock + "# c\rdistributionUrl=https\\://gradle.example.com/gradle-8.5-bin.zip\n", false},
 		{"the -all distribution", "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-all.zip\n", true},
 		{"space separator", "distributionUrl " + own + "\n", false},
 		{"two entries, Gradle's own last", "distributionUrl=https\\://gradle.example.com/g.zip\ndistributionUrl=" + own + "\n", false},
@@ -651,6 +709,25 @@ func TestGradleWrapperSafe(t *testing.T) {
 		checkout := t.TempDir()
 		writeFile(t, filepath.Join(checkout, "gradle", "wrapper", "gradle-wrapper.properties"), "distributionUrl=https\\://gradle.example.com/g.zip\n")
 		writeFile(t, filepath.Join(checkout, "svc", "build.gradle"), "")
+		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); ok {
+			t.Errorf("gradleWrapperSafe = true (%s), want false", why)
+		}
+	})
+	t.Run("a wrapper directory above the build directory that can't be searched", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		checkout := t.TempDir()
+		wrapper := filepath.Join(checkout, "gradle", "wrapper")
+		writeFile(t, filepath.Join(wrapper, "gradle-wrapper.properties"), "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n")
+		writeFile(t, filepath.Join(checkout, "svc", "build.gradle"), "")
+		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); !ok {
+			t.Fatalf("control: gradleWrapperSafe = false (%s), want true", why)
+		}
+		if err := os.Chmod(wrapper, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(wrapper, 0o755) })
 		if why, ok := gradleWrapperSafe(filepath.Join(checkout, "svc")); ok {
 			t.Errorf("gradleWrapperSafe = true (%s), want false", why)
 		}

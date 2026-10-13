@@ -148,6 +148,8 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 		sc.configIndexes(c, base, data)
 		if condaEnvironment(base, data) {
 			sc.veto(c, "conda environment file: conda installs its packages and its pip section, which the lockfile does not describe")
+		} else if manager := environmentManifest(base, data); manager != "" {
+			sc.veto(c, "%s: its environment manager installs the packages it lists, which the lockfile does not describe", manager)
 		}
 		kind := installSurface(rel, data)
 		if kind == "" {
@@ -474,6 +476,76 @@ func condaEnvironment(base string, data []byte) bool {
 		}
 	}
 	return false
+}
+
+// environmentManifest names the environment manifest or lock file data is, or "". Like a
+// conda environment file, each is installed by its manager (pixi, conda-lock, conda, spack,
+// devbox, Nix) without a command naming the packages it lists, conda or PyPI.
+func environmentManifest(base string, data []byte) string {
+	switch {
+	case base == "pixi.toml" || pixiTOML(data):
+		return "pixi manifest"
+	case base == "pixi.lock" || yamlHas(data, "environments", "packages"):
+		return "pixi lock file"
+	case strings.Contains(base, "conda-lock") || yamlHas(data, "metadata", "package"):
+		return "conda lock file"
+	case condaExplicitRe.Match(data):
+		return "conda explicit spec"
+	case base == "spack.yaml" || base == "spack.lock" || yamlHas(data, "spack") || yamlHas(data, "concrete_specs"):
+		return "spack environment"
+	case base == "devbox.json" || base == "devbox.lock":
+		return "devbox environment"
+	case path.Ext(base) == ".nix" && nixPythonRe.Match(data):
+		return "Nix expression with Python packages"
+	}
+	return ""
+}
+
+// condaExplicitRe is the marker line of a conda explicit spec (conda list --explicit, a
+// conda-lock render), which conda create --file installs.
+var condaExplicitRe = regexp.MustCompile(`(?m)^@EXPLICIT[ \t]*\r?$`)
+
+// nixPythonRe is a Nix expression's reference to Python (python3, python312Packages,
+// buildPythonPackage) or to a Python environment builder (poetry2nix, uv2nix, mach-nix).
+var nixPythonRe = regexp.MustCompile(`(?i)python|2nix|mach-nix`)
+
+// pixiTOML reports TOML that pixi reads as a manifest: a [tool.pixi] table, or PyPI
+// dependencies at the top level or in a feature.
+func pixiTOML(data []byte) bool {
+	if !bytes.Contains(data, []byte("pixi")) && !bytes.Contains(data, []byte("pypi-dependencies")) {
+		return false
+	}
+	var doc map[string]any
+	if _, err := toml.Decode(string(data), &doc); err != nil {
+		return false
+	}
+	if tool, ok := doc["tool"].(map[string]any); ok && tool["pixi"] != nil {
+		return true
+	}
+	if doc["pypi-dependencies"] != nil {
+		return true
+	}
+	features, _ := doc["feature"].(map[string]any)
+	for _, f := range features {
+		if f, ok := f.(map[string]any); ok && f["pypi-dependencies"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// yamlHas reports YAML (or JSON) whose top level has every one of keys.
+func yamlHas(data []byte, keys ...string) bool {
+	var doc map[string]any
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	for _, k := range keys {
+		if doc[k] == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // dockerfileContent reports a Dockerfile by its content, whatever its name (docker/web.prod,

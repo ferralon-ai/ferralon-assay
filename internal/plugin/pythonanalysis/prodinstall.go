@@ -149,6 +149,9 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			return nil // an image, a font or other data: neither text nor an archive
 		}
 		sc.configIndexes(c, base, data)
+		if condaEnvironment(base, data) {
+			sc.veto(c, "conda environment file: conda installs its packages and its pip section, which the lockfile does not describe")
+		}
 		kind := installSurface(rel, data)
 		if kind == "" {
 			return nil
@@ -444,6 +447,32 @@ func installSurface(rel string, data []byte) string {
 		return "json"
 	}
 	return "text"
+}
+
+// condaEnvironment reports a conda environment file (environment.yml, binder/environment.yml):
+// YAML whose top-level dependencies is a list, beside channels, with a pip section, or under
+// an environment file name. conda env create, mamba and repo2docker install it without a
+// command naming the packages.
+func condaEnvironment(base string, data []byte) bool {
+	var doc map[string]any
+	if yaml.Unmarshal(data, &doc) != nil {
+		return false
+	}
+	deps, ok := doc["dependencies"].([]any)
+	if !ok {
+		return false
+	}
+	if _, ok := doc["channels"]; ok || strings.HasPrefix(base, "environment") {
+		return true
+	}
+	for _, d := range deps {
+		if m, ok := d.(map[string]any); ok {
+			if _, ok := m["pip"]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dockerfileContent reports a Dockerfile by its content, whatever its name (docker/web.prod,

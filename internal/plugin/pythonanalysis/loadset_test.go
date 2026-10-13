@@ -978,6 +978,16 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		{name: "lowercase Dockerfile instructions in a heredoc", files: withLock(map[string]string{"deploy/build.sh": "cat > Dockerfile <<EOF\nfrom python:3.12\ncopy requirements/docker.txt requirements.txt\nrun pip install -r requirements.txt\nEOF\n", "requirements.txt": pinnedRuntimeExport, "requirements/docker.txt": "black==24.4.2\npathspec==0.12.1\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "Dockerfile instructions in a file not read as a Dockerfile"},
 		{name: "control: prose that starts a line with Add or From is not an instruction", files: withLock(map[string]string{"README.md": "Add the runtime requirements:\n\n    pip install -r requirements.txt\n\nFrom then on the app runs.\n", "requirements.txt": pinnedRuntimeExport}), pkg: "pkg:pypi/black@24.4.2", refute: true},
 
+		// A conda environment file installs packages and a pip section without naming them in a
+		// command.
+		{name: "conda environment.yml with a pip section", files: withLock(map[string]string{"environment.yml": "name: app\ndependencies:\n  - python=3.12\n  - pip\n  - pip:\n      - black==24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "conda environment file"},
+		{name: "a conda file by its channels", files: withLock(map[string]string{"ci/py.yml": "channels:\n  - conda-forge\ndependencies:\n  - python=3.12\n  - black=24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "conda environment file"},
+		{name: "a conda file by its pip section alone", files: withLock(map[string]string{"deploy/conda.yaml": "dependencies:\n  - python=3.12\n  - pip:\n      - black==24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "conda environment file"},
+		{name: "environment.yaml by its name alone", files: withLock(map[string]string{"environment.yaml": "dependencies:\n  - python=3.12\n  - black=24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "conda environment file"},
+		{name: "binder/environment.yml", files: withLock(map[string]string{"binder/environment.yml": "dependencies:\n  - python=3.12\n  - black=24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "conda environment file"},
+		{name: "control: a channels list without dependencies is not a conda file", files: withLock(map[string]string{"deploy/notify.yml": "channels:\n  - builds\n  - releases\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "control: a Helm chart's dependencies are not a conda file", files: withLock(map[string]string{"deploy/chart/Chart.yaml": "apiVersion: v2\nname: app\nversion: 0.1.0\ndependencies:\n  - name: redis\n    version: 18.0.0\n    repository: https://charts.bitnami.com/bitnami\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
+
 		// Files the scan cannot read as text: text in any Unicode encoding is decoded and
 		// read; an archive or executable can bundle distributions and blocks every refutation.
 		{name: "a UTF-16LE PowerShell script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", false, true)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
@@ -1106,6 +1116,44 @@ func TestLoadSet_UnreadableRequirementFile(t *testing.T) {
 	}
 	if res.Refutation != nil {
 		t.Fatalf("an unreadable requirement file must block refutation; got %+v", res.Refutation)
+	}
+}
+
+// TestLoadSet_UnreadableFile pins that a file the scan cannot open blocks every refutation,
+// whatever its name: it may carry install commands.
+func TestLoadSet_UnreadableFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	for _, unreadable := range []bool{false, true} {
+		dir := writeTree(t, withLock(map[string]string{"deploy/run.sh": "exec gunicorn app:app\n"}))
+		f := filepath.Join(dir, "deploy", "run.sh")
+		if unreadable {
+			if err := os.Chmod(f, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(f, 0o644) })
+		}
+		res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/pytest@8.2.0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := res.Refutation != nil; got == unreadable {
+			t.Fatalf("unreadable=%v: refuted=%v; an unreadable file must block refutation and a readable one must not", unreadable, got)
+		}
+		if !unreadable {
+			continue
+		}
+		ls := &loadSet{complete: true, reqRuntime: map[string]bool{}, installed: map[string]bool{}, projectNames: map[string]bool{}}
+		ls.locks = loadLocks(dir, ls)
+		ls.scanInstalls(dir)
+		found := false
+		for _, m := range ls.markerless {
+			found = found || strings.Contains(m, "deploy/run.sh: could not be read")
+		}
+		if !found {
+			t.Errorf("vetoes %v, want one containing %q", ls.markerless, "deploy/run.sh: could not be read")
+		}
 	}
 }
 

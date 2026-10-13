@@ -88,12 +88,13 @@ func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
 	if lockDir == lockNoGovern {
 		return nil
 	}
-	// A lockfile or a workspaces root above the governing lock means an install there puts a
-	// node_modules on every resolution path from it, whether or not one is on disk now, and
-	// npm installs a workspace member from the root's lock, not its own.
+	// A lockfile, a workspaces root or a package.json declaring dependencies above the
+	// governing lock means an install there puts a node_modules on every resolution path from
+	// it, whether or not one is on disk now, and npm installs a workspace member from the
+	// root's lock, not its own.
 	for d := lockDir; d != ""; {
 		d = lockParent(d)
-		if lc.hasLock(d) || lc.declaresWorkspaces(d) {
+		if lc.hasLock(d) || lc.declaresInstall(d) {
 			return nil
 		}
 	}
@@ -274,21 +275,27 @@ func (lc *lockClosures) governingLock(dir string) string {
 	return found
 }
 
-// declaresWorkspaces reports whether dir's package.json declares workspaces. One that cannot
-// be read or decoded counts, since npm would not install from it as this lane reads it.
-func (lc *lockClosures) declaresWorkspaces(dir string) bool {
+// declaresInstall reports whether dir's package.json declares workspaces or a non-empty
+// dependency field of any kind: an install there needs no lockfile. One that cannot be read or
+// decoded counts, since npm would not install from it as this lane reads it.
+func (lc *lockClosures) declaresInstall(dir string) bool {
 	data, err := os.ReadFile(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false
 	}
-	var m struct {
-		Workspaces json.RawMessage `json:"workspaces"`
-	}
+	var m map[string]json.RawMessage
 	if err != nil || json.Unmarshal(data, &m) != nil {
 		return true
 	}
-	w := strings.TrimSpace(string(m.Workspaces))
-	return w != "" && w != "null" && w != "[]" && w != "{}"
+	for _, field := range []string{"workspaces", "dependencies", "devDependencies", "optionalDependencies",
+		"peerDependencies", "bundleDependencies", "bundledDependencies"} {
+		switch strings.TrimSpace(string(m[field])) {
+		case "", "null", "[]", "{}", "false":
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (lc *lockClosures) hasLock(dir string) bool {
@@ -572,11 +579,11 @@ var (
 var tsConfigName = regexp.MustCompile(`^(?:tsconfig|jsconfig)(?:\.[^/]*)?\.json$`)
 
 // installerMarkers name files that mean something other than npm installs (or installed)
-// packages here: a yarn, pnpm or bun lockfile, or a Yarn Plug'n'Play runtime. Their layout
-// (yarn and bun hoisting, pnpm's .pnpm store and hidden hoist, PnP's own resolution map)
-// differs from the npm lock's positions.
+// packages here: a yarn, pnpm or bun lockfile, a pnpm workspace root, or a Yarn Plug'n'Play
+// runtime. Their layout (yarn and bun hoisting, pnpm's .pnpm store and hidden hoist, PnP's own
+// resolution map) differs from the npm lock's positions.
 var installerMarkers = map[string]bool{
-	"yarn.lock": true, "pnpm-lock.yaml": true, "bun.lock": true, "bun.lockb": true,
+	"yarn.lock": true, "pnpm-lock.yaml": true, "pnpm-workspace.yaml": true, "bun.lock": true, "bun.lockb": true,
 	".pnp.cjs": true, ".pnp.js": true, ".pnp.loader.mjs": true,
 }
 

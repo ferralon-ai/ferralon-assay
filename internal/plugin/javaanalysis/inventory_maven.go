@@ -50,9 +50,10 @@ func pomRelPath(g, a, v string) string {
 }
 
 // get returns the cached POM for a GAV, or (nil, false) on a cache-miss. Roots are searched in
-// order; the first hit wins.
+// order; the first hit wins. A GAV that cannot name a cache path, or whose POM resolves outside
+// its root, is a miss in every root: what sits there is not the cached POM.
 func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
-	if g == "" || a == "" || v == "" {
+	if !validGAV(g, a, v) {
 		return nil, false
 	}
 	key := gavKey(g, a, v)
@@ -64,10 +65,14 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 	}
 	rel := pomRelPath(g, a, v)
 	for _, root := range c.roots {
-		if root == "" {
+		path, st := inCache(root, rel)
+		if st == cacheEscape {
+			break
+		}
+		if st != cacheHit {
 			continue
 		}
-		if p, ok := parseMavenPOM(filepath.Join(root, rel)); ok {
+		if p, ok := parseMavenPOM(path); ok {
 			c.memo[key] = p
 			return p, true
 		}
@@ -79,13 +84,20 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 // digestFor reads the on-disk .sha1 sidecar of a cached artifact (jar preferred, else pom) as a
 // declared digest — no fetch, no compute (verified digest is PLAN-200). "" when absent.
 func (c *mavenCache) digestFor(g, a, v string) string {
+	if !validGAV(g, a, v) {
+		return ""
+	}
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {
 		rel := filepath.Join(strings.ReplaceAll(g, ".", "/"), a, v, a+"-"+v+ext)
 		for _, root := range c.roots {
-			if root == "" {
+			path, st := inCache(root, rel)
+			if st == cacheEscape {
+				return ""
+			}
+			if st != cacheHit {
 				continue
 			}
-			if data, err := os.ReadFile(filepath.Join(root, rel)); err == nil {
+			if data, err := os.ReadFile(path); err == nil {
 				if h := strings.TrimSpace(string(data)); h != "" {
 					return "sha1:" + strings.Fields(h)[0]
 				}

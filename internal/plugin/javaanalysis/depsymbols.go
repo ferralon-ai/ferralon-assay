@@ -24,7 +24,8 @@ import (
 // the JAR's code could call, callbacks into first-party code included (depclosure.go):
 //   - no version resolved, no cache holds the resolved version's JAR, or the build declares a
 //     classifier or non-jar type for it → tool_failure:no_dependency_artifact;
-//   - the JAR is unreadable, or some classes in it fail to parse → tool_failure.
+//   - a cached copy is unreadable or resolves outside its cache, the JAR is unreadable, or some
+//     classes in it fail to parse → tool_failure.
 // Each scoped reason is also listed run-wide in Reasons. An advisory symbol that matches
 // nothing in a fully read JAR is advisory_symbol_unresolved.
 
@@ -99,12 +100,15 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": artifact variant declared"))
 			continue
 		}
-		jarPath, ok, ambiguous := locateArtifactJar(buildDir, coordinate, v)
-		switch {
-		case ambiguous:
+		jarPath, found := locateArtifactJar(buildDir, coordinate, v)
+		switch found {
+		case jarCopiesDiffer:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": cached copies differ"))
 			continue
-		case !ok:
+		case jarUnreadable:
+			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, coordinate+":"+v+": cached copy unreadable or outside the cache"))
+			continue
+		case jarMissing:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v))
 			continue
 		}

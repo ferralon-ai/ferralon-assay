@@ -26,11 +26,11 @@ import (
 //
 // e.g. ("com.google.code.gson:gson", "2.10.1") ->
 // "com/google/code/gson/gson/2.10.1/gson-2.10.1.jar". ok is false for a coordinate
-// that is not "groupId:artifactId" or an empty version — a malformed input never
-// yields a path that could accidentally match an unrelated file.
+// that is not "groupId:artifactId", or any part validGAV rejects — a malformed input
+// never yields a path that could match an unrelated file.
 func mavenJarRelPath(coordinate, version string) (string, bool) {
 	group, artifact, ok := splitCoordinate(coordinate)
-	if !ok || version == "" {
+	if !ok || !validGAV(group, artifact, version) {
 		return "", false
 	}
 	groupPath := strings.ReplaceAll(group, ".", "/")
@@ -52,22 +52,76 @@ func splitCoordinate(coordinate string) (group, artifact string, ok bool) {
 	return group, artifact, true
 }
 
+// validCacheSegment reports whether s can stand for one level of a cache path: it is
+// non-empty and holds no path separator, no "..", and no NUL. Coordinates and versions come
+// from the repository's own build files, so a crafted one ("../../planted/fake") must never
+// steer a lookup out of the cache.
+func validCacheSegment(s string) bool {
+	return s != "" && s != "." && !strings.ContainsAny(s, "/\\\x00") && !strings.Contains(s, "..")
+}
+
+// validGAV reports whether a group, artifact and version are all valid cache segments.
+func validGAV(group, artifact, version string) bool {
+	return validCacheSegment(group) && validCacheSegment(artifact) && validCacheSegment(version)
+}
+
+// cacheLookup is the outcome of looking one relative path up under a cache root.
+type cacheLookup int
+
+const (
+	cacheMiss   cacheLookup = iota // nothing is there, or only a directory
+	cacheHit                       // a regular file whose real path stays inside the cache
+	cacheEscape                    // the name exists but resolves outside the cache, or cannot be resolved
+)
+
+// inCache looks rel up under root. A hit returns the file's real path: every symlink resolved,
+// and under root's own real path, so a symlinked root is fine but a link out of the cache is
+// not. What an escaping link points at is not the build's cached artifact.
+func inCache(root, rel string) (string, cacheLookup) {
+	if root == "" {
+		return "", cacheMiss
+	}
+	candidate := filepath.Join(root, rel)
+	if _, err := os.Lstat(candidate); err != nil {
+		return "", cacheMiss
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", cacheEscape
+	}
+	real, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", cacheEscape
+	}
+	if r, err := filepath.Rel(realRoot, real); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", cacheEscape
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return "", cacheEscape
+	}
+	if info.IsDir() {
+		return "", cacheMiss
+	}
+	return real, cacheHit
+}
+
 // LocateDependencyJar searches the given local Maven repository roots for the
-// artifact's JAR and returns the first existing path. ok is false when the JAR is
-// absent from every root (the caller declares a completeness hazard, it does not
-// fetch) or when the coordinate/version is malformed.
+// artifact's JAR and returns the first one found, by its real path. ok is false when the
+// JAR is absent from every root (the caller declares a completeness hazard, it does not
+// fetch), when the coordinate/version is malformed, or when the first copy found resolves
+// outside its root.
 func LocateDependencyJar(repoRoots []string, coordinate, version string) (string, bool) {
 	rel, ok := mavenJarRelPath(coordinate, version)
 	if !ok {
 		return "", false
 	}
 	for _, root := range repoRoots {
-		if root == "" {
-			continue
-		}
-		candidate := filepath.Join(root, rel)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
+		switch p, st := inCache(root, rel); st {
+		case cacheHit:
+			return p, true
+		case cacheEscape:
+			return "", false
 		}
 	}
 	return "", false
@@ -86,41 +140,59 @@ func mavenRepoRoots(buildDir string) []string {
 	return roots
 }
 
+// jarLookup is the outcome of locating a dependency JAR across the local caches.
+type jarLookup int
+
+const (
+	jarMissing      jarLookup = iota // no cache holds the JAR
+	jarFound                         // every copy found holds the same bytes
+	jarCopiesDiffer                  // two copies hold different bytes
+	jarUnreadable                    // a copy cannot be read, resolves outside its cache, or the coordinate cannot name a cache path
+)
+
 // locateArtifactJar finds a dependency JAR in the build's local caches. Both the Maven
 // repositories and the Gradle module cache are searched whatever the build tool, since a
 // Gradle build can read the Maven local repository (mavenLocal()) and nothing here says
-// which copy it used. ok is false when no cache holds the JAR. ambiguous is true when two
-// copies differ, or one cannot be read to compare: either could be the bytes the build ran,
-// so neither is offered.
-func locateArtifactJar(buildDir, coordinate, version string) (path string, ok, ambiguous bool) {
+// which copy it used. Only jarFound returns a path: when copies differ, or one cannot be read
+// or leaves its cache, any of them could be the bytes the build ran, so none is offered.
+func locateArtifactJar(buildDir, coordinate, version string) (string, jarLookup) {
 	rel, ok := mavenJarRelPath(coordinate, version)
 	if !ok {
-		return "", false, false
+		return "", jarUnreadable
 	}
 	group, artifact, _ := splitCoordinate(coordinate)
 	var copies []string
+	escaped := false
 	for _, root := range mavenRepoRoots(buildDir) {
-		if candidate := filepath.Join(root, rel); isFile(candidate) {
-			copies = append(copies, candidate)
+		switch p, st := inCache(root, rel); st {
+		case cacheHit:
+			copies = append(copies, p)
+		case cacheEscape:
+			escaped = true
 		}
 	}
-	copies = append(copies, gradleJarCopies(gradleCacheRoots(buildDir), group, artifact, version)...)
-	switch len(copies) {
-	case 0:
-		return "", false, false
-	case 1:
-		return copies[0], true, false
+	gradle, gradleEscaped := gradleJarCopies(gradleCacheRoots(buildDir), group, artifact, version)
+	copies = append(copies, gradle...)
+	if escaped || gradleEscaped {
+		return "", jarUnreadable
 	}
-	want, err := fileDigest(copies[0])
-	if err != nil {
-		return "", false, true
+	if len(copies) == 0 {
+		return "", jarMissing
 	}
-	for _, c := range copies[1:] {
-		if got, err := fileDigest(c); err != nil || got != want {
-			return "", false, true
+	digests := make([]string, len(copies))
+	for i, c := range copies {
+		d, err := fileDigest(c)
+		if err != nil {
+			return "", jarUnreadable
+		}
+		digests[i] = d
+	}
+	for _, d := range digests[1:] {
+		if d != digests[0] {
+			return "", jarCopiesDiffer
 		}
 	}
-	return copies[0], true, false
+	return copies[0], jarFound
 }
 
 // gradleJarCopies lists every copy of the JAR in the Gradle module cache layout:
@@ -128,28 +200,25 @@ func locateArtifactJar(buildDir, coordinate, version string) (path string, ok, a
 //	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.jar
 //
 // Gradle keeps the group dotted and interposes a content-hash directory, so every child of
-// the version directory is checked, in sorted order.
-func gradleJarCopies(roots []string, group, artifact, version string) []string {
+// the version directory is checked, in sorted order. escaped is true when any copy resolves
+// outside its cache root.
+func gradleJarCopies(roots []string, group, artifact, version string) (copies []string, escaped bool) {
 	jar := artifact + "-" + version + ".jar"
-	var out []string
 	for _, root := range roots {
-		versionDir := filepath.Join(root, group, artifact, version)
-		hashDirs, err := os.ReadDir(versionDir)
+		hashDirs, err := os.ReadDir(filepath.Join(root, group, artifact, version))
 		if err != nil {
 			continue
 		}
 		for _, hd := range hashDirs {
-			if candidate := filepath.Join(versionDir, hd.Name(), jar); hd.IsDir() && isFile(candidate) {
-				out = append(out, candidate)
+			switch p, st := inCache(root, filepath.Join(group, artifact, version, hd.Name(), jar)); st {
+			case cacheHit:
+				copies = append(copies, p)
+			case cacheEscape:
+				escaped = true
 			}
 		}
 	}
-	return out
-}
-
-func isFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	return copies, escaped
 }
 
 // fileDigest returns the SHA-256 of a file's contents.

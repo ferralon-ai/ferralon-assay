@@ -34,9 +34,10 @@ func newGradleCache(root string) *gradleCache {
 }
 
 // pom returns the cached POM for a locked coordinate, or (nil,false) on a cache-miss. The first
-// hash dir (lexicographically) that holds the POM wins — deterministic.
+// hash dir (lexicographically) that holds the POM wins — deterministic. A coordinate that cannot
+// name a cache path, or a POM that resolves outside the cache, is a miss.
 func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
-	if c.root == "" || g == "" || a == "" || v == "" {
+	if c.root == "" || !validGAV(g, a, v) {
 		return nil, false
 	}
 	base := filepath.Join(c.root, g, a, v)
@@ -52,7 +53,14 @@ func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
 	}
 	sort.Strings(names)
 	for _, h := range names {
-		if p, ok := parseMavenPOM(filepath.Join(base, h, a+"-"+v+".pom")); ok {
+		path, st := inCache(c.root, filepath.Join(g, a, v, h, a+"-"+v+".pom"))
+		if st == cacheEscape {
+			return nil, false
+		}
+		if st != cacheHit {
+			continue
+		}
+		if p, ok := parseMavenPOM(path); ok {
 			return p, true
 		}
 	}
@@ -61,7 +69,7 @@ func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
 
 // digest reads the on-disk .sha1 sidecar for a locked coordinate (jar preferred), "" when absent.
 func (c *gradleCache) digest(g, a, v string) string {
-	if c.root == "" {
+	if c.root == "" || !validGAV(g, a, v) {
 		return ""
 	}
 	base := filepath.Join(c.root, g, a, v)
@@ -78,7 +86,14 @@ func (c *gradleCache) digest(g, a, v string) string {
 	sort.Strings(names)
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {
 		for _, h := range names {
-			if data, err := os.ReadFile(filepath.Join(base, h, a+"-"+v+ext)); err == nil {
+			path, st := inCache(c.root, filepath.Join(g, a, v, h, a+"-"+v+ext))
+			if st == cacheEscape {
+				return ""
+			}
+			if st != cacheHit {
+				continue
+			}
+			if data, err := os.ReadFile(path); err == nil {
 				if s := strings.TrimSpace(string(data)); s != "" {
 					return "sha1:" + strings.Fields(s)[0]
 				}

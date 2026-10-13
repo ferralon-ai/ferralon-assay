@@ -547,3 +547,52 @@ func TestResolveVersions_AllOrderDeterministic(t *testing.T) {
 		})
 	}
 }
+
+// --- npm alias entries ---------------------------------------------------------
+
+// An npm alias ("qs-old": "npm:qs@6.5.1") installs a real package under another name. A v1
+// package-lock and yarn.lock key the entry by the alias, so the real package's copy is
+// filed under no name the resolver reads: the alias entry is UNRESOLVED, the lockfile reads
+// as unparseable, and the real package's other copy cannot decide its version alone.
+func TestResolveVersions_NpmAliasEntriesVeto(t *testing.T) {
+	cases := []struct{ name, file, lock, want string }{
+		{"package-lock v1", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "qs-old": {"version": "npm:qs@6.5.1"}
+}}`, "qs"},
+		{"package-lock v1 nested", "package-lock.json", `{"lockfileVersion": 1, "dependencies": {
+  "qs": {"version": "6.5.2"},
+  "x": {"version": "1.0.0", "dependencies": {"qs-old": {"version": "npm:qs@6.5.1"}}}
+}}`, "qs"},
+		{"yarn classic", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic second descriptor", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\nqs-old@^1.0.0, \"qs-old@npm:qs@6.5.1\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn classic bare alias", "yarn.lock", "qs@^6.5.2:\n  version \"6.5.2\"\n\n\"qs-old@npm:qs\":\n  version \"6.5.1\"\n", "qs"},
+		{"yarn berry", "yarn.lock", "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:qs@npm:6.5.1\":\n  version: 6.5.1\n", "qs"},
+		{"yarn berry scoped target", "yarn.lock", "__metadata:\n  version: 6\n\n\"@s/qs@npm:^6.5.2\":\n  version: 6.5.2\n\n\"qs-old@npm:@s/qs@npm:6.5.1\":\n  version: 6.5.1\n", "@s/qs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{tc.file: tc.lock})
+			res := resolveJS(t, dir, tc.want)
+			mustUnresolved(t, res)
+			if res.Partiality.Complete {
+				t.Fatal("a lockfile holding an npm alias must read as partial")
+			}
+			alias := resolveJS(t, dir, "qs-old")
+			mustUnresolved(t, alias)
+		})
+	}
+}
+
+// Berry writes every ordinary registry range as "name@npm:<range>"; those are not aliases.
+func TestResolveVersions_BerryNpmRangeIsNotAlias(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"yarn.lock": "__metadata:\n  version: 6\n\n\"qs@npm:^6.5.2, qs@npm:6.5.2\":\n  version: 6.5.2\n\n\"left-pad@npm:*\":\n  version: 1.3.0\n",
+	})
+	res := resolveJS(t, dir, "qs")
+	mustMatch(t, res, "6.5.2")
+	if !res.Partiality.Complete {
+		t.Fatalf("berry npm: ranges must not degrade partiality; got %+v", res.Partiality)
+	}
+	mustMatch(t, resolveJS(t, dir, "left-pad"), "1.3.0")
+}

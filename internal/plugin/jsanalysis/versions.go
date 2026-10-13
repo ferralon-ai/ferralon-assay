@@ -39,7 +39,9 @@ import (
 //   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure), and
 //     every Found Match is UNRESOLVED: the broken file may hold another copy of any
 //     coordinate, so the readable lockfiles cannot decide its version. A coordinate no
-//     readable lockfile holds stays not found.
+//     readable lockfile holds stays not found. A v1 package-lock or yarn.lock that holds an
+//     npm alias entry takes the same path: the entry is keyed by the alias, so the real
+//     package's copy is filed under no name this resolver reads.
 //
 // Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
 // out of several distinct versions. See its doc comment for the rule.
@@ -298,10 +300,13 @@ func parsePackageLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 		return out, true
 	}
 
+	readable := true
 	for _, name := range slices.Sorted(maps.Keys(pl.Dependencies)) {
-		collectV1(name, pl.Dependencies[name], &out)
+		if collectV1(name, pl.Dependencies[name], &out) {
+			readable = false
+		}
 	}
-	return out, true
+	return out, readable
 }
 
 // packageLockName derives the dependency's npm name from a v2/v3 "packages" key. The key
@@ -321,12 +326,23 @@ func packageLockName(installPath, explicit string) string {
 }
 
 // collectV1 walks the v1 "dependencies" tree, emitting one ResolvedDependency per node
-// (nested transitive deps included).
-func collectV1(name string, dep packageLockDep, out *[]plugin.ResolvedDependency) {
-	*out = append(*out, npmResolved(name, dep.Version))
-	for _, child := range slices.Sorted(maps.Keys(dep.Dependencies)) {
-		collectV1(child, dep.Dependencies[child], out)
+// (nested transitive deps included). It reports whether the tree holds an npm alias
+// ("version": "npm:real@1.2.3"): v1 keys the entry by the alias, so the real package's copy
+// is filed under no name this parser reads. The alias entry is UNRESOLVED and the caller
+// treats the lockfile as unparseable.
+func collectV1(name string, dep packageLockDep, out *[]plugin.ResolvedDependency) bool {
+	aliased := strings.HasPrefix(strings.TrimSpace(dep.Version), "npm:")
+	if aliased {
+		*out = append(*out, npmResolved(name, ""))
+	} else {
+		*out = append(*out, npmResolved(name, dep.Version))
 	}
+	for _, child := range slices.Sorted(maps.Keys(dep.Dependencies)) {
+		if collectV1(child, dep.Dependencies[child], out) {
+			aliased = true
+		}
+	}
+	return aliased
 }
 
 // --- yarn.lock (classic v1 + berry v2+) --------------------------------------
@@ -338,15 +354,21 @@ func collectV1(name string, dep packageLockDep, out *[]plugin.ResolvedDependency
 // not a YAML metadata key) and the following indented "version" field, deriving the
 // package name from the header's first descriptor. An entry with no version line is
 // UNRESOLVED. The version-field syntax difference (quoted string vs bare) is normalized.
+//
+// An npm alias entry (yarnHeaderHasAlias) is keyed by the alias, so the real package's copy
+// is filed under no name this parser reads: the entry is UNRESOLVED and the bool is false.
 func parseYarnLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	lines := strings.Split(string(data), "\n")
 	var out []plugin.ResolvedDependency
 
 	var curName string
-	haveEntry := false
+	haveEntry, curAlias, readable := false, false, true
 	flush := func(version string) {
 		if !haveEntry {
 			return
+		}
+		if curAlias {
+			version = ""
 		}
 		out = append(out, npmResolved(curName, version))
 	}
@@ -362,10 +384,15 @@ func parseYarnLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 		if !startsWithSpace(line) && strings.HasSuffix(trimmed, ":") {
 			// Close the previous entry before opening a new one.
 			flush(pendingVersion)
-			curName = yarnHeaderName(strings.TrimSuffix(trimmed, ":"))
+			header := strings.TrimSuffix(trimmed, ":")
+			curName = yarnHeaderName(header)
 			pendingVersion = ""
 			// __metadata and other yarn metadata blocks (leading "__") are not packages.
 			haveEntry = curName != "" && !strings.HasPrefix(curName, "__")
+			curAlias = haveEntry && yarnHeaderHasAlias(header)
+			if curAlias {
+				readable = false
+			}
 			continue
 		}
 		// Indented field line: look for the version field of the current entry.
@@ -374,7 +401,30 @@ func parseYarnLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 		}
 	}
 	flush(pendingVersion)
-	return out, true
+	return out, readable
+}
+
+// yarnHeaderHasAlias reports whether any descriptor in a yarn.lock header is an npm alias:
+// classic "alias@npm:real@^1.0.0", berry "alias@npm:real@npm:^1.0.0", or a bare
+// "alias@npm:real" that names a package rather than a range. Berry's ordinary
+// "name@npm:^1.2.0" range is not an alias; a range that starts with a letter ("npm:latest")
+// cannot be told apart from a bare alias and counts as one.
+func yarnHeaderHasAlias(header string) bool {
+	for _, d := range strings.Split(header, ",") {
+		body := strings.TrimPrefix(strings.Trim(strings.TrimSpace(d), "\"'"), "@")
+		at := strings.IndexByte(body, '@')
+		if at < 0 {
+			continue
+		}
+		r, isNPM := strings.CutPrefix(body[at+1:], "npm:")
+		if !isNPM || r == "" {
+			continue
+		}
+		if strings.IndexByte(r, '@') > 0 || r[0] == '@' || (r[0] >= 'a' && r[0] <= 'z') || (r[0] >= 'A' && r[0] <= 'Z') {
+			return true
+		}
+	}
+	return false
 }
 
 // yarnHeaderName extracts the package name from a yarn.lock entry header. The header is

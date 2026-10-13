@@ -248,7 +248,7 @@ func deadAxisCases() []deadAxisCase {
 			files: map[string]string{
 				"App.csproj": `<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="[13.0.0]" />
   </ItemGroup>
 </Project>`,
 			},

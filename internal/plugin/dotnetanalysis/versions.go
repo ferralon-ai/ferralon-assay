@@ -27,7 +27,8 @@ import (
 // RANGE ("[1.0,2.0)") or a floating version ("1.2.*") rather than an exact pin, and
 // transitive dependencies are unknown without a lockfile or a full restore. Only an EXACT
 // pin (a packages.lock.json "resolved" version, a packages.config "version", or a .csproj
-// exact "Version") yields Resolved=true; a range, a float, or an unreadable entry is an
+// exact-bracket "Version" such as "[1.2.3]") yields Resolved=true; a plain .csproj "Version" is a
+// minimum, not a pin; a range, a float, or an unreadable entry is an
 // UNRESOLVED marker (Resolved=false) the predicate fails OPEN on, never fabricating a
 // not-affected. A project that could pull the package in transitively, with neither restore
 // output nor a current lockfile to say which version, contributes an UNRESOLVED copy.
@@ -353,9 +354,10 @@ type csprojRefs struct {
 	} `xml:"ItemGroup"`
 }
 
-// parseProjectFile parses a .csproj/.fsproj/.vbproj with parseMSBuild. An exact literal
-// Version (e.g. "1.2.3" or the exact-bracket "[1.2.3]") resolves; a range, a floating
-// version, an empty Version (Central Package Management — the version lives in
+// parseProjectFile parses a .csproj/.fsproj/.vbproj with parseMSBuild. Only the exact-bracket
+// Version "[1.2.3]" resolves. A plain Version "1.2.3" is a minimum (NuGet restores the lowest
+// available version at or above it, NU1603), so it is UNRESOLVED unless a current lock covers
+// it, like a range, a floating version, an empty Version (Central Package Management — the version lives in
 // Directory.Packages.props) or a reference parseMSBuild reads as specUnread is UNRESOLVED.
 // Each entry carries the declared version (Version, else VersionOverride) for the lock
 // staleness check. A file parseMSBuild can't model still lists its PackageReference ids, all
@@ -626,8 +628,8 @@ func normalizeNuGetVersion(v string) (string, bool) {
 // --- shared helpers ----------------------------------------------------------
 
 // exactNuGetPin reports whether raw is an EXACT NuGet version pin and returns the concrete
-// version. A plain version ("1.2.3", "1.2.3.4") is exact; the exact-bracket form ("[1.2.3]")
-// is exact (unwrapped). A range/interval (contains ',' or an unmatched bracket), a floating
+// version. A plain version ("1.2.3", "1.2.3.4") is exact where the format makes it so
+// (packages.config, packages.lock.json); the exact-bracket form ("[1.2.3]") is exact (unwrapped). A range/interval (contains ',' or an unmatched bracket), a floating
 // version (contains '*'), or an empty string is NOT an exact pin → UNRESOLVED.
 func exactNuGetPin(raw string) (version string, resolved bool) {
 	raw = strings.TrimSpace(raw)
@@ -646,6 +648,16 @@ func exactNuGetPin(raw string) (version string, resolved bool) {
 		return "", false
 	}
 	return raw, true
+}
+
+// packageReferencePin reports whether a PackageReference Version is an exact pin. Only the
+// exact-bracket form is: a plain version is a minimum the restore may raise.
+func packageReferencePin(raw string) (version string, resolved bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "[") {
+		return "", false
+	}
+	return exactNuGetPin(raw)
 }
 
 // nugetResolved builds a ResolvedDependency for a NuGet package. An empty/unresolved version

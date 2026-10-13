@@ -37,11 +37,12 @@ const (
 	reasonMavenArtifactVariant = plugin.PartialReasonRelationshipUnexpressed + ":maven_artifact_variant" // a declaration of this GA names a classifier or non-jar type; the node cannot say which file the build uses
 
 	// Gradle residue.
-	reasonGradleTransitive   = plugin.PartialReasonRelationshipUnexpressed + ":gradle_transitive"   // no lockfile for a project: declared-direct only, transitive edges undetermined (irreducible Gradle boundary)
-	reasonGradleUncached     = plugin.PartialReasonRelationshipUnexpressed + ":gradle_uncached"     // a locked coordinate's cached POM is absent; its out-edges undetermined
-	reasonGradleSubstitution = plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution" // a dependencySubstitution swapped identity; cached-POM edges may not match the locked entry
-	reasonGradleVariant      = plugin.PartialReasonSourceUnpinned + ":gradle_variant"               // Gradle Module Metadata (.module) variant selection not recoverable from the POM alone
-	reasonGradleLockUnparsed = plugin.PartialReasonToolFailure + ":gradle_lockfile_unparsed"        // a lockfile line or file could not be read as a coordinate; the locked node set is not known in full
+	reasonGradleTransitive      = plugin.PartialReasonRelationshipUnexpressed + ":gradle_transitive"   // no lockfile for a project: declared-direct only, transitive edges undetermined (irreducible Gradle boundary)
+	reasonGradleUncached        = plugin.PartialReasonRelationshipUnexpressed + ":gradle_uncached"     // a locked coordinate's cached POM is absent; its out-edges undetermined
+	reasonGradleSubstitution    = plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution" // a dependencySubstitution swapped identity; cached-POM edges may not match the locked entry
+	reasonGradleVariant         = plugin.PartialReasonSourceUnpinned + ":gradle_variant"               // Gradle Module Metadata (.module) variant selection not recoverable from the POM alone
+	reasonGradleLockUnparsed    = plugin.PartialReasonToolFailure + ":gradle_lockfile_unparsed"        // a lockfile line or file could not be read as a coordinate; the locked node set is not known in full
+	reasonGradleLockUnconfirmed = plugin.PartialReasonSourceUnpinned + ":gradle_lockfile_unconfirmed"  // the build scripts declare this GA at a version the lock does not hold, at no literal version, or the lock lacks it: the lock may not be what the build resolved
 )
 
 // ResolveInventory resolves the whole dependency graph for the module rooted at req.BuildDir.

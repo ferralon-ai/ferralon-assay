@@ -11,6 +11,7 @@ package javaanalysis
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,12 +110,13 @@ func (c *gradleCache) digest(g, a, v string) string {
 type lockedEntry struct {
 	group, artifact, version string
 	configs                  []string
+	projects                 []string // the project dirs whose lock holds it
 }
 
 func (e lockedEntry) ga() string { return e.group + ":" + e.artifact }
 
-// readLockfiles parses every gradle.lockfile and gradle/dependency-locks/<config>.lockfile under
-// root. Lines are "g:a:v=conf1,conf2"; "empty=..." and comments are ignored. Returns the merged
+// readLockfiles parses every lock state Gradle itself reads under root (see gradleLockProject).
+// Lines are "g:a:v=conf1,conf2"; "empty=..." and comments are ignored. Returns the merged
 // map "g:a:v" -> entry (configs accumulated), the set of lockfile rel paths, whether any lockfile
 // existed at all, and every line that is neither of those nor a coordinate ("file:line").
 // A group:artifact locked at two versions (compileClasspath at one, runtimeClasspath at another,
@@ -132,8 +134,8 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 			}
 			return nil
 		}
-		name := d.Name()
-		if name != "gradle.lockfile" && !strings.HasSuffix(name, ".lockfile") {
+		project, ok := gradleLockProject(root, path)
+		if !ok {
 			return nil
 		}
 		rel := relToBase(root, path)
@@ -161,15 +163,36 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 			key := g + ":" + a + ":" + v
 			if e, seen := out[key]; seen {
 				e.configs = mergeReasons(e.configs, configs...)
+				e.projects = mergeReasons(e.projects, project)
 				continue
 			}
-			out[key] = &lockedEntry{group: g, artifact: a, version: v, configs: configs}
+			out[key] = &lockedEntry{group: g, artifact: a, version: v, configs: configs, projects: []string{project}}
 		}
 		return nil
 	})
 	sort.Strings(files)
 	sort.Strings(unparsed)
 	return out, files, len(files) > 0, unparsed
+}
+
+// gradleLockProject reports whether path is where Gradle keeps a project's lock state, and
+// returns that project's directory: gradle.lockfile in the project directory, or
+// <configuration>.lockfile in its gradle/dependency-locks. A project directory is root or one
+// holding a build script. A *.lockfile anywhere else (a test resource, a fixture, the
+// buildscript or settings lock) is nothing Gradle resolves the build's dependencies from.
+func gradleLockProject(root, path string) (string, bool) {
+	dir, name := filepath.Dir(path), filepath.Base(path)
+	switch {
+	case name == "gradle.lockfile":
+	case strings.HasSuffix(name, ".lockfile") && filepath.Base(dir) == "dependency-locks" && filepath.Base(filepath.Dir(dir)) == "gradle":
+		dir = filepath.Dir(filepath.Dir(dir))
+	default:
+		return "", false
+	}
+	if dir == filepath.Clean(root) || len(gradleScriptsIn(dir)) > 0 {
+		return dir, true
+	}
+	return "", false
 }
 
 func splitLockLine(line string) (coord string, configs []string, ok bool) {
@@ -350,9 +373,29 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		// A line that is not a coordinate may lock one: the node set is not known in full.
 		reasons = mergeReasons(reasons, reasonGradleLockUnparsed)
 	}
+	unconfirmed := unconfirmedLocks(buildDir, lockFiles, locked, catalog)
+	nodeAt := map[string]int{} // locked key -> index of its node
 	for _, k := range keys {
 		e := locked[k]
 		ga := e.ga()
+		if unconfirmed[ga] {
+			if len(nodeIDs[ga]) == 0 {
+				purl := mavenPURL(e.group, e.artifact, "")
+				nodeIDs[ga] = []string{"||" + purl}
+				_, direct := declared[ga]
+				nodes = append(nodes, plugin.DependencyNode{
+					ID:         "||" + purl,
+					PURL:       purl,
+					Direct:     direct,
+					Artifact:   plugin.DependencyArtifact{Identity: e.artifact},
+					Provenance: plugin.DependencyProvenance{Lockfile: lockRel, Resolver: "gradle-lockfile"},
+					Partiality: plugin.Partial(reasonGradleLockUnconfirmed),
+				})
+				reasons = mergeReasons(reasons, reasonGradleLockUnconfirmed)
+			}
+			continue
+		}
+		nodeAt[k] = len(nodes)
 		cfg := ""
 		if len(e.configs) > 0 {
 			cfg = e.configs[0]
@@ -384,7 +427,11 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 	// versions gets an edge to each: the lockfile does not say which one this parent's
 	// configuration selected.
 	var edges []plugin.DependencyEdge
-	for i, k := range keys {
+	for _, k := range keys {
+		i, ok := nodeAt[k]
+		if !ok {
+			continue // unconfirmed: no version, so no POM to read edges from
+		}
 		e := locked[k]
 		parentID := nodes[i].ID
 		pom, ok := cache.pom(e.group, e.artifact, e.version)
@@ -417,31 +464,20 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		}
 	}
 	sort.Strings(declaredKeys)
+	// Nor is the version the script states for it the one that ran: a lock that lacks a declared
+	// coordinate is one the build did not write, so it vouches for no version.
 	for _, k := range declaredKeys {
 		g, a := splitGA(k)
-		version := ""
-		resolver := "gradle-script"
-		if ce, ok := catalog[k]; ok && ce.version != "" {
-			version = ce.version
-			resolver = "gradle-catalog"
-		} else if rd := declared[k]; rd.Resolved && rd.Version != "" {
-			version = rd.Version
-		}
-		nodeReasons := []string{reasonGradleTransitive}
-		if version == "" {
-			nodeReasons = append(nodeReasons, plugin.PartialReasonSourceUnpinned)
-		}
-		purl := mavenPURL(g, a, version)
+		purl := mavenPURL(g, a, "")
 		nodes = append(nodes, plugin.DependencyNode{
 			ID:         "||" + purl,
 			PURL:       purl,
-			Version:    version,
 			Direct:     true,
 			Artifact:   plugin.DependencyArtifact{Identity: a},
-			Provenance: plugin.DependencyProvenance{Resolver: resolver},
-			Partiality: plugin.Partial(nodeReasons...),
+			Provenance: plugin.DependencyProvenance{Resolver: "gradle-script"},
+			Partiality: plugin.Partial(reasonGradleTransitive, reasonGradleLockUnconfirmed),
 		})
-		reasons = mergeReasons(reasons, reasonGradleTransitive)
+		reasons = mergeReasons(reasons, reasonGradleTransitive, reasonGradleLockUnconfirmed)
 	}
 
 	return assembleInventory(nodes, edges, graphPartiality(reasons, len(nodes)))
@@ -493,6 +529,189 @@ func splitGA(k string) (g, a string) {
 		return k[:i], k[i+1:]
 	}
 	return k, ""
+}
+
+// unconfirmedLocks returns the group:artifacts whose locked versions the build scripts do not
+// confirm. A lock outlives the script edit that stales it, and Gradle reads it only for the
+// configurations locking covers. Each project's lock is checked against the scripts that
+// declare for that project: its own build script and, for a subproject, the root's (whose
+// allprojects/subprojects blocks reach it). A GA's locked versions stand only when every such
+// declaration is consistent with that project's lock: a literal version must be one it holds,
+// and a dynamic, interpolated or absent one (a platform or constraint supplies it) is
+// consistent only when locking is enforced for the project, since then Gradle fails any
+// resolution that departs from the lock. A declaration the project's lock lacks, while some
+// other lock holds the GA, leaves it unconfirmed too, and a script that cannot be read
+// confirms nothing in its project's lock. A catalog alias's version stands in for a
+// declaration that has none.
+func unconfirmedLocks(root string, lockFiles []string, locked map[string]*lockedEntry, catalog map[string]catalogEntry) map[string]bool {
+	byProject := map[string]map[string]map[string]bool{} // project dir -> "g:a" -> versions
+	for _, rel := range lockFiles {
+		if dir, ok := gradleLockProject(root, filepath.Join(root, filepath.FromSlash(rel))); ok {
+			byProject[dir] = map[string]map[string]bool{} // a lock that holds nothing still answers for its project
+		}
+	}
+	anyLock := map[string]bool{}
+	for _, e := range locked {
+		anyLock[e.ga()] = true
+		for _, dir := range e.projects {
+			if byProject[dir] == nil {
+				byProject[dir] = map[string]map[string]bool{}
+			}
+			if byProject[dir][e.ga()] == nil {
+				byProject[dir][e.ga()] = map[string]bool{}
+			}
+			byProject[dir][e.ga()][e.version] = true
+		}
+	}
+	out := map[string]bool{}
+	for dir, versions := range byProject {
+		scripts := gradleScriptsIn(dir)
+		if filepath.Clean(dir) != filepath.Clean(root) {
+			scripts = append(scripts, gradleScriptsIn(root)...)
+		}
+		declarations, readAll := gradleDeclarations(scripts)
+		if !readAll {
+			for ga := range versions {
+				out[ga] = true
+			}
+			continue
+		}
+		enforced := gradleLockingEnforced(scripts)
+		for ga, decls := range declarations {
+			if !anyLock[ga] {
+				continue // absent from every lock: the caller reports it unresolved
+			}
+			if versions[ga] == nil {
+				out[ga] = true
+				continue
+			}
+			for _, d := range decls {
+				v := d.Version
+				if !d.Resolved {
+					v = catalog[ga].version
+				}
+				if !exactGradleVersion(v) {
+					v = "" // a range, dynamic selector or interpolation names no one version
+				}
+				if v == "" && enforced {
+					continue
+				}
+				if !versions[ga][v] {
+					out[ga] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// gradleScriptsIn returns the build scripts directly in dir that are regular files.
+func gradleScriptsIn(dir string) []string {
+	var out []string
+	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// gradleLockingEnforced reports whether scripts lock every configuration in Gradle's default,
+// strict mode (dependencyLocking { lockAllConfigurations() } with no LENIENT in any of them).
+// Locking set up any other way (per configuration, in a plugin or an init script) is not
+// recognized, and a declaration only the lock can version then stays unconfirmed.
+func gradleLockingEnforced(scripts []string) bool {
+	all := false
+	for _, gp := range scripts {
+		data, err := os.ReadFile(gp)
+		if err != nil {
+			return false
+		}
+		src := stripGradleComments(string(data))
+		if strings.Contains(src, "LENIENT") {
+			return false
+		}
+		all = all || strings.Contains(src, "lockAllConfigurations()")
+	}
+	return all
+}
+
+// exactGradleVersion reports whether v names exactly one version: not empty, not interpolated,
+// and not a dynamic selector (1.+, latest.release, a [1.0,2.0) range). A strict pin (1.0!!) is
+// not interpreted and counts as dynamic.
+func exactGradleVersion(v string) bool {
+	return isLiteralGradleVersion(v) && !strings.ContainsAny(v, "+[](),!") && !strings.HasPrefix(v, "latest.")
+}
+
+// gradleCoordinateString matches a quoted string in g:a[:v[:classifier]][@ext] notation.
+var gradleCoordinateString = regexp.MustCompile(`^([\w.\-]+):([\w.\-]+)(?::([^:@\s]*))?(?::[^:@\s]*)?(?:@\w+)?$`)
+
+// gradleDeclarations returns every declaration scripts make, keyed "g:a". Besides the
+// configuration-line scan, it reads every quoted coordinate string and every map-notation line
+// anywhere in the comment-stripped scripts, so a declaration on one line with its block
+// (dependencies { implementation 'g:a:v' }) or in a constraints block still counts. A string
+// that only looks like a coordinate costs nothing unless a lock holds its GA. readAll is false
+// when a script cannot be read.
+func gradleDeclarations(scripts []string) (map[string][]plugin.ResolvedDependency, bool) {
+	out := map[string][]plugin.ResolvedDependency{}
+	add := func(rd plugin.ResolvedDependency) {
+		if c := strings.TrimSpace(rd.Coordinate); c != "" {
+			out[c] = append(out[c], rd)
+		}
+	}
+	for _, gp := range scripts {
+		data, err := os.ReadFile(gp)
+		if err != nil {
+			return nil, false
+		}
+		deps, _ := parseGradle(gp)
+		for _, rd := range deps {
+			add(rd)
+		}
+		src := stripGradleComments(string(data))
+		for _, s := range quotedStrings(src) {
+			m := gradleCoordinateString.FindStringSubmatch(s)
+			if m == nil {
+				continue
+			}
+			rd := plugin.ResolvedDependency{Coordinate: m[1] + ":" + m[2], Source: "gradle"}
+			if isLiteralGradleVersion(m[3]) {
+				rd.Version, rd.Resolved = m[3], true
+			}
+			add(rd)
+		}
+		for _, line := range strings.Split(src, "\n") {
+			if rd, ok := gradleMapNotation(line); ok {
+				add(rd)
+			}
+		}
+	}
+	return out, true
+}
+
+// quotedStrings returns the contents of every single- or double-quoted string in src that
+// closes on its own line.
+func quotedStrings(src string) []string {
+	var out []string
+	for i := 0; i < len(src); i++ {
+		q := src[i]
+		if q != '"' && q != '\'' {
+			continue
+		}
+		j := i + 1
+		for j < len(src) && src[j] != q && src[j] != '\n' {
+			if src[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		if j < len(src) && src[j] == q {
+			out = append(out, src[i+1:j])
+		}
+		i = j
+	}
+	return out
 }
 
 // gradleDeclaredDirect returns the directly-declared coordinates from the build scripts (the

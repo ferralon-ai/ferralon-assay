@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,24 +24,17 @@ const reasonMultipleProjectsUnsupported = "multiple_projects_unsupported"
 // includes a build, or that cannot be read; a settings script below the root; or more than one
 // build script beside a src directory. The walk enters every directory but VCS metadata,
 // installed-package trees and the local dependency caches, since a project in bin/ or a dot-dir
-// is still a project. why names the evidence, for the partiality path.
+// is still a project; anything it cannot read (see walkProjectTree) counts too. why names the
+// evidence, for the partiality path.
 func multipleProjects(buildDir string) (multi bool, why string) {
 	skip := map[string]bool{}
 	for _, root := range append(mavenRepoRoots(buildDir), gradleCacheRoots(buildDir)...) {
 		skip[filepath.Clean(root)] = true
 	}
+	tree := walkProjectTree(buildDir, skip)
 	var poms, gradle, settings []string
-	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree holds no project we can see
-		}
-		if d.IsDir() {
-			if path != buildDir && (projectWalkSkip(d.Name()) || skip[filepath.Clean(path)]) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		switch d.Name() {
+	for _, path := range tree.files {
+		switch filepath.Base(path) {
 		case "pom.xml":
 			poms = append(poms, path)
 		case "settings.gradle", "settings.gradle.kts":
@@ -50,8 +44,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 				gradle = append(gradle, path)
 			}
 		}
-		return nil
-	})
+	}
 
 	for _, p := range poms {
 		if pomListsModules(p) {
@@ -82,7 +75,99 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		sort.Strings(gradle)
 		return true, relSlash(buildDir, gradle[0]) + ", " + relSlash(buildDir, gradle[1])
 	}
+	if len(tree.unread) > 0 {
+		return true, relSlash(buildDir, tree.unread[0]) + " cannot be read in full"
+	}
 	return false, ""
+}
+
+// projectTree is what walkProjectTree read under a build directory.
+type projectTree struct {
+	files  []string // every file it read, as walked (symlinks to files inside the root included)
+	unread []string // every path whose contents it cannot vouch for, in walk order
+}
+
+// walkProjectTree walks root in lexical order without following a symlink. It enters every
+// directory except one projectWalkSkip names or one whose path is in skip. What it cannot vouch
+// for having read goes in unread: the root or a directory that cannot be read, a symlink that
+// does not resolve or resolves outside root, and a symlinked directory whose target the walk
+// does not itself enter. An in-root symlinked directory whose target it does enter is read at
+// that target's real path, so it costs nothing; a link back to an ancestor is that case, which
+// is what keeps the walk cycle-safe without following links. A symlink at a skip path, or one a
+// projectWalkSkip name labels, is passed over as the directory it stands for would be.
+func walkProjectTree(root string, skip map[string]bool) projectTree {
+	var tree projectTree
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		tree.unread = append(tree.unread, root)
+		return tree
+	}
+	walked := map[string]bool{} // real paths of the directories the walk entered
+	type link struct{ path, target string }
+	var linked []link
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			tree.unread = append(tree.unread, path)
+			if d != nil && d.IsDir() && path != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path != root && skip[filepath.Clean(path)] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			target, inside := resolveInside(realRoot, path)
+			switch {
+			case !inside:
+				tree.unread = append(tree.unread, path)
+			case isDirPath(target):
+				if !projectWalkSkip(d.Name()) {
+					linked = append(linked, link{path, target})
+				}
+			default:
+				tree.files = append(tree.files, path)
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if path != root && projectWalkSkip(d.Name()) {
+				return filepath.SkipDir
+			}
+			// No component below root is a symlink here, so the real path is a lexical join.
+			if rel, err := filepath.Rel(root, path); err == nil {
+				walked[filepath.Join(realRoot, rel)] = true
+			}
+			return nil
+		}
+		tree.files = append(tree.files, path)
+		return nil
+	})
+	for _, l := range linked {
+		if !walked[l.target] {
+			tree.unread = append(tree.unread, l.path)
+		}
+	}
+	return tree
+}
+
+// resolveInside resolves every symlink in path and reports whether the result lies under
+// realRoot (itself already resolved). A path that does not resolve is not inside.
+func resolveInside(realRoot, path string) (string, bool) {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realRoot, target)
+	return target, err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func isDirPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // projectWalkSkip names the directories the project walk never enters: VCS metadata and
@@ -96,11 +181,12 @@ func projectWalkSkip(name string) bool {
 }
 
 // pomListsModules reports whether the POM lists any <module>, at the top level or in a
-// profile. A profile's modules join the reactor whenever the profile is active.
+// profile. A profile's modules join the reactor whenever the profile is active. A POM that
+// cannot be read or parsed may list any, so it counts as listing them.
 func pomListsModules(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return true
 	}
 	var x struct {
 		Modules  []string `xml:"modules>module"`
@@ -109,7 +195,7 @@ func pomListsModules(path string) bool {
 		} `xml:"profiles>profile"`
 	}
 	if unmarshalPOM(data, &x) != nil {
-		return false
+		return true
 	}
 	if len(x.Modules) > 0 {
 		return true
@@ -123,38 +209,54 @@ func pomListsModules(path string) bool {
 }
 
 var (
-	settingsIncludeWord = regexp.MustCompile(`\binclude\w*`)
-	settingsApplyWord   = regexp.MustCompile(`\bapply\b`)
-	settingsStringArg   = regexp.MustCompile(`^\s*(?:"([^"$\\]*)"|'([^'\\]*)')`)
+	settingsRootName  = regexp.MustCompile(`^rootProject\.name\s*=\s*(?:"[^"$\\\n]*"|'[^'\\\n]*')`)
+	settingsInclude   = regexp.MustCompile(`^include\b`)
+	settingsStringArg = regexp.MustCompile(`^\s*(?:"([^"$\\\n]*)"|'([^'\\\n]*)')`)
 )
 
-// gradleSettingsProjects returns the project paths a settings script includes. ok is false
-// when the script cannot be read, applies another script, includes a build, or names projects
-// in any form other than include/includeFlat over string literals (a loop, a variable, a
-// helper function): those can include any number of projects.
+// gradleSettingsProjects returns the project paths a settings script includes. The reader is
+// an allow-list: ok is true only when every statement is rootProject.name = "<literal>" or
+// include over string literals naming in-tree projects. Anything else (a projectDir
+// assignment, a plugins, pluginManagement or dependencyResolutionManagement block,
+// includeFlat, includeBuild, apply, a loop or variable, an unknown call) can add a project,
+// move one out of the tree or change how the build resolves, so ok is false; so is a script
+// that cannot be read or whose comments cannot be stripped reliably.
 func gradleSettingsProjects(path string) ([]string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
-	src := stripGradleComments(string(data))
-	if settingsApplyWord.MatchString(src) {
+	src, ok := stripGradleCommentsChecked(string(data))
+	if !ok {
 		return nil, false
 	}
 	seen := map[string]bool{}
 	var projects []string
-	for _, loc := range settingsIncludeWord.FindAllStringIndex(src, -1) {
-		word := src[loc[0]:loc[1]]
-		if word != "include" && word != "includeFlat" {
+	rest := src
+	for {
+		rest = strings.TrimLeft(rest, " \t\r\n;")
+		if rest == "" {
+			break
+		}
+		if m := settingsRootName.FindString(rest); m != "" {
+			after, ok := statementEnd(rest[len(m):])
+			if !ok {
+				return nil, false
+			}
+			rest = after
+			continue
+		}
+		m := settingsInclude.FindString(rest)
+		if m == "" {
 			return nil, false
 		}
-		args, ok := gradleStringArgs(src[loc[1]:])
+		args, after, ok := gradleStringArgs(rest[len(m):])
 		if !ok {
 			return nil, false
 		}
 		for _, a := range args {
 			a = strings.TrimPrefix(a, ":")
-			if a == "" {
+			if a == "" || strings.ContainsAny(a, "/\\") || strings.Contains(a, "..") {
 				return nil, false
 			}
 			if !seen[a] {
@@ -162,26 +264,27 @@ func gradleSettingsProjects(path string) ([]string, bool) {
 				projects = append(projects, a)
 			}
 		}
+		rest = after
 	}
 	sort.Strings(projects)
 	return projects, true
 }
 
 // gradleStringArgs reads the argument list after an include keyword: one or more string
-// literals separated by commas, optionally in parentheses. ok is false for anything else.
-func gradleStringArgs(rest string) ([]string, bool) {
+// literals separated by commas, optionally in parentheses, ending the statement. It returns
+// the text after the statement. ok is false for anything else.
+func gradleStringArgs(rest string) (args []string, after string, ok bool) {
 	rest = strings.TrimLeft(rest, " \t")
 	paren := strings.HasPrefix(rest, "(")
 	if paren {
 		rest = rest[1:]
 	}
-	var out []string
 	for {
 		m := settingsStringArg.FindStringSubmatch(rest)
 		if m == nil {
-			return nil, false
+			return nil, "", false
 		}
-		out = append(out, m[1]+m[2])
+		args = append(args, m[1]+m[2])
 		rest = rest[len(m[0]):]
 		trimmed := strings.TrimLeft(rest, " \t\r\n")
 		if strings.HasPrefix(trimmed, ",") {
@@ -190,22 +293,38 @@ func gradleStringArgs(rest string) ([]string, bool) {
 		}
 		if paren {
 			if !strings.HasPrefix(trimmed, ")") {
-				return nil, false
+				return nil, "", false
 			}
-			trimmed = trimmed[1:]
+			rest = trimmed[1:]
 		}
-		// The statement must end here: a trailing method call or operator could change what
-		// the literals name.
-		end := strings.TrimLeft(trimmed, " \t")
-		if end != "" && !strings.HasPrefix(end, "\n") && !strings.HasPrefix(end, "\r") && !strings.HasPrefix(end, ";") {
-			return nil, false
+		after, ok := statementEnd(rest)
+		if !ok {
+			return nil, "", false
 		}
-		return out, true
+		return args, after, true
 	}
+}
+
+// statementEnd reports whether a statement ends at the start of rest (after spaces and tabs):
+// at the end of the text, a line break or a semicolon. A trailing method call or operator could
+// change what the literals name.
+func statementEnd(rest string) (string, bool) {
+	end := strings.TrimLeft(rest, " \t")
+	if end == "" || strings.HasPrefix(end, "\n") || strings.HasPrefix(end, "\r") || strings.HasPrefix(end, ";") {
+		return end, true
+	}
+	return "", false
 }
 
 // stripGradleComments removes // line and /* */ block comments outside string literals.
 func stripGradleComments(src string) string {
+	out, _ := stripGradleCommentsChecked(src)
+	return out
+}
+
+// stripGradleCommentsChecked is stripGradleComments that also reports whether the result can be
+// trusted: false for an unterminated block comment, whose rest of the text is dropped.
+func stripGradleCommentsChecked(src string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(src); i++ {
 		c := src[i]
@@ -233,7 +352,7 @@ func stripGradleComments(src string) string {
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			end := strings.Index(src[i+2:], "*/")
 			if end < 0 {
-				return b.String()
+				return b.String(), false
 			}
 			i += end + 3
 			b.WriteByte(' ')
@@ -241,7 +360,7 @@ func stripGradleComments(src string) string {
 			b.WriteByte(c)
 		}
 	}
-	return b.String()
+	return b.String(), true
 }
 
 // withMultipleProjects adds the run-wide multiple_projects_unsupported reason to p, with an

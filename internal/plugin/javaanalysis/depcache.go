@@ -2,11 +2,14 @@ package javaanalysis
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // depcache.go — step (a) of dependency reachability: locate a resolved dependency's
@@ -71,19 +74,30 @@ type cacheLookup int
 const (
 	cacheMiss   cacheLookup = iota // nothing is there, or only a directory
 	cacheHit                       // a regular file whose real path stays inside the cache
-	cacheEscape                    // the name exists but resolves outside the cache, or cannot be resolved
+	cacheEscape                    // the name resolves outside the cache, cannot be resolved or read, or is not a regular file
 )
+
+// missing reports whether err says nothing is at a path: no such name, or a non-directory
+// where the path needs a directory. Any other failure (a permission, an I/O error) leaves the
+// path's contents unknown, which is not the same as absent.
+func missing(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
 
 // inCache looks rel up under root. A hit returns the file's real path: every symlink resolved,
 // and under root's own real path, so a symlinked root is fine but a link out of the cache is
-// not. What an escaping link points at is not the build's cached artifact.
+// not. What an escaping link points at is not the build's cached artifact. Only a name that is
+// not there is a miss; one that cannot be looked at could be the artifact the build used.
 func inCache(root, rel string) (string, cacheLookup) {
 	if root == "" {
 		return "", cacheMiss
 	}
 	candidate := filepath.Join(root, rel)
 	if _, err := os.Lstat(candidate); err != nil {
-		return "", cacheMiss
+		if missing(err) {
+			return "", cacheMiss
+		}
+		return "", cacheEscape
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -93,7 +107,7 @@ func inCache(root, rel string) (string, cacheLookup) {
 	if err != nil {
 		return "", cacheEscape
 	}
-	if r, err := filepath.Rel(realRoot, real); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+	if !within(realRoot, real) {
 		return "", cacheEscape
 	}
 	info, err := os.Stat(real)
@@ -103,34 +117,41 @@ func inCache(root, rel string) (string, cacheLookup) {
 	if info.IsDir() {
 		return "", cacheMiss
 	}
+	if !info.Mode().IsRegular() {
+		return "", cacheEscape // a FIFO or device: reading it could block, and it is no cached artifact
+	}
 	return real, cacheHit
 }
 
-// LocateDependencyJar searches the given local Maven repository roots for the
-// artifact's JAR and returns the first one found, by its real path. ok is false when the
-// JAR is absent from every root (the caller declares a completeness hazard, it does not
-// fetch), when the coordinate/version is malformed, or when the first copy found resolves
-// outside its root.
-func LocateDependencyJar(repoRoots []string, coordinate, version string) (string, bool) {
-	rel, ok := mavenJarRelPath(coordinate, version)
-	if !ok {
-		return "", false
+// within reports whether path lies under base; both are already resolved.
+func within(base, path string) bool {
+	r, err := filepath.Rel(base, path)
+	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
+}
+
+// rootLeavesCheckout reports whether a cache root inside the build directory resolves outside
+// it. A cache the checkout carries is trusted as the build's own; one it only links to is
+// somewhere else's bytes. A root outside the build directory (the user's caches) is never
+// judged here, and a root that is not there leaves nothing to judge.
+func rootLeavesCheckout(buildDir, root string) bool {
+	if !within(filepath.Clean(buildDir), filepath.Clean(root)) {
+		return false
 	}
-	for _, root := range repoRoots {
-		switch p, st := inCache(root, rel); st {
-		case cacheHit:
-			return p, true
-		case cacheEscape:
-			return "", false
-		}
+	realBuild, err := filepath.EvalSymlinks(buildDir)
+	if err != nil {
+		return true
 	}
-	return "", false
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return !missing(err)
+	}
+	return !within(realBuild, real)
 }
 
 // mavenRepoRoots returns the local Maven repository roots to search for a build, in
 // priority order: a project-local ".m2/repository" under the build (a per-build
 // cache, the zero-egress CI shape), then the user "~/.m2/repository". Non-existent
-// roots are harmless — LocateDependencyJar simply finds nothing in them.
+// roots are harmless: nothing is found in them.
 func mavenRepoRoots(buildDir string) []string {
 	var roots []string
 	roots = append(roots, filepath.Join(buildDir, ".m2", "repository"))
@@ -150,20 +171,31 @@ const (
 	jarUnreadable                    // a copy cannot be read, resolves outside its cache, or the coordinate cannot name a cache path
 )
 
+// artifactJar is a located dependency JAR: its real path and the bytes read from it.
+type artifactJar struct {
+	path string
+	data []byte
+}
+
 // locateArtifactJar finds a dependency JAR in the build's local caches. Both the Maven
 // repositories and the Gradle module cache are searched whatever the build tool, since a
 // Gradle build can read the Maven local repository (mavenLocal()) and nothing here says
-// which copy it used. Only jarFound returns a path: when copies differ, or one cannot be read
-// or leaves its cache, any of them could be the bytes the build ran, so none is offered.
-func locateArtifactJar(buildDir, coordinate, version string) (string, jarLookup) {
+// which copy it used. Only jarFound returns a JAR, with the bytes the copies were compared on,
+// so the caller parses exactly what was checked: when copies differ, or one cannot be read or
+// leaves its cache, any of them could be the bytes the build ran, so none is offered.
+func locateArtifactJar(buildDir, coordinate, version string) (artifactJar, jarLookup) {
 	rel, ok := mavenJarRelPath(coordinate, version)
 	if !ok {
-		return "", jarUnreadable
+		return artifactJar{}, jarUnreadable
 	}
 	group, artifact, _ := splitCoordinate(coordinate)
 	var copies []string
 	escaped := false
 	for _, root := range mavenRepoRoots(buildDir) {
+		if rootLeavesCheckout(buildDir, root) {
+			escaped = true
+			continue
+		}
 		switch p, st := inCache(root, rel); st {
 		case cacheHit:
 			copies = append(copies, p)
@@ -171,28 +203,32 @@ func locateArtifactJar(buildDir, coordinate, version string) (string, jarLookup)
 			escaped = true
 		}
 	}
-	gradle, gradleEscaped := gradleJarCopies(gradleCacheRoots(buildDir), group, artifact, version)
+	gradle, gradleEscaped := gradleJarCopies(buildDir, gradleCacheRoots(buildDir), group, artifact, version)
 	copies = append(copies, gradle...)
 	if escaped || gradleEscaped {
-		return "", jarUnreadable
+		return artifactJar{}, jarUnreadable
 	}
 	if len(copies) == 0 {
-		return "", jarMissing
+		return artifactJar{}, jarMissing
 	}
-	digests := make([]string, len(copies))
+	var first []byte
+	digests := make([][32]byte, len(copies))
 	for i, c := range copies {
-		d, err := fileDigest(c)
+		data, err := readRegular(c)
 		if err != nil {
-			return "", jarUnreadable
+			return artifactJar{}, jarUnreadable
 		}
-		digests[i] = d
+		if i == 0 {
+			first = data
+		}
+		digests[i] = sha256.Sum256(data)
 	}
 	for _, d := range digests[1:] {
 		if d != digests[0] {
-			return "", jarCopiesDiffer
+			return artifactJar{}, jarCopiesDiffer
 		}
 	}
-	return copies[0], jarFound
+	return artifactJar{path: copies[0], data: first}, jarFound
 }
 
 // gradleJarCopies lists every copy of the JAR in the Gradle module cache layout:
@@ -201,12 +237,20 @@ func locateArtifactJar(buildDir, coordinate, version string) (string, jarLookup)
 //
 // Gradle keeps the group dotted and interposes a content-hash directory, so every child of
 // the version directory is checked, in sorted order. escaped is true when any copy resolves
-// outside its cache root.
-func gradleJarCopies(roots []string, group, artifact, version string) (copies []string, escaped bool) {
+// outside its cache root or cannot be read, when a version directory cannot be listed, or when
+// a cache root inside the build directory resolves outside it.
+func gradleJarCopies(buildDir string, roots []string, group, artifact, version string) (copies []string, escaped bool) {
 	jar := artifact + "-" + version + ".jar"
 	for _, root := range roots {
+		if rootLeavesCheckout(buildDir, root) {
+			escaped = true
+			continue
+		}
 		hashDirs, err := os.ReadDir(filepath.Join(root, group, artifact, version))
 		if err != nil {
+			if !missing(err) {
+				escaped = true
+			}
 			continue
 		}
 		for _, hd := range hashDirs {
@@ -221,18 +265,22 @@ func gradleJarCopies(roots []string, group, artifact, version string) (copies []
 	return copies, escaped
 }
 
-// fileDigest returns the SHA-256 of a file's contents.
-func fileDigest(path string) (string, error) {
-	f, err := os.Open(path)
+// readRegular reads a file it has checked, on the open descriptor, to be a regular file. The
+// open does not block on a FIFO, and what is read is what was checked.
+func readRegular(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	return io.ReadAll(f)
 }
 
 // gradleCacheRoots returns the Gradle module-cache roots to search, in priority order: a

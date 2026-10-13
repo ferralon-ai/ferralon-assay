@@ -123,7 +123,12 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			sc.veto(c, "executable: an interpreter or distributions it bundles are not read")
 			return
 		case content == contentBinary:
-			return // an image, a font or other data: neither text nor an archive
+			// An image, a font or other data is neither text nor an archive, but one named as
+			// an install surface, or carrying an installer token, is a surface not read.
+			if installSurface(c.file, nil) != "" || installTokens(data) {
+				sc.veto(c, "binary content in an install surface: install commands it holds are not read")
+			}
+			return
 		}
 		sc.configIndexes(c, base, data)
 		if condaEnvironment(base, data) {
@@ -255,6 +260,11 @@ var (
 	// the value that follows it (=, : or whitespace), if any.
 	indexEnvRe = regexp.MustCompile(`\b((?:PIP|UV)_(?:FIND_LINKS|INDEX_URL|EXTRA_INDEX_URL|INDEX|DEFAULT_INDEX)|PIPENV_PYPI_MIRROR)\b(?:[ \t]*[=:][ \t]*|[ \t]+)?("[^"\n]*"|'[^'\n]*'|[^\s"'#]+)?`)
 )
+
+// installTokens reports whether data carries an installer command or an installer setting.
+func installTokens(data []byte) bool {
+	return installCommandRe.Match(data) || pipEnvRe.Match(data) || installerEnvRe.Match(data) || indexEnvRe.Match(data)
+}
 
 // pipEnvHarmless are PIP_* settings that change how pip fetches or reports, never which
 // requirements it installs.
@@ -453,7 +463,7 @@ func installSurface(rel string, data []byte) string {
 	if dockerfileContent(data) {
 		return "docker"
 	}
-	if !installCommandRe.Match(data) && !pipEnvRe.Match(data) && !installerEnvRe.Match(data) && !indexEnvRe.Match(data) {
+	if !installTokens(data) {
 		return ""
 	}
 	if hasDisallowedEnvOnly(data) {

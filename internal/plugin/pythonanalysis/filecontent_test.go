@@ -59,3 +59,29 @@ func utf32be(s string) string {
 	}
 	return b.String()
 }
+
+// TestLoadSet_BinaryInstallSurface pins that a file named as an install surface, or carrying an
+// installer token, whose content holds a NUL anywhere in buildtree's head is a surface not
+// read: it vetoes instead of being skipped as data. Other binary data still refutes.
+func TestLoadSet_BinaryInstallSurface(t *testing.T) {
+	const docker = "FROM python:3.12\nRUN uv sync --frozen --no-dev\n"
+	pad := strings.Repeat("# padding\n", 900) // ~9000 bytes: past 8000, inside buildtree.HeadSize
+	tests := []struct {
+		name, file, content string
+		veto                bool
+	}{
+		{"control: no NUL", "Dockerfile", docker + pad, false},
+		{"NUL at byte 40", "Dockerfile", docker[:40] + "\x00" + docker[40:], true},
+		{"NUL past byte 8000", "Dockerfile", docker + pad + "\x00\n", true},
+		{"binary carrying an install command", "tools/blob.bin", "\x00\x01pip install black\n", true},
+		{"control: binary, no surface, no token", "assets/logo.png", "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := reachFor(t, withLock(map[string]string{tt.file: tt.content}), "pkg:pypi/black@24.4.2")
+			if refuted := res.Refutation != nil; refuted == tt.veto {
+				t.Errorf("refuted = %v, want %v", refuted, !tt.veto)
+			}
+		})
+	}
+}

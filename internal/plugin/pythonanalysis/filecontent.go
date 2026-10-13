@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
 // fileContent is what readInstallFile found a file to be.
@@ -29,8 +31,9 @@ const (
 	contentBinary
 )
 
-// binaryHeadSize is how much of a file decides whether it is text.
-const binaryHeadSize = 8000
+// binaryHeadSize is how much of a file decides whether it is text: the head buildtree hands
+// every lane classifier, so the scan and the classifiers agree on what is binary.
+const binaryHeadSize = buildtree.HeadSize
 
 // archiveExts are the suffixes of archive, compressed and packaged-distribution files.
 var archiveExts = []string{".zip", ".pex", ".pyz", ".pyzw", ".whl", ".egg", ".tar", ".tgz", ".tbz", ".tbz2", ".txz",
@@ -79,14 +82,17 @@ func readRegular(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// readInstallFile reads the file at p and reports what it is. Text comes back decoded; any
-// other kind comes back with no data.
+// readInstallFile reads the file at p and reports what it is. Text comes back decoded and
+// other binary data as read; an archive or an executable comes back with no data.
 func readInstallFile(p string) ([]byte, fileContent, error) {
-	data, err := readRegular(p)
+	raw, err := readRegular(p)
 	if err != nil {
 		return nil, contentText, err
 	}
-	data, kind := classifyContent(path.Base(p), data)
+	data, kind := classifyContent(path.Base(p), raw)
+	if kind == contentBinary {
+		return raw, kind, nil
+	}
 	return data, kind, nil
 }
 

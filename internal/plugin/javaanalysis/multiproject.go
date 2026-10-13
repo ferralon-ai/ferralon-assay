@@ -90,7 +90,8 @@ type projectTree struct {
 // walkProjectTree walks root in lexical order without following a symlink. It enters every
 // directory except one projectWalkSkip names or one whose path is in skip. What it cannot vouch
 // for having read goes in unread: the root or a directory that cannot be read, a symlink that
-// does not resolve or resolves outside root, and a symlinked directory whose target the walk
+// does not resolve or resolves outside root, anything other than a directory or regular file
+// (itself or, for a symlink, its target), and a symlinked directory whose target the walk
 // does not itself enter. An in-root symlinked directory whose target it does enter is read at
 // that target's real path, so it costs nothing; a link back to an ancestor is that case, which
 // is what keeps the walk cycle-safe without following links. A symlink at a skip path, or one a
@@ -128,8 +129,10 @@ func walkProjectTree(root string, skip map[string]bool) projectTree {
 				if !projectWalkSkip(d.Name()) {
 					linked = append(linked, link{path, target})
 				}
-			default:
+			case isRegularPath(target):
 				tree.files = append(tree.files, path)
+			default:
+				tree.unread = append(tree.unread, path)
 			}
 			return nil
 		}
@@ -141,6 +144,10 @@ func walkProjectTree(root string, skip map[string]bool) projectTree {
 			if rel, err := filepath.Rel(root, path); err == nil {
 				walked[filepath.Join(realRoot, rel)] = true
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			tree.unread = append(tree.unread, path) // a FIFO, socket or device: reading it could block
 			return nil
 		}
 		tree.files = append(tree.files, path)
@@ -170,6 +177,11 @@ func isDirPath(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+func isRegularPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // projectWalkSkip names the directories the project walk never enters: VCS metadata and
 // installed-package trees, which hold no project of this build.
 func projectWalkSkip(name string) bool {
@@ -184,7 +196,7 @@ func projectWalkSkip(name string) bool {
 // profile. A profile's modules join the reactor whenever the profile is active. A POM that
 // cannot be read or parsed may list any, so it counts as listing them.
 func pomListsModules(path string) bool {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return true
 	}
@@ -222,7 +234,7 @@ var (
 // move one out of the tree or change how the build resolves, so ok is false; so is a script
 // that cannot be read or whose comments cannot be stripped reliably.
 func gradleSettingsProjects(path string) ([]string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

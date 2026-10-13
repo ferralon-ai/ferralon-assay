@@ -167,6 +167,21 @@ func TestMultipleProjects_SymlinksAndUnreadable(t *testing.T) {
 			}
 		})
 	}
+	t.Run("build directory whose real path cannot be resolved", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root searches a mode-0 directory")
+		}
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "b")
+		writeFile(t, filepath.Join(dir, "pom.xml"), single["pom.xml"])
+		if err := os.Chmod(parent, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		if got, why := multipleProjects(dir); !got {
+			t.Errorf("multipleProjects = false (%s), want true", why)
+		}
+	})
 }
 
 func mustSymlink(t *testing.T, target, link string) {

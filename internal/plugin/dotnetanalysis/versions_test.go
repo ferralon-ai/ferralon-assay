@@ -413,6 +413,141 @@ func TestVersions_MultipleCopies(t *testing.T) {
 			},
 		},
 		{
+			name: "a PackageVersion Update in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /><PackageVersion Update="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a PackageVersion Remove in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /><PackageVersion Remove="Other" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "an Import in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><Import Project="versions.props" /><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a conditioned PackageVersion covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" Condition="'$(TargetFramework)' == 'net8.0'" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a conditioned ItemGroup in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup Condition="'$(TargetFramework)' == 'net8.0'"><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a conditioned property in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><PropertyGroup><ManagePackageVersionsCentrally Condition="'$(Legacy)' != 'true'">true</ManagePackageVersionsCentrally></PropertyGroup><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "an unmodeled item in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /><GlobalPackageReference Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "an unmodeled element in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><Choose><When Condition="true"><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></When></Choose><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "an unmodeled attribute in the props file covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project Sdk="Microsoft.Build.NoTargets"><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a property-valued PackageVersion covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><PropertyGroup><NewtonsoftVersion>13.0.3</NewtonsoftVersion></PropertyGroup><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="$(NewtonsoftVersion)" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "central package management turned off covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><PropertyGroup><ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally></PropertyGroup><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "an Include listing several packages covers nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json;Other" Version="12.0.1" /><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "conflicting PackageVersion entries cover nothing",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="12.0.1" /><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a props file with literal properties and a Version element is covered",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- pinned for CVE review -->
+  <PropertyGroup Label="cpm">
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Newtonsoft.Json"><Version>13.0.3</Version></PackageVersion>
+  </ItemGroup>
+</Project>`,
+				"A/A.csproj":           csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+			version: "13.0.3",
+		},
+		{
+			name: "a lockfile including a lower bound the project excludes does not cover",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "(13.0,14.0)"),
+				"A/packages.lock.json": lockEntries("Direct", "[13.0.0, 14.0.0)", map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a lockfile excluding an upper bound the project includes does not cover",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "[13.0,14.0]"),
+				"A/packages.lock.json": lockEntries("Direct", "[13.0.0, 14.0.0)", map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
 			name: "a VersionOverride is the declared version",
 			files: map[string]string{
 				"Directory.Packages.props": cpmProps("12.0.1"),
@@ -457,6 +592,34 @@ func TestVersions_MultipleCopies(t *testing.T) {
 				if !r.Match.Resolved || r.Match.Version != tc.version {
 					t.Fatalf("run %d: want resolved %s; got %+v", run, tc.version, r.Match)
 				}
+			}
+		})
+	}
+}
+
+// readCentralVersions reads only a plain Directory.Packages.props; anything it doesn't model
+// makes the file unreadable rather than silently skipped.
+func TestReadCentralVersions(t *testing.T) {
+	cases := []struct {
+		name  string
+		props string
+		want  string // Newtonsoft.Json's entry when readable
+		ok    bool
+	}{
+		{name: "plain file", props: cpmProps("13.0.3"), want: "13.0.3", ok: true},
+		{name: "Version element", props: `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json"><Version>13.0.3</Version></PackageVersion></ItemGroup></Project>`, want: "13.0.3", ok: true},
+		{name: "unmodeled element without attributes", props: `<Project><ItemDefinitionGroup /><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
+		{name: "attribute on the Version element", props: `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json"><Version Condition="true">13.0.3</Version></PackageVersion></ItemGroup></Project>`},
+		{name: "document type declaration", props: `<!DOCTYPE Project><Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
+		{name: "stray text", props: `<Project>13.0.3<ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup></Project>`},
+		{name: "truncated", props: `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"Directory.Packages.props": tc.props})
+			got, ok := readCentralVersions(filepath.Join(dir, "Directory.Packages.props"))
+			if ok != tc.ok || got["newtonsoft.json"] != tc.want {
+				t.Fatalf("got %v, %v; want %q, %v", got, ok, tc.want, tc.ok)
 			}
 		})
 	}

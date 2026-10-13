@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -435,7 +436,7 @@ func parsePackagesConfig(data []byte) ([]plugin.ResolvedDependency, bool) {
 // centralVersions returns a lookup of the Central Package Management versions that apply to
 // a project directory: the PackageVersion entries of the nearest Directory.Packages.props at
 // or above it, bounded by root. MSBuild imports only that nearest file. The bool is false when
-// there is no such file or it can't be read or parsed. An id given conflicting versions in the
+// there is no such file or readCentralVersions can't read all of it. An id given conflicting versions in the
 // file maps to "" so it covers nothing.
 func centralVersions(root string) func(dir string) (map[string]string, bool) {
 	root = filepath.Clean(root)
@@ -457,30 +458,91 @@ func centralVersions(root string) func(dir string) (map[string]string, bool) {
 	}
 }
 
+// readCentralVersions reads the PackageVersion entries of one Directory.Packages.props. It
+// models only a plain file: a Project holding ItemGroups of PackageVersion Include/Version
+// items and PropertyGroups of literal properties. Anything else can change which version
+// ships without this reader seeing it: an Update or Remove item, an Import, a Condition, an
+// SDK, an Include that expands to several items, another item type, or an explicit
+// ManagePackageVersionsCentrally of false. Any of those, or any element or attribute not
+// listed here, makes the whole file unreadable, so it covers nothing. A property-valued
+// version is kept as written; it never equals the range restore records, so it covers nothing
+// either.
 func readCentralVersions(path string) (map[string]string, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
-	var pv packageVersionsXML
-	if err := xml.Unmarshal(data, &pv); err != nil {
-		return nil, false
-	}
 	out := make(map[string]string)
-	for _, ig := range pv.ItemGroups {
-		for _, e := range ig.PackageVersions {
-			id := normalizeNuGetCoordinate(e.Include)
-			if id == "" {
-				continue
+	d := xml.NewDecoder(strings.NewReader(string(data)))
+	var stack []string
+	var item string
+	var version, text strings.Builder
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			stack = append(stack, t.Name.Local)
+			allowed := map[string]bool{"Label": true}
+			switch path := strings.Join(stack, "/"); {
+			case path == "Project":
+				allowed = map[string]bool{"xmlns": true, "ToolsVersion": true}
+			case path == "Project/ItemGroup", path == "Project/PropertyGroup":
+			case path == "Project/ItemGroup/PackageVersion":
+				allowed["Include"], allowed["Version"] = true, true
+				item = ""
+				version.Reset()
+			case path == "Project/ItemGroup/PackageVersion/Version":
+			case len(stack) == 3 && stack[1] == "PropertyGroup":
+				text.Reset()
+			default:
+				return nil, false
 			}
-			v := strings.TrimSpace(e.VersionAttr)
-			if v == "" {
-				v = strings.TrimSpace(e.VersionElem)
+			for _, a := range t.Attr {
+				if a.Name.Space != "xmlns" && (a.Name.Space != "" || !allowed[a.Name.Local]) {
+					return nil, false
+				}
+				switch {
+				case len(stack) == 3 && a.Name.Local == "Include":
+					item = a.Value
+				case len(stack) == 3 && a.Name.Local == "Version":
+					version.WriteString(a.Value)
+				}
 			}
-			if prev, seen := out[id]; seen && prev != v {
-				v = ""
+		case xml.CharData:
+			switch {
+			case len(stack) == 4:
+				version.Write(t)
+			case len(stack) == 3 && stack[1] == "PropertyGroup":
+				text.Write(t)
+			case strings.TrimSpace(string(t)) != "":
+				return nil, false
 			}
-			out[id] = v
+		case xml.EndElement:
+			switch {
+			case len(stack) == 3 && stack[1] == "ItemGroup":
+				if strings.ContainsAny(item, ";*?$@%") {
+					return nil, false
+				}
+				id := normalizeNuGetCoordinate(item)
+				v := strings.TrimSpace(version.String())
+				if prev, seen := out[id]; seen && prev != v {
+					v = ""
+				}
+				out[id] = v
+			case len(stack) == 3 && stack[2] == "ManagePackageVersionsCentrally":
+				if strings.EqualFold(strings.TrimSpace(text.String()), "false") {
+					return nil, false
+				}
+			}
+			stack = stack[:len(stack)-1]
+		case xml.Directive:
+			return nil, false
 		}
 	}
 	return out, true

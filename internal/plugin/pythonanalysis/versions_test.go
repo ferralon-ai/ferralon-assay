@@ -3,6 +3,7 @@ package pythonanalysis
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -157,5 +158,96 @@ func TestResolveVersions_Absent(t *testing.T) {
 	dir := writeTree(t, map[string]string{"requirements.txt": "flask==2.3.0\n"})
 	if r := resolveVersion(t, dir, "nonexistent"); r.Found {
 		t.Fatalf("absent coordinate must be Found=false; got %+v", r)
+	}
+}
+
+// --- several pins of one project ---------------------------------------------
+
+const resolveRuns = 50
+
+func mustUnresolvedPy(t *testing.T, res plugin.DependencyVersionResult) {
+	t.Helper()
+	if !res.Found {
+		t.Fatalf("coordinate not found; all=%+v", res.All)
+	}
+	if res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match must be UNRESOLVED with no version; match=%+v", res.Match)
+	}
+}
+
+// Two services in one repo lock different versions of one project: the predicate must not be
+// handed whichever pin was read first.
+func TestResolveVersions_ManifestsDisagreeUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "Flask==2.2.0\n",
+		"svc-b/poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
+	}
+}
+
+// poetry.lock carries one [[package]] block per marker-split version (numpy for old and new
+// Pythons); either can be the installed one.
+func TestResolveVersions_PoetryMarkerSplitUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"poetry.lock": `[[package]]
+name = "numpy"
+version = "1.24.4"
+
+[[package]]
+name = "numpy"
+version = "1.26.4"
+`,
+	})
+	mustUnresolvedPy(t, resolveVersion(t, dir, "numpy"))
+}
+
+func TestResolveVersions_PipfileDefaultDevelopDisagreeUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Pipfile.lock": `{"default": {"urllib3": {"version": "==1.26.18"}}, "develop": {"urllib3": {"version": "==2.2.1"}}}`,
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "urllib3"))
+	}
+}
+
+func TestResolveVersions_SamePinAcrossManifestsResolves(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt": "Flask==2.3.0\n",
+		"poetry.lock":      "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+	})
+	if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
+		t.Fatalf("one pin repeated across manifests want 2.3.0 resolved; got %+v", r.Match)
+	}
+}
+
+// A declared range beside the lock's pin is the same environment, not a second copy: the pin
+// still resolves (the npm unknown-copy veto deliberately does not apply here).
+func TestResolveVersions_DeclaredRangeBesideLockPinResolves(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\n    \"flask>=2.0\",\n]\n",
+		"poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+	})
+	if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
+		t.Fatalf("range declaration + lock pin want 2.3.0 resolved; got %+v", r.Match)
+	}
+}
+
+// Pipfile.lock's maps are walked in sorted key order, so All is the same on every run.
+func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Pipfile.lock": `{"default": {"requests": {"version": "==2.31.0"}, "flask": {"version": "==2.3.0"}, "idna": {"version": "==3.6"}},
+"develop": {"pytest": {"version": "==8.1.0"}, "black": {"version": "==24.2.0"}}}`,
+	})
+	want := []string{"flask", "idna", "requests", "black", "pytest"}
+	for i := 0; i < resolveRuns; i++ {
+		var got []string
+		for _, d := range resolveVersion(t, dir, "flask").All {
+			got = append(got, d.Coordinate)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: All order = %v, want %v", i, got, want)
+		}
 	}
 }

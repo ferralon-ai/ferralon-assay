@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -36,6 +38,9 @@ import (
 //     the empty All as proof the dependency is absent and fabricate a not-affected.
 //   - An unparseable manifest degrades Partiality to declared-partial (tool_failure); the
 //     coordinate it would have carried becomes UNRESOLVED, not absent.
+//
+// Several pinned versions of one project: Match is chosen by matchCoordinate, which never
+// picks one pin out of several distinct versions. See its doc comment for the rule.
 //
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (PEP 440 specifiers, ordering) is applied by the
@@ -72,20 +77,55 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizePyCoordinate(req.Coordinate)
-	if want != "" {
-		for _, d := range all {
-			if normalizePyCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Match = d
-				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if d.Resolved {
-					break
-				}
-			}
-		}
-	}
+	res.Match, res.Found = matchCoordinate(all, normalizePyCoordinate(req.Coordinate))
 	return res, nil
+}
+
+// matchCoordinate selects the Match for the PEP 503-normalized coordinate want across every
+// manifest's entries. The rule:
+//
+//   - every resolved entry pins the SAME version (one pin repeated across requirements.txt,
+//     poetry.lock, ... counts once): Match is that version, Resolved=true;
+//   - two or more distinct pinned versions (e.g. services in one repo locking different
+//     versions): Match is UNRESOLVED (Resolved=false, Version empty), so the predicate fails
+//     OPEN rather than ruling the advisory on whichever pin was read first;
+//   - no resolved entry: Match is the first entry, UNRESOLVED.
+//
+// An UNRESOLVED entry does not veto a single resolved pin, unlike the npm rule. Python's
+// unresolved entries are overwhelmingly DECLARATIONS of the same environment the pin locks
+// (a pyproject.toml "flask>=2" range beside the uv.lock/poetry.lock pin), not separate
+// installed copies; letting them veto would unresolve nearly every locked project.
+// Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
+// open.
+func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
+	if want == "" {
+		return plugin.ResolvedDependency{}, false
+	}
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		versions = make(map[string]struct{})
+	)
+	for _, d := range all {
+		if normalizePyCoordinate(d.Coordinate) != want {
+			continue
+		}
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			continue
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	if found && len(versions) != 1 {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
 }
 
 // manifestFiles returns every recognized Python manifest under root, skipping
@@ -366,7 +406,8 @@ func parsePipfileLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	}
 	var out []plugin.ResolvedDependency
 	collect := func(m map[string]pipfileEntry) {
-		for name, e := range m {
+		for _, name := range slices.Sorted(maps.Keys(m)) {
+			e := m[name]
 			ver := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(e.Version), "=="))
 			out = append(out, pyResolved(name, ver, ver != "" && !strings.Contains(ver, "*"), "Pipfile.lock"))
 		}

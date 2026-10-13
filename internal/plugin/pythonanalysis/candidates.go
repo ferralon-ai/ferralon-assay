@@ -41,7 +41,9 @@ func newPySurface(root string) *pySurface {
 		memo:       map[string]bool{},
 		visiting:   map[string]bool{},
 	}
-	for _, m := range manifestFiles(root) {
+	// A directory the walk cannot read is an unreadable candidate of its own (buildtree.Candidates).
+	paths, _ := manifestFiles(root)
+	for _, m := range paths {
 		m = filepath.Clean(m)
 		s.manifests = append(s.manifests, m)
 		s.discovered[m] = true

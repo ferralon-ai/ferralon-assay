@@ -210,18 +210,23 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 
 // manifestFiles returns every recognized Python manifest under root, skipping
 // build-output / virtualenv / VCS trees so a vendored install does not shadow the
-// project's own top-level manifest.
-func manifestFiles(root string) []string {
+// project's own top-level manifest. read is false when part of the tree could not be read,
+// so a manifest there may be missing from the list.
+func manifestFiles(root string) (paths []string, read bool) {
 	return walkManifests(root, func(path string) bool { return isManifest(filepath.Base(path)) })
 }
 
 // walkManifests returns every file under root whose path satisfies match, skipping the
-// same trees as manifestFiles.
-func walkManifests(root string, match func(string) bool) []string {
-	var out []string
+// same trees as manifestFiles. read is false when the walk met an error other than a path
+// that is not there.
+func walkManifests(root string, match func(string) bool) (out []string, read bool) {
+	read = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
+			if !absent(err) {
+				read = false
+			}
+			return nil //nolint:nilerr // keep walking; the rest of the tree is still read.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -234,7 +239,7 @@ func walkManifests(root string, match func(string) bool) []string {
 		}
 		return nil
 	})
-	return out
+	return out, read
 }
 
 // isManifest reports whether name is a recognized Python dependency manifest: the lockfiles,

@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
 // depclosure_test.go — S2 fixtures: Reachability over first-party build output PLUS the
@@ -791,5 +793,47 @@ func TestReachability_InventoryVersionSelectionLimit(t *testing.T) {
 				t.Errorf("Searched = %v with limit %v", res.Searched, tt.wantLimit)
 			}
 		})
+	}
+}
+
+// TestMissingJarReasonIsDistinct: the missing-JAR reason is not the inventory's uncached-POM
+// reason, so a report never merges "one JAR absent" into "the graph is unresolved", and it
+// stays a did-not-run disclosure.
+func TestMissingJarReasonIsDistinct(t *testing.T) {
+	if partialReasonMissingJar == plugin.PartialReasonRelationshipUnexpressed+":maven_uncached_subtree" {
+		t.Errorf("%s is the inventory's maven_uncached_subtree reason", partialReasonMissingJar)
+	}
+	for _, r := range []string{partialReasonMissingJar, partialReasonRuntimeVersionAmbiguous} {
+		if got := report.ClassifyPartialityReason(r); got != report.PartialityDidNotRun {
+			t.Errorf("ClassifyPartialityReason(%s) = %v, want did_not_run", r, got)
+		}
+	}
+}
+
+// TestProgramClosureCoversInventory pins admitted ⊆ program for inventory mode: the dependency
+// SBOM a Kotlin run admits advisories against is javaanalysis.ResolveInventory's node set, the
+// same call the closure reads, so every package it names must be inside first-party code's
+// closure whenever that closure is bounded. A Targets bound that excluded one of them could
+// narrow a limit away from an admitted package.
+func TestProgramClosureCoversInventory(t *testing.T) {
+	const ga = jacksonGroup + ":" + jacksonArtifact
+	dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.9=runtimeClasspath\nempty=\n"})
+	inv, err := javaanalysis.ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := newInventoryGraph(inv).programClosure()
+	if program == nil {
+		t.Fatalf("closure unbounded on a complete lockfile inventory: %+v", inv.Partiality)
+	}
+	in := map[string]bool{}
+	for _, p := range program {
+		in[p] = true
+	}
+	for _, n := range inv.Nodes {
+		group, artifact, _, ok := splitMavenNodePURL(n.PURL)
+		if !ok || !in["pkg:maven/"+group+"/"+artifact] {
+			t.Errorf("admitted node %s outside the program closure %v", n.PURL, program)
+		}
 	}
 }

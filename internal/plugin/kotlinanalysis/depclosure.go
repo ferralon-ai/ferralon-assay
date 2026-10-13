@@ -43,9 +43,10 @@ import (
 // so reaching it makes the search undetermined.
 
 // partialReasonMissingJar is the scoped reason for an inventory node whose JAR is not in any
-// local cache (or whose version is unresolved, so no JAR can be located). Same string as
-// javaanalysis's maven_uncached_subtree: its subtree's code is unseen.
-const partialReasonMissingJar = plugin.PartialReasonRelationshipUnexpressed + ":maven_uncached_subtree"
+// local cache (or whose version is unresolved, so no JAR can be located): its code is unseen.
+// Distinct from the inventory's maven_uncached_subtree (a POM it could not read), so a missing
+// JAR is never disclosed as, or merged into, an unresolved graph.
+const partialReasonMissingJar = plugin.PartialReasonRelationshipUnexpressed + ":dependency_jar_uncached"
 
 // partialReasonDuplicateClass is the scoped reason for a dependency class whose binary name a
 // previously loaded JAR already defined. The engine keeps one body per name, so the shadowed

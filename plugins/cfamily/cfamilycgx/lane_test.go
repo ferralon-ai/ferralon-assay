@@ -234,8 +234,9 @@ func TestLane_ConfidenceFloor(t *testing.T) {
 	}
 }
 
-// Reachability and ComputeTaint find the path, carry the always-present dispatch partiality, and
-// declare a sink that is not in the graph.
+// Reachability and ComputeTaint find the path and declare a sink that is not in the graph. The
+// dispatch partiality is the residue's specific code (count is taken by function pointer), never
+// a bare dynamic_dispatch on every result.
 func TestLane_PathsAndTaint(t *testing.T) {
 	ctx := context.Background()
 	dir := copyFixture(t, "c")
@@ -259,17 +260,20 @@ func TestLane_PathsAndTaint(t *testing.T) {
 	if !reflect.DeepEqual(trace, []string{"parse", "scan"}) || ta.Paths[0].Ingress.SCIP != "parse" {
 		t.Errorf("trace = %v from %s", trace, ta.Paths[0].Ingress.SCIP)
 	}
-	for _, r := range []string{plugin.PartialReasonDynamicDispatch, reasonSinkUnresolved} {
+	for _, r := range []string{reasonFnPtr, reasonSinkUnresolved} {
 		if !hasReason(ta.Partiality, r) {
 			t.Errorf("taint partiality %v lacks %s", ta.Partiality.Reasons, r)
 		}
+	}
+	if hasReason(ta.Partiality, plugin.PartialReasonDynamicDispatch) {
+		t.Errorf("taint partiality %v carries a bare %s", ta.Partiality.Reasons, plugin.PartialReasonDynamicDispatch)
 	}
 
 	re, err := l.Reachability(ctx, plugin.ReachabilityRequest{BuildDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(re.Paths) != 0 || !hasReason(re.Partiality, plugin.PartialReasonDynamicDispatch) || !hasReason(re.Partiality, reasonFnPtr) {
+	if len(re.Paths) != 0 || hasReason(re.Partiality, plugin.PartialReasonDynamicDispatch) || !hasReason(re.Partiality, reasonFnPtr) {
 		t.Errorf("sinkless reachability = %+v, want no paths and the graph's partiality", re)
 	}
 }

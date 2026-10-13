@@ -583,7 +583,6 @@ func (l *Lane) paths(ctx context.Context, op, buildDir string, sinks []string) (
 	if err != nil {
 		return nil, part, err
 	}
-	reasons[plugin.PartialReasonDynamicDispatch] = true
 	from, ir := s.roots()
 	merge(reasons, ir)
 

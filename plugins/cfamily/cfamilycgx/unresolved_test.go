@@ -167,18 +167,8 @@ func TestLane_NoOpReadsComplete(t *testing.T) {
 		"index_symbols": idx.Partiality, "resolve_symbols": res.Partiality, "call_graph": cg.Partiality,
 		"find_ingresses": in.Partiality, "reachability": re.Partiality, "compute_taint": ta.Partiality,
 	} {
-		if p.Complete || len(p.Reasons) == 0 {
-			t.Errorf("%s: %+v, want Partial with its residue named", op, p)
-		}
-		for _, r := range p.Reasons {
-			if r != reasonMacro && r != plugin.PartialReasonDynamicDispatch {
-				t.Errorf("%s: declares %s on a clean tree", op, r)
-			}
-		}
-	}
-	for op, p := range map[string]plugin.Partiality{"index_symbols": idx.Partiality, "call_graph": cg.Partiality, "find_ingresses": in.Partiality} {
-		if !hasReason(p, reasonMacro) {
-			t.Errorf("%s: %v, want the standing %s", op, p.Reasons, reasonMacro)
+		if p.Complete || len(p.Reasons) != 1 || p.Reasons[0] != reasonMacro {
+			t.Errorf("%s: %+v, want only the standing %s on a clean tree", op, p, reasonMacro)
 		}
 	}
 }

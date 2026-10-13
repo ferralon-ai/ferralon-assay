@@ -442,3 +442,15 @@ func TestMavenProfile_InheritedProfileModulesStayWithTheParent(t *testing.T) {
 		}
 	}
 }
+
+// The pipeline declares these TargetEnv keys on its own side (pipeline/inventory.go), so they are
+// pinned here by their literal text: a rename on one side only goes red.
+func TestTargetEnvKeys_MatchThePipeline(t *testing.T) {
+	s := selectionOf(map[string]string{"maven.profiles": "release,!docs"})
+	if s.explicit("release") != explicitOn || s.explicit("docs") != explicitOff {
+		t.Errorf(`"maven.profiles" not read as the selection: release %v, docs %v`, s.explicit("release"), s.explicit("docs"))
+	}
+	if got := evalJDK("[11,)", map[string]string{"java.version": "17"}[targetEnvJavaVersion]); got != triTrue {
+		t.Errorf(`"java.version" not read as the Java version: evalJDK = %v`, got)
+	}
+}

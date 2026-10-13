@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -365,28 +365,23 @@ func scanBuildTree(root string, stems []string) *buildTreeScan {
 		}
 		return "", false
 	}
-	if !buildTreeAllFullyRead(buildTreeCandidates(root, match, func(string) bool { return false })) {
+	if !buildtree.AllFullyRead(buildtree.Candidates(root, match, func(string) bool { return false })) {
 		return nil
 	}
 	return scan
 }
 
-// readScanned reads the file at p whole. why is non-empty when it can't: unreadable, too
-// large, or binary (a NUL byte).
+// readScanned reads the file at p whole through readRegular. why is non-empty when it can't:
+// unreadable (a non-regular target included), too large, or binary (a NUL byte).
 func readScanned(p string) (data []byte, why string) {
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, "unreadable"
-	}
-	defer f.Close()
-	info, err := f.Stat()
+	info, err := os.Stat(p)
 	if err != nil {
 		return nil, "unreadable"
 	}
 	if info.Size() > maxScannedFile {
 		return nil, "too large to scan"
 	}
-	data, err = io.ReadAll(io.LimitReader(f, maxScannedFile+1))
+	data, err = readRegular(p)
 	if err != nil {
 		return nil, "unreadable"
 	}

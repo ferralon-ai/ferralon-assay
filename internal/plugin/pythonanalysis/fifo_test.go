@@ -225,3 +225,31 @@ func TestReaders_FIFO(t *testing.T) {
 		})
 	}
 }
+
+func treeSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+}
+
+// TestLoadProgram_BuildScriptLinkToPipe: a symlink to a pipe in the build tree is a file the
+// scan can't read, so the build script stays in, and loading never blocks on the pipe.
+func TestLoadProgram_BuildScriptLinkToPipe(t *testing.T) {
+	dir := writeTree(t, map[string]string{"setup.py": yamlSetupPy, "app.py": runtimePy, "requirements.txt": "setuptools\n"})
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	treeSymlink(t, "pipe", filepath.Join(dir, "link"))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = loadProgram(dir)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("loadProgram blocked opening the pipe behind link")
+	}
+	checkBuildScript(t, dir, buildScriptCase{name: "link to a pipe", script: "setup", edge: yamlLoad})
+}

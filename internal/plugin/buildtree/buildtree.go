@@ -215,6 +215,14 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 // Head returns up to HeadSize bytes of the file at path, or nil when they look binary (contain
 // a NUL byte).
 func Head(path string) ([]byte, error) {
+	buf, err := rawHead(path)
+	if err != nil || len(buf) == 0 || bytes.IndexByte(buf, 0) >= 0 {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func rawHead(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -225,11 +233,32 @@ func Head(path string) ([]byte, error) {
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
-	buf = buf[:n]
-	if n == 0 || bytes.IndexByte(buf, 0) >= 0 {
-		return nil, nil
+	return buf[:n], nil
+}
+
+// NULHeadMatch is a content rule's fallback for a file whose Head was nil. A NUL does not stop
+// every installer (pip and yarn v1 read past one in a comment), so it re-reads the head and runs
+// content on it twice: with every NUL removed, and with every NUL turned into a newline. A
+// re-read that fails matches as "unreadable": the file went unread, which never proves anything
+// absent. An empty file does not match.
+func NULHeadMatch(path string, content func(path string, head []byte) (string, bool)) (string, bool) {
+	raw, err := rawHead(path)
+	if err != nil {
+		return "unreadable", true
 	}
-	return buf, nil
+	renderings := [][]byte{
+		bytes.ReplaceAll(raw, []byte{0}, nil),
+		bytes.ReplaceAll(raw, []byte{0}, []byte{'\n'}),
+	}
+	for _, head := range renderings {
+		if len(head) == 0 {
+			continue
+		}
+		if why, ok := content(path, head); ok {
+			return why + " (NUL in head)", true
+		}
+	}
+	return "", false
 }
 
 // AllFullyRead reports whether every candidate is fully read.

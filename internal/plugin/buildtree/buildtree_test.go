@@ -298,3 +298,38 @@ func TestHead(t *testing.T) {
 		t.Error("Head of a missing file returned no error")
 	}
 }
+
+// TestNULHeadMatch: a nil head is re-read and judged with its NULs removed and with them made
+// newlines; a re-read that fails is a match, since the file went unread.
+func TestNULHeadMatch(t *testing.T) {
+	dir := t.TempDir()
+	equals := func(want string) func(string, []byte) (string, bool) {
+		return func(_ string, head []byte) (string, bool) { return "rule", string(head) == want }
+	}
+	cases := []struct {
+		name, content string
+		missing       bool
+		rule          func(string, []byte) (string, bool)
+		wantWhy       string
+		wantOK        bool
+	}{
+		{name: "NUL removed", content: "a\x00b", rule: equals("ab"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "NUL made a newline", content: "a\x00b", rule: equals("a\nb"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "no match", content: "a\x00b", rule: equals("c")},
+		{name: "empty", content: "", rule: equals("")},
+		{name: "only NULs, removed", content: "\x00\x00", rule: equals("")},
+		{name: "unreadable", missing: true, rule: equals("ab"), wantWhy: "unreadable", wantOK: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
+			if !tc.missing {
+				write(t, p, tc.content)
+			}
+			why, ok := NULHeadMatch(p, tc.rule)
+			if why != tc.wantWhy || ok != tc.wantOK {
+				t.Errorf("NULHeadMatch = %q, %v; want %q, %v", why, ok, tc.wantWhy, tc.wantOK)
+			}
+		})
+	}
+}

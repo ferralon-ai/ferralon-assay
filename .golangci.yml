@@ -35,6 +35,9 @@ linters:
             # matches only stdlib: no third-party import path lacks a domain segment.
             - "go/"
             - github.com/ferralon-ai/ferralon-assay
+            # The cgx SDK, for the plugins/cfamily nested module (the C/C++ lane's subprocess)
+            # only; the cfamily-cgx-scope rule below denies it everywhere else.
+            - github.com/ferralon-ai/cgx/sdk/go
             - github.com/google/uuid
             - golang.org/x/mod
             - golang.org/x/tools
@@ -55,6 +58,17 @@ linters:
                 ferralon-assay (OSS) must never import the proprietary service module
                 (github.com/ferralon-ai/tegron). The boundary is one-directional: service →
                 ferralon-assay only.
+        cfamily-cgx-scope:
+          # The cgx SDK is the C/C++ lane's engine and stays inside plugins/cfamily. The root
+          # module has no require on it, so the compiler already keeps it out of the host binary;
+          # this names an import of it anywhere else directly in review.
+          list-mode: lax
+          files:
+            - "$all"
+            - "!**/plugins/cfamily/**"
+          deny:
+            - pkg: github.com/ferralon-ai/cgx/sdk/go
+              desc: the cgx SDK is imported only by the plugins/cfamily nested module.
 
 issues:
   max-issues-per-linter: 0

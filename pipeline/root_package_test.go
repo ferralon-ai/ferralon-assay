@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -498,6 +500,63 @@ func TestGradleRootPackage_VersionAllowlist(t *testing.T) {
 			got, ok := ReadRootPackage(context.Background(), writeTree(t, files), checkout.LangJava)
 			if want := (RootPackage{PURLType: "maven", Name: "com.example:lib", Version: tc.want}); !ok || got != want {
 				t.Fatalf("got %+v, %v; want %+v", got, ok, want)
+			}
+		})
+	}
+}
+
+// TestGradleRootPackage_UnreadableWrapperIsNotStock: wrapper properties that are a FIFO, or a file
+// that can't be opened, are refused without waiting on a writer, and the root keeps its name but
+// not its version.
+func TestGradleRootPackage_UnreadableWrapperIsNotStock(t *testing.T) {
+	const stock = "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n"
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, props string)
+	}{
+		{"a FIFO", func(t *testing.T, props string) {
+			if err := syscall.Mkfifo(props, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"stock properties that can't be opened", func(t *testing.T, props string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root ignores file permissions")
+			}
+			if err := os.WriteFile(props, []byte(stock), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(props, 0); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"settings.gradle": "rootProject.name = 'lib'\n",
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n",
+			})
+			props := filepath.Join(dir, "gradle", "wrapper", "gradle-wrapper.properties")
+			if err := os.MkdirAll(filepath.Dir(props), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, props)
+			type result struct {
+				pkg RootPackage
+				ok  bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				pkg, ok := ReadRootPackage(context.Background(), dir, checkout.LangJava)
+				done <- result{pkg, ok}
+			}()
+			select {
+			case r := <-done:
+				if want := (RootPackage{PURLType: "maven", Name: "com.example:lib"}); !r.ok || r.pkg != want {
+					t.Fatalf("got %+v, %v; want %+v", r.pkg, r.ok, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("ReadRootPackage did not return: the wrapper properties were opened blocking")
 			}
 		})
 	}

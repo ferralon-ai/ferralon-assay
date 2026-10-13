@@ -3,10 +3,13 @@
 package gradlewrapper
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 var (
@@ -19,12 +22,16 @@ var (
 
 // StockGradleWrapper reports whether the wrapper, when there is one, fetches a distribution from
 // services.gradle.org into the Gradle user home; a custom distribution can carry init scripts that
-// set the version.
+// set the version. Properties that are present but not a regular file this reader can open are
+// not stock; the open does not block, so a FIFO in their place fails rather than hangs.
 func StockGradleWrapper(buildDir string) bool {
 	path := filepath.Join(buildDir, "gradle", "wrapper", "gradle-wrapper.properties")
-	data, err := os.ReadFile(path)
+	data, missing, err := readRegular(path)
+	if missing {
+		return true
+	}
 	if err != nil {
-		return absent(path)
+		return false
 	}
 	props, ok := stockWrapperProperties(string(data))
 	if !ok {
@@ -89,8 +96,32 @@ func storePathWithinHome(p string) bool {
 	return true
 }
 
-// absent reports whether nothing exists at path; an error other than not-exist counts as present.
-func absent(path string) bool {
-	_, err := os.Lstat(path)
-	return os.IsNotExist(err)
+var errNotRegular = errors.New("not a regular file")
+
+// readRegular reads path only when it is a regular file: checked with Lstat before the open, so
+// a symlink is refused, and again on the open descriptor, so what is read is what was checked.
+// The open is non-blocking, so a FIFO swapped in after the Lstat fails the second check rather
+// than hanging the open. missing is true only when the Lstat finds nothing at path; any other
+// failure is an error, and the file counts as present.
+func readRegular(path string) (data []byte, missing bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, os.IsNotExist(err), err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, errNotRegular
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	if info, err = f.Stat(); err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, errNotRegular
+	}
+	data, err = io.ReadAll(f)
+	return data, false, err
 }

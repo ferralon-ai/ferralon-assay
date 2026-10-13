@@ -165,8 +165,8 @@ func gradleAncestors(root string) ([]string, bool) {
 // gradleWrapperSafe reports whether every gradle/wrapper/gradle-wrapper.properties at root or
 // above it names a distribution from services.gradle.org (gradlewrapper.StockGradleWrapper). A
 // wrapper distribution is a Gradle home, and a custom one's init.d runs on every build it starts.
-// A properties file that is present but not a regular file this reader can open is unsafe; it is
-// opened non-blocking first, so a FIFO in its place fails rather than hangs.
+// A properties file that is present but not a regular file StockGradleWrapper can open is unsafe;
+// it opens non-blocking, so a FIFO in its place fails rather than hangs.
 func gradleWrapperSafe(root string) (why string, ok bool) {
 	dirs, ok := gradleAncestors(root)
 	if !ok {
@@ -177,11 +177,8 @@ func gradleWrapperSafe(root string) (why string, ok bool) {
 		if _, err := os.Lstat(path); err != nil && missing(err) {
 			continue
 		}
-		if _, err := readRegular(path); err != nil {
-			return path + " cannot be read", false
-		}
 		if !gradlewrapper.StockGradleWrapper(dir) {
-			return path + " names a distribution other than Gradle's own", false
+			return path + " is not a readable file naming a distribution of Gradle's own", false
 		}
 	}
 	return "", true

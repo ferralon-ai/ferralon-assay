@@ -59,12 +59,15 @@ type cdepRef struct{ name, triplet string }
 // on it ("1.3.1#2"), since two port-versions of one upstream version are different builds.
 func (d cdep) fullVersion() string { return vcpkgVersion(d.version, d.portVersion) }
 
+// resolvedDependency is d as ResolveDependencyVersions reports it: found, never resolved. See
+// ResolveDependencyVersions for why a pin does not resolve.
 func (d cdep) resolvedDependency() plugin.ResolvedDependency {
-	if !d.resolved {
-		return plugin.ResolvedDependency{Coordinate: d.name, Source: d.source}
-	}
-	return plugin.ResolvedDependency{Coordinate: d.name, Version: d.fullVersion(), Resolved: true, Source: d.source}
+	return plugin.ResolvedDependency{Coordinate: d.name, Source: d.source}
 }
+
+// reasonSoleSourceUnproven declares a dependency the manifests pin that is still not resolved: the
+// lane cannot show the pinned package is the only copy of that library in the build.
+const reasonSoleSourceUnproven = plugin.PartialReasonSourceUnpinned + ":sole_source_unproven"
 
 // manifestSet is what readManifests found at a build root.
 type manifestSet struct {
@@ -229,21 +232,26 @@ func checkBuildDir(buildDir string) error {
 	return nil
 }
 
-// ResolveDependencyVersions reads the C/C++ codebase's declared dependency versions from the Conan
-// and vcpkg manifests at the build root and returns the version for the requested coordinate (the
-// package name, compared case-insensitively). An empty coordinate enumerates every declaration.
+// ResolveDependencyVersions reads the C/C++ codebase's dependency declarations from the Conan and
+// vcpkg manifests at the build root and reports the requested coordinate (the package name,
+// compared case-insensitively). An empty coordinate enumerates every declaration.
 //
-// SOUNDNESS (inv.5): only an exact pin resolves — a conan.lock reference, a conanfile.txt
-// requirement with a literal version, a package vcpkg records as installed, or a vcpkg.json
-// override. A Conan version range, a vcpkg "version>=" minimum, or a bare vcpkg dependency name is
-// UNRESOLVED (source_unpinned), never a guessed version, unless the same manager's lock tier pins
-// that name. A conanfile.py is a Python program, not a manifest; it is not executed or
-// pattern-matched.
+// SOUNDNESS (inv.5): no C/C++ dependency resolves to a version. A declared coordinate is Found
+// with Resolved=false, whichever manifest pins it. An exact pin (a conan.lock reference, a literal
+// conanfile.txt requirement, a package vcpkg records as installed, a vcpkg.json override) shows
+// what one package manager installed, not that it is the only copy of the library in the build: a
+// vendored source tree, a prebuilt static library that bundles it, or a system copy is in no
+// manifest, and any of them can be the code that is linked. Until the lane can prove a single
+// source, a pin is declared reasonSoleSourceUnproven and never reaches the version comparison. The
+// pinned versions stay in ResolveInventory's nodes.
 //
-// A coordinate no manifest declares is NOT evidence of absence in C/C++: system packages,
-// vendored sources and header-only copies never appear in a package manifest, so a miss is
-// declared no_manifest rather than reading as "not a dependency". Two manifests pinning one
-// package to different versions resolve to neither (lockfile_ambiguous).
+// The other outcomes are declared as they are found. A Conan version range, a vcpkg "version>="
+// minimum, or a bare vcpkg dependency name is source_unpinned, unless the same manager's lock tier
+// pins that name. A conanfile.py is a Python program, not a manifest; it is not executed or
+// pattern-matched. A coordinate no manifest declares is NOT evidence of absence in C/C++, for the
+// same reason a pin is not proof of presence alone, so a miss is declared no_manifest rather than
+// reading as "not a dependency". Two manifests pinning one package to different versions are
+// lockfile_ambiguous.
 //
 // A missing or non-directory build dir is a hard error; an unparseable manifest degrades to
 // tool_failure and the dependencies it would have carried are unknown, not absent.
@@ -270,46 +278,48 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{All: all}
 	want := strings.ToLower(strings.TrimSpace(req.Coordinate))
 	if want == "" {
-		for _, d := range all {
-			if !d.Resolved {
+		for _, d := range ms.deps {
+			if d.resolved {
+				reasons.add(reasonSoleSourceUnproven)
+			} else {
 				reasons.add(plugin.PartialReasonSourceUnpinned)
-				break
 			}
 		}
 		res.Partiality = reasons.partiality()
 		return res, nil
 	}
 
-	var resolved []plugin.ResolvedDependency
-	for _, d := range all {
-		if strings.ToLower(d.Coordinate) != want {
+	var pins []cdep
+	for _, d := range ms.deps {
+		if strings.ToLower(d.name) != want {
 			continue
 		}
 		if !res.Found {
-			res.Found, res.Match = true, d
+			res.Found, res.Match = true, d.resolvedDependency()
 		}
-		if d.Resolved {
-			resolved = append(resolved, d)
+		if d.resolved {
+			pins = append(pins, d)
 		}
 	}
 	switch {
 	case !res.Found:
 		reasons.add(plugin.PartialReasonNoManifest)
-	case len(resolved) == 0:
+	case len(pins) == 0:
 		reasons.add(plugin.PartialReasonSourceUnpinned)
-	case !sameVersion(resolved):
-		res.Match = plugin.ResolvedDependency{Coordinate: resolved[0].Coordinate}
+	case !samePin(pins):
+		res.Match = plugin.ResolvedDependency{Coordinate: pins[0].name}
 		reasons.add(plugin.PartialReasonLockfileAmbiguous)
 	default:
-		res.Match = resolved[0]
+		res.Match = pins[0].resolvedDependency()
+		reasons.add(reasonSoleSourceUnproven)
 	}
 	res.Partiality = reasons.partiality()
 	return res, nil
 }
 
-func sameVersion(deps []plugin.ResolvedDependency) bool {
+func samePin(deps []cdep) bool {
 	for _, d := range deps[1:] {
-		if d.Version != deps[0].Version {
+		if d.fullVersion() != deps[0].fullVersion() {
 			return false
 		}
 	}

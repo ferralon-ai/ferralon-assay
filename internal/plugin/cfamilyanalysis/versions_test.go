@@ -115,9 +115,13 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// pinned is a dependency a manifest pins at version. ResolveDependencyVersions reports it found and
+// unresolved; the pin itself is what the inventory carries.
 func pinned(name, version, source string) plugin.ResolvedDependency {
 	return plugin.ResolvedDependency{Coordinate: name, Version: version, Resolved: true, Source: source}
 }
+
+var soleSourceUnproven = plugin.Partial(reasonSoleSourceUnproven)
 
 func unpinned(name, source string) plugin.ResolvedDependency {
 	return plugin.ResolvedDependency{Coordinate: name, Source: source}
@@ -138,7 +142,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", conanLockFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "user/channel and revision are stripped",
@@ -146,7 +150,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "mylib",
 			wantFound:  true,
 			wantMatch:  pinned("mylib", "2.0", conanLockFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "lock build_requires are not product dependencies",
@@ -160,7 +164,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "openssl",
 			wantFound:  true,
 			wantMatch:  pinned("openssl", "3.2.0", conanTxtFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "conanfile.txt range is unpinned",
@@ -176,7 +180,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "fmt",
 			wantFound:  true,
 			wantMatch:  pinned("fmt", "10.2.1", conanLockFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg override pins and keeps its port-version",
@@ -184,7 +188,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "FMT",
 			wantFound:  true,
 			wantMatch:  pinned("fmt", "10.1.1#2", vcpkgFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg override with no port-version is the upstream version",
@@ -192,7 +196,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", vcpkgFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg version>= is a minimum, not a pin",
@@ -222,7 +226,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg status keeps the port-version",
@@ -230,7 +234,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "libpng",
 			wantFound:  true,
 			wantMatch:  pinned("libpng", "1.6.43#2", vcpkgStatusFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg status package removed is not installed",
@@ -244,7 +248,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name: "vcpkg updates override status in name order",
@@ -256,7 +260,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1#3", vcpkgStatusFile),
-			wantPart:   plugin.Complete(),
+			wantPart:   soleSourceUnproven,
 		},
 		{
 			name:       "vcpkg status in an unknown state does not parse",
@@ -270,7 +274,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", vcpkgStatusFile),
-			wantPart:   plugin.Partial(plugin.PartialReasonToolFailure),
+			wantPart:   plugin.Partial(reasonSoleSourceUnproven, plugin.PartialReasonToolFailure),
 		},
 		{
 			name:       "no manifest at all",
@@ -298,7 +302,7 @@ func TestResolveDependencyVersions(t *testing.T) {
 			coordinate: "zlib",
 			wantFound:  true,
 			wantMatch:  pinned("zlib", "1.3.1", conanTxtFile),
-			wantPart:   plugin.Partial(plugin.PartialReasonToolFailure),
+			wantPart:   plugin.Partial(reasonSoleSourceUnproven, plugin.PartialReasonToolFailure),
 		},
 		{
 			name:       "unfamiliar conan lockfile format is not read as empty",
@@ -317,8 +321,14 @@ func TestResolveDependencyVersions(t *testing.T) {
 			if got.Found != tt.wantFound {
 				t.Errorf("Found = %v, want %v", got.Found, tt.wantFound)
 			}
-			if got.Match != tt.wantMatch {
-				t.Errorf("Match = %+v, want %+v", got.Match, tt.wantMatch)
+			reported := plugin.ResolvedDependency{Coordinate: tt.wantMatch.Coordinate, Source: tt.wantMatch.Source}
+			if got.Match != reported {
+				t.Errorf("Match = %+v, want %+v", got.Match, reported)
+			}
+			if tt.wantMatch.Resolved {
+				if v := pinFor(t, dir, tt.wantMatch.Coordinate, tt.wantMatch.Source); v != tt.wantMatch.Version {
+					t.Errorf("pin = %q, want %q", v, tt.wantMatch.Version)
+				}
 			}
 			if !reflect.DeepEqual(got.Partiality, tt.wantPart) {
 				t.Errorf("Partiality = %+v, want %+v", got.Partiality, tt.wantPart)
@@ -334,15 +344,60 @@ func TestResolveDependencyVersionsEnumerates(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []plugin.ResolvedDependency{
-		pinned("zlib", "1.3.1", conanTxtFile),
+		unpinned("zlib", conanTxtFile),
 		unpinned("fmt", conanTxtFile),
-		pinned("openssl", "3.2.0", conanTxtFile),
+		unpinned("openssl", conanTxtFile),
 	}
 	if !reflect.DeepEqual(got.All, want) {
 		t.Fatalf("All = %+v, want %+v", got.All, want)
 	}
-	if !reflect.DeepEqual(got.Partiality, plugin.Partial(plugin.PartialReasonSourceUnpinned)) {
+	if !reflect.DeepEqual(got.Partiality, plugin.Partial(plugin.PartialReasonSourceUnpinned, reasonSoleSourceUnproven)) {
 		t.Fatalf("Partiality = %+v", got.Partiality)
+	}
+}
+
+// pinFor is the version the manifest at source pins coordinate to, or "" when it pins none.
+func pinFor(t *testing.T, dir, coordinate, source string) string {
+	t.Helper()
+	for _, d := range readManifests(dir).deps {
+		if strings.EqualFold(d.name, coordinate) && d.source == source && d.resolved {
+			return d.fullVersion()
+		}
+	}
+	return ""
+}
+
+// No C/C++ dependency reaches intake resolved, from any manifest tier: a pin is not proof that the
+// pinned package is the only copy of the library in the build.
+func TestResolveDependencyVersionsNeverResolves(t *testing.T) {
+	trees := []map[string]string{
+		{conanLockFile: conanLock},
+		{conanTxtFile: conanfileTxt},
+		{vcpkgStatusFile: vcpkgStatus},
+		{vcpkgFile: vcpkgJSON},
+		{conanLockFile: conanLock, conanTxtFile: conanfileTxt, vcpkgStatusFile: vcpkgStatus, vcpkgFile: vcpkgJSON},
+	}
+	for _, files := range trees {
+		dir := writeFiles(t, files)
+		ms := readManifests(dir)
+		for _, d := range ms.deps {
+			got, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: d.name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Found || got.Match.Resolved || got.Match.Version != "" || got.Partiality.Complete {
+				t.Errorf("%v: %s = %+v, want found, unresolved and declared partial", files, d.name, got)
+			}
+		}
+		all, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range all.All {
+			if d.Resolved || d.Version != "" {
+				t.Errorf("%v: enumerated %+v resolved", files, d)
+			}
+		}
 	}
 }
 

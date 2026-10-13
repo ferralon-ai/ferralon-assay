@@ -57,7 +57,8 @@ const manifestContentVersion = "1.2.0"
 //
 //   - Resolvers: the files the lane reads. compile_commands.json and CMakeCache.txt give the
 //     build context; conan.lock, conanfile.txt, vcpkg's installed status and vcpkg.json give
-//     dependency versions and the inventory (exact pins only, everything else fails open).
+//     the inventory (exact pins only, everything else fails open). Dependency versions are
+//     reported found and unresolved: a pin does not prove the package is the build's only copy.
 //   - Runtimes: c and c++. Both run through the same cgx tree-sitter graph; C++ is a stepping
 //     stone (no template, overload or exception precision) and declares its residue.
 //   - GraphSemantics: direct, cgx's resolved direct calls; fn_ptr_candidate, cgx's possible-tier

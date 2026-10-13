@@ -236,18 +236,18 @@ func TestCFamilyBaseline_NamedUnreachedSymbolIsUndetermined(t *testing.T) {
 
 // cgx_sink_unreached is scoped to the advisory whose sink it is. One scan carries a C advisory
 // whose sink is resolved and unreached, a second C advisory whose sink resolves and is not flagged,
-// and a Go module advisory. No row here can refute: the fake emits no positive grounds, and the
-// cfamily inventory limit holds every not_exploitable in the scan. So the witness is the reason,
-// not the verdict. The unreached C row is held by its own did_not_run (analysis_did_not_run); the
-// other two land on vulnerable_symbol_unresolved, which a did_not_run on their own ops would
-// outrank. A run-wide declaration turns all three into analysis_did_not_run, so the second and
-// third rows are what fail if the code ever leaks out of the C advisory's own ops.
+// and a Go module advisory. No row here can refute: the fake emits no positive grounds. So the
+// witness is the reason, not the verdict. Both C rows are held by a did_not_run
+// (analysis_did_not_run): the first by its own cgx_sink_unreached, the second by its unresolved
+// version (sole_source_unproven). The Go row lands on vulnerable_symbol_unresolved, which a
+// did_not_run on its own ops would outrank, so it is the row that fails if the code ever leaks out
+// of the C advisory's own ops into a run-wide declaration.
 func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
 	const sink = "inflateGetHeader"
 	lane := cfamilyGatePlugin{unreached: map[string]bool{sink: true}}
 	rep := runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}, cfamilyAdvisoryID, cfamilySecondAdvisoryID, goAdvisoryID)
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
-	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
+	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonAnalysisDidNotRun)
 	assertUndetermined(t, rep, goAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
 }
 

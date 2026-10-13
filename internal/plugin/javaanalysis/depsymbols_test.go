@@ -263,8 +263,8 @@ func TestLocateArtifactJar_GradleCache(t *testing.T) {
 	jar := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar")
 	writeJar(t, jar, "com/evil/netkit/UrlFetcher.class", emitClass(&cpb{}, "com/evil/netkit/UrlFetcher", nil))
 	got, found := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
-	if found != jarFound || got != realPath(t, jar) {
-		t.Errorf("locateArtifactJar = %q, %v; want %q", got, found, jar)
+	if found != jarFound || got.path != realPath(t, jar) {
+		t.Errorf("locateArtifactJar = %q, %v; want %q", got.path, found, jar)
 	}
 	if _, found := locateArtifactJar(build, "com.evil:netkit", "2.0.0"); found != jarMissing {
 		t.Errorf("a version that is not cached: %v, want missing", found)
@@ -305,8 +305,17 @@ func TestLocateArtifactJar_ComparesEveryCache(t *testing.T) {
 				t.Cleanup(func() { _ = os.Chmod(copies[tc.unreadable], 0o644) })
 			}
 			got, found := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
-			if found != tc.want || (found == jarFound) != (got != "") || (found == jarFound && got != realPath(t, copies["m2"])) {
-				t.Fatalf("locateArtifactJar = %q, %v; want %v", got, found, tc.want)
+			if found != tc.want || (found == jarFound) != (got.path != "") || (found == jarFound && got.path != realPath(t, copies["m2"])) {
+				t.Fatalf("locateArtifactJar = %q, %v; want %v", got.path, found, tc.want)
+			}
+			if found == jarFound {
+				want, err := os.ReadFile(copies["m2"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got.data, want) {
+					t.Error("locateArtifactJar returned bytes other than the copy it compared")
+				}
 			}
 		})
 	}
@@ -365,8 +374,25 @@ func TestLocateArtifactJar_StaysInsideTheCache(t *testing.T) {
 			fetchJar(t, real)
 			symlink(t, real, m2Jar(build, "1.0.0"))
 		}, want: jarFound},
-		{name: "cache root is a symlink", version: "1.0.0", setup: func(t *testing.T, build string) {
+		// A cache inside the checkout that links out of it holds somewhere else's bytes; one
+		// that links elsewhere inside the checkout is still the checkout's.
+		{name: "checkout Maven repository links out of the checkout", version: "1.0.0", setup: func(t *testing.T, build string) {
 			repo := t.TempDir()
+			fetchJar(t, filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"))
+			symlink(t, repo, filepath.Join(build, ".m2", "repository"))
+		}, want: jarUnreadable},
+		{name: "checkout Gradle cache links out of the checkout", version: "1.0.0", setup: func(t *testing.T, build string) {
+			cache := t.TempDir()
+			fetchJar(t, filepath.Join(cache, "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar"))
+			symlink(t, cache, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1"))
+		}, want: jarUnreadable},
+		{name: "checkout Gradle user home links out of the checkout", version: "1.0.0", setup: func(t *testing.T, build string) {
+			cache := t.TempDir()
+			fetchJar(t, filepath.Join(cache, "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar"))
+			symlink(t, cache, filepath.Join(build, "caches", "modules-2", "files-2.1"))
+		}, want: jarUnreadable},
+		{name: "checkout Maven repository links inside the checkout", version: "1.0.0", setup: func(t *testing.T, build string) {
+			repo := filepath.Join(build, "vendor-cache")
 			fetchJar(t, filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"))
 			symlink(t, repo, filepath.Join(build, ".m2", "repository"))
 		}, want: jarFound},

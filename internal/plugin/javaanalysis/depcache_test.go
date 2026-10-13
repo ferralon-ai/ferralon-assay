@@ -3,6 +3,7 @@ package javaanalysis
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -36,70 +37,93 @@ func TestMavenJarRelPath(t *testing.T) {
 	}
 }
 
-func TestLocateDependencyJar(t *testing.T) {
-	// Build a synthetic per-build Maven cache: <root>/com/example/lib/widget/1.4.0/widget-1.4.0.jar.
-	// The locator only checks for the file's presence, so dummy content suffices here;
-	// bytecode parsing is exercised in the classfile package's tests.
-	root := t.TempDir()
-	jarDir := filepath.Join(root, "com", "example", "lib", "widget", "1.4.0")
-	if err := os.MkdirAll(jarDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	jarPath := filepath.Join(jarDir, "widget-1.4.0.jar")
-	if err := os.WriteFile(jarPath, []byte("PK\x03\x04"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// isolateHome points HOME at a fresh directory, so the user caches a lookup searches are the
+// test's own.
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}
 
-	t.Run("found in root", func(t *testing.T) {
-		got, ok := LocateDependencyJar([]string{root}, "com.example.lib:widget", "1.4.0")
-		if !ok || got != realPath(t, jarPath) {
-			t.Fatalf("LocateDependencyJar = (%q,%v), want (%q,true)", got, ok, jarPath)
-		}
-	})
-	t.Run("wrong version is a miss, not a fetch", func(t *testing.T) {
-		if got, ok := LocateDependencyJar([]string{root}, "com.example.lib:widget", "9.9.9"); ok {
-			t.Fatalf("want miss for absent version, got %q", got)
-		}
-	})
-	t.Run("skips empty and non-existent roots", func(t *testing.T) {
-		got, ok := LocateDependencyJar([]string{"", filepath.Join(root, "nope"), root}, "com.example.lib:widget", "1.4.0")
-		if !ok || got != realPath(t, jarPath) {
-			t.Fatalf("LocateDependencyJar across roots = (%q,%v), want (%q,true)", got, ok, jarPath)
-		}
-	})
-	t.Run("malformed coordinate is a miss", func(t *testing.T) {
-		if _, ok := LocateDependencyJar([]string{root}, "widget", "1.4.0"); ok {
-			t.Fatal("want miss for malformed coordinate")
-		}
-	})
-	t.Run("a directory at the jar path is a miss", func(t *testing.T) {
-		dirRoot := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(dirRoot, "com", "example", "lib", "widget", "1.4.0", "widget-1.4.0.jar"), 0o755); err != nil {
+// Only a JAR that is not there is missing. One that is there but cannot be looked at, or is not a
+// regular file, could be the bytes the build ran, so it is unreadable, and no other copy stands
+// in for it.
+func TestLocateArtifactJar_UnreadableIsNotAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file modes do not stop root reading a directory")
+	}
+	const gav = "com.example.lib:widget"
+	m2 := func(base string) string {
+		return filepath.Join(base, ".m2", "repository", "com", "example", "lib", "widget", "1.4.0")
+	}
+	gradle := func(base string) string {
+		return filepath.Join(base, ".gradle", "caches", "modules-2", "files-2.1", "com.example.lib", "widget", "1.4.0")
+	}
+	lock := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if got, ok := LocateDependencyJar([]string{dirRoot}, "com.example.lib:widget", "1.4.0"); ok {
-			t.Fatalf("want miss for a directory, got %q", got)
-		}
-	})
-	// The first copy found is the one the caller would bind; when it leaves its cache, a later
-	// root's copy doesn't stand in for it.
-	t.Run("first copy links out of its cache", func(t *testing.T) {
-		linkRoot := t.TempDir()
-		linkDir := filepath.Join(linkRoot, "com", "example", "lib", "widget", "1.4.0")
-		if err := os.MkdirAll(linkDir, 0o755); err != nil {
+		if err := os.Chmod(dir, 0); err != nil {
 			t.Fatal(err)
 		}
-		outside := filepath.Join(t.TempDir(), "elsewhere.jar")
-		if err := os.WriteFile(outside, []byte("PK\x03\x04"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(outside, filepath.Join(linkDir, "widget-1.4.0.jar")); err != nil {
-			t.Fatal(err)
-		}
-		if got, ok := LocateDependencyJar([]string{linkRoot, root}, "com.example.lib:widget", "1.4.0"); ok {
-			t.Fatalf("want miss when the first copy escapes, got %q", got)
-		}
-	})
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	}
+	for _, tc := range []struct {
+		name       string
+		coordinate string
+		setup      func(t *testing.T, build, home string)
+		want       jarLookup
+	}{
+		{name: "a copy in the checkout alone", coordinate: gav, setup: func(t *testing.T, build, home string) {}, want: jarFound},
+		{name: "user Maven version directory cannot be read", coordinate: gav, setup: func(t *testing.T, build, home string) {
+			lock(t, m2(home))
+		}, want: jarUnreadable},
+		{name: "user Gradle version directory cannot be read", coordinate: gav, setup: func(t *testing.T, build, home string) {
+			lock(t, gradle(home))
+		}, want: jarUnreadable},
+		{name: "a directory at the jar path", coordinate: gav, setup: func(t *testing.T, build, home string) {
+			if err := os.MkdirAll(filepath.Join(m2(home), "widget-1.4.0.jar"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, want: jarFound},
+		{name: "a FIFO at the jar path", coordinate: gav, setup: func(t *testing.T, build, home string) {
+			if err := os.MkdirAll(m2(home), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(filepath.Join(m2(home), "widget-1.4.0.jar"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: jarUnreadable},
+		{name: "malformed coordinate", coordinate: "widget", setup: func(t *testing.T, build, home string) {}, want: jarUnreadable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			build := t.TempDir()
+			writeJar(t, filepath.Join(m2(build), "widget-1.4.0.jar"), "com/example/lib/widget/W.class", emitClass(&cpb{}, "com/example/lib/widget/W", nil))
+			tc.setup(t, build, home)
+			if _, found := locateArtifactJar(build, tc.coordinate, "1.4.0"); found != tc.want {
+				t.Fatalf("locateArtifactJar = %v, want %v", found, tc.want)
+			}
+		})
+	}
+}
+
+// A FIFO is neither a cache hit nor a miss, and reading one fails at once instead of waiting for
+// a writer.
+func TestCacheReads_RefuseAFIFO(t *testing.T) {
+	root := t.TempDir()
+	fifo := filepath.Join(root, "w.jar")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, st := inCache(root, "w.jar"); st != cacheEscape {
+		t.Errorf("inCache on a FIFO = %v, want cacheEscape", st)
+	}
+	if _, err := readRegular(fifo); err == nil {
+		t.Error("readRegular read a FIFO")
+	}
 }
 
 func TestMavenRepoRoots_IncludesProjectLocalCache(t *testing.T) {
@@ -151,8 +175,8 @@ func TestCacheReaders_StayInsideTheCache(t *testing.T) {
 		if d := cache.digestFor("com.evil", "netkit", "1.0.0"); d != "" {
 			t.Errorf("digestFor read a sidecar linked from outside the cache: %q", d)
 		}
-		if p, ok := LocateDependencyJar([]string{repo}, "com.evil:netkit", "1.0.0"); ok {
-			t.Errorf("LocateDependencyJar bound a JAR linked from outside the cache: %q", p)
+		if p, st := inCache(repo, filepath.Join("com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")); st != cacheEscape {
+			t.Errorf("inCache bound a JAR linked from outside the cache: %q, %v", p, st)
 		}
 	})
 	t.Run("maven, link inside the cache", func(t *testing.T) {
@@ -161,6 +185,32 @@ func TestCacheReaders_StayInsideTheCache(t *testing.T) {
 		link(t, filepath.Join(repo, "blobs", "netkit.pom"), filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"))
 		if _, ok := newMavenCacheAt(repo).get("com.evil", "netkit", "1.0.0"); !ok {
 			t.Error("mavenCache.get refused a link that stays inside the cache")
+		}
+	})
+	// The first root's POM is an escape: a later root's copy does not stand in for it.
+	t.Run("maven, escape in an earlier root", func(t *testing.T) {
+		first, second := t.TempDir(), t.TempDir()
+		link(t, filepath.Join(outside, "netkit.pom"), filepath.Join(first, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"))
+		writeFile(t, filepath.Join(second, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), pom)
+		if _, ok := newMavenCacheAt(first, second).get("com.evil", "netkit", "1.0.0"); ok {
+			t.Error("mavenCache.get fell through an escaping POM to the next root")
+		}
+	})
+	// A repository the checkout only links to is somewhere else's cache.
+	t.Run("maven, checkout repository links out", func(t *testing.T) {
+		isolateHome(t)
+		build, repo := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), pom)
+		link(t, repo, filepath.Join(build, ".m2", "repository"))
+		if _, ok := newMavenCache(build).get("com.evil", "netkit", "1.0.0"); ok {
+			t.Error("mavenCache.get read a POM through a checkout repository that links outside the checkout")
+		}
+		other := t.TempDir()
+		inside := filepath.Join(other, "cache")
+		writeFile(t, filepath.Join(inside, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), pom)
+		link(t, inside, filepath.Join(other, ".m2", "repository"))
+		if _, ok := newMavenCache(other).get("com.evil", "netkit", "1.0.0"); !ok {
+			t.Error("mavenCache.get refused a checkout repository that links inside the checkout")
 		}
 	})
 	t.Run("gradle", func(t *testing.T) {

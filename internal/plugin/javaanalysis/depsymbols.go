@@ -100,7 +100,7 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": artifact variant declared"))
 			continue
 		}
-		jarPath, found := locateArtifactJar(buildDir, coordinate, v)
+		jar, found := locateArtifactJar(buildDir, coordinate, v)
 		switch found {
 		case jarCopiesDiffer:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": cached copies differ"))
@@ -112,13 +112,13 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v))
 			continue
 		}
-		jr, err := classfile.LoadJar(jarPath)
+		jr, err := classfile.LoadJarBytes(jar.data)
 		if err != nil {
-			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jarPath)))
+			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)))
 			continue
 		}
 		if len(jr.Failed) > 0 {
-			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jarPath)+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
+			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
 		}
 		read = true
 		for w, syms := range matchJarSymbols(jr.Classes, coordinate, wanted) {

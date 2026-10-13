@@ -21,19 +21,25 @@ import (
 // — the reader never reads os.UserHomeDir at resolution time. Parsed POMs are memoized; a GAV
 // whose POM is absent is a recorded cache-miss (nil), never assumed edgeless.
 type mavenCache struct {
-	roots []string
-	memo  map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
-	miss  map[string]bool
+	roots   []string
+	memo    map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
+	miss    map[string]bool
+	escaped bool // the build's own repository links out of the checkout: every lookup misses
 }
 
 // newMavenCache builds the default reader for a build dir (project-local .m2 first, then the
-// user ~/.m2). A blank home is harmless — that root simply resolves nothing.
+// user ~/.m2). A blank home is harmless — that root simply resolves nothing. A project-local
+// repository that resolves outside the build is an escape in the first root, so nothing is read
+// past it.
 func newMavenCache(buildDir string) *mavenCache {
-	roots := []string{filepath.Join(buildDir, ".m2", "repository")}
+	local := filepath.Join(buildDir, ".m2", "repository")
+	roots := []string{local}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		roots = append(roots, filepath.Join(home, ".m2", "repository"))
 	}
-	return newMavenCacheAt(roots...)
+	c := newMavenCacheAt(roots...)
+	c.escaped = rootLeavesCheckout(buildDir, local)
+	return c
 }
 
 // newMavenCacheAt builds a reader over explicit repository roots (the S4/test injection point).
@@ -53,7 +59,7 @@ func pomRelPath(g, a, v string) string {
 // order; the first hit wins. A GAV that cannot name a cache path, or whose POM resolves outside
 // its root, is a miss in every root: what sits there is not the cached POM.
 func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
-	if !validGAV(g, a, v) {
+	if c.escaped || !validGAV(g, a, v) {
 		return nil, false
 	}
 	key := gavKey(g, a, v)
@@ -84,7 +90,7 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 // digestFor reads the on-disk .sha1 sidecar of a cached artifact (jar preferred, else pom) as a
 // declared digest — no fetch, no compute (verified digest is PLAN-200). "" when absent.
 func (c *mavenCache) digestFor(g, a, v string) string {
-	if !validGAV(g, a, v) {
+	if c.escaped || !validGAV(g, a, v) {
 		return ""
 	}
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {

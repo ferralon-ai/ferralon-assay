@@ -1,9 +1,12 @@
 package trigger
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -102,5 +105,59 @@ func TestFinding_EmptyGraphYieldsUndetermined(t *testing.T) {
 	}
 	if f.Evidence.Basis != "" {
 		t.Errorf("basis = %q, want empty on an undetermined verdict", f.Evidence.Basis)
+	}
+}
+
+// A step that did not run holds the row wherever the lane declares it, including only on a call
+// graph that has edges. The footprint is built by the real stage, so a footprint that stops
+// harvesting the call graph fails here.
+func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
+	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
+	unbounded := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/com.example/urlkit", Path: "lib"}}}
+	tests := []struct {
+		name        string
+		cg          plugin.Partiality
+		wantVerdict report.Verdict
+	}{
+		{"an inherent limit on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch), report.VerdictNotExploitable},
+		{"a did-not-run reason on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch, plugin.PartialReasonToolFailure), report.VerdictUndetermined},
+		{"an unbounded scoped did-not-run limit on the graph", unbounded, report.VerdictUndetermined},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, err := assessment.NewMemStore().Create(assessment.Request{Vulnerability: assessment.VulnRef{ID: "FERRALON-JAVA-SSRF-0002"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := artifact.NewMemStore()
+			putJSON(t, store, a.ID, artifact.TypeNormalizedAdvisory, map[string]any{
+				"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
+				"advisory_symbols": []string{"com.example.net.UrlKit.get"},
+			})
+			putJSON(t, store, a.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
+				Partiality: plugin.Complete(),
+				Resolved:   []plugin.Symbol{{SCIP: sink}},
+				Origins:    map[string]string{sink: "pkg:maven/com.example/urlkit"},
+				Matched:    map[string][]string{"com.example.net.UrlKit.get": {sink}},
+			})
+			cg := plugin.CallGraphResult{
+				Algorithm:  "source-lexical",
+				Partiality: tt.cg,
+				Edges:      []plugin.CallEdge{depEdge("jvmref com/example/net/UrlKit#entry()V", sink)},
+			}
+			seedReachArtifact(t, store, a.ID, cg, plugin.ReachabilityResult{
+				Partiality: plugin.Partial(plugin.PartialReasonDynamicDispatch),
+				Searched:   []string{sink},
+			})
+			if err := pipeline.NewExposureFootprint().Run(context.Background(), a, store); err != nil {
+				t.Fatal(err)
+			}
+
+			pkg := &report.Package{Ecosystem: "Maven", Name: "com.example:urlkit", Version: "1.0.0", PURL: "pkg:maven/com.example/urlkit@1.0.0"}
+			f := finding(store, a.ID, report.Advisory{ID: "FERRALON-JAVA-SSRF-0002", Source: "corpus"}, pkg)
+			if f.Verdict != tt.wantVerdict {
+				t.Fatalf("verdict = %q (%s), want %q", f.Verdict, f.UndeterminedReason, tt.wantVerdict)
+			}
+		})
 	}
 }

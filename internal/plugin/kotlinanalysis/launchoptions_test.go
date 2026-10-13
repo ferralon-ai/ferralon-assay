@@ -85,7 +85,8 @@ func TestReachability_LaunchOptions(t *testing.T) {
 		{"entrypoint script java agent", inventory(map[string]string{
 			"entrypoint.sh": "#!/bin/sh\nexec java -javaagent:/otel.jar com.example.MainKt \"$@\"\n",
 		}), agent},
-		{"bootRun jvmArgs configure a dev JVM: searched", appendBuild("\ntasks.named<JavaExec>(\"run\") {\n    jvmArgs = listOf(\"-javaagent:/otel.jar\", \"-Dspring.profiles.active=dev\")\n}\n"), ""},
+		{"run task jvmArgs agent", appendBuild("\ntasks.named<JavaExec>(\"run\") {\n    jvmArgs = listOf(\"-javaagent:/otel.jar\", \"-Dspring.profiles.active=dev\")\n}\n"), agent},
+		{"test task jvmArgs configure a test JVM: searched", appendBuild("\ntasks.withType<Test>().configureEach {\n    jvmArgs = listOf(\"-javaagent:/jacoco.jar\", \"-Dspring.profiles.active=test\")\n}\n"), ""},
 		{"Dockerfile ENTRYPOINT java option", inventory(map[string]string{
 			"docker/Dockerfile": "FROM eclipse-temurin:21\nENTRYPOINT [\"java\", \"-Djava.system.class.loader=org.d.D\", \"-jar\", \"/app.jar\"]\n",
 		}), option},

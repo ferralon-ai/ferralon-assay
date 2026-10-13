@@ -178,11 +178,12 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 
 	pkgs, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
-	if len(pkgs) == 0 {
+	isRoot := rootMatcher(ctx, acq)
+	if len(pkgs) == 0 && isRoot == nil {
 		return ws
 	}
 
-	admitted, noCoords, unresolvable := admitByInventory(en.KnownIDs(), acq.advisories, corpus, ws.ecosystem, pkgs)
+	admitted, noCoords, unresolvable := admitByInventory(en.KnownIDs(), acq.advisories, corpus, ws.ecosystem, pkgs, isRoot)
 	ws.noCoordinates, ws.policyUnresolvable = noCoords, unresolvable
 	if len(noCoords) > 0 {
 		ws.partiality = append(ws.partiality, report.PartialityNote{
@@ -211,20 +212,22 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 // dependencies (sorted, floor-deduplicated), plus the ids that could not be judged either way: those
 // naming no affected package, and those whose record did not resolve. Both are sorted.
 //
-// A package matches when its name is a dependency name in pkgs and its ecosystem is the
-// repository's, or is unknown (no parseable PURL) — the same fail-open direction the intake
-// ecosystem guard takes. A package in another ecosystem, or one the repository does not declare, is
-// a real answer ("does not apply here") and is neither admitted nor disclosed.
-func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pipeline.AdvisorySource, ecosystem string, pkgs []report.Package) (additions []assessment.VulnRef, noCoordinates, unresolvable []string) {
+// A package matches when its name is a dependency name in pkgs, compared as pipeline.CanonicalName
+// compares them, and its ecosystem is the repository's, or is unknown (no parseable PURL) — the
+// same fail-open direction the intake ecosystem guard takes. It also matches when isRoot (nil when the project declares no package
+// identity) says it names the scanned project itself. A package in another ecosystem, or one the
+// repository neither is nor declares, is a real answer ("does not apply here") and is neither
+// admitted nor disclosed.
+func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pipeline.AdvisorySource, ecosystem string, pkgs []report.Package, isRoot func(pipeline.PackageKey) bool) (additions []assessment.VulnRef, noCoordinates, unresolvable []string) {
 	inFloor := make(map[string]struct{}, len(floor))
 	for _, a := range floor {
 		inFloor[a.ID] = struct{}{}
 	}
+	purlType := purlTypeForEcosystem(ecosystem)
 	deps := make(map[string]struct{}, len(pkgs))
 	for _, p := range pkgs {
-		deps[p.Name] = struct{}{}
+		deps[pipeline.CanonicalName(purlType, p.Name)] = struct{}{}
 	}
-	purlType := purlTypeForEcosystem(ecosystem)
 
 	// A floor id is evaluated whatever the policy says about it, so it is neither looked up nor
 	// disclosed here.
@@ -249,7 +252,7 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 			if k.Ecosystem != "" && k.Ecosystem != purlType {
 				continue
 			}
-			if _, hit := deps[k.Name]; hit {
+			if _, hit := deps[pipeline.CanonicalName(purlType, k.Name)]; hit || (isRoot != nil && isRoot(k)) {
 				additions = append(additions, assessment.VulnRef{ID: id, Source: "osv"})
 				return
 			}
@@ -260,6 +263,27 @@ func admitByInventory(policyIDs []string, floor []assessment.VulnRef, corpus pip
 	sort.Strings(noCoordinates)
 	sort.Strings(unresolvable)
 	return additions, noCoordinates, unresolvable
+}
+
+// rootMatcher returns whether an advisory package key names the scanned project itself, judged
+// exactly as codebase_inventory judges it, or nil when the project declares no package identity.
+func rootMatcher(ctx context.Context, acq *acquired) func(pipeline.PackageKey) bool {
+	root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language)
+	if !ok {
+		return nil
+	}
+	return func(k pipeline.PackageKey) bool {
+		if k.Ecosystem != "" && k.Ecosystem != root.PURLType {
+			return false
+		}
+		var ok bool
+		if root.PURLType == "golang" {
+			_, ok = root.Matches(acq.buildDir, k.Name, "", "")
+		} else {
+			_, ok = root.Matches(acq.buildDir, "", k.Name, "")
+		}
+		return ok
+	}
 }
 
 // purlTypeForEcosystem maps an OSV ecosystem name (the inventory's vocabulary) onto the PURL type an
@@ -308,6 +332,12 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 
 	pkgs, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
+	// The project's own published package is queried too, so OSV answers for advisories against
+	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
+	// advisory ever recorded against the package.
+	if root, ok := pipeline.ReadRootPackage(ctx, acq.buildDir, acq.language); ok && root.Version != "" {
+		pkgs = append(pkgs, report.Package{Ecosystem: ws.ecosystem, Name: root.Name, Version: root.Version, Root: true})
+	}
 	if len(pkgs) == 0 {
 		return ws
 	}

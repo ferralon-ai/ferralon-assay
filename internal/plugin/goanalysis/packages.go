@@ -346,9 +346,10 @@ func goflagsTags(env []string) []string {
 //
 // When module is the standard library, the packages that count are its vulnerable ones (vulnerable,
 // or every standard-library package when that is empty), and a file counts when it imports one
-// directly or through other packages. A loaded import is followed through the load; an unloaded
-// one through the imports `go list` resolves for it under the scan's own GOOS and the common ports,
-// and it counts when no port lists it cleanly.
+// directly or through other packages. A loaded import is followed through the load. An unloaded
+// standard-library import is followed through the imports `go list` resolves for it under the
+// scan's own GOOS and the common ports, and counts when no port lists it cleanly; an unloaded
+// import from any module counts outright.
 func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, buildDir string, env []string) bool {
 	loaded := map[string]*packages.Package{}
 	modules := map[string]bool{}
@@ -403,6 +404,11 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string
 			return false
 		}
 		if stdlib {
+			// Which imports a module's package resolves turns on the left-out file's own tags and
+			// GOOS, which no listing here reproduces, so any module the build did not load counts.
+			if !isStdlibPath(imp, modules) {
+				return true
+			}
 			clean, ok := listed[imp]
 			if !ok {
 				clean = deps.list(ctx, buildDir, env, imp)

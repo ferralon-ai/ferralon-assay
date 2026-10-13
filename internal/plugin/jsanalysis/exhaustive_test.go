@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
 
 const (
@@ -128,6 +130,8 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"B14 catalog: specifier the lock records as catalog:", map[string]string{"package.json": strings.Replace(exPkgJSON, `"left-pad":"^1.3.0"`, `"left-pad":"catalog:"`, 1), "pnpm-lock.yaml": catalogLock}, false},
 		{"B15 pnpm config-dependency plugin", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "configDependencies:\n  pnpm-plugin-x: 1.0.0+sha512-x\n"}, false},
 		{"B16 yarn berry plugin", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, ".yarnrc.yml": "plugins:\n  - path: .yarn/plugins/add.cjs\n", ".yarn/plugins/add.cjs": "module.exports = {name: 'add', factory: () => ({hooks: {reduceDependency: d => d}})}\n"}, false},
+		{"B11 installer config word past the head", map[string]string{"package.json": exPkgJSON, "yarn.lock": exYarnLock, ".yarnrc.yml": "# " + strings.Repeat("x", buildtree.HeadSize) + "\npackageExtensions:\n  \"express@*\":\n    dependencies:\n      absent-package: ^2\n"}, false},
+		{"B11 installer config with a NUL in its head", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "# \x00\noverrides:\n  left-pad: npm:absent-package@^2\n"}, false},
 		{"B11 pnpm settings that rewrite nothing", map[string]string{"package.json": rewrite(`"pnpm":{"onlyBuiltDependencies":["esbuild"]}`), "pnpm-lock.yaml": exPnpmV9}, true},
 		{"B11 installer config that rewrites nothing", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": exPnpmV9, "pnpm-workspace.yaml": "packages:\n  - .\n", ".yarnrc.yml": "nodeLinker: node-modules\n", ".npmrc": "registry=https://registry.example.com/\n"}, true},
 		{"B12 pnpm package bundling the coordinate", map[string]string{"package.json": exPkgJSON, "pnpm-lock.yaml": strings.Replace(exPnpmV9, "sha512-x}\n", "sha512-x}\n    bundledDependencies:\n      - absent-package\n", 1)}, false},

@@ -171,11 +171,15 @@ var rewriteConfigWords = []string{"packageExtensions", "overrides", "resolutions
 
 // installRewriteConfig reports whether the file is installer configuration whose head mentions
 // a setting that rewrites what an install resolves. It matches the word anywhere, comments
-// included.
+// included. A head that is nil (empty, or binary-looking) or fills buildtree.HeadSize (the file
+// may continue past it) is not a full read, so it counts as a match.
 func installRewriteConfig(path string, head []byte) bool {
 	lower := strings.ToLower(filepath.Base(path))
 	if !strings.HasPrefix(lower, ".yarnrc") && !strings.HasPrefix(lower, ".npmrc") && !strings.HasPrefix(lower, "pnpm-workspace.") {
 		return false
+	}
+	if head == nil || len(head) == buildtree.HeadSize {
+		return true
 	}
 	for _, w := range rewriteConfigWords {
 		if bytes.Contains(head, []byte(w)) {

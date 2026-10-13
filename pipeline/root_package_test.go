@@ -12,6 +12,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 func writeTree(t *testing.T, files map[string]string) string {
@@ -707,6 +708,7 @@ func TestCodebaseInventory_AdjudicatesTheRootPackage(t *testing.T) {
 		tags        []string
 		facts       AdvisoryFacts
 		wantVersion string
+		plug        plugin.LanguagePlugin
 	}{
 		{
 			name:        "go advisory keyed at a package path",
@@ -732,6 +734,18 @@ func TestCodebaseInventory_AdjudicatesTheRootPackage(t *testing.T) {
 			facts:       AdvisoryFacts{Coordinate: "next", PURL: "pkg:npm/next"},
 			wantVersion: "14.1.0",
 		},
+		{
+			name:  "pypi root with no established version is not ruled out by its own lockfile",
+			files: map[string]string{"setup.cfg": "[metadata]\nname = flask\nversion = attr: flask.__version__\n", "requirements.txt": "click==8.1.0\n", "flask/__init__.py": "__version__ = '3.0.0'\n"},
+			facts: AdvisoryFacts{Coordinate: "flask", PURL: "pkg:pypi/flask"},
+			plug:  membershipStub{lang: "python", exhaustive: true},
+		},
+		{
+			name:  "npm root with no version is not ruled out by its own lockfile",
+			files: map[string]string{"package.json": `{"name":"next","dependencies":{"left-pad":"1.3.0"}}`, "index.js": "module.exports = 1\n"},
+			facts: AdvisoryFacts{Coordinate: "next", PURL: "pkg:npm/next"},
+			plug:  membershipStub{lang: "js", exhaustive: true},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -751,7 +765,7 @@ func TestCodebaseInventory_AdjudicatesTheRootPackage(t *testing.T) {
 			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
 				t.Fatalf("advisory_intake: %v", err)
 			}
-			if err := (codebaseInventory{src: src}).Run(context.Background(), c, store); err != nil {
+			if err := (codebaseInventory{src: src, plugin: tc.plug}).Run(context.Background(), c, store); err != nil {
 				t.Fatalf("codebase_inventory: %v", err)
 			}
 			arts, err := store.Query(c.ID, artifact.TypeInventory)

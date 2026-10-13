@@ -63,14 +63,15 @@ func TestEvalProperty(t *testing.T) {
 		{"release", "!false", triTrue},
 		{"release", "!true", triFalse},
 		{"!release", "", triFalse},
-		{"!skip", "", triTrue},
-		{"skip", "", triFalse},
-		{"skip", "!x", triTrue},
+		{"!skip", "", triUnknown},
+		{"skip", "", triUnknown},
+		{"skip", "!x", triUnknown},
 		{"empty", "", triFalse},
 		{"java.version", "11", triTrue},
 		{"java.vendor", "", triUnknown},
 		{"!os.name", "", triUnknown},
 		{"env.CI", "true", triUnknown},
+		{"!empty", "", triTrue},
 		{"user.home", "!x", triUnknown},
 		{"!", "", triFalse},
 	}
@@ -249,6 +250,31 @@ func TestMavenProfile_OSFamilyIsUndecided(t *testing.T) {
 	}
 	if !hasStr(inv.Partiality.Reasons, reasonProfileActivation) {
 		t.Errorf("an <os> profile that adds a dependency must be disclosed; got %+v", inv.Partiality)
+	}
+}
+
+func TestMavenProfile_PropertyActivationNeedsAStatedValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       map[string]string
+		applied   bool
+		disclosed bool
+	}{
+		{"not stated", map[string]string{targetEnvJavaVersion: "11"}, false, true},
+		{"stated set", map[string]string{"skipP": "true"}, false, false},
+		{"stated empty", map[string]string{"skipP": ""}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := profileFixture(t, `<property><name>!skipP</name></property>`, false)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), tt.env))
+			if got := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil; got != tt.applied {
+				t.Errorf("profile applied = %v, want %v", got, tt.applied)
+			}
+			if got := hasStr(inv.Partiality.Reasons, reasonProfileActivation); got != tt.disclosed {
+				t.Errorf("profile_activation listed = %v, want %v; got %+v", got, tt.disclosed, inv.Partiality)
+			}
+		})
 	}
 }
 

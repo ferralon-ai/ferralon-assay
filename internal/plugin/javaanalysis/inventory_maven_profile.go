@@ -6,8 +6,9 @@ package javaanalysis
 //     looks the version up itself, so without one every <jdk> condition is undecided;
 //   - <file> against the reactor module's directory, for paths inside it; a dependency's POM has
 //     no project directory, so its <file> conditions stay undecided;
-//   - <property> against TargetEnv as the build's -D set; a JVM system property (java.*, os.*,
-//     env.*, ...) missing from TargetEnv is undecided, never assumed absent;
+//   - <property> against the values the caller states in TargetEnv; a property it doesn't state
+//     is undecided, never assumed absent, since a -D on the command line or a settings.xml
+//     profile can set it;
 //   - <os> and any activation element this reader does not know are always undecided.
 //
 // An undecided profile is never applied, and a dependency it could re-version is left with an
@@ -130,12 +131,9 @@ func evalConditions(a mvnActivation, env activationEnv) tri {
 	return res
 }
 
-// systemPropertyPrefixes name properties every JVM defines, so their absence from TargetEnv says
-// nothing about the build.
-var systemPropertyPrefixes = []string{"java.", "os.", "env.", "user.", "file.", "line.", "path.", "sun.", "jdk."}
-
-// evalProperty follows Maven's PropertyProfileActivator: "!name" activates when the property is
-// unset, a value activates on equality ("!value" on inequality).
+// evalProperty follows Maven's PropertyProfileActivator against caller-stated values: "!name"
+// activates when the property is unset, a value activates on equality ("!value" on inequality).
+// A property the caller doesn't state is undecided.
 func evalProperty(name, value string, env map[string]string) tri {
 	negName := strings.HasPrefix(name, "!")
 	name = strings.TrimPrefix(name, "!")
@@ -144,21 +142,17 @@ func evalProperty(name, value string, env map[string]string) tri {
 	}
 	got, present := env[name]
 	if !present {
-		for _, p := range systemPropertyPrefixes {
-			if strings.HasPrefix(name, p) {
-				return triUnknown
-			}
-		}
+		return triUnknown
 	}
 	if value != "" {
 		negValue := strings.HasPrefix(value, "!")
-		eq := triOf(present && got == strings.TrimPrefix(value, "!"))
+		eq := triOf(got == strings.TrimPrefix(value, "!"))
 		if negValue {
 			return triNot(eq)
 		}
 		return eq
 	}
-	set := triOf(present && got != "")
+	set := triOf(got != "")
 	if negName {
 		return triNot(set)
 	}

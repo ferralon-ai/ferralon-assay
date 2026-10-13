@@ -58,6 +58,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 	var (
 		all         []plugin.ResolvedDependency
+		origins     []manifestOrigin
 		parseFailed bool
 	)
 	for _, m := range manifests {
@@ -66,6 +67,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		o := originOf(m)
+		for range deps {
+			origins = append(origins, o)
+		}
 	}
 
 	part := plugin.Complete()
@@ -77,36 +82,65 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchCoordinate(all, normalizePyCoordinate(req.Coordinate))
+	res.Match, res.Found = matchCoordinate(all, origins, normalizePyCoordinate(req.Coordinate))
 	return res, nil
 }
 
+// manifestOrigin records where an entry of All was read: its manifest's directory, and
+// whether that manifest is a lock or a pyproject.toml declaration.
+type manifestOrigin struct {
+	dir         string
+	lock        bool
+	declaration bool
+}
+
+func originOf(path string) manifestOrigin {
+	switch filepath.Base(path) {
+	case "poetry.lock", "Pipfile.lock", "pdm.lock", "uv.lock":
+		return manifestOrigin{dir: filepath.Dir(path), lock: true}
+	case "pyproject.toml":
+		return manifestOrigin{dir: filepath.Dir(path), declaration: true}
+	}
+	return manifestOrigin{dir: filepath.Dir(path)}
+}
+
 // matchCoordinate selects the Match for the PEP 503-normalized coordinate want across every
-// manifest's entries. The rule:
+// manifest's entries; origins[i] is where all[i] was read. The rule:
 //
 //   - every resolved entry pins the SAME version (one pin repeated across requirements.txt,
-//     poetry.lock, ... counts once): Match is that version, Resolved=true;
+//     poetry.lock, ... counts once) and no entry's version is unknown: Match is that
+//     version, Resolved=true;
 //   - two or more distinct pinned versions (e.g. services in one repo locking different
 //     versions): Match is UNRESOLVED (Resolved=false, Version empty), so the predicate fails
 //     OPEN rather than ruling the advisory on whichever pin was read first;
+//   - any UNRESOLVED entry (a range, an unpinned requirement): Match is UNRESOLVED, because
+//     that install surface may hold any version;
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
-// An UNRESOLVED entry does not veto a single resolved pin, unlike the npm rule. Python's
-// unresolved entries are overwhelmingly DECLARATIONS of the same environment the pin locks
-// (a pyproject.toml "flask>=2" range beside the uv.lock/poetry.lock pin), not separate
-// installed copies; letting them veto would unresolve nearly every locked project.
+// One exception to the third case: an UNRESOLVED pyproject.toml declaration does not veto
+// when a lock in the SAME directory (poetry.lock, Pipfile.lock, pdm.lock, uv.lock) pins the
+// coordinate. That lock is the project's own resolution of the declared range, so both
+// describe one environment. A range in any other manifest or directory is a separate install
+// surface and still vetoes.
 // Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
 // open.
-func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
+func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {
 	if want == "" {
 		return plugin.ResolvedDependency{}, false
+	}
+	lockPinned := make(map[string]bool)
+	for i, d := range all {
+		if d.Resolved && origins[i].lock && normalizePyCoordinate(d.Coordinate) == want {
+			lockPinned[origins[i].dir] = true
+		}
 	}
 	var (
 		match    plugin.ResolvedDependency
 		found    bool
+		unknown  bool
 		versions = make(map[string]struct{})
 	)
-	for _, d := range all {
+	for i, d := range all {
 		if normalizePyCoordinate(d.Coordinate) != want {
 			continue
 		}
@@ -114,6 +148,9 @@ func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.Resol
 			match, found = d, true
 		}
 		if !d.Resolved {
+			if !origins[i].declaration || !lockPinned[origins[i].dir] {
+				unknown = true
+			}
 			continue
 		}
 		if len(versions) == 0 {
@@ -121,7 +158,7 @@ func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.Resol
 		}
 		versions[d.Version] = struct{}{}
 	}
-	if found && len(versions) != 1 {
+	if found && (unknown || len(versions) != 1) {
 		match.Version = ""
 		match.Resolved = false
 	}

@@ -234,6 +234,30 @@ func TestResolveVersions_DeclaredRangeBesideLockPinResolves(t *testing.T) {
 	}
 }
 
+// An unpinned requirement in one service can install any version, whatever another service
+// pins: the pin must not stand in for it.
+func TestResolveVersions_UnpinnedServiceBesidePinnedServiceUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"service-a/requirements.txt": "requests==2.32.3\n",
+		"service-b/requirements.txt": "requests>=2.0\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "requests"))
+	}
+}
+
+// A pyproject range is covered only by the lock in its own project directory, not by a lock
+// elsewhere in the repo.
+func TestResolveVersions_RangeBesideOtherProjectsLockUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+		"svc-b/pyproject.toml": "[project]\nname = \"b\"\ndependencies = [\n    \"flask>=2.0\",\n]\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
+	}
+}
+
 // Pipfile.lock's maps are walked in sorted key order, so All is the same on every run.
 func TestResolveVersions_PipfileAllOrderDeterministic(t *testing.T) {
 	dir := writeTree(t, map[string]string{

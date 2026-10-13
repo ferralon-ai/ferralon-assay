@@ -37,8 +37,20 @@ type lockModel struct {
 	runtime       map[string]bool            // some copy is in the runtime install per the lockfile markers
 	copyRuntime   map[string]map[string]bool // name → version → that copy is in the runtime install
 	devLabel      map[string]string          // outside runtime: the dev/optional group reaching it
+	groups        map[string]map[string]bool // outside runtime: every group key reaching it (groupKey)
+	uvGroups      map[string]bool            // every uv dependency group a member declares
+	uvExtras      map[string]bool            // every uv member extra no edge requests
+	poetryGroups  map[string]bool            // every poetry group the lock records, main excluded
+	lockDirs      map[string][]string        // format ("uv", "poetry", "pdm", "pipenv") → lockfile directories
+	coverDirs     map[string]bool            // project directories a lockfile locks: its own and uv members' sources
 	distinguishes bool                       // every lockfile read can tell runtime from dev
 }
+
+// Group keys name an install selection a production install command can keep: "uv:g:<group>",
+// "uv:x:<extra>", "poetry:<group>", "pdm:<group>", "pipfile:develop". "<format>:*" and "*" are
+// wildcards (install.go).
+func uvGroupKey(g string) string { return "uv:g:" + normalizePyCoordinate(g) }
+func uvExtraKey(e string) string { return "uv:x:" + normalizePyCoordinate(e) }
 
 var lockfileNames = map[string]bool{"uv.lock": true, "pdm.lock": true, "poetry.lock": true, "Pipfile.lock": true}
 
@@ -52,6 +64,12 @@ func loadLocks(buildDir string, ls *loadSet) *lockModel {
 		runtime:       map[string]bool{},
 		copyRuntime:   map[string]map[string]bool{},
 		devLabel:      map[string]string{},
+		groups:        map[string]map[string]bool{},
+		uvGroups:      map[string]bool{},
+		uvExtras:      map[string]bool{},
+		poetryGroups:  map[string]bool{},
+		lockDirs:      map[string][]string{},
+		coverDirs:     map[string]bool{},
 		distinguishes: true,
 	}
 	walkProjectFiles(buildDir, func(rel, abs string) {
@@ -65,15 +83,21 @@ func loadLocks(buildDir string, ls *loadSet) *lockModel {
 			return
 		}
 		m.files = append(m.files, rel)
+		dir := path.Dir(rel)
+		m.coverDirs[dir] = true
 		var ok bool
 		switch base {
 		case "uv.lock":
-			ok = m.readUV(data)
+			m.lockDirs["uv"] = append(m.lockDirs["uv"], dir)
+			ok = m.readUV(data, dir)
 		case "pdm.lock":
+			m.lockDirs["pdm"] = append(m.lockDirs["pdm"], dir)
 			ok = m.readPDM(data)
 		case "poetry.lock":
+			m.lockDirs["poetry"] = append(m.lockDirs["poetry"], dir)
 			ok = m.readPoetry(data)
 		case "Pipfile.lock":
+			m.lockDirs["pipenv"] = append(m.lockDirs["pipenv"], dir)
 			ok = m.readPipfile(data)
 			if ok {
 				ls.gap("%s records no dependency edges", rel)
@@ -128,8 +152,8 @@ func (m *lockModel) addEdge(from, to string) {
 }
 
 // labelFrom marks every package reachable over edges from seeds, and not runtime, as reached
-// through label (first label wins).
-func (m *lockModel) labelFrom(seeds []string, label string) {
+// through label (first label wins) and records key among its group keys.
+func (m *lockModel) labelFrom(seeds []string, label, key string) {
 	seen := map[string]bool{}
 	queue := append([]string(nil), seeds...)
 	for len(queue) > 0 {
@@ -139,13 +163,23 @@ func (m *lockModel) labelFrom(seeds []string, label string) {
 			continue
 		}
 		seen[d] = true
-		if !m.runtime[d] && !m.members[d] && m.devLabel[d] == "" {
-			m.devLabel[d] = label
+		if !m.runtime[d] && !m.members[d] {
+			if m.devLabel[d] == "" {
+				m.devLabel[d] = label
+			}
+			m.addGroup(d, key)
 		}
 		for c := range m.edges[d] {
 			queue = append(queue, c)
 		}
 	}
+}
+
+func (m *lockModel) addGroup(d, key string) {
+	if m.groups[d] == nil {
+		m.groups[d] = map[string]bool{}
+	}
+	m.groups[d][key] = true
 }
 
 // --- uv.lock -------------------------------------------------------------------------
@@ -172,7 +206,8 @@ type uvLoadDep struct {
 	Extra   []string `toml:"extra"`
 }
 
-func (m *lockModel) readUV(data []byte) bool {
+// readUV reads a uv.lock in directory dir (slash-separated, relative to the build root).
+func (m *lockModel) readUV(data []byte, dir string) bool {
 	var lock uvLoadLock
 	if err := toml.Unmarshal(data, &lock); err != nil {
 		return false
@@ -188,6 +223,11 @@ func (m *lockModel) readUV(data []byte) bool {
 			continue
 		}
 		pkgs[name] = append(pkgs[name], p)
+		for _, k := range []string{"editable", "virtual", "directory"} {
+			if v, ok := p.Source[k].(string); ok {
+				m.coverDirs[path.Join(dir, v)] = true
+			}
+		}
 		if len(lock.Manifest.Members) == 0 {
 			if _, ok := p.Source["editable"]; ok {
 				members[name] = true
@@ -269,11 +309,13 @@ func (m *lockModel) readUV(data []byte) bool {
 	for _, n := range sortedKeys(members) {
 		for _, p := range pkgs[n] {
 			for _, g := range sortedMapKeys(p.DevDependencies) {
-				m.labelFrom(depNames(p.DevDependencies[g]), n+" dependency group "+g)
+				m.uvGroups[normalizePyCoordinate(g)] = true
+				m.labelFrom(depNames(p.DevDependencies[g]), n+" dependency group "+g, uvGroupKey(g))
 			}
 			for _, e := range sortedMapKeys(p.OptionalDependencies) {
 				if !requested[n][e] {
-					m.labelFrom(depNames(p.OptionalDependencies[e]), n+"["+e+"] extra")
+					m.uvExtras[normalizePyCoordinate(e)] = true
+					m.labelFrom(depNames(p.OptionalDependencies[e]), n+"["+e+"] extra", uvExtraKey(e))
 				}
 			}
 		}
@@ -339,7 +381,9 @@ func (m *lockModel) readPDM(data []byte) bool {
 	}
 	for _, n := range sortedMapKeys(grouped) {
 		if !m.runtime[n] {
-			m.labelFrom([]string{n}, "pdm group "+strings.Join(grouped[n], ", "))
+			for _, g := range grouped[n] {
+				m.labelFrom([]string{n}, "pdm group "+strings.Join(grouped[n], ", "), "pdm:"+normalizePyCoordinate(g))
+			}
 		}
 	}
 	return true
@@ -364,6 +408,7 @@ func (m *lockModel) readPoetry(data []byte) bool {
 		return false
 	}
 	labels := map[string]string{}
+	keys := map[string][]string{}
 	for _, p := range lock.Package {
 		name := normalizePyCoordinate(p.Name)
 		if name == "" {
@@ -392,14 +437,24 @@ func (m *lockModel) readPoetry(data []byte) bool {
 		for _, g := range groups {
 			main = main || g == "main"
 		}
+		for _, g := range groups {
+			if g != "main" {
+				m.poetryGroups[normalizePyCoordinate(g)] = true
+			}
+		}
 		if main {
 			m.markRuntime(name, p.Version)
 		} else {
 			labels[name] = "poetry group " + strings.Join(groups, ", ")
+			for _, g := range groups {
+				keys[name] = append(keys[name], "poetry:"+normalizePyCoordinate(g))
+			}
 		}
 	}
 	for _, n := range sortedMapKeys(labels) {
-		m.labelFrom([]string{n}, labels[n])
+		for _, k := range keys[n] {
+			m.labelFrom([]string{n}, labels[n], k)
+		}
 	}
 	return true
 }
@@ -425,8 +480,11 @@ func (m *lockModel) readPipfile(data []byte) bool {
 			m.addVersion(n, strings.TrimPrefix(v.Version, "=="))
 			if section == "default" {
 				m.markRuntime(n, strings.TrimPrefix(v.Version, "=="))
-			} else if !m.runtime[n] && m.devLabel[n] == "" {
-				m.devLabel[n] = "Pipfile develop"
+			} else if !m.runtime[n] {
+				if m.devLabel[n] == "" {
+					m.devLabel[n] = "Pipfile develop"
+				}
+				m.addGroup(n, "pipfile:develop")
 			}
 		}
 	}

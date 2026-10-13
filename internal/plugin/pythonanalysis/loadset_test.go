@@ -2,6 +2,8 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -694,6 +696,16 @@ func TestLoadSet_RuntimeUnloadedSwitch(t *testing.T) {
 	if strings.Contains(res.Refutation.Detail, devAssumption) {
 		t.Errorf("a class (ii) detail must not claim the dev-group assumption: %q", res.Refutation.Detail)
 	}
+	// A distribution an install command names, or the repository carries installed, is never
+	// refuted, not even as runtime-unloaded.
+	for name, files := range map[string]map[string]string{
+		"pip install": dockerRun("pip install black==24.4.2"),
+		"dist-info":   withLock(map[string]string{"lib/black-24.4.2.dist-info/METADATA": "Name: black\n"}),
+	} {
+		if res := reachFor(t, files, "pkg:pypi/black@24.4.2"); res.Refutation != nil {
+			t.Errorf("%s: an installed distribution must not refute under B; got %+v", name, res.Refutation)
+		}
+	}
 	// An unbounded loader in the load set marks the whole runtime install loaded: B refutes nothing.
 	res = reachFor(t, withLock(map[string]string{"app/llm.py": "import litellm\n"}), "pkg:pypi/click@8.1.7")
 	if res.Refutation != nil {
@@ -714,8 +726,260 @@ func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
 	}
 }
 
+// dockerRun is the uv workspace plus a Dockerfile that runs cmd.
+func dockerRun(cmd string) map[string]string {
+	return withLock(map[string]string{"Dockerfile": "FROM python:3.12\nRUN " + cmd + "\n"})
+}
+
+const docsPoetryLock = devPoetryLock + "\n[[package]]\nname = \"mkdocs\"\nversion = \"1.5.0\"\ngroups = [\"docs\"]\n"
+
+// docsPoetry is a poetry project with a main requests, a dev black and a docs mkdocs group
+// (optional when docsOptional), installed by a Dockerfile that runs cmd.
+func docsPoetry(docsOptional bool, cmd string) map[string]string {
+	pyproject := "[tool.poetry]\nname = \"app\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"*\"\n\n" +
+		"[tool.poetry.group.dev.dependencies]\nblack = \"*\"\n\n[tool.poetry.group.docs]\noptional = " + map[bool]string{true: "true", false: "false"}[docsOptional] +
+		"\n\n[tool.poetry.group.docs.dependencies]\nmkdocs = \"*\"\n"
+	return map[string]string{
+		"app/__init__.py": "", "app/main.py": "import requests\n", "pyproject.toml": pyproject, "poetry.lock": docsPoetryLock,
+		"Dockerfile": "FROM python:3.12\nRUN " + cmd + "\n",
+	}
+}
+
+// docsUV is the uv workspace with a second dependency group, docs (mkdocs), a root pyproject
+// whose [tool.uv] carries uvTable, and a Dockerfile that runs cmd.
+func docsUV(uvTable, cmd string) map[string]string {
+	lock := strings.Replace(loadsetLock, "[package.dev-dependencies]\ndev = [\n", "[package.dev-dependencies]\ndocs = [{ name = \"mkdocs\" }]\ndev = [\n", 1) +
+		"\n[[package]]\nname = \"mkdocs\"\nversion = \"1.5.0\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+	f := withLock(map[string]string{
+		"pyproject.toml": "[project]\nname = \"app\"\n\n[tool.uv]\n" + uvTable + "\n",
+		"Dockerfile":     "FROM python:3.12\nRUN " + cmd + "\n",
+	})
+	f["uv.lock"] = lock
+	return f
+}
+
+const devPDMLock = "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\ngroups = [\"default\"]\n\n[[package]]\nname = \"black\"\nversion = \"24.4.2\"\ngroups = [\"lint\"]\n"
+
+// scanFor runs the install scan alone over files and returns the load set it filled.
+func scanFor(t *testing.T, files map[string]string) *loadSet {
+	t.Helper()
+	dir := writeTree(t, files)
+	ls := &loadSet{complete: true, reqRuntime: map[string]bool{}, installed: map[string]bool{}, projectNames: map[string]bool{}}
+	ls.locks = loadLocks(dir, ls)
+	ls.scanInstalls(dir)
+	return ls
+}
+
+// TestLoadSet_InstallCommands pins the install-command scan: a production install that keeps
+// a lockfile group blocks that group's distributions; an install command naming a
+// distribution blocks it; anything the scan cannot positively parse blocks every refutation.
+// veto is a substring of the markerless reason the scan must record ("" for none).
+func TestLoadSet_InstallCommands(t *testing.T) {
+	cases := []struct {
+		name   string
+		files  map[string]string
+		pkg    string
+		refute bool
+		veto   string
+		detail []string
+	}{
+		// Group-precise keeps (B2).
+		{name: "poetry --without dev still installs the non-optional docs group", files: docsPoetry(false, "poetry install --without dev --no-root"), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "poetry --no-dev still installs the non-optional docs group", files: docsPoetry(false, "poetry install --no-dev"), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "poetry --without dev,docs installs neither", files: docsPoetry(false, "poetry install --without dev,docs"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "poetry --without dev leaves an optional docs group out", files: docsPoetry(true, "poetry install --without dev"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "poetry --with an optional group installs it", files: docsPoetry(true, "poetry install --without dev --with docs"), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "poetry --without dev does not keep dev", files: docsPoetry(false, "poetry install --without dev"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "uv --no-dev keeps default-groups = all", files: docsUV(`default-groups = "all"`, "uv sync --frozen --no-dev"), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "uv --no-dev keeps a listed default group", files: docsUV(`default-groups = ["dev", "docs"]`, "uv sync --no-dev"), pkg: "pkg:pypi/mkdocs@1.5.0"},
+		{name: "uv --no-group drops a listed default group", files: docsUV(`default-groups = ["dev", "docs"]`, "uv sync --no-dev --no-group docs"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "uv sync without default-groups keeps only dev", files: docsUV(`package = true`, "uv sync"), pkg: "pkg:pypi/mkdocs@1.5.0", refute: true},
+		{name: "uv --all-extras keeps an extra", files: dockerRun("uv sync --no-dev --all-extras"), pkg: "pkg:pypi/asyncpg@0.29.0"},
+		{name: "uv --no-dev leaves an unrequested extra out", files: dockerRun("uv sync --no-dev"), pkg: "pkg:pypi/asyncpg@0.29.0", refute: true},
+		{name: "pdm --prod drops non-default groups", files: map[string]string{"pdm.lock": devPDMLock, "app.py": "import requests\n", "Dockerfile": "RUN pdm install --prod\n"}, pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "pdm --prod -G keeps the named group", files: map[string]string{"pdm.lock": devPDMLock, "app.py": "import requests\n", "Dockerfile": "RUN pdm install --prod -G lint\n"}, pkg: "pkg:pypi/black@24.4.2"},
+		{name: "pdm install without --prod keeps every group", files: map[string]string{"pdm.lock": devPDMLock, "app.py": "import requests\n", "Dockerfile": "RUN pdm install\n"}, pkg: "pkg:pypi/black@24.4.2"},
+
+		// Deploy surfaces (B1, S1).
+		{name: "compose command uv run syncs dev", files: withLock(map[string]string{"docker-compose.yml": "services:\n  web:\n    build: .\n    command: uv run python -m app.main\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "compose command uv run --no-dev does not", files: withLock(map[string]string{"docker-compose.yml": "services:\n  web:\n    command: uv run --no-dev python -m app.main\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true,
+			detail: []string{"install commands checked in 1 build, deploy and CI files (docker-compose.yml)"}},
+		{name: "CD workflow running a Lambda deploy command is production", files: withLock(map[string]string{".github/workflows/cd.yml": "name: CD\non: push\njobs:\n  ship:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync\n      - run: zip -r app.zip .venv app && aws lambda update-function-code --function-name x --zip-file fileb://app.zip\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "a Lambda deploy command makes a generically named job production", files: withLock(map[string]string{".github/workflows/main.yml": "name: Main\non: push\njobs:\n  ship:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync\n      - run: aws lambda update-function-code --function-name x --zip-file fileb://app.zip\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "a generically named job with no deploy signal is not production", files: withLock(map[string]string{".github/workflows/main.yml": "name: Main\non: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: uv sync\n      - run: uv run ruff check .\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "GitLab deploy job is production", files: withLock(map[string]string{".gitlab-ci.yml": "deploy:\n  script:\n    - uv sync\n    - ./ship.sh\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "GitLab test job is not production", files: withLock(map[string]string{".gitlab-ci.yml": "stages: [test]\nunit:\n  stage: test\n  script:\n    - uv sync\n    - uv run pytest\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
+		{name: "GitLab include is not read", files: withLock(map[string]string{".gitlab-ci.yml": "include:\n  - project: ops/ci\n    file: python.yml\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "include"},
+		{name: "unparsed compose file", files: withLock(map[string]string{"docker-compose.yml": "services: [\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "docker-compose.yml: could not be parsed"},
+		{name: "unparsed fly.toml", files: withLock(map[string]string{"fly.toml": "[build\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "fly.toml: could not be parsed"},
+		{name: "unparsed workflow", files: withLock(map[string]string{".github/workflows/ci.yml": "jobs: [\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "ci.yml: could not be parsed"},
+		{name: "composite action is production", files: withLock(map[string]string{".github/actions/setup/action.yml": "runs:\n  using: composite\n  steps:\n    - run: uv sync\n      shell: bash\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "no install surface: detail says so", files: withLock(nil), pkg: "pkg:pypi/black@24.4.2", refute: true, detail: []string{"no build, deploy or CI files to check for install commands"}},
+
+		// Named distributions: blocked with their lockfile closure, in any job.
+		{name: "pip install names black", files: dockerRun("pip install black==24.4.2"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "pip install of black leaves pytest refutable", files: dockerRun("pip install black==24.4.2"), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "pip install of black blocks its closure", files: dockerRun("pip install black==24.4.2"), pkg: "pkg:pypi/pathspec@0.12.1"},
+		{name: "pip3 install names black", files: dockerRun("pip3 install --no-cache-dir Black"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "python -m pip install names black", files: dockerRun("python3.12 -m pip install -U black"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "uv pip install names black", files: dockerRun("uv pip install --system black"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "pip install -r reads the file", files: withLock(map[string]string{"Dockerfile": "RUN pip install -r deploy/base.txt\n", "deploy/base.txt": "black==24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "pip install -r leaves unnamed pytest refutable", files: withLock(map[string]string{"Dockerfile": "RUN pip install -r deploy/base.txt\n", "deploy/base.txt": "black==24.4.2\n"}), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "pipx install names black", files: dockerRun("pipx install black"), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "uvx names black", files: dockerRun("uvx black --check ."), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "a test CI job's install still names black", files: withLock(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  lint:\n    runs-on: ubuntu-latest\n    environment: test\n    steps:\n      - run: pip install black==24.4.2\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "pip install of bootstrap tools is not a veto", files: dockerRun("pip install -U pip setuptools wheel"), pkg: "pkg:pypi/black@24.4.2", refute: true},
+
+		// Families the scan does not parse, and forms it cannot read: every refutation blocked.
+		{name: "uv add", files: dockerRun("uv add black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "uv add"},
+		{name: "poetry add", files: dockerRun("poetry add black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "poetry add"},
+		{name: "pdm add", files: dockerRun("pdm add black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "pdm add"},
+		{name: "pipenv install with packages", files: dockerRun("pipenv install black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "pipenv install with packages"},
+		{name: "conda install", files: dockerRun("conda install -y numpy"), pkg: "pkg:pypi/pytest@8.2.0", veto: "conda install"},
+		{name: "mamba install", files: dockerRun("mamba install numpy"), pkg: "pkg:pypi/pytest@8.2.0", veto: "mamba install"},
+		{name: "micromamba create", files: dockerRun("micromamba create -f env.yml"), pkg: "pkg:pypi/pytest@8.2.0", veto: "micromamba create"},
+		{name: "easy_install", files: dockerRun("easy_install black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "easy_install"},
+		{name: "setup.py install", files: dockerRun("python setup.py install"), pkg: "pkg:pypi/pytest@8.2.0", veto: "setup.py install"},
+		{name: "pipx install-all", files: dockerRun("pipx install-all pipx.json"), pkg: "pkg:pypi/pytest@8.2.0", veto: "install-all"},
+		{name: "unknown pip subcommand", files: dockerRun("pip frobnicate"), pkg: "pkg:pypi/pytest@8.2.0", veto: "pip frobnicate"},
+		{name: "unknown pip install option", files: dockerRun("pip install --group dev"), pkg: "pkg:pypi/pytest@8.2.0", veto: "--group"},
+		{name: "variable in pip install arguments", files: dockerRun("pip install $PKGS"), pkg: "pkg:pypi/pytest@8.2.0", veto: "variable or substitution"},
+		{name: "variable in a pip install option value", files: dockerRun("pip install --index-url $INDEX black==24.4.2"), pkg: "pkg:pypi/pytest@8.2.0", veto: "variable or substitution"},
+		{name: "substitution in pip install arguments", files: dockerRun("pip install $(cat deps.txt)"), pkg: "pkg:pypi/pytest@8.2.0", veto: "variable or substitution"},
+		{name: "variable names the installer", files: dockerRun("$PIP install black"), pkg: "pkg:pypi/pytest@8.2.0", veto: "variable or substitution"},
+		{name: "pip install of the project", files: dockerRun("pip install ."), pkg: "pkg:pypi/pytest@8.2.0", veto: "project, path"},
+		{name: "pip install -e of the project", files: dockerRun("pip install -e ."), pkg: "pkg:pypi/pytest@8.2.0", veto: "-e"},
+		{name: "pip install of a wheel", files: dockerRun("pip install dist/app-1.0-py3-none-any.whl"), pkg: "pkg:pypi/pytest@8.2.0", veto: "project, path"},
+		{name: "pip install of a URL", files: dockerRun("pip install https://example.com/app-1.0.tar.gz"), pkg: "pkg:pypi/pytest@8.2.0", veto: "project, path"},
+		{name: "pip install of a VCS reference", files: dockerRun("pip install git+https://github.com/example/app"), pkg: "pkg:pypi/pytest@8.2.0", veto: "project, path"},
+		{name: "pip install of a name the lockfile does not lock", files: dockerRun("pip install flask"), pkg: "pkg:pypi/pytest@8.2.0", veto: "flask is not locked"},
+		{name: "pip install -r from a URL", files: dockerRun("pip install -r https://example.com/requirements.txt"), pkg: "pkg:pypi/pytest@8.2.0", veto: "is a URL"},
+		{name: "pip install -r of a missing file", files: dockerRun("pip install -r requirements-prod.txt"), pkg: "pkg:pypi/pytest@8.2.0", veto: "not in the repository"},
+		{name: "pip install -r of a file outside the repository", files: dockerRun("pip install -r ../shared/requirements.txt"), pkg: "pkg:pypi/pytest@8.2.0", veto: "not in the repository"},
+		{name: "pip install -r of a file with an editable line", files: withLock(map[string]string{"Dockerfile": "RUN pip install -r deploy/base.txt\n", "deploy/base.txt": "-e ./lib\n"}), pkg: "pkg:pypi/pytest@8.2.0", veto: "deploy/base.txt"},
+		{name: "pip install --no-deps alongside another pip install", files: dockerRun("pip install --no-deps black==24.4.2 && pip install requests==2.31.0"), pkg: "pkg:pypi/pytest@8.2.0", veto: "--no-deps"},
+		{name: "a lockfile install with no lockfile of its format", files: dockerRun("poetry install --only main"), pkg: "pkg:pypi/pytest@8.2.0", veto: "no poetry lockfile"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := reachFor(t, tc.files, tc.pkg)
+			if got := res.Refutation != nil; got != tc.refute {
+				t.Fatalf("refuted = %v, want %v (refutation %+v)", got, tc.refute, res.Refutation)
+			}
+			if tc.refute {
+				for _, want := range append([]string{devAssumption}, tc.detail...) {
+					if !strings.Contains(res.Refutation.Detail, want) {
+						t.Errorf("detail %q lacks %q", res.Refutation.Detail, want)
+					}
+				}
+			}
+			ls := scanFor(t, tc.files)
+			found := false
+			for _, m := range ls.markerless {
+				found = found || (tc.veto != "" && strings.Contains(m, tc.veto))
+			}
+			if tc.veto != "" && !found {
+				t.Errorf("scan vetoes %v, want one containing %q", ls.markerless, tc.veto)
+			}
+			if tc.veto == "" && tc.refute && len(ls.markerless) > 0 {
+				t.Errorf("scan vetoes %v, want none", ls.markerless)
+			}
+		})
+	}
+}
+
+// TestLoadSet_UnreadableRequirementFile pins that a requirement file an install reads but the
+// scan cannot open blocks every refutation.
+func TestLoadSet_UnreadableRequirementFile(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	files := withLock(map[string]string{"Dockerfile": "RUN pip install -r deploy/base.txt\n", "deploy/base.txt": "black==24.4.2\n"})
+	dir := writeTree(t, files)
+	f := filepath.Join(dir, "deploy", "base.txt")
+	if err := os.Chmod(f, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(f, 0o644) })
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Package: "pkg:pypi/pytest@8.2.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Refutation != nil {
+		t.Fatalf("an unreadable requirement file must block refutation; got %+v", res.Refutation)
+	}
+}
+
+// TestLoadSet_RequirementFileOutsideRepo pins that a requirement file outside the repository
+// blocks every refutation even when it exists on the build host.
+func TestLoadSet_RequirementFileOutsideRepo(t *testing.T) {
+	files := map[string]string{"shared/requirements.txt": "black==24.4.2\n"}
+	for k, v := range withLock(map[string]string{"Dockerfile": "RUN pip install -r ../shared/requirements.txt\n"}) {
+		files["repo/"+k] = v
+	}
+	root := writeTree(t, files)
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: filepath.Join(root, "repo"), Package: "pkg:pypi/pytest@8.2.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Refutation != nil {
+		t.Fatalf("a requirement file outside the repository must block refutation; got %+v", res.Refutation)
+	}
+}
+
+// TestLoadSet_ProjectCoverage pins B3 and B4: a lockfile covers only its own project and
+// declared workspace members, and a distribution the repository carries installed never
+// refutes.
+func TestLoadSet_ProjectCoverage(t *testing.T) {
+	cases := []struct {
+		name   string
+		files  map[string]string
+		pkg    string
+		refute bool
+	}{
+		{name: "nested setup.py outside the workspace members", files: withLock(map[string]string{"services/worker/setup.py": "from setuptools import setup\nsetup(name='worker', install_requires=['black'])\n", "services/worker/worker/__init__.py": ""}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "nested setup.cfg outside the workspace members", files: withLock(map[string]string{"services/worker/setup.cfg": "[metadata]\nname = worker\n\n[options]\ninstall_requires =\n    black\n"}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "nested poetry project outside the workspace members", files: withLock(map[string]string{"services/worker/pyproject.toml": "[tool.poetry]\nname = \"worker\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nblack = \"*\"\n"}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "nested [project] outside the workspace members", files: withLock(map[string]string{"services/worker/pyproject.toml": "[project]\nname = \"worker\"\ndependencies = [\"black\"]\n"}), pkg: "pkg:pypi/pytest@8.2.0"},
+		{name: "a declared workspace member's project is covered", files: func() map[string]string {
+			f := withLock(map[string]string{"pkgs/worker/pyproject.toml": "[project]\nname = \"worker\"\ndependencies = [\"requests\"]\n"})
+			f["uv.lock"] = strings.Replace(strings.Replace(loadsetLock, `members = ["app"]`, `members = ["app", "worker"]`, 1), "[[package]]\nname = \"requests\"",
+				"[[package]]\nname = \"worker\"\nversion = \"0.1.0\"\nsource = { editable = \"pkgs/worker\" }\ndependencies = [{ name = \"requests\" }]\n\n[[package]]\nname = \"requests\"", 1)
+			return f
+		}(), pkg: "pkg:pypi/pytest@8.2.0", refute: true},
+		{name: "a root poetry dependency is a runtime name", files: map[string]string{"app.py": "import requests\n", "poetry.lock": devPoetryLock,
+			"pyproject.toml": "[tool.poetry]\nname = \"app\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nrequests = \"*\"\nblack = \"*\"\n"}, pkg: "pkg:pypi/black@24.4.2"},
+		{name: "committed dist-info under lib/", files: withLock(map[string]string{"app/main.py": "import requests\nimport django\n", "lib/black-24.4.2.dist-info/METADATA": "Metadata-Version: 2.1\nName: black\nVersion: 24.4.2\n", "lib/black/__init__.py": ""}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "committed dist-info outside any vendor dir", files: withLock(map[string]string{"deploy/pkgs/Black-24.4.2.dist-info/RECORD": ""}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "committed egg-info", files: withLock(map[string]string{"build/black.egg-info/PKG-INFO": "Metadata-Version: 1.0\nName: black\n"}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "vendored package without metadata", files: withLock(map[string]string{"vendor/black/__init__.py": ""}), pkg: "pkg:pypi/black@24.4.2"},
+		{name: "a test fixture's dist-info is not installed", files: withLock(map[string]string{"tests/fixtures/black-24.4.2.dist-info/METADATA": "Name: black\n"}), pkg: "pkg:pypi/black@24.4.2", refute: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := reachFor(t, tc.files, tc.pkg)
+			if got := res.Refutation != nil; got != tc.refute {
+				t.Fatalf("refuted = %v, want %v (refutation %+v)", got, tc.refute, res.Refutation)
+			}
+		})
+	}
+}
+
 // TestCallGraph_ScopedSitesStayRunWide pins that the CallGraph op alone (no load set) keeps
 // the run-wide dynamic_import reason for a scoped site; only Reachability narrows it.
+func TestCallGraph_ScopedSitesStayRunWide(t *testing.T) {
+	dir := writeTree(t, withLock(map[string]string{"app/plug.py": "from requests import *\n"}))
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasReason(cg.Partiality, plugin.PartialReasonDynamicImportSpecifier) {
+		t.Fatalf("CallGraph must keep dynamic_import for a star import; got %v", cg.Partiality.Reasons)
+	}
+}
+
+// TestLoadSet_UnpinnedExportReasonIsStable pins that the requirements-export reason names the
+// first unpinned edge in sorted order, whatever the map order.
 func TestLoadSet_UnpinnedExportReasonIsStable(t *testing.T) {
 	ls := &loadSet{locks: &lockModel{
 		versions: map[string]map[string]bool{
@@ -734,17 +998,6 @@ func TestLoadSet_UnpinnedExportReasonIsStable(t *testing.T) {
 		if got := ls.unpinnedExport(data); got != want {
 			t.Fatalf("run %d: unpinnedExport = %q, want %q", i, got, want)
 		}
-	}
-}
-
-func TestCallGraph_ScopedSitesStayRunWide(t *testing.T) {
-	dir := writeTree(t, withLock(map[string]string{"app/plug.py": "from requests import *\n"}))
-	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasReason(cg.Partiality, plugin.PartialReasonDynamicImportSpecifier) {
-		t.Fatalf("CallGraph must keep dynamic_import for a star import; got %v", cg.Partiality.Reasons)
 	}
 }
 

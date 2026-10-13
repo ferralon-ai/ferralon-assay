@@ -56,8 +56,9 @@ type loadSet struct {
 	scoped     []plugin.ScopedReason
 	unscoped   []string // unbounded dynamic loads in runtime code, "module: leaf"
 
-	prodKeepsDev string          // where a production install keeps dev deps, "" if nowhere seen
-	reqRuntime   map[string]bool // named by a non-dev requirements file or a [project] table
+	scan         *installScan    // what the build, deploy and CI files install
+	reqRuntime   map[string]bool // named by a non-dev requirements file, a project table or an install command
+	installed    map[string]bool // installed by a command or committed to the repository: never refuted
 	projectNames map[string]bool // the project's own distribution names: root subjects, never refuted
 	markerless   []string        // install sources whose runtime/dev split is unknown: nothing refutes
 }
@@ -88,6 +89,7 @@ func computeLoadSet(buildDir string, prog *program) *loadSet {
 		rootDists:  map[string][]string{},
 		loaders:    map[string]bool{},
 		reqRuntime: map[string]bool{},
+		installed:  map[string]bool{},
 
 		projectNames: map[string]bool{},
 	}
@@ -162,7 +164,8 @@ func computeLoadSet(buildDir string, prog *program) *loadSet {
 	for _, s := range sites {
 		ls.scopeSite(s.file, s.site)
 	}
-	ls.prodKeepsDev = productionKeepsDev(buildDir)
+	ls.scanInstalls(buildDir)
+	ls.committedInstalls(buildDir)
 	ls.runtimeManifestNames(buildDir)
 	ls.expandLoaders()
 	return ls
@@ -477,6 +480,9 @@ func (ls *loadSet) projectRoots(buildDir string) {
 					ls.reqRuntime[normalizePyCoordinate(name)] = true
 				}
 			}
+			for name := range pp.Tool.Poetry.Dependencies {
+				ls.reqRuntime[normalizePyCoordinate(name)] = true
+			}
 		case "setup.cfg":
 			ls.scanned++
 			data, err := os.ReadFile(abs)
@@ -518,14 +524,12 @@ func (ls *loadSet) projectRoots(buildDir string) {
 }
 
 // unlockedProject records a project manifest that declares runtime dependencies: installing
-// it resolves them afresh unless a lockfile in its directory or an ancestor's locks them, so
-// with none the install is markerless.
+// it resolves them afresh unless a lockfile locks that project, so with none the install is
+// markerless. A lockfile locks only its own directory's project and its declared uv workspace
+// members, never a nested project outside them.
 func (ls *loadSet) unlockedProject(rel string) {
-	dir := path.Dir(rel)
-	for _, f := range ls.locks.files {
-		if ld := path.Dir(f); ld == "." || ld == dir || strings.HasPrefix(dir, ld+"/") {
-			return
-		}
+	if ls.locks.coverDirs[path.Dir(rel)] {
+		return
 	}
 	ls.noMarkers("%s declares dependencies no lockfile locks", rel)
 }
@@ -772,7 +776,7 @@ func (ls *loadSet) installDists() []string {
 	}
 	var out []string
 	for d := range ls.locks.versions {
-		if !ls.locks.distinguishes || ls.prodKeepsDev != "" || len(ls.markerless) > 0 || ls.locks.runtime[d] || ls.loaded[d] || ls.reqRuntime[d] {
+		if !ls.locks.distinguishes || len(ls.markerless) > 0 || ls.locks.runtime[d] || ls.loaded[d] || ls.reqRuntime[d] || ls.keptByInstall(d) {
 			out = append(out, d)
 		}
 	}
@@ -986,7 +990,7 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 			return nil
 		}
 	}
-	if ls.loaded[dist] || ls.locks.members[dist] || ls.projectNames[dist] || !ls.locks.versions[dist][version] {
+	if ls.loaded[dist] || ls.installed[dist] || ls.locks.members[dist] || ls.projectNames[dist] || !ls.locks.versions[dist][version] {
 		return nil
 	}
 	// The gate matches Refutation.Package on name, never version, so every locked copy of
@@ -998,7 +1002,7 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 	if runtime && refuteRuntimeUnloaded != "1" {
 		return nil
 	}
-	if !ls.locks.distinguishes || ls.prodKeepsDev != "" || len(ls.markerless) > 0 {
+	if !ls.locks.distinguishes || len(ls.markerless) > 0 || ls.keptByInstall(dist) {
 		return nil
 	}
 	return &plugin.Refutation{
@@ -1040,6 +1044,19 @@ func (ls *loadSet) detail(dist, version string, runtime bool) string {
 	b.WriteString(")")
 	if len(ls.loaders) > 0 {
 		b.WriteString("; loaders expanded: " + strings.Join(sortedKeys(ls.loaders), ", "))
+	}
+	if sc := ls.scan; sc != nil && len(sc.files) > 0 {
+		shown := sc.files
+		if len(shown) > 4 {
+			shown = shown[:4]
+		}
+		fmt.Fprintf(&b, "; install commands checked in %d build, deploy and CI files (%s", len(sc.files), strings.Join(shown, ", "))
+		if len(sc.files) > len(shown) {
+			fmt.Fprintf(&b, ", +%d more", len(sc.files)-len(shown))
+		}
+		b.WriteString(")")
+	} else {
+		b.WriteString("; no build, deploy or CI files to check for install commands")
 	}
 	if !runtime {
 		b.WriteString("; assumes dev/tooling groups are not installed at runtime")

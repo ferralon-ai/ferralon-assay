@@ -46,6 +46,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"named install behind sudo", map[string]string{"requirements.txt": reqs, "install.sh": "sudo pip install jinja2==3.1.2\n"}, false, ""},
 		{"named install behind xargs", map[string]string{"requirements.txt": reqs, "install.sh": "xargs -a extra.txt pip install\n"}, false, ""},
 		{"poetry run pip install", map[string]string{"pyproject.toml": project, "poetry.lock": lockPoetry, "install.sh": "poetry run pip install jinja2==3.1.2\n"}, false, ""},
+		{"bare pipenv install", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "install.sh": "pipenv install\n"}, false, ""},
+		{"pipenv install --deploy with no Pipfile.lock", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "install.sh": "pipenv install --deploy\n"}, false, ""},
 		{"pdm run with a scripts table", map[string]string{"pyproject.toml": project + "[tool.pdm.scripts]\ntest = \"pip install jinja2==3.1.2\"\n", "pdm.lock": lockPDM, "install.sh": "pdm run test\n"}, false, ""},
 		{"unknown installer: conda", map[string]string{"requirements.txt": reqs, "install.sh": "conda install jinja2\n"}, false, ""},
 		{"unknown installer: mamba", map[string]string{"requirements.txt": reqs, "install.sh": "mamba install jinja2\n"}, false, ""},
@@ -107,6 +109,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"pdm sync with pdm.lock", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "install.sh": "pdm sync\n"}, true, ""},
 		{"surface with no installer", map[string]string{"requirements.txt": reqs, "install.sh": "#!/bin/sh\nset -e\npython -m app\n"}, true, ""},
 		{"poetry run", map[string]string{"pyproject.toml": project, "poetry.lock": lockPoetry, "Procfile": "web: poetry run gunicorn app:app\n"}, true, ""},
+		{"pipenv install --deploy", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "install.sh": "pipenv install --deploy\n"}, true, ""},
+		{"pipenv sync", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "Makefile": "deps:\n\tpipenv sync\n"}, true, ""},
 		{"pdm run without a scripts table", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
 	}
 	for _, tt := range tests {

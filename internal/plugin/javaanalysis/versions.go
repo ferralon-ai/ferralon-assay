@@ -31,8 +31,9 @@ import (
 //     legitimately empty. Soundness rests entirely on the declared partiality: the result is
 //     Complete=false, so a consumer must not read the empty All as proof the dependency is
 //     absent and fabricate a not-affected.
-//   - An unparseable build file degrades Partiality to declared-partial (tool_failure); any
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable build file degrades Partiality to declared-partial (tool_failure), and
+//     every requested coordinate becomes Found and UNRESOLVED: the broken file could declare
+//     any artifact at any version.
 //
 // Several declarations of one coordinate (modules of a multi-module build, Maven and Gradle
 // side by side, two configurations in one build.gradle): Match is chosen by
@@ -76,8 +77,17 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
+	want := normalizeCoordinate(req.Coordinate)
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchCoordinate(all, normalizeCoordinate(req.Coordinate))
+	res.Match, res.Found = matchCoordinate(all, want)
+	if parseFailed && want != "" {
+		if !res.Found {
+			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
+		}
+		res.Found = true
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
 	return res, nil
 }
 

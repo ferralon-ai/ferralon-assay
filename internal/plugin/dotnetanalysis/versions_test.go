@@ -161,14 +161,44 @@ func TestVersions_MissingBuildDirIsHardError(t *testing.T) {
 }
 
 // An unparseable manifest degrades Partiality to declared-partial (tool_failure), never a
-// confident Complete.
-func TestVersions_UnparseableManifest_Partial(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"packages.lock.json": "{ this is not valid json",
-	})
-	res := versionsOf(t, dir, "anything")
-	if res.Partiality.Complete {
-		t.Errorf("an unparseable manifest must NOT be Complete; got %+v", res.Partiality)
+// confident Complete, and vetoes every coordinate: it could declare any version of anything.
+func TestVersions_UnparseableManifest_Vetoes(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name: "a truncated project file beside a pin",
+			files: map[string]string{
+				"A/A.csproj": csproj("Newtonsoft.Json", "13.0.3"),
+				"B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="12.0.1"`,
+			},
+		},
+		{
+			name: "a malformed lockfile beside a pin",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "13.0.3"),
+				"B/packages.lock.json": "{ this is not valid json",
+			},
+		},
+		{
+			name:  "a malformed lockfile alone",
+			files: map[string]string{"packages.lock.json": "{ this is not valid json"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := versionsOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
+			if res.Partiality.Complete {
+				t.Errorf("an unparseable manifest must NOT be Complete; got %+v", res.Partiality)
+			}
+			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+				t.Errorf("want Found and UNRESOLVED; got found=%v %+v", res.Found, res.Match)
+			}
+		})
+	}
+	if res := versionsOf(t, writeTree(t, map[string]string{"packages.lock.json": "{"}), ""); res.Found {
+		t.Errorf("an empty coordinate must not be Found; got %+v", res.Match)
 	}
 }
 
@@ -183,6 +213,10 @@ func TestVersions_UnknownCoordinate_NotFound(t *testing.T) {
 	}
 }
 
+func cpmProps(version string) string {
+	return `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="` + version + `" /></ItemGroup></Project>`
+}
+
 func csproj(pkg, version string) string {
 	attr := ""
 	if version != "" {
@@ -191,9 +225,16 @@ func csproj(pkg, version string) string {
 	return `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="` + pkg + `"` + attr + ` /></ItemGroup></Project>`
 }
 
-// lockJSON renders a packages.lock.json with one Newtonsoft.Json entry per framework; an
-// empty version omits "resolved".
+// lockJSON renders a packages.lock.json with one Direct Newtonsoft.Json entry per framework,
+// requesting the range restore records for a bare "13.0.3" declaration. An empty version
+// omits "resolved".
 func lockJSON(byTFM map[string]string) string {
+	return lockEntries("Direct", "[13.0.3, )", byTFM)
+}
+
+// lockEntries is lockJSON with the entry type and "requested" chosen; an empty requested
+// omits it.
+func lockEntries(typ, requested string, byTFM map[string]string) string {
 	s := `{"version": 1, "dependencies": {`
 	first := true
 	for tfm, v := range byTFM {
@@ -205,7 +246,10 @@ func lockJSON(byTFM map[string]string) string {
 		if v != "" {
 			resolved = `, "resolved": "` + v + `"`
 		}
-		s += `"` + tfm + `": {"Newtonsoft.Json": {"type": "Direct"` + resolved + `}}`
+		if requested != "" {
+			resolved = `, "requested": "` + requested + `"` + resolved
+		}
+		s += `"` + tfm + `": {"Newtonsoft.Json": {"type": "` + typ + `"` + resolved + `}}`
 	}
 	return s + "}}"
 }
@@ -262,17 +306,128 @@ func TestVersions_MultipleCopies(t *testing.T) {
 			name: "a range is covered by its own project's lockfile",
 			files: map[string]string{
 				"A/A.csproj":           csproj("Newtonsoft.Json", "[13.0,14.0)"),
-				"A/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.3"}),
+				"A/packages.lock.json": lockEntries("Direct", "[13.0.0, 14.0.0)", map[string]string{"net8.0": "13.0.3"}),
 			},
 			version: "13.0.3",
 		},
 		{
-			name: "a central-package-management reference is covered by its own lockfile",
+			name: "a float is covered by its own project's lockfile",
 			files: map[string]string{
-				"A/A.csproj":           csproj("Newtonsoft.Json", ""),
-				"A/packages.lock.json": lockJSON(map[string]string{"net6.0": "13.0.3", "net8.0": "13.0.3"}),
+				"A/A.csproj":           csproj("Newtonsoft.Json", "13.*"),
+				"A/packages.lock.json": lockEntries("Direct", "[13.*, )", map[string]string{"net8.0": "13.0.3"}),
 			},
 			version: "13.0.3",
+		},
+		{
+			name: "a stale lockfile does not cover its project's range",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "[13.0.3,)"),
+				"A/packages.lock.json": lockEntries("Direct", "[12.0.1, )", map[string]string{"net8.0": "12.0.1"}),
+			},
+		},
+		{
+			name: "a lockfile stale for one target framework does not cover",
+			files: map[string]string{
+				"A/A.csproj": csproj("Newtonsoft.Json", "[13.0,14.0)"),
+				"A/packages.lock.json": `{"version": 1, "dependencies": {
+  "net6.0": {"Newtonsoft.Json": {"type": "Direct", "requested": "[12.0.1, )", "resolved": "13.0.3"}},
+  "net8.0": {"Newtonsoft.Json": {"type": "Direct", "requested": "[13.0.0, 14.0.0)", "resolved": "13.0.3"}}
+}}`,
+			},
+		},
+		{
+			name: "a lockfile requesting other bounds does not cover",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "(13.0,14.0]"),
+				"A/packages.lock.json": lockEntries("Direct", "[13.0.0, 14.0.0)", map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a lockfile entry without requested does not cover",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "[13.0,14.0)"),
+				"A/packages.lock.json": lockEntries("Direct", "", map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a transitive-only lockfile entry does not cover a declared range",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "[13.0,14.0)"),
+				"A/packages.lock.json": lockEntries("Transitive", "[13.0.0, 14.0.0)", map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a property-valued version is not covered",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", "$(NewtonsoftVersion)"),
+				"A/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a central-package-management reference is covered by its own lockfile",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("13.0.3"),
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net6.0": "13.0.3", "net8.0": "13.0.3"}),
+			},
+			version: "13.0.3",
+		},
+		{
+			name: "a central-package-management reference with a stale lockfile",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("13.0.3"),
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockEntries("Direct", "[12.0.1, )", map[string]string{"net8.0": "12.0.1"}),
+			},
+		},
+		{
+			name: "the nearest Directory.Packages.props decides",
+			files: map[string]string{
+				"Directory.Packages.props":   cpmProps("13.0.3"),
+				"A/Directory.Packages.props": cpmProps("12.0.1"),
+				"A/A.csproj":                 csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":       lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a central-package-management reference with no PackageVersion",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Other" Version="1.0.0" /></ItemGroup></Project>`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a central-package-management reference with no props file",
+			files: map[string]string{
+				"A/A.csproj":           csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a central-package-management reference with an unreadable props file",
+			files: map[string]string{
+				"Directory.Packages.props": `<Project><ItemGroup><PackageVersion Include="Newtonsoft.Json" Version="13.0.3"`,
+				"A/A.csproj":               csproj("Newtonsoft.Json", ""),
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+		},
+		{
+			name: "a VersionOverride is the declared version",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("12.0.1"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" VersionOverride="13.0.3" /></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
+			version: "13.0.3",
+		},
+		{
+			name: "a VersionOverride with a stale lockfile",
+			files: map[string]string{
+				"Directory.Packages.props": cpmProps("13.0.3"),
+				"A/A.csproj":               `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" VersionOverride="12.0.1" /></ItemGroup></Project>`,
+				"A/packages.lock.json":     lockJSON(map[string]string{"net8.0": "13.0.3"}),
+			},
 		},
 		{
 			name: "every copy agrees",

@@ -99,8 +99,8 @@ func installedCopies(root string, copies []nugetCopy, locks map[string]lockReque
 		}
 		lr, hasLock := locks[dir]
 		if hasLock && single {
-			versions, cok := central(dir)
-			if lockCurrent(lr, decl.specs, versions, cok) {
+			versions, _ := central(dir)
+			if lockCurrent(lr, decl.specs, versions) {
 				current[dir] = true
 				continue
 			}
@@ -174,22 +174,19 @@ func assetsCopies(dir, want string) (deps []plugin.ResolvedDependency, present, 
 // the Direct ids are exactly the declared ids, every Direct "requested" equals each
 // declaration of its id, and every CentralTransitive "requested" equals the central
 // PackageVersion of its id. A version-less declaration reads central (the nearest
-// Directory.Packages.props; centralOK false when there is none or it can't be read).
-func lockCurrent(lr lockRequests, specs map[string][]string, central map[string]string, centralOK bool) bool {
+// Directory.Packages.props; nil when there is none or it can't be read, which matches nothing).
+func lockCurrent(lr lockRequests, specs map[string][]string, central map[string]string) bool {
 	if len(lr.direct) != len(specs) {
 		return false
 	}
 	for id, reqs := range lr.transitive {
-		if !centralOK || !sameRanges(central[id], reqs) {
+		if !sameRanges(central[id], reqs) {
 			return false
 		}
 	}
 	for id, declared := range specs {
 		for _, spec := range declared {
 			if spec == "" {
-				if !centralOK {
-					return false
-				}
 				spec = central[id]
 			}
 			if !sameRanges(spec, lr.direct[id]) {

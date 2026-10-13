@@ -439,8 +439,7 @@ func centralVersions(root string) func(dir string) (map[string]string, bool) {
 // models only a plain file: a Project holding ItemGroups of PackageVersion Include/Version
 // items and PropertyGroups of literal properties. GlobalPackageReference Include/Version
 // items are allowed and skipped; declaredRefs reads them as references every project gets.
-// Anything else can change which version
-// ships without this reader seeing it: an Update or Remove item, an Import, a Condition, an
+// Anything else can change which version ships without this reader seeing it: an Update or Remove item, an Import, a Condition, an
 // SDK, an Include that expands to several items, another item type, or an explicit
 // ManagePackageVersionsCentrally of false. Any of those, or any element or attribute not
 // listed here, makes the whole file unreadable, so it covers nothing. A property-valued

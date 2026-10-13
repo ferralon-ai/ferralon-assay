@@ -127,6 +127,15 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 			version: "13.0.3",
 		},
 		{
+			name: "a lock listing another package in place of the declared one covers nothing",
+			files: map[string]string{
+				"A/A.csproj": msbuild(otherRef + `<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0,14.0)" /></ItemGroup>`),
+				"A/packages.lock.json": `{"version": 1, "dependencies": {"net8.0": {
+  "Other": {"type": "Direct", "requested": "[1.0.0, )", "resolved": "1.0.0"},
+  "Serilog": {"type": "Direct", "requested": "[3.0.0, )", "resolved": "3.0.0"}}}}`,
+			},
+		},
+		{
 			name: "Directory.Build.props injects a PackageReference",
 			files: map[string]string{
 				"A/A.csproj":              pinA,
@@ -664,7 +673,7 @@ func TestParseMSBuild(t *testing.T) {
 // dependency set (All) keeps them.
 func TestParseProjectFile_UnmodeledKeepsReferences(t *testing.T) {
 	entries, ok := parseProjectFile([]byte(`<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.3" /></ItemGroup><Choose><When Condition="true"><ItemGroup><PackageReference Update="Newtonsoft.Json" Version="12.0.1" /></ItemGroup></When></Choose></Project>`))
-	if !ok || len(entries) != 1 || entries[0].dep.Coordinate != "Newtonsoft.Json" || entries[0].dep.Resolved {
+	if !ok || len(entries) != 1 || entries[0].dep.Coordinate != "Newtonsoft.Json" || entries[0].dep.Resolved || entries[0].dep.Version != "" || entries[0].spec != specUnread {
 		t.Fatalf("got %+v, %v; want one unresolved Newtonsoft.Json", entries, ok)
 	}
 }

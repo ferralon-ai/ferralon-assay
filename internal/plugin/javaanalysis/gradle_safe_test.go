@@ -452,6 +452,20 @@ func TestGradleBuildSafe(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.Chmod(home, 0o755) })
 		}, false},
+		{"a wrapper directory that can't be searched", func(t *testing.T, dir string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root searches a mode-000 directory")
+			}
+			writeFile(t, filepath.Join(dir, "build.gradle"), safe)
+			wrapper := filepath.Join(dir, "gradle", "wrapper")
+			if err := os.MkdirAll(wrapper, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(wrapper, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(wrapper, 0o755) })
+		}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -571,6 +585,23 @@ func TestGradle_AncestorBuild(t *testing.T) {
 		}
 		if findNode(t, toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir()))), netkit) != nil {
 			t.Error("netkit must not bind at 1.0.0")
+		}
+	})
+
+	// The same rule at the ancestor search. No build can witness it end to end: every directory
+	// gradleFilesIn looks in above the build directory is on the path the build directory was
+	// reached through, so Lstat there can't fail with EACCES unless the build directory's own
+	// checks fail first. So the classification is pinned on gradleFilesIn itself.
+	t.Run("R6-N1 a name in an unsearchable directory counts as present", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		dir := t.TempDir()
+		chmod(t, dir, 0)
+		t.Cleanup(func() { chmod(t, dir, 0o755) })
+		want := filepath.Join(dir, "settings.gradle")
+		if got := gradleFilesIn(dir, "settings.gradle"); len(got) != 1 || got[0] != want {
+			t.Errorf("gradleFilesIn = %v, want [%s]", got, want)
 		}
 	})
 

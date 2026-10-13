@@ -132,7 +132,7 @@ func callGraphOf(res *LoadResult, algo string) (plugin.CallGraphResult, error) {
 
 	edges := sp.collectEdges(graph)
 	roots := sp.collectRoots()
-	part := sp.partiality(res.Partiality)
+	part := sp.partiality(res)
 	for _, r := range runTime {
 		part = withReason(part, r)
 	}
@@ -226,9 +226,11 @@ func (s *ssaProgram) collectEdges(graph *callgraph.Graph) []plugin.CallEdge {
 // partiality folds in the load partiality and inspects every built function for
 // reflection, cgo, and unresolved interface dispatch, declaring the matching
 // reason codes. Reaching past static resolution is declared, never hidden (inv.5).
-func (s *ssaProgram) partiality(load plugin.Partiality) plugin.Partiality {
+// A cgo boundary the load could bound (cgoLimits) is declared as its scoped limits
+// instead of a run-wide reason.
+func (s *ssaProgram) partiality(load *LoadResult) plugin.Partiality {
 	reasons := map[string]bool{}
-	for _, r := range load.Reasons {
+	for _, r := range load.Partiality.Reasons {
 		reasons[r] = true
 	}
 
@@ -236,10 +238,23 @@ func (s *ssaProgram) partiality(load plugin.Partiality) plugin.Partiality {
 		classifyFuncPartiality(fn, reasons)
 	}
 
-	if len(reasons) == 0 {
+	scoped := slices.Clone(load.Partiality.Scoped)
+	if reasons[plugin.PartialReasonCgo] && load.cgo != nil {
+		delete(reasons, plugin.PartialReasonCgo)
+		for _, r := range load.cgo {
+			if !slices.ContainsFunc(scoped, func(s plugin.ScopedReason) bool {
+				return s.Reason == r.Reason && s.Package == r.Package && s.Path == r.Path
+			}) {
+				scoped = append(scoped, r)
+			}
+		}
+	}
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = scoped
+	return part
 }
 
 // classifyFuncPartiality inspects a single SSA function for the same partiality
@@ -409,14 +424,15 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 
 // unsearchedMethods returns the exported methods a caller of the loaded non-main packages can invoke
 // that govulncheckEntries leaves out, each as its generic origin: a method of a generic type, whose
-// method set yields no function until instantiated, and a method promoted by embedding (into a
+// method set yields no function until instantiated, a method promoted by embedding (into a
 // package-level type or one declared in a function) from a type outside those packages or a generic
-// one, which reaches the method set only as a synthetic wrapper govulncheck does not enter.
+// one, which reaches the method set only as a synthetic wrapper govulncheck does not enter, and a
+// method of a type outside those packages that an alias names.
 // govulncheck searches none of them, so it can miss a call into a vulnerable module made only there.
 func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 	top := map[*types.Package]bool{}
 	for _, p := range pkgs {
-		if p.Types != nil && p.Name != "main" {
+		if p.Types != nil && !isMain(p) {
 			top[p.Types] = true
 		}
 	}
@@ -436,14 +452,14 @@ func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 		seen := map[*types.Func]bool{}
 		for _, obj := range p.TypesInfo.Defs {
 			tn, ok := obj.(*types.TypeName)
-			if !ok || tn.IsAlias() {
+			if !ok {
 				continue
 			}
-			named, ok := tn.Type().(*types.Named)
-			if !ok || types.IsInterface(named) {
+			typ := types.Unalias(tn.Type())
+			if types.IsInterface(typ) {
 				continue
 			}
-			for _, t := range []types.Type{named, types.NewPointer(named)} {
+			for _, t := range []types.Type{typ, types.NewPointer(typ)} {
 				ms := types.NewMethodSet(t)
 				for i := range ms.Len() {
 					fn, ok := ms.At(i).Obj().(*types.Func)

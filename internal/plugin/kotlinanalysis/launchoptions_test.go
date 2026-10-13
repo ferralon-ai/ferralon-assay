@@ -74,8 +74,18 @@ func TestReachability_LaunchOptions(t *testing.T) {
 			"Dockerfile": "FROM eclipse-temurin:21\nENV JAVA_TOOL_OPTIONS=\"-Djava.util.logging.config.class=org.d.D\"\nENTRYPOINT [\"/app/bin/app\"]\n",
 		}), option},
 		{"Dockerfile ENV allowlisted, entrypoint expands it: searched", inventory(map[string]string{
-			"Dockerfile": "FROM eclipse-temurin:21\nENV JAVA_OPTS=\"-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8\"\nENTRYPOINT exec java $JAVA_OPTS -jar /app.jar\n",
+			"Dockerfile": "FROM eclipse-temurin:21\nENV JAVA_OPTS=\"-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8\"\nENTRYPOINT exec java $JAVA_OPTS com.example.MainKt\n",
 		}), ""},
+		{"Dockerfile java -jar: the JAR's manifest classpath is unread", inventory(map[string]string{
+			"Dockerfile": "FROM eclipse-temurin:21\nENTRYPOINT [\"java\", \"-jar\", \"/app.jar\"]\n",
+		}), option},
+		{"CI workflow JAVA_TOOL_OPTIONS agent", inventory(map[string]string{
+			".github/workflows/deploy.yml": "jobs:\n  deploy:\n    env:\n      JAVA_TOOL_OPTIONS: -javaagent:/otel.jar\n",
+		}), agent},
+		{"entrypoint script java agent", inventory(map[string]string{
+			"entrypoint.sh": "#!/bin/sh\nexec java -javaagent:/otel.jar com.example.MainKt \"$@\"\n",
+		}), agent},
+		{"bootRun jvmArgs configure a dev JVM: searched", appendBuild("\ntasks.named<JavaExec>(\"run\") {\n    jvmArgs = listOf(\"-javaagent:/otel.jar\", \"-Dspring.profiles.active=dev\")\n}\n"), ""},
 		{"Dockerfile ENTRYPOINT java option", inventory(map[string]string{
 			"docker/Dockerfile": "FROM eclipse-temurin:21\nENTRYPOINT [\"java\", \"-Djava.system.class.loader=org.d.D\", \"-jar\", \"/app.jar\"]\n",
 		}), option},

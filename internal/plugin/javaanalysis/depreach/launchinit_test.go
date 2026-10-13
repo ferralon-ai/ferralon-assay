@@ -74,5 +74,67 @@ func TestReach_LaunchClassInitialization(t *testing.T) {
 			classes: []classfile.Class{launchMain(false, objectClass, nil, callsSink(holeMain, "<init>", "()V"), emptyFinalize(holeMain))}},
 		{name: "static main: no receiver is constructed", want: NotExploitable,
 			classes: []classfile.Class{launchMain(true, objectClass, nil, callsSink(holeMain, "<init>", "()V"), emptyFinalize(holeMain))}},
+		// Whether an out-of-classpath superinterface declares a default method is
+		// unknown, so its initializer may run.
+		{name: "launch class implementing an unopened interface", want: Undetermined, why: "unloaded_dependency: static initializer of unopened " + unopenedIface,
+			classes: []classfile.Class{launchMain(true, objectClass, []string{unopenedIface})}},
+		{name: "new of a class implementing an unopened interface", want: Undetermined, why: "unloaded_dependency: static initializer of unopened " + unopenedIface,
+			classes: []classfile.Class{
+				{Name: holeMain, Super: objectClass, Public: true, Methods: []classfile.Method{
+					{Ref: holeIngress, Static: true, Public: true, InitTriggers: []string{"com/acme/C"}}}},
+				{Name: "com/acme/C", Super: objectClass, Interfaces: []string{unopenedIface}, Public: true},
+			}},
+	})
+}
+
+const unopenedIface = "org/unopened/Iface"
+
+// TestReach_StaticFieldInitialization: getstatic/putstatic initializes the class or
+// interface that declares the resolved field (JVMS §5.4.3.2, §5.5), which can be a
+// superinterface that initializing the named class would not initialize.
+func TestReach_StaticFieldInitialization(t *testing.T) {
+	const (
+		consts = "com/acme/Consts"
+		sub    = "com/acme/Sub"
+		base   = "com/acme/Base"
+	)
+	x := classfile.Field{Name: "X", Descriptor: "Ljava/lang/Object;"}
+	readsX := func(owner string, ifaces []string) classfile.Class {
+		return classfile.Class{Name: holeMain, Super: objectClass, Interfaces: ifaces, Public: true, Methods: []classfile.Method{
+			{Ref: holeIngress, Static: true, Public: true, StaticFieldRefs: []classfile.FieldRef{{Owner: owner, Name: x.Name, Descriptor: x.Descriptor}}}}}
+	}
+	constIface := func(fields ...classfile.Field) classfile.Class {
+		c := ifaceWith(consts, nil, clinitCallingSink(consts))
+		c.Fields = fields
+		return c
+	}
+	plainClass := func(name, super string, ifaces []string, fields []classfile.Field, methods ...classfile.Method) classfile.Class {
+		return classfile.Class{Name: name, Super: super, Interfaces: ifaces, Public: true, Fields: fields, Methods: methods}
+	}
+	runHoleCases(t, []holeCase{
+		{name: "field named on its declaring interface", want: ReachableCandidate, via: "Consts.<clinit>",
+			classes: []classfile.Class{readsX(consts, nil), constIface(x)}},
+		{name: "field of a constant-only interface, named on a direct implementor", want: ReachableCandidate, via: "Consts.<clinit>",
+			classes: []classfile.Class{readsX(sub, nil), constIface(x), plainClass(sub, objectClass, []string{consts}, nil)}},
+		{name: "field of a constant-only interface, implemented through a superclass", want: ReachableCandidate, via: "Consts.<clinit>",
+			classes: []classfile.Class{readsX(sub, nil), constIface(x), plainClass(sub, base, nil, nil), plainClass(base, objectClass, []string{consts}, nil)}},
+		{name: "launch class reading an inherited interface field by its own name", want: ReachableCandidate, via: "Consts.<clinit>",
+			classes: []classfile.Class{readsX(holeMain, []string{consts}), constIface(x)}},
+		{name: "field declared on the named class does not initialize its interface", want: NotExploitable,
+			classes: []classfile.Class{readsX(sub, nil), constIface(classfile.Field{Name: "Y", Descriptor: x.Descriptor}), plainClass(sub, objectClass, []string{consts}, []classfile.Field{x})}},
+		{name: "superinterfaces are searched before the superclass", want: NotExploitable,
+			classes: []classfile.Class{readsX(sub, nil),
+				func() classfile.Class { c := ifaceWith(consts, nil); c.Fields = []classfile.Field{x}; return c }(),
+				plainClass(sub, base, []string{consts}, nil),
+				plainClass(base, objectClass, nil, []classfile.Field{x}, clinitCallingSink(base))}},
+		{name: "declarer behind an unopened superclass: every superinterface is initialized", want: ReachableCandidate, via: "Consts.<clinit>",
+			classes: []classfile.Class{readsX(sub, nil), constIface(), plainClass(sub, "org/unopened/Base", []string{consts}, nil)}},
+		{name: "invokestatic of a method inherited from a superclass initializes the superclass", want: ReachableCandidate, via: "Base.<clinit>",
+			classes: []classfile.Class{
+				{Name: holeMain, Super: objectClass, Public: true, Methods: []classfile.Method{
+					{Ref: holeIngress, Static: true, Public: true, InitTriggers: []string{sub}, Edges: []classfile.Edge{edge(classfile.EdgeStatic, sub, "s", "()V")}}}},
+				plainClass(sub, base, nil, nil),
+				plainClass(base, objectClass, nil, nil, classfile.Method{Ref: mref(base, "s", "()V"), Static: true, Public: true}, clinitCallingSink(base)),
+			}},
 	})
 }

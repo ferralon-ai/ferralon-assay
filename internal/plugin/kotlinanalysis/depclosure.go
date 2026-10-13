@@ -383,14 +383,15 @@ func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, 
 // inventoryReasons returns the inventory's run-wide graph reasons: every reason under which its
 // node set or a node's version may fall short of what the build runs (no lockfile, an uncached
 // subtree or POM, a substitution, an uncached BOM or parent, an unresolved property, an
-// unevaluable profile). The op withholds Searched under any of them itself rather than leaning
+// unevaluable profile, a resolver tool that failed). The op withholds Searched under any of them itself rather than leaning
 // on a caller's inventory limits, because the op is consumed as a library.
 func inventoryReasons(inv plugin.DependencyInventory) []string {
 	var out []string
 	for _, r := range inv.Partiality.Reasons {
 		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) ||
 			strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) ||
-			strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed) {
+			strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed) ||
+			strings.HasPrefix(r, plugin.PartialReasonToolFailure) {
 			out = append(out, r)
 		}
 	}

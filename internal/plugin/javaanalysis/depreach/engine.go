@@ -143,6 +143,75 @@ func (e *Engine) initClosure(owner string) []string {
 	return out
 }
 
+// fieldInitOwners returns the classes whose initialization a getstatic/putstatic of
+// f runs: the class or interface that declares the resolved field (JVMS §5.4.3.2,
+// §5.5). When resolution meets a class outside the classpath before finding the
+// field, the declarer is unknown, so every ancestor of the named owner is returned.
+func (e *Engine) fieldInitOwners(f classfile.FieldRef) []string {
+	if declarer, ok := e.resolveField(f.Owner, f.Name, f.Descriptor, map[string]bool{}); ok && declarer != "" {
+		return []string{declarer}
+	}
+	return e.ancestors(f.Owner)
+}
+
+// resolveField performs field resolution (JVMS §5.4.3.2) over the loaded classes: the
+// class's own fields, then its direct superinterfaces recursively, then its
+// superclass recursively. ok is false when an out-of-classpath class could declare
+// the field; ("", true) means no loaded declaration and nothing unknown.
+func (e *Engine) resolveField(owner, name, desc string, seen map[string]bool) (declarer string, ok bool) {
+	if seen[owner] {
+		return "", true
+	}
+	seen[owner] = true
+	c := e.classes[owner]
+	if c == nil {
+		return "", false
+	}
+	for _, f := range c.Fields {
+		if f.Name == name && f.Descriptor == desc {
+			return owner, true
+		}
+	}
+	for _, iface := range c.Interfaces {
+		if d, ok := e.resolveField(iface, name, desc, seen); !ok || d != "" {
+			return d, ok
+		}
+	}
+	if c.Super == "" {
+		return "", true
+	}
+	return e.resolveField(c.Super, name, desc, seen)
+}
+
+// ancestors returns owner plus every superclass and superinterface, direct or
+// indirect. An out-of-classpath ancestor is included but its own ancestors are
+// unknown.
+func (e *Engine) ancestors(owner string) []string {
+	seen := map[string]bool{owner: true}
+	out := []string{owner}
+	stack := []string{owner}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		c := e.classes[cur]
+		if c == nil {
+			continue
+		}
+		supers := append([]string(nil), c.Interfaces...)
+		if c.Super != "" {
+			supers = append(supers, c.Super)
+		}
+		for _, s := range supers {
+			if !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+				stack = append(stack, s)
+			}
+		}
+	}
+	return out
+}
+
 // declaresInstanceBody reports whether c declares a non-abstract, non-static method:
 // for an interface, a default (or private instance) method, which makes initializing
 // an implementing class initialize the interface too.
@@ -1246,6 +1315,13 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		// unloaded dependency's <clinit> is unseen code and a hazard.
 		for _, owner := range m.InitTriggers {
 			initialize(cur, owner)
+		}
+		// A static field access initializes the field's declarer, which can be a
+		// superinterface the named class's own initialization would skip.
+		for _, f := range m.StaticFieldRefs {
+			for _, owner := range e.fieldInitOwners(f) {
+				initialize(cur, owner)
+			}
 		}
 	}
 	res.Reached = len(visited)

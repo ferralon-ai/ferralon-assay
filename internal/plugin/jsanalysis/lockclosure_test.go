@@ -344,7 +344,7 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 		{name: "a package.json with bundledDependencies true above the governing lock", from: "app", files: map[string]string{
 			"package.json": `{"name":"root","bundledDependencies":true}`, "app/package-lock.json": lock}},
 		{name: "a package.json with empty dependency fields above the governing lock", from: "app", bounded: true, files: map[string]string{
-			"package.json": `{"name":"root","dependencies":{},"devDependencies":{},"optionalDependencies":null,"peerDependencies":{},"bundleDependencies":[],"bundledDependencies":false}`,
+			"package.json":          `{"name":"root","dependencies":{},"devDependencies":{},"optionalDependencies":null,"peerDependencies":{},"bundleDependencies":[],"bundledDependencies":false}`,
 			"app/package-lock.json": lock}},
 		{name: "a package.json with dependencies beside the governing lock", from: "app", bounded: true, files: map[string]string{
 			"package.json": `{"name":"root"}`, "app/package.json": `{"name":"app","dependencies":{"qs":"6.0.0"}}`, "app/package-lock.json": lock}},

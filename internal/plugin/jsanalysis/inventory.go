@@ -192,7 +192,7 @@ func selectLockfile(root string) (selectedLock, plugin.Partiality) {
 		p := filepath.Join(root, name)
 		fi, err := os.Stat(p)
 		switch {
-		case os.IsNotExist(err) || (err == nil && fi.IsDir()):
+		case absent(err) || (err == nil && fi.IsDir()):
 		case err != nil || !fi.Mode().IsRegular():
 			// A lock that cannot be read (a pipe, socket or device) may be the authoritative
 			// one, so no other lock is selected in its place.
@@ -249,7 +249,7 @@ func dialectForLock(name string) string {
 // when a package.json exists but cannot be read. Metadata read only — corepack is never invoked.
 func packageManagerDialect(root string) (dialect string, ok bool) {
 	data, err := readRegular(filepath.Join(root, "package.json"))
-	if os.IsNotExist(err) {
+	if absent(err) {
 		return "", true
 	}
 	if err != nil {
@@ -307,7 +307,7 @@ func manifestsUnder(root string) (out []manifestFile, complete bool) {
 		}
 		data, rerr := readRegular(path)
 		if rerr != nil {
-			complete = complete && os.IsNotExist(rerr)
+			complete = complete && absent(rerr)
 			return nil
 		}
 		var pkg invManifest

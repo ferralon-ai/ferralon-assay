@@ -44,7 +44,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	pkgPath := filepath.Join(req.BuildDir, "package.json")
 	data, err := readRegular(pkgPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if absent(err) {
 			// Not a package: declare the gap, do NOT fabricate a build command.
 			return plugin.BuildManifestResult{
 				Partiality: plugin.Partial(plugin.PartialReasonToolFailure),

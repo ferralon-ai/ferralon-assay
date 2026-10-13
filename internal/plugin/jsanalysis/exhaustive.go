@@ -324,7 +324,7 @@ func installedPackage(dir, installName, realRoot string, into, visited map[strin
 		if json.Unmarshal(data, &m) == nil && m.Name != "" {
 			into[normalizeNPMCoordinate(m.Name)] = true
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !absent(err) {
 		return false
 	}
 	nested := filepath.Join(dir, "node_modules")

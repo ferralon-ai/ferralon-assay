@@ -219,7 +219,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 				}
 			}
 			copies = append(copies, npmResolved(name, p.Version))
-		case !os.IsNotExist(err):
+		case !absent(err):
 			ok = false
 			return
 		}

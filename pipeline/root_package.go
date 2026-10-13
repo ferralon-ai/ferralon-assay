@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -299,8 +300,24 @@ func goModuleTagAtHead(ctx context.Context, dir, mod string) string {
 	return version
 }
 
+// gitRepositoryEnv names the variables that point git at a repository, work tree or config other
+// than the one it would find from dir (what `git rev-parse --local-env-vars` lists), and
+// GIT_CEILING_DIRECTORIES, which can stop it finding that one at all.
+var gitRepositoryEnv = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+	"GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+	"GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+	"GIT_SHALLOW_FILE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES",
+}
+
+// gitOutput runs git against the repository containing dir, whatever the environment says.
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(gitRepositoryEnv, name)
+	})
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
 

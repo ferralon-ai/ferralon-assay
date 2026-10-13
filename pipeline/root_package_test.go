@@ -625,6 +625,36 @@ func TestGoRootPackage_VersionIsTheModuleTagAtHead(t *testing.T) {
 	}
 }
 
+// TestGoRootPackage_TagLookupIgnoresTheGitEnvironment: the tag at HEAD is read from the repository
+// holding the build directory, even when the environment points git at another one or stops its
+// search short of it.
+func TestGoRootPackage_TagLookupIgnoresTheGitEnvironment(t *testing.T) {
+	cases := []struct {
+		name, variable string
+		value          func(other string) string
+	}{
+		{"GIT_DIR naming another repository", "GIT_DIR", func(other string) string { return filepath.Join(other, ".git") }},
+		{"GIT_WORK_TREE naming another work tree", "GIT_WORK_TREE", func(other string) string { return other }},
+		{"GIT_CEILING_DIRECTORIES above the build directory", "GIT_CEILING_DIRECTORIES", func(string) string { return "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := map[string]string{"go.mod": "module example.com/app\n", "sub/go.mod": "module example.com/app/sub\n", "sub/sub.go": "package sub\n"}
+			dir, other := writeTree(t, tree), writeTree(t, tree)
+			gitTree(t, dir, "sub/v0.3.0")
+			gitTree(t, other, "sub/v0.9.0")
+			value := tc.value(other)
+			if value == "" {
+				value = dir
+			}
+			t.Setenv(tc.variable, value)
+			if got, _ := ReadRootPackage(context.Background(), filepath.Join(dir, "sub"), checkout.LangGo); got.Version != "v0.3.0" {
+				t.Fatalf("version = %q, want v0.3.0", got.Version)
+			}
+		})
+	}
+}
+
 // TestGoRootPackage_TagMajorMustMatchThePath: a tag at HEAD is the module's version only when the
 // module path allows its major version, so a v2 module tagged v1.5.0 has no established version.
 func TestGoRootPackage_TagMajorMustMatchThePath(t *testing.T) {

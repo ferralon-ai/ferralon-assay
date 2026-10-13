@@ -104,9 +104,11 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 // dependencyJars returns the JAR(s) holding the bytes the build runs for the advisory's
 // package. When the build's start scripts name the coordinate on a runtime classpath, those
 // JARs are it (Gradle conflict resolution may have picked a version other than the declared
-// one); a version the PURL pins that differs from them is declared. Otherwise the version
-// comes from the PURL or the build files and the JAR from the local caches. ok is false when
-// no JAR can be located.
+// one); a version the PURL pins that differs from them is declared. Otherwise, when the
+// Gradle lockfile locks the coordinate, the version is the one runtimeClasspath locks (the same
+// selection the dependency closure loads), and a differing pinned version is declared. Otherwise
+// the version comes from the PURL or the build files. The JAR comes from the local caches. ok
+// is false when no JAR can be located, or when the lockfile selects no single runtime version.
 func dependencyJars(ctx context.Context, req plugin.ResolveSymbolsRequest) (paths []string, reasons map[string]bool, ok bool) {
 	reasons = map[string]bool{}
 	coordinate, pinned, ok := parseMavenPURL(req.PURL)
@@ -121,6 +123,20 @@ func dependencyJars(ctx context.Context, req plugin.ResolveSymbolsRequest) (path
 			}
 		}
 		return paths, reasons, true
+	}
+	if locks, ok := readRuntimeLocks(req.BuildDir); ok && locks.locked[coordinate] {
+		version, _, _ := locks.selection(coordinate)
+		if version == "" {
+			return nil, nil, false
+		}
+		if pinned != "" && version != pinned {
+			reasons[partialReasonNoDependencyArtifact] = true
+		}
+		jarPath, ok := LocateDependencyJar(req.BuildDir, coordinate, version)
+		if !ok {
+			return nil, nil, false
+		}
+		return []string{jarPath}, reasons, true
 	}
 	coordinate, version, ok := coordinateAndVersion(ctx, req)
 	if !ok {

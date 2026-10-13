@@ -3,6 +3,7 @@ package kotlinanalysis
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -18,6 +19,12 @@ import (
 // node's JAR is located in the local caches by LocateDependencyJar (Gradle modules-2, then
 // .m2) and parsed by the shared classfile reader.
 //
+// With a Gradle lockfile, a locked coordinate loads only the version runtimeClasspath locks
+// (gradlelocks.go), the one the application runs with: a coordinate locked only for kapt, an
+// annotation processor or a test classpath is not loaded, and one locked at more than one
+// runtime version, or at a version that is not concrete, is a scoped blind spot rather than a
+// guess.
+//
 // A dependency that is in the inventory but whose JAR cannot be opened is a blind spot bounded
 // by what it could reach (contract §4): a ScopedReason whose Targets are the JAR's package, its
 // transitive dependency closure, first-party code ("") and first-party code's own dependency
@@ -30,21 +37,34 @@ import (
 // When the build has Gradle start scripts (runtimeclasspath.go), their classpath replaces the
 // inventory: it lists every JAR the JVM is launched with, transitive ones included, in launch
 // order. A classpath JAR that cannot be found or read has no known closure, so its scoped
-// reason is unbounded.
+// reason is unbounded. A dependency class that redefines a first-party class shadows it unless
+// the project's own JAR precedes it on the classpath.
 //
 // A dependency the inventory does not list at all is never silently trusted: depreach treats
 // any call into a class that is neither loaded nor platform as an unloaded_dependency hazard,
 // so reaching it makes the search undetermined.
 
 // partialReasonMissingJar is the scoped reason for an inventory node whose JAR is not in any
-// local cache (or whose version is unresolved, so no JAR can be located). Same string as
-// javaanalysis's maven_uncached_subtree: its subtree's code is unseen.
-const partialReasonMissingJar = plugin.PartialReasonRelationshipUnexpressed + ":maven_uncached_subtree"
+// local cache (or whose version is unresolved, so no JAR can be located): its code is unseen.
+// Distinct from the inventory's maven_uncached_subtree (a POM it could not read), so a missing
+// JAR is never disclosed as, or merged into, an unresolved graph.
+const partialReasonMissingJar = plugin.PartialReasonRelationshipUnexpressed + ":dependency_jar_uncached"
 
 // partialReasonDuplicateClass is the scoped reason for a dependency class whose binary name a
 // previously loaded JAR already defined. The engine keeps one body per name, so the shadowed
 // body's edges are unseen.
 const partialReasonDuplicateClass = plugin.PartialReasonRelationshipUnexpressed + ":duplicate_class"
+
+// partialReasonRuntimeVersionAmbiguous is the scoped reason for a dependency whose runtime
+// version cannot be selected: the Gradle lockfile locks it in runtimeClasspath at more than one
+// version, or at one that is not concrete.
+// Loading any one candidate could trace bytes that never run, so none is loaded.
+const partialReasonRuntimeVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":runtime_version_ambiguous"
+
+// partialReasonLaunchAgent is the run-wide reason for a start script whose DEFAULT_JVM_OPTS
+// load a Java agent or extend the boot classpath: code outside the classpath runs, and an agent
+// can rewrite any loaded class.
+const partialReasonLaunchAgent = plugin.PartialReasonRelationshipUnexpressed + ":launch_jvm_agent"
 
 // depClosure is the loaded dependency bytecode plus the scoped blind spots loading it incurred.
 type depClosure struct {
@@ -56,6 +76,11 @@ type depClosure struct {
 	// mainClasses are the launch main classes the start scripts name; empty when the
 	// closure came from the inventory.
 	mainClasses []string
+	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
+	// no empty search is Searched: the inventory's graph-level reasons that leave the version it
+	// names for a node unknown (an uncached BOM or parent, an unresolved property, an unevaluable
+	// profile), or a start script that launches the JVM with an agent or a boot classpath.
+	reasons []string
 }
 
 // depNode is one distinct (group, artifact, version) from the inventory, with the inventory
@@ -83,12 +108,28 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 	g := newInventoryGraph(inv)
 	program := g.programClosure()
 	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
-	dc := &depClosure{loaded: map[string]string{}}
+	dc := &depClosure{loaded: map[string]string{}, reasons: versionSelectionReasons(inv)}
+
+	var locks *runtimeLocks
+	if fromLockfile(inv) {
+		if rl, ok := readRuntimeLocks(buildDir); ok {
+			locks = &rl
+		}
+	}
+	load, misses := g.runtimeSelection(locks)
+	for _, m := range misses {
+		dc.scoped = append(dc.scoped, plugin.ScopedReason{
+			Reason:  partialReasonRuntimeVersionAmbiguous,
+			Package: m.node.packageURL(),
+			Path:    m.detail,
+			Targets: targets(m.node),
+		})
+	}
 
 	definedBy := map[string]depNode{} // class binary name -> the dependency that defined it
 	shadowed := map[string]bool{}     // "<kept gav>|<shadowed gav>" pairs already reported
 
-	for _, n := range g.distinctNodes() {
+	for _, n := range load {
 		jarPath, ok := "", false
 		if n.version != "" {
 			jarPath, ok = LocateDependencyJar(buildDir, n.coordinate(), n.version)
@@ -148,15 +189,31 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 }
 
 // loadRuntimeClasspath loads the start-script classpath. On an ordered classpath a class
-// already defined by an earlier JAR (or by first-party output) is skipped silently: the JVM
-// loads the first definition, so the later copy never runs. On an unordered union of
-// differing classpaths that is unknown, and the duplicate is a scoped reason.
+// already defined by an earlier JAR is skipped silently: the JVM loads the first definition, so
+// the later copy never runs. On an unordered union of differing classpaths that is unknown, and
+// the duplicate is a scoped reason. The engine keeps first-party output's copy of a class; a
+// dependency JAR defining the same name is silent only when the project JAR precedes it on an
+// ordered classpath, and otherwise a scoped duplicate_class (the dependency's copy may be the
+// one that runs).
 func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[string]bool) *depClosure {
 	index := gradleCacheIndex(buildDir)
 	dc := &depClosure{loaded: map[string]string{}, mainClasses: rc.mainClasses}
+	if len(rc.launchAgents) > 0 {
+		dc.reasons = append(dc.reasons, partialReasonLaunchAgent)
+	}
+	projectJars := map[string]bool{}
+	for _, name := range rc.entries {
+		if fileExists(filepath.Join(buildDir, firstPartyJarDir, name)) {
+			projectJars[name] = true
+		}
+	}
+	projectSeen := false // a project JAR precedes the current entry
 	definedBy := map[string]string{}
 	shadowed := map[string]bool{}
 	for _, name := range rc.entries {
+		if projectJars[name] {
+			projectSeen = true
+		}
 		jar, ok := locateClasspathJar(buildDir, rc, index, name)
 		if !ok {
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: partialReasonMissingJar, Package: cacheOnlyPackage(index[name]), Path: "classpath: " + name})
@@ -174,6 +231,14 @@ func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[s
 		dc.loaded[name] = jar.path
 		for _, c := range jr.Classes {
 			if firstParty[c.Name] {
+				if !projectJars[name] && !(rc.ordered && projectSeen) && !shadowed["|"+name] {
+					shadowed["|"+name] = true
+					dc.scoped = append(dc.scoped, plugin.ScopedReason{
+						Reason:  partialReasonDuplicateClass,
+						Package: pkg,
+						Path:    fmt.Sprintf("classpath: %s may shadow first-party %s", name, c.Name),
+					})
+				}
 				continue
 			}
 			if prev, dup := definedBy[c.Name]; dup {
@@ -264,9 +329,76 @@ func newInventoryGraph(inv plugin.DependencyInventory) *inventoryGraph {
 	return g
 }
 
-// distinctNodes returns one entry per distinct group:artifact:version, sorted, so the load
-// order (and therefore which JAR wins a duplicate class) is deterministic.
-func (g *inventoryGraph) distinctNodes() []depNode { return g.nodes }
+// versionMiss is a dependency whose runtime version could not be selected: node carries every
+// inventory node ID of the group:artifact and no version; detail names what the lockfile locks.
+type versionMiss struct {
+	node   depNode
+	detail string
+}
+
+// runtimeSelection returns the dependencies whose JARs the closure loads, in inventory order.
+// Without a lockfile (locks nil) that is every inventory node. With one, a locked coordinate
+// loads the single concrete version runtimeClasspath locks, whichever version the inventory node
+// names; one locked only in other configurations (kapt, annotationProcessor, ksp, test) is not on
+// the runtime classpath and is not loaded, so a call into it stays an unloaded_dependency hazard;
+// one runtimeClasspath locks at more than one version, or at one that is not concrete, is a miss
+// and loads nothing. A coordinate the lockfile does not lock loads the inventory's version.
+func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, misses []versionMiss) {
+	if locks == nil {
+		return g.nodes, nil
+	}
+	merged := map[string]*depNode{}
+	var locked []string
+	for _, n := range g.nodes {
+		c := n.coordinate()
+		if !locks.locked[c] {
+			load = append(load, n)
+			continue
+		}
+		if m, ok := merged[c]; ok {
+			m.ids = append(m.ids, n.ids...)
+			continue
+		}
+		merged[c] = &depNode{group: n.group, artifact: n.artifact, ids: append([]string(nil), n.ids...)}
+		locked = append(locked, c)
+	}
+	sort.Strings(locked)
+	for _, c := range locked {
+		m := *merged[c]
+		version, detail, onRuntime := locks.selection(c)
+		switch {
+		case !onRuntime:
+		case version == "":
+			misses = append(misses, versionMiss{node: m, detail: detail})
+		default:
+			m.version = version
+			load = append(load, m)
+		}
+	}
+	return load, misses
+}
+
+// versionSelectionReasons returns the inventory's graph-level reasons under which a node's
+// version may not be the one the build selects.
+func versionSelectionReasons(inv plugin.DependencyInventory) []string {
+	var out []string
+	for _, r := range inv.Partiality.Reasons {
+		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) || strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// fromLockfile reports whether the inventory's node set came from a Gradle lockfile.
+func fromLockfile(inv plugin.DependencyInventory) bool {
+	for _, n := range inv.Nodes {
+		if n.Provenance.Resolver == "gradle-lockfile" {
+			return true
+		}
+	}
+	return false
+}
 
 // targets returns the packages (PURL without version) any code in n could reach: n itself and
 // its transitive dependency closure. It is nil (unbounded) when some node in that closure has
@@ -309,7 +441,7 @@ func (g *inventoryGraph) programClosure() []string {
 		return nil
 	}
 	for _, n := range g.byID {
-		// A node distinctNodes skipped (not a Maven package) has an unknown closure.
+		// A node newInventoryGraph skipped (not a Maven package) has an unknown closure.
 		if _, _, _, ok := splitMavenNodePURL(n.PURL); !ok {
 			return nil
 		}

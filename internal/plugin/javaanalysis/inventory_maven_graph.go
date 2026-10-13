@@ -103,6 +103,11 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		}
 
 		version := strings.TrimSpace(it.dep.Version)
+		if mv, ok := em.managed[ga]; ok && it.depth > 0 {
+			// The module's dependencyManagement (imported BOMs included) overrides the version a
+			// transitive POM declares; only a direct declaration's own version beats it.
+			version = strings.TrimSpace(mv)
+		}
 		purl := mavenPURL(it.dep.GroupID, it.dep.ArtifactID, version)
 		nodeID := moduleRel + "|" + it.scope + "|" + purl
 		selected[ga] = nodeID

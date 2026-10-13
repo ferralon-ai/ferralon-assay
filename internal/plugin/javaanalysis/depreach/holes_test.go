@@ -148,7 +148,11 @@ func TestReach_ProviderRoots(t *testing.T) {
 		{
 			name: "no JDK body on the frontier: no roots",
 			classes: []classfile.Class{
-				mainCalls(),
+				func() classfile.Class {
+					m := mainCalls(edge(classfile.EdgeStatic, holeMain, "helper", "()V"))
+					m.Methods = append(m.Methods, classfile.Method{Ref: mref(holeMain, "helper", "()V"), Static: true})
+					return m
+				}(),
 				{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
 					callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
 				}},
@@ -368,6 +372,14 @@ func TestReach_PlatformBodyOnThis(t *testing.T) {
 			classes: []classfile.Class{
 				mainCalls(edge(classfile.EdgeVirtual, l, "hashCode", "()I")),
 				{Name: l, Super: "java/util/ArrayList", Methods: []classfile.Method{emptyFinalize(l)}},
+			},
+			want: Undetermined, kind: HazardKindReentry, why: "runs on " + l,
+		},
+		{
+			name: "ArrayList subclass declaring nothing: hashCode still calls held elements",
+			classes: []classfile.Class{
+				mainCalls(edge(classfile.EdgeVirtual, l, "hashCode", "()I")),
+				{Name: l, Super: "java/util/ArrayList"},
 			},
 			want: Undetermined, kind: HazardKindReentry, why: "runs on " + l,
 		},

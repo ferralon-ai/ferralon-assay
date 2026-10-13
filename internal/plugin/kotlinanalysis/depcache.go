@@ -35,24 +35,23 @@ func splitCoordinate(coordinate string) (group, artifact string, ok bool) {
 	return group, artifact, true
 }
 
-// LocateDependencyJar searches the build's local caches — Gradle first (the Kotlin common
-// case), then Maven `.m2` — for the artifact's JAR at exactly this version. ok is false when
-// the JAR is absent from every cache (the caller declares a hazard, it does not fetch), when
-// the coordinate/version is malformed, or when the cache holds copies of it whose bytes
-// differ: the bytes the build used are then unknown, and analysing either copy could trace
-// code that never ran.
+// LocateDependencyJar searches the build's local caches — Gradle (the Kotlin common case) and
+// Maven `.m2` — for the artifact's JAR at exactly this version. ok is false when the JAR is
+// absent from every cache (the caller declares a hazard, it does not fetch), when the
+// coordinate/version is malformed, or when the caches hold copies of it whose bytes differ, in
+// one cache or across both: the bytes the build used are then unknown, and analysing either
+// copy could trace code that never ran.
 func LocateDependencyJar(buildDir, coordinate, version string) (string, bool) {
 	group, artifact, ok := splitCoordinate(coordinate)
 	if !ok || version == "" {
 		return "", false
 	}
-	if hits := locateGradleJars(gradleCacheRoots(buildDir), group, artifact, version); len(hits) > 0 {
-		return hits[0], sameBytes(hits)
+	hits := locateGradleJars(gradleCacheRoots(buildDir), group, artifact, version)
+	hits = append(hits, locateMavenJars(mavenRepoRoots(buildDir), group, artifact, version)...)
+	if len(hits) == 0 {
+		return "", false
 	}
-	if hits := locateMavenJars(mavenRepoRoots(buildDir), group, artifact, version); len(hits) > 0 {
-		return hits[0], sameBytes(hits)
-	}
-	return "", false
+	return hits[0], sameBytes(hits)
 }
 
 // locateMavenJars resolves the Maven local-repository layout in every root:

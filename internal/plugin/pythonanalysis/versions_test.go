@@ -28,10 +28,8 @@ DeepDiff==8.0.1 --hash=sha256:abc123
 flask>=2.0            # a range, not a pin → UNRESOLVED
 smolagents==1.2.3 ; python_version >= "3.10"
 Pillow[extra]==9.0.0
--r other.txt
 git+https://github.com/x/y.git#egg=z
 `,
-		"other.txt": "idna==3.6\n",
 	})
 	res := resolveVersion(t, dir, "deepdiff")
 	if !res.Found || !res.Match.Resolved || res.Match.Version != "8.0.1" {
@@ -370,52 +368,42 @@ func TestResolveVersions_IndexURLOptionIgnored(t *testing.T) {
 	}
 }
 
-// A Pipfile declaration is an install surface: a range with no lock beside it can install
-// any version, so it vetoes another service's pin.
+// A Pipfile is not read, so one with packages vetoes another service's pin.
 func TestResolveVersions_PipfileRangeWithoutLockVetoesPin(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"svc-a/requirements.txt": "flask==2.3.0\n",
 		"svc-b/Pipfile":          "[packages]\nflask = \">=2.0\"\n",
 	})
-	for i := 0; i < resolveRuns; i++ {
-		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
-	}
+	mustVetoedPy(t, dir, "flask")
 }
 
-// A Pipfile range is resolved by the Pipfile.lock in its own directory.
-func TestResolveVersions_PipfileRangeBesideOwnLockResolves(t *testing.T) {
+// A Pipfile vetoes even beside its own Pipfile.lock: pipenv re-locks a stale lock, so the
+// lock is not proof of what the Pipfile installs.
+func TestResolveVersions_PipfileBesideOwnLockVetoes(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"Pipfile":      "[packages]\nflask = \">=2.0\"\n\n[dev-packages]\npytest = \"*\"\n",
 		"Pipfile.lock": `{"default": {"flask": {"version": "==2.3.0"}}, "develop": {"pytest": {"version": "==8.0.0"}}}`,
 	})
-	for i := 0; i < resolveRuns; i++ {
-		if r := resolveVersion(t, dir, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
-			t.Fatalf("Pipfile range + own Pipfile.lock want 2.3.0 resolved; got %+v", r.Match)
-		}
-	}
+	mustVetoedPy(t, dir, "flask")
+	mustVetoedPy(t, dir, "pytest")
 }
 
-// A [tool.poetry] range is resolved by the poetry.lock in its own directory, including a
-// group dependency.
-func TestResolveVersions_PoetryRangeBesideOwnLockResolves(t *testing.T) {
+// [tool.poetry] dependencies are not read, so they veto even beside their own poetry.lock,
+// group dependencies included.
+func TestResolveVersions_PoetryBesideOwnLockVetoes(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"pyproject.toml": "[tool.poetry]\nname = \"app\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\nflask = \"^2.0\"\n\n[tool.poetry.group.dev.dependencies]\npytest = {version = \">=8\"}\n",
 		"poetry.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n\n[[package]]\nname = \"pytest\"\nversion = \"8.0.0\"\n",
 	})
-	for i := 0; i < resolveRuns; i++ {
-		for coord, want := range map[string]string{"flask": "2.3.0", "pytest": "8.0.0"} {
-			if r := resolveVersion(t, dir, coord); !r.Match.Resolved || r.Match.Version != want {
-				t.Fatalf("%s: poetry range + own poetry.lock want %s resolved; got %+v", coord, want, r.Match)
-			}
-		}
-	}
+	mustVetoedPy(t, dir, "flask")
+	mustVetoedPy(t, dir, "pytest")
 }
 
-// A [tool.poetry] range with no lock beside it vetoes another service's pin, whether it is
-// a main or a group dependency.
+// [tool.poetry] main, dev and group dependencies each veto another service's pin.
 func TestResolveVersions_PoetryRangeWithoutLockVetoesPin(t *testing.T) {
 	for name, table := range map[string]string{
 		"main":  "[tool.poetry.dependencies]\nflask = \"^2.0\"\n",
+		"dev":   "[tool.poetry.dev-dependencies]\npytest = \"^8\"\n",
 		"group": "[tool.poetry.group.web.dependencies]\nflask = {version = \"^2.0\"}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -423,31 +411,37 @@ func TestResolveVersions_PoetryRangeWithoutLockVetoesPin(t *testing.T) {
 				"svc-a/requirements.txt": "flask==2.3.0\n",
 				"svc-b/pyproject.toml":   "[tool.poetry]\nname = \"b\"\n\n" + table,
 			})
-			for i := 0; i < resolveRuns; i++ {
-				mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
-			}
+			mustVetoedPy(t, dir, "flask")
 		})
 	}
 }
 
-// An exact Pipfile or Poetry pin is a pin like any other: it agrees with an equal pin and
-// conflicts with a different one.
+// An exact Pipfile or Poetry pin is not read either: equal to another service's pin, it
+// still vetoes.
 func TestResolveVersions_DeclaredExactPins(t *testing.T) {
-	agree := writeTree(t, map[string]string{
-		"svc-a/requirements.txt": "flask==2.3.0\n",
-		"svc-b/Pipfile":          "[packages]\nflask = \"==2.3.0\"\n",
-		"svc-c/pyproject.toml":   "[tool.poetry.dependencies]\nflask = \"2.3.0\"\n",
-	})
-	if r := resolveVersion(t, agree, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" {
-		t.Fatalf("equal exact pins want 2.3.0 resolved; got %+v", r.Match)
+	for name, file := range map[string]string{
+		"Pipfile":        "[packages]\nflask = \"==2.3.0\"\n",
+		"pyproject.toml": "[tool.poetry.dependencies]\nflask = \"2.3.0\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + name:          file,
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
 	}
-	conflict := writeTree(t, map[string]string{
+}
+
+// A Pipfile with no package category, and a [tool.poetry] that declares only the
+// interpreter, install nothing and do not veto.
+func TestResolveVersions_DeclarationsWithoutPackagesDoNotVeto(t *testing.T) {
+	dir := writeTree(t, map[string]string{
 		"svc-a/requirements.txt": "flask==2.3.0\n",
-		"svc-b/pyproject.toml":   "[tool.poetry.dependencies]\nflask = {version = \"==2.2.0\"}\n",
+		"svc-b/Pipfile":          "[[source]]\nurl = \"https://pypi.org/simple\"\nname = \"pypi\"\n\n[requires]\npython_version = \"3.11\"\n\n[packages]\n",
+		"svc-c/pyproject.toml":   "[tool.poetry]\nname = \"c\"\n\n[tool.poetry.dependencies]\npython = \"^3.11\"\n\n[tool.poetry.group.dev.dependencies]\n",
 	})
-	for i := 0; i < resolveRuns; i++ {
-		mustUnresolvedPy(t, resolveVersion(t, conflict, "flask"))
-	}
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
 }
 
 // mustVetoedPy asserts the parse-failure outcome: the found coordinate is unresolved, the
@@ -466,15 +460,26 @@ func mustVetoedPy(t *testing.T, dir, coordinate string) {
 	}
 }
 
-// A -r or -c include is read whatever the file is called, relative to the including file,
-// so a range or a different pin in it vetoes another service's pin.
+// mustResolvedCompletePy asserts the coordinate resolves to want and the result is complete.
+func mustResolvedCompletePy(t *testing.T, dir, coordinate, want string) {
+	t.Helper()
+	for i := 0; i < resolveRuns; i++ {
+		res := resolveVersion(t, dir, coordinate)
+		if !res.Match.Resolved || res.Match.Version != want || !res.Partiality.Complete {
+			t.Fatalf("want %s resolved and complete; got %+v %+v", want, res.Match, res.Partiality)
+		}
+	}
+}
+
+// A -r or -c include is not followed, so it vetoes whatever the included file is called
+// and whatever it holds.
 func TestResolveVersions_IncludeFollowedWhateverItsName(t *testing.T) {
 	for name, tc := range map[string]struct{ line, file, body string }{
 		"r-space":         {"-r deps/common.in\n", "deps/common.in", "flask>=2.0\n"},
 		"r-glued":         {"-rbase.txt\n", "base.txt", "flask>=2.0\n"},
 		"requirement-eq":  {"--requirement=../shared/base.pip\n", "../shared/base.pip", "flask>=2.0\n"},
-		"c-space":         {"-c constraints.txt\n", "constraints.txt", "flask==2.2.0\n"},
-		"constraint-long": {"--constraint pins/all.txt\n", "pins/all.txt", "flask==2.2.0\n"},
+		"c-space":         {"-c constraints.txt\n", "constraints.txt", "flask==2.3.0\n"},
+		"constraint-long": {"--constraint pins/all.txt\n", "pins/all.txt", "flask==2.3.0\n"},
 		"nested":          {"-r a.in\n", "a.in", "-r b.in\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -484,38 +489,25 @@ func TestResolveVersions_IncludeFollowedWhateverItsName(t *testing.T) {
 				"svc-b/" + tc.file:       tc.body,
 			}
 			if name == "nested" {
-				files["svc-b/b.in"] = "flask>=2.0\n"
+				files["svc-b/b.in"] = "flask==2.3.0\n"
 			}
 			dir := writeTree(t, files)
-			for i := 0; i < resolveRuns; i++ {
-				res := resolveVersion(t, dir, "flask")
-				mustUnresolvedPy(t, res)
-				if !res.Partiality.Complete {
-					t.Fatalf("a readable include must leave the result complete; got %+v", res.Partiality)
-				}
-			}
-			if r := resolveVersion(t, dir, "requests"); !r.Match.Resolved || r.Match.Version != "2.32.3" {
-				t.Fatalf("requests want 2.32.3 resolved; got %+v", r.Match)
-			}
+			mustVetoedPy(t, dir, "flask")
+			mustVetoedPy(t, dir, "requests")
 		})
 	}
 }
 
-// Includes that loop back are read once, and the pins they hold still resolve.
+// Includes that loop back veto like any other include, and resolution terminates.
 func TestResolveVersions_IncludeCycleTerminates(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"requirements.txt": "-r base.in\nflask==2.3.0\n",
 		"base.in":          "-r requirements.txt\n-r base.in\nrequests==2.32.3\n",
 	})
-	for coord, want := range map[string]string{"flask": "2.3.0", "requests": "2.32.3"} {
-		res := resolveVersion(t, dir, coord)
-		if !res.Match.Resolved || res.Match.Version != want || !res.Partiality.Complete {
-			t.Fatalf("%s want %s resolved and complete; got %+v %+v", coord, want, res.Match, res.Partiality)
-		}
-	}
+	mustVetoedPy(t, dir, "flask")
 }
 
-// An include that is a URL cannot be read here, so it takes the parse-failure path.
+// An include that is a URL vetoes.
 func TestResolveVersions_URLIncludeUnresolved(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"svc-a/requirements.txt": "flask==2.3.0\n",
@@ -524,8 +516,7 @@ func TestResolveVersions_URLIncludeUnresolved(t *testing.T) {
 	mustVetoedPy(t, dir, "flask")
 }
 
-// A local include that is missing, unreadable, or outside the build directory takes the
-// parse-failure path.
+// A local include that is missing, a directory, or outside the build directory vetoes.
 func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
 	for name, tc := range map[string]struct {
 		line  string
@@ -577,31 +568,191 @@ func TestResolveVersions_ProjectSelfInstallDoesNotVeto(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"svc/requirements.txt": "-e .\n.\n-e .[dev]\n./\n-e ../svc\nflask==2.3.0\n",
 	})
-	res := resolveVersion(t, dir, "flask")
-	if !res.Match.Resolved || res.Match.Version != "2.3.0" || !res.Partiality.Complete {
-		t.Fatalf("want 2.3.0 resolved and complete; got %+v %+v", res.Match, res.Partiality)
-	}
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
 }
 
-// The same holds for Pipfile and Poetry path dependencies.
+// Pipfile and Poetry path dependencies veto, the project's own path included, because
+// neither file is read. A [project] file: dependency on another directory vetoes; one on
+// the project's own directory does not.
 func TestResolveVersions_DeclaredLocalPathVetoes(t *testing.T) {
-	for name, file := range map[string]string{
-		"Pipfile":        "[packages]\nx = {path = \"./vendor/x\", editable = true}\n",
-		"pyproject.toml": "[tool.poetry.dependencies]\nx = {path = \"../lib/x\"}\n",
+	for name, tc := range map[string]struct{ file, body string }{
+		"Pipfile":      {"Pipfile", "[packages]\nx = {path = \"./vendor/x\", editable = true}\n"},
+		"Pipfile-self": {"Pipfile", "[packages]\napp = {path = \".\", editable = true}\n"},
+		"poetry":       {"pyproject.toml", "[tool.poetry.dependencies]\nx = {path = \"../lib/x\"}\n"},
+		"project-file": {"pyproject.toml", "[project]\nname = \"b\"\ndependencies = [\"x @ file:../lib/x\"]\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeTree(t, map[string]string{
 				"svc-a/requirements.txt": "flask==2.3.0\n",
-				"svc-b/" + name:          file,
+				"svc-b/" + tc.file:       tc.body,
 			})
 			mustVetoedPy(t, dir, "flask")
 		})
 	}
 	self := writeTree(t, map[string]string{
-		"Pipfile": "[packages]\napp = {path = \".\", editable = true}\nflask = \"==2.3.0\"\n",
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/pyproject.toml":   "[project]\nname = \"b\"\ndependencies = [\"b @ file:.\"]\n",
 	})
-	if r := resolveVersion(t, self, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" || !r.Partiality.Complete {
-		t.Fatalf("the project's own path must not veto; got %+v %+v", r.Match, r.Partiality)
+	mustResolvedCompletePy(t, self, "flask", "2.3.0")
+}
+
+// setup.py and setup.cfg that declare install_requires or extras_require, and a
+// hatch_build.py hook that sets dependencies, are not read, so they veto.
+func TestResolveVersions_SetupDeclarationsVeto(t *testing.T) {
+	for name, tc := range map[string]struct{ file, body string }{
+		"setup.py-install": {"setup.py", "from setuptools import setup\nsetup(name=\"b\", install_requires=[\"flask>=2\"])\n"},
+		"setup.py-extras":  {"setup.py", "from setuptools import setup\nsetup(name=\"b\", extras_require={\"web\": [\"flask\"]})\n"},
+		"setup.cfg":        {"setup.cfg", "[metadata]\nname = b\n\n[options]\ninstall_requires =\n    flask>=2\n"},
+		"hatch_build.py":   {"hatch_build.py", "from hatchling.metadata.plugin.interface import MetadataHookInterface\nclass H(MetadataHookInterface):\n    def update(self, metadata):\n        metadata[\"dependencies\"] = [\"flask\"]\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + tc.file:       tc.body,
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+}
+
+// setup files that declare no dependencies do not veto.
+func TestResolveVersions_SetupWithoutDeclarationsDoesNotVeto(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/setup.py":         "from setuptools import setup\nsetup(name=\"b\")\n",
+		"svc-b/setup.cfg":        "[metadata]\nname = b\n",
+		"svc-b/hatch_build.py":   "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\nclass H(BuildHookInterface):\n    pass\n",
+	})
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+}
+
+// A conda environment that installs a conda package or has a pip: section is not read, so
+// it vetoes.
+func TestResolveVersions_CondaEnvironmentVetoes(t *testing.T) {
+	for name, tc := range map[string]struct{ file, body string }{
+		"conda-package": {"environment.yml", "name: b\ndependencies:\n  - python=3.11\n  - conda-forge::flask>=2\n"},
+		"pip-section":   {"environment.yaml", "name: b\ndependencies:\n  - python=3.11\n  - pip\n  - pip:\n    - flask==2.3.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + tc.file:       tc.body,
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+}
+
+// A conda environment that installs only the interpreter and pip does not veto.
+func TestResolveVersions_CondaInterpreterOnlyDoesNotVeto(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/environment.yml":  "name: b\nchannels:\n  - conda-forge\ndependencies:\n  - python>=3.11\n  - conda-forge::pip\n",
+	})
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+}
+
+// A requirements file whose name does not start with "requirements", any .txt under a
+// requirements/ directory, and a pip-tools .in source are not read, so they veto, even when
+// the .in sits beside the .txt compiled from it.
+func TestResolveVersions_NonStandardRequirementsNameVetoes(t *testing.T) {
+	for name, file := range map[string]string{
+		"dev-prefix":       "dev-requirements.txt",
+		"underscore":       "test_requirements.txt",
+		"requirements-dir": "requirements/prod.txt",
+		"in-source":        "requirements.in",
+		"in-under-dir":     "requirements/base.in",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + file:          "flask>=2.0\n",
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+	beside := writeTree(t, map[string]string{
+		"requirements.in":  "flask>=2.0\n",
+		"requirements.txt": "flask==2.3.0\n",
+	})
+	mustVetoedPy(t, beside, "flask")
+}
+
+// A requirements-*.txt name is read, and a .txt elsewhere that is not a requirements file
+// is ignored.
+func TestResolveVersions_StandardRequirementsNamesRead(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements-dev.txt": "flask==2.3.0\n",
+		"docs/notes.txt":       "flask>=2.0\n",
+		"LICENSE.txt":          "MIT\n",
+	})
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+}
+
+// pyproject.toml tables other than [project].dependencies are not read, so each vetoes,
+// even beside a lock that pins the coordinate.
+func TestResolveVersions_PyprojectUnreadTablesVeto(t *testing.T) {
+	for name, table := range map[string]string{
+		"optional-dependencies": "[project]\nname = \"b\"\n\n[project.optional-dependencies]\nweb = [\"flask>=2\"]\n",
+		"dependency-groups":     "[project]\nname = \"b\"\n\n[dependency-groups]\ndev = [\"flask>=2\", {include-group = \"x\"}]\n",
+		"uv-dev":                "[project]\nname = \"b\"\n\n[tool.uv]\ndev-dependencies = [\"flask>=2\"]\n",
+		"pdm-dev":               "[project]\nname = \"b\"\n\n[tool.pdm.dev-dependencies]\ntest = [\"flask>=2\"]\n",
+		"dynamic-deps":          "[project]\nname = \"b\"\ndynamic = [\"version\", \"dependencies\"]\n\n[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
+		"dynamic-optional":      "[project]\nname = \"b\"\ndynamic = [\"optional-dependencies\"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/pyproject.toml":   table,
+				"svc-b/uv.lock":          "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+}
+
+// [project].dependencies is read, and a dynamic field that is not a dependency list does
+// not veto.
+func TestResolveVersions_PyprojectReadTablesDoNotVeto(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"a\"\ndynamic = [\"version\"]\ndependencies = [\"flask==2.3.0\"]\n\n[project.optional-dependencies]\n\n[tool.uv]\ndev-dependencies = []\n",
+	})
+	mustResolvedCompletePy(t, dir, "flask", "2.3.0")
+}
+
+// A same-directory lock covers a [project] range only when its pin satisfies the range;
+// a pin outside it is a stale lock, so the range still vetoes.
+func TestResolveVersions_StaleLockDoesNotCoverRange(t *testing.T) {
+	for lock, body := range map[string]string{
+		"uv.lock":     "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+		"pdm.lock":    "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+		"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+	} {
+		t.Run(lock, func(t *testing.T) {
+			stale := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"a\"\ndependencies = [\"flask>=2.0,<2.3\"]\n",
+				lock:             body,
+			})
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, stale, "flask"))
+			}
+			fresh := writeTree(t, map[string]string{
+				"pyproject.toml": "[project]\nname = \"a\"\ndependencies = [\"Flask[async] (>=2.0,<3) ; python_version >= '3.8'\"]\n",
+				lock:             body,
+			})
+			mustResolvedCompletePy(t, fresh, "flask", "2.3.0")
+		})
+	}
+}
+
+// A [project] direct reference is never covered by a lock beside it.
+func TestResolveVersions_DirectReferenceBesideOwnLockUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"pyproject.toml": "[project]\nname = \"a\"\ndependencies = [\"flask @ https://example.com/flask-2.3.0.tar.gz\"]\n",
+		"uv.lock":        "version = 1\n\n[[package]]\nname = \"flask\"\nversion = \"2.3.0\"\n",
+	})
+	for i := 0; i < resolveRuns; i++ {
+		mustUnresolvedPy(t, resolveVersion(t, dir, "flask"))
 	}
 }
 

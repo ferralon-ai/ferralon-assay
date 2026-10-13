@@ -15,8 +15,8 @@ import (
 
 // ResolveDependencyVersions reads the Python codebase's INSTALLED (pinned) dependency
 // versions from its manifests — requirements.txt (pip freeze / hashed pins), poetry.lock,
-// Pipfile.lock, pdm.lock, uv.lock, Pipfile, and pyproject.toml (PEP 621 [project] and
-// [tool.poetry]) — and returns the resolved version for the
+// Pipfile.lock, pdm.lock, uv.lock, and pyproject.toml (PEP 621 [project].dependencies) —
+// and returns the resolved version for the
 // advisory's requested coordinate (the PyPI project name). It is the cheap Assess-tier
 // input to the disqualification predicate, the Python mirror of jsanalysis /
 // javaanalysis ResolveDependencyVersions.
@@ -41,6 +41,11 @@ import (
 //     every Found Match is UNRESOLVED: the broken file may hold another copy of any
 //     coordinate, so the readable manifests cannot decide its version. A coordinate no
 //     readable manifest holds stays not found.
+//   - A file that declares dependencies where this does not read them (a Pipfile, a
+//     requirements include, setup.py/setup.cfg/hatch_build.py, a conda environment, a
+//     non-standard requirements file, or a pyproject.toml table other than
+//     [project].dependencies) is treated exactly like an unparseable manifest. See
+//     versions_declared.go.
 //
 // Several pinned versions of one project: Match is chosen by matchCoordinate, which never
 // picks one pin out of several distinct versions. See its doc comment for the rule.
@@ -57,19 +62,21 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := walkManifests(req.BuildDir, isVersionManifest)
-	root, err := filepath.EvalSymlinks(req.BuildDir)
-	if err != nil {
-		root = filepath.Clean(req.BuildDir)
-	}
-
 	var (
+		manifests   []string
 		all         []plugin.ResolvedDependency
 		origins     []manifestOrigin
 		parseFailed bool
 	)
+	for _, f := range walkManifests(req.BuildDir, isVersionCandidate) {
+		if isManifest(filepath.Base(f)) {
+			manifests = append(manifests, f)
+		} else if unreadSurfaceVetoes(f) {
+			parseFailed = true
+		}
+	}
 	for _, m := range manifests {
-		deps, o, ok := parseManifest(root, m)
+		deps, o, ok := parseManifest(m)
 		if !ok {
 			parseFailed = true
 		}
@@ -96,20 +103,18 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 // manifestOrigin records where an entry of All was read: its manifest's directory, the
 // lock it came from ("" when it is not a lock), and, for a declaration, the locks that
-// resolve it when they sit in the same directory.
+// resolve it when they sit in the same directory, with the specifier a lock's pin must
+// satisfy (spec) or whether the declaration is a direct reference no lock covers.
 type manifestOrigin struct {
-	dir      string
-	lock     string
-	lockedBy []string
+	dir       string
+	lock      string
+	lockedBy  []string
+	spec      string
+	directRef bool
 }
 
-// The locks that resolve each kind of declaration. Pipfile.lock locks only the Pipfile;
-// poetry.lock locks [tool.poetry] and [project]; pdm.lock and uv.lock lock [project].
-var (
-	projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
-	poetryLocks  = []string{"poetry.lock"}
-	pipfileLocks = []string{"Pipfile.lock"}
-)
+// projectLocks are the locks that resolve a [project].dependencies declaration.
+var projectLocks = []string{"poetry.lock", "pdm.lock", "uv.lock"}
 
 // originsFor repeats one origin for every entry of deps.
 func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOrigin {
@@ -133,28 +138,32 @@ func originsFor(deps []plugin.ResolvedDependency, o manifestOrigin) []manifestOr
 //     that install surface may hold any version;
 //   - no resolved entry: Match is the first entry, UNRESOLVED.
 //
-// One exception to the third case: an UNRESOLVED declaration does not veto when its own
-// lock in the SAME directory pins the coordinate: a pyproject.toml [project] range by
-// poetry.lock, pdm.lock or uv.lock; a [tool.poetry] range by poetry.lock; a Pipfile range
-// by Pipfile.lock. That lock is the project's own resolution of the declared range, so
-// both describe one environment. A range in any other manifest or directory, or beside a
-// lock of another tool, is a separate install surface and still vetoes.
+// One exception to the third case: a pyproject.toml [project] range does not veto when
+// poetry.lock, pdm.lock or uv.lock in the SAME directory pins the coordinate at a version
+// that satisfies the range. That lock is the project's own resolution of the declared
+// range, so both describe one environment. A pin outside the range is a stale lock, and a
+// direct reference ("name @ url") is never covered. A range in any other manifest or
+// directory, or beside a lock of another tool, is a separate install surface and still
+// vetoes.
 // Versions compare as exact strings: "2.3" and "2.3.0" read as distinct, which can only fail
 // open.
 func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, want string) (plugin.ResolvedDependency, bool) {
 	if want == "" {
 		return plugin.ResolvedDependency{}, false
 	}
-	lockPinned := make(map[[2]string]bool) // {dir, lock basename}
+	lockPins := make(map[[2]string][]string) // {dir, lock basename} → versions pinned
 	for i, d := range all {
 		if d.Resolved && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
-			lockPinned[[2]string{origins[i].dir, origins[i].lock}] = true
+			k := [2]string{origins[i].dir, origins[i].lock}
+			lockPins[k] = append(lockPins[k], d.Version)
 		}
 	}
 	lockedHere := func(o manifestOrigin) bool {
 		for _, l := range o.lockedBy {
-			if lockPinned[[2]string{o.dir, l}] {
-				return true
+			for _, v := range lockPins[[2]string{o.dir, l}] {
+				if lockPinSatisfies(o, v) {
+					return true
+				}
 			}
 		}
 		return false
@@ -194,16 +203,16 @@ func matchCoordinate(all []plugin.ResolvedDependency, origins []manifestOrigin, 
 // build-output / virtualenv / VCS trees so a vendored install does not shadow the
 // project's own top-level manifest.
 func manifestFiles(root string) []string {
-	return walkManifests(root, isManifest)
+	return walkManifests(root, func(path string) bool { return isManifest(filepath.Base(path)) })
 }
 
-// isVersionManifest is isManifest plus the declarations version resolution also reads: a
-// Pipfile is an install surface even without its lock.
-func isVersionManifest(name string) bool {
-	return isManifest(name) || name == "Pipfile"
+// isVersionCandidate is what version resolution walks: every manifest, plus every file
+// that may be an install surface it does not read.
+func isVersionCandidate(path string) bool {
+	return isManifest(filepath.Base(path)) || isUnreadSurfaceCandidate(path)
 }
 
-// walkManifests returns every file under root whose name satisfies match, skipping the
+// walkManifests returns every file under root whose path satisfies match, skipping the
 // same trees as manifestFiles.
 func walkManifests(root string, match func(string) bool) []string {
 	var out []string
@@ -217,7 +226,7 @@ func walkManifests(root string, match func(string) bool) []string {
 			}
 			return nil
 		}
-		if match(d.Name()) {
+		if match(path) {
 			out = append(out, path)
 		}
 		return nil
@@ -244,13 +253,8 @@ func isRequirementsName(name string) bool {
 // returns each entry's origin alongside it. The bool is false when the file cannot be
 // read or is structurally unparseable, or holds an install whose project cannot be known
 // (the caller degrades partiality and leaves every Found match unresolved).
-func parseManifest(root, path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
 	dir, base := filepath.Dir(path), filepath.Base(path)
-	if base != "Pipfile" && base != "pyproject.toml" && isRequirementsName(base) {
-		r := requirementsReader{root: root, seen: make(map[string]bool)}
-		deps, ok := r.read(path)
-		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, false
@@ -268,57 +272,21 @@ func parseManifest(root, path string) ([]plugin.ResolvedDependency, []manifestOr
 		deps, ok = parsePDMLockAdvisory(data)
 	case "uv.lock":
 		deps, ok = parseUVLockAdvisory(data)
-	case "Pipfile":
-		deps, ok = parsePipfile(data)
-		return deps, originsFor(deps, manifestOrigin{dir: dir, lockedBy: pipfileLocks}), ok
 	case "pyproject.toml":
-		project, okProject := parsePyproject(data)
-		poetry, okPoetry := parsePoetryDependencies(data)
-		origins := append(originsFor(project, manifestOrigin{dir: dir, lockedBy: projectLocks}),
-			originsFor(poetry, manifestOrigin{dir: dir, lockedBy: poetryLocks})...)
-		return append(project, poetry...), origins, okProject && okPoetry
-	default:
-		return nil, nil, false
+		return parsePyprojectVersions(data, dir)
+	default: // requirements*.txt
+		deps, ok = parseRequirementLines(data, dir)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
 	}
 	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
 
 // --- requirements.txt --------------------------------------------------------
 
-// parseRequirementsTxt parses requirements-file content with no file context: an include
-// cannot be followed and a relative path cannot be placed, so either makes it report false.
+// parseRequirementsTxt parses requirements-file content with no file context, so a relative
+// path cannot be placed and makes it report false.
 func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
-	return parseRequirementLines(data, "", nil)
-}
-
-// requirementsReader reads a requirements file and, recursively, the files it includes.
-type requirementsReader struct {
-	root string          // build root, symlinks resolved; nothing outside it is read
-	seen map[string]bool // files already read in this traversal, symlinks resolved
-}
-
-// read parses the requirements file at path and every local -r/-c file it includes. A
-// file that is missing, unreadable or outside the build root reports false. A file
-// already read in this traversal contributes nothing more, so an include cycle ends.
-func (r *requirementsReader) read(path string) ([]plugin.ResolvedDependency, bool) {
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil || !withinRoot(r.root, real) {
-		return nil, false
-	}
-	if r.seen[real] {
-		return nil, true
-	}
-	r.seen[real] = true
-	data, err := os.ReadFile(real)
-	if err != nil {
-		return nil, false
-	}
-	return parseRequirementLines(data, filepath.Dir(path), r)
-}
-
-func withinRoot(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return parseRequirementLines(data, "")
 }
 
 // parseRequirementLines parses a pip requirements file located in dir. Only an EXACT "=="
@@ -330,14 +298,12 @@ func withinRoot(root, path string) bool {
 // The file reports false, exactly as an unparseable one does, when it can install a
 // distribution whose name or version cannot be read here: a URL or VCS requirement that
 // names no project, a local path or file: install other than the project's own directory
-// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), or a -r/-c
-// include that is a URL or cannot be read. The caller then leaves every Found match
-// unresolved; the entries that were read are still returned. A local include is read
-// through inc, relative to dir, whatever its name; constraint pins are read as entries.
-// Other option lines are skipped. Continuation lines ("\") and hashed pins
+// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), or any -r/-c
+// include, which is not followed. The caller then leaves every Found match unresolved; the
+// entries that were read are still returned. Other option lines are skipped. Continuation lines ("\") and hashed pins
 // ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
 // comments ("#...") are stripped.
-func parseRequirementLines(data []byte, dir string, inc *requirementsReader) ([]plugin.ResolvedDependency, bool) {
+func parseRequirementLines(data []byte, dir string) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
 	readable := true
 	for _, req := range joinContinuations(string(data)) {
@@ -346,14 +312,8 @@ func parseRequirementLines(data []byte, dir string, inc *requirementsReader) ([]
 		if line == "" {
 			continue
 		}
-		if target, isInclude := includeTarget(line); isInclude {
-			if inc == nil || target == "" || strings.Contains(target, "://") {
-				readable = false
-				continue
-			}
-			deps, ok := inc.read(filepath.Join(dir, target))
-			out = append(out, deps...)
-			readable = readable && ok
+		if isInclude(line) {
+			readable = false
 			continue
 		}
 		target, editable := trimEditable(line)
@@ -400,20 +360,15 @@ func parseRequirementLines(data []byte, dir string, inc *requirementsReader) ([]
 	return out, readable
 }
 
-// includeTarget reports whether line is a -r/--requirement or -c/--constraint include and
-// returns the file it names ("-r base.txt", "-rbase.txt", "--requirement=base.txt").
-func includeTarget(line string) (string, bool) {
+// isInclude reports whether line is a -r/--requirement or -c/--constraint include
+// ("-r base.txt", "-rbase.txt", "--requirement=base.txt").
+func isInclude(line string) bool {
 	for _, flag := range []string{"--requirement", "--constraint"} {
 		if rest, ok := strings.CutPrefix(line, flag); ok && (rest == "" || rest[0] == '=' || rest[0] == ' ' || rest[0] == '\t') {
-			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
+			return true
 		}
 	}
-	for _, flag := range []string{"-r", "-c"} {
-		if rest, ok := strings.CutPrefix(line, flag); ok {
-			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
-		}
-	}
-	return "", false
+	return strings.HasPrefix(line, "-r") || strings.HasPrefix(line, "-c")
 }
 
 // fileURLPath reports whether a requirement installs from a file: URL, bare or as the

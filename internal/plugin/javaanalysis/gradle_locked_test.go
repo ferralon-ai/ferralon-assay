@@ -89,6 +89,10 @@ func TestGradleLockedVersions(t *testing.T) {
 			"build.gradle":          gradleLockingOn,
 			"libs/app/build.gradle": gradleLockingOn + gradleWidgetDecl, "libs/app/gradle.lockfile": gradleWidgetLock,
 		}, []string{"2.5"}, false},
+		{"entries beside a legacy lock directory", map[string]string{
+			"build.gradle": gradleLockingOn + gradleWidgetDecl, "gradle.lockfile": gradleWidgetLock,
+			"gradle/dependency-locks/runtimeClasspath.lockfile": "# a comment, so no line goes unparsed\n",
+		}, []string{"2.5"}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeTree(t, tt.files)

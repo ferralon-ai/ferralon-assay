@@ -110,6 +110,7 @@ const reportHTMLSource = `<!DOCTYPE html>
   .limit-list > li { padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
   .limit-why { display: block; margin-top: 7px; font-size: 13px; line-height: 1.55; }
   .limit-code { margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .limit-scope { margin-top: 4px; font-size: 11px; color: var(--muted); }
   .limit-advisories { list-style: none; padding: 0; margin: 9px 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .limit-advisories li { font-size: 12px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
   .callpath { margin-top: 6px; padding-left: 0; list-style: none; font-size: 12px; color: var(--muted); }
@@ -166,6 +167,9 @@ const reportHTMLSource = `<!DOCTYPE html>
         <span class="limit-why">{{.Label}}</span>
         {{- if .Ecosystem}}<span class="src">{{.Ecosystem}}</span>{{end}}
         <div class="limit-code mono">{{.Reason}}</div>
+        {{- if or .Package .Path}}
+        <div class="limit-scope mono">{{if .Package}}{{.Package}}{{end}}{{if and .Package .Path}} &middot; {{end}}{{if .Path}}{{.Path}}{{end}}</div>
+        {{- end}}
         {{- if .Advisories}}
         <ul class="limit-advisories">
           {{- range .Advisories}}

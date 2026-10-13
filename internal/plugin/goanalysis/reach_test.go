@@ -40,12 +40,12 @@ func TestParseFindings_FiltersByGovulnGoID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			findings, err := parseFindings([]byte(stream), tc.vulnID)
+			scanned, err := parseFindings([]byte(stream), tc.vulnID)
 			if err != nil {
 				t.Fatalf("parseFindings(%q) error: %v", tc.vulnID, err)
 			}
-			if len(findings) != tc.wantLen {
-				t.Errorf("parseFindings(%q): got %d finding(s), want %d", tc.vulnID, len(findings), tc.wantLen)
+			if len(scanned.findings) != tc.wantLen {
+				t.Errorf("parseFindings(%q): got %d finding(s), want %d", tc.vulnID, len(scanned.findings), tc.wantLen)
 			}
 		})
 	}

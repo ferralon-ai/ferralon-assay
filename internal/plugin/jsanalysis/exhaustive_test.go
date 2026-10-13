@@ -107,6 +107,7 @@ func TestResolveVersions_Exhaustive(t *testing.T) {
 		{"B6 tsconfig is not a manifest", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "tsconfig.json": `{"compilerOptions":{"strict":true}}`}, true},
 		{"B6 NuGet packages.lock.json is not a manifest", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "svc/packages.lock.json": `{"version":1,"dependencies":{"net8.0":{"Serilog":{"type":"Direct","resolved":"3.1.1"}}}}`}, true},
 		{"B6 Python lock is not a JS candidate", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "uv.lock": "version = 1\n"}, true},
+		{"B6 workspace and registry config without a lock", map[string]string{"package.json": exPkgJSON, "pnpm-workspace.yaml": "packages:\n  - tools\n", ".yarnrc.yml": "nodeLinker: node-modules\n", ".npmrc": "registry=https://registry.example.com/\n", ".pnpmfile.cjs": "module.exports = {hooks: {}}\n"}, false},
 		{"B6 manifest quoted in docs", map[string]string{"package.json": exPkgJSON, "package-lock.json": exLockV3, "docs/setup.md": `{"dependencies":{"absent-package":"^2"}}`}, true},
 	}
 	for _, tt := range tests {

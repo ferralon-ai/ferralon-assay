@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -177,7 +179,7 @@ func declaredDependencies(root string) []plugin.ResolvedDependency {
 			if json.Unmarshal(raw, &deps) != nil {
 				continue
 			}
-			for name := range deps {
+			for _, name := range slices.Sorted(maps.Keys(deps)) {
 				key := normalizeNPMCoordinate(name)
 				if key == "" {
 					continue
@@ -315,6 +317,7 @@ type packageLockDep struct {
 // parsePackageLock parses package-lock.json (v1/v2/v3). v2/v3's "packages" map is
 // preferred when present (it is the authoritative resolved tree); v1's "dependencies"
 // map is the fallback. A package whose version is empty is UNRESOLVED, never guessed.
+// Every map is walked in sorted key order so All is identical across runs.
 func parsePackageLock(data []byte) (lockInfo, bool) {
 	var pl packageLock
 	if err := json.Unmarshal(data, &pl); err != nil {
@@ -323,7 +326,8 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 
 	if len(pl.Packages) > 0 {
 		info := newLockInfo(lockNPM)
-		for installPath, pkg := range pl.Packages {
+		for _, installPath := range slices.Sorted(maps.Keys(pl.Packages)) {
+			pkg := pl.Packages[installPath]
 			if !strings.Contains(installPath, "node_modules/") {
 				// The root ("") and each workspace folder are projects: record the specs npm
 				// locked them against.
@@ -357,8 +361,8 @@ func parsePackageLock(data []byte) (lockInfo, bool) {
 	}
 
 	info := newLockInfo(lockNPMv1)
-	for name, dep := range pl.Dependencies {
-		collectV1(name, dep, &info)
+	for _, name := range slices.Sorted(maps.Keys(pl.Dependencies)) {
+		collectV1(name, pl.Dependencies[name], &info)
 	}
 	return info, true
 }
@@ -390,8 +394,8 @@ func collectV1(key string, dep packageLockDep, info *lockInfo) {
 		info.opaque = true
 	}
 	info.add(name, version)
-	for child, c := range dep.Dependencies {
-		collectV1(child, c, info)
+	for _, child := range slices.Sorted(maps.Keys(dep.Dependencies)) {
+		collectV1(child, dep.Dependencies[child], info)
 	}
 }
 

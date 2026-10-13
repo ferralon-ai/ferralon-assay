@@ -3,6 +3,8 @@ package jsanalysis
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -166,6 +168,54 @@ func TestResolveVersions_DevLockedPackagePresent(t *testing.T) {
 			r := resolveJS(t, writeLockTree(t, map[string]string{"package.json": `{"name":"app"}`, "package-lock.json": devLock}), tt.coord)
 			if !r.Found || r.Match.Version != tt.version {
 				t.Fatalf("%s not reported present: found=%v match=%+v", tt.coord, r.Found, r.Match)
+			}
+		})
+	}
+}
+
+// Lockfile maps are walked in sorted key order, so All and Match are identical across runs. Go
+// randomizes map iteration, so an unsorted walk fails this within a few of the 64 runs.
+func TestResolveVersions_LockWalkOrderDeterministic(t *testing.T) {
+	tests := []struct {
+		name, lock string
+		want       []string
+	}{
+		{
+			"package-lock v3 packages",
+			`{"lockfileVersion":3,"packages":{"":{},"node_modules/zeta":{"version":"1.0.0"},"node_modules/qs":{"version":"6.5.0"},"node_modules/alpha":{"version":"1.0.0"},"node_modules/alpha/node_modules/qs":{"version":"6.11.0"},"node_modules/mid":{"version":"2.0.0"}}}`,
+			[]string{"alpha@1.0.0", "qs@6.11.0", "mid@2.0.0", "qs@6.5.0", "zeta@1.0.0"},
+		},
+		{
+			"package-lock v1 dependencies and children",
+			`{"lockfileVersion":1,"dependencies":{"zeta":{"version":"1.0.0"},"qs":{"version":"6.5.0"},"alpha":{"version":"1.0.0","dependencies":{"qs":{"version":"6.11.0"},"beta":{"version":"3.0.0"},"gamma":{"version":"4.0.0"}}}}}`,
+			[]string{"alpha@1.0.0", "beta@3.0.0", "gamma@4.0.0", "qs@6.11.0", "qs@6.5.0", "zeta@1.0.0"},
+		},
+		{
+			"declared seed without a lockfile",
+			"",
+			[]string{"alpha@", "beta@", "mid@", "qs@", "zeta@"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"package.json": `{"name":"app"}`, "package-lock.json": tt.lock}
+			if tt.lock == "" {
+				files = map[string]string{"package.json": `{"name":"app","dependencies":{"zeta":"^1","qs":"^6","alpha":"^1","mid":"^2","beta":"^3"}}`}
+			}
+			dir := writeLockTree(t, files)
+			first := resolveJS(t, dir, "qs").Match
+			for i := 0; i < 64; i++ {
+				r := resolveJS(t, dir, "qs")
+				got := make([]string, 0, len(r.All))
+				for _, d := range r.All {
+					got = append(got, d.Coordinate+"@"+d.Version)
+				}
+				if !slices.Equal(got, tt.want) {
+					t.Fatalf("run %d: All = %v, want %v", i, got, tt.want)
+				}
+				if !reflect.DeepEqual(r.Match, first) {
+					t.Fatalf("run %d: Match = %+v, first run %+v", i, r.Match, first)
+				}
 			}
 		})
 	}

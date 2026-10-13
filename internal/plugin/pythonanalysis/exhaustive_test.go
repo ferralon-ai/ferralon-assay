@@ -3,6 +3,8 @@ package pythonanalysis
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -112,5 +114,28 @@ func TestResolveVersions_ExhaustiveSymlinkedDir(t *testing.T) {
 	}
 	if r := resolveVersion(t, root, "PyJWT"); r.Exhaustive {
 		t.Fatalf("Exhaustive with a symlinked directory")
+	}
+}
+
+// Pipfile.lock sections are walked in sorted key order, so All and Match are identical across
+// runs. Go randomizes map iteration, so an unsorted walk fails this within a few of the 64 runs.
+func TestResolveVersions_PipfileLockWalkOrderDeterministic(t *testing.T) {
+	const lock = `{"default": {"zeta": {"version": "==1.0.0"}, "requests": {"version": "==2.31.0"}, "alpha": {"version": "==1.0.0"}, "mid": {"version": "==2.0.0"}},
+"develop": {"requests": {"version": "==2.32.3"}, "beta": {"version": "==3.0.0"}, "gamma": {"version": "==4.0.0"}}}`
+	want := []string{"alpha@1.0.0", "mid@2.0.0", "requests@2.31.0", "zeta@1.0.0", "beta@3.0.0", "gamma@4.0.0", "requests@2.32.3"}
+	dir := writeTree(t, map[string]string{"Pipfile.lock": lock})
+	first := resolveVersion(t, dir, "requests").Match
+	for i := 0; i < 64; i++ {
+		r := resolveVersion(t, dir, "requests")
+		got := make([]string, 0, len(r.All))
+		for _, d := range r.All {
+			got = append(got, d.Coordinate+"@"+d.Version)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: All = %v, want %v", i, got, want)
+		}
+		if !reflect.DeepEqual(r.Match, first) {
+			t.Fatalf("run %d: Match = %+v, first run %+v", i, r.Match, first)
+		}
 	}
 }

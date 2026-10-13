@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -383,6 +385,7 @@ type pipfileEntry struct {
 
 // parsePipfileLock parses Pipfile.lock. Pipenv pins every dependency with an exact
 // "==X.Y.Z" version, so a present version field resolves; a missing one is UNRESOLVED.
+// Each section is walked in sorted key order so All is identical across runs.
 func parsePipfileLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	var pl pipfileLock
 	if err := json.Unmarshal(data, &pl); err != nil {
@@ -390,7 +393,8 @@ func parsePipfileLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 	}
 	var out []plugin.ResolvedDependency
 	collect := func(m map[string]pipfileEntry) {
-		for name, e := range m {
+		for _, name := range slices.Sorted(maps.Keys(m)) {
+			e := m[name]
 			ver := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(e.Version), "=="))
 			out = append(out, pyResolved(name, ver, ver != "" && !strings.Contains(ver, "*"), "Pipfile.lock"))
 		}

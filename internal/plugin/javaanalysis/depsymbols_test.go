@@ -446,6 +446,32 @@ func TestResolveDependencySymbols_UnreadableJarIsScopedToolFailure(t *testing.T)
 	}
 }
 
+// A Gradle lockfile that locks the coordinate at two versions (one per configuration) keeps
+// both: each version's JAR is looked up, and one missing from every cache is reported.
+func TestResolveDependencySymbols_GradleLockTwoVersions(t *testing.T) {
+	build := t.TempDir()
+	writeFile(t, filepath.Join(build, "build.gradle"), "dependencies { implementation 'com.evil:netkit:1.0.0' }\n")
+	writeFile(t, filepath.Join(build, "src", "main", "java", "A.java"), "class A{}")
+	writeFile(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath\ncom.evil:netkit:2.0.0=runtimeClasspath\nempty=\n")
+	b := &cpb{}
+	writeJar(t, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b", "netkit-1.0.0.jar"),
+		"com/evil/netkit/UrlFetcher.class", emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
+
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+	if res.Partiality.Complete {
+		t.Fatalf("2.0.0's JAR is in no cache, yet the result is complete: %+v", res)
+	}
+	var paths []string
+	for _, sr := range res.Partiality.Scoped {
+		if sr.Reason == reasonNoDependencyArtifact && sr.Package == netkitPURL {
+			paths = append(paths, sr.Path)
+		}
+	}
+	if !reflect.DeepEqual(paths, []string{"com.evil:netkit:2.0.0"}) {
+		t.Errorf("scoped %s paths = %v, want [com.evil:netkit:2.0.0]", reasonNoDependencyArtifact, paths)
+	}
+}
+
 // A symbol short of the full binary name resolves nothing, even when the JAR holds exactly
 // one method it could mean: the JAR can also hold a lookalike, and a partial form cannot tell
 // the two apart. The miss is reported, so the advisory is never cleared on it.

@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -114,5 +115,87 @@ org.a:a:1.0=runtimeClasspath`)
 			t.Fatalf("non-deterministic gradle output:\n%s\n%s", prev, b)
 		}
 		prev = string(b)
+	}
+}
+
+// A group:artifact locked at two versions keeps a node for each, and the declared edge reaches
+// both: either copy can be the code that runs.
+func TestGradle_LockfileKeepsEveryVersion(t *testing.T) {
+	dir := t.TempDir()
+	cacheRoot := t.TempDir()
+	writeFile(t, filepath.Join(dir, "build.gradle"), "dependencies {\n    implementation 'org.top:top:1.0'\n}\n")
+	writeFile(t, filepath.Join(dir, "gradle.lockfile"), `org.top:top:1.0=compileClasspath,runtimeClasspath
+org.leaf:leaf:1.0=compileClasspath
+org.leaf:leaf:2.0=runtimeClasspath`)
+	writeGradleCachePOM(t, cacheRoot, "org.top", "top", "1.0", `<project><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.leaf</groupId><artifactId>leaf</artifactId><version>1.0</version></dependency></dependencies></project>`)
+
+	inv := toJSON(t, resolveGradle(dir, newGradleCache(cacheRoot)))
+	top := findNode(t, inv, "pkg:maven/org.top/top@1.0")
+	if top == nil {
+		t.Fatalf("top missing; got %+v", inv.Nodes)
+	}
+	for _, purl := range []string{"pkg:maven/org.leaf/leaf@1.0", "pkg:maven/org.leaf/leaf@2.0"} {
+		n := findNode(t, inv, purl)
+		if n == nil {
+			t.Errorf("locked %s dropped; got %+v", purl, inv.Nodes)
+			continue
+		}
+		edge := false
+		for _, e := range inv.Edges {
+			if e.Parent == top.ID && e.Child == n.ID {
+				edge = true
+			}
+		}
+		if !edge {
+			t.Errorf("no edge top -> %s; got %+v", purl, inv.Edges)
+		}
+	}
+}
+
+// A lock line that isn't a coordinate may lock one, so the node set isn't known in full.
+func TestGradle_UnparsedLockLineIsReasoned(t *testing.T) {
+	for _, tc := range []struct {
+		name, lock string
+		want       bool
+	}{
+		{"parsed", "# c\norg.top:top:1.0=runtimeClasspath\nempty=\n", false},
+		{"no configurations", "org.top:top:1.0=runtimeClasspath\norg.x:x:3.0\n", true},
+		{"two-part coordinate", "org.top:top:1.0=runtimeClasspath\norg.x:3.0=runtimeClasspath\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cacheRoot := t.TempDir()
+			writeFile(t, filepath.Join(dir, "build.gradle"), "dependencies {\n    implementation 'org.top:top:1.0'\n}\n")
+			writeFile(t, filepath.Join(dir, "gradle.lockfile"), tc.lock)
+			writeGradleCachePOM(t, cacheRoot, "org.top", "top", "1.0", `<project><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version></project>`)
+			inv := toJSON(t, resolveGradle(dir, newGradleCache(cacheRoot)))
+			if got := hasStr(inv.Partiality.Reasons, reasonGradleLockUnparsed); got != tc.want {
+				t.Errorf("gradle_lockfile_unparsed = %v, want %v; partiality %+v", got, tc.want, inv.Partiality)
+			}
+			if tc.want && inv.Partiality.Complete {
+				t.Error("graph with an unparsed lock line must not be Complete")
+			}
+		})
+	}
+}
+
+// A lockfile that can't be read may lock anything.
+func TestGradle_UnreadableLockfileIsReasoned(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-0 file")
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "build.gradle"), "dependencies {\n    implementation 'org.top:top:1.0'\n}\n")
+	writeFile(t, filepath.Join(dir, "gradle.lockfile"), "org.top:top:1.0=runtimeClasspath\n")
+	writeFile(t, filepath.Join(dir, "sub", "gradle.lockfile"), "org.x:x:1.0=runtimeClasspath\n")
+	lock := filepath.Join(dir, "sub", "gradle.lockfile")
+	if err := os.Chmod(lock, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lock, 0o644) })
+	inv := toJSON(t, resolveGradle(dir, newGradleCache(t.TempDir())))
+	if !hasStr(inv.Partiality.Reasons, reasonGradleLockUnparsed) {
+		t.Errorf("unreadable lockfile must give gradle_lockfile_unparsed; partiality %+v", inv.Partiality)
 	}
 }

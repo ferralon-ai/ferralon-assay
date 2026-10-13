@@ -79,16 +79,41 @@ type bfsItem struct {
 // back as scoped reasons, each also in the run-wide reasons.
 func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string, []plugin.ScopedReason) {
 	em := buildEffectiveModel(pom, reactor, cache, targetEnv, 0)
-	reasons := append([]string{}, em.residue...)
-	scoped := profileScoped(em, "", em.managed, reactor, cache, targetEnv)
 	// A transitive dependency an undecided profile of the module could manage or declare at
 	// another version resolves to that version whenever the profile is on.
 	alt := reversions(em)
+	// What an undecided profile adds, re-declares, manages or excludes, here or in any POM the
+	// graph reads, moves Maven's nearest-wins mediation everywhere below the module's direct
+	// dependencies: a nearer declaration can win, or an excluded one can hand the GA to another
+	// path. So no transitive version stands, and a graph that meets such a profile only after
+	// emitting nodes is built again with every transitive withheld.
+	alt.anyVersion = alt.anyVersion || mediationShifts(em)
+	nodes, edges, reasons, scoped, shifted := resolveModuleGraph(pom, em, alt, moduleRel, reactor, cache, targetEnv)
+	if shifted && !alt.anyVersion {
+		alt.anyVersion = true
+		nodes, edges, reasons, scoped, _ = resolveModuleGraph(pom, em, alt, moduleRel, reactor, cache, targetEnv)
+	}
+	return nodes, edges, reasons, withFirstPartyBound(scoped, em, reactor, cache, targetEnv)
+}
+
+// mediationShifts reports whether some undecided profile of em touches the dependency graph:
+// it declares, re-declares or manages a dependency (touched), or what it changes is unknown.
+func mediationShifts(em effectiveModel) bool {
+	for _, u := range em.undecided {
+		if u.anyVersion || len(u.touched) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveModuleGraph is one BFS over a module's graph under alt. shifted is true when a cached
+// POM it reads has an undecided profile that touches the graph (mediationShifts).
+func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) (nodes []plugin.DependencyNode, edges []plugin.DependencyEdge, reasons []string, scoped []plugin.ScopedReason, shifted bool) {
+	reasons = append([]string{}, em.residue...)
+	scoped = profileScoped(em, "", em.managed, reactor, cache, targetEnv)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
-	var nodes []plugin.DependencyNode
-	var edges []plugin.DependencyEdge
-
 	// Seed the queue with the module's direct dependencies, in declaration order.
 	var queue []bfsItem
 	for _, d := range em.deps {
@@ -168,6 +193,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 				reasons = mergeReasons(reasons, reasonMavenUncachedSubtree)
 			} else {
 				childEM := buildEffectiveModel(child, reactor, cache, targetEnv, 1)
+				shifted = shifted || mediationShifts(childEM)
 				reasons = mergeReasons(reasons, childEM.residue...)
 				scoped = append(scoped, profileScoped(childEM, mavenPackage(it.dep.GroupID, it.dep.ArtifactID), em.managed, reactor, cache, targetEnv)...)
 				childExcl := unionExclusions(it.exclusions, it.dep.Exclusions)
@@ -190,7 +216,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		nodes = append(nodes, node)
 	}
 
-	return nodes, edges, reasons, withFirstPartyBound(scoped, em, reactor, cache, targetEnv)
+	return nodes, edges, reasons, scoped, shifted
 }
 
 func unionExclusions(base map[string]bool, add []mvnGA) map[string]bool {

@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -336,6 +337,8 @@ func TestMavenProfile_PropertiesMakeAProfileUnbounded(t *testing.T) {
 
 // What an undecided profile's imported BOM manages is read from the cache: a transitive it
 // manages to another version is unresolved. A BOM that can't be read unresolves every transitive.
+// A BOM managing the transitive to the version it already has unresolves it too: a managed entry
+// applies to every occurrence in the tree, so it can move mediation, and every transitive is withheld.
 func TestMavenProfile_ProfileBOMReversionsTransitives(t *testing.T) {
 	for _, tt := range []struct {
 		name, bom   string // bom: the version org.bom:bom:1.0 manages org.t:t to, "" when uncached
@@ -343,7 +346,7 @@ func TestMavenProfile_ProfileBOMReversionsTransitives(t *testing.T) {
 		bounded     bool
 	}{
 		{"manages the transitive to another version", "2.0", true, true},
-		{"manages the transitive to its version", "1.0", false, true},
+		{"manages the transitive to its version", "1.0", true, true},
 		{"isn't cached", "", true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -758,6 +761,85 @@ func TestMavenProfile_FirstPartyClosureBound(t *testing.T) {
 			}
 			if !hasStr(raw.Partiality.Reasons, reasonProfileActivation) {
 				t.Errorf("profile_activation must be listed run-wide; got %+v", raw.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// An undecided profile that adds, re-declares, manages or excludes a dependency can move
+// nearest-wins mediation anywhere below the direct dependencies, so every transitive of the
+// module is withheld. That holds for a profile in a cached dependency's POM too, found only
+// while the graph is walked. A profile decided inactive, or one that changes only a plugin,
+// leaves the transitives resolved.
+func TestMavenProfile_UndecidedProfileShiftsMediation(t *testing.T) {
+	const (
+		und      = `<activation><jdk>11</jdk></activation>`
+		dep      = `<dependency><groupId>org.%s</groupId><artifactId>%s</artifactId><version>1.0</version>%s</dependency>`
+		exclT    = `<exclusions><exclusion><groupId>org.t</groupId><artifactId>t</artifactId></exclusion></exclusions>`
+		viaMid   = `<dependencies>` + `<dependency><groupId>org.mid</groupId><artifactId>mid</artifactId><version>1.0</version></dependency>` + `</dependencies>`
+		direct2  = `<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></dependency></dependencies>`
+		plugOnly = `<build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId></plugin></plugins></build>`
+	)
+	d := func(name, extra string) string { return fmt.Sprintf(dep, name, name, extra) }
+	for _, tt := range []struct {
+		name                string
+		rootDeps, rootProfs string // inside <dependencies>, inside <profiles>
+		baseDeps, baseProfs string // org.base:base:1.0's <dependencies> block and <profiles> body
+		java                string // stated java version; "" leaves <jdk> undecided
+		t1, t2              bool   // org.t:t@1.0 / @2.0 resolved
+	}{
+		{"a profile adds a dependency that brings the transitive nearer",
+			d("base", ""), `<profile><id>p</id>` + und + `<dependencies>` + d("x", "") + `</dependencies></profile>`,
+			viaMid, "", "", false, false},
+		{"control, the same profile decided inactive",
+			d("base", ""), `<profile><id>p</id>` + und + `<dependencies>` + d("x", "") + `</dependencies></profile>`,
+			viaMid, "", "17.0.2", true, false},
+		{"a profile re-declares a dependency excluding the transitive",
+			d("base", "") + d("y", ""), `<profile><id>p</id>` + und + `<dependencies>` + d("base", exclT) + `</dependencies></profile>`,
+			direct2, "", "", false, false},
+		{"a cached dependency's profile excludes the transitive",
+			d("base", "") + d("w", ""), "",
+			viaMid, `<profile><id>bp</id>` + und + `<dependencies>` + d("mid", exclT) + `</dependencies></profile>`, "", false, false},
+		{"control, the cached dependency's profile decided inactive",
+			d("base", "") + d("w", ""), "",
+			viaMid, `<profile><id>bp</id>` + und + `<dependencies>` + d("mid", exclT) + `</dependencies></profile>`, "17.0.2", true, false},
+		{"control, an undecided profile that changes only a plugin",
+			d("base", ""), `<profile><id>p</id>` + und + plugOnly + `</profile>`,
+			viaMid, "", "", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			profs := ""
+			if tt.rootProfs != "" {
+				profs = `<profiles>` + tt.rootProfs + `</profiles>`
+			}
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies>`+tt.rootDeps+`</dependencies>`+profs+`</project>`)
+			baseProfs := ""
+			if tt.baseProfs != "" {
+				baseProfs = `<profiles>` + tt.baseProfs + `</profiles>`
+			}
+			writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version>`+tt.baseDeps+baseProfs+`</project>`)
+			writeCachePOM(t, m2, "org.mid", "mid", "1.0", `<project><groupId>org.mid</groupId><artifactId>mid</artifactId><version>1.0</version>`+direct2+`</project>`)
+			to2 := `<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>2.0</version></dependency></dependencies>`
+			writeCachePOM(t, m2, "org.x", "x", "1.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version>`+to2+`</project>`)
+			writeCachePOM(t, m2, "org.y", "y", "1.0", `<project><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version>`+to2+`</project>`)
+			// w -> v -> u -> t:2.0 puts t at depth 4, below base -> mid -> t:1.0 at depth 3.
+			writeCachePOM(t, m2, "org.w", "w", "1.0", `<project><groupId>org.w</groupId><artifactId>w</artifactId><version>1.0</version><dependencies>`+d("v", "")+`</dependencies></project>`)
+			writeCachePOM(t, m2, "org.v", "v", "1.0", `<project><groupId>org.v</groupId><artifactId>v</artifactId><version>1.0</version><dependencies>`+d("u", "")+`</dependencies></project>`)
+			writeCachePOM(t, m2, "org.u", "u", "1.0", `<project><groupId>org.u</groupId><artifactId>u</artifactId><version>1.0</version>`+to2+`</project>`)
+			writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></project>`)
+			writeCachePOM(t, m2, "org.t", "t", "2.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>2.0</version></project>`)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", tt.java)))
+			if got := findNode(t, inv, "pkg:maven/org.t/t@1.0") != nil; got != tt.t1 {
+				t.Errorf("org.t:t@1.0 resolved = %v, want %v", got, tt.t1)
+			}
+			if got := findNode(t, inv, "pkg:maven/org.t/t@2.0") != nil; got != tt.t2 {
+				t.Errorf("org.t:t@2.0 resolved = %v, want %v", got, tt.t2)
+			}
+			if findNode(t, inv, "pkg:maven/org.base/base@1.0") == nil {
+				t.Error("a direct dependency with its own version stays resolved")
 			}
 		})
 	}

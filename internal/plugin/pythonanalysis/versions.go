@@ -58,6 +58,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	manifests := walkManifests(req.BuildDir, isVersionManifest)
+	root, err := filepath.EvalSymlinks(req.BuildDir)
+	if err != nil {
+		root = filepath.Clean(req.BuildDir)
+	}
 
 	var (
 		all         []plugin.ResolvedDependency
@@ -65,7 +69,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		parseFailed bool
 	)
 	for _, m := range manifests {
-		deps, o, ok := parseManifest(m)
+		deps, o, ok := parseManifest(root, m)
 		if !ok {
 			parseFailed = true
 		}
@@ -229,6 +233,10 @@ func isManifest(name string) bool {
 	case "poetry.lock", "Pipfile.lock", "pyproject.toml", "pdm.lock", "uv.lock":
 		return true
 	}
+	return isRequirementsName(name)
+}
+
+func isRequirementsName(name string) bool {
 	return strings.HasPrefix(name, "requirements") && strings.HasSuffix(name, ".txt")
 }
 
@@ -236,12 +244,17 @@ func isManifest(name string) bool {
 // returns each entry's origin alongside it. The bool is false when the file cannot be
 // read or is structurally unparseable, or holds an install whose project cannot be known
 // (the caller degrades partiality and leaves every Found match unresolved).
-func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+func parseManifest(root, path string) ([]plugin.ResolvedDependency, []manifestOrigin, bool) {
+	dir, base := filepath.Dir(path), filepath.Base(path)
+	if base != "Pipfile" && base != "pyproject.toml" && isRequirementsName(base) {
+		r := requirementsReader{root: root, seen: make(map[string]bool)}
+		deps, ok := r.read(path)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, false
 	}
-	dir, base := filepath.Dir(path), filepath.Base(path)
 	var (
 		deps []plugin.ResolvedDependency
 		ok   bool
@@ -264,26 +277,67 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, []manifestOrigin, 
 		origins := append(originsFor(project, manifestOrigin{dir: dir, lockedBy: projectLocks}),
 			originsFor(poetry, manifestOrigin{dir: dir, lockedBy: poetryLocks})...)
 		return append(project, poetry...), origins, okProject && okPoetry
-	default: // requirements*.txt
-		deps, ok = parseRequirementsTxt(data)
-		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
+	default:
+		return nil, nil, false
 	}
 	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
 
 // --- requirements.txt --------------------------------------------------------
 
-// parseRequirementsTxt parses a pip requirements file. Only an EXACT "==" pin yields a
-// resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a URL or VCS
-// requirement that names its project ("pkg @ https://...", "git+https://...#egg=pkg",
-// editable or not), since it installs a version nobody can read here. A URL or VCS
-// requirement that names no project can install any distribution at any version, so the
-// file reports false, exactly as an unparseable one does, and the caller leaves every
-// Found match unresolved; the entries it did read are still returned. A -r include or an
-// option line is skipped. Continuation lines ("\") and hashed pins
+// parseRequirementsTxt parses requirements-file content with no file context: an include
+// cannot be followed and a relative path cannot be placed, so either makes it report false.
+func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
+	return parseRequirementLines(data, "", nil)
+}
+
+// requirementsReader reads a requirements file and, recursively, the files it includes.
+type requirementsReader struct {
+	root string          // build root, symlinks resolved; nothing outside it is read
+	seen map[string]bool // files already read in this traversal, symlinks resolved
+}
+
+// read parses the requirements file at path and every local -r/-c file it includes. A
+// file that is missing, unreadable or outside the build root reports false. A file
+// already read in this traversal contributes nothing more, so an include cycle ends.
+func (r *requirementsReader) read(path string) ([]plugin.ResolvedDependency, bool) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil || !withinRoot(r.root, real) {
+		return nil, false
+	}
+	if r.seen[real] {
+		return nil, true
+	}
+	r.seen[real] = true
+	data, err := os.ReadFile(real)
+	if err != nil {
+		return nil, false
+	}
+	return parseRequirementLines(data, filepath.Dir(path), r)
+}
+
+func withinRoot(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// parseRequirementLines parses a pip requirements file located in dir. Only an EXACT "=="
+// pin yields a resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a
+// URL or VCS requirement that names its project ("pkg @ https://...",
+// "git+https://...#egg=pkg", editable or not), since it installs a version nobody can read
+// here.
+//
+// The file reports false, exactly as an unparseable one does, when it can install a
+// distribution whose name or version cannot be read here: a URL or VCS requirement that
+// names no project, a local path or file: install other than the project's own directory
+// ("-e ./vendor/x", "./dist/x.whl"; "-e ." and "." are the project itself), or a -r/-c
+// include that is a URL or cannot be read. The caller then leaves every Found match
+// unresolved; the entries that were read are still returned. A local include is read
+// through inc, relative to dir, whatever its name; constraint pins are read as entries.
+// Other option lines are skipped. Continuation lines ("\") and hashed pins
 // ("pkg==1.2.3 --hash=sha256:...") are handled; environment markers (";...") and inline
 // comments ("#...") are stripped.
-func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
+func parseRequirementLines(data []byte, dir string, inc *requirementsReader) ([]plugin.ResolvedDependency, bool) {
 	var out []plugin.ResolvedDependency
 	readable := true
 	for _, req := range joinContinuations(string(data)) {
@@ -292,8 +346,24 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		if line == "" {
 			continue
 		}
+		if target, isInclude := includeTarget(line); isInclude {
+			if inc == nil || target == "" || strings.Contains(target, "://") {
+				readable = false
+				continue
+			}
+			deps, ok := inc.read(filepath.Join(dir, target))
+			out = append(out, deps...)
+			readable = readable && ok
+			continue
+		}
 		target, editable := trimEditable(line)
-		if strings.HasPrefix(line, "-") && !editable { // -r include, --option
+		if strings.HasPrefix(line, "-") && !editable { // --index-url and other options
+			continue
+		}
+		if loc, isFile := fileURLPath(target); isFile {
+			if !isProjectDir(loc, dir) {
+				readable = false
+			}
 			continue
 		}
 		if isDirectReference(target) {
@@ -304,7 +374,13 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 			}
 			continue
 		}
-		if editable { // a local editable path ("-e .") is the project itself
+		if loc := localInstallPath(target); editable || loc != "" {
+			if editable && loc == "" {
+				loc = firstField(target)
+			}
+			if !isProjectDir(loc, dir) {
+				readable = false
+			}
 			continue
 		}
 		// Drop an environment marker ("; python_version < '3.8'") and any --hash tokens.
@@ -322,6 +398,102 @@ func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
 		out = append(out, pyResolved(name, version, resolved, "requirements.txt"))
 	}
 	return out, readable
+}
+
+// includeTarget reports whether line is a -r/--requirement or -c/--constraint include and
+// returns the file it names ("-r base.txt", "-rbase.txt", "--requirement=base.txt").
+func includeTarget(line string) (string, bool) {
+	for _, flag := range []string{"--requirement", "--constraint"} {
+		if rest, ok := strings.CutPrefix(line, flag); ok && (rest == "" || rest[0] == '=' || rest[0] == ' ' || rest[0] == '\t') {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
+		}
+	}
+	for _, flag := range []string{"-r", "-c"} {
+		if rest, ok := strings.CutPrefix(line, flag); ok {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
+		}
+	}
+	return "", false
+}
+
+// fileURLPath reports whether a requirement installs from a file: URL, bare or as the
+// target of a PEP 508 "name @ file:..." reference, and returns the local path it names.
+func fileURLPath(target string) (string, bool) {
+	loc := firstField(target)
+	if i := strings.IndexByte(target, '@'); i > 0 {
+		head := strings.TrimSpace(target[:i])
+		if j := strings.IndexByte(head, '['); j >= 0 {
+			head = strings.TrimSpace(head[:j])
+		}
+		if isProjectName(head) {
+			loc = firstField(target[i+1:])
+		}
+	}
+	if len(loc) < 5 || !strings.EqualFold(loc[:5], "file:") {
+		return "", false
+	}
+	loc = loc[5:]
+	if rest, ok := strings.CutPrefix(loc, "//"); ok { // file://host/path; only an empty host is local
+		if !strings.HasPrefix(rest, "/") {
+			return "", true
+		}
+		loc = rest
+	}
+	if i := strings.IndexAny(loc, "#?"); i >= 0 {
+		loc = loc[:i]
+	}
+	return loc, true
+}
+
+// localInstallPath returns the local path a requirement installs from, or "" when it is a
+// project name. pip treats a requirement as a path when it contains a path separator or
+// starts with "." or "~", and installs an archive file by its file name.
+func localInstallPath(target string) string {
+	loc := firstField(target)
+	if loc == "" {
+		return ""
+	}
+	if strings.ContainsAny(loc, "/\\") || loc[0] == '.' || loc[0] == '~' {
+		return loc
+	}
+	lower := strings.ToLower(loc)
+	for _, ext := range []string{".whl", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip"} {
+		if strings.HasSuffix(lower, ext) {
+			return loc
+		}
+	}
+	return ""
+}
+
+// isProjectDir reports whether a local install path names the directory holding the file
+// that installs it: ".", "./", ".[extras]", or a path that resolves there. With no file
+// context only the literal forms qualify.
+func isProjectDir(loc, dir string) bool {
+	if isSelfPath(loc) {
+		return true
+	}
+	if dir == "" || loc == "" {
+		return false
+	}
+	if i := strings.IndexByte(loc, '['); i >= 0 {
+		loc = loc[:i]
+	}
+	if !filepath.IsAbs(loc) {
+		loc = filepath.Join(dir, loc)
+	}
+	return filepath.Clean(loc) == filepath.Clean(dir)
+}
+
+// firstField returns the requirement's location token: the text before any marker (";")
+// and the first whitespace.
+func firstField(target string) string {
+	if i := strings.IndexByte(target, ';'); i >= 0 {
+		target = target[:i]
+	}
+	if f := strings.Fields(target); len(f) > 0 {
+		return f[0]
+	}
+	return ""
 }
 
 // trimEditable strips a leading "-e"/"--editable" option, reporting whether it was there.

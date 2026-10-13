@@ -31,6 +31,7 @@ Pillow[extra]==9.0.0
 -r other.txt
 git+https://github.com/x/y.git#egg=z
 `,
+		"other.txt": "idna==3.6\n",
 	})
 	res := resolveVersion(t, dir, "deepdiff")
 	if !res.Found || !res.Match.Resolved || res.Match.Version != "8.0.1" {
@@ -446,6 +447,161 @@ func TestResolveVersions_DeclaredExactPins(t *testing.T) {
 	})
 	for i := 0; i < resolveRuns; i++ {
 		mustUnresolvedPy(t, resolveVersion(t, conflict, "flask"))
+	}
+}
+
+// mustVetoedPy asserts the parse-failure outcome: the found coordinate is unresolved, the
+// result is partial, and a coordinate no manifest names stays not found.
+func mustVetoedPy(t *testing.T, dir, coordinate string) {
+	t.Helper()
+	for i := 0; i < resolveRuns; i++ {
+		res := resolveVersion(t, dir, coordinate)
+		mustUnresolvedPy(t, res)
+		if res.Partiality.Complete {
+			t.Fatal("result must be partial")
+		}
+	}
+	if resolveVersion(t, dir, "no-such-project").Found {
+		t.Fatal("a coordinate no manifest names must stay not found")
+	}
+}
+
+// A -r or -c include is read whatever the file is called, relative to the including file,
+// so a range or a different pin in it vetoes another service's pin.
+func TestResolveVersions_IncludeFollowedWhateverItsName(t *testing.T) {
+	for name, tc := range map[string]struct{ line, file, body string }{
+		"r-space":         {"-r deps/common.in\n", "deps/common.in", "flask>=2.0\n"},
+		"r-glued":         {"-rbase.txt\n", "base.txt", "flask>=2.0\n"},
+		"requirement-eq":  {"--requirement=../shared/base.pip\n", "../shared/base.pip", "flask>=2.0\n"},
+		"c-space":         {"-c constraints.txt\n", "constraints.txt", "flask==2.2.0\n"},
+		"constraint-long": {"--constraint pins/all.txt\n", "pins/all.txt", "flask==2.2.0\n"},
+		"nested":          {"-r a.in\n", "a.in", "-r b.in\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/requirements.txt": "requests==2.32.3\n" + tc.line,
+				"svc-b/" + tc.file:       tc.body,
+			}
+			if name == "nested" {
+				files["svc-b/b.in"] = "flask>=2.0\n"
+			}
+			dir := writeTree(t, files)
+			for i := 0; i < resolveRuns; i++ {
+				res := resolveVersion(t, dir, "flask")
+				mustUnresolvedPy(t, res)
+				if !res.Partiality.Complete {
+					t.Fatalf("a readable include must leave the result complete; got %+v", res.Partiality)
+				}
+			}
+			if r := resolveVersion(t, dir, "requests"); !r.Match.Resolved || r.Match.Version != "2.32.3" {
+				t.Fatalf("requests want 2.32.3 resolved; got %+v", r.Match)
+			}
+		})
+	}
+}
+
+// Includes that loop back are read once, and the pins they hold still resolve.
+func TestResolveVersions_IncludeCycleTerminates(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"requirements.txt": "-r base.in\nflask==2.3.0\n",
+		"base.in":          "-r requirements.txt\n-r base.in\nrequests==2.32.3\n",
+	})
+	for coord, want := range map[string]string{"flask": "2.3.0", "requests": "2.32.3"} {
+		res := resolveVersion(t, dir, coord)
+		if !res.Match.Resolved || res.Match.Version != want || !res.Partiality.Complete {
+			t.Fatalf("%s want %s resolved and complete; got %+v %+v", coord, want, res.Match, res.Partiality)
+		}
+	}
+}
+
+// An include that is a URL cannot be read here, so it takes the parse-failure path.
+func TestResolveVersions_URLIncludeUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc-a/requirements.txt": "flask==2.3.0\n",
+		"svc-b/requirements.txt": "-r https://example.com/requirements.txt\n",
+	})
+	mustVetoedPy(t, dir, "flask")
+}
+
+// A local include that is missing, unreadable, or outside the build directory takes the
+// parse-failure path.
+func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
+	for name, tc := range map[string]struct {
+		line  string
+		extra map[string]string
+	}{
+		"missing":   {"-r missing.txt\n", nil},
+		"directory": {"-c deps\n", map[string]string{"build/svc-b/deps/x.txt": "flask==2.3.0\n"}},
+		"outside":   {"-r ../../outside.txt\n", map[string]string{"outside.txt": "flask==2.3.0\n"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				"build/svc-a/requirements.txt": "flask==2.3.0\n",
+				"build/svc-b/requirements.txt": tc.line,
+			}
+			for k, v := range tc.extra {
+				files[k] = v
+			}
+			mustVetoedPy(t, filepath.Join(writeTree(t, files), "build"), "flask")
+		})
+	}
+}
+
+// A local path or file: install other than the project itself can be any distribution at
+// any version, so it takes the parse-failure path.
+func TestResolveVersions_LocalPathInstallVetoes(t *testing.T) {
+	for name, req := range map[string]string{
+		"editable-vendor": "-e ./vendor/x\n",
+		"editable-eq":     "--editable=../lib\n",
+		"editable-bare":   "-e lib/x\n",
+		"wheel":           "./dist/x-1.0-py3-none-any.whl\n",
+		"sdist-name":      "x-1.0.tar.gz\n",
+		"file-url":        "file:../wheels/x-1.0-py3-none-any.whl\n",
+		"file-url-egg":    "file:///opt/src/x#egg=x\n",
+		"pep508-file":     "x @ file:///opt/src/x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/requirements.txt": req,
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+}
+
+// Installing the project's own directory does not veto: "-e .", ".", extras, or a path
+// that resolves to the requirements file's directory.
+func TestResolveVersions_ProjectSelfInstallDoesNotVeto(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"svc/requirements.txt": "-e .\n.\n-e .[dev]\n./\n-e ../svc\nflask==2.3.0\n",
+	})
+	res := resolveVersion(t, dir, "flask")
+	if !res.Match.Resolved || res.Match.Version != "2.3.0" || !res.Partiality.Complete {
+		t.Fatalf("want 2.3.0 resolved and complete; got %+v %+v", res.Match, res.Partiality)
+	}
+}
+
+// The same holds for Pipfile and Poetry path dependencies.
+func TestResolveVersions_DeclaredLocalPathVetoes(t *testing.T) {
+	for name, file := range map[string]string{
+		"Pipfile":        "[packages]\nx = {path = \"./vendor/x\", editable = true}\n",
+		"pyproject.toml": "[tool.poetry.dependencies]\nx = {path = \"../lib/x\"}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"svc-a/requirements.txt": "flask==2.3.0\n",
+				"svc-b/" + name:          file,
+			})
+			mustVetoedPy(t, dir, "flask")
+		})
+	}
+	self := writeTree(t, map[string]string{
+		"Pipfile": "[packages]\napp = {path = \".\", editable = true}\nflask = \"==2.3.0\"\n",
+	})
+	if r := resolveVersion(t, self, "flask"); !r.Match.Resolved || r.Match.Version != "2.3.0" || !r.Partiality.Complete {
+		t.Fatalf("the project's own path must not veto; got %+v %+v", r.Match, r.Partiality)
 	}
 }
 

@@ -108,13 +108,16 @@ func (p cfamilyGatePlugin) symbolPartiality(symbols []string) plugin.Partiality 
 	return plugin.Partial(reasons...)
 }
 
-// cfamilyAdvisories serves one zlib advisory whose affected range contains the tree's pinned
-// version, and one Go module advisory whose range contains the go.mod's required version, both
-// from a first-party source so trust cannot be what withholds a refutation.
+// cfamilyAdvisories serves two zlib advisories whose affected ranges contain the tree's pinned
+// version (the first names symbols, the second always names deflate), and one Go module advisory
+// whose range contains the go.mod's required version, all from a first-party source so trust
+// cannot be what withholds a refutation.
 type cfamilyAdvisories struct{ symbols []string }
 
 const (
-	cfamilyAdvisoryID = "CVE-2022-37434"
+	cfamilyAdvisoryID       = "CVE-2022-37434"
+	cfamilySecondAdvisoryID = "CVE-2018-25032"
+	cfamilySecondSymbol     = "deflate"
 	goAdvisoryID      = "GO-2099-0001"
 	goAdvisoryModule  = "example.com/lib"
 	goAdvisorySymbol  = "example.com/lib.Decode"
@@ -130,6 +133,16 @@ func (s cfamilyAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 			FixedVersion:   "1.2.13",
 			AffectedRanges: []pipeline.Range{{Fixed: "1.2.13"}},
 			Symbols:        s.symbols,
+			Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
+		}, true
+	case cfamilySecondAdvisoryID:
+		return pipeline.AdvisoryFacts{
+			Coordinate:     "zlib",
+			PURL:           "pkg:conan/zlib",
+			UpperExclusive: "1.2.12",
+			FixedVersion:   "1.2.12",
+			AffectedRanges: []pipeline.Range{{Fixed: "1.2.12"}},
+			Symbols:        []string{cfamilySecondSymbol},
 			Provenance:     pipeline.Provenance{Source: "test", TrustTier: pipeline.TrustFirstParty},
 		}, true
 	case goAdvisoryID:
@@ -213,18 +226,20 @@ func TestCFamilyBaseline_NamedUnreachedSymbolIsUndetermined(t *testing.T) {
 }
 
 // cgx_sink_unreached is scoped to the advisory whose sink it is. One scan carries a C advisory
-// whose sink is resolved and unreached and a Go module advisory whose symbol resolves and is
-// unreached on a graph that declares nothing loud for it. The C row is undetermined; the Go row
-// keeps not_exploitable. A run-wide declaration would hold both, so the second row is what fails
-// if the code ever leaks out of the C advisory's own ops.
+// whose sink is resolved and unreached, a second C advisory whose sink resolves and is not flagged,
+// and a Go module advisory. No row here can refute: the fake emits no positive grounds, and the
+// cfamily inventory limit holds every not_exploitable in the scan. So the witness is the reason,
+// not the verdict. The unreached C row is held by its own did_not_run (analysis_did_not_run); the
+// other two land on vulnerable_symbol_unresolved, which a did_not_run on their own ops would
+// outrank. A run-wide declaration turns all three into analysis_did_not_run, so the second and
+// third rows are what fail if the code ever leaks out of the C advisory's own ops.
 func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
 	const sink = "inflateGetHeader"
 	lane := cfamilyGatePlugin{unreached: map[string]bool{sink: true}}
-	rep := runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}, cfamilyAdvisoryID, goAdvisoryID)
+	rep := runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}, cfamilyAdvisoryID, cfamilySecondAdvisoryID, goAdvisoryID)
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
-	if got := verdictByID(rep)[goAdvisoryID]; got != report.VerdictNotExploitable {
-		t.Errorf("%s verdict = %q, want %q (the C advisory's did_not_run leaked to it)", goAdvisoryID, got, report.VerdictNotExploitable)
-	}
+	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
+	assertUndetermined(t, rep, goAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
 }
 
 // A tree that reaches the vulnerable code only through the dependency (it calls uncompress, which

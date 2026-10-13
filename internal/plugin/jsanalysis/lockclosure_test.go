@@ -84,10 +84,12 @@ func TestLockClosures(t *testing.T) {
 	}
 }
 
-// TestLockClosures_NodePath: NODE_PATH set on any surface that may launch the production
-// process adds resolution roots no lockfile lists, so every closure is unbounded. A mention
-// that sets nothing, or a file that cannot configure the process, leaves it bounded.
-func TestLockClosures_NodePath(t *testing.T) {
+// TestLockClosures_LaunchOverrides: on any surface that may launch the production process,
+// NODE_PATH adds resolution roots no lockfile lists, NODE_OPTIONS or a node flag can preload
+// code or a loader or keep symlinked paths, and a Yarn PnP install resolves through its own
+// map, so every closure is unbounded. A mention that sets nothing, a flag that changes
+// neither, or a file that cannot configure the process leaves it bounded.
+func TestLockClosures_LaunchOverrides(t *testing.T) {
 	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
 	cases := []struct {
 		name    string
@@ -105,6 +107,30 @@ func TestLockClosures_NodePath(t *testing.T) {
 		{"README mention", "README.md", "Set NODE_PATH=src to run locally.\n", true},
 		{"a manifest that does not set it", "app.yaml", "runtime: nodejs20\nenv_variables:\n  NODE_ENV: production\n", true},
 		{"a source file under node_modules", "node_modules/qs/package.json", `{"name":"qs","scripts":{"x":"NODE_PATH=a node"}}`, true},
+
+		// NODE_OPTIONS, npm's node-options, and node flags that preload code or keep symlinks.
+		{"NODE_OPTIONS in a Dockerfile", "Dockerfile", "FROM node:20\nENV NODE_OPTIONS=\"--require ./otel.js\"\n", false},
+		{"NODE_OPTIONS from a variable", "deploy.sh", "export NODE_OPTIONS=\"$EXTRA\"\nnode server.js\n", false},
+		{"NODE_OPTIONS in a Kubernetes env list", "k8s/deployment.yaml", "env:\n  - name: NODE_OPTIONS\n    value: --import=./hook.mjs\n", false},
+		{"node-options in .npmrc", ".npmrc", "node-options=--experimental-loader ./loader.mjs\n", false},
+		{"--require in a package.json script", "package.json", `{"name":"app","scripts":{"start":"node --require ./apm.js index.js"}}`, false},
+		{"-r in a Procfile", "Procfile", "web: node -r dotenv/config server.js\n", false},
+		{"--import in a Makefile", "Makefile", "run:\n\tnode --import ./register.mjs index.js\n", false},
+		{"--loader in a pm2 ecosystem file", "ecosystem.config.js", "module.exports = {apps: [{script: 'index.js', node_args: '--loader ts-node/esm'}]}\n", false},
+		{"--experimental-loader in a workflow", ".github/workflows/deploy.yml", "jobs:\n  run:\n    steps:\n      - run: node --experimental-loader ./l.mjs index.js\n", false},
+		{"--preserve-symlinks in compose", "docker-compose.yml", "services:\n  web:\n    command: node --preserve-symlinks index.js\n", false},
+		{"--preserve-symlinks-main in a script", "start.sh", "exec node --preserve-symlinks-main index.js\n", false},
+		{"NODE_PRESERVE_SYMLINKS in an env file", ".env", "NODE_PRESERVE_SYMLINKS=1\n", false},
+		{"a node flag that changes neither", "Procfile", "web: node --max-old-space-size=4096 server.js\n", true},
+		{"-r for another command", "build.sh", "cp -r public dist\n", true},
+
+		// Yarn Plug'n'Play.
+		{"PnP runtime .pnp.cjs", ".pnp.cjs", "#!/usr/bin/env node\n", false},
+		{"PnP runtime .pnp.js", ".pnp.js", "module.exports = {}\n", false},
+		{"PnP ESM loader", ".pnp.loader.mjs", "export {}\n", false},
+		{"PnP linker in .yarnrc.yml", ".yarnrc.yml", "nodeLinker: pnp\n", false},
+		{".yarnrc.yml with the default linker", ".yarnrc.yml", "yarnPath: .yarn/releases/yarn-4.1.0.cjs\n", false},
+		{".yarnrc.yml with the node_modules linker", ".yarnrc.yml", "nodeLinker: node-modules\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -379,6 +379,36 @@ go(process.argv[2]);
 			held:  []*report.Package{qs, zed},
 		},
 		{
+			name: "NODE_OPTIONS preloading a module in the Procfile holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"Procfile": "web: NODE_OPTIONS='--require ./apm.js' node index.js\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "--preserve-symlinks in the start script holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{"start.sh": "exec node --preserve-symlinks index.js\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "a Yarn PnP runtime beside the npm lock holds every advisory",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock:  lock,
+			files: map[string]string{".pnp.cjs": "#!/usr/bin/env node\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
 			// Held twice over: by cfg's limit, whose reach includes the hoisted json5, and by the
 			// dynamic_import_specifier a literal import() keeps for an unmodeled condition.
 			name: "a literal import() of X whose development export loads a hoisted package X does not declare",

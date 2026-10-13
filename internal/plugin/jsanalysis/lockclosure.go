@@ -20,9 +20,10 @@ import (
 // plus every package installed in a node_modules directory on its install path, which
 // always includes the hoisted top level. Any answer it cannot give exactly (no lockfile, a
 // v1/yarn/pnpm lock, a package the lock does not list, a required dependency the lock does
-// not install, a node_modules on disk holding a package the lock does not list, NODE_PATH
-// set on a surface that may launch the production process) is nil, which a ScopedReason
-// reads as unbounded.
+// not install, a node_modules on disk holding a package the lock does not list, a Yarn
+// Plug'n'Play install, or a surface that may launch the production process setting
+// NODE_PATH, NODE_OPTIONS, npm's node-options, NODE_PRESERVE_SYMLINKS, or a node flag that
+// preloads code or changes resolution) is nil, which a ScopedReason reads as unbounded.
 //
 // The JS package-load refutation builds a fuller install model (disk, yarn, and pnpm
 // engines); when it lands, closureOf should delegate to that model's resolve and closure.
@@ -31,9 +32,9 @@ type lockClosures struct {
 	graphs map[string]*lockGraph // lockfile dir (build-relative, "" = root) -> parsed lock; nil = unusable
 	govern map[string]string     // build-relative dir -> governing lockfile dir; "\x00" = none
 	memo   map[string][]string   // lockDir + "\x00" + install path -> closure names
-	// nodePath is 0 until the build tree is scanned, then 1 when no candidate production
-	// surface sets NODE_PATH and 2 when one does.
-	nodePath int
+	// override is 0 until the build tree is scanned, then 1 when nothing overrides
+	// resolution from the lock and 2 when something does (see resolutionOverridden).
+	override int
 }
 
 // lockGraph is one npm v2/v3 lockfile's `packages` map, keyed by install path relative to
@@ -69,7 +70,7 @@ func newLockClosures(root string) *lockClosures {
 // sorted) that code loaded as pkg from fromDir can reach, or nil when the lock cannot bound it. "" in the
 // closure stands for first-party code reached through a workspace link.
 func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
-	if lc.nodePathSet() {
+	if lc.resolutionOverridden() {
 		return nil
 	}
 	lockDir := lc.governingLock(fromDir)
@@ -337,20 +338,42 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 	return true
 }
 
-// nodePathAssign matches NODE_PATH being given a value: `NODE_PATH=x` (shell, .env,
-// Procfile, package.json scripts), `NODE_PATH: x` and `"NODE_PATH": "x"` (YAML, JSON
-// manifests), `ENV NODE_PATH x` (Dockerfile), and `name: NODE_PATH` (Kubernetes env lists).
-var nodePathAssign = regexp.MustCompile(`\bNODE_PATH\b["']?\s*[=:]|\bENV\s+NODE_PATH\s|\bname:\s*["']?NODE_PATH\b`)
+// launchOverride matches a launch setting under which Node resolves or loads packages the
+// lock does not describe, on a surface that may start the production process:
+//   - NODE_PATH (resolve through extra directories), NODE_OPTIONS (any flag below, or an
+//     indirect value), and NODE_PRESERVE_SYMLINKS (resolve a linked package's dependencies
+//     from the link) given a value: `X=v` (shell, .env, Procfile, package.json scripts),
+//     `X: v` and `"X": "v"` (YAML, JSON), `ENV X v` (Dockerfile), `name: X` (Kubernetes);
+//   - npm's `node-options` setting, which npm exports as NODE_OPTIONS to the scripts it runs;
+//   - a node flag that preloads a module or a loader (`--require`/`-r`, `--import`,
+//     `--loader`, `--experimental-loader`) or keeps symlinked paths (`--preserve-symlinks`,
+//     `--preserve-symlinks-main`).
+var launchOverride = regexp.MustCompile(
+	`\b(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\b["']?\s*[=:]` +
+		`|\bENV\s+(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\s` +
+		`|\bname:\s*["']?(?:NODE_PATH|NODE_OPTIONS|NODE_PRESERVE_SYMLINKS)\b` +
+		`|(?m:^\s*node-options\s*=)` +
+		`|--(?:require|import|loader|experimental-loader|preserve-symlinks(?:-main)?)\b` +
+		`|\b(?:node|nodemon)(?:\.exe)?(?:\s[^\n]*)?\s-r[\s=]`)
 
-// nodePathSet reports whether any file that may launch or configure the production
-// process sets NODE_PATH. Node resolves a bare specifier through every NODE_PATH directory
-// after the node_modules walk, so a package's code can then reach packages no lockfile
-// lists. Candidates are container files, Procfiles, env files, shell scripts, and every
-// JSON, YAML, or TOML file (package.json scripts, CI workflows, compose and deploy
-// manifests), outside directories the lane does not index other than .github.
-func (lc *lockClosures) nodePathSet() bool {
-	if lc.nodePath == 0 {
-		lc.nodePath = 1
+// pnpRuntime names the files a Yarn Plug'n'Play install writes. Under PnP, packages load
+// through the PnP runtime's own map, not node_modules, so no npm lock bounds them.
+var pnpRuntime = map[string]bool{".pnp.cjs": true, ".pnp.js": true, ".pnp.loader.mjs": true}
+
+// nodeModulesLinker matches a .yarnrc.yml that selects the node_modules linker. Yarn 2+
+// defaults to Plug'n'Play, so a .yarnrc.yml without it is a PnP install.
+var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modules["']?\s*(?:#.*)?$`)
+
+// resolutionOverridden reports whether anything in the build tree makes Node resolve or
+// load packages other than through the node_modules layout the lock describes: a Yarn PnP
+// runtime file, a .yarnrc.yml that does not select the node_modules linker, or a
+// launchOverride on a surface that may start the production process. Surfaces are
+// container files, Procfiles, env files, .npmrc, Makefiles, pm2 ecosystem files, shell
+// scripts, and every JSON, YAML, or TOML file (package.json scripts, CI workflows, compose
+// and deploy manifests), outside directories the lane does not index other than .github.
+func (lc *lockClosures) resolutionOverridden() bool {
+	if lc.override == 0 {
+		lc.override = 1
 		_ = filepath.WalkDir(lc.root, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -362,28 +385,36 @@ func (lc *lockClosures) nodePathSet() bool {
 				}
 				return nil
 			}
-			if !d.Type().IsRegular() || !nodePathCandidate(name) {
+			if pnpRuntime[name] {
+				lc.override = 2
+				return filepath.SkipAll
+			}
+			if !d.Type().IsRegular() || !launchSurface(name) {
 				return nil
 			}
-			if b, err := os.ReadFile(p); err == nil && nodePathAssign.Match(b) {
-				lc.nodePath = 2
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return nil
+			}
+			if (name == ".yarnrc.yml" && !nodeModulesLinker.Match(b)) || launchOverride.Match(b) {
+				lc.override = 2
 				return filepath.SkipAll
 			}
 			return nil
 		})
 	}
-	return lc.nodePath == 2
+	return lc.override == 2
 }
 
-// nodePathCandidate reports whether a file of this name can set the production process's
-// environment.
-func nodePathCandidate(name string) bool {
+// launchSurface reports whether a file of this name can configure how the production
+// process is launched.
+func launchSurface(name string) bool {
 	lower := strings.ToLower(name)
 	switch lower {
 	case "package-lock.json", "npm-shrinkwrap.json":
 		return false
 	}
-	for _, prefix := range []string{"dockerfile", "containerfile", "procfile", ".env"} {
+	for _, prefix := range []string{"dockerfile", "containerfile", "procfile", ".env", ".npmrc", "makefile", "ecosystem.config"} {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}

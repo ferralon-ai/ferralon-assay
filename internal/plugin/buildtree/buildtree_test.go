@@ -390,24 +390,29 @@ func TestRawHead_Canonical(t *testing.T) {
 }
 
 // A doubled mark spends one more code unit (or three more bytes) before the text: the head still
-// holds HeadSize canonical bytes, the twin's.
+// holds HeadSize canonical bytes, the twin's, when a four-byte character straddles the cut too.
 func TestRawHead_DoubledMarkFillsTheHead(t *testing.T) {
 	dir := t.TempDir()
-	body := strings.Repeat("a", HeadSize+10)
-	for _, enc := range bomForms {
-		t.Run(enc, func(t *testing.T) {
-			p := filepath.Join(dir, enc)
-			marked := encodeText(enc, body)
-			mark := map[string]int{"UTF-8": 3, "UTF-16LE": 2, "UTF-16BE": 2, "UTF-32LE": 4, "UTF-32BE": 4}[enc]
-			write(t, p, marked[:mark]+marked)
-			got, err := rawHead(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != body[:HeadSize] {
-				t.Errorf("rawHead = %d bytes, want HeadSize bytes of a", len(got))
-			}
-		})
+	bodies := map[string]string{
+		"ASCII":                          strings.Repeat("a", HeadSize+10),
+		"four-byte character at the cut": strings.Repeat("a", HeadSize-1) + "\U0001F600tail",
+	}
+	for name, body := range bodies {
+		for _, enc := range bomForms {
+			t.Run(name+"/"+enc, func(t *testing.T) {
+				p := filepath.Join(dir, enc)
+				marked := encodeText(enc, body)
+				mark := map[string]int{"UTF-8": 3, "UTF-16LE": 2, "UTF-16BE": 2, "UTF-32LE": 4, "UTF-32BE": 4}[enc]
+				write(t, p, marked[:mark]+marked)
+				got, err := rawHead(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != body[:HeadSize] {
+					t.Errorf("rawHead = %d bytes ending %q, want the twin's first HeadSize bytes", len(got), got[max(0, len(got)-4):])
+				}
+			})
+		}
 	}
 }
 

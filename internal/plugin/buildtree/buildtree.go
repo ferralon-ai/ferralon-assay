@@ -272,9 +272,9 @@ func rawHead(path string) ([]byte, error) {
 	}
 	if len(buf) == HeadSize {
 		// Every code unit past the trimmed marks yields at least one UTF-8 byte, so this many
-		// raw bytes hold HeadSize canonical bytes, or the whole file. The extra unit covers a
-		// surrogate pair the read splits, and the extra four bytes a second mark.
-		if buf, err = readUpTo(f, buf, enc.mark+enc.unit*(HeadSize+1)+4); err != nil {
+		// raw bytes hold HeadSize canonical bytes, or the whole file. The extra four bytes hold
+		// a second mark and, in UTF-16, the low half of a surrogate pair the read would split.
+		if buf, err = readUpTo(f, buf, enc.mark+enc.unit*HeadSize+4); err != nil {
 			return nil, err
 		}
 	}

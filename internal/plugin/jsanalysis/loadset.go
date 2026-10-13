@@ -27,7 +27,8 @@ package jsanalysis
 //     dir declares uninspectable_package.
 //   - Build injectors (babel helpers, tslib, bundler polyfills) are loaded whenever their
 //     injector is installed in the same lock root, because they land in runtime output
-//     without a first-party import.
+//     without a first-party import. An installed bundler's own runtime modules load with the
+//     same reach as a package a build config names.
 //   - Enumerating loaders (packages that load others by a name chosen in first-party code or
 //     config: view engines, SQL clients, babel/webpack plugins) add their curated targets, or
 //     emit an unbounded ScopedReason that blocks refutation.
@@ -109,7 +110,6 @@ type loadSet struct {
 	complete  bool
 	gaps      []string
 	loaded    map[string]bool   // install paths with code loaded at runtime
-	selfOnly  map[string]bool   // loaded paths whose dependency closure was not taken (bundler runtimes)
 	roots     map[string]string // package name -> first-party reference that rooted it
 	loaders   map[string]bool
 	injectors map[string]bool
@@ -134,7 +134,6 @@ func computeLoadSet(buildDir string) *loadSet {
 	ls := &loadSet{
 		complete:  true,
 		loaded:    map[string]bool{},
-		selfOnly:  map[string]bool{},
 		roots:     map[string]string{},
 		loaders:   map[string]bool{},
 		injectors: map[string]bool{},
@@ -157,7 +156,7 @@ func computeLoadSet(buildDir string) *loadSet {
 	for _, r := range fp.config {
 		rc.addRoot(r)
 	}
-	c.applyInjectors()
+	c.applyInjectors(rc)
 	c.applyLoaders()
 
 	dc := &closer{ls: ls, m: m, dev: true}
@@ -703,7 +702,7 @@ func (c *closer) seen(in *pkgInstance) bool {
 		_, ok := c.ls.devFrom[in.path]
 		return ok || c.ls.loaded[in.path]
 	}
-	return c.ls.loaded[in.path] && !c.ls.selfOnly[in.path]
+	return c.ls.loaded[in.path]
 }
 
 func (c *closer) add(in *pkgInstance) {
@@ -717,7 +716,6 @@ func (c *closer) add(in *pkgInstance) {
 		c.ls.devFrom[in.path] = c.label
 	} else {
 		c.ls.loaded[in.path] = true
-		delete(c.ls.selfOnly, in.path)
 	}
 	c.queue = append(c.queue, in)
 }
@@ -872,17 +870,9 @@ func (c *closer) edges(in *pkgInstance, names []string, required bool) {
 	}
 }
 
-func (c *closer) selfLoad(in *pkgInstance) {
-	if c.ls.loaded[in.path] {
-		return
-	}
-	c.ls.loaded[in.path] = true
-	c.ls.selfOnly[in.path] = true
-}
-
-// markInRoot loads (with closure) every instance in lock root `root` whose identity
-// matches one of the patterns; self loads only the matched packages' own code.
-func (c *closer) markInRoot(root string, patterns []string, label string, self bool) bool {
+// markInRoot loads, with c's closure, every instance in lock root `root` whose identity
+// matches one of the patterns.
+func (c *closer) markInRoot(root string, patterns []string, label string) bool {
 	hit := false
 	for _, p := range c.m.sortedPaths() {
 		in := c.m.inst[p]
@@ -890,10 +880,6 @@ func (c *closer) markInRoot(root string, patterns []string, label string, self b
 			continue
 		}
 		hit = true
-		if self {
-			c.selfLoad(in)
-			continue
-		}
 		if !c.seen(in) {
 			c.label = label
 			c.add(in)
@@ -926,11 +912,13 @@ func matchesAny(name string, patterns []string) bool {
 // buildInjectors: when a trigger package is installed in a lock root, the listed packages are
 // loaded in that root. Babel/TypeScript/SWC inject helper imports into compiled output
 // (closure), bundlers inline their own runtime modules, loader runtimes and Node polyfills.
-// A bundler's own code is loaded self-only: its build-time dependency closure is not.
+// A bundler's runtime modules (the reach list) load with the same reach as a package a build
+// config names: a framework runtime such as SvelteKit's or Next's imports its own dependencies,
+// and the bundler inlines whatever those imports resolve to.
 var buildInjectors = []struct {
 	triggers []string
 	closure  []string
-	self     []string
+	reach    []string
 }{
 	{[]string{"@babel/core", "babel-core", "@babel/preset-env", "babel-preset-react-app", "babel-loader"},
 		[]string{"core-js", "core-js-pure", "regenerator-runtime", "@babel/runtime", "@babel/runtime-corejs2",
@@ -958,7 +946,7 @@ var nodePolyfills = []string{
 	"browserify-zlib", "console-browserify", "setimmediate", "readable-stream", "inherits",
 }
 
-func (c *closer) applyInjectors() {
+func (c *closer) applyInjectors(rc *closer) {
 	for _, root := range c.m.roots {
 		for _, inj := range buildInjectors {
 			trig := c.firstPresent(root, inj.triggers)
@@ -966,8 +954,8 @@ func (c *closer) applyInjectors() {
 				continue
 			}
 			label := "injected by " + trig
-			a := c.markInRoot(root, inj.closure, label, false)
-			b := c.markInRoot(root, inj.self, label, true)
+			a := c.markInRoot(root, inj.closure, label)
+			b := rc.markInRoot(root, inj.reach, label)
 			if a || b {
 				c.ls.injectors[trig] = true
 			}
@@ -1062,7 +1050,7 @@ func (c *closer) applyLoaders() {
 		for _, l := range enumeratingLoaders {
 			for _, in := range c.m.byName[l.loader] {
 				key := l.loader + "\x00" + in.root
-				if !c.ls.loaded[in.path] || c.ls.selfOnly[in.path] || fired[key] {
+				if !c.ls.loaded[in.path] || fired[key] {
 					continue
 				}
 				fired[key] = true
@@ -1075,7 +1063,7 @@ func (c *closer) applyLoaders() {
 					})
 					continue
 				}
-				c.markInRoot(in.root, l.targets, "loaded by "+l.loader, false)
+				c.markInRoot(in.root, l.targets, "loaded by "+l.loader)
 			}
 		}
 	}

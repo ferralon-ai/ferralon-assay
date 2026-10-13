@@ -526,6 +526,24 @@ func TestLoadSet(t *testing.T) {
 			checks:       []check{{pkg: "widget", version: "1.0.0", refuted: false}},
 		},
 		{
+			// No build config, but @sveltejs/kit's runtime imports devalue and the bundler
+			// inlines it into the server output.
+			name: "an installed bundler's runtime brings its reach",
+			files: func(t *testing.T) map[string]string {
+				return map[string]string{
+					"package.json": `{"name":"app","devDependencies":{"@sveltejs/kit":"*"}}`,
+					"package-lock.json": npmLockJSON(t, map[string]lockPkg{
+						"node_modules/@sveltejs/kit": {Version: "2.0.0", Dev: true, Deps: dep("devalue")},
+						"node_modules/devalue":       {Version: "4.3.0", Dev: true},
+					}),
+					"src/index.js": "module.exports = 1;\n",
+				}
+			},
+			complete:    true,
+			loadedPaths: []string{"node_modules/@sveltejs/kit", "node_modules/devalue"},
+			checks:      []check{{pkg: "devalue", version: "4.3.0", refuted: false}},
+		},
+		{
 			// test/ is dev tooling, but runtime code imports this helper, so its computed
 			// require runs at runtime.
 			name: "a computed require in a dev file runtime code imports leaves the load set incomplete",

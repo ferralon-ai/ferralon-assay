@@ -36,8 +36,10 @@ import (
 //     not present" and fabricate a not-affected. When there is no package.json either, All
 //     is empty but Partiality is declared-partial, which is what distinguishes it from a
 //     clean scan.
-//   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure); the
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable lockfile degrades Partiality to declared-partial (tool_failure), and
+//     every Found Match is UNRESOLVED: the broken file may hold another copy of any
+//     coordinate, so the readable lockfiles cannot decide its version. A coordinate no
+//     readable lockfile holds stays not found.
 //
 // Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
 // out of several distinct versions. See its doc comment for the rule.
@@ -83,6 +85,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
 	res.Match, res.Found = matchCoordinate(all, normalizeNPMCoordinate(req.Coordinate))
+	if parseFailed && res.Found {
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
 	return res, nil
 }
 

@@ -474,6 +474,20 @@ func TestResolveVersions_LockfilesDisagreeUnresolved(t *testing.T) {
 	}
 }
 
+// A lockfile that fails to parse may hold another copy of any coordinate, so a readable
+// lockfile's pin must not decide the version on its own. A coordinate no readable lockfile
+// holds stays not found.
+func TestResolveVersions_CorruptSecondLockfileUnresolved(t *testing.T) {
+	dir := writeLockTree(t, map[string]string{
+		"package-lock.json":     `{"lockfileVersion": 3, "packages": {"node_modules/qs": {"version": "6.5.2"}}}`,
+		"svc/package-lock.json": `{"lockfileVersion": 3, "packages": {`,
+	})
+	mustUnresolved(t, resolveJS(t, dir, "qs"))
+	if r := resolveJS(t, dir, "left-pad"); r.Found {
+		t.Fatalf("coordinate in no readable lockfile must stay not found; got %+v", r.Match)
+	}
+}
+
 func TestResolveVersions_YarnTwoVersionsUnresolved(t *testing.T) {
 	dir := writeLockTree(t, map[string]string{
 		"yarn.lock": "qs@6.5.1:\n  version \"6.5.1\"\n\nqs@^6.5.2:\n  version \"6.5.2\"\n",

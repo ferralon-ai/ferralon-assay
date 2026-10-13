@@ -32,13 +32,6 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// refuteRuntimeUnloaded, when "1", also refutes distributions inside the runtime install
-// that no runtime root loads. It is off: undeclared soft imports (`try: import x`) in
-// loaded dependency code are invisible to the lane, so only distributions outside the
-// runtime install refute by default. Set at build time with
-// -ldflags "-X github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis.refuteRuntimeUnloaded=1".
-var refuteRuntimeUnloaded = ""
-
 // loadSet is the computed runtime load set of one build.
 type loadSet struct {
 	locks    *lockModel
@@ -406,6 +399,7 @@ type pyprojectEntryPoints struct {
 	Project struct {
 		Name         string                       `toml:"name"`
 		Dependencies []string                     `toml:"dependencies"`
+		Dynamic      []string                     `toml:"dynamic"`
 		Scripts      map[string]string            `toml:"scripts"`
 		GUIScripts   map[string]string            `toml:"gui-scripts"`
 		EntryPoints  map[string]map[string]string `toml:"entry-points"`
@@ -442,7 +436,7 @@ func (ls *loadSet) projectRoots(buildDir string) {
 			ls.addProjectName(pp.Project.Name)
 			ls.addProjectName(pp.Tool.Poetry.Name)
 			delete(pp.Tool.Poetry.Dependencies, "python")
-			if len(pp.Project.Dependencies) > 0 || len(pp.Tool.Poetry.Dependencies) > 0 {
+			if len(pp.Project.Dependencies) > 0 || len(pp.Tool.Poetry.Dependencies) > 0 || dynamicDeps(pp.Project.Dynamic) {
 				ls.unlockedProject(rel)
 			}
 			var specs []string
@@ -528,10 +522,23 @@ func (ls *loadSet) projectRoots(buildDir string) {
 // markerless. A lockfile locks only its own directory's project and its declared uv workspace
 // members, never a nested project outside them.
 func (ls *loadSet) unlockedProject(rel string) {
+	// unlockedProject is also reached for dependencies a build backend computes (dynamic):
+	// only a lockfile that locks the project describes what they resolve to.
 	if ls.locks.coverDirs[path.Dir(rel)] {
 		return
 	}
 	ls.noMarkers("%s declares dependencies no lockfile locks", rel)
+}
+
+// dynamicDeps reports a [project] dynamic list naming dependencies or optional-dependencies:
+// the build backend computes them, so the manifest itself does not list them.
+func dynamicDeps(fields []string) bool {
+	for _, f := range fields {
+		if f == "dependencies" || f == "optional-dependencies" {
+			return true
+		}
+	}
+	return false
 }
 
 var setupPyName = regexp.MustCompile(`\bname\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]`)
@@ -608,19 +615,8 @@ func (ls *loadSet) configRoots(buildDir string) {
 // walkProjectFiles calls fn for every file under buildDir outside skipped trees and test
 // directories, with its slash-separated relative path.
 func walkProjectFiles(buildDir string, fn func(rel, abs string)) {
-	walkProjectTree(buildDir, fn, nil)
-}
-
-// walkProjectTree is walkProjectFiles that also reports each path it could not read to
-// unreadable, when set.
-func walkProjectTree(buildDir string, fn func(rel, abs string), unreadable func(rel string)) {
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			if unreadable != nil {
-				if rel, rerr := filepath.Rel(buildDir, path); rerr == nil {
-					unreadable(filepath.ToSlash(rel))
-				}
-			}
 			return nil //nolint:nilerr // an unreadable subtree contributes nothing; keep walking.
 		}
 		if d.IsDir() {
@@ -985,8 +981,12 @@ func pypiPackageRef(purl string) (name, version string, ok bool) {
 // loaded, not locked at version, or the project's own distribution (a root subject); the
 // lockfile cannot tell runtime from dev; some install source is markerless (an unpinned
 // requirements file, an unlocked project, or a lockfile that is not the only candidate for
-// its directory); the production install keeps dev dependencies; or
-// any locked copy of dist is in the runtime install (unless refuteRuntimeUnloaded).
+// its directory); the production install keeps dev dependencies; or any locked copy of dist
+// is in the runtime install, or something in the repository installs it.
+//
+// The grounds are install-closure membership alone: dist is outside the runtime install per
+// the lockfile's own markers and nothing installs it some other way. A missing import never
+// grounds a refutation; ls.loaded only blocks one.
 //
 // dist arrives PEP 503 normalized (pypiPackageRef), and every name it is compared against was
 // normalized the same way when recorded, so the advisory's spelling (PyJWT, python_multipart)
@@ -1010,7 +1010,7 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 	for v := range ls.locks.versions[dist] {
 		runtime = runtime || ls.locks.copyRuntime[dist][v]
 	}
-	if runtime && refuteRuntimeUnloaded != "1" {
+	if runtime {
 		return nil
 	}
 	if !ls.locks.distinguishes || len(ls.markerless) > 0 || ls.keptByInstall(dist) {
@@ -1019,17 +1019,15 @@ func (ls *loadSet) refute(dist, version string) *plugin.Refutation {
 	return &plugin.Refutation{
 		Basis:   plugin.RefutationPackageNotLoaded,
 		Package: purl,
-		Detail:  ls.detail(dist, version, runtime),
+		Detail:  ls.detail(dist, version),
 	}
 }
 
 // detail is the one-line, checkable account of a refutation.
-func (ls *loadSet) detail(dist, version string, runtime bool) string {
+func (ls *loadSet) detail(dist, version string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s is locked (%s)", dist, version, strings.Join(ls.locks.files, ", "))
 	switch {
-	case runtime:
-		b.WriteString(" and in the runtime install")
 	case ls.locks.devLabel[dist] != "":
 		b.WriteString(" outside the runtime install, only reachable from dev tooling: " + ls.locks.devLabel[dist])
 	default:
@@ -1061,17 +1059,23 @@ func (ls *loadSet) detail(dist, version string, runtime bool) string {
 		if len(shown) > 4 {
 			shown = shown[:4]
 		}
-		fmt.Fprintf(&b, "; install commands checked in %d build, deploy and CI files (%s", len(sc.files), strings.Join(shown, ", "))
+		noun := "files"
+		if len(sc.files) == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(&b, "; install commands checked in %d %s (%s", len(sc.files), noun, strings.Join(shown, ", "))
 		if len(sc.files) > len(shown) {
 			fmt.Fprintf(&b, ", +%d more", len(sc.files)-len(shown))
 		}
 		b.WriteString(")")
 	} else {
-		b.WriteString("; no build, deploy or CI files to check for install commands")
+		b.WriteString("; no file in the repository runs an install command")
 	}
-	if !runtime {
-		b.WriteString("; assumes dev/tooling groups are not installed at runtime")
+	if sc := ls.scan; sc != nil && len(sc.images) > 0 {
+		images := sortedKeys(sc.images)
+		fmt.Fprintf(&b, "; packages preinstalled in base images are not read (%s)", strings.Join(images, ", "))
 	}
+	b.WriteString("; assumes dev/tooling groups are not installed at runtime")
 	return b.String()
 }
 

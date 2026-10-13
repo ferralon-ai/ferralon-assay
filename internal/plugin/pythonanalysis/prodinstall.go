@@ -1,39 +1,40 @@
 package pythonanalysis
 
-// Install commands in the repository's build, deploy and CI files. A class (i) refutation
-// assumes the lockfile's dev/optional groups are not installed at runtime and that nothing
-// installs a distribution outside the lockfile's own selection. The scanner checks both and
-// fails closed:
+// What the repository installs. A package_not_loaded refutation rests only on install-closure
+// membership: the distribution is outside the runtime install per the lockfile's markers
+// (class (i)), and nothing in the repository installs it some other way. It never rests on the
+// absence of an import. Class (i) assumes the lockfile's dev/optional groups are not installed
+// at runtime, so the scanner needs positive evidence that the production install is fully
+// characterized, and fails closed whenever it lacks that evidence:
 //
+//   - Every file under the build dir is walked (buildwalk.go: only a committed node_modules or
+//     site-packages is skipped, and a symlink that leaves the build dir vetoes). A file is a
+//     candidate install surface when it is a Dockerfile/Containerfile, a GitHub workflow or
+//     action, GitLab CI, a shell script (by extension or shebang), a Makefile, Procfile or
+//     Jenkinsfile, a known deploy or CI config, or ANY text file whose content carries an
+//     installer token (pip, uv, uvx, pipx, poetry, pdm, pipenv, micropipenv, pex, shiv, flit,
+//     rye, hatch, pixi, conda, mamba, easy_install, setup.py install) or a PIP_* setting.
+//   - Every candidate must parse fully into the modelled install set: a line that carries an
+//     installer token but that the parser does not account for vetoes.
 //   - A production install that keeps a lockfile group blocks every distribution reached only
-//     through that group. The kept set is what the install mode provably keeps: `uv sync
-//     --no-dev` still keeps [tool.uv] default-groups other than dev, and `poetry install
-//     --without dev` still keeps every other non-optional group.
-//   - An install command that names a distribution blocks it and its lockfile closure, in any
-//     file and any job. Requirement and constraint files an install reads (-r, -c) are read
-//     the same way.
-//   - Anything the scanner cannot positively parse vetoes every refutation: a variable or
-//     substitution in a command or its arguments; installing the project, a path, a wheel or
-//     sdist, a URL or a VCS reference; -e; a requirement file it cannot read, from a URL, or
-//     outside the repository; a name the lockfile does not lock; an unknown option or pip
-//     subcommand; `--no-deps` alongside another pip install; a lockfile install with no
-//     lockfile of its format; a scanned file that does not parse or a directory the walk cannot
-//     read; and every install family it
-//     does not parse (conda, mamba, uv/poetry/pdm add, pipenv install <pkgs>, easy_install,
-//     setup.py install).
-//
-// Scope: Dockerfile*, Containerfile*, *.dockerfile, Makefile/*.mk, Procfile, Jenkinsfile and
-// shell scripts outside test directories; every GitHub workflow and composite action; GitLab
-// CI; docker-compose/compose files; cloudbuild, render, fly, railway, heroku and app.yaml
-// configs; Azure Pipelines, Travis, Bitbucket, CircleCI and Buildkite configs. Group keeps
-// count only in production contexts: everything except GitHub and GitLab jobs that are not
-// deploy jobs.
+//     through that group; the kept set is what the install mode provably keeps.
+//   - An install outside a lockfile installs its requirement's unlisted transitive closure, so
+//     it blocks ALL refutations: a pip requirement without an exact pin to a locked version, a
+//     pinned one whose locked closure is not pinned in the same install, extras, and every
+//     isolated tool install (pipx, uvx, uv tool, uv run --with). Only pip, setuptools, wheel
+//     and uv, whose closures are fixed, are exempt.
+//   - A pip configuration file anywhere, a PIP_* setting that changes what pip installs, an
+//     installer setting naming groups or extras, a requirement file that cannot be placed (in a
+//     Dockerfile: through WORKDIR, COPY and ADD), a COPY --from or RUN --mount from an image the
+//     repository does not build, a group selector the scanner does not model (pdm :all), a
+//     project whose dependencies are dynamic and unlocked, a system package manager installing
+//     a Python distribution, and every install family or option the scanner does not parse veto
+//     every refutation.
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -45,99 +46,194 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// installScan is what the build, deploy and CI files install.
+// installScan is what the repository's files install.
 type installScan struct {
 	ls           *loadSet
 	root         string
-	files        []string          // install surfaces read, relative paths
+	files        []string          // candidate install surfaces read, relative paths
 	keep         map[string]string // group key → where a production install keeps it
 	lockInstalls int               // production lockfile installs (uv sync, poetry install, ...)
 	pipInstalls  int
 	noDeps       string // where a pip install --no-deps ran
 	reqSeen      map[string]bool
+	images       map[string]bool // FROM images not built in the repository
+	handled      int             // install commands the parser accounted for
+	vetoes       int
 }
 
-// scanCtx locates one command: the file it is in, a human location, and whether it is a
-// production install.
+// scanCtx locates one command: the file it is in, a human location, whether it is a
+// production install, and the state relative paths resolve against.
 type scanCtx struct {
 	file, where string
 	prod        bool
+	st          *textState
+}
+
+// textState is what a relative path in a command resolves against: repository directories,
+// or, inside a Dockerfile, the container working directory and the image's copies.
+type textState struct {
+	bases   []string // repository directories, slash-separated
+	unknown bool     // a cd the scanner could not follow
+	docker  *dockerRunCtx
+}
+
+func newTextState(bases ...string) *textState {
+	return &textState{bases: append([]string(nil), bases...)}
 }
 
 func (sc *installScan) veto(c scanCtx, format string, args ...any) {
+	sc.vetoes++
 	sc.ls.noMarkers("%s: %s", c.where, fmt.Sprintf(format, args...))
 }
 
-// scanInstalls reads every install surface under buildDir into ls.scan.
+type pendingWorkflow struct {
+	rel  string
+	data []byte
+}
+
+// scanInstalls reads every candidate install surface under buildDir into ls.scan.
 func (ls *loadSet) scanInstalls(buildDir string) {
-	sc := &installScan{ls: ls, root: buildDir, keep: map[string]string{}, reqSeen: map[string]bool{}}
+	sc := &installScan{ls: ls, root: buildDir, keep: map[string]string{}, reqSeen: map[string]bool{}, images: map[string]bool{}}
 	ls.scan = sc
-	unreadable := func(rel string) {
-		sc.veto(scanCtx{where: rel}, "could not be read: install commands under it are unknown")
-	}
-	walkProjectTree(buildDir, func(rel, abs string) {
-		if kind := installSurface(rel); kind != "" {
-			sc.scanFile(rel, abs, kind)
-		}
-	}, unreadable)
-	// walkProjectFiles skips hidden trees; CI configuration lives in some.
-	for _, dir := range []string{".github", ".circleci", ".buildkite"} {
-		top := filepath.Join(buildDir, dir)
-		_ = filepath.WalkDir(top, func(p string, d os.DirEntry, err error) error {
-			rel, rerr := filepath.Rel(buildDir, p)
-			if rerr != nil {
-				return nil //nolint:nilerr // outside the build dir.
+	var workflows []pendingWorkflow
+	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
+		rel := relSlash(buildDir, e.Path)
+		c := scanCtx{file: rel, where: rel, prod: true}
+		switch {
+		case err != nil:
+			sc.veto(c, "could not be read: install commands under it are unknown")
+			if e.D != nil && e.D.IsDir() && e.Path != buildDir {
+				return filepath.SkipDir
 			}
-			rel = filepath.ToSlash(rel)
-			if err != nil {
-				if !(p == top && errors.Is(err, fs.ErrNotExist)) {
-					unreadable(rel)
+			return nil
+		case e.Symlink && e.Escapes:
+			sc.veto(c, "symlink that leaves the repository or does not resolve: install commands behind it are unknown")
+			return nil
+		case e.Skipped, e.D.IsDir():
+			return nil
+		case e.Symlink:
+			if buildTreeIsDir(e.Path) {
+				// Its target is walked where it lives, unless that is inside a skipped directory.
+				if target, err := filepath.EvalSymlinks(e.Path); err != nil || underSkipped(buildDir, target) {
+					sc.veto(c, "symlink into a skipped directory: install commands behind it are unknown")
 				}
 				return nil
 			}
-			if d.IsDir() {
-				return nil
-			}
-			if kind := hiddenInstallSurface(rel); kind != "" {
-				sc.scanFile(rel, p, kind)
-			}
+		case !e.D.Type().IsRegular():
+			return nil // a device, socket or pipe runs nothing, and reading a pipe would block
+		}
+		base := strings.ToLower(path.Base(rel))
+		if base == "pip.conf" || base == "pip.ini" {
+			sc.veto(c, "pip configuration file: it can add requirements and options the scanner does not read")
 			return nil
-		})
-	}
+		}
+		data, binary, err := readTextFile(e.Path)
+		if err != nil {
+			sc.veto(c, "could not be read")
+			return nil
+		}
+		if binary {
+			return nil
+		}
+		kind := installSurface(rel, data)
+		if kind == "" {
+			return nil
+		}
+		sc.files = append(sc.files, rel)
+		sc.envVetoes(c, data)
+		if kind == "workflow" {
+			workflows = append(workflows, pendingWorkflow{rel, data})
+			return nil
+		}
+		sc.scanFile(rel, data, kind)
+		return nil
+	})
+	sc.scanWorkflows(workflows)
 	sort.Strings(sc.files)
 	if sc.noDeps != "" && sc.pipInstalls > 1 {
 		ls.noMarkers("%s: pip install --no-deps alongside another pip install leaves the installed dependencies unknown", sc.noDeps)
 	}
 }
 
-// installSurface classifies a file walkProjectFiles visits: "shell" (lines of commands),
-// "yaml"/"toml"/"json" (must parse, then read as lines), "gitlab", or "".
-func installSurface(rel string) string {
-	base := strings.ToLower(path.Base(rel))
-	ext := path.Ext(base)
-	yml := ext == ".yml" || ext == ".yaml"
-	switch {
-	case strings.HasPrefix(base, "dockerfile"), strings.HasPrefix(base, "containerfile"), ext == ".dockerfile",
-		base == "makefile", base == "gnumakefile", ext == ".mk", base == "procfile", strings.HasPrefix(base, "jenkinsfile"),
-		ext == ".sh", ext == ".bash":
-		return "shell"
-	case base == ".gitlab-ci.yml" || base == ".gitlab-ci.yaml":
-		return "gitlab"
-	case yml && (strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose") ||
-		strings.HasPrefix(base, "cloudbuild") || strings.HasPrefix(base, "azure-pipelines") ||
-		base == "render.yaml" || base == "render.yml" || base == "app.yaml" || base == "app.yml" ||
-		base == "heroku.yml" || base == ".travis.yml" || base == "bitbucket-pipelines.yml"):
-		return "yaml"
-	case base == "fly.toml", base == "railway.toml":
-		return "toml"
-	case base == "railway.json":
-		return "json"
+func relSlash(root, p string) string {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return filepath.ToSlash(p)
 	}
-	return ""
+	return filepath.ToSlash(rel)
 }
 
-// hiddenInstallSurface classifies a file under .github, .circleci or .buildkite.
-func hiddenInstallSurface(rel string) string {
+// underSkipped reports whether target lies inside a node_modules or site-packages directory
+// under root (or outside root).
+func underSkipped(root, target string) bool {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return true
+	}
+	rel, err := filepath.Rel(realRoot, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return true
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if buildTreeSkipped(part) {
+			return true
+		}
+	}
+	return false
+}
+
+// installCommandRe matches an installer token: an install family word (with any directory
+// prefix) followed by a subcommand that installs, or an installer that always installs.
+var installCommandRe = regexp.MustCompile(`(?:^|[^\w.-])(?:[\w.-]*/)*(?:` +
+	`pip[0-9.]*[\s"',]+(?:install|config)\b|pip-sync\b|` +
+	`uv[\s"',]+(?:pip|sync|add|run|tool|export|lock)\b|uvx\b|` +
+	`pipx[\s"',]+(?:install|run|inject|upgrade|reinstall|install-all|runpip|upgrade-all|reinstall-all)\b|` +
+	`poetry[\s"',]+(?:install|sync|add|update|export|self|lock)\b|` +
+	`pdm[\s"',]+(?:install|sync|add|update|export|self|lock|plugin|import)\b|` +
+	`pipenv[\s"',]+(?:install|sync|update|upgrade|lock)\b|` +
+	`micropipenv\b|pex\b|shiv\b|flit[\s"',]+install\b|` +
+	`rye[\s"',]+(?:sync|add|install|tools?)\b|hatch[\s"',]+(?:env|run|shell|test|fmt)\b|` +
+	`pixi[\s"',]+(?:install|add|run|global|shell|exec)\b|` +
+	`(?:conda|mamba|micromamba)[\s"',]+(?:install|create|env|update|upgrade)\b|` +
+	`easy_install\b|setup\.py[\s"',]+(?:install|develop)\b)`)
+
+// pipEnvRe matches a pip setting by environment variable; installerEnvRe matches an installer
+// setting whose name selects groups or extras.
+var (
+	pipEnvRe       = regexp.MustCompile(`\bPIP_([A-Z][A-Z0-9_]*)`)
+	installerEnvRe = regexp.MustCompile(`\b(?:UV|POETRY|PDM|PIPENV)_[A-Z0-9_]*(?:GROUP|DEV|EXTRA|WITH|ONLY|CATEGOR|OPTIONAL)[A-Z0-9_]*`)
+)
+
+// pipEnvHarmless are PIP_* settings that change how pip fetches or reports, never which
+// requirements it installs.
+var pipEnvHarmless = setOf("NO_CACHE_DIR", "DISABLE_PIP_VERSION_CHECK", "DEFAULT_TIMEOUT", "TIMEOUT", "RETRIES",
+	"INDEX_URL", "EXTRA_INDEX_URL", "TRUSTED_HOST", "FIND_LINKS", "ROOT_USER_ACTION", "NO_INPUT", "PROGRESS_BAR",
+	"BREAK_SYSTEM_PACKAGES", "PREFER_BINARY", "NO_COLOR", "QUIET", "VERBOSE", "CERT", "CLIENT_CERT", "PROXY",
+	"CACHE_DIR", "NO_WARN_SCRIPT_LOCATION", "REQUIRE_VIRTUALENV", "NO_PYTHON_VERSION_WARNING", "KEYRING_PROVIDER",
+	"ONLY_BINARY", "NO_BINARY", "NO_BUILD_ISOLATION", "COMPILE", "NO_COMPILE")
+
+func (sc *installScan) envVetoes(c scanCtx, data []byte) {
+	seen := map[string]bool{}
+	for _, m := range pipEnvRe.FindAllSubmatch(data, -1) {
+		name := string(m[1])
+		if pipEnvHarmless[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		sc.veto(c, "sets PIP_%s, which can change what pip installs", name)
+	}
+	for _, m := range installerEnvRe.FindAll(data, -1) {
+		if name := string(m); !seen[name] {
+			seen[name] = true
+			sc.veto(c, "sets %s, an installer setting that selects groups or extras", name)
+		}
+	}
+}
+
+// installSurface classifies a file: "workflow", "action", "gitlab", "docker", "shell" (lines of
+// commands), "yaml"/"toml"/"json" (must parse, then read as lines), "text" (lines of
+// commands), or "" when it is not an install surface.
+func installSurface(rel string, data []byte) string {
 	base := strings.ToLower(path.Base(rel))
 	ext := path.Ext(base)
 	yml := ext == ".yml" || ext == ".yaml"
@@ -146,28 +242,67 @@ func hiddenInstallSurface(rel string) string {
 		return "workflow"
 	case strings.HasPrefix(rel, ".github/") && (base == "action.yml" || base == "action.yaml"):
 		return "action"
-	case yml && (rel == ".circleci/config.yml" || strings.HasPrefix(rel, ".buildkite/")):
-		return "yaml"
-	case ext == ".sh", ext == ".bash":
+	case base == ".gitlab-ci.yml" || base == ".gitlab-ci.yaml":
+		return "gitlab"
+	case strings.HasPrefix(base, "dockerfile"), strings.HasPrefix(base, "containerfile"), ext == ".dockerfile", ext == ".containerfile":
+		return "docker"
+	case base == "makefile", base == "gnumakefile", ext == ".mk", base == "procfile", strings.HasPrefix(base, "jenkinsfile"),
+		ext == ".sh", ext == ".bash", ext == ".zsh", ext == ".ksh", shellShebang.Match(data):
 		return "shell"
+	case yml && (strings.HasPrefix(base, "docker-compose") || strings.HasPrefix(base, "compose") ||
+		strings.HasPrefix(base, "cloudbuild") || strings.HasPrefix(base, "azure-pipelines") ||
+		base == "render.yaml" || base == "render.yml" || base == "app.yaml" || base == "app.yml" ||
+		base == "heroku.yml" || base == ".travis.yml" || base == "bitbucket-pipelines.yml" ||
+		strings.HasPrefix(base, "buildspec") || rel == ".circleci/config.yml" || strings.HasPrefix(rel, ".buildkite/")):
+		return "yaml"
+	case base == "fly.toml", base == "railway.toml":
+		return "toml"
+	case base == "railway.json":
+		return "json"
 	}
-	return ""
+	if !installCommandRe.Match(data) && !pipEnvRe.Match(data) && !installerEnvRe.Match(data) {
+		return ""
+	}
+	if hasDisallowedEnvOnly(data) {
+		return "env"
+	}
+	switch {
+	case yml:
+		return "yaml"
+	case ext == ".toml":
+		return "toml"
+	case ext == ".json":
+		return "json"
+	}
+	return "text"
 }
 
-func (sc *installScan) scanFile(rel, abs, kind string) {
-	c := scanCtx{file: rel, where: rel, prod: true}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		sc.veto(c, "could not be read")
-		return
-	}
-	sc.files = append(sc.files, rel)
+// hasDisallowedEnvOnly reports a file that is a candidate only for its settings: its vetoes
+// come from envVetoes, and it carries no installer token to parse.
+func hasDisallowedEnvOnly(data []byte) bool {
+	return !installCommandRe.Match(data)
+}
+
+var shellShebang = regexp.MustCompile(`^#!\s*(?:/usr)?(?:/local)?/bin/(?:env\s+)?(?:sh|bash|dash|zsh|ksh|ash)\b`)
+
+func (sc *installScan) scanFile(rel string, data []byte, kind string) {
+	c := scanCtx{file: rel, where: rel, prod: true, st: newTextState(path.Dir(rel), ".")}
 	switch kind {
+	case "env":
+		return
 	case "yaml":
-		var v any
-		if err := yaml.Unmarshal(data, &v); err != nil {
-			sc.veto(c, "could not be parsed")
-			return
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		for {
+			var v any
+			err := dec.Decode(&v)
+			if err != nil {
+				if err.Error() == "EOF" {
+					break
+				}
+				sc.veto(c, "could not be parsed")
+				return
+			}
+			sc.scanVectors(c, v)
 		}
 	case "toml":
 		var v map[string]any
@@ -175,27 +310,67 @@ func (sc *installScan) scanFile(rel, abs, kind string) {
 			sc.veto(c, "could not be parsed")
 			return
 		}
+		sc.scanVectors(c, v)
 	case "json":
-		if !json.Valid(data) {
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
 			sc.veto(c, "could not be parsed")
 			return
 		}
-	case "workflow":
-		sc.scanWorkflow(rel, data)
-		return
+		sc.scanVectors(c, v)
 	case "action":
 		sc.scanAction(rel, data)
 		return
 	case "gitlab":
 		sc.scanGitLab(rel, data)
 		return
+	case "docker":
+		sc.scanDockerfile(rel, string(data))
+		return
 	}
+	// A parsed config is also read line by line: a command can sit in any scalar.
+	c.st = newTextState(path.Dir(rel), ".")
 	sc.scanText(c, string(data))
 }
 
+// scanVectors reads every all-string sequence in a parsed config as one command (a container
+// `command: [sh, -c, ...]` or an exec-form vector split over lines); the raw lines are read
+// too.
+func (sc *installScan) scanVectors(c scanCtx, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, k := range sortedMapKeys(t) {
+			sc.scanVectors(c, t[k])
+		}
+	case []any:
+		words := make([]string, 0, len(t))
+		for _, e := range t {
+			s, ok := e.(string)
+			if !ok {
+				words = nil
+				break
+			}
+			words = append(words, s)
+		}
+		if len(words) > 1 {
+			lc := c
+			lc.where = c.where + " vector"
+			lc.st = newTextState(path.Dir(c.file), ".")
+			sc.scanText(lc, strings.Join(words, " "))
+		}
+		for _, e := range t {
+			sc.scanVectors(c, e)
+		}
+	}
+}
+
 // scanText reads text as shell command lines: backslash continuations joined, comment lines
-// skipped, each line split on && || ; |.
+// skipped, each line split on && || ; |. A line that carries an installer token the parser
+// does not account for vetoes.
 func (sc *installScan) scanText(c scanCtx, text string) {
+	if c.st == nil {
+		c.st = newTextState(path.Dir(c.file), ".")
+	}
 	lines := strings.Split(text, "\n")
 	for i := 0; i < len(lines); i++ {
 		start := i
@@ -209,15 +384,62 @@ func (sc *installScan) scanText(c scanCtx, text string) {
 		}
 		lc := c
 		lc.where = fmt.Sprintf("%s:%d", c.where, start+1)
-		for _, seg := range splitShellCommands(line) {
-			sc.command(lc, shellTokens(seg))
+		sc.scanLine(lc, line)
+	}
+}
+
+// scanLine reads one logical command line.
+func (sc *installScan) scanLine(c scanCtx, line string) {
+	handled, vetoes := sc.handled, sc.vetoes
+	for _, seg := range splitShellCommands(line) {
+		tok := shellTokens(seg)
+		if len(tok) > 0 && (cmdWord(tok[0]) == "cd" || cmdWord(tok[0]) == "pushd" || cmdWord(tok[0]) == "popd") {
+			c.st.cd(tok)
+			continue
 		}
+		sc.command(c, tok)
+	}
+	if installCommandRe.MatchString(line) && sc.handled == handled && sc.vetoes == vetoes {
+		sc.veto(c, "an install command the scanner does not parse")
+	}
+}
+
+// cd follows a change of directory: a literal relative path moves every base (or the container
+// working directory); anything else leaves the directory unknown.
+func (st *textState) cd(tok []string) {
+	sub := strings.HasPrefix(tok[0], "(")
+	if cmdWord(tok[0]) != "cd" || len(tok) < 2 || sub || strings.ContainsAny(tok[1], "$`~") || tok[1] == "-" || shellEnd(tok[1]) {
+		st.unknown = true
+		if st.docker != nil {
+			st.docker.cwdUnknown = true
+		}
+		return
+	}
+	d := path.Clean(tok[1])
+	if st.docker != nil {
+		if path.IsAbs(d) {
+			st.docker.cwd = d
+		} else {
+			st.docker.cwd = path.Join(st.docker.cwd, d)
+		}
+		return
+	}
+	if path.IsAbs(d) {
+		st.unknown = true
+		return
+	}
+	for i := range st.bases {
+		st.bases[i] = path.Join(st.bases[i], d)
 	}
 }
 
 var shellSeparators = regexp.MustCompile(`&&|\|\||;|\|`)
 
 func splitShellCommands(line string) []string { return shellSeparators.Split(line, -1) }
+
+// arrayOpen is the bracket that opens an exec-form array; an extras bracket (black[d]) follows
+// a name instead.
+var arrayOpen = regexp.MustCompile(`(^|[\s=:])\[`)
 
 // execFormComma is the comma between two quoted words of an exec-form array.
 var execFormComma = regexp.MustCompile(`(["'])\s*,\s*(["'])`)
@@ -227,51 +449,15 @@ var execFormComma = regexp.MustCompile(`(["'])\s*,\s*(["'])`)
 // (`--without dev,docs`) is kept.
 func shellTokens(seg string) []string {
 	seg = execFormComma.ReplaceAllString(seg, "$1 $2")
-	seg = strings.NewReplacer(`"`, " ", `'`, " ", "[", " [").Replace(seg)
+	seg = arrayOpen.ReplaceAllString(seg, "$1 ")
+	seg = strings.NewReplacer(`"`, " ", `'`, " ").Replace(seg)
 	var out []string
 	for _, f := range strings.Fields(seg) {
-		if f == "[" || f == "]" {
-			continue
+		if !strings.Contains(f, "[") {
+			f = strings.TrimRight(f, "]")
 		}
-		out = append(out, f)
-	}
-	return out
-}
-
-func hasFlag(args []string, flags ...string) bool {
-	for _, a := range args {
-		for _, f := range flags {
-			if a == f || strings.HasPrefix(a, f+"=") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// flagValues returns the values of every --flag value or --flag=value pair.
-func flagValues(args []string, flags ...string) []string {
-	var out []string
-	for i, a := range args {
-		for _, flag := range flags {
-			if a == flag && i+1 < len(args) {
-				out = append(out, args[i+1])
-			} else if v, ok := strings.CutPrefix(a, flag+"="); ok {
-				out = append(out, v)
-			}
-		}
-	}
-	return out
-}
-
-// listValues is flagValues with comma-separated lists split and names PEP 503 normalized.
-func listValues(args []string, flags ...string) []string {
-	var out []string
-	for _, v := range flagValues(args, flags...) {
-		for _, p := range strings.Split(v, ",") {
-			if n := normalizePyCoordinate(p); n != "" {
-				out = append(out, n)
-			}
+		if f != "" {
+			out = append(out, f)
 		}
 	}
 	return out
@@ -314,23 +500,36 @@ func (sc *installScan) command(c scanCtx, tok []string) {
 		}
 		switch {
 		case pipWordRe.MatchString(w):
+			sc.handled++
 			sc.pip(c, rest)
 			return
 		case pythonRe.MatchString(w) && len(rest) >= 2 && rest[0] == "-m":
 			mod := rest[1]
 			if pipWordRe.MatchString(mod) {
+				sc.handled++
 				sc.pip(c, rest[2:])
 				return
 			}
 			if familyWords[mod] {
+				sc.handled++
 				sc.family(c, mod, rest[2:])
 				return
 			}
 		case w == "pip-sync":
+			sc.handled++
 			sc.syncFiles(c, rest)
 			return
 		case familyWords[w]:
+			sc.handled++
 			sc.family(c, w, rest)
+			return
+		case vetoFamilies[w]:
+			sc.handled++
+			sc.vetoFamily(c, w, rest)
+			return
+		case systemInstallers[w]:
+			sc.handled++
+			sc.systemInstall(c, w, rest)
 			return
 		case w == "easy_install":
 			sc.veto(c, "easy_install is not parsed")
@@ -347,6 +546,80 @@ var familyWords = map[string]bool{
 	"conda": true, "mamba": true, "micromamba": true,
 }
 
+// vetoFamilies are installers the scanner does not model; harmless lists the subcommands of
+// each that install nothing.
+var (
+	vetoFamilies = setOf("micropipenv", "pex", "shiv", "flit", "rye", "hatch", "pixi")
+	vetoHarmless = map[string]map[string]bool{
+		"flit":  setOf("build", "publish", "init", "--version", "--help", "-h"),
+		"rye":   setOf("show", "version", "build", "publish", "fmt", "lint", "init", "config", "self", "--version", "--help", "-h", "help"),
+		"hatch": setOf("build", "publish", "version", "clean", "config", "status", "new", "project", "--version", "--help", "-h", "help"),
+		"pixi":  setOf("info", "list", "tree", "init", "auth", "config", "clean", "search", "--version", "--help", "-h", "help", "completion"),
+	}
+)
+
+func (sc *installScan) vetoFamily(c scanCtx, w string, rest []string) {
+	if len(rest) > 0 && vetoHarmless[w][rest[0]] {
+		return
+	}
+	if len(rest) == 0 || shellEnd(rest[0]) {
+		if w == "flit" || w == "rye" || w == "hatch" || w == "pixi" {
+			return
+		}
+	}
+	sc.veto(c, "%s installs dependencies the scanner does not parse", strings.TrimSpace(w+" "+firstArg(rest)))
+}
+
+func firstArg(xs []string) string {
+	if len(xs) == 0 || shellEnd(xs[0]) {
+		return ""
+	}
+	return xs[0]
+}
+
+// systemInstallers are system package managers; a Python distribution they install
+// (python3-<name>, py3-<name>) is outside the lockfile.
+var systemInstallers = setOf("apt-get", "apt", "apk", "dnf", "yum", "microdnf", "zypper")
+
+// systemPythonHarmless are suffixes of interpreter and build-tool packages, not distributions
+// an application imports.
+var systemPythonHarmless = []string{"-pip", "-venv", "-dev", "-distutils", "-setuptools", "-wheel", "-minimal", "-full",
+	"-lib2to3", "-all", "-all-dev", "-tk", "-gdbm", "-doc", "-dbg", "-examples", "-stdlib-extensions"}
+
+var systemPythonRe = regexp.MustCompile(`^(?:python3?(?:\.\d+)?|py3)-([A-Za-z0-9][A-Za-z0-9._+-]*?)(?:=.*)?$`)
+
+func (sc *installScan) systemInstall(c scanCtx, w string, rest []string) {
+	if len(rest) == 0 || (rest[0] != "install" && rest[0] != "add") {
+		// Options before the verb (`apt-get -y install`) are read too.
+		i := 0
+		for i < len(rest) && strings.HasPrefix(rest[i], "-") {
+			i++
+		}
+		if i >= len(rest) || (rest[i] != "install" && rest[i] != "add") {
+			return
+		}
+		rest = rest[i:]
+	}
+	for _, a := range rest[1:] {
+		if shellEnd(a) {
+			return
+		}
+		m := systemPythonRe.FindStringSubmatch(a)
+		if m == nil {
+			continue
+		}
+		pkg, _, _ := strings.Cut(a, "=")
+		harmless := false
+		for _, s := range systemPythonHarmless {
+			harmless = harmless || strings.HasSuffix(pkg, s)
+		}
+		if !harmless {
+			sc.veto(c, "%s installs %s, a Python distribution outside the lockfile", w, a)
+			return
+		}
+	}
+}
+
 // --- pip -----------------------------------------------------------------------------
 
 var (
@@ -355,7 +628,7 @@ var (
 		"--user", "--break-system-packages")
 	pipGlobalValues = setOf("--python", "--log", "--proxy", "--retries", "--timeout", "--exists-action", "--trusted-host",
 		"--cert", "--client-cert", "--cache-dir", "--use-feature", "--use-deprecated", "--keyring-provider")
-	pipOtherSubs = setOf("download", "wheel", "freeze", "list", "show", "uninstall", "config", "cache", "check", "inspect",
+	pipOtherSubs = setOf("download", "wheel", "freeze", "list", "show", "uninstall", "cache", "check", "inspect",
 		"index", "hash", "debug", "completion", "help", "compile", "tree", "lock")
 	pipInstallFlags = setOf("-U", "--upgrade", "--user", "--system", "--no-cache-dir", "-q", "--quiet", "-v", "--verbose",
 		"--pre", "--force-reinstall", "-I", "--ignore-installed", "--no-build-isolation", "--break-system-packages",
@@ -408,10 +681,24 @@ func (sc *installScan) pip(c scanCtx, args []string) {
 	switch sub := args[i]; {
 	case sub == "install":
 		sc.pipInstall(c, args[i+1:])
+	case sub == "config":
+		if i+1 < len(args) && (args[i+1] == "list" || args[i+1] == "get" || args[i+1] == "debug") {
+			return
+		}
+		sc.veto(c, "pip config changes pip's configuration, which can add requirements")
 	case pipOtherSubs[sub]:
 	default:
 		sc.veto(c, "pip %s is not a subcommand the scanner parses", sub)
 	}
+}
+
+// pipSet is what one install command asks for: the distributions it installs and the exact
+// pins its requirements and constraints give.
+type pipSet struct {
+	installs []string
+	boot     []string
+	pins     map[string]string
+	noDeps   bool
 }
 
 // pipInstall reads `pip install` / `uv pip install` arguments.
@@ -426,6 +713,7 @@ func (sc *installScan) pipInstall(c scanCtx, args []string) {
 			return
 		}
 	}
+	set := &pipSet{pins: map[string]string{}}
 	targets := 0
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -434,7 +722,7 @@ func (sc *installScan) pipInstall(c scanCtx, args []string) {
 		}
 		if !strings.HasPrefix(a, "-") {
 			targets++
-			if !sc.spec(c, a, true) {
+			if !sc.spec(c, a, set, false) {
 				return
 			}
 			continue
@@ -464,14 +752,18 @@ func (sc *installScan) pipInstall(c scanCtx, args []string) {
 				sc.veto(c, "%s names no file the scanner can read", opt)
 				return
 			}
-			targets++
-			if !sc.reqFile(c, v) {
+			constraint := opt == "-c" || opt == "--constraint"
+			if !constraint {
+				targets++
+			}
+			if !sc.reqFile(c, v, set, constraint) {
 				return
 			}
 		case opt == "-e" || opt == "--editable":
 			sc.veto(c, "pip install %s installs a project whose dependencies are not read", opt)
 			return
 		case opt == "--no-deps":
+			set.noDeps = true
 			if sc.noDeps == "" {
 				sc.noDeps = c.where
 			}
@@ -488,17 +780,61 @@ func (sc *installScan) pipInstall(c scanCtx, args []string) {
 	}
 	if targets == 0 {
 		sc.veto(c, "pip install with no requirement the scanner could read")
+		return
+	}
+	sc.installSet(c, set)
+}
+
+// installSet marks what a pip install installs, or vetoes when it resolves outside the
+// lockfile: every requirement must be pinned exactly to a locked version, and so must every
+// distribution in its locked closure, or pip installs an unlisted transitive closure.
+func (sc *installScan) installSet(c scanCtx, set *pipSet) {
+	locks := sc.ls.locks
+	pinned := func(n string) bool {
+		v, ok := set.pins[n]
+		return ok && locks.versions[n][v]
+	}
+	for _, n := range set.installs {
+		if !pinned(n) {
+			sc.veto(c, "%s is not pinned to a locked version: it resolves outside the lockfile, so its transitive closure is not listed", n)
+			return
+		}
+	}
+	if !set.noDeps {
+		seen := map[string]bool{}
+		queue := append([]string(nil), set.installs...)
+		for len(queue) > 0 {
+			d := queue[0]
+			queue = queue[1:]
+			if seen[d] {
+				continue
+			}
+			seen[d] = true
+			if !pinned(d) {
+				sc.veto(c, "%s, in the locked closure of what this install names, is not pinned in it: pip resolves it outside the lockfile", d)
+				return
+			}
+			for ch := range locks.edges[d] {
+				queue = append(queue, ch)
+			}
+		}
+	}
+	for _, n := range set.boot {
+		sc.ls.markInstalled(n)
+		for _, d := range bootstrapClosures[n] {
+			sc.ls.markInstalled(d)
+		}
+	}
+	for _, n := range set.installs {
+		sc.ls.markInstalled(n)
 	}
 }
 
 var artifactSuffixes = []string{".whl", ".tar.gz", ".tgz", ".zip", ".tar.bz2", ".tar.xz", ".egg"}
 
-// spec reads one requirement an install names. strict (pip into the application's
-// environment): a locked or bootstrap name is blocked with its lockfile closure; any other
-// name has an unknown closure and the scan vetoes. Not strict (an isolated tool
-// environment: pipx, uv tool, uvx): a locked name is blocked with its closure, an unlocked one
-// adds nothing. Returns false when it vetoed.
-func (sc *installScan) spec(c scanCtx, a string, strict bool) bool {
+// spec reads one requirement into set: an install target, or with constraint only a pin.
+// Returns false when it vetoed.
+func (sc *installScan) spec(c scanCtx, a string, set *pipSet, constraint bool) bool {
 	a = strings.Trim(a, "()")
 	if a == "" {
 		return true
@@ -517,73 +853,61 @@ func (sc *installScan) spec(c scanCtx, a string, strict bool) bool {
 		artifact = artifact || strings.HasSuffix(lower, s)
 	}
 	if artifact || strings.HasPrefix(a, ".") || strings.HasPrefix(a, "~") || strings.ContainsAny(a, "/\\@") || strings.Contains(a, "://") {
+		if constraint {
+			return true
+		}
 		sc.veto(c, "%s installs a project, path, artifact, URL or VCS reference whose dependencies are not read", a)
 		return false
 	}
-	name, _, _, _ := parseRequirementSpec(a)
+	name, version, resolved, extras := parseRequirementSpec(a)
 	n := normalizePyCoordinate(name)
 	if n == "" {
 		sc.veto(c, "requirement %s is not parsed", a)
 		return false
 	}
-	locks := sc.ls.locks
-	if cl, ok := bootstrapClosures[n]; ok {
-		sc.ls.markInstalled(n)
-		for _, d := range cl {
-			sc.ls.markInstalled(d)
-		}
+	if resolved {
+		set.pins[n] = version
+	}
+	if constraint {
 		return true
 	}
-	if !strict {
-		if locks.versions[n] != nil {
-			sc.ls.markInstalled(n)
-		}
-		return true
-	}
-	if locks.versions[n] == nil {
-		sc.veto(c, "%s is not locked: its dependencies are unknown", a)
+	if len(extras) > 0 {
+		sc.veto(c, "%s requests extras whose dependencies the scanner does not read", a)
 		return false
 	}
-	sc.ls.markInstalled(n)
+	if _, ok := bootstrapClosures[n]; ok {
+		set.boot = append(set.boot, n)
+		return true
+	}
+	set.installs = append(set.installs, n)
 	return true
 }
 
-// reqFile reads a requirement or constraint file an install names: every line must be a name
-// a locked name or a source option. Returns false when it vetoed.
-func (sc *installScan) reqFile(c scanCtx, p string) bool {
-	if strings.Contains(p, "://") {
-		sc.veto(c, "requirement file %s is a URL", p)
+// reqFile reads a requirement or constraint file an install names into set. Returns false
+// when it vetoed.
+func (sc *installScan) reqFile(c scanCtx, p string, set *pipSet, constraint bool) bool {
+	rel, ok := sc.locate(c, p)
+	if !ok {
 		return false
 	}
-	if path.IsAbs(p) || filepath.IsAbs(p) || strings.HasPrefix(p, "~") {
-		sc.veto(c, "requirement file %s is not a repository path", p)
-		return false
+	key := rel
+	if constraint {
+		key = "c:" + rel
 	}
-	var rel string
-	for _, cand := range []string{path.Join(path.Dir(c.file), p), path.Clean(p)} {
-		if cand == ".." || strings.HasPrefix(cand, "../") {
-			continue
-		}
-		if info, err := os.Stat(filepath.Join(sc.root, filepath.FromSlash(cand))); err == nil && !info.IsDir() {
-			rel = cand
-			break
-		}
-	}
-	if rel == "" {
-		sc.veto(c, "requirement file %s is not in the repository", p)
-		return false
-	}
-	if sc.reqSeen[rel] {
+	if sc.reqSeen[key] && set == nil {
 		return true
 	}
-	sc.reqSeen[rel] = true
+	sc.reqSeen[key] = true
 	data, err := os.ReadFile(filepath.Join(sc.root, filepath.FromSlash(rel)))
 	if err != nil {
 		sc.veto(c, "requirement file %s could not be read", rel)
 		return false
 	}
-	sc.files = append(sc.files, rel)
-	rc := scanCtx{file: rel, where: rel, prod: c.prod}
+	if !containsString(sc.files, rel) {
+		sc.files = append(sc.files, rel)
+	}
+	// A nested -r or -c resolves against the file's own directory.
+	rc := scanCtx{file: rel, where: rel, prod: c.prod, st: newTextState(path.Dir(rel))}
 	for _, line := range joinContinuations(string(data)) {
 		t := strings.TrimSpace(stripReqComment(line))
 		if t == "" {
@@ -604,13 +928,17 @@ func (sc *installScan) reqFile(c scanCtx, p string) bool {
 			}
 			switch {
 			case opt == "-r" || opt == "--requirement" || opt == "-c" || opt == "--constraint":
-				if val == "" || !sc.reqFile(rc, val) {
-					if val == "" {
-						sc.veto(rc, "%s names no file", opt)
-					}
+				if val == "" {
+					sc.veto(rc, "%s names no file", opt)
+					return false
+				}
+				if !sc.reqFile(rc, val, set, constraint || opt == "-c" || opt == "--constraint") {
 					return false
 				}
 			case opt == "-e" || opt == "--editable":
+				if constraint {
+					continue
+				}
 				sc.veto(rc, "%s installs a project whose dependencies are not read", opt)
 				return false
 			case reqFileOptions[opt]:
@@ -626,40 +954,125 @@ func (sc *installScan) reqFile(c scanCtx, p string) bool {
 		if i := strings.Index(t, "--hash"); i >= 0 {
 			t = t[:i]
 		}
-		if !sc.spec(rc, strings.Join(strings.Fields(t), ""), true) {
+		if !sc.spec(rc, strings.Join(strings.Fields(t), ""), set, constraint) {
 			return false
 		}
 	}
 	return true
 }
 
+// locate places a requirement file a command names in the repository: inside a Dockerfile
+// through the image's working directory and copies, elsewhere against the command's base
+// directories. It vetoes when the file is a URL, outside the repository, missing, or could be
+// either of two files that differ.
+func (sc *installScan) locate(c scanCtx, p string) (string, bool) {
+	if strings.Contains(p, "://") {
+		sc.veto(c, "requirement file %s is a URL", p)
+		return "", false
+	}
+	st := c.st
+	if st == nil {
+		st = newTextState(path.Dir(c.file), ".")
+	}
+	if st.docker != nil {
+		srcs, why := st.docker.locate(p)
+		if why != "" {
+			sc.veto(c, "requirement file %s %s", p, why)
+			return "", false
+		}
+		return sc.pickRepoFile(c, p, srcs, []string{path.Dir(st.docker.df.rel), "."})
+	}
+	if path.IsAbs(p) || filepath.IsAbs(p) || strings.HasPrefix(p, "~") {
+		sc.veto(c, "requirement file %s is not a repository path", p)
+		return "", false
+	}
+	if st.unknown {
+		sc.veto(c, "requirement file %s is read after a change of directory the scanner cannot follow", p)
+		return "", false
+	}
+	return sc.pickRepoFile(c, p, []string{p}, st.bases)
+}
+
+// pickRepoFile resolves each source path against each base and returns the one existing
+// regular file inside the repository; several that differ veto.
+func (sc *installScan) pickRepoFile(c scanCtx, p string, srcs, bases []string) (string, bool) {
+	var found []string
+	var contents [][]byte
+	for _, src := range srcs {
+		for _, b := range bases {
+			cand := path.Clean(path.Join(b, strings.TrimPrefix(src, "/")))
+			if cand == ".." || strings.HasPrefix(cand, "../") || containsString(found, cand) {
+				continue
+			}
+			abs := filepath.Join(sc.root, filepath.FromSlash(cand))
+			info, err := os.Stat(abs)
+			if err != nil || info.IsDir() || underSkipped(sc.root, mustEval(abs)) {
+				continue
+			}
+			data, err := os.ReadFile(abs)
+			if err != nil {
+				sc.veto(c, "requirement file %s could not be read", cand)
+				return "", false
+			}
+			found = append(found, cand)
+			contents = append(contents, data)
+		}
+	}
+	switch {
+	case len(found) == 0:
+		sc.veto(c, "requirement file %s is not in the repository", p)
+		return "", false
+	case len(found) > 1:
+		for _, d := range contents[1:] {
+			if !bytes.Equal(d, contents[0]) {
+				sc.veto(c, "requirement file %s could be %s or %s, which differ", p, found[0], found[1])
+				return "", false
+			}
+		}
+	}
+	return found[0], true
+}
+
+func mustEval(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
 // syncFiles reads `uv pip sync` / `pip-sync`: every positional is a requirement file.
 func (sc *installScan) syncFiles(c scanCtx, args []string) {
 	sc.pipInstalls++
+	set := &pipSet{pins: map[string]string{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if shellEnd(a) {
-			return
+			break
 		}
 		if strings.ContainsAny(a, "$`") {
 			sc.veto(c, "sync argument %s is a variable or substitution", a)
 			return
 		}
 		if !strings.HasPrefix(a, "-") {
-			if !sc.reqFile(c, a) {
+			if !sc.reqFile(c, a, set, false) {
 				return
 			}
 			continue
 		}
-		opt, _, eq := strings.Cut(a, "=")
+		opt, val, eq := strings.Cut(a, "=")
 		switch {
 		case pipInstallFlags[opt] && !eq:
 		case opt == "-c" || opt == "--constraint":
-			if !eq && i+1 < len(args) {
-				i++
-				if !sc.reqFile(c, args[i]) {
+			if !eq {
+				if i+1 >= len(args) {
+					sc.veto(c, "%s names no file", opt)
 					return
 				}
+				i++
+				val = args[i]
+			}
+			if !sc.reqFile(c, val, set, true) {
+				return
 			}
 		case pipInstallValues[opt]:
 			if !eq {
@@ -670,214 +1083,411 @@ func (sc *installScan) syncFiles(c scanCtx, args []string) {
 			return
 		}
 	}
+	sc.installSet(c, set)
 }
 
-// --- other families ------------------------------------------------------------------
+// --- options -------------------------------------------------------------------------
 
-var uvGlobalValues = setOf("--directory", "--project", "--config-file", "--cache-dir", "--color", "--python", "-p",
-	"--allow-insecure-host", "--python-preference")
+// optSpec lists a command's options: flags take no value, values take one.
+type optSpec struct{ flags, values map[string]bool }
 
-// family reads one uv/uvx/pipx/poetry/pdm/pipenv/conda command.
-func (sc *installScan) family(c scanCtx, w string, rest []string) {
-	i := 0
-	for i < len(rest) && strings.HasPrefix(rest[i], "-") {
-		opt, _, eq := strings.Cut(rest[i], "=")
-		i++
-		if w == "uv" && uvGlobalValues[opt] && !eq {
-			i++
-		}
-	}
-	if w == "uvx" {
-		sc.toolSpecs(c, rest, true)
-		return
-	}
-	if i >= len(rest) || shellEnd(rest[i]) {
-		return
-	}
-	sub, args := rest[i], rest[i+1:]
-	switch w {
-	case "uv":
-		switch sub {
-		case "pip":
-			if len(args) == 0 {
-				return
-			}
-			switch args[0] {
-			case "install":
-				sc.pipInstall(c, args[1:])
-			case "sync":
-				sc.syncFiles(c, args[1:])
-			case "compile", "freeze", "list", "show", "tree", "check", "uninstall":
-			default:
-				sc.veto(c, "uv pip %s is not parsed", args[0])
-			}
-		case "sync", "export":
-			sc.uvKeep(c, "uv "+sub, args)
-		case "run":
-			for _, v := range flagValues(args, "--with") {
-				for _, s := range strings.Split(v, ",") {
-					if !sc.spec(c, s, true) {
-						return
-					}
-				}
-			}
-			for _, v := range flagValues(args, "--with-requirements") {
-				if !sc.reqFile(c, v) {
-					return
-				}
-			}
-			if hasFlag(args, "--with-editable") {
-				sc.veto(c, "uv run --with-editable installs a project whose dependencies are not read")
-				return
-			}
-			if !hasFlag(args, "--no-sync") {
-				sc.uvKeep(c, "uv run", args)
-			}
-			sc.command(c, args)
-		case "add":
-			sc.veto(c, "uv add changes dependencies the committed lockfile records")
-		case "tool":
-			if len(args) > 0 && (args[0] == "install" || args[0] == "run" || args[0] == "upgrade") {
-				sc.toolSpecs(c, args[1:], args[0] == "run")
-			}
-		}
-	case "pipx":
-		switch sub {
-		case "install", "upgrade", "reinstall":
-			sc.toolSpecs(c, args, false)
-		case "run":
-			sc.toolSpecs(c, args, true)
-		case "inject":
-			if pos := positionals(args); len(pos) > 1 {
-				sc.toolSpecs(c, pos[1:], false)
-			}
-		case "install-all":
-			sc.veto(c, "pipx install-all reads a spec file the scanner does not parse")
-		}
-	case "poetry":
-		switch sub {
-		case "install", "sync", "export":
-			sc.poetryKeep(c, "poetry "+sub, args)
-		case "add", "update":
-			sc.veto(c, "poetry %s changes dependencies the committed lockfile records", sub)
-		case "run":
-			sc.command(c, args)
-		}
-	case "pdm":
-		switch sub {
-		case "install", "sync", "export":
-			if c.prod {
-				sc.lockInstall(c, "pdm", "pdm "+sub)
-				if !hasFlag(args, "--prod", "--production", "-P") || hasFlag(args, "-d", "--dev") {
-					sc.keepKey("pdm:*", c)
-				} else {
-					for _, g := range listValues(args, "-G", "--group") {
-						if g == "all" {
-							g = "*"
-						}
-						sc.keepKey("pdm:"+g, c)
-					}
-				}
-			}
-		case "add", "update":
-			sc.veto(c, "pdm %s changes dependencies the committed lockfile records", sub)
-		case "run":
-			sc.command(c, args)
-		}
-	case "pipenv":
-		switch sub {
-		case "install", "sync":
-			if sub == "install" && len(positionals(args)) > 0 {
-				sc.veto(c, "pipenv install with packages changes dependencies the committed lockfile records")
-				return
-			}
-			if c.prod {
-				sc.lockInstall(c, "pipenv", "pipenv "+sub)
-				if hasFlag(args, "--dev", "-d", "--categories") {
-					sc.keepKey("pipfile:*", c)
-				}
-			}
-		case "update", "upgrade":
-			sc.veto(c, "pipenv %s changes dependencies the committed lockfile records", sub)
-		case "run":
-			sc.command(c, args)
-		}
-	case "conda", "mamba", "micromamba":
-		switch sub {
-		case "install", "create", "update", "upgrade", "env":
-			sc.veto(c, "%s %s is not parsed", w, sub)
-		case "run":
-			sc.command(c, args)
-		}
-	}
+// opts is a command's arguments as parsed: every option's values ("" for a flag), the
+// positionals, and with stopAtCommand the arguments from the first positional on.
+type opts struct {
+	vals map[string][]string
+	pos  []string
+	rest []string
 }
 
-// positionals are the arguments that are not options. Option values are not told apart, so a
-// caller only uses this where that over-reads safely.
-func positionals(args []string) []string {
-	var out []string
-	for _, a := range args {
+func (o opts) has(names ...string) bool {
+	for _, n := range names {
+		if _, ok := o.vals[n]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// list returns the comma-split, PEP 503 normalized values of the named options, and the raw
+// values that are not names (":all").
+func (o opts) list(names ...string) (out, odd []string) {
+	for _, n := range names {
+		for _, v := range o.vals[n] {
+			for _, p := range strings.Split(v, ",") {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				if !groupNameRe.MatchString(p) {
+					odd = append(odd, p)
+					continue
+				}
+				out = append(out, normalizePyCoordinate(p))
+			}
+		}
+	}
+	return out, odd
+}
+
+var groupNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// parseOpts parses args against spec: --opt=value, --opt value, -Xvalue, -X value and flag
+// clusters (-qv). It returns the first option it cannot parse, or a variable, as bad.
+func parseOpts(args []string, spec optSpec, stopAtCommand bool) (o opts, bad string) {
+	o.vals = map[string][]string{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		if shellEnd(a) {
 			break
 		}
-		if !strings.HasPrefix(a, "-") {
-			out = append(out, a)
+		if strings.ContainsAny(a, "$`") {
+			return o, a
+		}
+		if a == "--" {
+			if stopAtCommand {
+				o.rest = args[i+1:]
+				return o, ""
+			}
+			o.pos = append(o.pos, args[i+1:]...)
+			return o, ""
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			if stopAtCommand {
+				o.rest = args[i:]
+				return o, ""
+			}
+			o.pos = append(o.pos, a)
+			continue
+		}
+		if strings.HasPrefix(a, "--") {
+			name, val, eq := strings.Cut(a, "=")
+			switch {
+			case spec.flags[name] && !eq:
+				o.vals[name] = append(o.vals[name], "")
+			case spec.values[name]:
+				if !eq {
+					if i+1 >= len(args) || shellEnd(args[i+1]) {
+						return o, a
+					}
+					i++
+					val = args[i]
+				}
+				if strings.ContainsAny(val, "$`") {
+					return o, a + " " + val
+				}
+				o.vals[name] = append(o.vals[name], val)
+			default:
+				return o, name
+			}
+			continue
+		}
+		short := a[:2]
+		switch {
+		case spec.values[short]:
+			val := strings.TrimPrefix(a[2:], "=")
+			if len(a) == 2 {
+				if i+1 >= len(args) || shellEnd(args[i+1]) {
+					return o, a
+				}
+				i++
+				val = args[i]
+			}
+			if strings.ContainsAny(val, "$`") {
+				return o, a + " " + val
+			}
+			o.vals[short] = append(o.vals[short], val)
+		case spec.flags[a]:
+			o.vals[a] = append(o.vals[a], "")
+		default:
+			for _, ch := range a[1:] {
+				f := "-" + string(ch)
+				if !spec.flags[f] {
+					return o, a
+				}
+				o.vals[f] = append(o.vals[f], "")
+			}
+		}
+	}
+	return o, ""
+}
+
+func mergeSpec(specs ...optSpec) optSpec {
+	out := optSpec{flags: map[string]bool{}, values: map[string]bool{}}
+	for _, s := range specs {
+		for k := range s.flags {
+			out.flags[k] = true
+		}
+		for k := range s.values {
+			out.values[k] = true
 		}
 	}
 	return out
 }
 
-var toolValues = setOf("--python", "-p", "--index-url", "-i", "--extra-index-url", "--suffix", "--pip-args", "--index",
-	"--python-preference", "--directory")
+// --- other families ------------------------------------------------------------------
 
-// toolSpecs reads the specs an isolated tool install names: --from/--with/--spec values and
-// positionals (only the first when it is the command to run).
-func (sc *installScan) toolSpecs(c scanCtx, args []string, firstOnly bool) {
+var (
+	uvGlobalValues = setOf("--directory", "--project", "--config-file", "--cache-dir", "--color", "--python", "-p",
+		"--allow-insecure-host", "--python-preference")
+	uvCommon = optSpec{
+		flags: setOf("--frozen", "--locked", "--no-dev", "--dev", "--only-dev", "--all-groups", "--no-default-groups",
+			"--all-extras", "--no-install-project", "--no-install-workspace", "--no-install-local", "--no-editable",
+			"--all-packages", "--compile-bytecode", "--no-progress", "--offline", "--refresh", "--no-cache", "-n", "-q",
+			"--quiet", "-v", "--verbose", "--native-tls", "--no-build-isolation", "--no-build", "--no-binary",
+			"--no-sources", "--upgrade", "-U", "--reinstall", "--no-config", "--no-python-downloads", "--managed-python",
+			"--no-managed-python", "--preview", "--no-index", "--active", "--frozen-lockfile"),
+		values: setOf("--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package", "--python", "-p",
+			"--directory", "--project", "--config-file", "--cache-dir", "--index-url", "--extra-index-url", "--index",
+			"--default-index", "--find-links", "-f", "--link-mode", "--index-strategy", "--keyring-provider", "--resolution",
+			"--prerelease", "--exclude-newer", "--python-platform", "--no-install-package", "--refresh-package",
+			"--upgrade-package", "-P", "--reinstall-package", "--no-binary-package", "--no-build-package",
+			"--no-build-isolation-package", "--config-setting", "-C", "--color", "--allow-insecure-host",
+			"--python-preference"),
+	}
+	uvSync   = mergeSpec(uvCommon, optSpec{flags: setOf("--inexact", "--exact", "--dry-run", "--check")})
+	uvExport = mergeSpec(uvCommon, optSpec{
+		flags:  setOf("--no-hashes", "--no-header", "--no-annotate", "--no-emit-project", "--no-emit-workspace", "--no-emit-local"),
+		values: setOf("--format", "-o", "--output-file", "--no-emit-package", "--prune"),
+	})
+	uvRun = mergeSpec(uvCommon, optSpec{
+		flags:  setOf("--isolated", "--no-sync", "-m", "--module", "-s", "--script", "--gui-script", "--no-project", "--no-env-file", "--exact"),
+		values: setOf("--with", "--with-requirements", "--with-editable", "--env-file"),
+	})
+	poetryInstall = optSpec{
+		flags: setOf("--only-root", "--no-root", "--sync", "--no-directory", "--dry-run", "--all-extras", "--all-groups",
+			"--compile", "--no-interaction", "-n", "--no-ansi", "--ansi", "-q", "--quiet", "-v", "-vv", "-vvv", "--verbose",
+			"--no-plugins", "--no-cache", "--no-dev", "--remove-untracked", "--without-hashes", "--without-urls",
+			"--with-credentials", "--dev"),
+		values: setOf("--without", "--with", "--only", "-E", "--extras", "-C", "--directory", "-P", "--project", "-f",
+			"--format", "-o", "--output"),
+	}
+	pdmInstall = optSpec{
+		flags: setOf("--prod", "--production", "-d", "--dev", "--no-default", "--dry-run", "--check", "--frozen-lockfile",
+			"--no-editable", "--no-self", "--fail-fast", "-x", "--no-isolation", "-v", "-q", "--verbose", "--quiet",
+			"--plugins", "--clean", "--only-keep", "--reinstall", "--without-hashes", "--self", "--editable-self",
+			"--expandvars", "--no-markers"),
+		values: setOf("-G", "--group", "-k", "--skip", "-p", "--project", "--venv", "--override", "-f", "--format", "-o", "--output"),
+	}
+	pipenvInstall = optSpec{
+		flags: setOf("--dev", "-d", "--system", "--deploy", "--ignore-pipfile", "--clear", "--keep-outdated",
+			"--selective-upgrade", "--site-packages", "--no-site-packages", "--verbose", "-v", "--quiet", "-q", "--pre"),
+		values: setOf("--categories", "--pypi-mirror", "--python"),
+	}
+)
+
+// familyHarmless are the subcommands of each family that install nothing.
+var familyHarmless = map[string]map[string]bool{
+	"uv": setOf("venv", "python", "cache", "self", "version", "help", "init", "build", "publish", "tree", "format",
+		"generate-shell-completion", "auth", "--version", "--help", "-h"),
+	"pipx": setOf("list", "uninstall", "uninstall-all", "ensurepath", "environment", "completions", "upgrade-all",
+		"reinstall-all", "upgrade-shared", "--version", "--help", "-h"),
+	"poetry": setOf("build", "check", "config", "env", "new", "init", "publish", "search", "show", "source", "version",
+		"about", "list", "help", "debug", "cache", "shell", "completions", "--version", "--help", "-h", "-V"),
+	"pdm": setOf("build", "config", "info", "init", "list", "outdated", "publish", "search", "show", "use", "venv",
+		"cache", "completion", "fix", "help", "--version", "--help", "-h", "-V", "python", "py"),
+	"pipenv": setOf("requirements", "graph", "check", "clean", "shell", "--venv", "--where", "--py", "scripts", "verify",
+		"open", "uninstall", "--version", "--help", "-h", "--rm", "--envs", "--support"),
+	"conda": setOf("activate", "deactivate", "info", "list", "clean", "config", "init", "search", "remove", "uninstall",
+		"shell", "--version", "--help", "-h", "-V", "package", "export"),
+}
+
+// family reads one uv/uvx/pipx/poetry/pdm/pipenv/conda command.
+func (sc *installScan) family(c scanCtx, w string, rest []string) {
+	if w == "uvx" {
+		sc.toolSpecs(c, "uvx", rest)
+		return
+	}
+	i := 0
+	for i < len(rest) && strings.HasPrefix(rest[i], "-") && !shellEnd(rest[i]) {
+		opt, _, eq := strings.Cut(rest[i], "=")
+		if familyHarmless[familyKey(w)][opt] {
+			return
+		}
+		i++
+		if w == "uv" && uvGlobalValues[opt] && !eq {
+			i++
+		}
+	}
+	if i >= len(rest) || shellEnd(rest[i]) {
+		return
+	}
+	sub, args := rest[i], rest[i+1:]
+	if familyHarmless[familyKey(w)][sub] {
+		return
+	}
+	switch w {
+	case "uv":
+		sc.uv(c, sub, args)
+	case "pipx":
+		switch sub {
+		case "install", "upgrade", "reinstall", "run", "inject":
+			sc.toolSpecs(c, "pipx "+sub, args)
+		default:
+			sc.veto(c, "pipx %s is not parsed", sub)
+		}
+	case "poetry":
+		switch sub {
+		case "install", "sync", "export":
+			sc.poetryKeep(c, "poetry "+sub, args)
+		case "lock":
+			if o, bad := parseOpts(args, optSpec{flags: setOf("--check", "--no-update", "-n", "--no-interaction", "-q", "--quiet")}, false); bad == "" && o.has("--check") {
+				return
+			}
+			sc.veto(c, "poetry lock regenerates the lockfile the scanner reads")
+		case "run":
+			sc.command(c, args)
+		default:
+			sc.veto(c, "poetry %s is not parsed", sub)
+		}
+	case "pdm":
+		switch sub {
+		case "install", "sync", "export":
+			sc.pdmKeep(c, "pdm "+sub, args)
+		case "lock":
+			if o, bad := parseOpts(args, optSpec{flags: setOf("--check", "-v", "-q")}, false); bad == "" && o.has("--check") {
+				return
+			}
+			sc.veto(c, "pdm lock regenerates the lockfile the scanner reads")
+		case "run":
+			sc.command(c, args)
+		default:
+			sc.veto(c, "pdm %s is not parsed", sub)
+		}
+	case "pipenv":
+		switch sub {
+		case "install", "sync":
+			sc.pipenvKeep(c, "pipenv "+sub, args)
+		case "run":
+			sc.command(c, args)
+		default:
+			sc.veto(c, "pipenv %s is not parsed", sub)
+		}
+	case "conda", "mamba", "micromamba":
+		switch sub {
+		case "run":
+			sc.command(c, args)
+		default:
+			sc.veto(c, "%s %s is not parsed", w, sub)
+		}
+	}
+}
+
+func familyKey(w string) string {
+	if w == "mamba" || w == "micromamba" {
+		return "conda"
+	}
+	return w
+}
+
+func (sc *installScan) uv(c scanCtx, sub string, args []string) {
+	switch sub {
+	case "pip":
+		if len(args) == 0 || shellEnd(args[0]) {
+			return
+		}
+		switch args[0] {
+		case "install":
+			sc.pipInstall(c, args[1:])
+		case "sync":
+			sc.syncFiles(c, args[1:])
+		case "compile", "freeze", "list", "show", "tree", "check", "uninstall":
+		default:
+			sc.veto(c, "uv pip %s is not parsed", args[0])
+		}
+	case "sync":
+		o, bad := parseOpts(args, uvSync, false)
+		if bad != "" || len(o.pos) > 0 {
+			sc.veto(c, "uv sync option %s is not parsed", strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
+			return
+		}
+		sc.uvKeep(c, "uv sync", o)
+	case "export":
+		o, bad := parseOpts(args, uvExport, false)
+		if bad != "" || len(o.pos) > 0 {
+			sc.veto(c, "uv export option %s is not parsed", strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
+			return
+		}
+		sc.uvKeep(c, "uv export", o)
+	case "run":
+		o, bad := parseOpts(args, uvRun, true)
+		if bad != "" {
+			sc.veto(c, "uv run option %s is not parsed", bad)
+			return
+		}
+		if o.has("--with", "--with-requirements", "--with-editable") {
+			sc.veto(c, "uv run --with installs into an environment outside the lockfile")
+			return
+		}
+		if !o.has("--no-sync") && !o.has("--no-project") && !o.has("--isolated") {
+			sc.uvKeep(c, "uv run", o)
+		}
+		sc.command(c, o.rest)
+	case "lock":
+		if o, bad := parseOpts(args, mergeSpec(uvCommon, optSpec{flags: setOf("--check", "--check-exists", "--dry-run")}), false); bad == "" && o.has("--check", "--locked", "--check-exists") {
+			return
+		}
+		sc.veto(c, "uv lock regenerates the lockfile the scanner reads")
+	case "tool":
+		if len(args) == 0 || shellEnd(args[0]) {
+			return
+		}
+		switch args[0] {
+		case "list", "dir", "update-shell", "uninstall", "--help", "-h":
+		default:
+			sc.toolSpecs(c, "uv tool "+args[0], args[1:])
+		}
+	default:
+		sc.veto(c, "uv %s is not parsed", sub)
+	}
+}
+
+// toolSpecs reads an isolated tool install (pipx, uvx, uv tool): the tool resolves outside
+// the lockfile, so anything but a bootstrap installer vetoes.
+func (sc *installScan) toolSpecs(c scanCtx, what string, args []string) {
+	var specs []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if shellEnd(a) {
-			return
+			break
 		}
 		if strings.ContainsAny(a, "$`") {
-			sc.veto(c, "tool install argument %s is a variable or substitution", a)
+			sc.veto(c, "%s argument %s is a variable or substitution", what, a)
 			return
 		}
 		if !strings.HasPrefix(a, "-") {
-			name, _, _ := strings.Cut(a, "@")
-			if !sc.spec(c, name, false) {
-				return
-			}
-			if firstOnly {
-				return
+			specs = append(specs, a)
+			if what == "uvx" || what == "pipx run" || what == "uv tool run" {
+				break
 			}
 			continue
 		}
 		opt, val, eq := strings.Cut(a, "=")
-		switch {
-		case opt == "--from" || opt == "--with" || opt == "--spec":
+		switch opt {
+		case "--from", "--with", "--spec", "--with-requirements", "--with-editable":
 			if !eq && i+1 < len(args) {
 				i++
 				val = args[i]
 			}
-			for _, s := range strings.Split(val, ",") {
-				if !sc.spec(c, s, false) {
-					return
-				}
-			}
-		case opt == "--with-requirements":
-			if !eq && i+1 < len(args) {
-				i++
-				val = args[i]
-			}
-			if !sc.reqFile(c, val) {
+			if opt == "--with-requirements" || opt == "--with-editable" {
+				sc.veto(c, "%s %s installs requirements into a tool environment outside the lockfile", what, opt)
 				return
 			}
-		case opt == "--with-editable":
-			sc.veto(c, "--with-editable installs a project whose dependencies are not read")
-			return
-		case toolValues[opt] && !eq:
-			i++
+			specs = append(specs, strings.Split(val, ",")...)
+		case "--python", "-p", "--index-url", "-i", "--extra-index-url", "--suffix", "--pip-args", "--index", "--python-preference", "--directory":
+			if !eq {
+				i++
+			}
 		}
+	}
+	for _, s := range specs {
+		name, _, _ := strings.Cut(s, "@")
+		n, _, _, extras := parseRequirementSpec(name)
+		if _, ok := bootstrapClosures[normalizePyCoordinate(n)]; ok && len(extras) == 0 {
+			sc.ls.markInstalled(normalizePyCoordinate(n))
+			continue
+		}
+		sc.veto(c, "%s installs %s into a tool environment: it resolves outside the lockfile, so its transitive closure is not listed", what, s)
+		return
 	}
 }
 
@@ -900,37 +1510,43 @@ func (sc *installScan) keepKey(key string, c scanCtx) {
 // project's [tool.uv] default-groups (dev when unset), as --no-default-groups, --only-group,
 // --only-dev, --group, --dev, --all-groups, --no-group and --no-dev change them, plus requested
 // extras.
-func (sc *installScan) uvKeep(c scanCtx, what string, args []string) {
+func (sc *installScan) uvKeep(c scanCtx, what string, o opts) {
+	if odd := oddSelectors(o, "--group", "--only-group", "--extra"); odd != "" {
+		sc.veto(c, "%s selects %s, a group or extra the scanner does not model", what, odd)
+		return
+	}
 	if !c.prod {
 		return
 	}
 	sc.lockInstall(c, "uv", what)
 	locks := sc.ls.locks
 	groups := sc.uvDefaultGroups()
-	if hasFlag(args, "--no-default-groups") {
+	if o.has("--no-default-groups") {
 		groups = map[string]bool{}
 	}
-	if only := listValues(args, "--only-group"); len(only) > 0 || hasFlag(args, "--only-dev") {
+	if only, _ := o.list("--only-group"); len(only) > 0 || o.has("--only-dev") {
 		groups = setOf(only...)
-		if hasFlag(args, "--only-dev") {
+		if o.has("--only-dev") {
 			groups["dev"] = true
 		}
 	}
-	for _, g := range listValues(args, "--group") {
+	add, _ := o.list("--group")
+	for _, g := range add {
 		groups[g] = true
 	}
-	if hasFlag(args, "--dev") {
+	if o.has("--dev") {
 		groups["dev"] = true
 	}
-	if hasFlag(args, "--all-groups") {
+	if o.has("--all-groups") {
 		for g := range locks.uvGroups {
 			groups[g] = true
 		}
 	}
-	for _, g := range listValues(args, "--no-group") {
+	drop, _ := o.list("--no-group")
+	for _, g := range drop {
 		delete(groups, g)
 	}
-	if hasFlag(args, "--no-dev") {
+	if o.has("--no-dev") {
 		delete(groups, "dev")
 	}
 	for g := range groups {
@@ -940,17 +1556,28 @@ func (sc *installScan) uvKeep(c scanCtx, what string, args []string) {
 			sc.keepKey(uvGroupKey(g), c)
 		}
 	}
-	for _, e := range listValues(args, "--extra") {
+	extras, _ := o.list("--extra")
+	for _, e := range extras {
 		sc.keepKey(uvExtraKey(e), c)
 	}
-	if hasFlag(args, "--all-extras") {
-		drop := setOf(listValues(args, "--no-extra")...)
+	if o.has("--all-extras") {
+		noExtra, _ := o.list("--no-extra")
+		drop := setOf(noExtra...)
 		for e := range locks.uvExtras {
 			if !drop[e] {
 				sc.keepKey(uvExtraKey(e), c)
 			}
 		}
 	}
+}
+
+// oddSelectors returns the first value of the named keep options that is not a plain group
+// name (":all", a glob), or "".
+func oddSelectors(o opts, names ...string) string {
+	if _, odd := o.list(names...); len(odd) > 0 {
+		return odd[0]
+	}
+	return ""
 }
 
 // uvDefaultGroups reads [tool.uv] default-groups beside each uv.lock: unset is dev, "all" is
@@ -1007,8 +1634,19 @@ func (sc *installScan) uvDefaultGroups() map[string]bool {
 
 // poetryKeep records the groups a production `poetry install`/`sync`/`export` keeps: every
 // non-optional group (a group the lock records and the pyproject does not declare optional),
-// as --only, --only-root, --with, --all-groups, --without and --no-dev change them.
+// as --only, --only-root, --with, --all-groups, --without and --no-dev change them. Extras
+// change nothing: poetry.lock records extras' dependencies in the main group, which is
+// runtime.
 func (sc *installScan) poetryKeep(c scanCtx, what string, args []string) {
+	o, bad := parseOpts(args, poetryInstall, false)
+	if bad != "" || len(o.pos) > 0 {
+		sc.veto(c, "%s option %s is not parsed", what, strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
+		return
+	}
+	if odd := oddSelectors(o, "--with", "--only"); odd != "" {
+		sc.veto(c, "%s selects %s, a group the scanner does not model", what, odd)
+		return
+	}
 	if !c.prod {
 		return
 	}
@@ -1019,24 +1657,29 @@ func (sc *installScan) poetryKeep(c scanCtx, what string, args []string) {
 		return
 	}
 	groups := base
-	if only := listValues(args, "--only"); len(only) > 0 {
+	if only, _ := o.list("--only"); len(only) > 0 {
 		groups = setOf(only...)
 	}
-	if hasFlag(args, "--only-root") {
+	if o.has("--only-root") {
 		groups = map[string]bool{}
 	}
-	for _, g := range listValues(args, "--with") {
+	with, _ := o.list("--with")
+	for _, g := range with {
 		groups[g] = true
 	}
-	if hasFlag(args, "--all-groups") {
+	if o.has("--dev") {
+		groups["dev"] = true
+	}
+	if o.has("--all-groups") {
 		for g := range optional {
 			groups[g] = true
 		}
 	}
-	for _, g := range listValues(args, "--without") {
+	without, _ := o.list("--without")
+	for _, g := range without {
 		delete(groups, g)
 	}
-	if hasFlag(args, "--no-dev") {
+	if o.has("--no-dev") {
 		delete(groups, "dev")
 	}
 	delete(groups, "main")
@@ -1088,6 +1731,54 @@ func (sc *installScan) poetryGroups() (base, optional map[string]bool, ok bool) 
 		}
 	}
 	return base, optional, true
+}
+
+// pdmKeep records the groups a production `pdm install`/`sync`/`export` keeps: every group
+// unless --prod, then the default group plus each -G group. -G :all and any other selector
+// that is not a group name veto.
+func (sc *installScan) pdmKeep(c scanCtx, what string, args []string) {
+	o, bad := parseOpts(args, pdmInstall, false)
+	if bad != "" || len(o.pos) > 0 {
+		sc.veto(c, "%s option %s is not parsed", what, strings.TrimSpace(bad+" "+strings.Join(o.pos, " ")))
+		return
+	}
+	if odd := oddSelectors(o, "-G", "--group"); odd != "" {
+		sc.veto(c, "%s selects %s, a group selector the scanner does not model", what, odd)
+		return
+	}
+	if !c.prod {
+		return
+	}
+	sc.lockInstall(c, "pdm", what)
+	if !o.has("--prod", "--production") || o.has("-d", "--dev") {
+		sc.keepKey("pdm:*", c)
+		return
+	}
+	groups, _ := o.list("-G", "--group")
+	for _, g := range groups {
+		sc.keepKey("pdm:"+g, c)
+	}
+}
+
+// pipenvKeep records a production `pipenv install`/`sync`: --dev or --categories keeps every
+// category. Packages on the command line change the lockfile and veto.
+func (sc *installScan) pipenvKeep(c scanCtx, what string, args []string) {
+	o, bad := parseOpts(args, pipenvInstall, false)
+	if bad != "" {
+		sc.veto(c, "%s option %s is not parsed", what, bad)
+		return
+	}
+	if len(o.pos) > 0 {
+		sc.veto(c, "%s with packages changes dependencies the committed lockfile records", what)
+		return
+	}
+	if !c.prod {
+		return
+	}
+	sc.lockInstall(c, "pipenv", what)
+	if o.has("--dev", "-d", "--categories") {
+		sc.keepKey("pipfile:*", c)
+	}
 }
 
 // keptByInstall reports whether a production install keeps dist: one of its group keys, or
@@ -1149,37 +1840,189 @@ var deployCommand = regexp.MustCompile(`(?i)\bdeploy|update-function-code|\bkube
 // exact, case-insensitive. Staging, preview and expression values count as deploys.
 var testEnvironments = regexp.MustCompile(`(?i)^(test|testing|ci|dev|development)$`)
 
+type workflowDefaults struct {
+	Run struct {
+		WorkingDirectory string `yaml:"working-directory"`
+	} `yaml:"run"`
+}
+
 type workflowFile struct {
-	Name string                 `yaml:"name"`
-	Jobs map[string]workflowJob `yaml:"jobs"`
+	Name     string                 `yaml:"name"`
+	On       yaml.Node              `yaml:"on"`
+	Defaults workflowDefaults       `yaml:"defaults"`
+	Jobs     map[string]workflowJob `yaml:"jobs"`
 }
 
 type workflowJob struct {
-	Name        string    `yaml:"name"`
-	Environment yaml.Node `yaml:"environment"`
+	Name        string           `yaml:"name"`
+	Environment yaml.Node        `yaml:"environment"`
+	Uses        string           `yaml:"uses"`
+	Needs       yaml.Node        `yaml:"needs"`
+	Defaults    workflowDefaults `yaml:"defaults"`
 	Steps       []struct {
-		Uses string `yaml:"uses"`
-		Run  string `yaml:"run"`
+		Uses             string `yaml:"uses"`
+		Run              string `yaml:"run"`
+		WorkingDirectory string `yaml:"working-directory"`
 	} `yaml:"steps"`
 }
 
-// scanWorkflow reads every job's run steps; a deploy job's are production installs.
-func (sc *installScan) scanWorkflow(rel string, data []byte) {
-	var wf workflowFile
-	if err := yaml.Unmarshal(data, &wf); err != nil {
-		sc.veto(scanCtx{file: rel, where: rel}, "could not be parsed")
-		return
+type parsedWorkflow struct {
+	rel  string
+	wf   workflowFile
+	prod map[string]bool // job → production
+	all  bool            // every job is production
+}
+
+// scanWorkflows reads every GitHub workflow. A job is a production install when it is a
+// deploy job, when a production job needs it (it builds what the deploy ships), or when its
+// whole workflow is production: named for a deploy, reusable (on: workflow_call), called by a
+// production job, or the workflow_run trigger of a production workflow. A job that calls a
+// reusable workflow outside the repository vetoes.
+func (sc *installScan) scanWorkflows(files []pendingWorkflow) {
+	var all []*parsedWorkflow
+	byFile := map[string]*parsedWorkflow{}
+	byName := map[string][]*parsedWorkflow{}
+	for _, f := range files {
+		var wf workflowFile
+		if err := yaml.Unmarshal(f.data, &wf); err != nil {
+			sc.veto(scanCtx{file: f.rel, where: f.rel}, "could not be parsed")
+			continue
+		}
+		p := &parsedWorkflow{rel: f.rel, wf: wf, prod: map[string]bool{}}
+		p.all = deployName.MatchString(path.Base(f.rel)) || deployName.MatchString(wf.Name) || nodeHasKey(wf.On, "workflow_call")
+		all = append(all, p)
+		byFile[f.rel] = p
+		if wf.Name != "" {
+			byName[wf.Name] = append(byName[wf.Name], p)
+		}
 	}
-	whole := deployName.MatchString(path.Base(rel)) || deployName.MatchString(wf.Name)
-	for _, id := range sortedMapKeys(wf.Jobs) {
-		job := wf.Jobs[id]
-		prod := whole || deployJob(id, job)
-		for i, st := range job.Steps {
-			if st.Run != "" {
-				sc.scanText(scanCtx{file: rel, where: fmt.Sprintf("%s job %s step %d", rel, id, i+1), prod: prod}, st.Run)
+	for changed := true; changed; {
+		changed = false
+		for _, p := range all {
+			for id, job := range p.wf.Jobs {
+				if !p.prod[id] && (p.all || deployJob(id, job)) {
+					p.prod[id] = true
+					changed = true
+				}
+			}
+			for id, job := range p.wf.Jobs {
+				if !p.prod[id] {
+					continue
+				}
+				for _, need := range nodeStrings(job.Needs) {
+					if _, ok := p.wf.Jobs[need]; ok && !p.prod[need] {
+						p.prod[need] = true
+						changed = true
+					}
+				}
+				if callee, ok := byFile[strings.TrimPrefix(path.Clean(strings.SplitN(job.Uses, "@", 2)[0]), "./")]; ok && !callee.all {
+					callee.all = true
+					changed = true
+				}
+			}
+			if len(p.prod) > 0 {
+				for _, name := range workflowRunSources(p.wf.On) {
+					for _, src := range byName[name] {
+						if !src.all {
+							src.all = true
+							changed = true
+						}
+					}
+				}
 			}
 		}
 	}
+	for _, p := range all {
+		for _, id := range sortedMapKeys(p.wf.Jobs) {
+			job := p.wf.Jobs[id]
+			if job.Uses != "" && !strings.HasPrefix(job.Uses, "./") {
+				sc.veto(scanCtx{file: p.rel, where: p.rel + " job " + id}, "calls %s, a reusable workflow outside the repository", job.Uses)
+			}
+			wd := job.Defaults.Run.WorkingDirectory
+			if wd == "" {
+				wd = p.wf.Defaults.Run.WorkingDirectory
+			}
+			for i, st := range job.Steps {
+				if st.Run == "" {
+					continue
+				}
+				dir := wd
+				if st.WorkingDirectory != "" {
+					dir = st.WorkingDirectory
+				}
+				ts := newTextState(".")
+				if dir != "" {
+					ts = workingDirState(dir)
+				}
+				sc.scanText(scanCtx{file: p.rel, where: fmt.Sprintf("%s job %s step %d", p.rel, id, i+1), prod: p.prod[id], st: ts}, st.Run)
+			}
+		}
+	}
+}
+
+// workingDirState is the base for a step's working-directory: a literal relative path, or
+// unknown.
+func workingDirState(dir string) *textState {
+	if strings.Contains(dir, "${{") || strings.ContainsAny(dir, "$`~") || path.IsAbs(dir) {
+		return &textState{bases: []string{"."}, unknown: true}
+	}
+	return newTextState(path.Clean(dir))
+}
+
+// nodeHasKey reports whether an `on:` node names the event key: as a scalar, a list item or
+// a mapping key.
+func nodeHasKey(n yaml.Node, key string) bool {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return n.Value == key
+	case yaml.SequenceNode:
+		for _, c := range n.Content {
+			if c.Value == key {
+				return true
+			}
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nodeStrings returns a scalar or a sequence of scalars.
+func nodeStrings(n yaml.Node) []string {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return []string{n.Value}
+	case yaml.SequenceNode:
+		var out []string
+		for _, c := range n.Content {
+			out = append(out, c.Value)
+		}
+		return out
+	}
+	return nil
+}
+
+// workflowRunSources returns the workflow names an `on: workflow_run` trigger follows.
+func workflowRunSources(on yaml.Node) []string {
+	if on.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(on.Content); i += 2 {
+		if on.Content[i].Value != "workflow_run" {
+			continue
+		}
+		wr := on.Content[i+1]
+		for j := 0; j+1 < len(wr.Content); j += 2 {
+			if wr.Content[j].Value == "workflows" {
+				return nodeStrings(*wr.Content[j+1])
+			}
+		}
+	}
+	return nil
 }
 
 // deployJob reports whether a job is a deploy step: it targets a non-test environment, builds
@@ -1230,7 +2073,8 @@ func (sc *installScan) scanAction(rel string, data []byte) {
 	var a struct {
 		Runs struct {
 			Steps []struct {
-				Run string `yaml:"run"`
+				Run              string `yaml:"run"`
+				WorkingDirectory string `yaml:"working-directory"`
 			} `yaml:"steps"`
 		} `yaml:"runs"`
 	}
@@ -1239,16 +2083,21 @@ func (sc *installScan) scanAction(rel string, data []byte) {
 		return
 	}
 	for i, st := range a.Runs.Steps {
-		sc.scanText(scanCtx{file: rel, where: fmt.Sprintf("%s step %d", rel, i+1), prod: true}, st.Run)
+		ts := &textState{bases: []string{"."}, unknown: true} // the caller's working directory
+		if st.WorkingDirectory != "" {
+			ts = workingDirState(st.WorkingDirectory)
+		}
+		sc.scanText(scanCtx{file: rel, where: fmt.Sprintf("%s step %d", rel, i+1), prod: true, st: ts}, st.Run)
 	}
 }
 
 // gitlabGlobals are .gitlab-ci.yml top-level keys that are not jobs.
 var gitlabGlobals = setOf("stages", "variables", "workflow", "image", "services", "cache")
 
-// scanGitLab reads .gitlab-ci.yml. A deploy job (named or staged for a deploy, a non-test
-// environment, or a deploy command), a hidden template job and the global scripts are
-// production installs. An include pulls configuration the scanner does not read: veto.
+// scanGitLab reads .gitlab-ci.yml. When any job deploys (named or staged for a deploy, a
+// non-test environment, or a deploy command), every job is a production install, since any
+// may build what it ships; hidden template jobs and the global scripts always are. An include
+// pulls configuration the scanner does not read: veto.
 func (sc *installScan) scanGitLab(rel string, data []byte) {
 	c := scanCtx{file: rel, where: rel, prod: true}
 	var doc map[string]any
@@ -1260,6 +2109,13 @@ func (sc *installScan) scanGitLab(rel string, data []byte) {
 		sc.veto(c, "include: pulls CI configuration the scanner does not read")
 		return
 	}
+	type gjob struct {
+		key  string
+		job  map[string]any
+		prod bool
+	}
+	var jobs []gjob
+	anyDeploy := false
 	for _, key := range sortedMapKeys(doc) {
 		if gitlabGlobals[key] {
 			continue
@@ -1284,24 +2140,29 @@ func (sc *installScan) scanGitLab(rel string, data []byte) {
 			}
 		}
 		stage, _ := job["stage"].(string)
-		prod := strings.HasPrefix(key, ".") || deployName.MatchString(key) || deployName.MatchString(stage)
+		deploy := deployName.MatchString(key) || deployName.MatchString(stage)
 		switch env := job["environment"].(type) {
 		case string:
-			prod = prod || (env != "" && !testEnvironments.MatchString(env))
+			deploy = deploy || (env != "" && !testEnvironments.MatchString(env))
 		case map[string]any:
 			name, _ := env["name"].(string)
-			prod = prod || !testEnvironments.MatchString(name)
+			deploy = deploy || !testEnvironments.MatchString(name)
 		}
 		for _, s := range flattenStrings(job["script"]) {
-			prod = prod || deployCommand.MatchString(s)
+			deploy = deploy || deployCommand.MatchString(s)
 		}
-		sc.gitlabScripts(scanCtx{file: rel, where: rel + " job " + key, prod: prod}, job["before_script"], job["script"], job["after_script"])
+		anyDeploy = anyDeploy || (deploy && !strings.HasPrefix(key, "."))
+		jobs = append(jobs, gjob{key, job, deploy || strings.HasPrefix(key, ".")})
+	}
+	for _, j := range jobs {
+		sc.gitlabScripts(scanCtx{file: rel, where: rel + " job " + j.key, prod: j.prod || anyDeploy}, j.job["before_script"], j.job["script"], j.job["after_script"])
 	}
 }
 
 func (sc *installScan) gitlabScripts(c scanCtx, vs ...any) {
 	for _, v := range vs {
 		for _, s := range flattenStrings(v) {
+			c.st = newTextState(".")
 			sc.scanText(c, s)
 		}
 	}
@@ -1324,60 +2185,101 @@ func flattenStrings(v any) []string {
 
 // --- committed install targets -------------------------------------------------------
 
-// committedSkip are directories whose installed metadata is not part of the deployed tree:
-// VCS and virtualenv internals, caches, and test fixtures.
-var committedSkip = setOf(".git", "node_modules", ".venv", "venv", ".tox", ".nox", "__pycache__", ".mypy_cache",
-	".pytest_cache", ".ruff_cache", "test", "tests", "testing", "testdata", "fixtures")
-
 // vendorDirs hold installed or vendored packages: a package or module directly under one is
-// installed code.
-var vendorDirs = setOf("lib", "vendor", "_vendor", "vendored", "third_party", "site-packages", "dist-packages")
+// installed code. python/ is the AWS Lambda layer layout.
+var vendorDirs = setOf("lib", "vendor", "_vendor", "vendored", "third_party", "site-packages", "dist-packages", "python")
 
-// committedInstalls marks installed every distribution the repository itself carries: a
-// *.dist-info or *.egg-info anywhere outside skipped trees (site-packages, build output and
-// hidden trees included), and a package or module vendored under lib/, vendor/, site-packages/
-// and the like.
+// committedInstalls marks installed every distribution the repository itself carries, on the
+// same walk as the install scan: a *.dist-info or *.egg-info anywhere, a committed wheel or
+// egg, every top-level entry of a committed site-packages, and a package or module vendored
+// under lib/, vendor/, python/ and the like.
 func (ls *loadSet) committedInstalls(buildDir string) {
-	_ = filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
+	_ = buildTreeWalk(buildDir, func(e buildTreeEntry, err error) error {
+		rel := relSlash(buildDir, e.Path)
 		if err != nil {
-			if rel, rerr := filepath.Rel(buildDir, p); rerr == nil {
-				ls.noMarkers("%s: could not be read: installed copies under it are unknown", filepath.ToSlash(rel))
-			}
-			return nil
-		}
-		if p == buildDir {
-			return nil
-		}
-		name := d.Name()
-		if d.IsDir() && committedSkip[name] {
-			return filepath.SkipDir
-		}
-		if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
-			ls.committedDist(p, name, d.IsDir())
-			if d.IsDir() {
+			ls.noMarkers("%s: could not be read: installed copies under it are unknown", rel)
+			if e.D != nil && e.D.IsDir() && e.Path != buildDir {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !vendorDirs[filepath.Base(filepath.Dir(p))] {
+		if e.Path == buildDir {
 			return nil
 		}
-		mod := ""
-		if d.IsDir() {
-			if _, err := os.Stat(filepath.Join(p, "__init__.py")); err == nil {
-				mod = name
+		if e.Symlink {
+			if e.Escapes {
+				ls.noMarkers("%s: symlink that leaves the repository or does not resolve: installed copies behind it are unknown", rel)
 			}
-		} else if strings.HasSuffix(name, ".py") && name != "__init__.py" {
-			mod = strings.TrimSuffix(name, ".py")
+			return nil
 		}
-		if mod != "" {
-			dists, _ := ls.mapModule(mod, mapStrict)
-			for _, dist := range dists {
-				ls.markInstalled(dist)
+		name := e.D.Name()
+		if e.Skipped {
+			if name == "site-packages" {
+				ls.committedSitePackages(e.Path, rel)
 			}
+			return nil
+		}
+		if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
+			ls.committedDist(e.Path, name, e.D.IsDir())
+			if e.D.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !e.D.IsDir() && (strings.HasSuffix(name, ".whl") || strings.HasSuffix(name, ".egg")) {
+			n, _, _ := strings.Cut(name, "-")
+			ls.markInstalled(normalizePyCoordinate(n))
+			return nil
+		}
+		if vendorDirs[filepath.Base(filepath.Dir(e.Path))] {
+			ls.committedModule(e.Path, name, e.D.IsDir())
 		}
 		return nil
 	})
+}
+
+// committedSitePackages marks every top-level entry of a committed site-packages installed.
+func (ls *loadSet) committedSitePackages(dir, rel string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		ls.noMarkers("%s: could not be read: installed copies under it are unknown", rel)
+		return
+	}
+	for _, d := range entries {
+		name := d.Name()
+		p := filepath.Join(dir, name)
+		if strings.HasSuffix(name, ".dist-info") || strings.HasSuffix(name, ".egg-info") {
+			ls.committedDist(p, name, d.IsDir())
+			continue
+		}
+		if d.IsDir() {
+			if dists, _ := ls.mapModule(name, mapStrict); len(dists) > 0 {
+				for _, dist := range dists {
+					ls.markInstalled(dist)
+				}
+			}
+			continue
+		}
+		ls.committedModule(p, name, false)
+	}
+}
+
+// committedModule marks the distributions a vendored package directory or module maps to.
+func (ls *loadSet) committedModule(p, name string, dir bool) {
+	mod := ""
+	if dir {
+		if _, err := os.Stat(filepath.Join(p, "__init__.py")); err == nil {
+			mod = name
+		}
+	} else if strings.HasSuffix(name, ".py") && name != "__init__.py" {
+		mod = strings.TrimSuffix(name, ".py")
+	}
+	if mod != "" {
+		dists, _ := ls.mapModule(mod, mapStrict)
+		for _, dist := range dists {
+			ls.markInstalled(dist)
+		}
+	}
 }
 
 // committedDist marks the distribution an installed-metadata entry names: its METADATA or

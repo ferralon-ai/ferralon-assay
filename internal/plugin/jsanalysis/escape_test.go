@@ -117,6 +117,47 @@ module.exports = { routes: { '/x': handler } };
 `},
 			roots: []string{funcSCIP("app", nil, "handler", 1)},
 		},
+		{
+			name: "constructor invoked with new",
+			files: map[string]string{"app.js": `function Jar(x) { this.x = x; }
+function main() { return new Jar(1); }
+module.exports = { main };
+`},
+			roots: []string{funcSCIP("app", nil, "Jar", 1)},
+		},
+		{
+			name: "spread of a function binding",
+			files: map[string]string{"app.js": `function h(x) { return x; }
+function main(arr) { return [...h, ...arr]; }
+module.exports = { main };
+`},
+			roots: []string{funcSCIP("app", nil, "h", 1)},
+		},
+		{
+			name: "named function expression passed as an argument",
+			files: map[string]string{"app.js": `const lib = require('lib');
+lib.use(function handler(req) { return req; });
+`},
+			roots: []string{funcSCIP("app", nil, "handler", 1)},
+		},
+		{
+			name: "Function() without new makes every function a root",
+			files: map[string]string{"app.js": `function hidden(x) { return x; }
+function main(s) { return Function(s)(); }
+module.exports = { main };
+`},
+			roots: []string{funcSCIP("app", nil, "hidden", 1)},
+		},
+		{
+			name: "Vue SFC script functions are roots: the template calls them by name",
+			files: map[string]string{"app.vue": `<template><p>{{ fmt(1) }}</p></template>
+<script>
+function fmt(x) { return x; }
+export default {};
+</script>
+`},
+			roots: []string{funcSCIP("app", nil, "fmt", 1)},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

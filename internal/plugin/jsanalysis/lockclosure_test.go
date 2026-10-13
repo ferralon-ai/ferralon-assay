@@ -107,9 +107,10 @@ func TestLockClosures(t *testing.T) {
 // NODE_OPTIONS or a node flag can preload code or a loader or keep symlinked paths. Launch
 // surfaces are not enumerated: a file anywhere in the build tree (node_modules and
 // site-packages aside) that mentions one of these settings leaves every closure unbounded,
-// so a mention that sets nothing over-fires by design. The short -r counts only as an
-// argument of a node command on the same line; a flag that changes neither resolution nor
-// preloading leaves the closure bounded.
+// so a mention that sets nothing over-fires by design. The short -r and -C count in any file
+// that also names a node command, wherever they sit; a flag that changes neither resolution
+// nor preloading leaves the closure bounded. Resolver hooks, a bundler's alias or modules
+// setting, and a tsconfig paths setting together with a TypeScript runner leave it unbounded.
 func TestLockClosures_LaunchTokens(t *testing.T) {
 	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
 	cases := []struct {
@@ -173,11 +174,56 @@ func TestLockClosures_LaunchTokens(t *testing.T) {
 		{"-r at the end of a node line", "run.sh", "node index.js -r\n", false},
 		{"a node flag that changes neither", "Procfile", "web: node --max-old-space-size=4096 server.js\n", true},
 		{"-r for another command", "build.sh", "cp -r public dist\n", true},
-		{"-r after && on a node line", "build.sh", "node build.js && rm -r dist\n", true},
-		{"-r after ; on a node line", "build.sh", "node build.js; cp -r out dist\n", true},
-		{"-r on the line after node", "build.sh", "node build.js\ncp -r out dist\n", true},
+		{"-r after && on a node line", "build.sh", "node build.js && rm -r dist\n", false},
+		{"-r after ; on a node line", "build.sh", "node build.js; cp -r out dist\n", false},
+		{"-r on the line after node", "build.sh", "node build.js\ncp -r out dist\n", false},
 		{"-r inside a longer word", "Procfile", "web: node server.js -rf\n", true},
 		{"-r after a word that only contains node", "ops.sh", "kubectl get nodes -r\n", true},
+
+		// Command lines are not parsed: node and a -r or -C anywhere in one file count.
+		{"-r on a Dockerfile continuation line", "Dockerfile", "FROM node:20\nCMD node \\\n  -r zed/register server.js\n", false},
+		{"-r in a Kubernetes args list", "k8s/deployment.yaml", "containers:\n  - name: web\n    command: [\"node\"]\n    args: [\"-r\", \"zed/register\", \"server.js\"]\n", false},
+		{"-r in a compose block list", "docker-compose.yml", "services:\n  web:\n    command:\n      - node\n      - -r\n      - zed/register\n      - server.js\n", false},
+		{"-r in a multi-line exec-form array", "Dockerfile", "FROM node:20\nCMD [\n  \"node\",\n  \"-r\",\n  \"zed/register\",\n  \"server.js\"\n]\n", false},
+		{"-r= form", "Procfile", "web: node -r=./apm.js server.js\n", false},
+		{"npx with -r", "package.json", `{"name":"app","scripts":{"test":"npx mocha -r ./setup.js"}}`, false},
+		{"node -C", "Procfile", "web: node -C development server.js\n", false},
+		{"--conditions", "start.sh", "exec node --conditions=development index.js\n", false},
+		{"--experimental-policy", "start.sh", "exec node --experimental-policy=policy.json index.js\n", false},
+		{"-C with no node in the file", "build.sh", "make -C sub all\n", true},
+
+		// Resolver hooks reached without a first-party require('module').
+		{"tsconfig-paths registered in code", "index.js", "require('tsconfig-paths/register');\n", false},
+		{"tsconfig-paths in a ts-node tsconfig", "tsconfig.json", `{"ts-node":{"require":["tsconfig-paths/register"]}}`, false},
+		{"registerHooks through getBuiltinModule", "index.js", "process.getBuiltinModule('module').registerHooks({ resolve });\n", false},
+		{"registerHooks imported from node:module", "hooks.mjs", "import { registerHooks } from 'node:module';\nregisterHooks({ resolve });\n", false},
+		{"getBuiltinModule('node:module') bound to a name", "index.js", "const m = process.getBuiltinModule(\"node:module\");\nm.findPackageJSON;\n", false},
+		{"register imported from node:module", "hooks.mjs", "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n", false},
+		{"module internals through a renamed binding", "src/hook.js", "const M = require('module');\nM._load = wrap(M._load);\n", false},
+		{"module.constructor._load", "src/hook.js", "const load = module.constructor._load;\nmodule.constructor._load = (r, p, m) => load(r, p, m);\n", false},
+		{"Module._extensions on a Module from module.constructor", "src/hook.js", "const Module = module.constructor;\nModule._extensions['.yml'] = loadYaml;\n", false},
+		{"Module.prototype.require replaced", "src/hook.js", "const Module = module.constructor;\nModule.prototype.require = function (id) { return wrap(id); };\n", false},
+		{"require.extensions", "src/hook.js", "require.extensions['.yml'] = loadYaml;\n", false},
+		{"module.register", "hooks.mjs", "import module from 'node:module';\nmodule.register('./hooks.mjs', import.meta.url);\n", false},
+		{"require reassigned", "src/boot.js", "require = wrap(require);\n", false},
+		{"global.require assigned", "src/boot.js", "global.require = wrap(require);\n", false},
+		{"a Module._findPath patch", "src/hook.js", "require('module')._findPath = find;\n", false},
+		{"Module._initPaths called", "src/hook.js", "require('module')._initPaths();\n", false},
+		{"require compared, not assigned", "src/boot.js", "if (require == null || module.require === undefined) {}\n", true},
+		{"a require('module') that changes nothing", "src/list.js", "const { builtinModules } = require('module');\n", true},
+		{"a register( call with no node:module load", "src/app.js", "register(user);\n", true},
+
+		// Bundler resolution: what the bundle loads is what runs.
+		{"webpack resolve.modules", "webpack.config.js", "module.exports = { resolve: { modules: ['vendor_modules', 'node_modules'] } };\n", false},
+		{"webpack resolve.alias", "webpack.config.js", "module.exports = { resolve: { alias: { qs: path.resolve(__dirname, 'src/qs.js') } } };\n", false},
+		{"vite alias", "vite.config.ts", "import { defineConfig } from 'vite';\nexport default defineConfig({ resolve: { alias: { qs: '/src/qs.js' } } });\n", false},
+		{"rollup alias plugin", "rollup.config.mjs", "import alias from '@rollup/plugin-alias';\nexport default { plugins: [alias({ entries: [{ find: 'qs', replacement: './src/qs.js' }] })] };\n", false},
+		{"esbuild alias", "build.mjs", "import * as esbuild from 'esbuild';\nawait esbuild.build({ entryPoints: ['index.js'], alias: { qs: './src/qs.js' } });\n", false},
+		{"babel module-resolver", ".babelrc", `{"plugins":[["module-resolver",{"root":["./vendor"]}]]}`, false},
+		{"resolve.alias set through a config chain", "config/chain.js", "config.resolve.alias.set('qs', './src/qs.js');\n", false},
+		{"a webpack config with neither key", "webpack.config.js", "module.exports = { entry: './index.js', mode: 'production' };\n", true},
+		{"an alias in a file that names no bundler", "src/routes.js", "const r = { alias: '/home' };\n", true},
+		{"a package name that only contains modules", "package.json", `{"name":"app","devDependencies":{"webpack":"5","postcss-modules":"6"}}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -258,6 +304,20 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 			"package.json": `{"name":"root","workspaces":[]}`, "app/package-lock.json": lock}},
 		{name: "a workspace member the root lock governs", from: "packages/a", bounded: true, files: map[string]string{
 			"package.json": `{"name":"root","workspaces":["packages/*"]}`, "package-lock.json": lock, "packages/a/package.json": `{"name":"a"}`}},
+
+		// tsconfig paths applied by a TypeScript runner.
+		{name: "tsconfig paths and a tsx runner", files: map[string]string{"package-lock.json": lock,
+			"tsconfig.json": `{"compilerOptions":{"paths":{"*":["vendor_modules/*"]}}}`, "Procfile": "web: tsx index.ts\n"}},
+		{name: "a tsconfig base from a package and bun", files: map[string]string{"package-lock.json": lock,
+			"tsconfig.json": `{"extends":"@tsconfig/node20/tsconfig.json"}`, "Procfile": "web: bun run index.ts\n"}},
+		{name: "jsconfig baseUrl and ts-node", files: map[string]string{"package-lock.json": lock,
+			"web/jsconfig.json": `{"compilerOptions":{"baseUrl":"src"}}`, "package.json": `{"name":"app","scripts":{"dev":"ts-node index.ts"}}`}},
+		{name: "tsconfig paths with no runner", bounded: true, files: map[string]string{"package-lock.json": lock,
+			"tsconfig.json": `{"compilerOptions":{"paths":{"*":["vendor_modules/*"]}}}`, "Procfile": "web: node dist/index.js\n"}},
+		{name: "a tsx runner with a tsconfig that sets no paths", bounded: true, files: map[string]string{"package-lock.json": lock,
+			"tsconfig.json": `{"extends":"./tsconfig.base.json","compilerOptions":{"strict":true}}`, "Procfile": "web: tsx index.ts\n"}},
+		{name: "paths in a file that is not a tsconfig, with tsx", bounded: true, files: map[string]string{"package-lock.json": lock,
+			"routes.json": `{"paths":{"/":"home"}}`, "Procfile": "web: tsx index.ts\n"}},
 
 		{name: "a file: link to a directory above the lock", from: "app", files: map[string]string{
 			"app/package-lock.json": lockAbove, "shared/package.json": `{"name":"shared"}`}},

@@ -39,6 +39,9 @@ type lockClosures struct {
 	// what the walk found (see resolutionOverridden).
 	scanned    bool
 	overridden bool
+	// tsPaths and tsRunner record a tsconfig paths setting and a TypeScript runner seen
+	// anywhere in the tree; together they override resolution.
+	tsPaths, tsRunner bool
 	// nodeModules lists the build-relative directory holding each node_modules the walk saw
 	// ("" = the build root), in walk order.
 	nodeModules []string
@@ -399,28 +402,81 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 // resolves or loads packages the lock does not describe: NODE_PATH (extra resolution directories),
 // NODE_OPTIONS (which can carry any flag below), NODE_PRESERVE_SYMLINKS, npm's node-options
 // (exported as NODE_OPTIONS to the scripts npm runs), and the node flags that preload a
-// module or a loader or keep symlinked paths: --require, --import, --loader,
-// --experimental-loader, --preserve-symlinks (and -main). The short -r counts only as an
-// argument of a node, nodejs or nodemon command: after the command name on the same line,
-// with no ;, | or & in between, as its own word (also as a quoted exec-form array element),
-// so `cp -r` and `rm -r` do not. A -r inside NODE_OPTIONS is caught by NODE_OPTIONS itself.
+// module or a loader, keep symlinked paths, or add export conditions: --require, --import,
+// --loader, --experimental-loader, --preserve-symlinks (and -main), --conditions, and
+// --experimental-policy, whose manifest can redirect a dependency.
+//
 // It also matches the resolver hooks first-party code or config can install: module-alias
-// (and its package.json _moduleDirectories and _moduleAliases), app-module-path, and patches
-// of Module._resolveFilename or Module._nodeModulePaths.
+// (and its package.json _moduleDirectories and _moduleAliases), app-module-path,
+// tsconfig-paths, babel-plugin-module-resolver, a bundler's resolve.alias or resolve.modules,
+// patches of Module._resolveFilename, _nodeModulePaths, _findPath or _initPaths, Node's
+// registerHooks and getBuiltinModule('module'), and the Module internals reached without
+// importing node:module: Module._load, Module._extensions, Module.prototype.require,
+// require.extensions, module.constructor's _load, _extensions and prototype.require,
+// module.register, and reassigning require or module.require.
 var launchToken = regexp.MustCompile(
 	`\bNODE_PATH\b|\bNODE_OPTIONS\b|\bNODE_PRESERVE_SYMLINKS\b|\bnode-options\b` +
-		`|\b(?:_moduleDirectories|_moduleAliases|module-alias|app-module-path|_resolveFilename|_nodeModulePaths)\b` +
-		`|--(?:require|import|loader|experimental-loader|preserve-symlinks)\b` +
-		`|\b(?:node|nodejs|nodemon)(?:\.exe)?\b[^\n;|&]{0,256}[\s,"'\[]-r(?:[\s"'=,\]]|$)`)
+		`|\b(?:_moduleDirectories|_moduleAliases|module-alias|app-module-path|tsconfig-paths|module-resolver|_resolveFilename|_nodeModulePaths|_findPath|_initPaths|registerHooks)\b` +
+		`|\bgetBuiltinModule\s*\(\s*['"\x60](?:node:)?module['"\x60]|\bresolve\.(?:alias|modules)\b` +
+		`|\b(?:Module|constructor)\.(?:_load|_extensions|prototype\.require)\b|\brequire\.extensions\b|\bmodule\.register\b` +
+		`|\b(?:module|global|globalThis)\.require\s*=[^=]|(?m:(?:^|[;{}(,])[ \t]*require[ \t]*=[^=])` +
+		`|--(?:require|import|loader|experimental-loader|experimental-policy|preserve-symlinks|conditions)\b`)
 
 // launchNeedles prefilter launchToken: a window holding none of them cannot match.
 var launchNeedles = [][]byte{
 	[]byte("NODE_PATH"), []byte("NODE_OPTIONS"), []byte("NODE_PRESERVE_SYMLINKS"),
 	[]byte("node-options"), []byte("--require"), []byte("--import"), []byte("--loader"),
-	[]byte("--experimental-loader"), []byte("--preserve-symlinks"), []byte("-r"),
+	[]byte("--experimental-loader"), []byte("--experimental-policy"), []byte("--preserve-symlinks"), []byte("--conditions"),
 	[]byte("_moduleDirectories"), []byte("_moduleAliases"), []byte("module-alias"),
-	[]byte("app-module-path"), []byte("_resolveFilename"), []byte("_nodeModulePaths"),
+	[]byte("app-module-path"), []byte("tsconfig-paths"), []byte("module-resolver"),
+	[]byte("_resolveFilename"), []byte("_nodeModulePaths"), []byte("_findPath"), []byte("_initPaths"),
+	[]byte("registerHooks"), []byte("getBuiltinModule"), []byte("resolve."),
+	[]byte("_load"), []byte("_extensions"), []byte("prototype.require"), []byte("require.extensions"),
+	[]byte("module.register"), []byte("require"),
 }
+
+// nodeCommand and shortFlag together leave every closure unbounded: a file that names node,
+// nodejs, nodemon or npx as a word and holds -r (preload a module) or -C (add an export
+// condition) as a whole token anywhere, = form included. Command lines are not parsed, so a
+// flag on a continuation line, in a separate args list or in an argv array counts, and so
+// does a -r that belongs to another command in the same file.
+var (
+	nodeCommand = regexp.MustCompile(`\b(?:node|nodejs|nodemon|npx)(?:\.exe)?\b`)
+	shortFlag   = regexp.MustCompile(`(?:^|[\s"'\[,])-[rC](?:$|[\s"'\],=])`)
+)
+
+// moduleImport matches a load of node:module, and moduleInternal a use, under whatever name
+// the file binds it to, of what that module offers to change how Node loads code: the
+// Module._load, _extensions and prototype.require internals, globalPaths, and a bare call
+// of the ESM register hook. A file holding both leaves every closure unbounded.
+var (
+	moduleImport   = regexp.MustCompile(`(?:\bfrom|\brequire\(|\bimport\()\s*['"\x60](?:node:)?module['"\x60]`)
+	moduleInternal = regexp.MustCompile(`\.(?:_load|_extensions|globalPaths)\b|\.prototype\.require\b|(?:^|[^.\w$])register\s*\(`)
+)
+
+// bundlerName and bundlerResolve together leave every closure unbounded: a file that names a
+// bundler, in its name or its text, and mentions an alias or sets a modules key, which
+// redirects what the bundle, the code that runs, loads in place of the specifier Node would
+// resolve. A package name that only contains one of the words (postcss-modules, alias-hq) is
+// not a mention.
+var (
+	bundlerName    = regexp.MustCompile(`\b(?:webpack|vite|rollup|rolldown|esbuild|rspack)\b`)
+	bundlerResolve = regexp.MustCompile(`(?:^|[^\w-])(?:alias(?:$|[^\w-])|["']?modules["']?\s*:)`)
+)
+
+// tsPathsSetting matches, in a tsconfig or jsconfig file, compilerOptions that make specifiers
+// resolve outside Node's own resolution (paths, baseUrl) or a base config from a package the
+// walk does not read, which may set them. tsRunner matches a TypeScript runner or runtime that
+// applies those settings when the program runs: ts-node (with a paths plugin), tsx,
+// @swc-node/register, esbuild-register, @esbuild-kit, bun. Either alone leaves resolution to
+// Node; a tree holding both leaves every closure unbounded.
+var (
+	tsPathsSetting = regexp.MustCompile(`"(?:paths|baseUrl)"\s*:|"extends"\s*:\s*(?:\[|"[^."])`)
+	tsRunner       = regexp.MustCompile(`\b(?:ts-node|swc-node|esbuild-register|esbuild-kit)\b|(?:^|[\s"'\[,=/])(?:tsx|bun)(?:$|[\s"',\]/])`)
+)
+
+// tsConfigName matches the file names TypeScript and editors read compilerOptions from.
+var tsConfigName = regexp.MustCompile(`^(?:tsconfig|jsconfig)(?:\.[^/]*)?\.json$`)
 
 // installerMarkers name files that mean something other than npm installs (or installed)
 // packages here: a yarn, pnpm or bun lockfile, or a Yarn Plug'n'Play runtime. Their layout
@@ -442,8 +498,10 @@ var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modu
 // except node_modules and site-packages is entered; node_modules is visited, not entered; no
 // symlink is followed), recording every node_modules it sees. It reports true, leaving every
 // closure unbounded, when the walk finds:
-//   - a file anywhere containing a launchToken. Over-firing on a mention is the price of not
-//     enumerating launch surfaces;
+//   - a file anywhere containing a launchToken, or both halves of a nodeCommand/shortFlag,
+//     moduleImport/moduleInternal or bundlerName/bundlerResolve pair.
+//     Over-firing on a mention is the price of not enumerating launch surfaces;
+//   - a tsconfig or jsconfig paths setting and a TypeScript runner, anywhere in the tree;
 //   - an installerMarker, a .yarnrc.yml that does not select the node_modules linker, or a
 //     node_modules holding pnpm's or yarn's state;
 //   - a symlink that leaves the build tree or does not resolve, a symlinked node_modules, or
@@ -513,12 +571,17 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		}
 		// A symlinked file inside the tree is read through the link, since its target may sit
 		// in a directory the walk does not enter.
-		found, err := fileHasLaunchToken(e.Path, name == ".yarnrc.yml")
-		if err != nil || found {
+		sc, err := scanLaunchFile(e.Path, name == ".yarnrc.yml", tsConfigName.MatchString(name), bundlerName.MatchString(name))
+		if err != nil || sc.overrides() {
 			return veto()
 		}
+		lc.tsPaths = lc.tsPaths || sc.tsPaths
+		lc.tsRunner = lc.tsRunner || sc.tsRunner
 		return nil
 	})
+	if lc.tsPaths && lc.tsRunner {
+		lc.overridden = true
+	}
 	for _, link := range linkedDirs {
 		if lc.overridden {
 			break
@@ -531,13 +594,31 @@ func (lc *lockClosures) resolutionOverridden() bool {
 	return lc.overridden
 }
 
-// fileHasLaunchToken scans the file at p for a launchToken in overlapping windows, so a file
-// of any size is read in bounded memory. yarnrc also reports true when the whole file does
-// not select the node_modules linker.
-func fileHasLaunchToken(p string, yarnrc bool) (bool, error) {
+// launchScan is what scanLaunchFile found in one file.
+type launchScan struct {
+	// token is a launchToken, or a .yarnrc.yml that does not select the node_modules linker.
+	token                        bool
+	nodeCommand, shortFlag       bool
+	moduleImport, moduleInternal bool
+	bundlerName, bundlerResolve  bool
+	// tsPaths is set only for a tsconfig or jsconfig file.
+	tsPaths, tsRunner bool
+}
+
+// overrides reports whether the file alone leaves every closure unbounded.
+func (sc launchScan) overrides() bool {
+	return sc.token || sc.nodeCommand && sc.shortFlag || sc.moduleImport && sc.moduleInternal ||
+		sc.bundlerName && sc.bundlerResolve
+}
+
+// scanLaunchFile scans the file at p in overlapping windows, so a file of any size is read in
+// bounded memory. yarnrc marks a .yarnrc.yml, tsconfig a tsconfig or jsconfig file, and
+// bundler a file whose name names a bundler.
+func scanLaunchFile(p string, yarnrc, tsconfig, bundler bool) (launchScan, error) {
+	sc := launchScan{bundlerName: bundler}
 	f, err := os.Open(p)
 	if err != nil {
-		return false, err
+		return sc, err
 	}
 	defer f.Close()
 	const window, overlap = 1 << 20, 512
@@ -547,16 +628,26 @@ func fileHasLaunchToken(p string, yarnrc bool) (bool, error) {
 		n, err := io.ReadFull(f, buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+n]
 		if hasNeedle(buf) && launchToken.Match(buf) {
-			return true, nil
+			sc.token = true
+			return sc, nil
 		}
 		if yarnrc && nodeModulesLinker.Match(buf) {
 			linker = true
 		}
+		sc.nodeCommand = sc.nodeCommand || nodeCommand.Match(buf)
+		sc.shortFlag = sc.shortFlag || shortFlag.Match(buf)
+		sc.moduleImport = sc.moduleImport || moduleImport.Match(buf)
+		sc.bundlerName = sc.bundlerName || bundlerName.Match(buf)
+		sc.bundlerResolve = sc.bundlerResolve || bundlerResolve.Match(buf)
+		sc.moduleInternal = sc.moduleInternal || moduleInternal.Match(buf)
+		sc.tsPaths = sc.tsPaths || tsconfig && tsPathsSetting.Match(buf)
+		sc.tsRunner = sc.tsRunner || tsRunner.Match(buf)
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
-			return yarnrc && !linker, nil
+			sc.token = yarnrc && !linker
+			return sc, nil
 		}
 		if err != nil {
-			return false, err
+			return sc, err
 		}
 		if len(buf) > overlap {
 			buf = append(buf[:0], buf[len(buf)-overlap:]...)

@@ -500,6 +500,56 @@ go(process.argv[2]);
 			held: []*report.Package{qs, zed},
 		},
 		{
+			name:  "node -r on a Dockerfile continuation line holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"Dockerfile": "FROM node:20\nCMD node \\\n  -r zed/register index.js\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name:  "-r in a Kubernetes args list holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"k8s/deployment.yaml": "containers:\n  - name: web\n    command: [\"node\"]\n    args: [\"-r\", \"zed/register\", \"index.js\"]\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			// The lock installs tsconfig-paths, so its own reach is bounded; the hook it installs
+			// sends qs to vendor_modules, which the lock does not describe.
+			name: "tsconfig-paths registered in code holds every advisory",
+			src:  "require('tsconfig-paths/register');\nconst qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock: `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"qs":"6.0.0","tsconfig-paths":"4.2.0"}},
+"node_modules/qs":{"version":"6.0.0"},
+"node_modules/tsconfig-paths":{"version":"4.2.0"}}}`,
+			files: map[string]string{
+				"tsconfig.json":                   `{"compilerOptions":{"baseUrl":".","paths":{"*":["vendor_modules/*"]}}}`,
+				"vendor_modules/qs/package.json":  `{"name":"qs","version":"6.0.0"}`,
+				"vendor_modules/zed/package.json": `{"name":"zed","version":"1.0.0"}`,
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "registerHooks through getBuiltinModule holds every advisory",
+			src:  "process.getBuiltinModule('module').registerHooks({ resolve: (s, c, n) => n(s, c) });\nconst qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock: lock,
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name:  "webpack resolve.modules holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"webpack.config.js": "module.exports = { resolve: { modules: ['vendor_modules', 'node_modules'] } };\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name:  "a vite alias holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"vite.config.js": "export default { resolve: { alias: { qs: '/src/qs.js' } } };\n"},
+			held:  []*report.Package{qs, zed},
+		},
+		{
 			name: "a yarn.lock beside the npm lock holds every advisory",
 			src: `const qs = require('qs');
 function go(u) { return qs.parse(u); }

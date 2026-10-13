@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -27,6 +29,10 @@ const (
 	purlTypeConan    = "conan"
 	purlTypeVcpkg    = "vcpkg"
 	vcpkgInstalledOK = "install ok installed"
+
+	// maxManifestBytes caps what the lane reads from one manifest, and from vcpkg's
+	// installed-package database (status plus updates) as a whole.
+	maxManifestBytes = 32 << 20
 )
 
 // cdep is one dependency a manifest records. ResolveDependencyVersions and ResolveInventory both
@@ -138,7 +144,70 @@ func readManifests(buildDir string) manifestSet {
 }
 
 func readRootFile(name string) func(string) ([]byte, error) {
-	return func(buildDir string) ([]byte, error) { return os.ReadFile(filepath.Join(buildDir, name)) }
+	return func(buildDir string) ([]byte, error) { return readInTree(buildDir, name, maxManifestBytes) }
+}
+
+// readInTree reads rel, a slash-separated path under root. The path, with every link in it
+// resolved, must stay inside root and name a regular file. The open does not block on a FIFO, the
+// open descriptor is checked to be that same regular file, and more than limit bytes is refused.
+// A path that does not exist returns an error os.IsNotExist reports; every other refusal is an
+// ordinary error, which the caller declares as a manifest it could not read.
+func readInTree(root, rel string, limit int64) ([]byte, error) {
+	path, err := resolveInTree(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	want, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !want.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", rel)
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	got, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !got.Mode().IsRegular() || !os.SameFile(want, got) {
+		return nil, fmt.Errorf("%s: changed while it was opened", rel)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s: larger than %d bytes", rel, limit)
+	}
+	return data, nil
+}
+
+// resolveInTree returns rel under root with every link resolved, or an error when the result
+// leaves root. A link whose target does not exist is an error, not an absent file.
+func resolveInTree(root, rel string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(root, filepath.FromSlash(rel))
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if _, lerr := os.Lstat(p); lerr == nil {
+				return "", fmt.Errorf("%s: link to a missing target", rel)
+			}
+		}
+		return "", err
+	}
+	r, err := filepath.Rel(realRoot, real)
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s resolves outside the build root", rel)
+	}
+	return real, nil
 }
 
 // checkBuildDir is the hard error both dependency ops return for a build dir they cannot read.
@@ -329,26 +398,37 @@ func isConanRange(version string) bool { return strings.HasPrefix(version, "[") 
 
 // readVcpkgStatus reads vcpkg's installed-package database: the status file, then each file in
 // the updates directory beside it in name order. vcpkg appends one update per package it installs
-// or removes and folds them into status on a later run, so status alone can lag the tree.
+// or removes and folds them into status on a later run, so status alone can lag the tree. Every
+// entry in the updates directory must read as a regular file inside the build root, so none is
+// skipped unread.
 func readVcpkgStatus(buildDir string) ([]byte, error) {
-	data, err := os.ReadFile(filepath.Join(buildDir, filepath.FromSlash(vcpkgStatusFile)))
+	data, err := readInTree(buildDir, vcpkgStatusFile, maxManifestBytes)
 	if err != nil {
 		return nil, err
 	}
-	updatesDir := filepath.Join(buildDir, filepath.FromSlash(vcpkgUpdatesDir))
-	entries, err := os.ReadDir(updatesDir)
-	if err != nil && !os.IsNotExist(err) {
+	updatesDir, err := resolveInTree(buildDir, vcpkgUpdatesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return data, nil
+		}
 		return nil, err
 	}
-	var names []string
+	if info, err := os.Lstat(updatesDir); err != nil {
+		return nil, err
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("%s: not a directory", vcpkgUpdatesDir)
+	}
+	entries, err := os.ReadDir(updatesDir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		if e.Type().IsRegular() {
-			names = append(names, e.Name())
-		}
+		names = append(names, e.Name())
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		u, err := os.ReadFile(filepath.Join(updatesDir, n))
+		u, err := readInTree(buildDir, vcpkgUpdatesDir+"/"+n, maxManifestBytes-int64(len(data)))
 		if err != nil {
 			return nil, err
 		}

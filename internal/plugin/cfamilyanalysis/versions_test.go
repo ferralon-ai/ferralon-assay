@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -348,4 +351,131 @@ func TestResolveDependencyVersionsBadBuildDir(t *testing.T) {
 	if _, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: missing}); err == nil {
 		t.Fatal("missing build dir: want a hard error")
 	}
+}
+
+// Every manifest the lane reads is read only as a regular file inside the build root. A FIFO, a
+// link out of the root, or a file past the size cap is a manifest that did not read: tool_failure,
+// and the manager it belongs to is unlocked. None of them blocks the read or reads as Complete.
+func TestManifestReadsRefuseNonRegularFiles(t *testing.T) {
+	const status = "Package: zlib\nVersion: 1.3.1\nArchitecture: x64-linux\nStatus: install ok installed\n"
+	const evilStatus = "Package: evil\nVersion: 9.9\nArchitecture: x64-linux\nStatus: install ok installed\n"
+	outside := writeFiles(t, map[string]string{
+		"status":      evilStatus,
+		"0000000001":  evilStatus,
+		conanLockFile: `{"version":"0.5","requires":["evil/9.9"]}`,
+		conanTxtFile:  "[requires]\nevil/9.9\n",
+		vcpkgFile:     `{"overrides":[{"name":"evil","version":"9.9"}]}`,
+	})
+	for _, target := range []struct {
+		path  string
+		files map[string]string // the rest of the tree, which reads Complete on its own
+	}{
+		{conanLockFile, map[string]string{vcpkgStatusFile: status}},
+		{conanTxtFile, map[string]string{conanLockFile: `{"version":"0.5","requires":["zlib/1.3.1"]}`}},
+		{vcpkgStatusFile, map[string]string{conanLockFile: `{"version":"0.5","requires":["zlib/1.3.1"]}`}},
+		{vcpkgUpdatesDir + "/0000000001", map[string]string{vcpkgStatusFile: status}},
+		{vcpkgFile, map[string]string{vcpkgStatusFile: status}},
+	} {
+		for _, kind := range []struct {
+			name string
+			make func(t *testing.T, path string)
+		}{
+			{"FIFO", func(t *testing.T, path string) {
+				if err := syscall.Mkfifo(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"link out of the build root", func(t *testing.T, path string) {
+				if err := os.Symlink(filepath.Join(outside, filepath.Base(path)), path); err != nil {
+					t.Fatal(err)
+				}
+			}},
+			{"past the size cap", func(t *testing.T, path string) {
+				f, err := os.Create(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				if err := f.Truncate(maxManifestBytes + 1); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		} {
+			t.Run(target.path+"/"+kind.name, func(t *testing.T) {
+				dir := writeFiles(t, target.files)
+				full := filepath.Join(dir, filepath.FromSlash(target.path))
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				kind.make(t, full)
+
+				type result struct {
+					inv plugin.DependencyInventory
+					vr  plugin.DependencyVersionResult
+				}
+				done := make(chan result, 1)
+				go func() {
+					inv, _ := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+					vr, _ := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir})
+					done <- result{inv, vr}
+				}()
+				var r result
+				select {
+				case r = <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the manifest read blocked")
+				}
+				for name, p := range map[string]plugin.Partiality{"inventory": r.inv.Partiality, "versions": r.vr.Partiality} {
+					if p.Complete || !hasReason(p.Reasons, plugin.PartialReasonToolFailure) {
+						t.Errorf("%s Partiality = %+v, want tool_failure", name, p)
+					}
+				}
+				for _, n := range r.inv.Nodes {
+					if strings.Contains(n.PURL, "evil") {
+						t.Errorf("read a file outside the build root: %+v", n)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestReadInTreeAllowsALinkInsideTheRoot(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"real/conan.lock": `{"version":"0.5","requires":["zlib/1.3.1"]}`})
+	if err := os.Symlink(filepath.Join("real", conanLockFile), filepath.Join(dir, conanLockFile)); err != nil {
+		t.Fatal(err)
+	}
+	if inv := inventoryAt(t, dir); !inv.Partiality.Complete {
+		t.Fatalf("Partiality = %+v, want Complete", inv.Partiality)
+	}
+	if _, err := readInTree(dir, conanLockFile, 8); err == nil {
+		t.Error("readInTree read past its limit")
+	}
+	if _, err := readInTree(dir, "missing", 8); !os.IsNotExist(err) {
+		t.Errorf("missing file: err = %v, want not-exist", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, conanTxtFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readInTree(dir, conanTxtFile, maxManifestBytes); err == nil || os.IsNotExist(err) {
+		t.Errorf("dangling link: err = %v, want a read failure, not absence", err)
+	}
+}
+
+func inventoryAt(t *testing.T, dir string) plugin.DependencyInventory {
+	t.Helper()
+	inv, err := ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inv
+}
+
+func hasReason(reasons []string, want string) bool {
+	for _, r := range reasons {
+		if r == want {
+			return true
+		}
+	}
+	return false
 }

@@ -28,6 +28,10 @@ type program struct {
 	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
 	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
 	dynamicImportOpaque bool
+	// importUnattributed records that a manifest could not be read in full and an import
+	// resolves to no distribution, so the name that would attribute it may be in the unread
+	// part and the boundary nodes behind it are missing.
+	importUnattributed bool
 }
 
 // resolveCallee maps a lexical call (leaf name + explicit-argument arity) to the SCIP id
@@ -152,7 +156,7 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
-	declared, read := declaredDistributions(buildDir)
+	declared, declaredComplete, read := declaredDistributions(buildDir)
 	if !read {
 		prog.readFailed = true
 	}
@@ -160,8 +164,26 @@ func loadProgram(buildDir string) (*program, error) {
 		curated:    NewDistImportMap(CuratedContributions()...),
 		declared:   declared,
 		firstParty: firstPartyTops(modules),
+		python:     buildInterpreter(buildDir),
 	}
+	prog.importUnattributed = !declaredComplete && prog.hasUndeclaredImport()
 	return prog, nil
+}
+
+// hasUndeclaredImport reports whether any import binding's top-level module is one the
+// resolver can attribute only through a manifest name it does not hold.
+func (prog *program) hasUndeclaredImport() bool {
+	for _, f := range prog.files {
+		for _, scope := range f.bindings {
+			for _, b := range scope {
+				top, _, _ := strings.Cut(b.target, ".") // "" for an instance binding
+				if prog.dists.undeclaredTop(top) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init
@@ -280,11 +302,14 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 // callGraphPartiality declares the call graph ALWAYS partial for Python: the lexical
 // scanner categorically cannot resolve dynamic dispatch / getattr / decorator-rewriting /
 // monkeypatching, so dynamic_dispatch is a standing reason. Read failures and skipped
-// constructs add their own machine-readable reasons.
+// constructs add their own machine-readable reasons. A manifest read only in part counts as
+// a read failure when some import resolves to no distribution, since the name that would
+// attribute it may be in the part not read; with every import attributed, the unread part
+// changes no boundary node.
 func callGraphPartiality(prog *program) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
 	reasons = append(reasons, dynamicImportReasons(prog.dynamicImportOpaque)...)
-	if prog.readFailed {
+	if prog.readFailed || prog.importUnattributed {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if prog.skipped {

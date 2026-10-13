@@ -1,10 +1,12 @@
 package pythonanalysis
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -152,6 +154,7 @@ type distResolver struct {
 	curated    DistImportMap
 	declared   map[string]bool // PEP 503 names from the build's manifests
 	firstParty map[string]bool // top-level import names the build's own sources provide
+	python     interpreterRange
 }
 
 // distsFor returns the distributions that may provide the dotted import path. The longest
@@ -218,6 +221,17 @@ func (d distResolver) curatedShippers(path string) []string {
 	return nil
 }
 
+// undeclaredTop reports whether top reaches a distribution only through the PEP 503
+// fallback and no manifest name read here matches it: not first-party, not a standard-library
+// module every interpreter the build may run on ships, and not a curated name exactly one
+// distribution provides, which decides on its own either way.
+func (d distResolver) undeclaredTop(top string) bool {
+	if top == "" || d.firstParty[top] || d.python.ships(top) || len(d.curated.Reverse(top)) == 1 {
+		return false
+	}
+	return !d.declared[normalizePyCoordinate(top)]
+}
+
 // importTops returns the top-level import names distribution dist provides: its curated
 // rows, else its own name read as an import name (the PEP 503 fallback distsFor applies in
 // reverse).
@@ -270,24 +284,40 @@ func firstPartyTops(modules []string) map[string]bool {
 }
 
 // declaredDistributions returns the PEP 503 names every recognized manifest under buildDir
-// declares. read is false when a manifest cannot be read: it may declare a distribution an
-// import maps to.
-func declaredDistributions(buildDir string) (out map[string]bool, read bool) {
-	out, read = map[string]bool{}, true
-	for _, m := range manifestFiles(buildDir) {
-		data, err := readRegular(m)
-		if err != nil {
-			read = false
-			continue
-		}
-		deps, _ := parseManifestData(m, data)
+// declares. complete is false when a manifest fails to parse, a file declares dependencies
+// version resolution does not read (the same surfaces that leave a version unresolved), or an
+// install surface is not fully read by the coverage check (ManifestCandidates): a name only
+// that file holds is missing, so an import of it reaches no boundary node. read is false when a
+// manifest cannot be read at all.
+func declaredDistributions(buildDir string) (names map[string]bool, complete, read bool) {
+	names, complete, read = map[string]bool{}, true, true
+	add := func(deps []plugin.ResolvedDependency) {
 		for _, d := range deps {
 			if n := normalizePyCoordinate(d.Coordinate); n != "" {
-				out[n] = true
+				names[n] = true
 			}
 		}
 	}
-	return out, read
+	manifests, unread := versionSurfaces(buildDir)
+	complete = !unread && buildtree.AllFullyRead(ManifestCandidates(buildDir))
+	for _, f := range manifests {
+		data, err := readRegular(f)
+		if err != nil {
+			complete, read = false, false
+			continue
+		}
+		deps, _, ok := parseManifestData(f, data)
+		if !ok {
+			complete = false
+		}
+		add(deps)
+		if filepath.Base(f) == "pyproject.toml" {
+			// The lexical [project] reader still yields names from a file TOML rejects.
+			lexical, _ := parsePyprojectLexical(data)
+			add(lexical)
+		}
+	}
+	return names, complete, read
 }
 
 // boundaryPrefix marks a dependency boundary node: a dependency attribute the build's code

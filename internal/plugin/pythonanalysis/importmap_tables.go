@@ -81,6 +81,13 @@ func CuratedContributions() []Contribution {
 			Date:          importBindingTableDate,
 		},
 		{
+			Distribution:  "jwt",
+			ImportPackage: "jwt",
+			Provenance:    ProvenanceCurated,
+			Source:        "jwt-1.4.0-py3-none-any.whl from pypi.org: sole top-level package jwt/ (RECORD, top_level.txt); ships the same import package as pyjwt",
+			Date:          importBindingTableDate,
+		},
+		{
 			Distribution:  "pyyaml",
 			ImportPackage: "_yaml",
 			Provenance:    ProvenanceCurated,
@@ -99,6 +106,13 @@ func CuratedContributions() []Contribution {
 			ImportPackage: "PIL",
 			Provenance:    ProvenanceCurated,
 			Source:        "pillow-12.3.0-cp310-cp310-macosx_10_10_x86_64.whl from pypi.org: sole top-level package PIL/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "pillow-simd",
+			ImportPackage: "PIL",
+			Provenance:    ProvenanceCurated,
+			Source:        "pillow_simd-12.1.1.post0.tar.gz from pypi.org (the project publishes no wheels): pyproject.toml [tool.setuptools] packages = [\"PIL\"] with package-dir src, and src/PIL/__init__.py; ships the same import package as pillow",
 			Date:          importBindingTableDate,
 		},
 		{
@@ -130,15 +144,43 @@ func CuratedContributions() []Contribution {
 			Date:          importBindingTableDate,
 		},
 		{
+			Distribution:  "python-dotenv-yaml",
+			ImportPackage: "dotenv",
+			Provenance:    ProvenanceCurated,
+			Source:        "python_dotenv_yaml-0.17.1-py2.py3-none-any.whl from pypi.org: RECORD top-level package dotenv/ (has __init__.py); ships the same import package as python-dotenv",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "django-dotenv",
+			ImportPackage: "dotenv",
+			Provenance:    ProvenanceCurated,
+			Source:        "django_dotenv-1.4.2-py2.py3-none-any.whl from pypi.org: RECORD top-level module dotenv.py, top_level.txt dotenv; ships the same import name as python-dotenv",
+			Date:          importBindingTableDate,
+		},
+		{
 			Distribution:  "teams-ai",
 			ImportPackage: "teams",
 			Provenance:    ProvenanceCurated,
 			Source:        "teams_ai-1.8.2-py3-none-any.whl from pypi.org: RECORD top-level packages teams/ and tests/ (no top_level.txt); only teams/ is mapped, since tests/ is a name projects commonly use for their own code",
 			Date:          importBindingTableDate,
 		},
+		{
+			Distribution:  "teams-ai-azml-model",
+			ImportPackage: "teams",
+			Provenance:    ProvenanceCurated,
+			Source:        "teams_ai_azml_model-1.0.2-py3-none-any.whl from pypi.org: RECORD top-level packages teams/ (has __init__.py) and tests/; only teams/ is mapped; ships the same import package as teams-ai",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "teams",
+			ImportPackage: "teams",
+			Provenance:    ProvenanceCurated,
+			Source:        "teams-0.1.0-py3-none-any.whl from pypi.org: RECORD sole top-level package teams/ (has __init__.py); ships the same import package as teams-ai",
+			Date:          importBindingTableDate,
+		},
 		// azure and botframework are PEP 420 namespaces shared by several distributions, so
-		// each row names its leaf; Reverse on the bare root returns every distribution under
-		// it, which attributes nothing on its own.
+		// each row names the package its wheel ships; distsFor takes the longest one on an
+		// import path, and the bare root names none.
 		{
 			Distribution:  "azure-core",
 			ImportPackage: "azure.core",
@@ -147,10 +189,38 @@ func CuratedContributions() []Contribution {
 			Date:          importBindingTableDate,
 		},
 		{
+			Distribution:  "azure-core-experimental",
+			ImportPackage: "azure.core.experimental",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_core_experimental-1.0.0b4-py3-none-any.whl from pypi.org: RECORD package azure/core/experimental/ with no azure/__init__.py or azure/core/__init__.py; azure-core ships no azure/core/experimental/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "azure-core-tracing-opentelemetry",
+			ImportPackage: "azure.core.tracing.ext.opentelemetry_span",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_core_tracing_opentelemetry-1.0.0b13-py3-none-any.whl from pypi.org: RECORD package azure/core/tracing/ext/opentelemetry_span/ and nothing above it; azure-core ships azure/core/tracing/ext/__init__.py but no opentelemetry_span/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "azure-core-tracing-opencensus",
+			ImportPackage: "azure.core.tracing.ext.opencensus_span",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_core_tracing_opencensus-1.0.0b10-py3-none-any.whl from pypi.org: RECORD package azure/core/tracing/ext/opencensus_span/ and nothing above it; azure-core ships no opencensus_span/",
+			Date:          importBindingTableDate,
+		},
+		{
 			Distribution:  "azure-identity",
 			ImportPackage: "azure.identity",
 			Provenance:    ProvenanceCurated,
 			Source:        "azure_identity-1.26.0-py3-none-any.whl from pypi.org: RECORD top-level azure/ with no azure/__init__.py (namespace); package azure/identity/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "azure-identity-broker",
+			ImportPackage: "azure.identity.broker",
+			Provenance:    ProvenanceCurated,
+			Source:        "azure_identity_broker-1.3.0-py3-none-any.whl from pypi.org: RECORD package azure/identity/broker/ with no azure/identity/__init__.py; azure-identity ships no azure/identity/broker/",
 			Date:          importBindingTableDate,
 		},
 		{

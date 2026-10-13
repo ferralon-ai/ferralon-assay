@@ -1,6 +1,7 @@
 package pythonanalysis
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 
@@ -153,24 +154,72 @@ type distResolver struct {
 	firstParty map[string]bool // top-level import names the build's own sources provide
 }
 
-// distFor returns the distribution providing the top-level import name top.
-func (d distResolver) distFor(top string) (string, bool) {
+// distsFor returns the distributions that may provide the dotted import path. The longest
+// curated package that is the path or a whole-segment prefix of it decides, so
+// azure.identity.X reaches azure-identity even though several distributions share the azure
+// namespace. Every curated distribution shipping exactly that package is returned, declared
+// or not: they install into the same directory, so the code the path names can come from any
+// of them. With no curated package on the path, the top-level name decides: a single curated
+// distribution beneath it, else PEP 503 equality with a declared name. A namespace root
+// several distributions share names none.
+func (d distResolver) distsFor(path string) []string {
+	top, _, _ := strings.Cut(path, ".")
 	if top == "" || d.firstParty[top] {
-		return "", false
+		return nil
 	}
-	if dists := d.curated.Reverse(top); len(dists) == 1 {
-		return dists[0], true
-	} else if len(dists) > 1 {
-		return "", false
+	if shippers := d.curatedShippers(path); len(shippers) > 0 {
+		return shippers
+	}
+	if dists := d.curated.Reverse(top); len(dists) > 0 {
+		if len(dists) == 1 {
+			return dists
+		}
+		return nil
 	}
 	if n := normalizePyCoordinate(top); d.declared[n] {
-		return n, true
+		return []string{n}
 	}
-	return "", false
+	return nil
+}
+
+// importDeclared reports whether the build's manifests declare a distribution providing the
+// dotted import path. Under a curated package, at least one of the distributions shipping the
+// longest one must be declared; distsFor already counts the others, so the import is covered.
+// A declared distribution shipping a different package (azure-core for azure.identity) never
+// covers it. Otherwise the distribution distsFor names must be declared, and a namespace root
+// several distributions share is never covered. First-party imports count as declared.
+func (d distResolver) importDeclared(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	if top == "" || d.firstParty[top] {
+		return true
+	}
+	if shippers := d.curatedShippers(path); len(shippers) > 0 {
+		return slices.ContainsFunc(shippers, func(s string) bool { return d.declared[s] })
+	}
+	if dists := d.curated.Reverse(top); len(dists) > 0 {
+		return len(dists) == 1 && d.declared[dists[0]]
+	}
+	return d.declared[normalizePyCoordinate(top)]
+}
+
+// curatedShippers returns the curated distributions shipping exactly the longest curated
+// package that is path or a whole-segment prefix of it, or nil when none is.
+func (d distResolver) curatedShippers(path string) []string {
+	for prefix := path; prefix != ""; {
+		if owners := d.curated.Owners(prefix); len(owners) > 0 {
+			return owners
+		}
+		i := strings.LastIndexByte(prefix, '.')
+		if i < 0 {
+			return nil
+		}
+		prefix = prefix[:i]
+	}
+	return nil
 }
 
 // importTops returns the top-level import names distribution dist provides: its curated
-// rows, else its own name read as an import name (the PEP 503 fallback distFor applies in
+// rows, else its own name read as an import name (the PEP 503 fallback distsFor applies in
 // reverse).
 func (d distResolver) importTops(dist string) []string {
 	var tops []string
@@ -275,15 +324,15 @@ func pypiDistFromPURL(purl string) string {
 
 // boundaryTarget resolves a call chain against the bindings visible at the call (its def
 // scopes inner→outer, then the module) to the dotted dependency path it reaches and the
-// providing distribution. ok is false when the chain's first segment is not bound to a
-// non-first-party import the resolver can map.
-func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scopedBinding, dists distResolver) (dist, dotted string, ok bool) {
+// distributions that may provide it. It returns no distributions when the chain's first
+// segment is not bound to a non-first-party import the resolver can map.
+func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scopedBinding, dists distResolver) (provides []string, dotted string) {
 	if len(chain) == 0 {
-		return "", "", false
+		return nil, ""
 	}
 	b, found := lookupBinding(chain[0], scopes, bindings)
 	if !found {
-		return "", "", false
+		return nil, ""
 	}
 	target := b.target
 	if b.inst != nil {
@@ -291,19 +340,12 @@ func boundaryTarget(chain, scopes []string, bindings map[string]map[string]scope
 		// recursion through further instance bindings).
 		ib, ifound := lookupBinding(b.inst[0], scopes, bindings)
 		if !ifound || ib.target == "" {
-			return "", "", false
+			return nil, ""
 		}
 		target = strings.Join(append([]string{ib.target}, b.inst[1:]...), ".")
 	}
-	top := target
-	if i := strings.IndexByte(top, '.'); i >= 0 {
-		top = top[:i]
-	}
-	dist, ok = dists.distFor(top)
-	if !ok {
-		return "", "", false
-	}
-	return dist, strings.Join(append([]string{target}, chain[1:]...), "."), true
+	dotted = strings.Join(append([]string{target}, chain[1:]...), ".")
+	return dists.distsFor(dotted), dotted
 }
 
 // lookupBinding finds the binding for name visible from the innermost def scope outward,

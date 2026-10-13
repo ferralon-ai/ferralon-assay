@@ -477,7 +477,8 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// A call through an import binding reaches a dependency attribute: emit a
 			// boundary edge to it. The node stands for code the lane does not read, so it is
 			// a candidate target only, never a searched sink.
-			if dist, dotted, ok := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists); ok {
+			provides, dotted := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists)
+			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			callee, ok := prog.resolveCallee(cs.calleeName, cs.calleeArity)

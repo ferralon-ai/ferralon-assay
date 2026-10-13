@@ -227,7 +227,8 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 		name     string
 		files    map[string]string
 		caller   string
-		boundary string // "" = no boundary edge from caller
+		boundary string   // must be among the boundary edges from caller
+		exact    []string // the boundary edges from caller, exactly
 	}{
 		{
 			name:     "jinja2 call-result receiver",
@@ -306,20 +307,79 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 			boundary: "pypi:teams-ai#teams.Application",
 		},
 		{
-			name: "azure namespace root names no single distribution",
+			name:   "azure.identity.X reaches azure-identity under the shared azure namespace",
+			files:  map[string]string{"app.py": "from azure.identity import DefaultAzureCredential\n\ndef cred(o):\n    return DefaultAzureCredential(o)\n"},
+			caller: funcSCIP("app", nil, "cred", 1),
+			exact:  []string{"pypi:azure-identity#azure.identity.DefaultAzureCredential"},
+		},
+		{
+			name:   "dotted import chain reaches azure-identity",
+			files:  map[string]string{"app.py": "import azure.identity\n\ndef cred(o):\n    return azure.identity.DefaultAzureCredential(o)\n"},
+			caller: funcSCIP("app", nil, "cred", 1),
+			exact:  []string{"pypi:azure-identity#azure.identity.DefaultAzureCredential"},
+		},
+		{
+			name:   "botframework.connector.X reaches botframework-connector",
+			files:  map[string]string{"app.py": "from botframework.connector import ConnectorClient\n\ndef client(o):\n    return ConnectorClient(o)\n"},
+			caller: funcSCIP("app", nil, "client", 1),
+			exact:  []string{"pypi:botframework-connector#botframework.connector.ConnectorClient"},
+		},
+		{
+			name:   "longest curated package wins: azure.identity.broker is not azure-identity",
+			files:  map[string]string{"app.py": "from azure.identity.broker import InteractiveBrowserBrokerCredential\n\ndef cred(o):\n    return InteractiveBrowserBrokerCredential(o)\n"},
+			caller: funcSCIP("app", nil, "cred", 1),
+			exact:  []string{"pypi:azure-identity-broker#azure.identity.broker.InteractiveBrowserBrokerCredential"},
+		},
+		{
+			name: "declared sibling does not take another package's import",
 			files: map[string]string{
-				"requirements.txt": "azure-identity==1.26.0\n",
+				"requirements.txt": "azure-core==1.41.0\n",
 				"app.py":           "from azure.identity import DefaultAzureCredential\n\ndef cred(o):\n    return DefaultAzureCredential(o)\n",
+			},
+			caller: funcSCIP("app", nil, "cred", 1),
+			exact:  []string{"pypi:azure-identity#azure.identity.DefaultAzureCredential"},
+		},
+		{
+			name:   "bare azure namespace root names no distribution",
+			files:  map[string]string{"requirements.txt": "azure-core==1.41.0\n", "app.py": "import azure\n\ndef cred(o):\n    return azure.load(o)\n"},
+			caller: funcSCIP("app", nil, "cred", 1),
+		},
+		{
+			name: "uncurated package under the azure namespace names no distribution",
+			files: map[string]string{
+				"requirements.txt": "azure-core==1.41.0\n",
+				"app.py":           "from azure.keyvault.secrets import SecretClient\n\ndef cred(o):\n    return SecretClient(o)\n",
 			},
 			caller: funcSCIP("app", nil, "cred", 1),
 		},
 		{
-			name: "botframework namespace root names no single distribution",
-			files: map[string]string{
-				"requirements.txt": "botframework-connector==4.17.1\n",
-				"app.py":           "from botframework.connector import ConnectorClient\n\ndef client(o):\n    return ConnectorClient(o)\n",
-			},
-			caller: funcSCIP("app", nil, "client", 1),
+			name:   "curated package matches whole segments only",
+			files:  map[string]string{"app.py": "from azure.identityx import Credential\n\ndef cred(o):\n    return Credential(o)\n"},
+			caller: funcSCIP("app", nil, "cred", 1),
+		},
+		{
+			name:   "teams reaches every distribution shipping it",
+			files:  map[string]string{"requirements.txt": "teams-ai==1.8.2\n", "app.py": "import teams\n\ndef boot(o):\n    return teams.Application(o)\n"},
+			caller: funcSCIP("app", nil, "boot", 1),
+			exact:  []string{"pypi:teams#teams.Application", "pypi:teams-ai#teams.Application", "pypi:teams-ai-azml-model#teams.Application"},
+		},
+		{
+			name:   "dotenv reaches every distribution shipping it",
+			files:  map[string]string{"app.py": "from dotenv import load_dotenv\n\ndef boot(p):\n    return load_dotenv(p)\n"},
+			caller: funcSCIP("app", nil, "boot", 1),
+			exact:  []string{"pypi:django-dotenv#dotenv.load_dotenv", "pypi:python-dotenv#dotenv.load_dotenv", "pypi:python-dotenv-yaml#dotenv.load_dotenv"},
+		},
+		{
+			name:   "jwt reaches every distribution shipping it",
+			files:  map[string]string{"app.py": "import jwt\n\ndef check(t):\n    return jwt.decode(t)\n"},
+			caller: funcSCIP("app", nil, "check", 1),
+			exact:  []string{"pypi:jwt#jwt.decode", "pypi:pyjwt#jwt.decode"},
+		},
+		{
+			name:   "PIL reaches every distribution shipping it",
+			files:  map[string]string{"app.py": "from PIL import Image\n\ndef load(p):\n    return Image.open(p)\n"},
+			caller: funcSCIP("app", nil, "load", 1),
+			exact:  []string{"pypi:pillow#PIL.Image.open", "pypi:pillow-simd#PIL.Image.open"},
 		},
 		{
 			name: "first-party module shadows the distribution",
@@ -341,6 +401,13 @@ func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
 				if e.Caller.SCIP == c.caller && strings.HasPrefix(e.Callee.SCIP, boundaryPrefix) {
 					got = append(got, e.Callee.SCIP)
 				}
+			}
+			if c.exact != nil {
+				slices.Sort(got)
+				if !slices.Equal(got, c.exact) {
+					t.Fatalf("boundary edges from %s = %v, want exactly %v", c.caller, got, c.exact)
+				}
+				return
 			}
 			if c.boundary == "" {
 				if len(got) != 0 {

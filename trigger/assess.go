@@ -57,7 +57,7 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
 //   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
 //     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
-//     carries no affected range for the admitted package.
+//     carries no affected range the version axis can bound for the admitted package.
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.

@@ -125,6 +125,17 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 			wantCandidate: true,
 		},
 		{
+			// last_affected excludes later versions the version axis cannot exclude.
+			name:     "ranged: last_affected only",
+			advisory: with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
+			pkg:      requestsPkg,
+		},
+		{
+			name:     "ranged: introduced above zero only",
+			advisory: with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
+			pkg:      requestsPkg,
+		},
+		{
 			name: "multi-package: admitted package ranged, another absent",
 			advisory: with(requests, map[string]any{"affected_packages": []map[string]any{
 				{"coordinate": "requests", "purl": "pkg:pypi/requests", "affected_ranges": []map[string]string{{"upper_exclusive": "2.33.0", "scheme": "pypi"}}},
@@ -200,6 +211,7 @@ func TestFinding_RangeAbsentNotExploitableUnchanged(t *testing.T) {
 	fx := yamlSearched()
 	fx.advisorySymbols = nil
 	fx.reach.Searched = nil
+	fx.affected = []string{"pkg:pypi/pyyaml"} // package_not_loaded grounds only a record listing every package
 	fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 	f := fx.finding(t) // the fixture's advisory declares no affected range
 	if f.Verdict != report.VerdictNotExploitable || f.UndeterminedReason != "" {

@@ -22,6 +22,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
@@ -66,7 +67,7 @@ func (toolchainCandidatePlugin) Reachability(context.Context, plugin.Reachabilit
 // reason), and the candidate arm proves eligibility does not override a positive finding.
 func TestGoToolchainArmOrder_CandidateOutranksUndetermined(t *testing.T) {
 	// go 1.20 ⇒ floor go1.20.0, and GO-2021-0264 declares no affected range at all, so the version
-	// axis can never disqualify it. Reachability alone decides the disposition.
+	// axis can never disqualify it.
 	const goFloorMod = "module example.com/target\n\ngo 1.20\n"
 
 	t.Run("no path found: undetermined", func(t *testing.T) {
@@ -105,6 +106,66 @@ func TestGoToolchainArmOrder_CandidateOutranksUndetermined(t *testing.T) {
 		}
 		if len(doc.Statements) != 1 || doc.Statements[0].Status != projection.VEXStatusUnderInvestigation {
 			t.Fatalf("OpenVEX statements = %+v, want one under_investigation", doc.Statements)
+		}
+	})
+
+	// CVE-2023-39325 declares ranges (fixed go1.20.10 and go1.21.3), and the go1.20.0 floor sits
+	// inside the first, so the version axis cannot disqualify it either: the same eligibility with
+	// a range, where the candidate arm answers with a real candidate.
+	rangedStdlib := []assessment.VulnRef{{ID: "CVE-2023-39325", Source: "corpus"}}
+
+	t.Run("ranged, no path found: undetermined", func(t *testing.T) {
+		rep := runGoBaseline(t, goFloorMod, rangedStdlib)
+		assertUndetermined(t, rep, "CVE-2023-39325", report.ReasonGoToolchainNotScanned)
+	})
+
+	t.Run("ranged, path found: reachable_candidate, never undetermined", func(t *testing.T) {
+		rep := runGoBaseline(t, goFloorMod, rangedStdlib, pipeline.WithPlugin(toolchainCandidatePlugin{}))
+
+		if len(rep.Advisories) != 1 {
+			t.Fatalf("advisories[] = %+v, want exactly the candidate finding", rep.Advisories)
+		}
+		f := rep.Advisories[0]
+		if f.Verdict != report.VerdictReachableCandidate {
+			t.Fatalf("CVE-2023-39325 verdict = %q, want %q — a path WAS found, and the undetermined check must not reach an advisory the candidate arm already answered",
+				f.Verdict, report.VerdictReachableCandidate)
+		}
+		if f.UndeterminedReason != "" {
+			t.Errorf("candidate carries undetermined_reason %q", f.UndeterminedReason)
+		}
+		if f.Evidence.ReachablePath == "" {
+			t.Error("candidate carries no reachable_path; the fixture did not actually produce a candidate pair, so this test would pass vacuously")
+		}
+		if f.Evidence.Grade != report.GradeAttackerTainted {
+			t.Errorf("grade = %q, want %q — the attacker-controllable ingress is on the trace", f.Evidence.Grade, report.GradeAttackerTainted)
+		}
+		if err := rep.Validate(); err != nil {
+			t.Errorf("report invalid: %v", err)
+		}
+
+		// A finding with an established verdict must not ALSO be disclosed as a coverage limit: the
+		// limit and the undetermined row appear together or not at all.
+		for _, n := range rep.Partiality {
+			if n.Reason == report.ReasonGoToolchainNotScanned || n.Reason == report.ReasonGoToolchainUnresolved {
+				t.Errorf("limit %q emitted alongside a reachable candidate", n.Reason)
+			}
+		}
+
+		// At the wire, candidate and undetermined share the `under_investigation` status, so status
+		// alone cannot tell them apart. The impact statement is the discriminator: a candidate
+		// carries one, an undetermined finding must not (it has no finding to characterize).
+		doc, err := projection.ProjectReportVEX(*rep)
+		if err != nil {
+			t.Fatalf("ProjectReportVEX: %v", err)
+		}
+		if len(doc.Statements) != 1 {
+			t.Fatalf("OpenVEX statements = %d, want 1", len(doc.Statements))
+		}
+		if doc.Statements[0].Status != projection.VEXStatusUnderInvestigation {
+			t.Errorf("status = %q, want %q", doc.Statements[0].Status, projection.VEXStatusUnderInvestigation)
+		}
+		if doc.Statements[0].ImpactStatement == "" {
+			t.Error("candidate statement carries no impact statement — at the wire it is now indistinguishable from an undetermined row")
 		}
 	})
 }

@@ -276,10 +276,11 @@ func (lc *lockClosures) governingLock(dir string) string {
 }
 
 // declaresInstall reports whether dir's package.json declares workspaces or a non-empty
-// dependency field of any kind: an install there needs no lockfile. One that cannot be read or
-// decoded counts, since npm would not install from it as this lane reads it.
+// dependency field of any kind: an install there needs no lockfile. One that is not a regular
+// file or cannot be read or decoded counts, since npm would not install from it as this lane
+// reads it.
 func (lc *lockClosures) declaresInstall(dir string) bool {
-	data, err := os.ReadFile(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
+	data, err := readRegularFile(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return false
 	}
@@ -309,16 +310,20 @@ func (lc *lockClosures) hasLock(dir string) bool {
 
 // graph parses the lockfile in lockDir once. npm-shrinkwrap.json wins over
 // package-lock.json, as in npm. A v2/v3 lock is read from its `packages` map, a v1 lock from
-// its nested `dependencies` tree (v1Packages).
+// its nested `dependencies` tree (v1Packages). A lock that is present but not a regular file,
+// or cannot be read, leaves the graph unread.
 func (lc *lockClosures) graph(lockDir string) *lockGraph {
 	if g, ok := lc.graphs[lockDir]; ok {
 		return g
 	}
 	var g *lockGraph
 	for _, name := range []string{"npm-shrinkwrap.json", "package-lock.json"} {
-		data, err := os.ReadFile(filepath.Join(lc.root, filepath.FromSlash(lockDir), name))
-		if err != nil {
+		data, err := readRegularFile(filepath.Join(lc.root, filepath.FromSlash(lockDir), name))
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
+		}
+		if err != nil {
+			break
 		}
 		var raw struct {
 			LockfileVersion int                  `json:"lockfileVersion"`
@@ -594,7 +599,7 @@ var npmLockNames = map[string]bool{"package-lock.json": true, "npm-shrinkwrap.js
 // npmLockParses reports whether the file at p decodes as an npm lockfile: a lockfileVersion
 // and a packages or dependencies map of entries.
 func npmLockParses(p string) bool {
-	data, err := os.ReadFile(p)
+	data, err := readRegularFile(p)
 	if err != nil {
 		return false
 	}
@@ -604,6 +609,23 @@ func npmLockParses(p string) bool {
 		Dependencies    map[string]struct{} `json:"dependencies"`
 	}
 	return json.Unmarshal(data, &raw) == nil && raw.LockfileVersion >= 1 && (raw.Packages != nil || raw.Dependencies != nil)
+}
+
+// errNotRegularFile is readRegularFile's error for a path that is not a regular file.
+var errNotRegularFile = errors.New("not a regular file")
+
+// readRegularFile reads the file at p only when it resolves, through any symlink, to a regular
+// file. It stats before it opens and never opens a pipe, socket or device, since opening a pipe
+// with no writer blocks.
+func readRegularFile(p string) ([]byte, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &fs.PathError{Op: "read", Path: p, Err: errNotRegularFile}
+	}
+	return os.ReadFile(p)
 }
 
 // installedByOther name entries a node_modules holds when pnpm or yarn installed it.

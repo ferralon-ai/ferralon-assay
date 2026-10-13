@@ -780,6 +780,7 @@ func TestFinding_RootPackage(t *testing.T) {
 		{
 			name: "package_not_loaded naming the project itself is not grounds",
 			mutate: func(fx *groundsFixture) {
+				fx.affected = []string{"pkg:pypi/apache-airflow"}
 				fx.reach.Searched = nil
 				fx.reach.Refutation = refutation("pkg:pypi/apache-airflow")
 			},

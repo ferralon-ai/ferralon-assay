@@ -12,7 +12,6 @@ package jsanalysis
 // ID == PURL.
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -52,7 +51,7 @@ type pnpmDirect struct {
 }
 
 func (pnpmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
-	data, err := os.ReadFile(sel.path)
+	data, err := readRegular(sel.path)
 	if err != nil {
 		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
 	}

@@ -194,7 +194,7 @@ func TestVersions_UnknownCoordinate_NotFound(t *testing.T) {
 // lock restores at its own version is listed.
 func TestVersions_MatchesEveryProject(t *testing.T) {
 	dir := writeTree(t, map[string]string{
-		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="13.0.1" /></ItemGroup></Project>`,
+		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`,
 		"Worker/Worker.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0,14.0)" /></ItemGroup></Project>`,
 		"Worker/packages.lock.json": `{"version": 1, "dependencies": {
   "net6.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.0"}},
@@ -205,7 +205,7 @@ func TestVersions_MatchesEveryProject(t *testing.T) {
 	got := map[string]bool{}
 	for _, m := range r.Matches {
 		if !m.Resolved {
-			t.Fatalf("an unresolved match survived: %+v (the Worker range beside its lock)", m)
+			t.Fatalf("an unresolved match survived: %+v", m)
 		}
 		got[m.Version] = true
 	}
@@ -282,6 +282,32 @@ func TestVersions_MatchesComplete(t *testing.T) {
 			}
 			if tc.versions != nil && !slices.Equal(got, tc.versions) {
 				t.Fatalf("Matches = %v, want %v", got, tc.versions)
+			}
+		})
+	}
+}
+
+// An MSBuild-wide file applies from any directory above a project, the build directory's own
+// ancestors included, so one above the build directory leaves MatchesComplete false.
+func TestVersions_MatchesCompleteAncestorProps(t *testing.T) {
+	const api = `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`
+	for _, tc := range []struct {
+		above string
+		want  bool
+	}{
+		{"", true},
+		{"Directory.Build.props", false},
+		{"Directory.Build.targets", false},
+		{"Directory.Packages.props", false},
+	} {
+		t.Run("above: "+tc.above, func(t *testing.T) {
+			files := map[string]string{"repo/Api/Api.csproj": api}
+			if tc.above != "" {
+				files[tc.above] = `<Project />`
+			}
+			r := versionsOf(t, filepath.Join(writeTree(t, files), "repo"), "Newtonsoft.Json")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
 			}
 		})
 	}

@@ -216,6 +216,11 @@ func TestUndeterminedReason_JSScopedLimits(t *testing.T) {
 "":{"name":"fixture","dependencies":{"cfg":"1.0.0","json5":"2.2.1"}},
 "node_modules/cfg":{"version":"1.0.0"},
 "node_modules/json5":{"version":"2.2.1"}}}`
+	// The same install tree as lock, written as a lockfileVersion 1 lock.
+	const lockV1 = `{"name":"fixture","version":"1.0.0","lockfileVersion":1,"requires":true,"dependencies":{
+"express":{"version":"4.18.2","requires":{"qs":"6.0.0"}},
+"qs":{"version":"6.0.0"},
+"json5":{"version":"2.2.1"}}}`
 	var (
 		express = &report.Package{Ecosystem: "npm", Name: "express", Version: "4.18.2", PURL: "pkg:npm/express@4.18.2"}
 		qs      = &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.0.0", PURL: "pkg:npm/qs@6.0.0"}
@@ -629,6 +634,55 @@ go(process.argv[2]);
 			lock:  lock,
 			files: map[string]string{"yarn.lock": "# yarn lockfile v1\n"},
 			held:  []*report.Package{qs, zed},
+		},
+		{
+			name: "a v1 lock bounds the reach of a boundary edge into X and lets a package outside it refute",
+			src: `const express = require('express');
+const app = express();
+app.get('/go', route);
+function route(req, res) { res.redirect(req.query.u); }
+`,
+			lock:      lockV1,
+			edge:      "npm:express#response.redirect",
+			held:      []*report.Package{express, qs, json5Package},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "a v1 lock that nests qs only under express holds every advisory for a first-party require of qs",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock: `{"lockfileVersion":1,"dependencies":{
+"express":{"version":"4.18.2","requires":{"qs":"6.0.0"},"dependencies":{"qs":{"version":"6.0.0"}}},
+"json5":{"version":"2.2.1"}}}`,
+			held: []*report.Package{qs, zed},
+		},
+		{
+			name: "a v1 lock with a bundled dependency bounds the reach where the tree nests it",
+			src: `const express = require('express');
+const app = express();
+app.get('/go', route);
+function route(req, res) { res.redirect(req.query.u); }
+`,
+			lock: `{"lockfileVersion":1,"dependencies":{
+"express":{"version":"4.18.2","requires":{"qs":"6.0.0"},"dependencies":{"qs":{"version":"6.0.0","bundled":true}}},
+"json5":{"version":"2.2.1"}}}`,
+			edge:      "npm:express#response.redirect",
+			held:      []*report.Package{express, qs, json5Package},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name: "dev and optional entries of a v1 lock stay in the reach",
+			src: `const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock: `{"lockfileVersion":1,"dependencies":{
+"qs":{"version":"6.0.0","dev":true,"requires":{"json5":"2.2.1"}},
+"json5":{"version":"2.2.1","optional":true}}}`,
+			held:      []*report.Package{qs, json5Package},
+			refutable: []*report.Package{zed},
 		},
 		{
 			// Held twice over: by cfg's limit, whose reach includes the hoisted json5, and by the

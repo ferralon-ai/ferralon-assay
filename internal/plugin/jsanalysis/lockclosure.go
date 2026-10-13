@@ -16,14 +16,14 @@ import (
 )
 
 // lockClosures answers "which packages can code loaded from package P reach?" from the
-// npm v2/v3 lockfile that governs the importing file: it finds the installed instance of P
+// npm lockfile (v1, v2 or v3) that governs the importing file: it finds the installed instance of P
 // the Node resolver would pick from that file's directory, then follows everything that
 // instance's require() can resolve, transitively. Node resolves a bare specifier through
 // every node_modules directory on the requiring package's path, whatever the package
 // declares, so the reach of an instance is its runtime, optional, and peer dependencies
 // plus every package installed in a node_modules directory on its install path, which
 // always includes the hoisted top level. Any answer it cannot give exactly is nil, which a
-// ScopedReason reads as unbounded: no lockfile or a v1 lock; a package the lock does not
+// ScopedReason reads as unbounded: no lockfile or one it cannot read; a package the lock does not
 // list; a required dependency the lock does not install; a link to a directory above the
 // lockfile's; a node_modules on disk, anywhere under the lockfile's directory, holding a
 // package the lock does not list at that position; a node_modules in a directory above the
@@ -49,8 +49,9 @@ type lockClosures struct {
 	nodeModules []string
 }
 
-// lockGraph is one npm v2/v3 lockfile's `packages` map, keyed by install path relative to
-// the lockfile's directory ("node_modules/a", "node_modules/a/node_modules/b", "packages/x").
+// lockGraph is one npm lockfile's install tree, keyed by install path relative to the
+// lockfile's directory ("node_modules/a", "node_modules/a/node_modules/b", "packages/x"): a
+// v2/v3 lock's `packages` map as written, or a v1 lock's nested `dependencies` converted to it.
 type lockGraph struct {
 	pkgs map[string]lockEntry
 	// installedIn maps a directory (relative to the lockfile) to the keys of the packages
@@ -351,8 +352,9 @@ func (lc *lockClosures) hasLock(dir string) bool {
 }
 
 // graph parses the lockfile in lockDir once. npm-shrinkwrap.json wins over
-// package-lock.json, as in npm. Only lockfileVersion 2 and 3 carry the `packages` map. A lock
-// that is present but not a regular file, or cannot be read, leaves the graph unread.
+// package-lock.json, as in npm. A v2/v3 lock is read from its `packages` map, a v1 lock from
+// its nested `dependencies` tree (v1Packages). A lock that is present but not a regular file,
+// or cannot be read, leaves the graph unread.
 func (lc *lockClosures) graph(lockDir string) *lockGraph {
 	if g, ok := lc.graphs[lockDir]; ok {
 		return g
@@ -368,10 +370,20 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 		}
 		var raw struct {
 			LockfileVersion int                  `json:"lockfileVersion"`
+			Name            string               `json:"name"`
 			Packages        map[string]lockEntry `json:"packages"`
+			Dependencies    map[string]v1Dep     `json:"dependencies"`
 		}
-		if json.Unmarshal(data, &raw) == nil && raw.LockfileVersion >= 2 && raw.Packages != nil {
+		if json.Unmarshal(data, &raw) != nil {
+			break
+		}
+		switch {
+		case raw.LockfileVersion >= 2 && raw.Packages != nil:
 			g = &lockGraph{pkgs: raw.Packages}
+		case raw.LockfileVersion == 1:
+			if pkgs, ok := v1Packages(raw.Name, raw.Dependencies); ok {
+				g = &lockGraph{pkgs: pkgs}
+			}
 		}
 		break
 	}
@@ -390,6 +402,87 @@ func (lc *lockClosures) graph(lockDir string) *lockGraph {
 	}
 	lc.graphs[lockDir] = g
 	return g
+}
+
+// v1Dep is one entry of a lockfileVersion 1 `dependencies` tree. Its position in the tree is
+// its install position: a top-level entry is installed in node_modules, and an entry under
+// another's `dependencies` in that package's node_modules. `requires` names what the
+// package's code requires, resolved by the Node walk from its position like any require.
+// dev, optional, peer and bundled flags are not read: a flagged entry is still installed
+// where the tree puts it, so it stays in the reach.
+type v1Dep struct {
+	Version      string            `json:"version"`
+	Requires     map[string]string `json:"requires"`
+	Dependencies map[string]v1Dep  `json:"dependencies"`
+}
+
+// v1Packages converts a v1 `dependencies` tree to the v2 `packages` shape closure reads. Every
+// name in `requires` counts as required, since v1 does not mark which are optional. It reports
+// false for anything it cannot place: a name that is not a package name, or a `file:`
+// directory dependency, which npm links and whose own dependencies the lock does not list.
+func v1Packages(rootName string, deps map[string]v1Dep) (map[string]lockEntry, bool) {
+	pkgs := map[string]lockEntry{"": {Name: rootName}}
+	var add func(parent string, deps map[string]v1Dep) bool
+	add = func(parent string, deps map[string]v1Dep) bool {
+		for name, d := range deps {
+			if !npmPackageName(name) || v1DirectoryLink(d.Version) {
+				return false
+			}
+			key := "node_modules/" + name
+			if parent != "" {
+				key = parent + "/" + key
+			}
+			e := lockEntry{Dependencies: d.Requires}
+			if real, ok := strings.CutPrefix(d.Version, "npm:"); ok {
+				// An alias records the real package as npm:<name>@<version>.
+				if i := strings.LastIndex(real, "@"); i > 0 {
+					real = real[:i]
+				}
+				if !npmPackageName(real) {
+					return false
+				}
+				e.Name = real
+			}
+			pkgs[key] = e
+			if !add(key, d.Dependencies) {
+				return false
+			}
+		}
+		return true
+	}
+	if !add("", deps) {
+		return nil, false
+	}
+	return pkgs, true
+}
+
+// npmPackageName reports whether name is a plain or scoped npm package name, so it can sit in
+// an install path.
+func npmPackageName(name string) bool {
+	parts := strings.Split(name, "/")
+	switch {
+	case len(parts) == 2 && (!strings.HasPrefix(parts[0], "@") || parts[0] == "@"):
+		return false
+	case len(parts) > 2, len(parts) == 1 && strings.HasPrefix(name, "@"):
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\\x00") {
+			return false
+		}
+	}
+	return true
+}
+
+// v1DirectoryLink reports whether a v1 version is a `file:` dependency on a directory rather
+// than a tarball.
+func v1DirectoryLink(version string) bool {
+	target, ok := strings.CutPrefix(version, "file:")
+	if !ok {
+		return false
+	}
+	lower := strings.ToLower(target)
+	return !strings.HasSuffix(lower, ".tgz") && !strings.HasSuffix(lower, ".tar.gz") && !strings.HasSuffix(lower, ".tar")
 }
 
 // diskMatchesLock reports whether every package installed on disk under lockDir is listed

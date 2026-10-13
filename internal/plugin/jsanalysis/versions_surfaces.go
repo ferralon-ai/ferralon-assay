@@ -196,8 +196,9 @@ func namesPackage(head []byte) bool {
 // when it names no version. A directory or package.json that is there but cannot be read
 // makes ok false. A symlink wherever this reads one (a node_modules, a package or @scope entry,
 // a .pnpm/<id>) is followed when it resolves inside root, whatever its target is named, and
-// makes ok false when it leaves root or does not resolve (an npm link). Each package and
-// node_modules directory is read once, at its real path.
+// makes ok false when it leaves root or does not resolve (an npm link). Each directory is read
+// once as a package and once as a node_modules, at its real path: a link can make one directory
+// both, and each role reads different copies from it.
 func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
@@ -220,10 +221,10 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 		}
 		return info.IsDir(), true
 	}
-	// once reports whether path's real path is seen for the first time. A path that does not
-	// resolve makes ok false.
-	seen := map[string]bool{}
-	once := func(path string) bool {
+	// once reports whether path's real path is seen for the first time in the role whose set
+	// is seen. A path that does not resolve makes ok false.
+	pkgSeen, nmSeen := map[string]bool{}, map[string]bool{}
+	once := func(seen map[string]bool, path string) bool {
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			ok = false
@@ -257,7 +258,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 		}
 	}
 	readPkg := func(dir string) {
-		if !once(dir) {
+		if !once(pkgSeen, dir) {
 			return
 		}
 		data, err := readRegular(filepath.Join(dir, "package.json"))
@@ -286,7 +287,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 		readNodeModules(filepath.Join(dir, "node_modules"))
 	}
 	readDir = func(dir string) {
-		if !once(dir) {
+		if !once(nmSeen, dir) {
 			return
 		}
 		ents, err := os.ReadDir(dir)

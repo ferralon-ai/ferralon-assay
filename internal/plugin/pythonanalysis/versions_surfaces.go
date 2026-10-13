@@ -268,16 +268,18 @@ func toxDeclares(src string) bool {
 // root, which the shared walk does not enter: each *.dist-info or *.egg-info names one by its
 // metadata's Name and Version. A symlink, whether the site-packages directory itself or an entry
 // in it, is followed when it resolves inside root, whatever its target is named, and makes ok
-// false when it leaves root or does not resolve. Each directory and metadata entry is read once,
-// at its real path. A copy whose metadata cannot be read makes ok false.
+// false when it leaves root or does not resolve. Each site-packages directory is read once at
+// its real path, and so is each metadata file: a link can make one directory both a
+// site-packages and a metadata entry, and each role reads it. A copy whose metadata cannot be
+// read makes ok false.
 func installedCopies(root string) (copies []plugin.ResolvedDependency, origins []manifestOrigin, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
 	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
-	// once reports whether path's real path is seen for the first time. A path that does not
-	// resolve makes ok false.
-	seen := map[string]bool{}
-	once := func(path string) bool {
+	// once reports whether path's real path is seen for the first time in the role whose set
+	// is seen. A path that does not resolve makes ok false.
+	dirSeen, metaSeen := map[string]bool{}, map[string]bool{}
+	once := func(seen map[string]bool, path string) bool {
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
 			ok = false
@@ -297,7 +299,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, origins [
 			ok = false
 			return nil
 		}
-		if !once(e.Path) {
+		if !once(dirSeen, e.Path) {
 			return nil
 		}
 		ents, rerr := os.ReadDir(e.Path)
@@ -332,7 +334,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, origins [
 			default:
 				continue
 			}
-			if !once(p) {
+			if !once(metaSeen, meta) {
 				continue
 			}
 			dist, version, mok := readDistMetadata(meta)

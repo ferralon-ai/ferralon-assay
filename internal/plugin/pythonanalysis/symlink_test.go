@@ -28,7 +28,8 @@ func symlinkAt(t *testing.T, dir, rel, target string) {
 // TestInstalledCopies_SymlinkedSitePackages: a symlinked site-packages, or a symlinked entry in
 // one, is read at its target when that resolves inside the build dir, whatever the target is
 // named, and leaves the copies unread when it leaves the build dir or does not resolve. Each
-// directory and metadata entry counts once.
+// site-packages directory and each metadata file counts once, so a directory a link makes both
+// is read in each role.
 func TestInstalledCopies_SymlinkedSitePackages(t *testing.T) {
 	const reqs = "jinja2==3.1.2\n"
 	meta := func(v string) string { return "Metadata-Version: 2.1\nName: Jinja2\nVersion: " + v + "\n" }
@@ -56,6 +57,9 @@ func TestInstalledCopies_SymlinkedSitePackages(t *testing.T) {
 		{name: "a dist-info linked to a sibling is read once",
 			files: map[string]string{"lib/site-packages/jinja2-3.1.2.dist-info/METADATA": meta("3.1.2")},
 			links: map[string]string{"lib/site-packages/linked.dist-info": "jinja2-3.1.2.dist-info"}, copies: []string{"3.1.2"}, ok: true, resolved: "3.1.2"},
+		{name: "a dist-info also linked as a site-packages is read as an entry",
+			files: map[string]string{"b/site-packages/jinja2-2.10.dist-info/METADATA": meta("2.10")},
+			links: map[string]string{"a/site-packages": "../b/site-packages/jinja2-2.10.dist-info"}, copies: []string{"2.10"}, ok: true},
 		{name: "a dist-info linked outside the build dir", files: map[string]string{"lib/site-packages/.keep": ""},
 			links: map[string]string{"lib/site-packages/jinja2-2.10.dist-info": "OUTSIDE"}, ok: false},
 		{name: "a dangling dist-info link", files: map[string]string{"lib/site-packages/.keep": ""},

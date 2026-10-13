@@ -12,8 +12,9 @@ import (
 // TestInstalledCopies_SymlinkedEntries: a symlink installedCopies meets (a node_modules, a
 // package or @scope entry, a nested node_modules, a .pnpm entry) is read at its target when
 // that resolves inside the build dir, whatever the target is named or wherever it lies, and
-// leaves the copies unread when it leaves the build dir or does not resolve. Each package and
-// node_modules directory counts once, so a pnpm link and a link cycle read each copy once.
+// leaves the copies unread when it leaves the build dir or does not resolve. A directory counts
+// once as a package and once as a node_modules, so a pnpm link and a link cycle read each copy
+// once, and a directory a link makes both is read in each role.
 func TestInstalledCopies_SymlinkedEntries(t *testing.T) {
 	pkg := func(name, v string) string { return `{"name":"` + name + `","version":"` + v + `"}` }
 	cases := []struct {
@@ -48,6 +49,12 @@ func TestInstalledCopies_SymlinkedEntries(t *testing.T) {
 			links: map[string]string{"node_modules/express": ".pnpm/express@4.18.2/node_modules/express"}, copies: []string{"express@4.18.2", "left-pad@1.3.0"}, ok: true, resolved: true},
 		{name: "a link cycle is read once",
 			links: map[string]string{"node_modules/left-pad/node_modules": ".."}, copies: []string{"express@4.18.2", "left-pad@1.3.0"}, ok: true, resolved: true},
+		{name: "a package directory also linked as a node_modules is read in both roles",
+			files: map[string]string{"node_modules/aaa/express/package.json": pkg("express", "4.17.0")},
+			links: map[string]string{"node_modules/zzz/node_modules": "../aaa"}, copies: []string{"express@4.17.0", "express@4.18.2", "left-pad@1.3.0"}, ok: true},
+		{name: "a node_modules link into a package read later is read in both roles",
+			files: map[string]string{"node_modules/left-pad/node_modules/express/package.json": pkg("express", "4.17.0")},
+			links: map[string]string{"node_modules/aaa/node_modules": "../left-pad/node_modules/express"}, copies: []string{"express@4.17.0", "express@4.18.2", "left-pad@1.3.0"}, ok: true},
 		{name: "a package linked outside the build dir", files: map[string]string{"node_modules/express/package.json": "\x00omit"},
 			links: map[string]string{"node_modules/express": "OUTSIDE"}, copies: []string{"left-pad@1.3.0"}, ok: false},
 		{name: "a dangling package link", files: map[string]string{"node_modules/express/package.json": "\x00omit"},

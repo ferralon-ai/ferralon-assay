@@ -27,7 +27,8 @@ import (
 // list; a required dependency the lock does not install; a link to a directory above the
 // lockfile's; a node_modules on disk, anywhere under the lockfile's directory, holding a
 // package the lock does not list at that position; a node_modules in a directory above the
-// lockfile's; and anything resolutionOverridden reports.
+// lockfile's; a package.json declaring an install between the importer and the lockfile,
+// other than a workspace member the lock installs; and anything resolutionOverridden reports.
 //
 // The JS package-load refutation builds a fuller install model (disk, yarn, and pnpm
 // engines); when it lands, closureOf should delegate to that model's resolve and closure.
@@ -65,6 +66,9 @@ type lockEntry struct {
 	OptionalDependencies map[string]string          `json:"optionalDependencies"`
 	PeerDependencies     map[string]string          `json:"peerDependencies"`
 	PeerDependenciesMeta map[string]lockPeerMetaRaw `json:"peerDependenciesMeta"`
+	// Workspaces is the root entry's copy of package.json's workspaces: an array of
+	// patterns or {"packages": [...]}.
+	Workspaces json.RawMessage `json:"workspaces"`
 }
 
 type lockPeerMetaRaw struct {
@@ -108,6 +112,14 @@ func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
 	g := lc.graph(lockDir)
 	if g == nil {
 		return nil
+	}
+	// A package.json with no lock of its own between fromDir and the lock is installed there
+	// by its own npm install, into a node_modules every resolution from fromDir searches first.
+	// Only a workspace member of the lock's root is installed from the lock.
+	for d := fromDir; d != lockDir; d = lockParent(d) {
+		if lc.declaresInstall(d) && !g.workspaceMember(lockRel(lockDir, d)) {
+			return nil
+		}
 	}
 	key, ok := g.resolve(lockRel(lockDir, fromDir), pkg)
 	if !ok {
@@ -254,6 +266,35 @@ func (g *lockGraph) resolve(dir, pkg string) (string, bool) {
 			return "", false
 		}
 	}
+}
+
+// workspaceMember reports whether dir (relative to the lockfile) is a workspace the lock's
+// root declares and the lock lists. A dir a negated pattern matches is not a member.
+func (g *lockGraph) workspaceMember(dir string) bool {
+	if _, ok := g.pkgs[dir]; !ok || dir == "" {
+		return false
+	}
+	raw := g.pkgs[""].Workspaces
+	var patterns []string
+	if json.Unmarshal(raw, &patterns) != nil {
+		var obj struct {
+			Packages []string `json:"packages"`
+		}
+		if json.Unmarshal(raw, &obj) != nil {
+			return false
+		}
+		patterns = obj.Packages
+	}
+	member := false
+	for _, p := range patterns {
+		neg := strings.HasPrefix(p, "!")
+		ok, err := path.Match(path.Clean(strings.TrimPrefix(p, "!")), dir)
+		if err != nil || (neg && ok) {
+			return false
+		}
+		member = member || ok
+	}
+	return member
 }
 
 // governingLock finds the nearest directory at or above dir holding package-lock.json or

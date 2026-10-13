@@ -397,10 +397,10 @@ func setuptoolsJoins(entry string) bool {
 // setuptoolsReadsAsWritten reports whether _reqs.parse reads a setup.py requirement list
 // element, as readPyString decoded it, as the one requirement it spells: it holds no line break
 // (yield_lines makes each line an entry), no " #" (drop_comment cuts there), and no backslash.
-// A backslash is either one setuptools joins on (setuptoolsJoins) or an escape readPyString
+// A backslash covers both an entry setuptools joins (setuptoolsJoins) and an escape readPyString
 // leaves undecoded, such as "\f" or "\x0b", which Python decodes to a line break.
 func setuptoolsReadsAsWritten(elem string) bool {
-	return len(pyLines(elem)) <= 1 && !strings.Contains(elem, " #") && !strings.Contains(elem, `\`) && !setuptoolsJoins(elem)
+	return len(pyLines(elem)) <= 1 && !strings.Contains(elem, " #") && !strings.Contains(elem, `\`)
 }
 
 // pyLines splits s at every line boundary Python's str.splitlines recognizes, dropping empty

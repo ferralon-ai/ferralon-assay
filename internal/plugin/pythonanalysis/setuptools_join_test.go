@@ -120,6 +120,7 @@ func TestResolveVersions_SetupPyElementNotAsWritten(t *testing.T) {
 		{"line break", `["six\npyjwt==2.10.0"]`, `["six", "pyjwt==2.10.0"]`},
 		{"line break, form feed escape", `["six\fpyjwt==2.10.0"]`, `["six", "pyjwt==2.10.0"]`},
 		{"line break, vertical tab escape", `["six\x0bpyjwt==2.10.0"]`, `["six", "pyjwt==2.10.0"]`},
+		{"line break, literal form feed", "[\"six\fpyjwt==2.10.0\"]", `["six", "pyjwt==2.10.0"]`},
 		{"inline comment", `["pyjwt==2.10.0 # c"]`, `["pyjwt==2.10.0"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

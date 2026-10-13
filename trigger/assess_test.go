@@ -183,9 +183,21 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 			mutate: func(fx *groundsFixture) {
 				fx.advisorySymbols = nil
 				fx.reach.Searched = nil
+				fx.affected = []string{"pkg:pypi/pyyaml"}
 				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
 			},
 			wantDetail: "PyYAML@5.3: no runtime-loaded module imports it (package_not_loaded)",
+		},
+		{
+			// A record with only the scalar purl may affect a package it does not name, which
+			// could load at runtime beside the refuted one.
+			name: "arm B: package_not_loaded on a record without affected_packages does not ground",
+			mutate: func(fx *groundsFixture) {
+				fx.advisorySymbols = nil
+				fx.reach.Searched = nil
+				fx.reach.Refutation = refutation("pkg:pypi/PyYAML")
+			},
+			wantReason: report.ReasonAdvisorySymbolAbsent,
 		},
 		{
 			name: "multi-package: the admitted package listed again grounds as before",

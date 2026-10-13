@@ -1,6 +1,7 @@
 package kotlinanalysis
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,32 @@ const (
 	javacOption        = "com/sun/tools/javac/main/Option"
 	saxParserFactory   = "javax/xml/parsers/SAXParserFactory"
 )
+
+// writeRawJar writes a JAR whose entries are named exactly as given (writeJar appends .class).
+func writeRawJar(t *testing.T, path string, entries map[string][]byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	for name, data := range entries {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func plainClass(name string) []byte {
 	b := newKClassBuilder()
@@ -72,6 +99,70 @@ func TestReachability_SplitPackages(t *testing.T) {
 			writeJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{"META-INF/versions/11/" + javacOption: plainClass(javacOption)})
 			return dir
 		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"a fat JAR in build/libs nests BOOT-INF/lib/javac-shaded.jar: Option is unopened", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
+			writeRawJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{
+				"com/acme/Boot.class":           plainClass("com/acme/Boot"),
+				"BOOT-INF/lib/javac-shaded.jar": []byte("PK nested"),
+			})
+			return dir
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"a WAR-shaped JAR in build/libs nests WEB-INF/lib/javac-shaded.jar: Option is unopened", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
+			writeRawJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{
+				"com/acme/Boot.class":          plainClass("com/acme/Boot"),
+				"WEB-INF/lib/javac-shaded.jar": []byte("PK nested"),
+			})
+			return dir
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"a dependency JAR's manifest names Class-Path: javac-shaded.jar: Option is unopened", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, nil)
+			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
+				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
+				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\r\nClass-Path: javac-shaded.jar\r\n\r\n"),
+			})
+			return dir
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"control: a dependency JAR's manifest has an empty Class-Path, so Option is the JDK's", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, nil)
+			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
+				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
+				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\r\nClass-Path: \r\n\r\n"),
+			})
+			return dir
+		}, true, nil},
+		{"control: a JAR in build/libs with no nested archive, so Option is the JDK's", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
+			writeRawJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{
+				"com/acme/Boot.class":  plainClass("com/acme/Boot"),
+				"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nMain-Class: com.acme.Boot\n\n"),
+			})
+			return dir
+		}, true, nil},
+		{"a first-party class root holds a nested JAR: Option is unopened", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
+			writeRawJar(t, filepath.Join(dir, "build", "classes", "kotlin", "main", "lib", "javac-shaded.jar"),
+				map[string][]byte{"com/sun/tools/javac/main/Main.class": plainClass("com/sun/tools/javac/main/Main")})
+			return dir
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"a start-script classpath JAR's manifest names Class-Path: javac-shaded.jar: Option is unopened", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, nil)
+			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
+				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
+				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\nClass-Path: javac-shaded.jar\n\n"),
+			})
+			writeStartScript(t, dir, "scripts/app", []string{jacksonJarName, errorproneArtifact + "-" + errorproneVersion + ".jar"}, "com.example.MainKt")
+			return dir
+		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
+		{"control: a start-script classpath JAR with no Class-Path, so Option is the JDK's", func(t *testing.T) string {
+			dir := withErrorprone(t, callsOption, nil)
+			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
+				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
+				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\n\n"),
+			})
+			writeStartScript(t, dir, "scripts/app", []string{jacksonJarName, errorproneArtifact + "-" + errorproneVersion + ".jar"}, "com.example.MainKt")
+			return dir
+		}, true, nil},
 		{"a corrupt dependency JAR may define javax/xml/parsers: not searched", func(t *testing.T) string {
 			dir := withErrorprone(t, callsParsers, nil)
 			p := errorproneJarPath(dir)

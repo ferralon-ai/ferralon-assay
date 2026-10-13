@@ -154,8 +154,8 @@ func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]b
 			})
 			continue
 		}
-		pkgs, listed := classfile.ClasspathPackages(jarPath, buildDir)
-		dc.cp.Add(pkgs, listed)
+		pkgs, listed, closed := classfile.ClasspathPackages(jarPath, buildDir)
+		dc.cp.Add(pkgs, listed && closed)
 		if !listed {
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{
 				Reason:  plugin.PartialReasonToolFailure,
@@ -240,8 +240,8 @@ func loadRuntimeClasspath(buildDir string, rc runtimeClasspath, firstParty map[s
 			continue
 		}
 		pkg := jar.packageURL()
-		pkgs, listed := classfile.ClasspathPackages(jar.path, buildDir)
-		dc.cp.Add(pkgs, listed)
+		pkgs, listed, closed := classfile.ClasspathPackages(jar.path, buildDir)
+		dc.cp.Add(pkgs, listed && closed)
 		if !listed {
 			dc.scoped = append(dc.scoped, plugin.ScopedReason{Reason: plugin.PartialReasonToolFailure, Package: pkg, Path: "classpath: " + name})
 			continue

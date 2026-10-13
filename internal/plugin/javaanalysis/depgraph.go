@@ -108,8 +108,8 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR not in local cache", d.Coordinate, d.Version))
 			continue
 		}
-		pkgs, listed := classfile.ClasspathPackages(jarPath, buildDir)
-		cp.Add(pkgs, listed)
+		pkgs, listed, closed := classfile.ClasspathPackages(jarPath, buildDir)
+		cp.Add(pkgs, listed && closed)
 		if !listed {
 			dg.Complete = false
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR cannot be listed", d.Coordinate, d.Version))

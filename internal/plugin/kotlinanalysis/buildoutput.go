@@ -39,7 +39,8 @@ var firstPartyJarDir = filepath.Join("build", "libs")
 // an edge could hide — declared, never silently dropped). classes is sorted by binary name
 // for deterministic downstream ordering. cp lists the packages each root and JAR defines; a
 // root or JAR that cannot be listed (classfile.ClasspathPackages) is never opened, and is a
-// failure that leaves cp unlisted.
+// failure that leaves cp unlisted. A root or JAR that lists but is not closed (it nests an
+// archive or names a Class-Path) is read, and also leaves cp unlisted.
 func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, failed []string, cp depreach.Classpath) {
 	seen := map[string]bool{}
 	add := func(cs []classfile.Class) {
@@ -59,8 +60,8 @@ func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, fai
 			continue
 		}
 		found = true
-		pkgs, listed := classfile.ClasspathPackages(root, buildDir)
-		cp.Add(pkgs, listed)
+		pkgs, listed, closed := classfile.ClasspathPackages(root, buildDir)
+		cp.Add(pkgs, listed && closed)
 		if !listed {
 			failed = append(failed, rel+": not a listable class directory")
 			continue
@@ -86,8 +87,8 @@ func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, fai
 		}
 		sort.Strings(names)
 		for _, n := range names {
-			pkgs, listed := classfile.ClasspathPackages(filepath.Join(jarDir, n), buildDir)
-			cp.Add(pkgs, listed)
+			pkgs, listed, closed := classfile.ClasspathPackages(filepath.Join(jarDir, n), buildDir)
+			cp.Add(pkgs, listed && closed)
 			if !listed {
 				failed = append(failed, filepath.Join(firstPartyJarDir, n)+": not a listable JAR")
 				continue

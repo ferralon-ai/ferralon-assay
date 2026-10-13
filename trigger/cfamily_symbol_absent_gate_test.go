@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -172,6 +173,28 @@ func runCFamilyBaselineTree(t *testing.T, lane cfamilyGatePlugin, src pipeline.A
 	if len(ids) == 0 {
 		ids = []string{cfamilyAdvisoryID}
 	}
+	refs := make([]assessment.VulnRef, 0, len(ids))
+	for _, id := range ids {
+		refs = append(refs, assessment.VulnRef{ID: id, Source: "corpus"})
+	}
+	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
+		Subject:       Subject{Repo: "example.com/c-target", Revision: "main", ResolvedCommit: "deadbeef"},
+		Codebase:      cfamilyCodebase,
+		Advisories:    refs,
+		AssessOptions: cfamilyAssessOptions(t, lane, src, manifests),
+	})
+	if err != nil {
+		t.Fatalf("buildBaselineReport: %v", err)
+	}
+	return rep
+}
+
+var cfamilyCodebase = assessment.CodebaseRef{Repo: "example.com/c-target", Revision: "main"}
+
+// cfamilyAssessOptions writes the C tree with manifests into a temp dir and returns the options
+// that assess it through lane against src.
+func cfamilyAssessOptions(t *testing.T, lane cfamilyGatePlugin, src pipeline.AdvisorySource, manifests map[string]string) []pipeline.AssessOption {
+	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
 		"go.mod": "module example.com/c-target\n\ngo 1.22\n\nrequire " + goAdvisoryModule + " v1.0.0\n",
@@ -189,24 +212,11 @@ func runCFamilyBaselineTree(t *testing.T, lane cfamilyGatePlugin, src pipeline.A
 			t.Fatal(err)
 		}
 	}
-	refs := make([]assessment.VulnRef, 0, len(ids))
-	for _, id := range ids {
-		refs = append(refs, assessment.VulnRef{ID: id, Source: "corpus"})
+	return []pipeline.AssessOption{
+		pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "cfamily"}),
+		pipeline.WithPlugin(lane),
+		pipeline.WithAdvisorySource(src),
 	}
-	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
-		Subject:    Subject{Repo: "example.com/c-target", Revision: "main", ResolvedCommit: "deadbeef"},
-		Codebase:   assessment.CodebaseRef{Repo: "example.com/c-target", Revision: "main"},
-		Advisories: refs,
-		AssessOptions: []pipeline.AssessOption{
-			pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "cfamily"}),
-			pipeline.WithPlugin(lane),
-			pipeline.WithAdvisorySource(src),
-		},
-	})
-	if err != nil {
-		t.Fatalf("buildBaselineReport: %v", err)
-	}
-	return rep
 }
 
 func cfamilyRow(t *testing.T, rep *report.Report) report.AdvisoryFinding {
@@ -247,14 +257,38 @@ func TestCFamilyBaseline_NamedUnreachedSymbolIsUndetermined(t *testing.T) {
 // (analysis_did_not_run): the first by its own cgx_sink_unreached, the second by its unresolved
 // version (sole_source_unproven). The Go row lands on vulnerable_symbol_unresolved, which a
 // did_not_run on its own ops would outrank, so it is the row that fails if the code ever leaks out
-// of the C advisory's own ops into a run-wide declaration.
+// of the C advisory's own ops into a run-wide declaration. The second C advisory shares the first's
+// package, so its verdict cannot see a leak keyed on that package; its own assessment's footprint
+// is the witness for it, read per assessment because report-level notes are scan-wide.
 func TestCFamilyBaseline_SinkUnreachedScopedToItsAdvisory(t *testing.T) {
 	const sink = "inflateGetHeader"
 	lane := cfamilyGatePlugin{unreached: map[string]bool{sink: true}}
-	rep := runCFamilyBaseline(t, lane, cfamilyAdvisories{symbols: []string{sink}}, cfamilyAdvisoryID, cfamilySecondAdvisoryID, goAdvisoryID)
+	src := cfamilyAdvisories{symbols: []string{sink}}
+	rep := runCFamilyBaseline(t, lane, src, cfamilyAdvisoryID, cfamilySecondAdvisoryID, goAdvisoryID)
 	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
 	assertUndetermined(t, rep, cfamilySecondAdvisoryID, report.ReasonAnalysisDidNotRun)
 	assertUndetermined(t, rep, goAdvisoryID, report.ReasonVulnerableSymbolUnresolved)
+
+	opts := cfamilyAssessOptions(t, lane, src, map[string]string{"conanfile.txt": "[requires]\nzlib/1.2.11\n"})
+	for _, tc := range []struct {
+		id        string
+		unreached bool
+	}{
+		{cfamilyAdvisoryID, true},
+		{cfamilySecondAdvisoryID, false},
+	} {
+		st, aid, err := assess(context.Background(), assessment.Request{
+			Vulnerability: assessment.VulnRef{ID: tc.id, Source: "corpus"},
+			Codebase:      cfamilyCodebase,
+		}, opts...)
+		if err != nil {
+			t.Fatalf("assess %s: %v", tc.id, err)
+		}
+		flags := footprintPartialityFlags(st, aid)
+		if got := slices.Contains(flags, cfamilySinkUnreached); got != tc.unreached {
+			t.Errorf("%s footprint %v: carries %s = %v, want %v", tc.id, flags, cfamilySinkUnreached, got, tc.unreached)
+		}
+	}
 }
 
 // A tree that reaches the vulnerable code only through the dependency (it calls uncompress, which

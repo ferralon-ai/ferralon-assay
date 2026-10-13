@@ -503,7 +503,10 @@ func TestCurated_SharedImportPackages(t *testing.T) {
 		{"dotenv", []string{"django-dotenv", "python-dotenv", "python-dotenv-yaml"}},
 		{"teams", []string{"teams", "teams-ai", "teams-ai-azml-model"}},
 		{"jwt", []string{"jwt", "pyjwt"}},
-		{"PIL", []string{"pillow", "pillow-simd"}},
+		{"PIL", []string{"pillow", "pillow-simd"}}, {"jose", []string{"jose", "python-jose", "python-jose-cryptodome"}},
+		{"dateutil", []string{"py-dateutil", "python-dateutil"}},
+		{"airflow", []string{"apache-airflow", "apache-airflow-core"}},
+		{"airflow.sdk", []string{"apache-airflow-task-sdk"}},
 	}
 	for _, c := range cases {
 		if got := m.Owners(c.pkg); !slices.Equal(got, c.want) {
@@ -588,6 +591,33 @@ func TestDistResolver_SharedPackages(t *testing.T) {
 			name:     "whole segments only",
 			declared: []string{"azure-identity"},
 			path:     "azure.identityx.Credential",
+		},
+		{
+			name:         "airflow 3 declaring only the core distribution",
+			declared:     []string{"apache-airflow-core"},
+			path:         "airflow.models.DAG",
+			wantDists:    []string{"apache-airflow", "apache-airflow-core"},
+			wantDeclared: true,
+		},
+		{
+			name:      "airflow task sdk goes to its own shipper",
+			declared:  []string{"apache-airflow-core"},
+			path:      "airflow.sdk.DAG",
+			wantDists: []string{"apache-airflow-task-sdk"},
+		},
+		{
+			name:         "jose through a co-shipper",
+			declared:     []string{"python-jose-cryptodome"},
+			path:         "jose.jwt.decode",
+			wantDists:    []string{"jose", "python-jose", "python-jose-cryptodome"},
+			wantDeclared: true,
+		},
+		{
+			name:         "dateutil through a co-shipper",
+			declared:     []string{"py-dateutil"},
+			path:         "dateutil.parser.parse",
+			wantDists:    []string{"py-dateutil", "python-dateutil"},
+			wantDeclared: true,
 		},
 		{
 			name:      "single curated shipper undeclared",

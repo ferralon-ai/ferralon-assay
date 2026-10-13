@@ -39,6 +39,20 @@ func CuratedContributions() []Contribution {
 			Date:          curatedTableDate,
 		},
 		{
+			Distribution:  "apache-airflow-core",
+			ImportPackage: "airflow",
+			Provenance:    ProvenanceCurated,
+			Source:        "apache_airflow_core-3.3.2-py3-none-any.whl from pypi.org: RECORD sole top-level package airflow/ (has __init__.py, no airflow/sdk/); ships the same import package as apache-airflow 2.x, while the apache-airflow 3.3.2 wheel ships no package at all",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "apache-airflow-task-sdk",
+			ImportPackage: "airflow.sdk",
+			Provenance:    ProvenanceCurated,
+			Source:        "apache_airflow_task_sdk-1.3.2-py3-none-any.whl from pypi.org: RECORD ships only airflow/sdk/ (has __init__.py), with no airflow/__init__.py; apache-airflow-core ships no airflow/sdk/",
+			Date:          importBindingTableDate,
+		},
+		{
 			Distribution:  "flask",
 			ImportPackage: "flask",
 			Provenance:    ProvenanceCurated,
@@ -130,10 +144,31 @@ func CuratedContributions() []Contribution {
 			Date:          importBindingTableDate,
 		},
 		{
+			Distribution:  "py-dateutil",
+			ImportPackage: "dateutil",
+			Provenance:    ProvenanceCurated,
+			Source:        "py-dateutil-2.2.tar.gz from pypi.org (the project publishes no wheels): setup.py packages = [\"dateutil\", \"dateutil.zoneinfo\"], egg-info top_level.txt dateutil; ships the same import package as python-dateutil",
+			Date:          importBindingTableDate,
+		},
+		{
 			Distribution:  "python-jose",
 			ImportPackage: "jose",
 			Provenance:    ProvenanceCurated,
 			Source:        "python_jose-3.5.0-py2.py3-none-any.whl from pypi.org: sole top-level package jose/",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "python-jose-cryptodome",
+			ImportPackage: "jose",
+			Provenance:    ProvenanceCurated,
+			Source:        "python_jose_cryptodome-1.3.2-py2.py3-none-any.whl from pypi.org: RECORD sole top-level package jose/; ships the same import package as python-jose",
+			Date:          importBindingTableDate,
+		},
+		{
+			Distribution:  "jose",
+			ImportPackage: "jose",
+			Provenance:    ProvenanceCurated,
+			Source:        "jose-1.0.0.tar.gz from pypi.org (the project publishes no wheels): setup.py py_modules=['jose'], egg-info top_level.txt jose, top-level module jose.py; ships the same import name as python-jose",
 			Date:          importBindingTableDate,
 		},
 		{

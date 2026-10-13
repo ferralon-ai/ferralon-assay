@@ -1,10 +1,11 @@
 package pythonanalysis
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -159,7 +160,7 @@ func loadProgram(buildDir string) (*program, error) {
 		parsed = append(parsed, pf)
 	}
 
-	build := buildScripts(parsed, readLoaders(buildDir))
+	build := buildScripts(parsed, buildDir)
 	modules := make([]string, 0, len(parsed))
 	for i, pf := range parsed {
 		// A build script is still the project's own code, so its module stays first-party.
@@ -201,27 +202,27 @@ var buildScriptBackends = map[string][]string{
 }
 
 // buildScripts returns the indexes of the parsed files that are packaging build scripts:
-// a file named in buildScriptBackends that imports one of its backends and does not sit in
-// a regular package (no __init__.py beside it). Build scripts run when the project is
-// built, not when it runs, so their imports and calls are not runtime code.
+// a file named in buildScriptBackends at the build root that imports one of its backends,
+// with no __init__.py beside it. Build scripts run when the project is built, not when it
+// runs, so their imports and calls are not runtime code. Only the build root counts, since
+// that is where the backend looks for them; a file of that name anywhere else is ordinary
+// code to whatever loads files from its directory.
 //
 // Leaving a file out can only make the program look like it loads less, so a script is
-// left out only when nothing at runtime can reach it. It stays in when any other file
-// imports it under any name it could have (absolute, dotted, relative or star import), when
-// any other file imports anything dynamically, when an entry point in a config or in a
-// build script names it, or when a launcher mentions it. ld is nil when a config or launcher
-// could not be read, which keeps every script.
-func buildScripts(parsed []parsedFile, ld *loaders) map[int]bool {
-	if ld == nil {
-		return nil
-	}
+// left out only when nothing in the build tree could load it. scanBuildTree reads every
+// file under buildDir; the script stays in when any other file mentions its stem, when any
+// Python file loads code by path or computed name, when a relative import climbs above the
+// build root, or when a string in its own text names it (an entry point or py_modules entry
+// it declares about itself). Any file the scan can't read keeps every script.
+func buildScripts(parsed []parsedFile, buildDir string) map[int]bool {
+	root := filepath.Clean(buildDir)
 	build := map[int]bool{}
 	for i, pf := range parsed {
 		backends, ok := buildScriptBackends[filepath.Base(pf.path)]
-		if !ok {
+		if !ok || filepath.Dir(pf.path) != root {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(filepath.Dir(pf.path), "__init__.py")); err == nil {
+		if _, err := os.Stat(filepath.Join(root, "__init__.py")); err == nil {
 			continue
 		}
 		if slices.ContainsFunc(pf.refs, func(r importRef) bool {
@@ -234,18 +235,23 @@ func buildScripts(parsed []parsedFile, ld *loaders) map[int]bool {
 	if len(build) == 0 {
 		return nil
 	}
-	texts := slices.Clone(ld.configs)
+	var stems []string
 	for i := range build {
-		texts = append(texts, parsed[i].text)
+		stems = append(stems, scriptStem(parsed[i].path))
+	}
+	scan := scanBuildTree(root, stems)
+	if scan == nil {
+		return nil
 	}
 	for i := range build {
-		names := moduleNames(parsed[i].parse.module)
-		if namedByEntryPoint(names, texts) || mentionedByLauncher(path.Base(parsed[i].parse.module), ld.launchers) {
+		own := filepath.Clean(parsed[i].path)
+		stem := scriptStem(own)
+		if scan.mentionedOutside(stem, own) || scan.loaderOutside(own) || namesItself(parsed[i].text, stem) {
 			delete(build, i)
 			continue
 		}
 		for j, pf := range parsed {
-			if j != i && (pf.opaque || len(pf.parse.loadRoots) > 0 || reachesAny(pf.refs, names)) {
+			if j != i && climbsAboveRoot(pf.refs) {
 				delete(build, i)
 				break
 			}
@@ -254,116 +260,165 @@ func buildScripts(parsed []parsedFile, ld *loaders) map[int]bool {
 	return build
 }
 
-// moduleNames returns every dotted name a module could be imported under: its path from
-// the build root and each suffix of it, since any directory on the path may be an import
-// root (a src layout, a namespace package, a sys.path entry).
-func moduleNames(module string) []string {
-	segs := strings.Split(module, "/")
-	names := make([]string, 0, len(segs))
-	for i := range segs {
-		names = append(names, strings.Join(segs[i:], "."))
-	}
-	return names
+// scriptStem is the module name a build script at the build root imports and runs under,
+// lower-cased for matching.
+func scriptStem(p string) string {
+	return strings.ToLower(strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)))
 }
 
-// reachesAny reports whether an import in refs may load a module imported under one of
-// names: the name itself or something beneath it. A relative import climbing above the
-// build root reaches everything. A star import from a package above a build script never
-// loads it: the script's directory has no __init__.py to list it in __all__.
-func reachesAny(refs []importRef, names []string) bool {
-	for _, r := range refs {
-		if r.unresolved {
+// climbsAboveRoot reports whether a relative import in refs climbs above the build root,
+// which could reach anything.
+func climbsAboveRoot(refs []importRef) bool {
+	return slices.ContainsFunc(refs, func(r importRef) bool { return r.unresolved })
+}
+
+// stemPattern matches stem as a whole word, ignoring case: "python SETUP.PY" runs the script
+// on a case-insensitive filesystem.
+func stemPattern(stem string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[^0-9A-Za-z_])` + regexp.QuoteMeta(stem) + `($|[^0-9A-Za-z_])`)
+}
+
+// namesItself reports whether a string literal in a build script's own source mentions its
+// stem: an entry point it declares about itself ("x = setup:main", "x = setup"), or a
+// py_modules or scripts entry. The rest of its text always says "setup", so it can't count.
+func namesItself(src, stem string) bool {
+	re := stemPattern(stem)
+	_, lits := stripPythonLiterals(src)
+	for _, l := range lits {
+		if re.MatchString(l.body) {
 			return true
 		}
-		for _, n := range names {
-			if r.path == n || strings.HasPrefix(r.path, n+".") {
-				return true
-			}
-		}
 	}
 	return false
 }
 
-// namedByEntryPoint reports whether any text names one of names as an entry-point object
-// reference ("module:attr", as [project.scripts], setup.cfg and setup() entry_points write
-// it). The match is lexical, so a stray "name:" keeps a script in rather than leaving it out.
-func namedByEntryPoint(names, texts []string) bool {
-	for _, n := range names {
-		re := regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(n) + `\s*:\s*[A-Za-z_]`)
-		for _, t := range texts {
-			if re.MatchString(t) {
-				return true
-			}
-		}
+// maxScannedFile is the largest file scanBuildTree reads; a larger one keeps every script.
+var maxScannedFile int64 = 8 << 20
+
+// fileLoaderLeafs are callables that run or import code chosen at runtime by file path or
+// by a computed name, so the scanner can't tell which module they load.
+var fileLoaderLeafs = map[string]bool{
+	"run_path":                true, // runpy
+	"run_module":              true, // runpy
+	"exec":                    true,
+	"execfile":                true,
+	"eval":                    true, // eval(compile(src, path, "exec"))
+	"spec_from_file_location": true, // importlib.util
+	"spec_from_loader":        true, // importlib.util
+	"module_from_spec":        true, // importlib.util
+	"exec_module":             true, // a loader
+	"load_module":             true, // a loader, imp
+	"SourceFileLoader":        true, // importlib.machinery
+	"SourcelessFileLoader":    true, // importlib.machinery
+	"load_source":             true, // imp
+	"load_compiled":           true, // imp
+	"load_package":            true, // imp
+	"iter_modules":            true, // pkgutil
+	"zipimporter":             true, // zipimport
+}
+
+// buildTreeScan is what scanBuildTree found that could load a build script.
+type buildTreeScan struct {
+	mentions map[string][]string // lower-case stem -> files mentioning it
+	loaders  []string            // Python files that load code by path or computed name
+}
+
+func (s *buildTreeScan) mentionedOutside(stem, own string) bool {
+	return slices.ContainsFunc(s.mentions[stem], func(p string) bool { return filepath.Clean(p) != own })
+}
+
+func (s *buildTreeScan) loaderOutside(own string) bool {
+	return slices.ContainsFunc(s.loaders, func(p string) bool { return filepath.Clean(p) != own })
+}
+
+// scanBuildTree reads every file under root through the shared build-tree walk, recording
+// which files mention each stem as a whole word and which Python files (by extension, a .pth
+// file, or a python shebang) name a dynamic-import or file-loader callable anywhere, aliased
+// imports included. It returns nil when any file can't be read in full: unreadable, larger
+// than maxScannedFile, binary, a symlink leaving root, or a symlinked directory the walk
+// doesn't read through its target. Any of those could hold the mention.
+func scanBuildTree(root string, stems []string) *buildTreeScan {
+	scan := &buildTreeScan{mentions: map[string][]string{}}
+	patterns := map[string]*regexp.Regexp{}
+	for _, s := range stems {
+		patterns[s] = stemPattern(s)
 	}
-	return false
-}
-
-// mentionedByLauncher reports whether a launcher's text mentions stem as a whole word, as
-// "python setup.py", "python -m pkg.setup" or a CMD array would. A mention for any other
-// reason (a comment, "setup.py install" at image build time) keeps the script in too.
-func mentionedByLauncher(stem string, launchers []string) bool {
-	re := regexp.MustCompile(`(^|\W)` + regexp.QuoteMeta(stem) + `(\W|$)`)
-	return slices.ContainsFunc(launchers, re.MatchString)
-}
-
-// loaders holds the text of the non-Python files that can load a module at runtime under
-// buildDir: configs declare entry points (pyproject.toml, setup.cfg), and launchers start
-// processes (Procfile, Dockerfile, Containerfile, compose files, shell scripts).
-type loaders struct {
-	configs   []string
-	launchers []string
-}
-
-// readLoaders walks buildDir, skipping the directories the source walk skips. It returns
-// nil when a file cannot be read or the walk fails.
-func readLoaders(buildDir string) *loaders {
-	ld := &loaders{configs: []string{}, launchers: []string{}}
-	err := filepath.WalkDir(buildDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	match := func(p string, _ []byte) (string, bool) {
+		data, why := readScanned(p)
+		if why != "" {
+			return why, true
 		}
-		if d.IsDir() {
-			if skipDir(d.Name()) && p != buildDir {
-				return filepath.SkipDir
+		text := string(data)
+		for s, re := range patterns {
+			if re.MatchString(text) {
+				scan.mentions[s] = append(scan.mentions[s], p)
 			}
-			return nil
 		}
-		n := d.Name()
-		config := n == "pyproject.toml" || n == "setup.cfg"
-		if !config && !isLauncher(n) {
-			return nil
+		if pythonText(p, text) && namesLoader(text) {
+			scan.loaders = append(scan.loaders, p)
 		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		if config {
-			ld.configs = append(ld.configs, string(data))
-		} else {
-			ld.launchers = append(ld.launchers, string(data))
-		}
+		return "", false
+	}
+	if !buildTreeAllFullyRead(buildTreeCandidates(root, match, func(string) bool { return false })) {
 		return nil
-	})
+	}
+	return scan
+}
+
+// readScanned reads the file at p whole. why is non-empty when it can't: unreadable, too
+// large, or binary (a NUL byte).
+func readScanned(p string) (data []byte, why string) {
+	f, err := os.Open(p)
 	if err != nil {
-		return nil
+		return nil, "unreadable"
 	}
-	return ld
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "unreadable"
+	}
+	if info.Size() > maxScannedFile {
+		return nil, "too large to scan"
+	}
+	data, err = io.ReadAll(io.LimitReader(f, maxScannedFile+1))
+	if err != nil {
+		return nil, "unreadable"
+	}
+	if int64(len(data)) > maxScannedFile {
+		return nil, "too large to scan"
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return nil, "binary"
+	}
+	return data, ""
 }
 
-// isLauncher reports whether a file name is one that starts processes: a Procfile, a
-// Dockerfile or Containerfile (Dockerfile.prod, api.dockerfile), a compose file, or a shell
-// script.
-func isLauncher(name string) bool {
-	n := strings.ToLower(name)
-	switch {
-	case n == "procfile",
-		strings.HasPrefix(n, "dockerfile"), strings.HasPrefix(n, "containerfile"),
-		strings.HasSuffix(n, ".dockerfile"), strings.HasSuffix(n, ".containerfile"),
-		strings.HasPrefix(n, "docker-compose"),
-		strings.HasPrefix(n, "compose.") && (strings.HasSuffix(n, ".yml") || strings.HasSuffix(n, ".yaml")),
-		strings.HasSuffix(n, ".sh"):
+// pythonText reports whether the file at p holds Python the interpreter runs: a .py or .pyw
+// source, a .pth file (its import lines run at startup), or a script with a python shebang.
+func pythonText(p, text string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".py", ".pyw", ".pth":
 		return true
+	}
+	first, _, _ := strings.Cut(text, "\n")
+	return strings.HasPrefix(first, "#!") && strings.Contains(first, "python")
+}
+
+// namesLoader reports whether Python source names a dynamic-import or file-loader callable
+// as an identifier outside comments and strings, called or not, so an aliased import
+// ("from runpy import run_path as rp") counts.
+func namesLoader(src string) bool {
+	r := []rune(stripPython(src))
+	for i := 0; i < len(r); {
+		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
+			i++
+			continue
+		}
+		w, end := readWordRunes(r, i)
+		if fileLoaderLeafs[w] || dynamicImportLiteralLeafs[w] || dynamicImportOpaqueLeafs[w] {
+			return true
+		}
+		i = end
 	}
 	return false
 }

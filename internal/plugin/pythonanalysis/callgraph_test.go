@@ -485,31 +485,82 @@ func TestCallGraph_DynamicImports(t *testing.T) {
 	}
 }
 
-// TestLoadProgram_BuildScripts: a packaging build script's imports are build-time, so the
-// script is left out of the program (no module, no boundary edge from its module-init),
-// while it stays first-party. Every way runtime code could still load the script keeps it.
+// buildScriptCase is one tree for the build-script exclusion tests. script is the module of
+// the build-script candidate; edge is a boundary edge a kept script's module init must
+// still have.
+type buildScriptCase struct {
+	name     string
+	files    map[string]string
+	script   string
+	excluded bool
+	edge     string
+}
+
+const (
+	setupPy = "from setuptools import setup\nsetup(name='app')\n"
+	// yamlSetupPy loads YAML when it runs, so a kept copy's module init has yamlLoad.
+	yamlSetupPy = "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app')\n"
+	yamlLoad    = "pypi:pyyaml#yaml.load"
+	runtimePy   = "def check(t):\n    return t\n"
+)
+
+// checkBuildScript loads dir and checks whether c.script is in the program, that it stays
+// first-party either way, and its module init's boundary edges.
+func checkBuildScript(t *testing.T, dir string, c buildScriptCase) {
+	t.Helper()
+	prog, err := loadProgram(dir)
+	if err != nil {
+		t.Fatalf("loadProgram: %v", err)
+	}
+	present := slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == c.script })
+	if present == c.excluded {
+		t.Fatalf("build script %s in program = %v, want %v", c.script, present, !c.excluded)
+	}
+	top, _, _ := strings.Cut(c.script, "/")
+	if !prog.dists.firstParty[top] {
+		t.Errorf("first-party tops %v lost %s", prog.dists.firstParty, top)
+	}
+	init := moduleInitSCIP(c.script)
+	var fromScript []string
+	for _, e := range callGraphOf(prog).Edges {
+		if e.Caller.SCIP == init && strings.HasPrefix(e.Callee.SCIP, boundaryPrefix) {
+			fromScript = append(fromScript, e.Callee.SCIP)
+		}
+	}
+	if c.excluded && len(fromScript) != 0 {
+		t.Errorf("excluded build script still contributes boundary edges %v", fromScript)
+	}
+	if c.edge != "" && !slices.Contains(fromScript, c.edge) {
+		t.Errorf("kept build script's boundary edges %v lack %s", fromScript, c.edge)
+	}
+}
+
+// keptBy is a row where files beside a root setup.py keep it in the program.
+func keptBy(name string, files map[string]string) buildScriptCase {
+	all := map[string]string{"setup.py": yamlSetupPy, "app.py": runtimePy}
+	for p, s := range files {
+		all[p] = s
+	}
+	return buildScriptCase{name: name, files: all, script: "setup", edge: yamlLoad}
+}
+
+// TestLoadProgram_BuildScripts: a packaging build script's imports are build-time, so a
+// setup.py or hatch_build.py at the build root is left out of the program (no module, no
+// boundary edge from its module init) while it stays first-party. It stays in when any
+// other file under the build root mentions its name as a whole word, ignoring case, when a
+// Python file anywhere loads code by path or computed name, when a relative import climbs
+// above the root, or when a string in its own text names it.
 func TestLoadProgram_BuildScripts(t *testing.T) {
-	const setupPy = "from setuptools import setup\nsetup(name='app')\n"
-	const runtime = "def check(t):\n    return t\n"
-	// nsSetupPy sits in the namespace package pkg (no __init__.py), so pkg.setup is importable.
-	const nsSetupPy = "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app')\n"
-	const yamlLoad = "pypi:pyyaml#yaml.load"
-	cases := []struct {
-		name     string
-		files    map[string]string
-		script   string // module of the build-script candidate
-		excluded bool
-		edge     string // boundary edge the kept script's module-init must still have
-	}{
+	cases := []buildScriptCase{
 		{
 			name:     "setup.py importing setuptools is excluded",
-			files:    map[string]string{"setup.py": setupPy, "app.py": runtime},
+			files:    map[string]string{"setup.py": setupPy, "app.py": runtimePy},
 			script:   "setup",
 			excluded: true,
 		},
 		{
 			name:     "setup.py importing distutils is excluded",
-			files:    map[string]string{"setup.py": "from distutils.core import setup\nsetup(name='app')\n", "app.py": runtime},
+			files:    map[string]string{"setup.py": "from distutils.core import setup\nsetup(name='app')\n", "app.py": runtimePy},
 			script:   "setup",
 			excluded: true,
 		},
@@ -517,226 +568,253 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 			name: "hatch_build.py importing hatchling is excluded",
 			files: map[string]string{
 				"hatch_build.py": "from hatchling.builders.hooks.plugin.interface import BuildHookInterface\n\nclass Hook(BuildHookInterface):\n    def initialize(self, version, data):\n        return data\n",
-				"app.py":         runtime,
+				"app.py":         runtimePy,
 			},
 			script:   "hatch_build",
 			excluded: true,
 		},
 		{
+			name:     "a loader in the script's own text leaves it out",
+			files:    map[string]string{"setup.py": "from setuptools import setup\nns = {}\nexec(open('src/app/version.py').read(), ns)\nsetup(name='app', version=ns['v'])\n", "app.py": runtimePy},
+			script:   "setup",
+			excluded: true,
+		},
+		{
 			name:   "setup.py importing no build backend stays",
-			files:  map[string]string{"setup.py": "import click\n\ndef setup(cfg):\n    return click.echo(cfg)\n", "app.py": runtime},
+			files:  map[string]string{"setup.py": "import click\n\ndef setup(cfg):\n    return click.echo(cfg)\n", "app.py": runtimePy},
 			script: "setup",
 		},
 		{
-			name:   "setup.py inside a regular package stays",
-			files:  map[string]string{"pkg/__init__.py": "", "pkg/setup.py": setupPy, "app.py": runtime},
-			script: "pkg/setup",
-		},
-		{
-			name:   "runtime import of the script's module keeps it",
-			files:  map[string]string{"setup.py": setupPy, "app.py": "import setup\n\ndef check(t):\n    return t\n"},
+			name:   "setup.py beside a root __init__.py stays",
+			files:  map[string]string{"__init__.py": "", "setup.py": yamlSetupPy},
 			script: "setup",
+			edge:   yamlLoad,
 		},
 		{
-			name:   "runtime star import of the script's module keeps it",
-			files:  map[string]string{"setup.py": setupPy, "app.py": "from setup import *\n\ndef check(t):\n    return t\n"},
-			script: "setup",
-		},
-		{
-			name:   "runtime literal dynamic import of the script's module keeps it",
-			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\nmod = importlib.import_module('setup')\n"},
-			script: "setup",
-		},
-		{
-			name:     "setup.py in a namespace package nothing loads is excluded",
-			files:    map[string]string{"pkg/setup.py": nsSetupPy, "pkg/run.py": runtime},
-			script:   "pkg/setup",
-			excluded: true,
-		},
-		{
-			name:   "dotted import of a namespace-package setup.py keeps it",
-			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "import pkg.setup\n\ndef check(t):\n    return t\n"},
+			name:   "setup.py below the build root stays",
+			files:  map[string]string{"pkg/setup.py": yamlSetupPy, "pkg/run.py": runtimePy},
 			script: "pkg/setup",
 			edge:   yamlLoad,
 		},
+
+		// Another file mentions the script.
+		keptBy("runtime import of the script's module keeps it", map[string]string{"app.py": "import setup\n\ndef check(t):\n    return t\n"}),
+		keptBy("runtime star import of the script's module keeps it", map[string]string{"app.py": "from setup import *\n"}),
+		keptBy("relative import of the script keeps it", map[string]string{"app.py": "from . import setup\n"}),
+		keptBy("a comment naming the script keeps it", map[string]string{"app.py": "# python setup.py serve starts the dev server\n"}),
+		keptBy("a Procfile launching the script keeps it", map[string]string{"Procfile": "web: python setup.py serve\n"}),
+		keptBy("a Procfile naming it in another case keeps it", map[string]string{"Procfile": "web: python SETUP.PY serve\n"}),
+		keptBy("a Dockerfile variant running the module keeps it", map[string]string{"Dockerfile.prod": "FROM python:3.12\nCMD [\"python\", \"-m\", \"setup\"]\n"}),
+		keptBy("a Containerfile launching the script keeps it", map[string]string{"Containerfile": "FROM python:3.12\nENTRYPOINT python setup.py\n"}),
+		keptBy("a named .dockerfile launching the script keeps it", map[string]string{"deploy/api.dockerfile": "FROM python:3.12\nCMD python setup.py\n"}),
+		keptBy("a compose command launching the script keeps it", map[string]string{"docker-compose.yml": "services:\n  web:\n    command: python setup.py\n"}),
+		keptBy("a shell script launching the script keeps it", map[string]string{"boot.sh": "#!/bin/sh\nexec python setup.py\n"}),
+		keptBy("a systemd unit launching the script keeps it", map[string]string{"deploy/app.service": "[Service]\nExecStart=/usr/bin/python3 /srv/app/setup.py serve\n"}),
+		keptBy("a supervisord program launching the script keeps it", map[string]string{"supervisord.conf": "[program:app]\ncommand=python setup.py serve\n"}),
+		keptBy("a Makefile target running the script keeps it", map[string]string{"Makefile": "serve:\n\tpython setup.py serve\n"}),
+		keptBy("a CI workflow running the module keeps it", map[string]string{".github/workflows/ci.yml": "jobs:\n  run:\n    steps:\n      - run: python -m setup\n"}),
+		keptBy("a git hook running the script keeps it", map[string]string{".git/hooks/post-merge": "#!/bin/sh\npython setup.py develop\n"}),
+		keptBy("a file under build/ naming the script keeps it", map[string]string{"build/run.cfg": "entry = setup\n"}),
+		keptBy("a file under env/ naming the script keeps it", map[string]string{"env/bin/start": "#!/bin/sh\nexec python /srv/setup.py\n"}),
+		keptBy("a pyproject entry point naming the script keeps it", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\n\n[project.scripts]\nfoo = \"setup:main\"\n"}),
+		keptBy("a setup.cfg console script naming the script keeps it", map[string]string{"setup.cfg": "[options.entry_points]\nconsole_scripts =\n    foo = setup:main\n"}),
+		keptBy("an entry point through a package path keeps it", map[string]string{"pyproject.toml": "[project.scripts]\nfoo = \"pkg.setup:main\"\n"}),
+
+		// The script's own strings name it.
 		{
-			name:   "from-import of a namespace-package setup.py keeps it",
-			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "from pkg import setup\n\ndef check(t):\n    return t\n"},
-			script: "pkg/setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "relative import of a sibling setup.py keeps it",
-			files:  map[string]string{"pkg/setup.py": nsSetupPy, "pkg/run.py": "from . import setup\n\ndef check(t):\n    return t\n"},
-			script: "pkg/setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "relative import of a root setup.py keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "from . import setup\n\ndef check(t):\n    return t\n"},
+			name:   "an entry point the script declares about itself keeps it",
+			files:  map[string]string{"setup.py": "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app', entry_points={'console_scripts': ['foo = setup:main']})\n", "app.py": runtimePy},
 			script: "setup",
 			edge:   yamlLoad,
 		},
 		{
-			name:   "literal dynamic import of a namespace-package setup.py keeps it",
-			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": "import importlib\nmod = importlib.import_module('pkg.setup')\n"},
-			script: "pkg/setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "any other dynamic import keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "import importlib\nmod = importlib.import_module('json')\n"},
+			name:   "a module-only entry point the script declares keeps it",
+			files:  map[string]string{"setup.py": "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app', entry_points={'app.plugins': ['foo = setup']})\n", "app.py": runtimePy},
 			script: "setup",
 			edge:   yamlLoad,
 		},
 		{
-			name:   "relative import climbing above the build root keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": "from .. import helpers\n\ndef check(t):\n    return t\n"},
+			name:   "py_modules listing the script keeps it",
+			files:  map[string]string{"setup.py": "from setuptools import setup\nimport yaml\ncfg = yaml.load(open('c.yml'))\nsetup(name='app', py_modules=['setup', 'app'])\n", "app.py": runtimePy},
 			script: "setup",
 			edge:   yamlLoad,
 		},
+
+		// Nothing that could load the script.
 		{
-			name:   "an entry point naming the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "pyproject.toml": "[project]\nname = \"app\"\n\n[project.scripts]\ntool = \"setup:main\"\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:     "an entry point naming another module leaves it out",
-			files:    map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "pyproject.toml": "[project]\nname = \"app\"\n\n[project.scripts]\ntool = \"app:check\"\n"},
+			name: "files that never mention the script leave it out",
+			files: map[string]string{
+				"setup.py":           yamlSetupPy,
+				"app.py":             runtimePy,
+				"Procfile":           "web: gunicorn app:check\n",
+				"Dockerfile":         "FROM python:3.12\nRUN pip install .\nCMD [\"python\", \"app.py\"]\n",
+				"Makefile":           "test:\n\tpytest\n",
+				"setuptools.sh":      "pip install -U setuptools\n",
+				"scripts/setup_env":  "export SETUP_ENV=1\n",
+				"pyproject.toml":     "[project]\nname = \"app\"\n\n[project.scripts]\nfoo = \"app:check\"\n",
+				"docs/loaders.md":    "Never call runpy.run_path(sys.argv[1]) on untrusted input.\n",
+				"tools/comment.py":   "# exec and run_path appear only in this comment\nmsg = 'spec_from_file_location'\n",
+				".gitignore":         "build/\n",
+				"src/app/version.py": "v = '1.0'\n",
+			},
 			script:   "setup",
 			excluded: true,
 		},
 		{
-			name:   "a Procfile launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Procfile": "web: python setup.py serve\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a Dockerfile variant running the module keeps it",
-			files:  map[string]string{"pkg/setup.py": nsSetupPy, "app.py": runtime, "Dockerfile.prod": "FROM python:3.12\nCMD [\"python\", \"-m\", \"pkg.setup\"]\n"},
-			script: "pkg/setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a Containerfile launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Containerfile": "FROM python:3.12\nENTRYPOINT python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a named .dockerfile launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "deploy/api.dockerfile": "FROM python:3.12\nCMD python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a named .containerfile launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "worker.containerfile": "FROM python:3.12\nCMD python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a compose command launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "docker-compose.yml": "services:\n  web:\n    command: python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a compose.yaml command launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "compose.yaml": "services:\n  web:\n    command: python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:   "a shell script launching the script keeps it",
-			files:  map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "boot.sh": "#!/bin/sh\nexec python setup.py\n"},
-			script: "setup",
-			edge:   yamlLoad,
-		},
-		{
-			name:     "launchers that never mention the script leave it out",
-			files:    map[string]string{"setup.py": nsSetupPy, "app.py": runtime, "Procfile": "web: gunicorn app:check\n", "Dockerfile": "FROM python:3.12\nRUN pip install .\nCMD [\"python\", \"app.py\"]\n", "setuptools.sh": "pip install -U setuptools\n"},
+			name:     "a mention under node_modules leaves it out",
+			files:    map[string]string{"setup.py": yamlSetupPy, "app.py": runtimePy, "node_modules/tool/run.sh": "python setup.py\n"},
 			script:   "setup",
 			excluded: true,
 		},
 		{
-			name:   "runtime dynamic import the scanner cannot name keeps it",
-			files:  map[string]string{"setup.py": setupPy, "app.py": "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"},
-			script: "setup",
+			name:     "a mention or loader under site-packages leaves it out",
+			files:    map[string]string{"setup.py": yamlSetupPy, "app.py": runtimePy, ".venv/lib/python3.12/site-packages/x/y.py": "import setup\nimport runpy\nrunpy.run_path(p)\n"},
+			script:   "setup",
+			excluded: true,
 		},
+
+		// A Python file loads code by path or computed name.
+		keptBy("runpy.run_path with a computed path keeps it", map[string]string{"app.py": "import runpy, sys\nrunpy.run_path(sys.argv[1])\n"}),
+		keptBy("exec of a file read from the environment keeps it", map[string]string{"app.py": "import os\nexec(open(os.environ['S']).read())\n"}),
+		keptBy("spec_from_file_location over a plugin dir keeps it", map[string]string{"app.py": "import importlib.util, os\nfor f in os.listdir('plugins'):\n    s = importlib.util.spec_from_file_location(f, os.path.join('plugins', f))\n    importlib.util.module_from_spec(s)\n"}),
+		keptBy("SourceFileLoader on a computed path keeps it", map[string]string{"app.py": "import sys\nfrom importlib.machinery import SourceFileLoader\nSourceFileLoader('x', sys.argv[1]).load_module()\n"}),
+		keptBy("an aliased loader import keeps it", map[string]string{"app.py": "from runpy import run_path as rp\n\ndef go(p):\n    return rp(p)\n"}),
+		keptBy("a literal dynamic import keeps it", map[string]string{"app.py": "import importlib\nmod = importlib.import_module('json')\n"}),
+		keptBy("a dynamic import the scanner cannot name keeps it", map[string]string{"app.py": "import importlib\n\ndef load(n):\n    return importlib.import_module(n)\n"}),
+		keptBy("a loader in a script the program doesn't parse keeps it", map[string]string{".github/scripts/release.py": "import runpy, sys\nrunpy.run_path(sys.argv[1])\n"}),
+		keptBy("a loader in a .pth file keeps it", map[string]string{"boot.pth": "import os; exec(open(os.environ['BOOT']).read())\n"}),
+		keptBy("a loader in a python-shebang script keeps it", map[string]string{"bin/run": "#!/usr/bin/env python3\nimport runpy, sys\nrunpy.run_path(sys.argv[1])\n"}),
+		keptBy("relative import climbing above the build root keeps it", map[string]string{"app.py": "from .. import helpers\n"}),
+	}
+	var leafs []string
+	for _, m := range []map[string]bool{fileLoaderLeafs, dynamicImportLiteralLeafs, dynamicImportOpaqueLeafs} {
+		for l := range m {
+			leafs = append(leafs, l)
+		}
+	}
+	slices.Sort(leafs)
+	for _, l := range leafs {
+		cases = append(cases, keptBy("loader "+l+" keeps it", map[string]string{"app.py": "import mod\n\ndef go(p):\n    return mod." + l + "(p)\n"}))
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			c.files["requirements.txt"] = "setuptools\nhatchling\nclick\n"
-			prog, err := loadProgram(writeTree(t, c.files))
-			if err != nil {
-				t.Fatalf("loadProgram: %v", err)
-			}
-			var present bool
-			for _, f := range prog.files {
-				present = present || f.module == c.script
-			}
-			if present == c.excluded {
-				t.Fatalf("build script %s in program = %v, want %v", c.script, present, !c.excluded)
-			}
-			top, _, _ := strings.Cut(c.script, "/")
-			if !prog.dists.firstParty[top] {
-				t.Errorf("first-party tops %v lost %s", prog.dists.firstParty, top)
-			}
-			init := moduleInitSCIP(c.script)
-			var fromScript []string
-			for _, e := range callGraphOf(prog).Edges {
-				if e.Caller.SCIP == init && strings.HasPrefix(e.Callee.SCIP, boundaryPrefix) {
-					fromScript = append(fromScript, e.Callee.SCIP)
-				}
-			}
-			if c.excluded && len(fromScript) != 0 {
-				t.Errorf("excluded build script still contributes boundary edges %v", fromScript)
-			}
-			if c.edge != "" && !slices.Contains(fromScript, c.edge) {
-				t.Errorf("kept build script's boundary edges %v lack %s", fromScript, c.edge)
-			}
+			checkBuildScript(t, writeTree(t, c.files), c)
 		})
 	}
 }
 
-// TestLoadProgram_UnreadableConfigKeepsBuildScripts: an entry-point config that cannot be
-// read might name the build script, so the script stays in.
-func TestLoadProgram_UnreadableConfigKeepsBuildScripts(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"setup.py": "from setuptools import setup\nsetup(name='app')\n",
-		"app.py":   "def check(t):\n    return t\n",
-	})
-	if err := os.Symlink(filepath.Join(dir, "missing.cfg"), filepath.Join(dir, "setup.cfg")); err != nil {
-		t.Fatalf("symlink: %v", err)
+// TestLoadProgram_BuildScriptScanFailsClosed: a file or directory the build-tree scan
+// can't read in full might mention the script, so every build script stays in. A symlinked
+// directory is read only through its target, when the walk itself reads that target.
+func TestLoadProgram_BuildScriptScanFailsClosed(t *testing.T) {
+	unreadable := func(t *testing.T, p string) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads files whatever their mode")
+		}
+		if err := os.Chmod(p, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
 	}
-	prog, err := loadProgram(dir)
-	if err != nil {
-		t.Fatalf("loadProgram: %v", err)
+	symlink := func(t *testing.T, target, link string) {
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == "setup" }) {
-		t.Fatal("setup.py left out although setup.cfg could not be read")
+	cases := []struct {
+		name     string
+		files    map[string]string
+		prepare  func(t *testing.T, dir string)
+		excluded bool
+	}{
+		{
+			name:    "an unreadable file keeps it",
+			files:   map[string]string{"deploy/app.service": "[Service]\n"},
+			prepare: func(t *testing.T, dir string) { unreadable(t, filepath.Join(dir, "deploy/app.service")) },
+		},
+		{
+			// build/ is outside the program's source walk, so the scan is what has to stop.
+			name:    "an unreadable directory keeps it",
+			files:   map[string]string{"build/deploy/app.service": "[Service]\n"},
+			prepare: func(t *testing.T, dir string) { unreadable(t, filepath.Join(dir, "build/deploy")) },
+		},
+		{
+			name:  "a binary file keeps it",
+			files: map[string]string{"assets/blob.bin": "PK\x00\x01\x02"},
+		},
+		{
+			name:  "a file larger than the scan limit keeps it",
+			files: map[string]string{"data/big.txt": strings.Repeat("x", 4096)},
+			prepare: func(t *testing.T, _ string) {
+				old := maxScannedFile
+				maxScannedFile = 1024
+				t.Cleanup(func() { maxScannedFile = old })
+			},
+		},
+		{
+			name: "a dangling setup.cfg symlink keeps it",
+			prepare: func(t *testing.T, dir string) {
+				symlink(t, filepath.Join(dir, "missing.cfg"), filepath.Join(dir, "setup.cfg"))
+			},
+		},
+		{
+			name: "a dangling Procfile symlink keeps it",
+			prepare: func(t *testing.T, dir string) {
+				symlink(t, filepath.Join(dir, "missing"), filepath.Join(dir, "Procfile"))
+			},
+		},
+		{
+			name: "a symlink to a file outside the build dir keeps it",
+			prepare: func(t *testing.T, dir string) {
+				out := filepath.Join(t.TempDir(), "run.sh")
+				if err := os.WriteFile(out, []byte("echo hi\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				symlink(t, out, filepath.Join(dir, "run.sh"))
+			},
+		},
+		{
+			name:    "a symlinked directory outside the build dir keeps it",
+			prepare: func(t *testing.T, dir string) { symlink(t, t.TempDir(), filepath.Join(dir, "deploy")) },
+		},
+		{
+			name:  "a symlinked directory into node_modules keeps it",
+			files: map[string]string{"node_modules/tool/run.sh": "echo hi\n"},
+			prepare: func(t *testing.T, dir string) {
+				symlink(t, filepath.Join(dir, "node_modules/tool"), filepath.Join(dir, "tool"))
+			},
+		},
+		{
+			name:     "a symlinked directory to one the walk reads leaves it out",
+			files:    map[string]string{"deploy/app.service": "[Service]\nExecStart=/usr/bin/gunicorn app:check\n"},
+			prepare:  func(t *testing.T, dir string) { symlink(t, filepath.Join(dir, "deploy"), filepath.Join(dir, "ops")) },
+			excluded: true,
+		},
+		{
+			name:  "a symlink to a file inside the build dir leaves it out",
+			files: map[string]string{"deploy/app.service": "[Service]\nExecStart=/usr/bin/gunicorn app:check\n"},
+			prepare: func(t *testing.T, dir string) {
+				symlink(t, filepath.Join(dir, "deploy/app.service"), filepath.Join(dir, "app.service"))
+			},
+			excluded: true,
+		},
 	}
-}
-
-// TestLoadProgram_UnreadableLauncherKeepsBuildScripts: a launcher that cannot be read might
-// start the build script, so the script stays in.
-func TestLoadProgram_UnreadableLauncherKeepsBuildScripts(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"setup.py": "from setuptools import setup\nsetup(name='app')\n",
-		"app.py":   "def check(t):\n    return t\n",
-	})
-	if err := os.Symlink(filepath.Join(dir, "missing"), filepath.Join(dir, "Procfile")); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-	prog, err := loadProgram(dir)
-	if err != nil {
-		t.Fatalf("loadProgram: %v", err)
-	}
-	if !slices.ContainsFunc(prog.files, func(f fileParse) bool { return f.module == "setup" }) {
-		t.Fatal("setup.py left out although the Procfile could not be read")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			files := map[string]string{"setup.py": setupPy, "app.py": runtimePy}
+			for p, s := range c.files {
+				files[p] = s
+			}
+			dir := writeTree(t, files)
+			if c.prepare != nil {
+				c.prepare(t, dir)
+			}
+			checkBuildScript(t, dir, buildScriptCase{script: "setup", excluded: c.excluded})
+		})
 	}
 }
 

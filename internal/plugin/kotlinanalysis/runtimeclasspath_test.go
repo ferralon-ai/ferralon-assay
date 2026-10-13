@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -238,7 +239,7 @@ func TestReachability_RuntimeClasspath(t *testing.T) {
 				return jvmOptsBuild(t, `'"-Xmx64m" "-Dfile.encoding=UTF-8"'`)
 			},
 			wantSearched: true,
-			denyReasons:  []string{partialReasonLaunchAgent},
+			denyReasons:  []string{javaanalysis.PartialReasonLaunchAgent},
 		},
 		{
 			// An agent (or a boot classpath) runs code outside the classpath and can rewrite
@@ -247,14 +248,14 @@ func TestReachability_RuntimeClasspath(t *testing.T) {
 			setup: func(t *testing.T) string {
 				return jvmOptsBuild(t, `'"-Xmx64m" "-javaagent:$APP_HOME/lib/agent.jar"'`)
 			},
-			wantReasons: []string{partialReasonLaunchAgent},
+			wantReasons: []string{javaanalysis.PartialReasonLaunchAgent},
 		},
 		{
 			name: "DEFAULT_JVM_OPTS extends the boot classpath: not searched, declared",
 			setup: func(t *testing.T) string {
 				return jvmOptsBuild(t, `'"-Xbootclasspath/a:$APP_HOME/lib/boot.jar"'`)
 			},
-			wantReasons: []string{partialReasonLaunchAgent},
+			wantReasons: []string{javaanalysis.PartialReasonLaunchAgent},
 		},
 		{
 			// The project JAR comes first: the JVM loads first-party output's copy, the one the

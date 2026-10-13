@@ -37,6 +37,17 @@ type callSite struct {
 	head            string   // first segment of a dotted chain ("JSON5" in JSON5.parse); "" for a bare call
 	calleeFrame     bool     // callee is a synthetic frame minted by the scanner (an inline handler), not a name to resolve
 	calleeEnclosing []string // enclosing class chain of a calleeFrame callee
+	chain           []string // every segment of the callee expression ("express","Router" in express.Router()); nil for a calleeFrame
+	headParam       paramRef // the enclosing function parameter the chain's head names; idx<0 when it names none
+}
+
+// paramRef names one positional parameter of a function frame: the frame (enclosing chain,
+// name, arity, as funcSCIP takes them) and the parameter's index. idx<0 means no parameter.
+type paramRef struct {
+	enclosing []string
+	name      string
+	arity     int
+	idx       int
 }
 
 // ingressMarker is one entry-point signal found lexically: an Express/Koa route
@@ -51,6 +62,7 @@ type ingressMarker struct {
 	selector  string   // route selector ("" — string literals are blanked by the lexer)
 	arity     int      // handler arity; read only when frame is set
 	frame     bool     // the handler is an inline function frame whose SCIP id is minted directly
+	router    []string // the value the route method was called on ("app" in app.get); nil when not a plain identifier chain
 }
 
 // parseResult holds the module-relative path and declarations parsed from one

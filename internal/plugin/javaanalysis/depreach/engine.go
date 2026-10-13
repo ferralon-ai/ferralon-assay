@@ -96,36 +96,63 @@ func (e *Engine) subtypeClosure(owner string) []string {
 }
 
 // initClosure returns owner plus every in-classpath class whose <clinit> the JVM
-// runs when owner is initialized: the transitive superclass chain and implemented
-// interfaces (JVMS §5.5 — a class's initialization first initializes its superclass,
-// then its default-method superinterfaces). It over-approximates the interface set
-// (walking all superinterfaces, not only those declaring a default method): extra
-// <clinit>s can only ADD reachability, never hide a path, so this never produces a
-// false not_exploitable — at worst a rare over-flag when an interface with a static
-// initializer would not actually run. An out-of-classpath ancestor is not in
-// e.classes, so its chain cannot be walked (its <clinit> is a sound leaf).
+// runs when owner is initialized (JVMS §5.5 step 7): the transitive superclass chain,
+// and every superinterface, direct or indirect, that declares a non-abstract,
+// non-static method. A superinterface declaring no such method is not initialized, so
+// its <clinit> is not included. An out-of-classpath ancestor is included as itself but
+// its ancestors cannot be walked (its <clinit> is a leaf, or a hazard when it belongs
+// to an unopened dependency); an out-of-classpath superinterface is included because
+// whether it declares a default method is unknown.
 func (e *Engine) initClosure(owner string) []string {
 	seen := map[string]bool{}
 	var out []string
-	stack := []string{owner}
-	for len(stack) > 0 {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if seen[cur] {
-			continue
+	add := func(name string) {
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
 		}
-		seen[cur] = true
-		out = append(out, cur)
-		c := e.classes[cur]
-		if c == nil {
-			continue // out-of-classpath: ancestors unknown, <clinit> is a leaf
+	}
+	add(owner)
+	walked := map[string]bool{}
+	var superinterfaces func(ifaces []string)
+	superinterfaces = func(ifaces []string) {
+		for _, name := range ifaces {
+			if walked[name] {
+				continue
+			}
+			walked[name] = true
+			c := e.classes[name]
+			if c == nil {
+				add(name)
+				continue
+			}
+			if declaresInstanceBody(c) {
+				add(name)
+			}
+			superinterfaces(c.Interfaces)
 		}
-		if c.Super != "" {
-			stack = append(stack, c.Super)
+	}
+	for cur := e.classes[owner]; cur != nil; {
+		superinterfaces(cur.Interfaces)
+		if cur.Super == "" {
+			break
 		}
-		stack = append(stack, c.Interfaces...)
+		add(cur.Super)
+		cur = e.classes[cur.Super]
 	}
 	return out
+}
+
+// declaresInstanceBody reports whether c declares a non-abstract, non-static method:
+// for an interface, a default (or private instance) method, which makes initializing
+// an implementing class initialize the interface too.
+func declaresInstanceBody(c *classfile.Class) bool {
+	for _, m := range c.Methods {
+		if !m.Abstract && !m.Static && m.Ref.Name != "<clinit>" {
+			return true
+		}
+	}
+	return false
 }
 
 // hasAppSubtype reports whether some in-classpath class other than typ is a direct
@@ -1085,6 +1112,11 @@ type Result struct {
 // finalize() on every constructed concrete class, and the JDK's own calls into
 // provider classes (providerRoots) once the search runs any JDK body. A path through
 // a provider root is reported from the JDK call site that opened it.
+//
+// The JVM initializes the ingress's class before it invokes the ingress (JVMS §5.5), so
+// the search starts from that class's initialization closure (initClosure: the class, its
+// superclasses, and each superinterface that declares a default method) as well as the
+// ingress. An instance ingress also runs the class's no-arg constructor first.
 func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 	res := Result{SinkPresent: e.declared[sink.String()] != nil}
 	if !res.SinkPresent {
@@ -1143,6 +1175,32 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		}
 	}
 
+	// initialize runs the static initializers the JVM runs when owner is initialized:
+	// every <clinit> in its init closure. A platform class's initializer is a JDK body;
+	// an unloaded dependency's is unseen code and a hazard.
+	initialize := func(from classfile.MethodRef, owner string) {
+		if !rooted && platformBody(owner) {
+			root(from)
+		}
+		for _, cls := range e.initClosure(owner) {
+			if dep, ok := e.unloadedDependency([]string{cls}); ok {
+				res.hazard("unloaded_dependency: static initializer of unopened " + dep)
+				continue
+			}
+			clinit := classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}
+			enqueue(from, e.declared[clinit.String()])
+		}
+	}
+
+	// The JVM initializes the ingress's class before it invokes the ingress (JVMS §5.5):
+	// a launch class, a framework handler's class. An instance ingress also runs on an
+	// object someone constructed; the launcher builds an instance main's receiver with
+	// its no-argument constructor.
+	initialize(start.Ref, ingress.Owner)
+	if !start.Static {
+		enqueue(start.Ref, e.declared[classfile.MethodRef{Owner: ingress.Owner, Name: "<init>", Descriptor: "()V"}.String()])
+	}
+
 	for len(queue) > 0 && !found {
 		cur := queue[0]
 		queue = queue[1:]
@@ -1187,17 +1245,7 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		// A platform class in the closure has no parsed <clinit> (nil -> leaf); an
 		// unloaded dependency's <clinit> is unseen code and a hazard.
 		for _, owner := range m.InitTriggers {
-			if !rooted && platformBody(owner) {
-				root(cur)
-			}
-			for _, cls := range e.initClosure(owner) {
-				if dep, ok := e.unloadedDependency([]string{cls}); ok {
-					res.hazard("unloaded_dependency: static initializer of unopened " + dep)
-					continue
-				}
-				clinit := classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}
-				enqueue(cur, e.declared[clinit.String()])
-			}
+			initialize(cur, owner)
 		}
 	}
 	res.Reached = len(visited)

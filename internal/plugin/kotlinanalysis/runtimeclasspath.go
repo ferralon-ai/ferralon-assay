@@ -36,9 +36,6 @@ type runtimeClasspath struct {
 	mainClasses []string
 	// libDirs are the directories that hold the classpath JARs when installDist ran.
 	libDirs []string
-	// launchAgents are the DEFAULT_JVM_OPTS options, from any script, that load a Java agent or
-	// extend the boot classpath.
-	launchAgents []string
 }
 
 // startScriptDirs are where Gradle writes the generated start scripts: `startScripts` (run by
@@ -82,7 +79,6 @@ func findRuntimeClasspath(buildDir string) (runtimeClasspath, bool) {
 			continue
 		}
 		parsed++
-		rc.launchAgents = append(rc.launchAgents, launchAgentOptions(s)...)
 		if parsed == 1 {
 			first = cp
 		} else if strings.Join(cp, ":") != strings.Join(first, ":") {
@@ -156,35 +152,6 @@ func parseStartScript(path string) (classpath []string, main string, ok bool) {
 		}
 	}
 	return classpath, main, found
-}
-
-// launchAgentPrefixes are JVM options that run code from outside the classpath.
-var launchAgentPrefixes = []string{"-javaagent:", "-agentlib:", "-agentpath:", "-Xbootclasspath"}
-
-// launchAgentOptions returns the options on a start script's DEFAULT_JVM_OPTS lines that begin
-// with a launchAgentPrefixes entry. Gradle writes each option quoted
-// (DEFAULT_JVM_OPTS='"-Xmx64m" "-javaagent:/opt/a.jar"'), so quotes are stripped first.
-func launchAgentOptions(path string) []string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, line := range strings.Split(string(data), "\n") {
-		value, ok := strings.CutPrefix(strings.TrimSpace(line), "DEFAULT_JVM_OPTS=")
-		if !ok {
-			continue
-		}
-		for _, opt := range strings.Fields(strings.NewReplacer(`"`, " ", "'", " ", `\`, " ").Replace(value)) {
-			for _, p := range launchAgentPrefixes {
-				if strings.HasPrefix(opt, p) {
-					out = append(out, opt)
-					break
-				}
-			}
-		}
-	}
-	return out
 }
 
 // classpathJar is one start-script classpath entry located on disk.

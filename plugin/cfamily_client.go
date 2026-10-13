@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // cfamilyPlugin is the out-of-process client for the C/C++ (C-family) language plugin. It is
@@ -17,7 +18,8 @@ import (
 // Phase 1) links only into the subprocess binary (inv.8). At Phase 0 the lane is a skeleton:
 // every operation returns declared partiality (honest absence), never a fabricated result.
 type cfamilyPlugin struct {
-	bin string // resolved path to the assay-plugin-cfamily binary
+	bin string   // resolved path to the assay-plugin-cfamily binary
+	env []string // extra KEY=VALUE entries for the subprocess environment
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -32,6 +34,20 @@ type CFamilyOption func(*cfamilyPlugin)
 // precedence over PATH lookup.
 func WithCFamilyBinaryPath(path string) CFamilyOption {
 	return func(p *cfamilyPlugin) { p.bin = path }
+}
+
+// CFamilyWasmCacheDirEnv names the directory the subprocess keeps its compiled wasm module in
+// (see plugins/cfamily/cmd/assay-plugin-cfamily). Unset, every spawn compiles the module cold.
+const CFamilyWasmCacheDirEnv = brand.EnvPrefix + "_CFAMILY_CGX_WASM_CACHE_DIR"
+
+// WithCFamilyWasmCacheDir passes dir to every subprocess as CFamilyWasmCacheDirEnv. An empty
+// dir adds nothing.
+func WithCFamilyWasmCacheDir(dir string) CFamilyOption {
+	return func(p *cfamilyPlugin) {
+		if dir != "" {
+			p.env = append(p.env, CFamilyWasmCacheDirEnv+"="+dir)
+		}
+	}
 }
 
 // NewCFamilyPlugin constructs the subprocess-backed C-family plugin client. Binary discovery
@@ -59,7 +75,7 @@ func (*cfamilyPlugin) Language() string { return "cfamily" }
 // plugin's run funnels through (see subprocess.go).
 func (p *cfamilyPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 // ensureMetrics lazily creates the client's instruments on first use, mirroring

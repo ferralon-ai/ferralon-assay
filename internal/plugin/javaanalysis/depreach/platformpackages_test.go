@@ -1,6 +1,7 @@
 package depreach
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -36,8 +37,23 @@ var (
 		"org/w3c/dom/svg/SVGDocument", "org/w3c/dom/smil/ElementTimeControl",
 		"sun/net/www/protocol/s3/Handler", "sun/jvm/hotspot/HotSpotAgent", "jdk/vm/ci/meta/JavaKind",
 		"javax/xml/Other", "javax/swing2/JList",
+		"jdk/jfr/snippet-files/X", "javax/tools/snippet-files/X", "jdk/internal/classfile/snippet-files/X",
 	}
 )
+
+// TestPlatformPackages_AreModulePackageNames: every key is a package name a module can
+// define. A javadoc snippet-files directory in src.zip is not one, and '-' is legal in
+// a class file's internal name, so a jar class there must not be filed as the JDK's.
+func TestPlatformPackages_AreModulePackageNames(t *testing.T) {
+	ident := regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+	for p := range platformPackages {
+		for _, seg := range strings.Split(p, "/") {
+			if !ident.MatchString(seg) {
+				t.Errorf("%q: segment %q is not a Java identifier", p, seg)
+			}
+		}
+	}
+}
 
 // TestReach_PlatformIsExactPackages: a class the predicate files as the JDK's ends a
 // call or a static-field lookup at the platform; one in a jar under the same prefix
@@ -108,6 +124,7 @@ func TestReach_JarClassesUnderJDKPrefixes(t *testing.T) {
 	}
 	const jaspic = "javax/security/auth/message/config/AuthConfigFactory"
 	const xjc = "com/sun/tools/xjc/Driver"
+	const snippet = "jdk/jfr/snippet-files/X"
 	extendsException := func(super string) []classfile.Class {
 		return []classfile.Class{
 			mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")),
@@ -121,6 +138,9 @@ func TestReach_JarClassesUnderJDKPrefixes(t *testing.T) {
 		{name: "jaxb-xjc Driver static call: its <clinit> and body are unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
 			why:     "unopened " + xjc,
 			classes: []classfile.Class{initializes(xjc, nil, edge(classfile.EdgeStatic, xjc, "run", "([Ljava/lang/String;)I")), provider}},
+		{name: "a class in a javadoc snippet-files directory is a jar's: its <clinit> and body are unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why:     "unopened " + snippet,
+			classes: []classfile.Class{initializes(snippet, nil, edge(classfile.EdgeStatic, snippet, "run", "()V")), provider}},
 		{name: "JDK control: java/lang static initializer roots the JDK-loadable provider", want: ReachableCandidate, via: "D.<clinit>",
 			classes: []classfile.Class{initializes("java/lang/Character", []classfile.FieldRef{{Owner: "java/lang/Character", Name: "MAX_RADIX", Descriptor: "I"}}), provider}},
 		{name: "JDK control: javax/xml/parsers static call roots the JDK-loadable provider", want: ReachableCandidate, via: "D.<clinit>",

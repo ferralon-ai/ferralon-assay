@@ -664,6 +664,8 @@ func (e *Engine) platformLoadable(c string) bool {
 // loadableType reports whether type t can be the static type under which the JDK
 // holds an object it may call: a loaded class that is platformLoadable, an unopened
 // dependency type, or a platform type outside deniedLoadable and the Throwables.
+// A Throwable needs no roots: every instance ran Throwable's constructor on itself,
+// which the search already treats as a platform body running on that receiver.
 func (e *Engine) loadableType(t string) bool {
 	if _, ok := e.classes[t]; ok {
 		return e.platformLoadable(t)

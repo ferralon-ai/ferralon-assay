@@ -7,31 +7,49 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// ResolveDependencySymbols maps the advisory's vulnerable symbol(s) to concrete declared C#
-// symbols in the build dir. The advisory identifiers are GIVEN (inv.7): this only resolves
-// them against the parsed program, never originates them. .NET advisories name the sink by a
-// namespace-qualified dotted name ("Ionic.Zip.ZipEntry.Extract"), a type-qualified method
-// ("ZipEntry.Extract"), a namespace-leaf-qualified form ("Zip.ZipEntry.Extract"), or a bare
-// leaf ("Extract"); we match each wanted identifier against those forms, arity-tolerant and
-// CASE-INSENSITIVE (a NuGet advisory may carry a cross-language lower-cased method name such
-// as "Ecdsa.verify" for the C# "Ecdsa.Verify"). A no-match is an empty result, not an error;
-// a load failure is a hard error (inv.4).
+// ResolveDependencySymbols maps the advisory's vulnerable symbol(s) to concrete symbols. The
+// advisory identifiers are GIVEN (inv.7): this only resolves them, never originates them.
+//
+// A NuGet advisory against a package the build restores resolves inside that package's own
+// assemblies (resolveInDependency): Resolved symbols carry the NuGet id as Package, Origins
+// and Matched are filled, and nothing is matched against first-party source — a first-party
+// method sharing the vulnerable method's name is not the package's code. An advisory
+// against one of the build's own projects, or one without a NuGet coordinate, resolves
+// against first-party source (resolveInSource).
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
-	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
+	var wanted []string
+	for _, s := range req.AdvisorySymbols {
+		if strings.TrimSpace(s) != "" {
+			wanted = append(wanted, s)
+		}
+	}
+	if id, version, ok := nugetCoordinate(req.PURL); ok && !isFirstPartyProject(req.BuildDir, id) {
+		if len(wanted) == 0 {
+			return plugin.SymbolResolutionResult{Partiality: plugin.Complete()}, nil
+		}
+		return resolveInDependency(req.BuildDir, id, version, wanted), nil
+	}
+	return resolveInSource(ctx, req.BuildDir, wanted)
+}
+
+// resolveInSource matches advisory identifiers against the build's own declared C# symbols:
+// a namespace-qualified dotted name ("Ionic.Zip.ZipEntry.Extract"), a type-qualified method
+// ("ZipEntry.Extract"), a namespace-leaf-qualified form ("Zip.ZipEntry.Extract"), or a bare
+// leaf ("Extract"), arity-tolerant and CASE-INSENSITIVE (a NuGet advisory may carry a
+// cross-language lower-cased method name such as "Ecdsa.verify" for the C# "Ecdsa.Verify").
+// A no-match is an empty result, not an error; a load failure is a hard error (inv.4).
+func resolveInSource(ctx context.Context, buildDir string, wanted []string) (plugin.SymbolResolutionResult, error) {
+	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: buildDir})
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
-
-	wanted := make([]string, 0, len(req.AdvisorySymbols))
-	for _, s := range req.AdvisorySymbols {
-		if t := strings.TrimSpace(s); t != "" {
-			wanted = append(wanted, t)
-		}
+	trimmed := make([]string, len(wanted))
+	for i, w := range wanted {
+		trimmed[i] = strings.TrimSpace(w)
 	}
-
 	var resolved []plugin.Symbol
 	for _, sym := range index.Symbols {
-		if dotnetSymbolMatches(sym, wanted) {
+		if dotnetSymbolMatches(sym, trimmed) {
 			resolved = append(resolved, sym)
 		}
 	}

@@ -2,6 +2,9 @@ package pythonanalysis
 
 import (
 	"context"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -210,5 +213,177 @@ func TestCallGraph_MissingBuildDirIsHardError(t *testing.T) {
 	_, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: "testdata/does-not-exist"})
 	if err == nil {
 		t.Fatal("expected a hard error for a nonexistent build dir")
+	}
+}
+
+// TestCallGraph_ImportBindingBoundaryEdges: a call through an import binding reaches a
+// dependency attribute and emits an edge to its boundary node, named by the import path
+// the code used; unmapped imports, first-party modules, and names bound in another def
+// emit none.
+func TestCallGraph_ImportBindingBoundaryEdges(t *testing.T) {
+	cases := []struct {
+		name     string
+		files    map[string]string
+		caller   string
+		boundary string // "" = no boundary edge from caller
+	}{
+		{
+			name:     "jinja2 call-result receiver",
+			files:    map[string]string{"app.py": "from jinja2 import Environment\n\ndef render(x):\n    return Environment().from_string(x)\n"},
+			caller:   funcSCIP("app", nil, "render", 1),
+			boundary: "pypi:jinja2#jinja2.Environment.from_string",
+		},
+		{
+			name:     "jinja2 instance binding",
+			files:    map[string]string{"app.py": "from jinja2 import Environment\n\ndef render(x):\n    env = Environment(autoescape=False)\n    return env.from_string(x)\n"},
+			caller:   funcSCIP("app", nil, "render", 1),
+			boundary: "pypi:jinja2#jinja2.Environment.from_string",
+		},
+		{
+			name:     "curated non-identity pyjwt",
+			files:    map[string]string{"app.py": "import jwt\n\ndef check(t):\n    return jwt.decode(t)\n"},
+			caller:   funcSCIP("app", nil, "check", 1),
+			boundary: "pypi:pyjwt#jwt.decode",
+		},
+		{
+			name:     "from-import alias",
+			files:    map[string]string{"app.py": "from jwt import decode as jd\n\ndef check(t):\n    return jd(t)\n"},
+			caller:   funcSCIP("app", nil, "check", 1),
+			boundary: "pypi:pyjwt#jwt.decode",
+		},
+		{
+			name: "PEP 503 fallback against declared manifest",
+			files: map[string]string{
+				"requirements.txt": "requests==2.31.0\n",
+				"app.py":           "import requests\n\ndef fetch(u):\n    return requests.get(u)\n",
+			},
+			caller:   funcSCIP("app", nil, "fetch", 1),
+			boundary: "pypi:requests#requests.get",
+		},
+		{
+			name: "import as alias of submodule",
+			files: map[string]string{
+				"requirements.txt": "acme-tools==1.0\n",
+				"app.py":           "import acme_tools.net as n\n\ndef go(u):\n    return n.fetch(u)\n",
+			},
+			caller:   funcSCIP("app", nil, "go", 1),
+			boundary: "pypi:acme-tools#acme_tools.net.fetch",
+		},
+		{
+			name:     "function-local import",
+			files:    map[string]string{"app.py": "def check(t):\n    import jwt\n    return jwt.decode(t)\n"},
+			caller:   funcSCIP("app", nil, "check", 1),
+			boundary: "pypi:pyjwt#jwt.decode",
+		},
+		{
+			name:   "function-local import does not leak to another def",
+			files:  map[string]string{"app.py": "def a(t):\n    import jwt\n    return t\n\ndef b(t):\n    return jwt.decode(t)\n"},
+			caller: funcSCIP("app", nil, "b", 1),
+		},
+		{
+			name:   "undeclared, uncurated import maps to nothing",
+			files:  map[string]string{"app.py": "import requests\n\ndef fetch(u):\n    return requests.get(u)\n"},
+			caller: funcSCIP("app", nil, "fetch", 1),
+		},
+		{
+			name:     "import binding beats a later instance binding of the same name",
+			files:    map[string]string{"app.py": "from jinja2 import Environment\nimport jwt\njwt = Environment()\n\ndef check(t):\n    return jwt.decode(t)\n"},
+			caller:   funcSCIP("app", nil, "check", 1),
+			boundary: "pypi:pyjwt#jwt.decode",
+		},
+		{
+			name: "first-party module shadows the distribution",
+			files: map[string]string{
+				"jwt.py": "def decode(t):\n    return t\n",
+				"app.py": "import jwt\n\ndef check(t):\n    return jwt.decode(t)\n",
+			},
+			caller: funcSCIP("app", nil, "check", 1),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, c.files)})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			var got []string
+			for _, e := range res.Edges {
+				if e.Caller.SCIP == c.caller && strings.HasPrefix(e.Callee.SCIP, boundaryPrefix) {
+					got = append(got, e.Callee.SCIP)
+				}
+			}
+			if c.boundary == "" {
+				if len(got) != 0 {
+					t.Fatalf("want no boundary edge from %s, got %v", c.caller, got)
+				}
+				return
+			}
+			if !slices.Contains(got, c.boundary) {
+				t.Fatalf("boundary edges from %s = %v, want %s among them\nedges: %+v", c.caller, got, c.boundary, res.Edges)
+			}
+		})
+	}
+}
+
+// TestCallGraph_ModuleLevelCallsGetModuleInitCaller: calls at module (and class-body)
+// level run at import time; they are attributed to a synthetic module-init caller that
+// is a root, so top-level `app = create_app()` and `jwt.decode(...)` produce edges.
+func TestCallGraph_ModuleLevelCallsGetModuleInitCaller(t *testing.T) {
+	src := "import jwt\n\ndef create_app():\n    return 1\n\napp = create_app()\nclaims = jwt.decode(TOKEN)\n"
+	res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeTree(t, map[string]string{"main.py": src})})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	init := moduleInitSCIP("main")
+	for _, callee := range []string{funcSCIP("main", nil, "create_app", 0), "pypi:pyjwt#jwt.decode"} {
+		if !hasEdge(res.Edges, init, callee) {
+			t.Errorf("missing module-init edge %s -> %s\nedges: %+v", init, callee, res.Edges)
+		}
+	}
+	var isRoot bool
+	for _, r := range res.Roots {
+		isRoot = isRoot || r.SCIP == init
+	}
+	if !isRoot {
+		t.Errorf("module-init caller %s must be a root; roots=%v", init, res.Roots)
+	}
+}
+
+// TestCallGraph_DynamicImports: a literal dynamic import is recorded as a load root on the
+// program; a dynamic import the scanner cannot name adds the run-wide dynamic_import
+// reason.
+func TestCallGraph_DynamicImports(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		roots     []string
+		dynReason bool
+	}{
+		{"importlib literal", "import importlib\nmod = importlib.import_module(\"yaml\")\n", []string{"yaml"}, false},
+		{"from-imported literal with package", "from importlib import import_module\n\ndef f():\n    return import_module('.sub', package=__package__)\n", []string{".sub"}, false},
+		{"__import__ literal", "m = __import__(r'os.path')\n", []string{"os.path"}, false},
+		{"pkgutil resolve_name literal", "import pkgutil\nf = pkgutil.resolve_name('acme.plugins:load')\n", []string{"acme.plugins"}, false},
+		{"non-literal name", "from importlib import import_module\n\ndef load(name):\n    return import_module(name)\n", nil, true},
+		{"f-string", "import importlib\n\ndef load(n):\n    return importlib.import_module(f\"plugins.{n}\")\n", nil, true},
+		{"concatenation", "import importlib\n\ndef load(n):\n    return importlib.import_module(\"plugins.\" + n)\n", nil, true},
+		{"entry points", "from importlib.metadata import entry_points\n\nfor ep in entry_points(group='acme.plugins'):\n    ep.load()\n", nil, true},
+		{"comment and string only", "# importlib.import_module(name)\ns = 'import_module(name)'\n", nil, false},
+		{"def named import_module", "def import_module(name):\n    return name\n", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"m.py": c.src})
+			prog, err := loadProgram(dir)
+			if err != nil {
+				t.Fatalf("loadProgram: %v", err)
+			}
+			if got := prog.files[0].loadRoots; !reflect.DeepEqual(got, c.roots) {
+				t.Errorf("loadRoots = %v, want %v", got, c.roots)
+			}
+			res := callGraphOf(prog)
+			if got := hasReason(res.Partiality, plugin.PartialReasonDynamicImportSpecifier); got != c.dynReason {
+				t.Errorf("dynamic_import reason = %v, want %v (reasons %v)", got, c.dynReason, res.Partiality.Reasons)
+			}
+		})
 	}
 }

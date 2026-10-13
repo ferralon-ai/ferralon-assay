@@ -605,23 +605,30 @@ func splitGA(k string) (g, a string) {
 // configuration's resolution that the lock state does not hold), and a declaration with no
 // version, or one the project's lock lacks, leaves the GA unconfirmed.
 func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[string]*gradleProjectLock) map[string]bool {
-	out := map[string]bool{}
-	all := func() map[string]bool {
+	out, unknown := gradleLockConfirmation(root, locked, state)
+	if unknown != "" {
 		for _, e := range locked {
 			out[e.ga()] = true
 		}
-		return out
 	}
-	if _, ok := gradleBuildSafe(root); !ok {
-		return all()
+	return out
+}
+
+// gradleLockConfirmation is unconfirmedLocks' predicate. unknown is empty, or names the first
+// reason no locked GA can be confirmed: then what any project resolves is unknown, and every
+// lock is unconfirmed. Otherwise out holds the GAs it leaves unconfirmed one by one.
+func gradleLockConfirmation(root string, locked map[string]*lockedEntry, state map[string]*gradleProjectLock) (out map[string]bool, unknown string) {
+	out = map[string]bool{}
+	if why, ok := gradleBuildSafe(root); !ok {
+		return out, why
 	}
 	projects, ok := gradleProjects(root)
 	if !ok {
-		return all()
+		return out, "the settings script can't be read in full"
 	}
 	rootSrcs, ok := readGradleSources(gradleScriptsIn(root))
 	if !ok {
-		return all()
+		return out, "the root build script can't be read"
 	}
 	byProject := map[string]map[string]map[string]bool{} // project dir -> "g:a" -> versions
 	for dir := range projects {
@@ -632,7 +639,7 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[str
 		anyLock[e.ga()] = true
 		for _, dir := range e.projects {
 			if byProject[dir] == nil {
-				return all() // a lock outside the project set: readLockfiles and the set disagree
+				return out, relToBase(root, dir) + " holds a lock outside the project set" // readLockfiles and the set disagree
 			}
 			if byProject[dir][e.ga()] == nil {
 				byProject[dir][e.ga()] = map[string]bool{}
@@ -644,14 +651,14 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[str
 		own, inherited := rootSrcs, []string(nil)
 		if dir != filepath.Clean(root) {
 			if own, ok = readGradleSources(gradleScriptsIn(dir)); !ok {
-				return all()
+				return out, relToBase(root, dir) + "'s build script can't be read"
 			}
 			inherited = rootSrcs
 		}
 		declarations := gradleDeclarations(append(append([]string{}, own...), inherited...))
 		if len(versions) == 0 {
 			if len(declarations) > 0 {
-				return all() // what a project that locks nothing resolves, transitively too, is unknown
+				return out, relToBase(root, dir) + " declares dependencies, but no lock read for it holds any" // what a project that locks nothing resolves, transitively too, is unknown
 			}
 			continue
 		}
@@ -664,7 +671,7 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[str
 		}
 		if !gradleConfigPinned(dir, state[dir], strict, "runtimeClasspath") {
 			if len(declarations) > 0 {
-				return all() // an unpinned runtimeClasspath resolves whatever it is asked for
+				return out, relToBase(root, dir) + "'s runtimeClasspath is not pinned by its lock" // an unpinned runtimeClasspath resolves whatever it is asked for
 			}
 			for ga := range versions {
 				out[ga] = true
@@ -686,7 +693,7 @@ func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[str
 			}
 		}
 	}
-	return out
+	return out, ""
 }
 
 // gradleProjects returns the directories of root and of every project the root settings script

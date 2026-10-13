@@ -64,11 +64,12 @@ func gradleResolvableConfigs(srcs []string) []string {
 // gradleLockedVersions returns every version of coordinate ("group:name") that a lock under
 // root holds, across every Gradle project and configuration. complete is true only when those
 // are the versions Gradle can resolve it to: the build is SAFE (gradleBuildSafe), every lock
-// line parses, every project the settings script creates is read, and in each of them every
-// configuration a declaration can feed (gradleResolvableConfigs) is pinned by a lock Gradle
-// enforces (gradleLockingEnforced, gradleConfigPinned). A pinned configuration resolves only to
-// what its lock state holds, or fails, so a version the locks lack is never resolved. A version
-// in deps binds only when complete; why names the first reason it is not.
+// line parses, every project the settings script creates is read, in each of them every
+// configuration a declaration can feed (gradleResolvableConfigs) is pinned by lock state read
+// for it that Gradle enforces (gradleLockingEnforced, gradleConfigPinned), and the inventory's
+// predicate (gradleLockConfirmation) finds no project whose resolution is unknown. A pinned configuration
+// resolves only to what its lock state holds, or fails, so a version the locks lack is never
+// resolved. A version in deps binds only when complete; why names the first reason it is not.
 func gradleLockedVersions(root, coordinate string) (deps []plugin.ResolvedDependency, complete bool, why string) {
 	locked, complete, why := gradleLockBinding(root)
 	want := normalizeCoordinate(coordinate)
@@ -79,7 +80,13 @@ func gradleLockedVersions(root, coordinate string) (deps []plugin.ResolvedDepend
 }
 
 // gradleLockBinding reads every lock under root once for gradleLockedVersions: each locked
-// coordinate (normalized) to its sorted versions, and whether and why not those bind.
+// coordinate (normalized) to its sorted versions, and whether and why not those bind. The lock
+// state comes from readLockfiles' walk, which never reads a lock in a directory it skips or
+// can't list, or behind a symlinked directory, while Gradle reads each project's lock by path.
+// Two checks keep such a project from passing: the inventory's predicate
+// (gradleLockConfirmation) reads each project's scripts by path and finds it declaring with no
+// lock read for it, and gradleProjectsPinned refuses a STRICT project with no lock state read,
+// which gradleConfigPinned alone would count as pinned.
 func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	locked, _, haveLock, unparsed, state := readLockfiles(root)
 	versions := map[string][]string{}
@@ -96,8 +103,8 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	if len(unparsed) > 0 {
 		return versions, false, unparsed[0] + " is not a lock line"
 	}
-	if why, ok := gradleBuildSafe(root); !ok {
-		return versions, false, why
+	if _, unknown := gradleLockConfirmation(root, locked, state); unknown != "" {
+		return versions, false, unknown // gradleBuildSafe first among its reasons
 	}
 	projects, ok := gradleProjects(root)
 	if !ok {
@@ -107,6 +114,17 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	if !ok {
 		return versions, false, "the root build script can't be read"
 	}
+	if why, ok := gradleProjectsPinned(root, projects, rootSrcs, state); !ok {
+		return versions, false, why
+	}
+	return versions, true, ""
+}
+
+// gradleProjectsPinned reports whether, in every project, each configuration a declaration can
+// feed is pinned by a lock Gradle enforces, from lock state that was read. A project script it
+// can't read fails it on its own: gradleBuildSafe reads the same scripts first, but this check
+// doesn't lean on that.
+func gradleProjectsPinned(root string, projects map[string]bool, rootSrcs []string, state map[string]*gradleProjectLock) (string, bool) {
 	dirs := make([]string, 0, len(projects))
 	for dir := range projects {
 		dirs = append(dirs, dir)
@@ -115,8 +133,9 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	for _, dir := range dirs {
 		own, inherited := rootSrcs, []string(nil)
 		if dir != filepath.Clean(root) {
+			var ok bool
 			if own, ok = readGradleSources(gradleScriptsIn(dir)); !ok {
-				return versions, false, relToBase(root, dir) + "'s build script can't be read"
+				return relToBase(root, dir) + "'s build script can't be read", false
 			}
 			inherited = rootSrcs
 		}
@@ -126,13 +145,18 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 		}
 		enforced, strict := gradleLockingEnforced(own, inherited)
 		if !enforced {
-			return versions, false, relToBase(root, dir) + " does not lock every configuration"
+			return relToBase(root, dir) + " does not lock every configuration", false
+		}
+		if strict && state[dir] == nil {
+			// gradleConfigPinned counts STRICT with no lock state as pinned, since Gradle fails
+			// a project with none; here the walk may only have missed a lock Gradle reads.
+			return relToBase(root, dir) + " is STRICT and no lock was read for it", false
 		}
 		for _, c := range confs {
 			if !gradleConfigPinned(dir, state[dir], strict, c) {
-				return versions, false, relToBase(root, dir) + "'s " + c + " is not pinned by its lock"
+				return relToBase(root, dir) + "'s " + c + " is not pinned by its lock", false
 			}
 		}
 	}
-	return versions, true, ""
+	return "", true
 }

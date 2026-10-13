@@ -106,7 +106,8 @@ type pyprojectDoc struct {
 // optional-dependencies, each entry with the specifier a same-directory lock's pin must
 // satisfy to cover it, dynamic dependencies from the requirement files a dynamic-metadata
 // table names, and [build-system].requires, which no lock covers. The bool is false when the
-// file does not decode, when an entry installs a local path other than the project itself,
+// file does not decode, when an entry installs a local path other than the project itself or
+// ends in a backslash (setuptoolsJoins),
 // when dynamic dependencies name no file this reader can read, or when the file declares
 // dependencies anywhere version resolution does not read: [dependency-groups],
 // [tool.poetry] dependencies, dev-dependencies or groups, [tool.uv] dev-dependencies, or
@@ -123,7 +124,7 @@ func parsePyprojectVersions(path string, data []byte, dir string) ([]plugin.Reso
 	)
 	addSpec := func(spec string) {
 		d, o, keep, ok := pep508Entry(spec, dir)
-		readable = readable && ok
+		readable = readable && ok && !setuptoolsJoins(spec)
 		if keep {
 			deps = append(deps, d)
 			origins = append(origins, o)

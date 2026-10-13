@@ -43,16 +43,14 @@ func TestHeadReaders_Pipe(t *testing.T) {
 		t.Skipf("mkfifo: %v", err)
 	}
 	symlink(t, "pylock.toml", filepath.Join(dir, "link"))
-	marked := append([]byte("\xff\xfe"), make([]byte, HeadSize)...)
 	never := func(string, []byte) (string, bool) { return "rule", false }
 	for _, p := range []string{pipe, filepath.Join(dir, "link")} {
 		calls := map[string]func() string{
 			"Head":         func() string { _, err := Head(p); return fmt.Sprint(err != nil) },
 			"rawHead":      func() string { _, err := rawHead(p); return fmt.Sprint(err != nil) },
 			"NULHeadMatch": func() string { why, ok := NULHeadMatch(p, never); return fmt.Sprint(why, " ", ok) },
-			"BOMWide":      func() string { _, bom, err := BOMWide(p, marked); return fmt.Sprint(bom, " ", err != nil) },
 		}
-		want := map[string]string{"Head": "true", "rawHead": "true", "NULHeadMatch": "unreadable true", "BOMWide": "false true"}
+		want := map[string]string{"Head": "true", "rawHead": "true", "NULHeadMatch": "unreadable true"}
 		for name, call := range calls {
 			t.Run(filepath.Base(p)+"/"+name, func(t *testing.T) {
 				done := make(chan string, 1)

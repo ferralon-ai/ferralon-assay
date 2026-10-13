@@ -157,8 +157,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"UTF-16LE text file without requirement lines", map[string]string{"notes": utf16(false, "pyjwt is not used here\n")}, true},
 		// pip's UTF-16 decoder consumes a second byte-order mark.
 		{"requirement lines by content, UTF-16LE with a doubled BOM", map[string]string{"deps.pins": "\xff\xfe" + utf16(false, "pyjwt==2.8.0\n")}, false},
-		// A marked file is judged over as much text as its UTF-8 twin: HeadSize characters, which
-		// UTF-16 spends twice the bytes and UTF-32 four times the bytes on.
+		// A marked file is judged over its UTF-8 twin's head: HeadSize bytes of UTF-8 text, which
+		// UTF-16 and UTF-32 spend more raw bytes on.
 		{"requirement lines by content, UTF-16LE, first requirement at character 40000", map[string]string{"deps.pins": utf16(false, commentsTo(40000)+"pyjwt==2.8.0\r\n")}, false},
 		{"requirement lines by content, UTF-32LE, first requirement at character 40000", map[string]string{"deps.pins": utf32LE(commentsTo(40000) + "pyjwt==2.8.0\r\n")}, false},
 		{"UTF-8 BOM text file without requirement lines", map[string]string{"notes": "\xef\xbb\xbfpyjwt is not used here\n"}, true},

@@ -2,6 +2,7 @@ package buildtree
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // TestSkipped pins the skip rule other walkers copy: exactly node_modules and site-packages,
@@ -325,8 +327,11 @@ func TestNULHeadMatch(t *testing.T) {
 		{name: "empty", content: "", rule: equals("")},
 		{name: "only NULs, removed", content: "\x00\x00", rule: equals("")},
 		{name: "unreadable", missing: true, rule: equals("ab"), wantWhy: "unreadable", wantOK: true},
-		{name: "UTF-16LE BOM decoded", content: "\xff\xfea\x00\n\x00b\x00", rule: equals("a\nb"), wantWhy: "rule (NUL in head)", wantOK: true},
-		{name: "UTF-16LE BOM, token past the HeadSize bytes", content: utf16LE(strings.Repeat("a", 40000) + "b"), rule: endsWith("ab"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "UTF-16LE BOM, canonical NUL removed", content: "\xff\xfea\x00\x00\x00b\x00", rule: equals("ab"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "UTF-16LE BOM, canonical NUL made a newline", content: "\xff\xfea\x00\x00\x00b\x00", rule: equals("a\nb"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "UTF-16LE BOM, ASCII past the HeadSize bytes, NUL code point", content: utf16LE(strings.Repeat("a", 40000) + "\x00b"), rule: endsWith("ab"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "undecodable after its mark, NUL removed", content: "\xfe\xff\xdc\x00\x00pyjwt", rule: equals("\xfe\xff\xdcpyjwt"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "undecodable after its mark, NUL made a newline", content: "\xfe\xff\xdc\x00\x00pyjwt", rule: equals("\xfe\xff\xdc\n\npyjwt"), wantWhy: "rule (NUL in head)", wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -342,51 +347,88 @@ func TestNULHeadMatch(t *testing.T) {
 	}
 }
 
-func TestBOMDecode(t *testing.T) {
+// rawHead gives a file that starts with a byte-order mark its canonical content: the text in
+// UTF-8 without the mark (and one more U+FEFF), or its bytes when the text does not decode.
+func TestRawHead_Canonical(t *testing.T) {
+	dir := t.TempDir()
 	cases := []struct {
-		name, head, want string
-		wantOK           bool
+		name, content, want string
 	}{
-		{"UTF-8", "\xef\xbb\xbfab", "ab", true},
-		{"UTF-16LE", "\xff\xfea\x00\xe9\x00", "a\u00e9", true},
-		{"UTF-16BE", "\xfe\xff\x00a\x00\xe9", "a\u00e9", true},
-		{"UTF-16LE surrogate pair", "\xff\xfe\x3d\xd8\x00\xde", "\U0001F600", true},
-		{"UTF-16LE cut mid code unit", "\xff\xfea\x00b", "a", true},
-		{"UTF-32LE", "\xff\xfe\x00\x00a\x00\x00\x00", "a", true},
-		{"UTF-32BE", "\x00\x00\xfe\xff\x00\x00\x00a", "a", true},
-		{"UTF-16LE double BOM", "\xff\xfe\xff\xfea\x00", "a", true},
-		{"UTF-16BE double BOM", "\xfe\xff\xfe\xff\x00a", "a", true},
-		{"UTF-8 double BOM", "\xef\xbb\xbf\xef\xbb\xbfa", "a", true},
-		{"UTF-16LE triple BOM keeps the third", "\xff\xfe\xff\xfe\xff\xfea\x00", "\ufeffa", true},
-		{"no BOM", "ab", "", false},
-		{"empty", "", "", false},
+		{"UTF-8", "\xef\xbb\xbfab", "ab"},
+		{"UTF-16LE", "\xff\xfea\x00\xe9\x00", "a\u00e9"},
+		{"UTF-16BE", "\xfe\xff\x00a\x00\xe9", "a\u00e9"},
+		{"UTF-16LE surrogate pair", "\xff\xfe\x3d\xd8\x00\xde", "\U0001F600"},
+		{"UTF-16LE odd trailing byte", "\xff\xfea\x00b", "a"},
+		{"UTF-16LE high surrogate at the end", "\xff\xfea\x00\x3d\xd8", "a"},
+		{"UTF-32LE", "\xff\xfe\x00\x00a\x00\x00\x00", "a"},
+		{"UTF-32BE", "\x00\x00\xfe\xff\x00\x00\x00a", "a"},
+		{"UTF-16LE double BOM", "\xff\xfe\xff\xfea\x00", "a"},
+		{"UTF-16BE double BOM", "\xfe\xff\xfe\xff\x00a", "a"},
+		{"UTF-8 double BOM", "\xef\xbb\xbf\xef\xbb\xbfa", "a"},
+		{"UTF-32LE double BOM", "\xff\xfe\x00\x00\xff\xfe\x00\x00a\x00\x00\x00", "a"},
+		{"UTF-16LE triple BOM keeps the third", "\xff\xfe\xff\xfe\xff\xfea\x00", "\ufeffa"},
+		{"UTF-16LE NUL code point", "\xff\xfea\x00\x00\x00b\x00", "a\x00b"},
+		{"UTF-16LE unpaired low surrogate", "\xff\xfe\x00\xdca\x00", "\xff\xfe\x00\xdca\x00"},
+		{"UTF-16LE high surrogate without its pair", "\xff\xfe\x3d\xd8a\x00", "\xff\xfe\x3d\xd8a\x00"},
+		{"UTF-32LE past U+10FFFF", "\xff\xfe\x00\x00\x00\x00\x11\x00", "\xff\xfe\x00\x00\x00\x00\x11\x00"},
+		{"no BOM", "ab", "ab"},
+		{"empty", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := BOMDecode([]byte(tc.head))
-			if string(got) != tc.want || ok != tc.wantOK {
-				t.Errorf("BOMDecode(%q) = %q, %v; want %q, %v", tc.head, got, ok, tc.want, tc.wantOK)
+			p := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
+			write(t, p, tc.content)
+			got, err := rawHead(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("rawHead(%q) = %q, want %q", tc.content, got, tc.want)
 			}
 		})
 	}
 }
 
-// A head the match rejects is judged again without its byte-order mark, and only then: a mark
-// adds candidates, never removes one, and a BOM-free head is matched once.
+// A doubled mark spends one more code unit (or three more bytes) before the text: the head still
+// holds HeadSize canonical bytes, the twin's.
+func TestRawHead_DoubledMarkFillsTheHead(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("a", HeadSize+10)
+	for _, enc := range bomForms {
+		t.Run(enc, func(t *testing.T) {
+			p := filepath.Join(dir, enc)
+			marked := encodeText(enc, body)
+			mark := map[string]int{"UTF-8": 3, "UTF-16LE": 2, "UTF-16BE": 2, "UTF-32LE": 4, "UTF-32BE": 4}[enc]
+			write(t, p, marked[:mark]+marked)
+			got, err := rawHead(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != body[:HeadSize] {
+				t.Errorf("rawHead = %d bytes, want HeadSize bytes of a", len(got))
+			}
+		})
+	}
+}
+
+// A marked file is matched once, on its canonical head, and never on its raw bytes; a file whose
+// text does not decode after its mark is matched on its bytes.
 func TestCandidates_BOMHead(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "bom"), "\xef\xbb\xbfwant")
 	write(t, filepath.Join(root, "bom-raw"), "\xef\xbb\xbfraw")
 	write(t, filepath.Join(root, "plain"), "want")
-	write(t, filepath.Join(root, "other"), "\xef\xbb\xbfother")
+	write(t, filepath.Join(root, "undecodable"), "\xfe\xff\xdcAwant")
 	calls := map[string]int{}
 	match := func(path string, head []byte) (string, bool) {
 		calls[filepath.Base(path)]++
 		switch string(head) {
 		case "want":
-			return "decoded", true
+			return "canonical", true
 		case "\xef\xbb\xbfraw":
 			return "raw", true
+		case "\xfe\xff\xdcAwant":
+			return "bytes", true
 		}
 		return "", false
 	}
@@ -394,11 +436,11 @@ func TestCandidates_BOMHead(t *testing.T) {
 	for _, c := range Candidates(root, match, func(string) bool { return true }) {
 		got = append(got, filepath.Base(c.Path)+":"+c.Why)
 	}
-	want := []string{"bom:decoded", "bom-raw:raw", "plain:decoded"}
+	want := []string{"bom:canonical", "plain:canonical", "undecodable:bytes"}
 	if !slices.Equal(got, want) {
 		t.Errorf("candidates = %v, want %v", got, want)
 	}
-	if want := map[string]int{"bom": 2, "bom-raw": 1, "plain": 1, "other": 2}; !maps.Equal(calls, want) {
+	if want := map[string]int{"bom": 1, "bom-raw": 1, "plain": 1, "undecodable": 1}; !maps.Equal(calls, want) {
 		t.Errorf("match calls = %v, want %v", calls, want)
 	}
 }
@@ -439,72 +481,137 @@ func encodeBOM(enc, s string) string {
 	return string(b)
 }
 
-// BOMWide gives a marked file the same window of text a BOM-free UTF-8 twin gets as its head:
-// HeadSize code units, whatever the encoding's unit size.
-func TestBOMWide(t *testing.T) {
-	dir := t.TempDir()
-	long := strings.Repeat("a", HeadSize+100)
-	cases := []struct {
-		name, content string
-		missing       bool
-		wantLen       int
-		wantBOM       bool
-		wantErr       bool
-	}{
-		{name: "UTF-8", content: encodeBOM("UTF-8", long), wantLen: HeadSize, wantBOM: true},
-		{name: "UTF-16LE", content: encodeBOM("UTF-16LE", long), wantLen: HeadSize, wantBOM: true},
-		{name: "UTF-16BE", content: encodeBOM("UTF-16BE", long), wantLen: HeadSize, wantBOM: true},
-		{name: "UTF-32LE", content: encodeBOM("UTF-32LE", long), wantLen: HeadSize, wantBOM: true},
-		{name: "UTF-32BE", content: encodeBOM("UTF-32BE", long), wantLen: HeadSize, wantBOM: true},
-		{name: "UTF-16LE ending within the head", content: encodeBOM("UTF-16LE", "ab")},
-		{name: "no BOM", content: long},
-		{name: "re-read fails", content: encodeBOM("UTF-16LE", long), missing: true, wantErr: true},
+// bomForms are the five byte-order marks rawHead decodes.
+var bomForms = []string{"UTF-8", "UTF-16LE", "UTF-16BE", "UTF-32LE", "UTF-32BE"}
+
+// encodeText encodes UTF-8 text s behind the named byte-order mark.
+func encodeText(enc, s string) string {
+	if enc == "UTF-8" {
+		return "\xef\xbb\xbf" + s
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
-			write(t, p, tc.content)
-			head, err := rawHead(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.missing {
-				if err := os.Remove(p); err != nil {
-					t.Fatal(err)
-				}
-			}
-			text, bom, err := BOMWide(p, head)
-			if bom != tc.wantBOM || (err != nil) != tc.wantErr || len(text) != tc.wantLen {
-				t.Errorf("BOMWide = %d bytes, %v, %v; want %d bytes, %v, error %v", len(text), bom, err, tc.wantLen, tc.wantBOM, tc.wantErr)
-			}
-			if tc.wantBOM && strings.Trim(string(text), "a") != "" {
-				t.Errorf("BOMWide text is not the decoded run of a")
-			}
-		})
+	var b []byte
+	put := func(order binary.AppendByteOrder, unit int, v uint32) {
+		if unit == 2 {
+			b = order.AppendUint16(b, uint16(v))
+		} else {
+			b = order.AppendUint32(b, v)
+		}
 	}
+	order, unit := binary.AppendByteOrder(binary.LittleEndian), 2
+	switch enc {
+	case "UTF-16BE":
+		order = binary.BigEndian
+	case "UTF-32LE":
+		unit = 4
+	case "UTF-32BE":
+		order, unit = binary.BigEndian, 4
+	}
+	put(order, unit, 0xFEFF)
+	for _, r := range s {
+		if unit == 4 {
+			put(order, unit, uint32(r))
+			continue
+		}
+		for _, u := range utf16.Encode([]rune{r}) {
+			put(order, unit, uint32(u))
+		}
+	}
+	return string(b)
 }
 
-// A marked head the match still rejects is judged once more over the wider BOMWide window, and
-// a re-read that fails there is a candidate the walk could not read.
-func TestCandidates_BOMWide(t *testing.T) {
-	root := t.TempDir()
-	body := "\xef\xbb\xbf" + strings.Repeat("a", HeadSize-4) + "want"
-	write(t, filepath.Join(root, "wide"), body)
-	write(t, filepath.Join(root, "wide-locked"), body)
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "wide-locked"), 0o644) })
-	match := func(path string, head []byte) (string, bool) {
-		if filepath.Base(path) == "wide-locked" {
-			if err := os.Chmod(path, 0o000); err != nil {
-				t.Fatal(err)
+// TestBOMTwins pins that a byte-order mark never changes a verdict: a file in each of the five
+// marked encodings gets the same Head, and the same Candidates verdict and FullyRead, as its
+// twin, the same text in UTF-8 without the mark. The bodies straddle HeadSize in UTF-8 bytes,
+// cross it in one encoding and not the other (CJK text is shorter raw in UTF-16 than in UTF-8,
+// ASCII longer), and carry a NUL, so every rule that reads the head, its length or its NULs
+// judges the marked file over exactly the twin's bytes.
+//
+// The scope is what a rule reads from the head: its bytes, its length and its NULs. A lane's
+// fullyRead that parses a name-matched manifest in full reads the file itself, and the lane tests
+// pin that a marked one withholds.
+func TestBOMTwins(t *testing.T) {
+	const req = "pyjwt==2.0\n"
+	comments := func(line string, n int) string { // n UTF-8 bytes of comment lines, then ASCII fill
+		var b strings.Builder
+		for b.Len()+len(line) <= n {
+			b.WriteString(line)
+		}
+		b.WriteString(strings.Repeat("#", n-b.Len()))
+		return b.String()
+	}
+	eLine := "# r\u00e9sum\u00e9 caf\u00e9 \u00e9\u00e9\u00e9\r\n"
+	cjkLine := "# \u4e2d\u6587\u6ce8\u91ca\u4e2d\u6587\u6ce8\u91ca\n"
+	bodies := []struct{ name, body string }{
+		{"empty", ""},
+		{"ASCII", "# deps\n" + req},
+		{"e-heavy", comments(eLine, 20000) + "\n" + req},
+		{"requirement ends at the cut", comments(eLine, HeadSize-len(req)-1) + "\n" + req},
+		{"requirement straddles the cut", comments(eLine, HeadSize-5) + "\n" + req},
+		{"requirement starts at the cut", comments(eLine, HeadSize-1) + "\n" + req},
+		{"requirement past the cut", comments(eLine, HeadSize+100) + "\n" + req},
+		{"NUL before the requirement", "# a\x00b\n" + req},
+		{"NUL past the cut", comments(eLine, HeadSize+10) + "\x00\n" + req},
+		{"CJK, UTF-8 past the cut, UTF-16 within it", comments(cjkLine, 72000) + "\n" + req},
+		{"ASCII, UTF-8 within the cut, UTF-16 and UTF-32 past it", comments("# some words\n", 40000) + "\n" + req},
+		{"ASCII filling the cut exactly", comments("# x\n", HeadSize)},
+		{"astral character straddling the cut", comments("# x\n", HeadSize-1) + "\U0001F600\n" + req},
+	}
+	content := func(_ string, head []byte) (string, bool) {
+		for _, l := range strings.Split(string(head), "\n") {
+			if strings.HasPrefix(l, "pyjwt") {
+				return "requirement", true
 			}
 		}
-		return "wide", bytes.HasSuffix(head, []byte("want"))
+		return "", false
 	}
-	var got []string
-	for _, c := range Candidates(root, match, func(string) bool { return true }) {
-		got = append(got, fmt.Sprintf("%s:%s:%v", filepath.Base(c.Path), c.Why, c.FullyRead))
+	// Two rules, judged apart so neither masks the other: one reads the head's lines (through
+	// NULHeadMatch when the head is nil), one only its length, as installRewriteConfig does.
+	byLines := func(path string, head []byte) (string, bool) {
+		if head == nil {
+			return NULHeadMatch(path, content)
+		}
+		return content(path, head)
 	}
-	if want := []string{"wide:wide:true", "wide-locked:unreadable:false"}; !slices.Equal(got, want) {
-		t.Errorf("candidates = %v, want %v", got, want)
+	byLength := func(_ string, head []byte) (string, bool) {
+		return "fills the head", len(head) == HeadSize // the file may go on past it
+	}
+	fullyRead := func(string) bool { return true }
+	verdict := func(dir string) string {
+		var got []string
+		for _, match := range []func(string, []byte) (string, bool){byLines, byLength} {
+			var cs []string
+			for _, c := range Candidates(dir, match, fullyRead) {
+				cs = append(cs, fmt.Sprintf("%s:%v", c.Why, c.FullyRead))
+			}
+			got = append(got, "["+strings.Join(cs, ",")+"]")
+		}
+		return strings.Join(got, " ")
+	}
+	for _, b := range bodies {
+		twinDir := t.TempDir()
+		twin := filepath.Join(twinDir, "deps")
+		write(t, twin, b.body)
+		wantHead, err := Head(twin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantVerdict := verdict(twinDir)
+		for _, enc := range bomForms {
+			t.Run(b.name+"/"+enc, func(t *testing.T) {
+				dir := t.TempDir()
+				p := filepath.Join(dir, "deps")
+				write(t, p, encodeText(enc, b.body))
+				head, err := Head(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(head, wantHead) || (head == nil) != (wantHead == nil) {
+					t.Errorf("Head = %d bytes (nil %v), want the twin's %d bytes (nil %v)", len(head), head == nil, len(wantHead), wantHead == nil)
+				}
+				if got := verdict(dir); got != wantVerdict {
+					t.Errorf("verdict = %q, want the twin's %q", got, wantVerdict)
+				}
+			})
+		}
 	}
 }

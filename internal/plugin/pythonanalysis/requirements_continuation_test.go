@@ -66,3 +66,37 @@ func TestResolveVersions_ExhaustiveContinuedInclude(t *testing.T) {
 		})
 	}
 }
+
+// pip splits a requirements file wherever Python's str.splitlines does, not only at "\n". Each
+// boundary below ends the flask line, so jinja2 is a requirement of its own; read as one line,
+// jinja2 would be trailing text of the flask pin and go missing.
+func TestResolveVersions_RequirementsLineBoundaries(t *testing.T) {
+	boundaries := []struct{ name, sep string }{
+		{"CR", "\r"},
+		{"VT", "\v"},
+		{"FF", "\f"},
+		{"FS", "\x1c"},
+		{"GS", "\x1d"},
+		{"RS", "\x1e"},
+		{"NEL", "\u0085"},
+		{"LINE SEPARATOR", " "},
+		{"PARAGRAPH SEPARATOR", " "},
+	}
+	for _, b := range boundaries {
+		t.Run(b.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{"requirements.txt": "flask==3.0.0" + b.sep + "jinja2==3.1.4\n"})
+			for coord, version := range map[string]string{"flask": "3.0.0", "jinja2": "3.1.4"} {
+				r := resolveVersion(t, dir, coord)
+				if !r.Found || !r.Match.Resolved || r.Match.Version != version {
+					t.Errorf("%s: got found=%v %+v, want %s", coord, r.Found, r.Match, version)
+				}
+			}
+		})
+	}
+	t.Run("CR continuation", func(t *testing.T) {
+		r := resolveVersion(t, writeTree(t, map[string]string{"requirements.txt": "flask==3.\\\r0.0\r"}), "flask")
+		if !r.Found || !r.Match.Resolved || r.Match.Version != "3.0.0" {
+			t.Errorf("flask: got found=%v %+v, want 3.0.0", r.Found, r.Match)
+		}
+	})
+}

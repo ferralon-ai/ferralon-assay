@@ -1,9 +1,13 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/assessment"
 )
 
 // The introduced lower bound on the version axis. A version below every range's introduced is not
@@ -181,10 +185,98 @@ func TestCorpusDecode_IntroducedReachesAxis(t *testing.T) {
 				t.Fatalf("toFacts ok=%v packages=%d, want one element", ok, len(facts.AffectedPackages))
 			}
 			p := facts.AffectedPackages[0]
-			rngs := buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, "npm")
+			rngs := withDisagreeingLegacyRanges(buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, "npm"), p, facts, "npm")
 			outside, gotOK := versionOutsideRanges("1.4.2", rngs)
 			if outside != tt.wantOutside || gotOK != tt.wantOK {
 				t.Fatalf("versionOutsideRanges(1.4.2, %+v) = (%v, %v), want (%v, %v)", rngs, outside, gotOK, tt.wantOutside, tt.wantOK)
+			}
+		})
+	}
+}
+
+// fakeRangesSource serves one advisory as the corpus would, with affected[] read into elems and the
+// legacy affected_ranges into the scalar ranges.
+type fakeRangesSource struct {
+	legacy []Range
+	elems  []AffectedPackage
+}
+
+func (s fakeRangesSource) Lookup(string) (AdvisoryFacts, bool) {
+	return AdvisoryFacts{
+		VersionScheme:    "npm",
+		Coordinate:       "multer",
+		PURL:             "pkg:npm/multer",
+		AffectedRanges:   s.legacy,
+		AffectedPackages: s.elems,
+		Provenance:       Provenance{TrustTier: TrustFirstParty},
+	}, true
+}
+
+// runLegacyUnionDisqual runs the real intake stage over src, selects coordinate in the inventory with the
+// resolved version ver, and runs the version axis.
+func runLegacyUnionDisqual(t *testing.T, src AdvisorySource, coordinate, ver string) DisqualResult {
+	t.Helper()
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "case-legacy-union", Request: assessment.Request{
+		Vulnerability: assessment.VulnRef{ID: "CVE-2026-5038", Source: "corpus"},
+	}}
+	if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("intake: %v", err)
+	}
+	putJSON(t, store, c.ID, artifact.TypeInventory, map[string]any{
+		"resolved_version":    ver,
+		"selected_coordinate": coordinate,
+	})
+	return runDisqual(t, store, c.ID)
+}
+
+// A record whose affected[] and legacy affected_ranges disagree admits wherever either admits.
+func TestIntake_DisagreeingLegacyRangesAdmit(t *testing.T) {
+	elem := func(coordinate string, rngs ...Range) AffectedPackage {
+		return AffectedPackage{Coordinate: coordinate, PURL: "pkg:npm/" + coordinate, AffectedRanges: rngs}
+	}
+	multer := []Range{{Introduced: "2.0.0-alpha.1", Fixed: "2.2.0"}, {Introduced: "3.0.0-alpha.1", Fixed: "3.0.0-alpha.2"}}
+	tests := []struct {
+		name       string
+		src        fakeRangesSource
+		coordinate string
+		ver        string
+		wantDisq   bool
+	}{
+		{
+			name:       "legacy agreeing but for the introduced it cannot carry keeps the lower bound",
+			src:        fakeRangesSource{legacy: []Range{{Fixed: "2.2.0"}, {Fixed: "3.0.0-alpha.2"}}, elems: []AffectedPackage{elem("multer", multer...)}},
+			coordinate: "multer", ver: "1.4.2", wantDisq: true,
+		},
+		{
+			name:       "legacy with a different upper bound is unioned in and admits",
+			src:        fakeRangesSource{legacy: []Range{{Fixed: "2.3.0"}, {Fixed: "3.0.0-alpha.2"}}, elems: []AffectedPackage{elem("multer", multer...)}},
+			coordinate: "multer", ver: "1.4.2", wantDisq: false,
+		},
+		{
+			name:       "legacy with fewer ranges is unioned in and admits",
+			src:        fakeRangesSource{legacy: []Range{{Fixed: "2.2.0"}}, elems: []AffectedPackage{elem("multer", multer...)}},
+			coordinate: "multer", ver: "1.4.2", wantDisq: false,
+		},
+		{
+			name:       "legacy with a different introduced is unioned in and admits",
+			src:        fakeRangesSource{legacy: []Range{{Introduced: "1.0.0", Fixed: "2.2.0"}, {Fixed: "3.0.0-alpha.2"}}, elems: []AffectedPackage{elem("multer", multer...)}},
+			coordinate: "multer", ver: "1.4.2", wantDisq: false,
+		},
+		{
+			name: "legacy ranges describe the primary package only",
+			src: fakeRangesSource{
+				legacy: []Range{{Fixed: "2.3.0"}},
+				elems:  []AffectedPackage{elem("multer", multer...), elem("busboy", Range{Introduced: "2.0.0", Fixed: "2.2.0"})},
+			},
+			coordinate: "busboy", ver: "1.4.2", wantDisq: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := runLegacyUnionDisqual(t, tt.src, tt.coordinate, tt.ver)
+			if res.Disqualified != tt.wantDisq {
+				t.Fatalf("Disqualified = %v, want %v (%+v)", res.Disqualified, tt.wantDisq, res)
 			}
 		})
 	}

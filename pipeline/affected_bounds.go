@@ -139,3 +139,53 @@ func compareVersions(a, b, scheme string) (int, bool) {
 		return 0, false
 	}
 }
+
+// withDisagreeingLegacyRanges adds the advisory-level legacy ranges to the element they describe when
+// the two disagree, so the element admits wherever either one admits.
+//
+// A published record can carry both affected[] (read into the element) and the legacy
+// affected_ranges (read into the advisory's scalar ranges). The legacy field cannot carry
+// introduced, so its missing lower bounds are a projection loss, not a disagreement. A disagreement
+// is any other difference in the bounds. Only the element the scalar block names is compared: the
+// legacy ranges describe that package and no other.
+func withDisagreeingLegacyRanges(rngs []affectedRange, pkg AffectedPackage, facts AdvisoryFacts, scheme string) []affectedRange {
+	if len(facts.AffectedRanges) == 0 || !describesPrimary(pkg, facts) {
+		return rngs
+	}
+	if !legacyRangesDisagree(pkg.AffectedRanges, facts.AffectedRanges) {
+		return rngs
+	}
+	return append(rngs, buildAffectedRanges(facts.AffectedRanges, "", scheme)...)
+}
+
+// describesPrimary reports whether pkg is the element the advisory's scalar block names.
+func describesPrimary(pkg AffectedPackage, facts AdvisoryFacts) bool {
+	return (pkg.PURL != "" && pkg.PURL == facts.PURL) || (pkg.Coordinate != "" && pkg.Coordinate == facts.Coordinate)
+}
+
+// legacyRangesDisagree reports whether the legacy ranges fail to pair one-to-one with the element's
+// on their upper bounds, and on introduced wherever the legacy range states one.
+func legacyRangesDisagree(elem, legacy []Range) bool {
+	if len(elem) != len(legacy) {
+		return true
+	}
+	used := make([]bool, len(elem))
+	for _, l := range legacy {
+		paired := false
+		for i, e := range elem {
+			if used[i] || e.Fixed != l.Fixed || e.LastAffected != l.LastAffected {
+				continue
+			}
+			if l.Introduced != "" && l.Introduced != e.Introduced {
+				continue
+			}
+			used[i] = true
+			paired = true
+			break
+		}
+		if !paired {
+			return true
+		}
+	}
+	return false
+}

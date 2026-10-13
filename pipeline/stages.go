@@ -1310,7 +1310,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 			Module:         p.Module,
 			Coordinate:     p.Coordinate,
 			PURL:           p.PURL,
-			AffectedRanges: buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme),
+			AffectedRanges: withDisagreeingLegacyRanges(buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme), p, facts, scheme),
 			Symbols:        p.Symbols,
 		})
 	}

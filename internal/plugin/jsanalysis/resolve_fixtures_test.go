@@ -114,8 +114,10 @@ function run() {
 	if err != nil {
 		t.Fatalf("CallGraph: %v", err)
 	}
-	if len(res.Edges) != 0 {
-		t.Errorf("no first-party edge expected in the C5 fixture; got %+v", res.Edges)
+	// The only edge is the call into lodash's boundary node, which keeps the package
+	// declared uninspectable.
+	if len(res.Edges) != 1 || res.Edges[0].Callee.SCIP != "npm:lodash#debounce" {
+		t.Errorf("only the lodash boundary edge is expected in the C5 fixture; got %+v", res.Edges)
 	}
 	want := []string{
 		plugin.PartialReasonComputedRequireSpecifier,

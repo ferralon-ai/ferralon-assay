@@ -83,24 +83,55 @@ func ingressPartiality(prog *program) plugin.Partiality {
 // identifier against the symbol's display name, its module-qualified form, and its
 // last-dot leaf, arity-tolerant. A no-match is an empty result, not an error; a load
 // failure is a hard error (inv.4).
+//
+// When the request's PURL names an npm package this build depends on (declared in a
+// package.json or resolved by its lockfile) and that is not one of the build's own
+// packages, first-party declarations are not candidates: a first-party `parse` is not
+// json5's parse. The advisory symbols then resolve only to package-boundary nodes the
+// call graph has edges into (boundary.go), each with the Origin its import binding's
+// lockfile resolution gives it.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	index, err := IndexSymbols(ctx, plugin.IndexSymbolsRequest{BuildDir: req.BuildDir})
 	if err != nil {
 		return plugin.SymbolResolutionResult{}, err
 	}
+	out := plugin.SymbolResolutionResult{Partiality: index.Partiality}
 
-	wanted := make(map[string]bool, len(req.AdvisorySymbols))
-	for _, s := range req.AdvisorySymbols {
-		wanted[s] = true
-	}
-
-	var resolved []plugin.Symbol
-	for _, sym := range index.Symbols {
-		if jsSymbolMatches(sym, wanted) {
-			resolved = append(resolved, sym)
+	pkg := npmPURLName(req.PURL)
+	bp := readBuildPackages(ctx, req.BuildDir)
+	firstParty := map[string][]string{}
+	if !bp.isDependency(pkg) {
+		for _, sym := range index.Symbols {
+			hit := false
+			for _, s := range req.AdvisorySymbols {
+				if jsSymbolMatches(sym, map[string]bool{s: true}) {
+					firstParty[s] = append(firstParty[s], sym.SCIP)
+					hit = true
+				}
+			}
+			if hit {
+				out.Resolved = append(out.Resolved, sym)
+			}
 		}
 	}
-	return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: resolved}, nil
+	if pkg == "" {
+		return out, nil
+	}
+
+	graph, _, err := callGraphInternal(req.BuildDir)
+	if err != nil {
+		return plugin.SymbolResolutionResult{}, err
+	}
+	resolved, origins, matched := resolveBoundarySymbols(pkg, req.AdvisorySymbols, graph.Edges, bp)
+	if len(resolved) == 0 {
+		return out, nil
+	}
+	for s, scips := range firstParty {
+		matched[s] = append(scips, matched[s]...)
+	}
+	out.Resolved = append(out.Resolved, resolved...)
+	out.Origins, out.Matched = origins, matched
+	return out, nil
 }
 
 // jsSymbolMatches reports whether sym corresponds to any wanted advisory identifier.

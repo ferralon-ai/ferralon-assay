@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"go/types"
-	"slices"
 	"sort"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -297,19 +297,12 @@ var runTimeCallees = map[string]string{
 	"plugin.Open":                               plugin.PartialReasonPluginLoad,
 }
 
-// runTimeCalls returns the reasons runTimeCallees declares for the callees the program reaches.
-// The functions reachable from main and init are searched; a program without a main function has
-// no single entry, so every function is.
+// runTimeCalls returns the reasons runTimeCallees declares for the callees the program reaches
+// from govulncheck's entry points.
 func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 	var queue []*callgraph.Node
-	if hasMain := slices.ContainsFunc(s.pkgs, func(p *ssa.Package) bool { return p != nil && p.Func("main") != nil }); hasMain {
-		for _, fn := range s.entryFunctions() {
-			if n := graph.Nodes[fn]; n != nil {
-				queue = append(queue, n)
-			}
-		}
-	} else {
-		for _, n := range graph.Nodes {
+	for _, fn := range s.govulncheckEntries() {
+		if n := graph.Nodes[fn]; n != nil {
 			queue = append(queue, n)
 		}
 	}
@@ -332,6 +325,53 @@ func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 		}
 	}
 	return sortedKeys(reasons)
+}
+
+// govulncheckEntries returns the functions govulncheck (v1.3.0, internal/vulncheck entryPoints)
+// searches from: main and init of a main package, and every exported function or method, plus
+// the package initializer, of any other loaded package. A run-time call only hides a call from
+// its search when one of these reaches it.
+func (s *ssaProgram) govulncheckEntries() []*ssa.Function {
+	var entries []*ssa.Function
+	for _, p := range s.pkgs {
+		if p == nil {
+			continue
+		}
+		if p.Pkg.Name() == "main" {
+			for name, m := range p.Members {
+				if name == "main" || name == "init" || strings.HasPrefix(name, "init#") {
+					entries = append(entries, s.memberFuncs(m)...)
+				}
+			}
+			continue
+		}
+		for _, m := range p.Members {
+			for _, fn := range s.memberFuncs(m) {
+				if (fn.Name() == "init" && fn.Synthetic == "package initializer") ||
+					(fn.Synthetic == "" && fn.Object() != nil && fn.Object().Exported()) {
+					entries = append(entries, fn)
+				}
+			}
+		}
+	}
+	return entries
+}
+
+// memberFuncs returns a package member's function, or a named type's methods on T and *T.
+func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
+	switch m := m.(type) {
+	case *ssa.Function:
+		return []*ssa.Function{m}
+	case *ssa.Type:
+		var fns []*ssa.Function
+		for _, sel := range typeutil.IntuitiveMethodSet(m.Type(), &s.prog.MethodSets) {
+			if fn := s.prog.MethodValue(sel); fn != nil {
+				fns = append(fns, fn)
+			}
+		}
+		return fns
+	}
+	return nil
 }
 
 func sortedKeys(set map[string]bool) []string {

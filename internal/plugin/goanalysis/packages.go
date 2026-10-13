@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -186,12 +187,19 @@ func goflagsTags(env []string) []string {
 // package's syntax holds such a file, so govulncheck traced no call from it, yet a build for that
 // platform or with that tag compiles it.
 //
-// A file may call into module when it imports a package of module, a loaded package that imports
+// A file may call into a module when it imports a package of module, a loaded package that imports
 // one, or a package the build did not load whose module is module, holds it, or requires it in the
 // module graph. A file that cannot be read counts, as does an unloaded import when the module graph
 // cannot be read or holds no module for it. A file constrained by the ignore tag is never built and does
 // not count.
-func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, buildDir string, env []string) bool {
+//
+// When module is the standard library, the packages that count are its vulnerable ones (vulnerable,
+// or every standard-library package when that is empty), and a file counts when it imports one
+// directly or through other packages. A loaded import is followed through the load. An unloaded
+// standard-library import is followed through the imports `go list` resolves for it under the
+// scan's own GOOS and the common ports, and counts when no port lists it cleanly; an unloaded
+// import from any module counts outright.
+func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module string, vulnerable []string, buildDir string, env []string) bool {
 	loaded := map[string]*packages.Package{}
 	modules := map[string]bool{}
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
@@ -200,6 +208,18 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, build
 			modules[p.Module.Path] = true
 		}
 	})
+	stdlib := module == "stdlib"
+	// inModule reports whether the package at path, loaded as p or not loaded (nil), is one of the
+	// refuted module's packages that count.
+	inModule := func(path string, p *packages.Package) bool {
+		if !stdlib {
+			return underModule(path, module) || (p != nil && p.Module != nil && p.Module.Path == module)
+		}
+		if (p != nil && p.Module != nil) || !isStdlibPath(path, modules) {
+			return false
+		}
+		return len(vulnerable) == 0 || slices.Contains(vulnerable, path)
+	}
 	reaches := map[*packages.Package]bool{}
 	var reachesModule func(p *packages.Package) bool
 	reachesModule = func(p *packages.Package) bool {
@@ -207,7 +227,7 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, build
 			return v
 		}
 		reaches[p] = false
-		v := underModule(p.PkgPath, module) || (p.Module != nil && p.Module.Path == module)
+		v := inModule(p.PkgPath, p)
 		for _, imp := range p.Imports {
 			if v {
 				break
@@ -220,14 +240,32 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, build
 	var graph modGraph
 	var graphErr error
 	graphRead := false
+	deps := importGraph{}
+	listed := map[string]bool{}
 	mayCall := func(imp string) bool {
-		if underModule(imp, module) {
-			return true
-		}
 		if p, ok := loaded[imp]; ok {
 			return reachesModule(p)
 		}
-		if imp == "C" || isStdlibPath(imp, modules) {
+		if inModule(imp, nil) {
+			return true
+		}
+		if imp == "C" {
+			return false
+		}
+		if stdlib {
+			// Which imports a module's package resolves turns on the left-out file's own tags and
+			// GOOS, which no listing here reproduces, so any module the build did not load counts.
+			if !isStdlibPath(imp, modules) {
+				return true
+			}
+			clean, ok := listed[imp]
+			if !ok {
+				clean = deps.list(ctx, buildDir, env, imp)
+				listed[imp] = clean
+			}
+			return !clean || deps.reaches(imp, func(path string) bool { return inModule(path, loaded[path]) })
+		}
+		if isStdlibPath(imp, modules) {
 			return false
 		}
 		if !graphRead {
@@ -278,6 +316,72 @@ func leftOutCallers(ctx context.Context, pkgs []*packages.Package, module, build
 		mainDir = buildDir
 	}
 	return firstPartyLeftOut(mainDir, loadedDirs, leftOut)
+}
+
+// importGraph is a package import graph `go list -deps` resolves, unioned over every port it ran for.
+type importGraph map[string][]string
+
+// list adds imp and its dependencies, as `go list -deps` resolves them under the scan's own GOOS and
+// each of the common ports, and reports whether any port listed them all without error. A left-out
+// file is most often one for another of those ports, so its imports resolve there.
+func (g importGraph) list(ctx context.Context, buildDir string, env []string, imp string) bool {
+	ports := []string{envOr(env, "GOOS", runtime.GOOS)}
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		if !slices.Contains(ports, goos) {
+			ports = append(ports, goos)
+		}
+	}
+	clean := false
+	for _, goos := range ports {
+		cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-f", "{{.ImportPath}}{{if or .Error .DepsErrors}} !{{end}}{{range .Imports}} {{.}}{{end}}", imp)
+		cmd.Dir = buildDir
+		cmd.Env = append(slices.Clip(env), "GOOS="+goos)
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+		port := importGraph{}
+		ok := true
+		for _, line := range strings.Split(string(out), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 {
+				continue
+			}
+			if slices.Contains(f[1:], "!") {
+				ok = false
+				break
+			}
+			port[f[0]] = f[1:]
+		}
+		if _, root := port[imp]; !ok || !root {
+			continue
+		}
+		clean = true
+		for p, imps := range port {
+			g[p] = append(g[p], imps...)
+		}
+	}
+	return clean
+}
+
+// reaches reports whether from, or a package it imports directly or through others, satisfies match.
+func (g importGraph) reaches(from string, match func(string) bool) bool {
+	seen := map[string]bool{from: true}
+	queue := []string{from}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		if match(p) {
+			return true
+		}
+		for _, next := range g[p] {
+			if !seen[next] {
+				seen[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	return false
 }
 
 // firstPartyLeftOut walks the main module's source tree for a package directory the load never

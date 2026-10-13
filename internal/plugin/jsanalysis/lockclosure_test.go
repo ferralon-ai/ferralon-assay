@@ -250,6 +250,8 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 	const lock = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`
 	const lockSrcNM = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"src/node_modules/util":{}}}`
 	const lockAbove = `{"lockfileVersion":3,"packages":{"":{"name":"app","dependencies":{"shared":"file:../shared"}},"node_modules/qs":{},"node_modules/shared":{"link":true,"resolved":"../shared"},"../shared":{"name":"shared"}}}`
+	const lockHook = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"node_modules/tsconfig-paths":{"version":"4.2.0"}}}`
+	const lockHookV1 = `{"lockfileVersion":1,"dependencies":{"tsconfig-paths":{"version":"4.2.0"}}}`
 	const window, overlap = 1 << 20, 512
 	cases := []struct {
 		name    string
@@ -289,6 +291,29 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 		{name: "PnP linker in .yarnrc.yml", files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "nodeLinker: pnp\n"}},
 		{name: ".yarnrc.yml with the default linker", files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "yarnPath: .yarn/releases/yarn-4.1.0.cjs\n"}},
 		{name: ".yarnrc.yml with the node_modules linker", bounded: true, files: map[string]string{"package-lock.json": lock, ".yarnrc.yml": "nodeLinker: node-modules\n"}},
+		// An npm lockfile is parsed, not scanned: a hook package it lists is installed, not
+		// launched. One that does not parse vetoes, and a package.json declaring the hook
+		// package is scanned. yarn.lock and pnpm-lock.yaml veto as installer markers.
+		{name: "a package-lock.json listing tsconfig-paths", bounded: true, files: map[string]string{"package-lock.json": lockHook}},
+		{name: "an npm-shrinkwrap.json listing tsconfig-paths", bounded: true, files: map[string]string{"npm-shrinkwrap.json": lockHook}},
+		{name: "a v1 package-lock.json listing tsconfig-paths", bounded: true, files: map[string]string{
+			"package-lock.json": lock, "tools/package-lock.json": lockHookV1}},
+		{name: "a corrupt package-lock.json", files: map[string]string{
+			"package-lock.json": lock, "tools/package-lock.json": `{"lockfileVersion":3,"packages":{`}},
+		{name: "a corrupt package-lock.json listing tsconfig-paths", files: map[string]string{
+			"package-lock.json": lock, "tools/package-lock.json": `{"lockfileVersion":3,"packages":{"node_modules/tsconfig-paths":`}},
+		{name: "a package-lock.json with no lockfileVersion", files: map[string]string{
+			"package-lock.json": lock, "tools/package-lock.json": `{"name":"tools","packages":{}}`}},
+		{name: "a package-lock.json with no packages or dependencies", files: map[string]string{
+			"package-lock.json": lock, "tools/package-lock.json": `{"lockfileVersion":3}`}},
+		{name: "a package.json dependency on tsconfig-paths", files: map[string]string{
+			"package.json": `{"name":"app","dependencies":{"tsconfig-paths":"^4.2.0"}}`, "package-lock.json": lockHook}},
+		{name: "a package.json devDependency on tsconfig-paths", files: map[string]string{
+			"package.json": `{"name":"app","devDependencies":{"tsconfig-paths":"^4.2.0"}}`, "package-lock.json": lockHook}},
+		{name: "a yarn.lock listing tsconfig-paths", files: map[string]string{
+			"package-lock.json": lock, "yarn.lock": "tsconfig-paths@^4.2.0:\n  version \"4.2.0\"\n"}},
+		{name: "a pnpm-lock.yaml listing tsconfig-paths", files: map[string]string{
+			"package-lock.json": lock, "pnpm-lock.yaml": "lockfileVersion: '9.0'\npackages:\n  tsconfig-paths@4.2.0: {}\n"}},
 		{name: "npm's own node_modules/.package-lock.json", bounded: true, files: map[string]string{"package-lock.json": lock, "node_modules/.package-lock.json": "{}"}},
 
 		// A lockfile or a workspaces root above the governing lock: an install there puts a

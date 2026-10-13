@@ -541,6 +541,34 @@ go(process.argv[2]);
 			held: []*report.Package{qs, zed},
 		},
 		{
+			// The lock is parsed, not scanned: tsconfig-paths installed under express is not a
+			// hook anything launches.
+			name: "a lock listing tsconfig-paths with nothing loading it lets a package outside the reach refute",
+			src:  "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock: `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"express":"4.18.2","qs":"6.0.0","json5":"2.2.1"}},
+"node_modules/express":{"version":"4.18.2","dependencies":{"qs":"6.0.0","tsconfig-paths":"4.2.0"}},
+"node_modules/qs":{"version":"6.0.0"},
+"node_modules/json5":{"version":"2.2.1"},
+"node_modules/tsconfig-paths":{"version":"4.2.0"}}}`,
+			held:      []*report.Package{qs},
+			refutable: []*report.Package{zed},
+		},
+		{
+			name:  "a package.json devDependency on tsconfig-paths holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"package.json": `{"name":"fixture","version":"1.0.0","dependencies":{"json5":"2.2.1"},"devDependencies":{"tsconfig-paths":"4.2.0"}}`},
+			held:  []*report.Package{qs, zed},
+		},
+		{
+			name:  "a lock that does not parse holds every advisory",
+			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
+			lock:  lock,
+			files: map[string]string{"tools/package-lock.json": `{"lockfileVersion":3,"packages":{`},
+			held:  []*report.Package{qs, zed},
+		},
+		{
 			name:  "webpack resolve.modules holds every advisory",
 			src:   "const qs = require('qs');\nfunction go(u) { return qs.parse(u); }\ngo(process.argv[2]);\n",
 			lock:  lock,

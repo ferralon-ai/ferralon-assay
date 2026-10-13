@@ -8,9 +8,6 @@ package pythonanalysis
 // closed on it.
 
 import (
-	"bytes"
-	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -81,31 +78,4 @@ func buildTreeInside(realRoot, path string) bool {
 func buildTreeIsDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
-}
-
-// binaryHeadSize is how much of a file decides whether it is text.
-const binaryHeadSize = 8000
-
-// readTextFile returns the file's content, or binary true (and no content) when its first
-// bytes contain a NUL: a binary file runs no install command as text.
-func readTextFile(path string) (data []byte, binary bool, err error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer f.Close()
-	head := make([]byte, binaryHeadSize)
-	n, err := io.ReadFull(f, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, false, err
-	}
-	head = head[:n]
-	if bytes.IndexByte(head, 0) >= 0 {
-		return nil, true, nil
-	}
-	rest, err := io.ReadAll(f)
-	if err != nil {
-		return nil, false, err
-	}
-	return append(head, rest...), false, nil
 }

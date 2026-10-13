@@ -134,13 +134,19 @@ func (ls *loadSet) scanInstalls(buildDir string) {
 			sc.veto(c, "pip configuration file: it can add requirements and options the scanner does not read")
 			return nil
 		}
-		data, binary, err := readTextFile(e.Path)
-		if err != nil {
+		data, content, err := readInstallFile(e.Path)
+		switch {
+		case err != nil:
 			sc.veto(c, "could not be read")
 			return nil
-		}
-		if binary {
+		case content == contentArchive:
+			sc.veto(c, "archive: distributions or install commands it bundles are not read")
 			return nil
+		case content == contentExecutable:
+			sc.veto(c, "executable: an interpreter or distributions it bundles are not read")
+			return nil
+		case content == contentBinary:
+			return nil // an image, a font or other data: neither text nor an archive
 		}
 		sc.configIndexes(c, base, data)
 		kind := installSurface(rel, data)

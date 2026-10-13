@@ -1,6 +1,8 @@
 package pythonanalysis
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -714,6 +716,49 @@ func TestLoadSet_LoaderWithoutLockfile(t *testing.T) {
 }
 
 // dockerRun is the uv workspace plus a Dockerfile that runs cmd.
+// utf16Text encodes s as UTF-16, big- or little-endian, with or without a byte-order mark.
+func utf16Text(s string, bigEndian, bom bool) string {
+	var b bytes.Buffer
+	if bom {
+		s = "\ufeff" + s
+	}
+	for _, r := range s {
+		if bigEndian {
+			b.Write([]byte{byte(r >> 8), byte(r)})
+		} else {
+			b.Write([]byte{byte(r), byte(r >> 8)})
+		}
+	}
+	return b.String()
+}
+
+func utf32le(s string) string {
+	var b bytes.Buffer
+	for _, r := range s {
+		b.Write([]byte{byte(r), byte(r >> 8), byte(r >> 16), byte(r >> 24)})
+	}
+	return b.String()
+}
+
+// zipText is a zip archive of files.
+func zipText(files map[string]string) string {
+	var b bytes.Buffer
+	w := zip.NewWriter(&b)
+	for name, content := range files {
+		f, err := w.Create(name)
+		if err != nil {
+			panic(err)
+		}
+		if _, err := f.Write([]byte(content)); err != nil {
+			panic(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	return b.String()
+}
+
 // appendFile returns files with extra appended to the named file.
 func appendFile(files map[string]string, name, extra string) map[string]string {
 	files[name] += extra
@@ -898,6 +943,20 @@ func TestLoadSet_InstallCommands(t *testing.T) {
 		// pip configuration.
 		{name: "ENV PIP_REQUIREMENT", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "Dockerfile": "FROM python:3.12\nENV PIP_REQUIREMENT=requirements-dev.txt\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "PIP_REQUIREMENT"},
 		{name: "a committed pip.conf", files: withLock(map[string]string{"requirements.txt": pinnedRuntimeExport, "requirements-dev.txt": "black==24.4.2\npathspec==0.12.1\n", "pip.conf": "[install]\nrequirement = requirements-dev.txt\n", "Dockerfile": "FROM python:3.12\nCOPY pip.conf /etc/pip.conf\nCOPY requirements.txt .\nRUN pip install -r requirements.txt\n"}), pkg: "pkg:pypi/black@24.4.2", veto: "pip configuration file"},
+
+		// Files the scan cannot read as text (R3-B1): text in any Unicode encoding is decoded and
+		// read; an archive or executable can bundle distributions and blocks every refutation.
+		{name: "a UTF-16LE PowerShell script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", false, true)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
+		{name: "a UTF-16BE script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", true, true)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
+		{name: "a UTF-16LE script without a BOM is read", files: withLock(map[string]string{"deploy.ps1": utf16Text("pip install black\r\n", false, false)}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
+		{name: "a UTF-32LE script with a BOM is read", files: withLock(map[string]string{"deploy.ps1": "\xff\xfe\x00\x00" + utf32le("pip install black\n")}), pkg: "pkg:pypi/pytest@8.2.0", veto: "black is not pinned"},
+		{name: "a committed Lambda layer zip", files: withLock(map[string]string{"layer.zip": zipText(map[string]string{"python/black/__init__.py": "", "python/black-24.4.2.dist-info/METADATA": "Name: black\n"})}), pkg: "pkg:pypi/black@24.4.2", veto: "layer.zip: archive"},
+		{name: "a committed pex: a shebang before a zip", files: withLock(map[string]string{"dist/app": "#!/usr/bin/env python3\n" + zipText(map[string]string{"black/__init__.py": ""})}), pkg: "pkg:pypi/black@24.4.2", veto: "dist/app: archive"},
+		{name: "a committed sdist tarball", files: withLock(map[string]string{"vendor/black-24.4.2": "\x1f\x8b\x08\x00\x00\x00\x00\x00"}), pkg: "pkg:pypi/black@24.4.2", veto: "vendor/black-24.4.2: archive"},
+		{name: "a committed tar without a suffix", files: withLock(map[string]string{"vendor/bundle": strings.Repeat("\x00", 257) + "ustar\x0000" + strings.Repeat("\x00", 100)}), pkg: "pkg:pypi/black@24.4.2", veto: "vendor/bundle: archive"},
+		{name: "an archive suffix alone vetoes", files: withLock(map[string]string{"vendor/deps.tar.gz": "not really gzip"}), pkg: "pkg:pypi/black@24.4.2", veto: "vendor/deps.tar.gz: archive"},
+		{name: "a committed executable", files: withLock(map[string]string{"bin/app": "\x7fELF\x02\x01\x01\x00" + strings.Repeat("\x00", 64)}), pkg: "pkg:pypi/black@24.4.2", veto: "bin/app: executable"},
+		{name: "an image is neither text nor an archive", files: withLock(map[string]string{"docs/logo.png": "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + strings.Repeat("\x00", 32)}), pkg: "pkg:pypi/black@24.4.2", refute: true},
 
 		// Index and find-links locations: a remote https index is a fetch option; anything else
 		// (a directory, file: URL, relative, loopback or unresolvable value) is an install

@@ -27,7 +27,9 @@ name = "jinja2"
 version = "3.1.4"
 source = { registry = "https://pypi.org/simple" }
 `
-	exPyproject = "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n"
+	exPyproject    = "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n"
+	exDynPyproject = "[project]\nname = \"app\"\ndynamic = [\"dependencies\"]\n"
+	exSetupCfgFile = "[metadata]\nname = app\n[options]\ninstall_requires = file: deps.txt\n"
 )
 
 // Exhaustive covers the whole build dir: a manifest the resolver skipped or never parses, an
@@ -84,6 +86,26 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"[tool.poetry.dev-dependencies] unlocked", map[string]string{"pyproject.toml": exPyproject + "[tool.poetry.dev-dependencies]\npyjwt = \"^2\"\n"}, false},
 		{"[tool.pdm.dev-dependencies] unlocked", map[string]string{"pyproject.toml": exPyproject + "[tool.pdm.dev-dependencies]\ntest = [\"pyjwt\"]\n"}, false},
 		{"[tool.hatch.envs] unlocked", map[string]string{"pyproject.toml": exPyproject + "[tool.hatch.envs.default]\ndependencies = [\"pyjwt\"]\n"}, false},
+
+		// Requirement files named by setup.cfg "file:" and pyproject dynamic metadata.
+		{"setup.cfg file: locked names", map[string]string{"setup.cfg": exSetupCfgFile, "deps.txt": "flask>=3\n"}, true},
+		{"setup.cfg file: unlocked name", map[string]string{"setup.cfg": exSetupCfgFile, "deps.txt": "flask>=3\nrequests\n"}, false},
+		{"setup.cfg file: missing", map[string]string{"setup.cfg": exSetupCfgFile}, false},
+		{"dynamic dependencies from setuptools file, locked", map[string]string{"pyproject.toml": exDynPyproject + "[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n", "deps.txt": "flask>=3\n"}, true},
+		{"dynamic dependencies from setuptools file, unlocked", map[string]string{"pyproject.toml": exDynPyproject + "[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n", "deps.txt": "requests\n"}, false},
+		{"dynamic dependencies from setup.cfg beside it", map[string]string{"pyproject.toml": exDynPyproject, "setup.cfg": "[metadata]\nname = app\n[options]\ninstall_requires = flask>=3\n"}, true},
+		{"dynamic dependencies from an unread hatchling hook", map[string]string{"pyproject.toml": "[build-system]\nbuild-backend = \"hatchling.build\"\n" + exDynPyproject, "setup.cfg": "[flake8]\nmax-line-length = 100\n"}, false},
+		{"dynamic dependencies with no source", map[string]string{"pyproject.toml": exDynPyproject}, false},
+
+		// setup.py and hatch_build.py are read only when their dependencies are literal.
+		{"setup.py literal install_requires", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", install_requires=[\"flask>=3\"])\n"}, true},
+		{"setup.py computed install_requires", map[string]string{"setup.py": "from setuptools import setup\nREQS = open(\"deps.txt\").read().split()\nsetup(name=\"app\", install_requires=REQS)\n"}, false},
+		{"setup.py install_requires extended", map[string]string{"setup.py": "from setuptools import setup\ninstall_requires = [\"flask>=3\"]\ninstall_requires.append(\"pyjwt\")\nsetup(name=\"app\", install_requires=install_requires)\n"}, false},
+		{"setup.py splatted options", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", **load_options())\n"}, false},
+		{"setup.py literal extras_require, unlocked", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", extras_require={\"http\": [\"requests\"]})\n"}, false},
+		{"setup.py literal extras_require, locked", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", extras_require={\"web\": [\"jinja2\"], \"all\": [\"flask\", \"jinja2\"]})\n"}, true},
+		{"setup.py computed extras_require", map[string]string{"setup.py": "from setuptools import setup\nsetup(name=\"app\", extras_require=EXTRAS)\n"}, false},
+		{"hatch_build.py", map[string]string{"hatch_build.py": "from hatchling.metadata.plugin.interface import MetadataHookInterface\n"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

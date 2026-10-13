@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -157,9 +156,9 @@ func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
 	case base == "uv.lock":
 		return parseUVLockAdvisory(data)
 	case base == "pyproject.toml":
-		return parsePyproject(data)
+		return parsePyproject(path, data)
 	case base == "setup.cfg":
-		return parseSetupCfg(data)
+		return parseSetupCfg(path, data)
 	case base == "setup.py":
 		return parseSetupPy(data)
 	case base == "hatch_build.py":
@@ -406,22 +405,37 @@ func parsePipfileLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 
 // --- pyproject.toml (PEP 621) ------------------------------------------------
 
-// pyprojectDeps is the PEP 621 subset read here: [project].dependencies and
-// [project].optional-dependencies.
+// pyprojectDeps is the subset read here: [project].dependencies and
+// [project].optional-dependencies, and the requirement files that supply them when they are
+// dynamic ([tool.setuptools.dynamic], or hatch-requirements-txt's
+// [tool.hatch.metadata.hooks.requirements_txt]).
 type pyprojectDeps struct {
 	Project struct {
 		Dependencies         []string            `toml:"dependencies"`
 		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+		Dynamic              []string            `toml:"dynamic"`
 	} `toml:"project"`
+	Tool struct {
+		Setuptools struct {
+			Dynamic map[string]any `toml:"dynamic"`
+		} `toml:"setuptools"`
+		Hatch struct {
+			Metadata struct {
+				Hooks map[string]any `toml:"hooks"`
+			} `toml:"metadata"`
+		} `toml:"hatch"`
+	} `toml:"tool"`
 }
 
 // parsePyproject reads a PEP 621 pyproject.toml's [project].dependencies and every
-// [project].optional-dependencies group. Each entry is a declared PEP 508 requirement: an exact
-// "==" pin resolves, a range rides in Constraint with Resolved=false (the authoritative pins
-// live in a lockfile). A file the TOML decoder rejects (a templated pyproject, say) falls back
-// to the lexical [project] dependencies reader, so such a file still contributes the names it
-// visibly declares.
-func parsePyproject(data []byte) ([]plugin.ResolvedDependency, bool) {
+// [project].optional-dependencies group, plus every requirement file a dynamic-metadata table
+// names for them (pyprojectDynamicFiles), read relative to the pyproject. Each entry is a
+// declared PEP 508 requirement: an exact "==" pin resolves, a range rides in Constraint with
+// Resolved=false (the authoritative pins live in a lockfile). ok is false when a dynamic table
+// has a shape not read here or a file it names fails readRequirementFiles. A file the TOML
+// decoder rejects (a templated pyproject, say) falls back to the lexical [project] dependencies
+// reader, so such a file still contributes the names it visibly declares.
+func parsePyproject(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
 	var pp pyprojectDeps
 	if err := toml.Unmarshal(data, &pp); err != nil {
 		return parsePyprojectLexical(data)
@@ -435,17 +449,101 @@ func parsePyproject(data []byte) ([]plugin.ResolvedDependency, bool) {
 	for _, spec := range pp.Project.Dependencies {
 		add(spec)
 	}
-	groups := make([]string, 0, len(pp.Project.OptionalDependencies))
-	for g := range pp.Project.OptionalDependencies {
-		groups = append(groups, g)
-	}
-	sort.Strings(groups)
-	for _, g := range groups {
+	for _, g := range slices.Sorted(maps.Keys(pp.Project.OptionalDependencies)) {
 		for _, spec := range pp.Project.OptionalDependencies[g] {
 			add(spec)
 		}
 	}
+	files, ok := pyprojectDynamicFiles(pp)
+	if !ok {
+		return out, false
+	}
+	for _, f := range files {
+		deps, fileOK := readRequirementFiles(filepath.Dir(path), f, "pyproject.toml")
+		out = append(out, deps...)
+		if !fileOK {
+			return out, false
+		}
+	}
 	return out, true
+}
+
+// pyprojectDynamicFiles returns, in a stable order, every requirement file named for
+// dependencies or optional-dependencies by [tool.setuptools.dynamic] ({file = "a.txt"} or
+// {file = ["a.txt", ...]}, per field and per optional group) and by
+// [tool.hatch.metadata.hooks.requirements_txt] (files = [...] and an optional-dependencies
+// table of file lists). ok is false for any other shape of those entries.
+func pyprojectDynamicFiles(pp pyprojectDeps) (files []string, ok bool) {
+	fileKey := func(v any) bool {
+		m, isMap := v.(map[string]any)
+		if !isMap || len(m) != 1 {
+			return false
+		}
+		names, isList := stringList(m["file"])
+		files = append(files, names...)
+		return isList
+	}
+	dyn := pp.Tool.Setuptools.Dynamic
+	if v, present := dyn["dependencies"]; present && !fileKey(v) {
+		return nil, false
+	}
+	if v, present := dyn["optional-dependencies"]; present {
+		groups, isMap := v.(map[string]any)
+		if !isMap {
+			return nil, false
+		}
+		for _, g := range slices.Sorted(maps.Keys(groups)) {
+			if !fileKey(groups[g]) {
+				return nil, false
+			}
+		}
+	}
+	if v, present := pp.Tool.Hatch.Metadata.Hooks["requirements_txt"]; present {
+		hook, isMap := v.(map[string]any)
+		if !isMap {
+			return nil, false
+		}
+		if fv, has := hook["files"]; has {
+			names, isList := stringList(fv)
+			if !isList {
+				return nil, false
+			}
+			files = append(files, names...)
+		}
+		if ov, has := hook["optional-dependencies"]; has {
+			groups, isMap := ov.(map[string]any)
+			if !isMap {
+				return nil, false
+			}
+			for _, g := range slices.Sorted(maps.Keys(groups)) {
+				names, isList := stringList(groups[g])
+				if !isList {
+					return nil, false
+				}
+				files = append(files, names...)
+			}
+		}
+	}
+	return files, true
+}
+
+// stringList accepts a TOML string or array of strings.
+func stringList(v any) ([]string, bool) {
+	switch t := v.(type) {
+	case string:
+		return []string{t}, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			s, isStr := e.(string)
+			if !isStr {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // parsePyprojectLexical reads the "dependencies = [ ... ]" array under a "[project]" table

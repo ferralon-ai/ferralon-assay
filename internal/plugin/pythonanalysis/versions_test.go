@@ -2,7 +2,9 @@ package pythonanalysis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -174,7 +176,6 @@ install_requires =
     click==8.1.7
     # a comment line
     importlib-metadata; python_version<"3.8"
-    file: extra.txt
 
 [options.extras_require]
 test = pytest>=7.0; coverage
@@ -235,7 +236,6 @@ python_req = "python_version >= '3.9'"
 		{"setup.cfg bare name with marker", map[string]string{"setup.cfg": setupCfg}, "importlib-metadata", true, false, "", ""},
 		{"setup.cfg extras_require semicolon list", map[string]string{"setup.cfg": setupCfg}, "pytest", true, false, "", ">=7.0"},
 		{"setup.cfg extras_require second entry", map[string]string{"setup.cfg": setupCfg}, "coverage", true, false, "", ""},
-		{"setup.cfg file: directive not read", map[string]string{"setup.cfg": setupCfg}, "extra.txt", false, false, "", ""},
 		{"setup.py literal range", map[string]string{"setup.py": setupPy}, "jinja2", true, false, "", ">=3.0.0"},
 		{"setup.py literal exact pin", map[string]string{"setup.py": setupPy}, "markupsafe", true, true, "2.1.3", ""},
 		{"setup.py parenthesized specifier", map[string]string{"setup.py": setupPy}, "pydantic", true, false, "", ">=2.3"},
@@ -439,5 +439,117 @@ source = { registry = "https://pypi.org/simple" }
 				t.Fatalf("dev-locked pytest not reported present: found=%v match=%+v", r.Found, r.Match)
 			}
 		})
+	}
+}
+
+// A "file:" directive in setup.cfg, and a [tool.setuptools.dynamic] or hatch-requirements-txt
+// file list in pyproject.toml, are read as requirement lines relative to the manifest. A file
+// that is missing, not local to the manifest's directory, or not plain requirements takes the
+// parse-failure path: partiality tool_failure, so Exhaustive is withheld.
+func TestResolveVersions_RequirementFileDirectives(t *testing.T) {
+	const dynPyproject = "[project]\nname = \"app\"\ndynamic = [\"dependencies\", \"optional-dependencies\"]\n"
+	tests := []struct {
+		name           string
+		files          map[string]string
+		wantFound      bool
+		wantConstraint string
+		wantFailed     bool
+	}{
+		{"setup.cfg install_requires file:", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
+			"deps.txt":  "# runtime\nflask>=3\npyjwt>=2.8  # tokens\n",
+		}, true, ">=2.8", false},
+		{"setup.cfg dangling file: list", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires =\n    file: base.txt,\n          extra.txt\n",
+			"base.txt":  "flask>=3\n", "extra.txt": "pyjwt==2.8.0\n",
+		}, true, "", false},
+		{"setup.cfg extras_require file:", map[string]string{
+			"setup.cfg": "[options.extras_require]\njwt = file: jwt.txt\n",
+			"jwt.txt":   "pyjwt<3\n",
+		}, true, "<3", false},
+		{"setup.cfg file: in a subdirectory", map[string]string{
+			"pkg/setup.cfg":     "[options]\ninstall_requires = file: reqs/deps.txt\n",
+			"pkg/reqs/deps.txt": "pyjwt>=2\n",
+		}, true, ">=2", false},
+		{"setup.cfg file: missing", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
+		}, false, "", true},
+		{"setup.cfg file: escapes the project", map[string]string{
+			"pkg/setup.cfg": "[options]\ninstall_requires = file: ../deps.txt\n",
+			"deps.txt":      "pyjwt>=2\n",
+		}, false, "", true},
+		{"setup.cfg file: absolute", map[string]string{
+			"setup.cfg":    "[options]\ninstall_requires = file: /etc/deps.txt\n",
+			"etc/deps.txt": "pyjwt>=2\n",
+		}, false, "", true},
+		{"setup.cfg file: URL", map[string]string{
+			"setup.cfg":                   "[options]\ninstall_requires = file: https://example.com/deps.txt\n",
+			"https:/example.com/deps.txt": "pyjwt>=2\n",
+		}, false, "", true},
+		{"setup.cfg file: holding a pip include", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
+			"deps.txt":  "-r more.txt\nflask>=3\n", "more.txt": "pyjwt\n",
+		}, false, "", true},
+		{"setup.cfg file: holding a non-requirement", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n",
+			"deps.txt":  "flask>=3\n=broken\n",
+		}, false, "", true},
+		{"setup.cfg file: after a requirement", map[string]string{
+			"setup.cfg": "[options]\ninstall_requires =\n    flask>=3\n    file: deps.txt\n",
+			"deps.txt":  "pyjwt\n",
+		}, false, "", true},
+		{"pyproject setuptools dynamic dependencies", map[string]string{
+			"pyproject.toml": dynPyproject + "[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
+			"deps.txt":       "pyjwt>=2.8\n",
+		}, true, ">=2.8", false},
+		{"pyproject setuptools dynamic optional group", map[string]string{
+			"pyproject.toml": dynPyproject + "[tool.setuptools.dynamic.optional-dependencies]\njwt = {file = \"jwt.txt\"}\n",
+			"jwt.txt":        "pyjwt<3\n",
+		}, true, "<3", false},
+		{"pyproject hatch requirements_txt", map[string]string{
+			"pyproject.toml": dynPyproject + "[tool.hatch.metadata.hooks.requirements_txt]\nfiles = [\"deps.txt\"]\n[tool.hatch.metadata.hooks.requirements_txt.optional-dependencies]\njwt = [\"jwt.txt\"]\n",
+			"deps.txt":       "flask>=3\n", "jwt.txt": "pyjwt>=2\n",
+		}, true, ">=2", false},
+		{"pyproject setuptools dynamic file missing", map[string]string{
+			"pyproject.toml": dynPyproject + "[tool.setuptools.dynamic]\ndependencies = {file = [\"deps.txt\"]}\n",
+		}, false, "", true},
+		{"pyproject setuptools dynamic file escapes", map[string]string{
+			"pkg/pyproject.toml": dynPyproject + "[tool.setuptools.dynamic]\ndependencies = {file = \"../deps.txt\"}\n",
+			"deps.txt":           "pyjwt\n",
+		}, false, "", true},
+		{"pyproject setuptools dynamic unread shape", map[string]string{
+			"pyproject.toml": dynPyproject + "[tool.setuptools.dynamic]\ndependencies = {attr = \"app.DEPS\"}\n",
+		}, false, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found != tt.wantFound {
+				t.Fatalf("Found = %v, want %v (all: %+v)", r.Found, tt.wantFound, r.All)
+			}
+			if tt.wantFound && r.Match.Constraint != tt.wantConstraint {
+				t.Fatalf("Constraint = %q, want %q", r.Match.Constraint, tt.wantConstraint)
+			}
+			failed := slices.Contains(r.Partiality.Reasons, plugin.PartialReasonToolFailure)
+			if failed != tt.wantFailed {
+				t.Fatalf("tool_failure = %v, want %v (partiality %+v)", failed, tt.wantFailed, r.Partiality)
+			}
+			if failed && r.Exhaustive {
+				t.Fatal("Exhaustive despite a parse failure")
+			}
+		})
+	}
+}
+
+// A symlinked "file:" target that resolves outside setup.cfg's directory is not local.
+func TestResolveVersions_SetupCfgFileSymlinkEscape(t *testing.T) {
+	outside := writeTree(t, map[string]string{"deps.txt": "pyjwt>=2\n"})
+	root := writeTree(t, map[string]string{"setup.cfg": "[options]\ninstall_requires = file: deps.txt\n"})
+	if err := os.Symlink(filepath.Join(outside, "deps.txt"), filepath.Join(root, "deps.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r := resolveVersion(t, root, "PyJWT")
+	if r.Found || !slices.Contains(r.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+		t.Fatalf("symlink escape read: found=%v partiality=%+v", r.Found, r.Partiality)
 	}
 }

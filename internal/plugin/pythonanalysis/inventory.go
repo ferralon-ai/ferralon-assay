@@ -142,10 +142,10 @@ func manifestToPyReqs(path string, env map[string]string, selection []string) ([
 		deps, ok := parsePipfileLock(data)
 		return liftAdvisory(deps, "Pipfile.lock"), ok
 	case "pyproject.toml":
-		deps, ok := parsePyproject(data)
+		deps, ok := parsePyproject(path, data)
 		return liftAdvisory(deps, "pyproject.toml"), ok
 	case "setup.cfg":
-		deps, ok := parseSetupCfg(data)
+		deps, ok := parseSetupCfg(path, data)
 		return liftAdvisory(deps, "setup.cfg"), ok
 	case "setup.py":
 		deps, ok := parseSetupPy(data)

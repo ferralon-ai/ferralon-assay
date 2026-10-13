@@ -6,6 +6,8 @@ package pythonanalysis
 // and nothing here ever derives a version from a range.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -15,22 +17,53 @@ import (
 
 // parseSetupCfg reads setup.cfg's "[options] install_requires" and every key of
 // "[options.extras_require]". Values are setuptools list fields: a dangling list (one
-// requirement per indented continuation line) or a single-line ';'-separated string. A
-// "file:" directive points at another file and contributes nothing here. Entries that are not
-// well-formed PEP 508 requirements are skipped.
-func parseSetupCfg(data []byte) ([]plugin.ResolvedDependency, bool) {
+// requirement per indented continuation line) or a single-line ';'-separated string. A value
+// that starts with "file:" names comma-separated requirement files relative to setup.cfg, which
+// are read in its place (readRequirementFiles). Entries that are not well-formed PEP 508
+// requirements are skipped. ok is false when a referenced file cannot be read, is not local to
+// setup.cfg's directory, or holds a line that is not a plain requirement, and when "file:"
+// appears anywhere but at the start of a value (setuptools rejects that).
+func parseSetupCfg(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
 	var (
 		out     []plugin.ResolvedDependency
+		ok      = true
 		section string
-		inList  bool // inside a dependency-list value's continuation lines
+		inList  bool     // inside a dependency-list value's continuation lines
+		head    string   // the value text on the key line
+		cont    []string // the value's continuation lines
 	)
 	add := func(spec string) {
 		spec = strings.TrimSpace(stripCfgInlineComment(spec))
-		if spec == "" || strings.HasPrefix(spec, "file:") {
+		if spec == "" {
 			return
 		}
-		if d, ok := declaredDependency(spec, "setup.cfg"); ok {
+		if strings.HasPrefix(spec, "file:") {
+			ok = false
+			return
+		}
+		if d, valid := declaredDependency(spec, "setup.cfg"); valid {
 			out = append(out, d)
+		}
+	}
+	flush := func() {
+		if !inList {
+			return
+		}
+		inList = false
+		whole := strings.TrimSpace(strings.Join(append([]string{head}, cont...), "\n"))
+		if spec, isFile := strings.CutPrefix(whole, "file:"); isFile {
+			deps, fileOK := readRequirementFiles(filepath.Dir(path), spec, "setup.cfg")
+			out = append(out, deps...)
+			ok = ok && fileOK
+			return
+		}
+		if head != "" {
+			for _, part := range splitCfgSemicolons(head) {
+				add(part)
+			}
+		}
+		for _, c := range cont {
+			add(c)
 		}
 	}
 	for _, raw := range strings.Split(string(data), "\n") {
@@ -41,10 +74,10 @@ func parseSetupCfg(data []byte) ([]plugin.ResolvedDependency, bool) {
 		}
 		indented := line[0] == ' ' || line[0] == '\t'
 		if indented && inList {
-			add(trimmed)
+			cont = append(cont, trimmed)
 			continue
 		}
-		inList = false
+		flush()
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
 			section = strings.ToLower(strings.TrimSpace(trimmed[1 : len(trimmed)-1]))
 			continue
@@ -57,19 +90,69 @@ func parseSetupCfg(data []byte) ([]plugin.ResolvedDependency, bool) {
 			continue
 		}
 		key := strings.ToLower(strings.TrimSpace(trimmed[:k]))
-		val := strings.TrimSpace(trimmed[k+1:])
-		isDeps := (section == "options" && key == "install_requires") || section == "options.extras_require"
-		if !isDeps {
-			continue
+		if (section == "options" && key == "install_requires") || section == "options.extras_require" {
+			inList, head, cont = true, strings.TrimSpace(trimmed[k+1:]), nil
 		}
-		inList = true
-		if val != "" && !strings.HasPrefix(val, "file:") {
-			for _, part := range splitCfgSemicolons(val) {
-				add(part)
+	}
+	flush()
+	return out, ok
+}
+
+// readRequirementFiles reads the comma-separated requirement files a setuptools "file:"
+// directive (or a pyproject "file" key) names, relative to dir. ok is false when a path is
+// empty, absolute, a URL, or resolves (symlinks included) outside dir, when a file cannot be
+// read, or when a line is not a plain PEP 508 requirement: setuptools does not follow pip
+// options (-r, -c, -e, --hash), so their presence means the file is not what it is read as.
+func readRequirementFiles(dir, spec, source string) ([]plugin.ResolvedDependency, bool) {
+	var out []plugin.ResolvedDependency
+	for _, p := range strings.Split(spec, ",") {
+		target, local := localFile(dir, strings.TrimSpace(p))
+		if !local {
+			return out, false
+		}
+		data, err := os.ReadFile(target)
+		if err != nil {
+			return out, false
+		}
+		for _, raw := range strings.Split(string(data), "\n") {
+			line := strings.TrimSpace(stripCfgInlineComment(strings.TrimRight(raw, "\r")))
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			if strings.HasPrefix(line, "-") {
+				return out, false
+			}
+			d, valid := declaredDependency(line, source)
+			if !valid {
+				return out, false
+			}
+			out = append(out, d)
 		}
 	}
 	return out, true
+}
+
+// localFile resolves p against dir and returns it when it names a file inside dir, symlinks
+// resolved. Absolute paths, URLs, and paths that escape dir are refused, as setuptools refuses a
+// "file:" path outside the project root.
+func localFile(dir, p string) (string, bool) {
+	if p == "" || strings.Contains(p, "://") || filepath.IsAbs(p) {
+		return "", false
+	}
+	target := filepath.Join(dir, p)
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realDir, realTarget)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return target, true
 }
 
 // splitCfgSemicolons splits a single-line setuptools list value on ';'. A segment that does
@@ -105,45 +188,140 @@ func stripCfgInlineComment(s string) string {
 
 // --- setup.py ----------------------------------------------------------------
 
-// parseSetupPy reads every literal "install_requires = [ ... ]" list in setup.py (keyword
-// argument or variable assignment). A list is accepted only when every element is a plain
-// string literal; one computed element (a name, a call, an f-string, a comprehension) rejects
-// the whole list, because a partial read would silently misstate what is declared. The file is
-// never executed.
+// parseSetupPy reads every literal "install_requires = [ ... ]" list and every literal
+// "extras_require = { "name": [ ... ], ... }" dict in setup.py (keyword argument or variable
+// assignment). A value is accepted only when every element is a plain string literal; one
+// computed element (a name, a call, an f-string, a comprehension) rejects the whole value,
+// because a partial read would silently misstate what is declared. The file is never executed.
+// Whether the read is complete is setupPyComplete's question, not this reader's.
 func parseSetupPy(data []byte) ([]plugin.ResolvedDependency, bool) {
-	src := string(data)
+	specs, _ := scanSetupPy(string(data))
 	var out []plugin.ResolvedDependency
-	const key = "install_requires"
-	for i := 0; ; {
-		k := strings.Index(src[i:], key)
-		if k < 0 {
-			break
-		}
-		start := i + k
-		i = start + len(key)
-		if start > 0 && isIdentChar(src[start-1]) || i < len(src) && isIdentChar(src[i]) {
-			continue
-		}
-		j := skipPySpace(src, i)
-		if j >= len(src) || src[j] != '=' || j+1 < len(src) && src[j+1] == '=' {
-			continue
-		}
-		j = skipPySpace(src, j+1)
-		if j >= len(src) || src[j] != '[' {
-			continue
-		}
-		elems, next, ok := literalStringList(src, j+1)
-		i = next
-		if !ok {
-			continue
-		}
-		for _, e := range elems {
-			if d, ok := declaredDependency(e, "setup.py"); ok {
-				out = append(out, d)
-			}
+	for _, e := range specs {
+		if d, ok := declaredDependency(e, "setup.py"); ok {
+			out = append(out, d)
 		}
 	}
 	return out, true
+}
+
+// setupPyComplete reports whether parseSetupPy read every dependency setup.py declares: each
+// occurrence of install_requires or extras_require (in code, a string, or a comment alike) is a
+// literal value parseSetupPy reads, and nothing is passed through a "**" splat, which can carry
+// either keyword unseen. Anything else (setup(install_requires=REQS), install_requires.append,
+// a requirements file read at build time) means the declared set is computed.
+func setupPyComplete(data []byte) bool {
+	_, complete := scanSetupPy(string(data))
+	return complete
+}
+
+// scanSetupPy returns the requirement strings of every literal install_requires list and
+// extras_require dict in src, and whether every occurrence of either name was such a literal
+// and src holds no "**" outside string literals and comments.
+func scanSetupPy(src string) (specs []string, complete bool) {
+	complete = !hasPySplat(src)
+	for _, key := range []string{"install_requires", "extras_require"} {
+		for i := 0; ; {
+			k := strings.Index(src[i:], key)
+			if k < 0 {
+				break
+			}
+			start := i + k
+			i = start + len(key)
+			if start > 0 && isIdentChar(src[start-1]) || i < len(src) && isIdentChar(src[i]) {
+				continue
+			}
+			j := skipPySpace(src, i)
+			if j >= len(src) || src[j] != '=' || j+1 < len(src) && src[j+1] == '=' {
+				complete = false
+				continue
+			}
+			j = skipPySpace(src, j+1)
+			var (
+				elems []string
+				ok    bool
+			)
+			switch {
+			case key == "install_requires" && j < len(src) && src[j] == '[':
+				elems, i, ok = literalStringList(src, j+1)
+			case key == "extras_require" && j < len(src) && src[j] == '{':
+				elems, i, ok = literalStringListDict(src, j+1)
+			}
+			if !ok {
+				complete = false
+				continue
+			}
+			specs = append(specs, elems...)
+		}
+	}
+	return specs, complete
+}
+
+// literalStringListDict reads a dict starting just after '{' whose keys are string literals and
+// whose values are literal string lists, and returns every list element. next is the index after
+// the closing '}' (or where scanning stopped); ok is false for any other shape.
+func literalStringListDict(src string, i int) (elems []string, next int, ok bool) {
+	for {
+		i = skipPySpaceAndComments(src, i)
+		if i >= len(src) {
+			return nil, i, false
+		}
+		if src[i] == '}' {
+			return elems, i + 1, true
+		}
+		_, nx, isF, lit := readPyString(src, i)
+		if !lit || isF {
+			return nil, i + 1, false
+		}
+		i = skipPySpaceAndComments(src, nx)
+		if i >= len(src) || src[i] != ':' {
+			return nil, i, false
+		}
+		i = skipPySpaceAndComments(src, i+1)
+		if i >= len(src) || src[i] != '[' {
+			return nil, i, false
+		}
+		vals, nx, ok := literalStringList(src, i+1)
+		if !ok {
+			return nil, nx, false
+		}
+		elems = append(elems, vals...)
+		i = skipPySpaceAndComments(src, nx)
+		if i >= len(src) {
+			return nil, i, false
+		}
+		switch src[i] {
+		case ',':
+			i++
+		case '}':
+			return elems, i + 1, true
+		default:
+			return nil, i, false
+		}
+	}
+}
+
+// hasPySplat reports whether src holds "**" outside string literals and comments.
+func hasPySplat(src string) bool {
+	for i := 0; i < len(src); {
+		switch {
+		case src[i] == '#':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case startsPyString(src, i) && (i == 0 || !isIdentChar(src[i-1])):
+			if _, next, _, ok := readPyString(src, i); ok {
+				i = next
+			} else {
+				i++
+			}
+		case strings.HasPrefix(src[i:], "**"):
+			return true
+		default:
+			i++
+		}
+	}
+	return false
 }
 
 // literalStringList reads list elements starting just after '[' and returns them when every

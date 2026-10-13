@@ -27,6 +27,10 @@ package pythonanalysis
 //     dev-dependencies and groups, [tool.pdm] dev-dependencies, [tool.hatch] environment
 //     dependencies (a non-frozen sync re-locks and installs it);
 //   - a requirements file whose -r/-c include is not itself a parsed manifest;
+//   - a setup.py whose dependencies are not all literal (setupPyComplete), or any hatch_build.py
+//     (a build or metadata hook can add dependencies at build time);
+//   - a pyproject.toml listing dependencies or optional-dependencies in [project].dynamic
+//     without a source the resolver reads (pyprojectDynamicCovered);
 //   - anything the walk of the whole build dir (everything but .git; no skip list) finds that
 //     installs packages the parsed manifests do not account for: a manifest the resolver did not
 //     read (one under build/, env/, a dot-dir, ...), an install manifest it never parses
@@ -111,7 +115,18 @@ func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile 
 		if isRequirementsFile(filepath.Base(m)) && (requirementsHasUnenumeratedSource(m) || !includesParsed(m, parsed)) {
 			return false
 		}
-		if filepath.Base(m) == "pyproject.toml" {
+		switch filepath.Base(m) {
+		case "hatch_build.py":
+			return false
+		case "setup.py":
+			data, err := os.ReadFile(m)
+			if err != nil || !setupPyComplete(data) {
+				return false
+			}
+		case "pyproject.toml":
+			if !pyprojectDynamicCovered(m, manifests) {
+				return false
+			}
 			names, ok := pyprojectGroupNames(m)
 			if !ok {
 				return false
@@ -506,6 +521,62 @@ func includeTarget(line string) (string, bool) {
 		return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), "=")), true
 	}
 	return "", false
+}
+
+// pyprojectDynamicCovered reports whether a pyproject.toml that lists dependencies or
+// optional-dependencies in [project].dynamic names a source for them that the resolver reads:
+// a [tool.setuptools.dynamic] or hatch-requirements-txt file list (parsePyproject reads those
+// files), [tool.poetry] dependencies (pyprojectGroupNames checks them against the lock), or,
+// under the setuptools backend (named or defaulted), a setup.py / setup.cfg beside it (each a
+// parsed manifest; setup.py must also be complete).
+// Any other backend computes the field from something never read (a hatch_build.py metadata
+// hook, a plugin), so the declared set is unknown.
+func pyprojectDynamicCovered(path string, manifests []string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var pp pyprojectDeps
+	var extra struct {
+		BuildSystem struct {
+			Backend string `toml:"build-backend"`
+		} `toml:"build-system"`
+		Tool struct {
+			Poetry struct {
+				Dependencies map[string]any `toml:"dependencies"`
+			} `toml:"poetry"`
+		} `toml:"tool"`
+	}
+	if toml.Unmarshal(data, &pp) != nil || toml.Unmarshal(data, &extra) != nil {
+		return false
+	}
+	dir := filepath.Dir(path)
+	setuptools := extra.BuildSystem.Backend == "" || strings.HasPrefix(extra.BuildSystem.Backend, "setuptools")
+	for _, m := range manifests {
+		if setuptools && filepath.Dir(m) == dir && (filepath.Base(m) == "setup.py" || filepath.Base(m) == "setup.cfg") {
+			return true
+		}
+	}
+	hook, _ := pp.Tool.Hatch.Metadata.Hooks["requirements_txt"].(map[string]any)
+	for _, field := range pp.Project.Dynamic {
+		var covered bool
+		switch field {
+		case "dependencies":
+			_, setuptools := pp.Tool.Setuptools.Dynamic["dependencies"]
+			_, hatch := hook["files"]
+			covered = setuptools || hatch || len(extra.Tool.Poetry.Dependencies) > 0
+		case "optional-dependencies":
+			_, setuptools := pp.Tool.Setuptools.Dynamic["optional-dependencies"]
+			_, hatch := hook["optional-dependencies"]
+			covered = setuptools || hatch
+		default:
+			continue
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
 }
 
 // pyprojectGroupNames returns the normalized names a pyproject.toml declares outside [project]

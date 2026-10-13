@@ -1,8 +1,8 @@
 package pythonanalysis
 
 // These tests pin the build-tree walk copied into buildtree.go. They are the tests of
-// internal/plugin/buildtree/buildtree_test.go at commit 444cd8f, for buildtree.go blob
-// 43f93477755565bdfa3fd0dabf8a313a22deb9b1, renamed to match the copy and otherwise unchanged.
+// internal/plugin/buildtree/buildtree_test.go at commit bc0233d, for buildtree.go blob
+// 0219ca2d925dae344581fe87d7774381431c7e62, renamed to match the copy and otherwise unchanged.
 // A change that makes one fail has drifted from the shared walker.
 
 import (

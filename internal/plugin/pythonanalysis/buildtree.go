@@ -1,7 +1,7 @@
 package pythonanalysis
 
 // The build-tree walk below is copied from internal/plugin/buildtree/buildtree.go at commit
-// 444cd8f (blob 43f93477755565bdfa3fd0dabf8a313a22deb9b1), whose package is not on main yet:
+// bc0233d (blob 0219ca2d925dae344581fe87d7774381431c7e62), whose package is not on main yet:
 // Skipped, Entry, Walk, Inside, isDir, Candidate, HeadSize, Candidates, Head and AllFullyRead,
 // renamed with a buildTree prefix and otherwise unchanged. buildtree_test.go pins the same
 // behavior. Once that package lands, callers move to it and this copy goes.
@@ -107,10 +107,12 @@ const buildTreeHeadSize = 64 << 10
 
 // buildTreeCandidates walks root and returns, in walk order:
 //
-//   - every regular file, or symlink to a file inside root, that match accepts;
+//   - every regular file, or symlink to a regular file inside root, that match accepts;
 //   - every symlink that escapes root (or does not resolve, a link cycle included), every
-//     directory or file that cannot be read, and every symlinked directory whose target the walk
-//     does not itself read, since what they hold cannot be classified.
+//     symlink inside root to something that is neither a regular file nor a directory (opening a
+//     pipe would block the walk), every directory or file that cannot be read, and every
+//     symlinked directory whose target the walk does not itself read, since what they hold
+//     cannot be classified.
 //
 // A symlinked directory is read in full, and is not a candidate, only when its target resolves
 // inside root's real path to a directory the walk enters at that real path: not a Skipped
@@ -161,6 +163,17 @@ func buildTreeCandidates(root string, match func(path string, head []byte) (why 
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
 			return nil // a device, socket or pipe declares nothing, and reading a pipe would block
+		}
+		if e.Symlink {
+			fi, err := os.Stat(e.Path)
+			if err != nil {
+				add(e.Path, "unreadable", false)
+				return nil
+			}
+			if !fi.Mode().IsRegular() {
+				add(e.Path, "symlink to a non-regular file", false) // opening a pipe would block
+				return nil
+			}
 		}
 		head, err := buildTreeHead(e.Path)
 		if err != nil {

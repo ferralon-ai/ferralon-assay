@@ -535,6 +535,34 @@ func checkBuildScript(t *testing.T, dir string, c buildScriptCase) {
 	}
 }
 
+// benignPython runs only what its literal names and arguments say: plain imports, metadata
+// and constant reads, and process launches with literal arguments.
+const benignPython = `import subprocess
+import os.path
+import importlib
+from importlib.metadata import version
+from importlib import invalidate_caches, reload
+from pkgutil import get_data, extend_path
+from builtins import str
+from os import path, sep
+
+out = subprocess.run(["git", "describe"], check=True, stdout=subprocess.PIPE)
+subprocess.call(["make"], stderr=subprocess.STDOUT)
+subprocess.check_call(("make", "docs"), stdin=subprocess.DEVNULL)
+subprocess.check_output(["git", "rev-parse", "HEAD"], timeout=5, env={"A": "1"})
+subprocess.Popen([r"make", b"x"], cwd=None)
+subprocess.getoutput("date")
+subprocess.getstatusoutput('date')
+errors = (subprocess.CalledProcessError, subprocess.TimeoutExpired, subprocess.SubprocessError)
+done, info, quote = subprocess.CompletedProcess, subprocess.STARTUPINFO, subprocess.list2cmdline
+v = version("app")
+missing = importlib.metadata.PackageNotFoundError
+here = os.path.dirname(__file__)
+os.system("make docs")
+os.execv("/usr/bin/make", ["make", "-j", 4])
+importlib.invalidate_caches()
+`
+
 // keptBy is a row where files beside a root setup.py keep it in the program.
 func keptBy(name string, files map[string]string) buildScriptCase {
 	all := map[string]string{"setup.py": yamlSetupPy, "app.py": runtimePy}
@@ -547,8 +575,9 @@ func keptBy(name string, files map[string]string) buildScriptCase {
 // TestLoadProgram_BuildScripts: a packaging build script's imports are build-time, so a
 // setup.py or hatch_build.py at the build root is left out of the program (no module, no
 // boundary edge from its module init) while it stays first-party. It stays in when any
-// other file under the build root mentions its name as a whole word, ignoring case, when a
-// Python file anywhere loads code by path or computed name, when a relative import climbs
+// other file under the build root mentions its name as a whole word, ignoring case, when any
+// file that can carry Python names a loader, reaches a loader module other than plainly, or
+// launches a process with arguments that are not all literals, when a relative import climbs
 // above the root, or when a string in its own text names it.
 func TestLoadProgram_BuildScripts(t *testing.T) {
 	cases := []buildScriptCase{
@@ -653,7 +682,9 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 				"scripts/setup_env":  "export SETUP_ENV=1\n",
 				"pyproject.toml":     "[project]\nname = \"app\"\n\n[project.scripts]\nfoo = \"app:check\"\n",
 				"docs/loaders.md":    "Never call runpy.run_path(sys.argv[1]) on untrusted input.\n",
-				"tools/comment.py":   "# exec and run_path appear only in this comment\nmsg = 'spec_from_file_location'\n",
+				"tools/version.py":   benignPython,
+				"Dockerfile.tools":   "FROM python:3.12\nRUN python -c \"from importlib.metadata import version; print(version('pip'))\"\n",
+				"start.sh":           "#!/bin/sh\nexec gunicorn app:check\n",
 				".gitignore":         "build/\n",
 				"src/app/version.py": "v = '1.0'\n",
 			},
@@ -685,6 +716,67 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 		keptBy("a loader in a .pth file keeps it", map[string]string{"boot.pth": "import os; exec(open(os.environ['BOOT']).read())\n"}),
 		keptBy("a loader in a python-shebang script keeps it", map[string]string{"bin/run": "#!/usr/bin/env python3\nimport runpy, sys\nrunpy.run_path(sys.argv[1])\n"}),
 		keptBy("relative import climbing above the build root keeps it", map[string]string{"app.py": "from .. import helpers\n"}),
+
+		// A loader reached by name, or named in text the interpreter may run.
+		keptBy("a loader named only in a comment or string keeps it", map[string]string{"tools/comment.py": "# exec and run_path appear only in this comment\nmsg = 'spec_from_file_location'\n"}),
+		keptBy("a string-keyed getattr on importlib keeps it", map[string]string{"app.py": "import importlib\nload = getattr(importlib, name)\n"}),
+		keptBy("a concatenated loader name keeps it", map[string]string{"app.py": "import importlib\nload = getattr(importlib, 'imp' + 'ort_module')\n"}),
+		keptBy("a loader module's __dict__ keeps it", map[string]string{"app.py": "import importlib\nload = importlib.__dict__['imp' + 'ort_module']\n"}),
+		keptBy("attrgetter on a loader module keeps it", map[string]string{"app.py": "import importlib, operator\nload = operator.attrgetter('imp' + 'ort_module')(importlib)\n"}),
+		keptBy("an aliased loader module keeps it", map[string]string{"app.py": "import importlib as il\nload = getattr(il, name)\n"}),
+		keptBy("an aliased loader submodule keeps it", map[string]string{"app.py": "import importlib.util as u\nload = getattr(u, name)\n"}),
+		keptBy("a loader submodule from-imported keeps it", map[string]string{"app.py": "from importlib import util\nload = getattr(util, name)\n"}),
+		keptBy("a loader submodule handed on as a value keeps it", map[string]string{"app.py": "import importlib\nu = importlib.util\n"}),
+		keptBy("a dunder deeper in a loader module chain keeps it", map[string]string{"app.py": "import importlib\nf = importlib.util.__dict__[n]\n"}),
+		keptBy("a private subprocess attribute keeps it", map[string]string{"app.py": "import subprocess\nsubprocess._posixsubprocess.fork_exec(args)\n"}),
+		keptBy("subprocess named in a string keeps it", map[string]string{"app.py": "import sys\nsys.modules['subprocess'].run(cmd)\n"}),
+		keptBy("os named in a string keeps it", map[string]string{"app.py": "import sys\nsys.modules['os'].system(cmd)\n"}),
+		keptBy("a from-import aliased from a loader module keeps it", map[string]string{"app.py": "from importlib import reload as r\n"}),
+		keptBy("builtins reached by name keeps it", map[string]string{"app.py": "import builtins\nf = vars(builtins)[name]\n"}),
+		keptBy("__builtins__ indexed keeps it", map[string]string{"app.py": "f = __builtins__['ev' + 'al']\n"}),
+		keptBy("a Dockerfile RUN python -c naming a loader keeps it", map[string]string{"Dockerfile": "FROM python:3.12\nRUN python3 -c \"import importlib; getattr(importlib, 'imp' + 'ort_module')\"\n"}),
+		keptBy("flags before -c keep it", map[string]string{"Dockerfile": "FROM python:3.12\nRUN python3 -I -u -c \"import importlib; getattr(importlib, n)\"\n"}),
+		keptBy("a flag cluster ending in c keeps it", map[string]string{"Dockerfile": "FROM python:3.12\nRUN python -Ic \"import importlib; getattr(importlib, n)\"\n"}),
+		keptBy("a shell heredoc into python keeps it", map[string]string{"boot.sh": "#!/bin/sh\npython3 <<'EOF'\nimport importlib, sys\ngetattr(importlib, sys.argv[1])\nEOF\n"}),
+		keptBy("python reading a script from stdin keeps it", map[string]string{"boot.sh": "#!/bin/sh\npython3 - \"$@\" <<'EOF'\nimport importlib, sys\ngetattr(importlib, sys.argv[1])\nEOF\n"}),
+		keptBy("a script piped into python keeps it", map[string]string{"boot.sh": "#!/bin/sh\necho \"import importlib; getattr(importlib, n)\" | python3\n"}),
+		keptBy("a uv run --script shebang keeps it", map[string]string{"bin/tool": "#!/usr/bin/env -S uv run --script\nimport importlib, sys\ngetattr(importlib, sys.argv[1])\n"}),
+		keptBy("a pipx run shebang keeps it", map[string]string{"bin/tool": "#!/usr/bin/env -S pipx run\nimport importlib, sys\ngetattr(importlib, sys.argv[1])\n"}),
+		keptBy("a pypy shebang keeps it", map[string]string{"bin/tool": "#!/usr/bin/pypy3\nimport importlib, sys\ngetattr(importlib, sys.argv[1])\n"}),
+		keptBy("a Cython .pyx naming a loader keeps it", map[string]string{"ext/fast.pyx": "import importlib\ndef go(n):\n    return getattr(importlib, n)\n"}),
+		keptBy("a Cython .pxd naming a loader keeps it", map[string]string{"ext/fast.pxd": "# run_path\n"}),
+		keptBy("a Cython .pxi naming a loader keeps it", map[string]string{"ext/fast.pxi": "# run_path\n"}),
+		keptBy("a .pyw naming a loader keeps it", map[string]string{"gui.pyw": "# run_path\n"}),
+		keptBy("a CI step running python -c keeps it", map[string]string{".github/workflows/ci.yml": "jobs:\n  r:\n    steps:\n      - run: python -c \"import importlib, os; getattr(importlib, os.environ['L'])\"\n"}),
+		keptBy("a notebook naming a loader keeps it", map[string]string{"nb/explore.ipynb": "{\"cells\": [{\"cell_type\": \"code\", \"source\": [\"import importlib\\n\", \"getattr(importlib, n)\"]}]}\n"}),
+
+		// A process launch that could run any script.
+		keptBy("subprocess with a computed argument keeps it", map[string]string{"app.py": "import subprocess, sys\nsubprocess.run([sys.executable, sys.argv[1]])\n"}),
+		keptBy("subprocess with an f-string keeps it", map[string]string{"app.py": "import subprocess\nsubprocess.run(f\"python {p}\", shell=True)\n"}),
+		keptBy("a subprocess launch referenced, not called, keeps it", map[string]string{"app.py": "import subprocess\nrunner = subprocess.check_output\n"}),
+		keptBy("a subprocess launch from-imported keeps it", map[string]string{"app.py": "from subprocess import run\n"}),
+		keptBy("subprocess aliased keeps it", map[string]string{"app.py": "import subprocess as sp\nsp.run(cmd)\n"}),
+		keptBy("getattr on subprocess keeps it", map[string]string{"app.py": "import subprocess\ngetattr(subprocess, 'run')(cmd)\n"}),
+		keptBy("subprocess Popen with a computed argument keeps it", map[string]string{"app.py": "import subprocess\nsubprocess.Popen(cmd)\n"}),
+		keptBy("os.system with a computed argument keeps it", map[string]string{"app.py": "import os\nos.system(cmd)\n"}),
+		keptBy("os.popen with a computed argument keeps it", map[string]string{"app.py": "import os\nos.popen(cmd)\n"}),
+		keptBy("os.execv with a computed argument keeps it", map[string]string{"app.py": "import os, sys\nos.execv(sys.executable, [sys.executable, sys.argv[1]])\n"}),
+		keptBy("os.spawnv with a computed argument keeps it", map[string]string{"app.py": "import os\nos.spawnv(os.P_WAIT, p, [p])\n"}),
+		keptBy("os.posix_spawn with a computed argument keeps it", map[string]string{"app.py": "import os\nos.posix_spawn(p, [p], {})\n"}),
+		keptBy("os.startfile with a computed argument keeps it", map[string]string{"app.py": "import os\nos.startfile(p)\n"}),
+		keptBy("an os launch from-imported keeps it", map[string]string{"app.py": "from os import execv\n"}),
+		keptBy("a star import from os keeps it", map[string]string{"app.py": "from os import *\n"}),
+		keptBy("os aliased keeps it", map[string]string{"app.py": "import os as o\no.system(cmd)\n"}),
+		keptBy("os handed on as a value keeps it", map[string]string{"app.py": "import os\nm = os\n"}),
+		keptBy("getattr on os keeps it", map[string]string{"app.py": "import os\ngetattr(os, 'system')(cmd)\n"}),
+		keptBy("os.__dict__ keeps it", map[string]string{"app.py": "import os\nos.__dict__['system'](cmd)\n"}),
+		keptBy("posix.system with a computed argument keeps it", map[string]string{"app.py": "import posix\nposix.system(cmd)\n"}),
+		keptBy("pty.spawn with a computed argument keeps it", map[string]string{"app.py": "import pty\npty.spawn(argv)\n"}),
+		keptBy("asyncio create_subprocess_exec with a computed argument keeps it", map[string]string{"app.py": "import asyncio\n\nasync def go(p):\n    await asyncio.create_subprocess_exec('python', p)\n"}),
+		keptBy("asyncio create_subprocess_shell with a computed argument keeps it", map[string]string{"app.py": "import asyncio\n\nasync def go(c):\n    await asyncio.create_subprocess_shell(c)\n"}),
+		keptBy("loop.subprocess_exec with a computed argument keeps it", map[string]string{"app.py": "async def go(loop, proto, p):\n    await loop.subprocess_exec(proto, p)\n"}),
+		keptBy("loop.subprocess_shell with a computed argument keeps it", map[string]string{"app.py": "async def go(loop, proto, c):\n    await loop.subprocess_shell(proto, c)\n"}),
+		keptBy("a launch in a Dockerfile python -c keeps it", map[string]string{"Dockerfile": "FROM python:3.12\nRUN python -c \"import os, sys; os.system(sys.argv[1])\" x\n"}),
 	}
 	// The leaves are listed here, not read from the loader tables, so dropping one from a
 	// table turns its row red instead of removing it.
@@ -704,6 +796,31 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 	}
 	for _, l := range leafs {
 		cases = append(cases, keptBy("loader "+l+" keeps it", map[string]string{"app.py": "import mod\n\ndef go(p):\n    return mod." + l + "(p)\n"}))
+	}
+	// Likewise every module reached by getattr, and every asyncio launch with a computed
+	// argument.
+	modules := []string{"importlib", "runpy", "imp", "pkgutil", "zipimport", "builtins", "__builtins__", "os", "posix", "nt", "pty"}
+	for m := range loaderModules {
+		if !slices.Contains(modules, m) {
+			t.Errorf("loader module %s has no row", m)
+		}
+	}
+	for m := range processModules {
+		if !slices.Contains(modules, m) {
+			t.Errorf("process module %s has no row", m)
+		}
+	}
+	for _, m := range modules {
+		cases = append(cases, keptBy("getattr on "+m+" keeps it", map[string]string{"app.py": "import " + m + "\nf = getattr(" + m + ", n)\n"}))
+	}
+	launches := []string{"create_subprocess_exec", "create_subprocess_shell", "subprocess_exec", "subprocess_shell"}
+	for l := range processLaunchLeafs {
+		if !slices.Contains(launches, l) {
+			t.Errorf("process launch %s has no row", l)
+		}
+	}
+	for _, l := range launches {
+		cases = append(cases, keptBy("launch "+l+" with a computed argument keeps it", map[string]string{"app.py": "async def go(x, p):\n    await x." + l + "('python', p)\n"}))
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

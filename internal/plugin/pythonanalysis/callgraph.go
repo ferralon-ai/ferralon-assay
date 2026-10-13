@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -208,12 +209,14 @@ var buildScriptBackends = map[string][]string{
 // that is where the backend looks for them; a file of that name anywhere else is ordinary
 // code to whatever loads files from its directory.
 //
-// Leaving a file out can only make the program look like it loads less, so a script is
-// left out only when nothing in the build tree could load it. scanBuildTree reads every
-// file under buildDir; the script stays in when any other file mentions its stem, when any
-// Python file loads code by path or computed name, when a relative import climbs above the
-// build root, or when a string in its own text names it (an entry point or py_modules entry
-// it declares about itself). Any file the scan can't read keeps every script.
+// Leaving a file out can only make the program look like it loads less, so a script stays
+// in on any sign that the build tree could load it. scanBuildTree reads every file under
+// buildDir; the script stays in when any other file mentions its stem, when any file that
+// can carry Python names a loader, a loader module reached other than plainly, or a process
+// launch with arguments that are not all literals (namesLoader), when a relative import
+// climbs above the build root, or when a string in its own text names it (an entry point or
+// py_modules entry it declares about itself). Any file the scan can't read keeps every
+// script. Code that installed dependencies run is not read.
 func buildScripts(parsed []parsedFile, buildDir string) map[int]bool {
 	root := filepath.Clean(buildDir)
 	build := map[int]bool{}
@@ -332,9 +335,8 @@ func (s *buildTreeScan) loaderOutside(own string) bool {
 }
 
 // scanBuildTree reads every file under root through the shared build-tree walk, recording
-// which files mention each stem as a whole word and which Python files (by extension, a .pth
-// file, or a python shebang) name a dynamic-import or file-loader callable anywhere, aliased
-// imports included. It returns nil when any file can't be read in full: unreadable, larger
+// which files mention each stem as a whole word and which files that can carry Python
+// (pythonCarrier) name a way to run code chosen at runtime (namesLoader). It returns nil when any file can't be read in full: unreadable, larger
 // than maxScannedFile, binary, a symlink leaving root, or a symlinked directory the walk
 // doesn't read through its target. Any of those could hold the mention.
 func scanBuildTree(root string, stems []string) *buildTreeScan {
@@ -354,7 +356,7 @@ func scanBuildTree(root string, stems []string) *buildTreeScan {
 				scan.mentions[s] = append(scan.mentions[s], p)
 			}
 		}
-		if pythonText(p, text) && namesLoader(text) {
+		if pythonCarrier(p, text) && namesLoader(text) {
 			scan.loaders = append(scan.loaders, p)
 		}
 		return "", false
@@ -393,34 +395,280 @@ func readScanned(p string) (data []byte, why string) {
 	return data, ""
 }
 
-// pythonText reports whether the file at p holds Python the interpreter runs: a .py or .pyw
-// source, a .pth file (its import lines run at startup), or a script with a python shebang.
-func pythonText(p, text string) bool {
+// pythonCarrier reports whether the file at p can carry Python the interpreter runs: a
+// source by extension (.py, .pyw, Cython's .pyx, .pxd and .pxi, a notebook, or a .pth file,
+// whose import lines run at startup), a script whose shebang names python, pypy, uv, uvx or
+// pipx, or any file holding inline Python for an interpreter (python -c, python - or a heredoc
+// into python, or a pipe into a bare interpreter), such as a Dockerfile RUN line, a shell
+// script or a CI step.
+func pythonCarrier(p, text string) bool {
 	switch strings.ToLower(filepath.Ext(p)) {
-	case ".py", ".pyw", ".pth":
+	case ".py", ".pyw", ".pyx", ".pxd", ".pxi", ".ipynb", ".pth":
 		return true
 	}
-	first, _, _ := strings.Cut(text, "\n")
-	return strings.HasPrefix(first, "#!") && strings.Contains(first, "python")
+	if first, _, _ := strings.Cut(text, "\n"); strings.HasPrefix(first, "#!") && pythonShebangRE.MatchString(first) {
+		return true
+	}
+	return inlinePythonRE.MatchString(text) || pipedPythonRE.MatchString(text)
 }
 
-// namesLoader reports whether Python source names a dynamic-import or file-loader callable
-// as an identifier outside comments and strings, called or not, so an aliased import
-// ("from runpy import run_path as rp") counts.
-func namesLoader(src string) bool {
-	r := []rune(stripPython(src))
+var (
+	pythonShebangRE = regexp.MustCompile(`(?i)python|pypy|(^|[^0-9a-z_])(uvx?|pipx)($|[^0-9a-z_])`)
+	// inlinePythonRE is an interpreter, after any other flags, given -c (alone or in a flag
+	// cluster), - for stdin, or a heredoc.
+	inlinePythonRE = regexp.MustCompile(`(?im)(python|pypy)[0-9.]*[^\s|;&]*(([ \t]+-[a-z]+)*[ \t]+-[a-z]*c($|[^0-9a-z_])|([ \t]+-[a-z]+)*[ \t]+-($|[ \t'"])|[ \t]*<<)`)
+	pipedPythonRE  = regexp.MustCompile(`(?im)\|[ \t]*[^\s|;&]*(python|pypy)[0-9.]*[^\s|;&]*[ \t]*($|[|;&)'"])`)
+)
+
+// namesLoader reports whether text that can carry Python names a way to run code chosen at
+// runtime, matched as plain text, so comments and strings count and a loader reached by name
+// (getattr(importlib, "import_module"), a module __dict__, operator.attrgetter) is seen:
+//
+//   - a dynamic-import or file-loader callable, called or not;
+//   - a loader module (loaderModules) used other than by a plain import or a call through
+//     attributes with ordinary names, which covers a loader name built at runtime;
+//   - subprocess, os, posix, nt or pty used other than by a plain import, a constant or
+//     exception, or a launch function called with literal arguments only, and an asyncio
+//     launch (processLaunchLeafs) with arguments that are not all literals: either could run
+//     any script.
+func namesLoader(text string) bool {
+	r := []rune(text)
 	for i := 0; i < len(r); {
 		if !isIdentStartRune(r[i]) || (i > 0 && isIdentPart(r[i-1])) {
 			i++
 			continue
 		}
 		w, end := readWordRunes(r, i)
-		if fileLoaderLeafs[w] || dynamicImportLiteralLeafs[w] || dynamicImportOpaqueLeafs[w] {
+		switch {
+		case fileLoaderLeafs[w] || dynamicImportLiteralLeafs[w] || dynamicImportOpaqueLeafs[w]:
+			return true
+		case loaderModules[w] && !plainModuleUse(r, i, end, loaderAttrPlain(w)):
+			return true
+		case w == "subprocess" && !plainModuleUse(r, i, end, subprocessAttrPlain):
+			return true
+		case processModules[w] && !plainModuleUse(r, i, end, osAttrPlain):
+			return true
+		case processLaunchLeafs[w] && !literalCall(r, end):
 			return true
 		}
 		i = end
 	}
 	return false
+}
+
+// loaderModules are the modules whose attributes import or run code by name or path.
+var loaderModules = map[string]bool{
+	"importlib": true, "runpy": true, "imp": true, "pkgutil": true, "zipimport": true,
+	"builtins": true, "__builtins__": true,
+}
+
+// loaderTopPlain are the names a from-import can take from a loader module other than
+// builtins without binding a module or loader: everything else it holds is a loader (also
+// matched by name) or a submodule a later getattr could reach one through.
+var loaderTopPlain = map[string]bool{"reload": true, "invalidate_caches": true, "get_data": true, "extend_path": true}
+
+// loaderAttrPlain accepts what a plain use of the loader module named module may reach. From
+// a from-import (r nil) that is any builtin, or a name in loaderTopPlain. Through attributes
+// it is a chain of ordinary names ending in a call or in a class or exception name, so
+// importlib.metadata.version("x") is plain while importlib.util handed on as a value is not.
+func loaderAttrPlain(module string) func(name string, r []rune, end int) bool {
+	return func(name string, r []rune, end int) bool {
+		if r == nil {
+			return module == "builtins" || module == "__builtins__" || loaderTopPlain[name]
+		}
+		for {
+			j := skipSpaceRunes(r, end)
+			if j >= len(r) || r[j] != '.' {
+				break
+			}
+			n, nend := readWordRunes(r, skipSpaceRunes(r, j+1))
+			if n == "" || strings.HasPrefix(n, "__") {
+				return false
+			}
+			name, end = n, nend
+		}
+		j := skipSpaceRunes(r, end)
+		return j < len(r) && r[j] == '(' || unicode.IsUpper([]rune(name)[0])
+	}
+}
+
+// osAttrPlain accepts an os, posix, nt or pty attribute or from-import that is not a launch
+// function (osLaunchAttr), or one called with literal arguments only.
+func osAttrPlain(name string, r []rune, end int) bool {
+	return !osLaunchAttr(name) || literalCall(r, end)
+}
+
+// processModules are the modules whose launch functions (osLaunchAttr) start a process.
+var processModules = map[string]bool{"os": true, "posix": true, "nt": true, "pty": true}
+
+// processLaunchLeafs start a process wherever they are reached from (asyncio, an event loop).
+var processLaunchLeafs = map[string]bool{
+	"create_subprocess_exec": true, "create_subprocess_shell": true,
+	"subprocess_exec": true, "subprocess_shell": true,
+}
+
+// osLaunchAttr reports whether name is a process-launching function of os, posix, nt or pty.
+func osLaunchAttr(name string) bool {
+	switch name {
+	case "system", "popen", "startfile":
+		return true
+	}
+	return strings.HasPrefix(name, "exec") || strings.HasPrefix(name, "spawn") || strings.HasPrefix(name, "posix_spawn")
+}
+
+// subprocessAttrPlain reports whether a subprocess attribute reached at r[end:] (just past
+// its name) runs nothing chosen at runtime: an exception or result type, a constant, or a
+// launch function called with literal arguments only.
+func subprocessAttrPlain(name string, r []rune, end int) bool {
+	switch name {
+	case "run", "call", "check_call", "check_output", "Popen", "getoutput", "getstatusoutput":
+		return literalCall(r, end)
+	case "CalledProcessError", "TimeoutExpired", "CompletedProcess", "SubprocessError", "list2cmdline":
+		return true
+	}
+	return name != "" && strings.ToUpper(name) == name
+}
+
+var (
+	importBeforeRE = regexp.MustCompile(`(^|[^0-9A-Za-z_.])import\s+([0-9A-Za-z_.]+\s*,\s*)*$`)
+	fromBeforeRE   = regexp.MustCompile(`(^|[^0-9A-Za-z_.])from\s+$`)
+	asAfterRE      = regexp.MustCompile(`^((\.[0-9A-Za-z_]+)*)\s+as\s`)
+	fromImportRE   = regexp.MustCompile(`^([0-9A-Za-z_.]*)\s+import\s+([0-9A-Za-z_, ]+?)\s*([#;"'].*)?$`)
+)
+
+// plainModuleUse reports whether the module name at r[i:end] is used in a way that reaches
+// only what its attribute names say: imported without an alias ("import m", "import a, m",
+// "from m import x", "from m.sub import x as y"), a submodule imported under an alias that
+// attr accepts ("import m.sub as s"), or followed by an attribute with an ordinary (not
+// dunder) name. attr, when set, also has to accept every attribute reached (with r and the
+// index past its name) and every name imported from the module itself (with r nil). Anything
+// else (getattr(m, ...), vars(m), m passed as a value, the module aliased, a name imported
+// from it under an alias, the name in a string or comment) could reach any attribute.
+func plainModuleUse(r []rune, i, end int, attr func(name string, r []rune, end int) bool) bool {
+	ls := i
+	for ls > 0 && r[ls-1] != '\n' {
+		ls--
+	}
+	le := end
+	for le < len(r) && r[le] != '\n' {
+		le++
+	}
+	before, after := string(r[ls:i]), string(r[end:le])
+	if importBeforeRE.MatchString(before) {
+		m := asAfterRE.FindStringSubmatch(after)
+		if m == nil {
+			return true
+		}
+		sub, _, _ := strings.Cut(strings.TrimPrefix(m[1], "."), ".")
+		return sub != "" && (attr == nil || attr(sub, nil, 0))
+	}
+	if fromBeforeRE.MatchString(before) {
+		m := fromImportRE.FindStringSubmatch(after)
+		if m == nil {
+			return false
+		}
+		if m[1] != "" {
+			return true
+		}
+		for _, part := range strings.Split(m[2], ",") {
+			name, rest, _ := strings.Cut(strings.TrimSpace(part), " ")
+			if strings.TrimSpace(rest) != "" || attr != nil && !attr(name, nil, 0) {
+				return false
+			}
+		}
+		return true
+	}
+	j := skipSpaceRunes(r, end)
+	if j >= len(r) || r[j] != '.' {
+		return false
+	}
+	name, nend := readWordRunes(r, skipSpaceRunes(r, j+1))
+	if name == "" || strings.HasPrefix(name, "__") {
+		return false
+	}
+	return attr == nil || attr(name, r, nend)
+}
+
+// literalCall reports whether r[end:], just past a callable's name, is a call whose arguments
+// are all literals: strings that are not f-strings, numbers, True, False, None, the
+// subprocess stream constants, and lists, tuples and dicts of them, by position or keyword. A name not followed by a call is a
+// reference that could be called with anything.
+func literalCall(r []rune, end int) bool {
+	j := skipSpaceRunes(r, end)
+	if j >= len(r) || r[j] != '(' {
+		return false
+	}
+	depth := 0
+	for k := j; k < len(r); {
+		c := r[k]
+		switch {
+		case c == '(' || c == '[' || c == '{':
+			depth++
+			k++
+		case c == ')' || c == ']' || c == '}':
+			depth--
+			k++
+			if depth == 0 {
+				return true
+			}
+		case c == '"' || c == '\'':
+			k = skipStringRunes(r, k)
+			if k < 0 {
+				return false
+			}
+		case isIdentStartRune(c):
+			w, wend := readWordRunes(r, k)
+			if wend < len(r) && (r[wend] == '"' || r[wend] == '\'') && len(w) <= 2 && strings.Trim(strings.ToLower(w), "rbu") == "" {
+				k = wend
+				continue
+			}
+			n := skipSpaceRunes(r, wend)
+			if c, cend := readWordRunes(r, n+1); w == "subprocess" && n < len(r) && r[n] == '.' && subprocessConstants[c] {
+				k = cend
+				continue
+			}
+			kwarg := n < len(r) && r[n] == '=' && (n+1 >= len(r) || r[n+1] != '=')
+			if !kwarg && w != "True" && w != "False" && w != "None" {
+				return false
+			}
+			k = wend
+		case unicode.IsSpace(c) || unicode.IsDigit(c) || strings.ContainsRune(",:+-.=", c):
+			k++
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// subprocessConstants are the subprocess constants a literal call may pass for a stream.
+var subprocessConstants = map[string]bool{"PIPE": true, "STDOUT": true, "DEVNULL": true}
+
+// skipStringRunes returns the index just past the string literal opening at r[k], or -1 when
+// it does not close.
+func skipStringRunes(r []rune, k int) int {
+	q := r[k]
+	triple := k+2 < len(r) && r[k+1] == q && r[k+2] == q
+	if triple {
+		k += 3
+	} else {
+		k++
+	}
+	for k < len(r) {
+		switch {
+		case r[k] == '\\':
+			k += 2
+		case triple && r[k] == q && k+2 < len(r) && r[k+1] == q && r[k+2] == q:
+			return k + 3
+		case !triple && r[k] == q:
+			return k + 1
+		case !triple && r[k] == '\n':
+			return -1
+		default:
+			k++
+		}
+	}
+	return -1
 }
 
 // importRef is one module an import statement may load, made absolute against the

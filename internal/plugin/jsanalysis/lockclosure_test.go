@@ -310,6 +310,11 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 	const lockHook = `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"node_modules/tsconfig-paths":{"version":"4.2.0"}}}`
 	const lockHookV1 = `{"lockfileVersion":1,"dependencies":{"tsconfig-paths":{"version":"4.2.0"}}}`
 	const window, overlap = 1 << 20, 512
+	// lockWS is a lock whose root declares workspaces and that lists member.
+	lockWS := func(workspaces, member string) string {
+		return `{"lockfileVersion":3,"packages":{"":{"name":"app","workspaces":` + workspaces + `},"node_modules/qs":{},` +
+			`"node_modules/a":{"link":true,"resolved":"` + member + `"},"` + member + `":{"name":"a","dependencies":{"qs":"6"}}}}`
+	}
 	cases := []struct {
 		name    string
 		from    string
@@ -423,6 +428,36 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 			"package.json": `{"name":"root","workspaces":[]}`, "app/package-lock.json": lock}},
 		{name: "a workspace member the root lock governs", from: "packages/a", bounded: true, files: map[string]string{
 			"package.json": `{"name":"root","workspaces":["packages/*"]}`, "package-lock.json": lock, "packages/a/package.json": `{"name":"a"}`}},
+
+		// A package.json with no lock of its own between the importer and the governing lock:
+		// an install there puts a node_modules the lock does not describe first on every
+		// resolution path. Only a workspace member the lock's root declares and the lock lists
+		// is installed from the lock.
+		{name: "a lockless package.json with dependencies below the governing lock", from: "frontend", files: map[string]string{
+			"package-lock.json": lock, "frontend/package.json": `{"name":"frontend","dependencies":{"zed":"9.0.0"}}`}},
+		{name: "a lockless package.json with dependencies above the importer, below the lock", from: "frontend/src", files: map[string]string{
+			"package-lock.json": lock, "frontend/package.json": `{"name":"frontend","dependencies":{"zed":"9.0.0"}}`}},
+		{name: "a lockless package.json declaring no install below the governing lock", from: "frontend", bounded: true, files: map[string]string{
+			"package-lock.json": lock, "frontend/package.json": `{"name":"frontend","dependencies":{}}`}},
+		{name: "an undecodable lockless package.json below the governing lock", from: "frontend", files: map[string]string{
+			"package-lock.json": lock, "frontend/package.json": `{"name":`}},
+		{name: "a lockless workspaces root below the governing lock", from: "tools", files: map[string]string{
+			"package-lock.json": lock, "tools/package.json": `{"name":"tools","workspaces":["x/*"]}`}},
+		{name: "a workspace member with dependencies the lock installs", from: "packages/a", bounded: true, files: map[string]string{
+			"package.json": `{"name":"app","workspaces":["packages/*"]}`, "package-lock.json": lockWS(`["packages/*"]`, "packages/a"),
+			"packages/a/package.json": `{"name":"a","dependencies":{"qs":"6"}}`}},
+		{name: "a workspace member under an object workspaces field", from: "packages/a/src", bounded: true, files: map[string]string{
+			"package.json": `{"name":"app","workspaces":{"packages":["./packages/*"]}}`, "package-lock.json": lockWS(`{"packages":["./packages/*"]}`, "packages/a"),
+			"packages/a/package.json": `{"name":"a","dependencies":{"qs":"6"}}`}},
+		{name: "a directory the lock lists under a root that declares no workspaces", from: "packages/a", files: map[string]string{
+			"package.json": `{"name":"app"}`, "package-lock.json": lockWS(`null`, "packages/a"),
+			"packages/a/package.json": `{"name":"a","dependencies":{"qs":"6"}}`}},
+		{name: "a directory the workspaces pattern matches but the lock does not list", from: "packages/a", files: map[string]string{
+			"package.json": `{"name":"app","workspaces":["packages/*"]}`, "package-lock.json": lockWS(`["packages/*"]`, "packages/b"),
+			"packages/a/package.json": `{"name":"a","dependencies":{"qs":"6"}}`}},
+		{name: "a directory a negated workspaces pattern excludes", from: "packages/a", files: map[string]string{
+			"package.json": `{"name":"app","workspaces":["packages/*","!packages/a"]}`, "package-lock.json": lockWS(`["packages/*","!packages/a"]`, "packages/a"),
+			"packages/a/package.json": `{"name":"a","dependencies":{"qs":"6"}}`}},
 
 		// tsconfig paths applied by a TypeScript runner.
 		{name: "tsconfig paths and a tsx runner", files: map[string]string{"package-lock.json": lock,

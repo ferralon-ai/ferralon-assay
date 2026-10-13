@@ -138,10 +138,11 @@ const HeadSize = 64 << 10
 // link, so whatever the target holds is classified once, at its real path.
 //
 // match sees the path and up to HeadSize bytes of the file's content (nil when the content
-// looks binary or the file is empty). A head match rejects that starts with a byte-order mark
-// is judged again as its BOMDecode text, so a mark can only add a candidate. fullyRead is asked only about a regular file match
-// accepted; every other candidate is not fully read. Skipped directories yield nothing, unless
-// they are symlinks leaving root.
+// looks binary or the file is empty). When match rejects a head that starts with a byte-order
+// mark, it judges the head's BOMDecode text, then the BOMWide text, so a mark can only add a
+// candidate. fullyRead is asked only about a regular file match accepted; every other
+// candidate is not fully read. Skipped directories yield nothing, unless they are symlinks
+// leaving root.
 func Candidates(root string, match func(path string, head []byte) (why string, ok bool), fullyRead func(path string) bool) []Candidate {
 	var out []Candidate
 	add := func(path, why string, read bool) {
@@ -206,6 +207,16 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 			}
 		}
 		if !ok {
+			wide, bom, err := BOMWide(e.Path, head)
+			switch {
+			case err != nil:
+				add(e.Path, "unreadable", false)
+				return nil
+			case bom:
+				why, ok = match(e.Path, wide)
+			}
+		}
+		if !ok {
 			return nil
 		}
 		add(e.Path, why, !e.Symlink && fullyRead(e.Path))
@@ -231,12 +242,16 @@ func Head(path string) ([]byte, error) {
 }
 
 func rawHead(path string) ([]byte, error) {
+	return rawHeadN(path, HeadSize)
+}
+
+func rawHeadN(path string, size int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	buf := make([]byte, HeadSize)
+	buf := make([]byte, size)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -246,10 +261,10 @@ func rawHead(path string) ([]byte, error) {
 
 // NULHeadMatch is a content rule's fallback for a file whose Head was nil. A NUL does not stop
 // every installer (pip and yarn v1 read past one in a comment), so it re-reads the head and runs
-// content on it twice: with every NUL removed, and with every NUL turned into a newline; a head
-// that starts with a byte-order mark is also judged as its BOMDecode text. A
-// re-read that fails matches as "unreadable": the file went unread, which never proves anything
-// absent. An empty file does not match.
+// content on it twice: with every NUL removed, and with every NUL turned into a newline. A head
+// that starts with a byte-order mark is also judged as its BOMDecode text, then as its BOMWide
+// text. A re-read that fails matches as "unreadable": the file went unread, which never proves
+// anything absent. An empty file does not match.
 func NULHeadMatch(path string, content func(path string, head []byte) (string, bool)) (string, bool) {
 	raw, err := rawHead(path)
 	if err != nil {
@@ -261,6 +276,13 @@ func NULHeadMatch(path string, content func(path string, head []byte) (string, b
 	}
 	if text, bom := BOMDecode(raw); bom {
 		renderings = append(renderings, text)
+	}
+	wide, bom, err := BOMWide(path, raw)
+	if err != nil {
+		return "unreadable", true
+	}
+	if bom {
+		renderings = append(renderings, wide)
 	}
 	for _, head := range renderings {
 		if len(head) == 0 {
@@ -276,22 +298,54 @@ func NULHeadMatch(path string, content func(path string, head []byte) (string, b
 // BOMDecode returns head as UTF-8 text when it starts with a byte-order mark, and false when it
 // does not. pip decodes a requirements file by its BOM (Windows PowerShell 5 writes `pip freeze >`
 // as UTF-16LE with one), so a content rule judges the decoded text. A UTF-32 BOM is checked
-// before UTF-16, whose little-endian mark it begins with. A trailing partial code unit, where
-// HeadSize cut the file, is dropped.
+// before UTF-16, whose little-endian mark it begins with. One U+FEFF left at the start of the
+// text is trimmed too, as pip's UTF-16 decoder consumes a second mark. A trailing partial code
+// unit, where HeadSize cut the file, is dropped.
 func BOMDecode(head []byte) ([]byte, bool) {
+	enc, ok := bomOf(head)
+	if !ok {
+		return nil, false
+	}
+	return bytes.TrimPrefix(enc.decode(head[enc.mark:]), []byte("\ufeff")), true
+}
+
+// BOMWide re-reads the file at path, whose head starts with a byte-order mark, far enough that
+// its BOMDecode text holds HeadSize code units: the window a twin of the file without the mark,
+// in UTF-8, gets as its head. A UTF-16 head re-reads twice HeadSize bytes and a UTF-32 head four
+// times. bom is false when head carries no mark or the file ended within head, which BOMDecode
+// already judged whole; err is set when the re-read fails.
+func BOMWide(path string, head []byte) (text []byte, bom bool, err error) {
+	enc, ok := bomOf(head)
+	if !ok || len(head) < HeadSize {
+		return nil, false, nil
+	}
+	raw, err := rawHeadN(path, enc.mark+enc.unit*HeadSize)
+	if err != nil {
+		return nil, false, err
+	}
+	text, _ = BOMDecode(raw)
+	return text, true, nil
+}
+
+type bomEncoding struct {
+	mark, unit int
+	decode     func([]byte) []byte
+}
+
+func bomOf(head []byte) (bomEncoding, bool) {
 	switch {
 	case bytes.HasPrefix(head, []byte{0xEF, 0xBB, 0xBF}):
-		return head[3:], true
+		return bomEncoding{3, 1, func(b []byte) []byte { return b }}, true
 	case bytes.HasPrefix(head, []byte{0xFF, 0xFE, 0, 0}):
-		return decodeUTF32(head[4:], binary.LittleEndian), true
+		return bomEncoding{4, 4, func(b []byte) []byte { return decodeUTF32(b, binary.LittleEndian) }}, true
 	case bytes.HasPrefix(head, []byte{0, 0, 0xFE, 0xFF}):
-		return decodeUTF32(head[4:], binary.BigEndian), true
+		return bomEncoding{4, 4, func(b []byte) []byte { return decodeUTF32(b, binary.BigEndian) }}, true
 	case bytes.HasPrefix(head, []byte{0xFF, 0xFE}):
-		return decodeUTF16(head[2:], binary.LittleEndian), true
+		return bomEncoding{2, 2, func(b []byte) []byte { return decodeUTF16(b, binary.LittleEndian) }}, true
 	case bytes.HasPrefix(head, []byte{0xFE, 0xFF}):
-		return decodeUTF16(head[2:], binary.BigEndian), true
+		return bomEncoding{2, 2, func(b []byte) []byte { return decodeUTF16(b, binary.BigEndian) }}, true
 	}
-	return nil, false
+	return bomEncoding{}, false
 }
 
 func decodeUTF16(b []byte, order binary.ByteOrder) []byte {

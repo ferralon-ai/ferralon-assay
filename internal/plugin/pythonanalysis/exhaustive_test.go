@@ -59,6 +59,19 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		}
 		return b.String()
 	}
+	// utf32LE encodes ASCII s as UTF-32LE behind its byte-order mark.
+	utf32LE := func(s string) string {
+		b := []byte("\xff\xfe\x00\x00")
+		for _, c := range []byte(s) {
+			b = append(b, c, 0, 0, 0)
+		}
+		return string(b)
+	}
+	// commentsTo is comment lines filling n characters.
+	commentsTo := func(n int) string {
+		line := "# " + strings.Repeat("x", 61) + "\r\n"
+		return strings.Repeat(line, n/len(line)) + "#" + strings.Repeat("x", n%len(line)-2) + "\r\n"
+	}
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -142,6 +155,12 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"requirement lines by content, UTF-16BE with a BOM", map[string]string{"deps.pins": utf16(true, "pyjwt==2.8.0\n")}, false},
 		{"requirement lines by content, UTF-8 BOM", map[string]string{"deps.pins": "\xef\xbb\xbfpyjwt==2.8.0\n"}, false},
 		{"UTF-16LE text file without requirement lines", map[string]string{"notes": utf16(false, "pyjwt is not used here\n")}, true},
+		// pip's UTF-16 decoder consumes a second byte-order mark.
+		{"requirement lines by content, UTF-16LE with a doubled BOM", map[string]string{"deps.pins": "\xff\xfe" + utf16(false, "pyjwt==2.8.0\n")}, false},
+		// A marked file is judged over as much text as its UTF-8 twin: HeadSize characters, which
+		// UTF-16 spends twice the bytes and UTF-32 four times the bytes on.
+		{"requirement lines by content, UTF-16LE, first requirement at character 40000", map[string]string{"deps.pins": utf16(false, commentsTo(40000)+"pyjwt==2.8.0\r\n")}, false},
+		{"requirement lines by content, UTF-32LE, first requirement at character 40000", map[string]string{"deps.pins": utf32LE(commentsTo(40000) + "pyjwt==2.8.0\r\n")}, false},
 		{"UTF-8 BOM text file without requirement lines", map[string]string{"notes": "\xef\xbb\xbfpyjwt is not used here\n"}, true},
 		{"binary file without requirement lines", map[string]string{"assets/logo.png": "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x01\x00"}, true},
 		{"text file without requirement lines", map[string]string{"notes": "pyjwt is not used here\n"}, true},

@@ -2,6 +2,7 @@ package buildtree
 
 import (
 	"bytes"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -308,6 +309,9 @@ func TestNULHeadMatch(t *testing.T) {
 	equals := func(want string) func(string, []byte) (string, bool) {
 		return func(_ string, head []byte) (string, bool) { return "rule", string(head) == want }
 	}
+	endsWith := func(want string) func(string, []byte) (string, bool) {
+		return func(_ string, head []byte) (string, bool) { return "rule", bytes.HasSuffix(head, []byte(want)) }
+	}
 	cases := []struct {
 		name, content string
 		missing       bool
@@ -322,6 +326,7 @@ func TestNULHeadMatch(t *testing.T) {
 		{name: "only NULs, removed", content: "\x00\x00", rule: equals("")},
 		{name: "unreadable", missing: true, rule: equals("ab"), wantWhy: "unreadable", wantOK: true},
 		{name: "UTF-16LE BOM decoded", content: "\xff\xfea\x00\n\x00b\x00", rule: equals("a\nb"), wantWhy: "rule (NUL in head)", wantOK: true},
+		{name: "UTF-16LE BOM, token past the HeadSize bytes", content: utf16LE(strings.Repeat("a", 40000) + "b"), rule: endsWith("ab"), wantWhy: "rule (NUL in head)", wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,6 +354,10 @@ func TestBOMDecode(t *testing.T) {
 		{"UTF-16LE cut mid code unit", "\xff\xfea\x00b", "a", true},
 		{"UTF-32LE", "\xff\xfe\x00\x00a\x00\x00\x00", "a", true},
 		{"UTF-32BE", "\x00\x00\xfe\xff\x00\x00\x00a", "a", true},
+		{"UTF-16LE double BOM", "\xff\xfe\xff\xfea\x00", "a", true},
+		{"UTF-16BE double BOM", "\xfe\xff\xfe\xff\x00a", "a", true},
+		{"UTF-8 double BOM", "\xef\xbb\xbf\xef\xbb\xbfa", "a", true},
+		{"UTF-16LE triple BOM keeps the third", "\xff\xfe\xff\xfe\xff\xfea\x00", "\ufeffa", true},
 		{"no BOM", "ab", "", false},
 		{"empty", "", "", false},
 	}
@@ -391,5 +400,111 @@ func TestCandidates_BOMHead(t *testing.T) {
 	}
 	if want := map[string]int{"bom": 2, "bom-raw": 1, "plain": 1, "other": 2}; !maps.Equal(calls, want) {
 		t.Errorf("match calls = %v, want %v", calls, want)
+	}
+}
+
+// utf16LE encodes ASCII s as UTF-16LE behind its byte-order mark.
+func utf16LE(s string) string {
+	b := []byte("\xff\xfe")
+	for _, c := range []byte(s) {
+		b = append(b, c, 0)
+	}
+	return string(b)
+}
+
+// encodeBOM encodes ASCII s behind the named byte-order mark.
+func encodeBOM(enc, s string) string {
+	var b []byte
+	switch enc {
+	case "UTF-8":
+		return "\xef\xbb\xbf" + s
+	case "UTF-16LE":
+		return utf16LE(s)
+	case "UTF-16BE":
+		b = []byte("\xfe\xff")
+		for _, c := range []byte(s) {
+			b = append(b, 0, c)
+		}
+	case "UTF-32LE":
+		b = []byte("\xff\xfe\x00\x00")
+		for _, c := range []byte(s) {
+			b = append(b, c, 0, 0, 0)
+		}
+	case "UTF-32BE":
+		b = []byte("\x00\x00\xfe\xff")
+		for _, c := range []byte(s) {
+			b = append(b, 0, 0, 0, c)
+		}
+	}
+	return string(b)
+}
+
+// BOMWide gives a marked file the same window of text a BOM-free UTF-8 twin gets as its head:
+// HeadSize code units, whatever the encoding's unit size.
+func TestBOMWide(t *testing.T) {
+	dir := t.TempDir()
+	long := strings.Repeat("a", HeadSize+100)
+	cases := []struct {
+		name, content string
+		missing       bool
+		wantLen       int
+		wantBOM       bool
+		wantErr       bool
+	}{
+		{name: "UTF-8", content: encodeBOM("UTF-8", long), wantLen: HeadSize, wantBOM: true},
+		{name: "UTF-16LE", content: encodeBOM("UTF-16LE", long), wantLen: HeadSize, wantBOM: true},
+		{name: "UTF-16BE", content: encodeBOM("UTF-16BE", long), wantLen: HeadSize, wantBOM: true},
+		{name: "UTF-32LE", content: encodeBOM("UTF-32LE", long), wantLen: HeadSize, wantBOM: true},
+		{name: "UTF-32BE", content: encodeBOM("UTF-32BE", long), wantLen: HeadSize, wantBOM: true},
+		{name: "UTF-16LE ending within the head", content: encodeBOM("UTF-16LE", "ab")},
+		{name: "no BOM", content: long},
+		{name: "re-read fails", content: encodeBOM("UTF-16LE", long), missing: true, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-"))
+			write(t, p, tc.content)
+			head, err := rawHead(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.missing {
+				if err := os.Remove(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			text, bom, err := BOMWide(p, head)
+			if bom != tc.wantBOM || (err != nil) != tc.wantErr || len(text) != tc.wantLen {
+				t.Errorf("BOMWide = %d bytes, %v, %v; want %d bytes, %v, error %v", len(text), bom, err, tc.wantLen, tc.wantBOM, tc.wantErr)
+			}
+			if tc.wantBOM && strings.Trim(string(text), "a") != "" {
+				t.Errorf("BOMWide text is not the decoded run of a")
+			}
+		})
+	}
+}
+
+// A marked head the match still rejects is judged once more over the wider BOMWide window, and
+// a re-read that fails there is a candidate the walk could not read.
+func TestCandidates_BOMWide(t *testing.T) {
+	root := t.TempDir()
+	body := "\xef\xbb\xbf" + strings.Repeat("a", HeadSize-4) + "want"
+	write(t, filepath.Join(root, "wide"), body)
+	write(t, filepath.Join(root, "wide-locked"), body)
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "wide-locked"), 0o644) })
+	match := func(path string, head []byte) (string, bool) {
+		if filepath.Base(path) == "wide-locked" {
+			if err := os.Chmod(path, 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return "wide", bytes.HasSuffix(head, []byte("want"))
+	}
+	var got []string
+	for _, c := range Candidates(root, match, func(string) bool { return true }) {
+		got = append(got, fmt.Sprintf("%s:%s:%v", filepath.Base(c.Path), c.Why, c.FullyRead))
+	}
+	if want := []string{"wide:wide:true", "wide-locked:unreadable:false"}; !slices.Equal(got, want) {
+		t.Errorf("candidates = %v, want %v", got, want)
 	}
 }

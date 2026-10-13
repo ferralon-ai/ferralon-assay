@@ -141,7 +141,19 @@ func TestResolveInventoryPartiality(t *testing.T) {
 			name:      "vcpkg.json asks for a package the status does not have installed",
 			files:     map[string]string{vcpkgStatusFile: vcpkgStatus, vcpkgFile: vcpkgJSON},
 			wantPart:  plugin.Partial(plugin.PartialReasonSourceUnpinned),
-			wantPURLs: []string{"pkg:vcpkg/fmt@10.1.1?port_version=2", "pkg:vcpkg/libpng@1.6.43?port_version=2", "pkg:vcpkg/vcpkg-cmake@2024-04-23", "pkg:vcpkg/zlib@1.3.1", "pkg:vcpkg/curl"},
+			wantPURLs: []string{"pkg:vcpkg/fmt", "pkg:vcpkg/libpng@1.6.43?port_version=2", "pkg:vcpkg/vcpkg-cmake@2024-04-23", "pkg:vcpkg/zlib@1.3.1", "pkg:vcpkg/curl"},
+		},
+		{
+			name:      "conanfile.txt pins a package conan.lock does not contain",
+			files:     map[string]string{conanLockFile: `{"version":"0.5","requires":["zlib/1.3.1"]}`, conanTxtFile: "[requires]\nzlib/1.3.1\nopenssl/3.0.0\n"},
+			wantPart:  plugin.Partial(plugin.PartialReasonSourceUnpinned),
+			wantPURLs: []string{"pkg:conan/zlib@1.3.1", "pkg:conan/openssl"},
+		},
+		{
+			name:      "vcpkg.json overrides a package the status does not have installed",
+			files:     map[string]string{vcpkgStatusFile: vcpkgStatus, vcpkgFile: `{"dependencies":["zlib"],"overrides":[{"name":"openssl","version":"3.0.0"}]}`},
+			wantPart:  plugin.Partial(plugin.PartialReasonSourceUnpinned),
+			wantPURLs: []string{"pkg:vcpkg/libpng@1.6.43?port_version=2", "pkg:vcpkg/vcpkg-cmake@2024-04-23", "pkg:vcpkg/zlib@1.3.1", "pkg:vcpkg/openssl"},
 		},
 	}
 	for _, tt := range tests {

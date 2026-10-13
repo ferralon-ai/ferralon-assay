@@ -82,7 +82,8 @@ type manifestSet struct {
 // readManifests reads every dependency manifest at the build root. A declared-tier entry with no
 // pin is dropped when its manager's lock tier pins the same name: the lock is what that range or
 // bare name resolved to. A declared pin is kept beside the lock's, so a stale declaration that
-// disagrees with the lock still surfaces.
+// disagrees with the lock still surfaces. A declared entry whose manager has a lock that does not
+// pin its name is unpinned, since the lock does not contain it.
 func readManifests(buildDir string) manifestSet {
 	ms := manifestSet{present: map[string]bool{}, locked: map[string]bool{}, declared: map[string]map[string]bool{}}
 	for _, m := range []struct {
@@ -134,8 +135,14 @@ func readManifests(buildDir string) manifestSet {
 	}
 	kept := ms.deps[:0]
 	for _, d := range ms.deps {
-		if !d.lockTier && !d.resolved && lockPinned[d.purlType+"/"+strings.ToLower(d.name)] {
+		inLock := lockPinned[d.purlType+"/"+strings.ToLower(d.name)]
+		if !d.lockTier && !d.resolved && inLock {
 			continue
+		}
+		if !d.lockTier && ms.locked[d.purlType] && !inLock {
+			// The lock is the resolved graph. A declared package it does not contain was not
+			// resolved by it, whatever version the declaration names.
+			d.version, d.portVersion, d.resolved = "", 0, false
 		}
 		kept = append(kept, d)
 	}

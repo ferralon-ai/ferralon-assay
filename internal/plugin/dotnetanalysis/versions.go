@@ -53,10 +53,18 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
+	manifests, sealed := manifestFiles(req.BuildDir)
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	locked := make(map[string]bool)
+	for _, m := range manifests {
+		if filepath.Base(m) == "packages.lock.json" {
+			locked[filepath.Dir(m)] = true
+		}
+	}
 
 	var (
 		all         []plugin.ResolvedDependency
+		matches     []plugin.ResolvedDependency
 		parseFailed bool
 	)
 	for _, m := range manifests {
@@ -65,6 +73,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		if isProjectFile(filepath.Base(m)) && locked[filepath.Dir(m)] {
+			continue // the packages.lock.json beside it pins what this references
+		}
+		for _, d := range deps {
+			if want != "" && normalizeNuGetCoordinate(d.Coordinate) == want {
+				matches = append(matches, d)
+			}
+		}
 	}
 
 	part := plugin.Complete()
@@ -75,8 +91,9 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	want := normalizeNuGetCoordinate(req.Coordinate)
+	res := plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}
+	res.MatchesComplete = len(matches) > 0 && sealed && !parseFailed &&
+		!msbuildWideInAncestors(req.BuildDir) && projectsCovered(manifests, locked, want)
 	if want != "" {
 		for _, d := range all {
 			if normalizeNuGetCoordinate(d.Coordinate) == want {
@@ -94,11 +111,15 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 }
 
 // manifestFiles returns every recognized .NET manifest under root, skipping build-output /
-// package / VCS trees so a restored copy does not shadow the project's own manifest.
-func manifestFiles(root string) []string {
-	var out []string
+// package / VCS trees so a restored copy does not shadow the project's own manifest. sealed is
+// false when part of the tree could not be walked or an MSBuild-wide file
+// (Directory.Build.props/.targets, Directory.Packages.props) sits in it: those inject or
+// override PackageReference versions this reader does not evaluate.
+func manifestFiles(root string) (files []string, sealed bool) {
+	sealed = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			sealed = false
 			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
 		}
 		if d.IsDir() {
@@ -107,19 +128,179 @@ func manifestFiles(root string) []string {
 			}
 			return nil
 		}
+		if isMSBuildWide(d.Name()) {
+			sealed = false
+		}
 		if isManifest(d.Name()) {
-			out = append(out, path)
+			files = append(files, path)
 		}
 		return nil
 	})
-	return out
+	return files, sealed
+}
+
+// isMSBuildWide reports whether name is an MSBuild file every project beneath it imports
+// implicitly, one that can add PackageReference items or set their versions centrally.
+func isMSBuildWide(name string) bool {
+	switch strings.ToLower(name) {
+	case "directory.build.props", "directory.build.targets", "directory.packages.props":
+		return true
+	}
+	return false
+}
+
+// msbuildWideInAncestors reports whether an MSBuild-wide file sits in a directory above root:
+// MSBuild searches upward from each project, so one there applies to the whole build.
+func msbuildWideInAncestors(root string) bool {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return true
+	}
+	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return true
+		}
+		for _, e := range entries {
+			if isMSBuildWide(e.Name()) {
+				return true
+			}
+		}
+		if filepath.Dir(dir) == dir {
+			return false
+		}
+	}
+}
+
+// projectsCovered reports whether every project file pins the coordinate in a form NuGet
+// restores as written, so Matches can hold every version the build installs. A project beside
+// packages.lock.json is covered by the lock, which enumerates its whole graph, unless it declares
+// the coordinate and the lock omits it (a stale lock). A project beside packages.config with no
+// PackageReference is covered by that file's flat list, transitives included. Any other project
+// is covered only when it references nothing, or references the coordinate directly at an
+// exact-bracket pin with no condition: the direct reference wins NuGet's resolution, and only
+// "[1.2.3]" means exactly 1.2.3 ("1.2.3" is a minimum, and restore takes a higher version when
+// the feed lacks it).
+func projectsCovered(manifests []string, locked map[string]bool, want string) bool {
+	if want == "" {
+		return false
+	}
+	configured := make(map[string]bool)
+	lockHas := make(map[string]bool)
+	for _, m := range manifests {
+		switch filepath.Base(m) {
+		case "packages.config":
+			configured[filepath.Dir(m)] = true
+		case "packages.lock.json":
+			deps, _ := parseManifest(m)
+			for _, d := range deps {
+				if normalizeNuGetCoordinate(d.Coordinate) == want {
+					lockHas[filepath.Dir(m)] = true
+				}
+			}
+		}
+	}
+	for _, m := range manifests {
+		if !isProjectFile(filepath.Base(m)) {
+			continue
+		}
+		data, err := os.ReadFile(m)
+		if err != nil {
+			return false
+		}
+		refs, ok := coordinateReferences(data, want)
+		if !ok {
+			return false
+		}
+		dir := filepath.Dir(m)
+		switch {
+		case locked[dir]:
+			if refs.declares && !lockHas[dir] {
+				return false
+			}
+		case configured[dir] && !refs.packages:
+			// packages.config lists the project's whole package graph.
+		case refs.imports:
+			return false
+		case refs.pinned:
+		case refs.packages || refs.projects:
+			return false
+		}
+	}
+	return true
+}
+
+// coordinateRefs summarises the references one project file makes, as projectsCovered reads them.
+type coordinateRefs struct {
+	packages bool // any PackageReference
+	projects bool // any ProjectReference
+	imports  bool // any explicit <Import>, which can add references of its own
+	declares bool // a PackageReference to the coordinate (Include or Update)
+	pinned   bool // the coordinate is referenced directly, every reference unconditional and exact-bracket
+}
+
+// refFile is the subset of a project file coordinateReferences reads.
+type refFile struct {
+	Imports []struct {
+		Project string `xml:"Project,attr"`
+	} `xml:"Import"`
+	ItemGroups []struct {
+		Condition   string `xml:"Condition,attr"`
+		PackageRefs []struct {
+			Include     string `xml:"Include,attr"`
+			Update      string `xml:"Update,attr"`
+			Condition   string `xml:"Condition,attr"`
+			VersionAttr string `xml:"Version,attr"`
+			VersionElem string `xml:"Version"`
+		} `xml:"PackageReference"`
+		ProjectRefs []struct {
+			Include string `xml:"Include,attr"`
+		} `xml:"ProjectReference"`
+	} `xml:"ItemGroup"`
+}
+
+// coordinateReferences reads a project file's references to want. The bool is false when the file
+// is unparseable.
+func coordinateReferences(data []byte, want string) (coordinateRefs, bool) {
+	var proj refFile
+	if err := xml.Unmarshal(data, &proj); err != nil {
+		return coordinateRefs{}, false
+	}
+	refs := coordinateRefs{imports: len(proj.Imports) > 0}
+	exact := true
+	for _, ig := range proj.ItemGroups {
+		refs.projects = refs.projects || len(ig.ProjectRefs) > 0
+		for _, pr := range ig.PackageRefs {
+			refs.packages = true
+			name := pr.Include
+			if name == "" {
+				name = pr.Update
+			}
+			if normalizeNuGetCoordinate(name) != want {
+				continue
+			}
+			refs.declares = true
+			raw := strings.TrimSpace(pr.VersionAttr)
+			if raw == "" {
+				raw = strings.TrimSpace(pr.VersionElem)
+			}
+			_, pin := packageReferencePin(raw)
+			if pr.Update != "" || strings.TrimSpace(ig.Condition) != "" || strings.TrimSpace(pr.Condition) != "" || !pin {
+				exact = false
+			}
+		}
+	}
+	refs.pinned = refs.declares && exact
+	return refs, true
 }
 
 // isManifest reports whether name is a recognized .NET dependency manifest.
 func isManifest(name string) bool {
-	if name == "packages.lock.json" || name == "packages.config" {
-		return true
-	}
+	return name == "packages.lock.json" || name == "packages.config" || isProjectFile(name)
+}
+
+// isProjectFile reports whether name is an SDK-style project file.
+func isProjectFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".csproj" || ext == ".fsproj" || ext == ".vbproj"
 }
@@ -172,9 +353,11 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 			if strings.EqualFold(e.Type, "Project") {
 				continue
 			}
-			key := normalizeNuGetCoordinate(name)
+			// The same package across target frameworks needs one entry per distinct version:
+			// each framework can restore its own.
+			key := normalizeNuGetCoordinate(name) + "@" + e.Resolved
 			if seen[key] {
-				continue // the same package across target frameworks — one entry suffices.
+				continue
 			}
 			seen[key] = true
 			out = append(out, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))

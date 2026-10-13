@@ -358,6 +358,15 @@ type DependencyVersionResult struct {
 	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
 	Match      ResolvedDependency   `json:"match"`
 	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Matches is every copy of the request coordinate the plugin read, Match among them: a
+	// package declared or installed at several versions (one per module, a nested install) lists
+	// each. It is evidence; on its own it does not claim no other version exists.
+	Matches []ResolvedDependency `json:"matches,omitempty"`
+	// MatchesComplete asserts that Matches holds every version of the request coordinate the
+	// build can install: every version source in scope is a form the plugin recognises and read
+	// in full, and every project that could carry the coordinate transitively is covered by a
+	// lockfile or pins it directly. False (the default) means other versions cannot be ruled out.
+	MatchesComplete bool `json:"matches_complete,omitempty"`
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
 	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
 	// from All is provably not a dependency. Build-isolation environments are not runtime

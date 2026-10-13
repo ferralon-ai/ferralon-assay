@@ -2,7 +2,9 @@ package dotnetanalysis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -184,5 +186,148 @@ func TestVersions_UnknownCoordinate_NotFound(t *testing.T) {
 	})
 	if r := versionsOf(t, dir, "NotDeclared"); r.Found {
 		t.Errorf("an undeclared coordinate must not be Found; got %+v", r)
+	}
+}
+
+// Matches lists every project's reference, so a project pinned at another version is visible. A
+// project file beside packages.lock.json is superseded by the lock, and each target framework the
+// lock restores at its own version is listed.
+func TestVersions_MatchesEveryProject(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`,
+		"Worker/Worker.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0,14.0)" /></ItemGroup></Project>`,
+		"Worker/packages.lock.json": `{"version": 1, "dependencies": {
+  "net6.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.0"}},
+  "net8.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.3"}}
+}}`,
+	})
+	r := versionsOf(t, dir, "newtonsoft.json")
+	got := map[string]bool{}
+	for _, m := range r.Matches {
+		if !m.Resolved {
+			t.Fatalf("an unresolved match survived: %+v", m)
+		}
+		got[m.Version] = true
+	}
+	if len(r.Matches) != 3 || !got["13.0.0"] || !got["13.0.1"] || !got["13.0.3"] {
+		t.Fatalf("Matches = %+v, want Newtonsoft.Json 13.0.0, 13.0.1 and 13.0.3", r.Matches)
+	}
+}
+
+// MatchesComplete holds only when every project's version of the coordinate is one NuGet
+// restores as written: a lock beside the project, an exact-bracket direct pin, or no references
+// at all. Anything that can bring in another version leaves it false.
+func TestVersions_MatchesComplete(t *testing.T) {
+	const (
+		lock = `{"version": 1, "dependencies": {"net8.0": {
+  "Newtonsoft.Json": {"type": "Transitive", "resolved": "13.0.3"},
+  "Serilog": {"type": "Direct", "resolved": "3.1.1"}}}}`
+		lockWithout = `{"version": 1, "dependencies": {"net8.0": {"Serilog": {"type": "Direct", "resolved": "3.1.1"}}}}`
+		bare        = `<Project Sdk="Microsoft.NET.Sdk"></Project>`
+	)
+	proj := func(items string) string {
+		return `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>` + items + `</ItemGroup></Project>`
+	}
+	pin := func(v string) string { return `<PackageReference Include="Newtonsoft.Json" Version="` + v + `" />` }
+	tests := []struct {
+		name     string
+		files    map[string]string
+		want     bool
+		versions []string
+	}{
+		{"exact-bracket direct pin", map[string]string{"Api/Api.csproj": proj(pin("[13.0.1]"))}, true, []string{"13.0.1"}},
+		{"plain version is a minimum", map[string]string{"Api/Api.csproj": proj(pin("13.0.1"))}, false, nil},
+		{"lock beside the project", map[string]string{
+			"Api/Api.csproj": proj(`<PackageReference Include="Serilog" Version="3.1.1" />`), "Api/packages.lock.json": lock,
+		}, true, []string{"13.0.3"}},
+		{"lock and an exact pin in another project", map[string]string{
+			"Api/Api.csproj": proj(`<PackageReference Include="Serilog" Version="3.1.1" />`), "Api/packages.lock.json": lock,
+			"Worker/Worker.csproj": proj(pin("[12.0.3]")), "Docs/Docs.csproj": bare,
+		}, true, []string{"13.0.3", "12.0.3"}},
+		{"stale lock omits a declared coordinate", map[string]string{
+			"Api/Api.csproj": proj(pin("[13.0.1]")), "Api/packages.lock.json": lockWithout,
+			"Worker/Worker.csproj": proj(pin("[12.0.3]")),
+		}, false, nil},
+		{"unlocked project with other packages", map[string]string{
+			"Api/Api.csproj": proj(pin("[13.0.1]")), "Worker/Worker.csproj": proj(`<PackageReference Include="Serilog" Version="[3.1.1]" />`),
+		}, false, nil},
+		{"unlocked project referencing a project", map[string]string{
+			"Api/Api.csproj": proj(pin("[13.0.1]")), "Worker/Worker.csproj": proj(`<ProjectReference Include="../Lib/Lib.csproj" />`),
+		}, false, nil},
+		{"conditional pin", map[string]string{
+			"Api/Api.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup Condition="'$(TargetFramework)' == 'net6.0'">` + pin("[13.0.1]") + `</ItemGroup></Project>`,
+		}, false, nil},
+		{"pin updated elsewhere", map[string]string{
+			"Api/Api.csproj": proj(pin("[13.0.1]") + `<PackageReference Update="Newtonsoft.Json" Version="[13.0.3]" />`),
+		}, false, nil},
+		{"explicit import", map[string]string{
+			"Api/Api.csproj": `<Project Sdk="Microsoft.NET.Sdk"><Import Project="../shared.props" /><ItemGroup>` + pin("[13.0.1]") + `</ItemGroup></Project>`,
+		}, false, nil},
+		{"Directory.Packages.props", map[string]string{"Api/Api.csproj": proj(pin("[13.0.1]")), "Directory.Packages.props": `<Project />`}, false, nil},
+		{"Directory.Build.props", map[string]string{"Api/Api.csproj": proj(pin("[13.0.1]")), "Api/Directory.Build.props": `<Project />`}, false, nil},
+		{"packages.config beside a classic project", map[string]string{
+			"Legacy/Legacy.csproj":   `<Project ToolsVersion="15.0"><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /></Project>`,
+			"Legacy/packages.config": `<packages><package id="Newtonsoft.Json" version="12.0.3" /></packages>`,
+		}, true, []string{"12.0.3"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := versionsOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
+			}
+			var got []string
+			for _, m := range r.Matches {
+				got = append(got, m.Version)
+			}
+			if tc.versions != nil && !slices.Equal(got, tc.versions) {
+				t.Fatalf("Matches = %v, want %v", got, tc.versions)
+			}
+		})
+	}
+}
+
+// An MSBuild-wide file applies from any directory above a project, the build directory's own
+// ancestors included, so one above the build directory leaves MatchesComplete false.
+func TestVersions_MatchesCompleteAncestorProps(t *testing.T) {
+	const api = `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`
+	for _, tc := range []struct {
+		above string
+		want  bool
+	}{
+		{"", true},
+		{"Directory.Build.props", false},
+		{"Directory.Build.targets", false},
+		{"Directory.Packages.props", false},
+	} {
+		t.Run("above: "+tc.above, func(t *testing.T) {
+			files := map[string]string{"repo/Api/Api.csproj": api}
+			if tc.above != "" {
+				files[tc.above] = `<Project />`
+			}
+			r := versionsOf(t, filepath.Join(writeTree(t, files), "repo"), "Newtonsoft.Json")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
+			}
+		})
+	}
+}
+
+// A subtree the walk cannot read may hold another project, so Matches cannot be complete.
+func TestVersions_MatchesCompleteUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-0 directory")
+	}
+	dir := writeTree(t, map[string]string{
+		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`,
+		"Hidden/Hidden.csproj": `<Project Sdk="Microsoft.NET.Sdk"></Project>`,
+	})
+	hidden := filepath.Join(dir, "Hidden")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	if r := versionsOf(t, dir, "Newtonsoft.Json"); r.MatchesComplete {
+		t.Fatalf("an unreadable subtree must leave MatchesComplete false; got %+v", r.Matches)
 	}
 }

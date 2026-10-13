@@ -4,8 +4,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // sbomFromInventory maps a whole-graph plugin.DependencyInventory (§4.1) to the report.SBOM the scan
@@ -112,9 +114,15 @@ func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 // admitted package may also be installed where the analysis never looked, so no
 // not_exploitable of that ecosystem stands. Those limits are resolved once per scan, outside
 // every assessment's own artifacts, which is why finding() cannot see them and this runs after
-// it. It only ever removes not_exploitable.
+// it.
+//
+// The same holds for a disqualification that rests on the inventory: a version outside the range
+// says nothing of a second copy the inventory missed, and a package absent from the manifest may
+// be present where it never looked. Those rows become undetermined too. A symbol-axis
+// disqualification compares the built artifact and an ecosystem mismatch compares the lane, so
+// neither depends on the inventory and both stand.
 func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
-	if f.Verdict != report.VerdictNotExploitable || f.Package == nil {
+	if f.Package == nil || !(f.Verdict == report.VerdictNotExploitable || restsOnInventory(f)) {
 		return f
 	}
 	for _, n := range limits {
@@ -130,6 +138,15 @@ func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNot
 		return f
 	}
 	return f
+}
+
+// restsOnInventory reports whether f is a disqualification whose grounds are inventory facts.
+func restsOnInventory(f report.AdvisoryFinding) bool {
+	if f.Verdict != report.VerdictDisqualified {
+		return false
+	}
+	return f.Evidence.Basis == verdict.BasisVersionNotAffected ||
+		f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
 }
 
 // inventoryPartialityNotes turns a graph-level Partiality into the scan-level notes that declare an

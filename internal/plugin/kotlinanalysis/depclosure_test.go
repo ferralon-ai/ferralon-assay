@@ -504,6 +504,15 @@ func TestProgramClosure(t *testing.T) {
 			inv:  plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c, node("x", "pkg:generic/x@1")}, Edges: ab},
 		},
 		{
+			// A scoped limit names a package the inventory could not fully read, so the graph is
+			// not fully known even with no graph-level reason.
+			name: "a scoped limit only",
+			inv: plugin.DependencyInventory{
+				Partiality: plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/org.c/c"}}},
+				Nodes:      []plugin.DependencyNode{a, b, c}, Edges: ab,
+			},
+		},
+		{
 			name: "an edge to a node the inventory lacks",
 			inv: plugin.DependencyInventory{Partiality: plugin.Partiality{Complete: true}, Nodes: []plugin.DependencyNode{a, b, c},
 				Edges: append([]plugin.DependencyEdge{{Parent: "c", Child: "gone"}}, ab...)},

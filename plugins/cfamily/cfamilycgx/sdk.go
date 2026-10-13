@@ -16,7 +16,8 @@ import (
 )
 
 // OpenSDK is the Opener backed by the cgx Go SDK. The wasm compile cache lives at
-// cfg.WasmCacheDir, when the operator set one; with none set, the SDK is told explicitly to
+// cfg.WasmCacheDir, when one is set (the operator's, or the private dir ferralon-assay creates
+// per scan); with none set, the SDK is told explicitly to
 // cache in memory only (WithCacheDir("")) rather than falling back to its own on-disk default,
 // so the plugin never writes to a shared cache dir unasked.
 //

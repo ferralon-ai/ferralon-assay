@@ -26,8 +26,9 @@
 //	ASSAY_CFAMILY_CGX_CACHE_DIR       index snapshots and the native binary's private copy
 //	                                  (default: user cache dir)
 //	ASSAY_CFAMILY_CGX_WASM_CACHE_DIR  wasm engine compilation cache: an absolute path, not
-//	                                  writable or readable by group or other (default: unset,
-//	                                  caches in memory only for the life of this process)
+//	                                  writable or readable by group or other. ferralon-assay
+//	                                  sets a private dir per scan when the operator sets none;
+//	                                  unset, caches in memory only for the life of this process
 //	ASSAY_CFAMILY_CGX_POOL_SIZE       wasm extractor instances (default: the SDK's)
 //	ASSAY_CFAMILY_CGX_MIN_CONFIDENCE  call-graph edge floor: possible (default) | probable |
 //	                                  certain

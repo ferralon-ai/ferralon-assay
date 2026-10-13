@@ -118,6 +118,7 @@ func TestLoadSet_CondaRecipe(t *testing.T) {
 		{"conda.yml run requirement", "recipe/conda.yml", runBlack, false},
 		{"conda.yaml run requirement", "conda.yaml", runBlack, false},
 		{"recipe.yml run requirement", "recipe/recipe.yml", runBlack, false},
+		{"META.YAML run requirement", "recipe/META.YAML", runBlack, false},
 		{"control: plain meta.yml is read", "recipe/meta.yml", plain("app"), true},
 		{"host requirement exports run requirements", "recipe/meta.yaml", strings.Replace(plain("app"), "    - pip\n", "    - pip\n    - black\n", 1), false},
 		{"build requirement exports run requirements", "recipe/meta.yaml", plain("app") + "  build:\n    - black\n", false},

@@ -284,7 +284,8 @@ func TestLockClosures_LaunchTokens(t *testing.T) {
 		{"resolve.alias set through a config chain", "config/chain.js", "config.resolve.alias.set('qs', './src/qs.js');\n", false},
 		{"a webpack config with neither key", "webpack.config.js", "module.exports = { entry: './index.js', mode: 'production' };\n", true},
 		{"an alias in a file that names no bundler", "src/routes.js", "const r = { alias: '/home' };\n", true},
-		{"a package name that only contains modules", "package.json", `{"name":"app","devDependencies":{"webpack":"5","postcss-modules":"6"}}`, true},
+		// Off the importer's path, so the lock need not install what it declares.
+		{"a package name that only contains modules", "tools/package.json", `{"name":"tools","devDependencies":{"webpack":"5","postcss-modules":"6"}}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -553,9 +554,10 @@ func TestLockClosures_TreeVetoes(t *testing.T) {
 
 // TestLockClosures_NestedLocks: a lockfile above the governing one adds its install to the
 // reach, since Node walks on from the nested install's node_modules into the ancestor's, on
-// disk or not. That holds only while the ancestor lock is exactly what installs there: it
+// disk or not. That holds only while each lock is exactly what installs at its level: it
 // installs everything its package.json declares, disk agrees with it, no other installer or
-// workspaces root is involved, and nothing between the two locks installs on its own.
+// workspaces root above the governing lock is involved, and nothing below the topmost lock
+// installs on its own.
 func TestLockClosures_NestedLocks(t *testing.T) {
 	const rootPkg = `{"name":"root","dependencies":{"zed":"1.0.0"}}`
 	const rootLock = `{"lockfileVersion":3,"packages":{"":{"name":"root","dependencies":{"zed":"1.0.0"}},"node_modules/zed":{"dependencies":{"zdep":"1"}},"node_modules/zdep":{}}}`
@@ -595,6 +597,31 @@ func TestLockClosures_NestedLocks(t *testing.T) {
 			files: nested(map[string]string{"package.json": `{"name":"root","dependencies":{"zed":"1.0.0"},"devDependencies":{"extra":"1.0.0"}}`})},
 		{name: "a root package.json whose dependencies do not decode", from: "app", pkg: "qs",
 			files: nested(map[string]string{"package.json": `{"name":"root","dependencies":["zed"]}`})},
+		// The governing lock is held to its own package.json too: an install beside it puts a
+		// declared package the lock lacks in its node_modules, ahead of the root's copy.
+		{name: "a nested lock that does not install a dependency its package.json declares", from: "app", pkg: "zed",
+			files: nested(map[string]string{"app/package.json": `{"name":"app","dependencies":{"qs":"6.0.0","zed":"2.0.0"}}`})},
+		{name: "a nested lock missing a declared dependency, loading another package", from: "app", pkg: "qs",
+			files: nested(map[string]string{"app/package.json": `{"name":"app","dependencies":{"qs":"6.0.0","zed":"2.0.0"}}`})},
+		{name: "a nested lock that installs every dependency its package.json declares", from: "app", pkg: "zed",
+			files: nested(map[string]string{"app/package.json": `{"name":"app","dependencies":{"qs":"6.0.0","zed":"2.0.0"}}`,
+				"app/package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{"dependencies":{"zed":"1"}},"node_modules/zed":{}}}`}),
+			want: []string{"zed", "qs", "zdep"}},
+		{name: "a nested lock beside an undecodable package.json", from: "app", pkg: "qs",
+			files: nested(map[string]string{"app/package.json": `{"name":`})},
+		{name: "a single lock that does not install a devDependency its package.json declares", from: "", pkg: "qs",
+			files: map[string]string{"package.json": `{"name":"app","dependencies":{"qs":"6.0.0"},"devDependencies":{"zed":"2.0.0"}}`,
+				"package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{}}}`}},
+		{name: "the same single lock installing the devDependency", from: "", pkg: "qs",
+			files: map[string]string{"package.json": `{"name":"app","dependencies":{"qs":"6.0.0"},"devDependencies":{"zed":"2.0.0"}}`,
+				"package-lock.json": `{"lockfileVersion":3,"packages":{"":{"name":"app"},"node_modules/qs":{},"node_modules/zed":{"dev":true}}}`},
+			want: []string{"qs", "zed"}},
+		// A package.json with no lock below the nested one is installed on its own, so the
+		// union does not bound it either.
+		{name: "a lockless package.json declaring an install below the nested lock", from: "app/sub", pkg: "qs",
+			files: nested(map[string]string{"app/sub/package.json": `{"name":"sub","dependencies":{"qs":"7.0.0"}}`})},
+		{name: "a lockless package.json declaring nothing below the nested lock", from: "app/sub", pkg: "qs",
+			files: nested(map[string]string{"app/sub/package.json": `{"name":"sub"}`}), want: []string{"qs", "zdep", "zed"}},
 		// A mixed installer at either level is caught by the tree-wide installer check, which
 		// runs before any level is read.
 		{name: "a mixed installer at the root: yarn.lock beside the npm lock", from: "app", pkg: "qs",

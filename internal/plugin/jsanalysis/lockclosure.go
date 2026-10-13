@@ -106,7 +106,7 @@ func (lc *lockClosures) closureOf(fromDir, pkg string) []string {
 	// by its own npm install, into a node_modules every resolution from fromDir searches first.
 	// Only a workspace member of the lock's root is installed from the lock.
 	for d := fromDir; d != lockDir; d = lockParent(d) {
-		if installs, _, _ := lc.declaresInstall(d); installs && !levels[0].g.workspaceMember(lockRel(lockDir, d)) {
+		if installs, _, _, _ := lc.declaresInstall(d); installs && !levels[0].g.workspaceMember(lockRel(lockDir, d)) {
 			return nil
 		}
 	}
@@ -141,8 +141,9 @@ type lockLevel struct {
 //   - an ancestor's package.json or lockfile declares workspaces, since npm installs the
 //     members from the root lock, not their own, or its package.json declares an install with
 //     no lockfile beside it;
-//   - an ancestor lock does not install a dependency its package.json declares (an install
-//     there would change it), or describes packages inside the nearer lock's directory;
+//   - any level's lock does not install a dependency its package.json declares (an install
+//     there would change it), or the governing lock's package.json cannot be read, or an
+//     ancestor lock describes packages inside the nearer lock's directory;
 //   - a node_modules in a directory above lockDir that holds no lockfile, which no lock
 //     describes.
 func (lc *lockClosures) lockLevels(lockDir string) lockLevels {
@@ -150,10 +151,16 @@ func (lc *lockClosures) lockLevels(lockDir string) lockLevels {
 	if g == nil {
 		return nil
 	}
+	// The governing lock must install every dependency its own package.json declares: an
+	// install at lockDir would put a missing one in its node_modules, ahead of any ancestor's
+	// copy. Workspaces are allowed here; npm installs the members from this lock.
+	if _, _, deps, unread := lc.declaresInstall(lockDir); unread || !g.installsTop(deps) {
+		return nil
+	}
 	levels := lockLevels{{lockDir, g}}
 	for d := lockDir; d != ""; {
 		d = lockParent(d)
-		installs, workspaces, deps := lc.declaresInstall(d)
+		installs, workspaces, deps, _ := lc.declaresInstall(d)
 		if workspaces {
 			return nil
 		}
@@ -172,10 +179,8 @@ func (lc *lockClosures) lockLevels(lockDir string) lockLevels {
 		default:
 			return nil
 		}
-		for _, dep := range deps {
-			if _, ok := ga.pkgs["node_modules/"+dep]; !ok {
-				return nil
-			}
+		if !ga.installsTop(deps) {
+			return nil
 		}
 		levels = append(levels, lockLevel{d, ga})
 	}
@@ -190,6 +195,16 @@ func (lc *lockClosures) lockLevels(lockDir string) lockLevels {
 }
 
 type lockLevels []lockLevel
+
+// installsTop reports whether the lock installs every name in deps at its top level.
+func (g *lockGraph) installsTop(deps []string) bool {
+	for _, dep := range deps {
+		if _, ok := g.pkgs["node_modules/"+dep]; !ok {
+			return false
+		}
+	}
+	return true
+}
 
 func (ls lockLevels) has(dir string) bool {
 	for _, l := range ls {
@@ -420,18 +435,18 @@ func (lc *lockClosures) governingLock(dir string) string {
 // declaresInstall reports whether dir's package.json declares workspaces or a non-empty
 // dependency field of any kind (an install there needs no lockfile), whether it declares
 // workspaces, and the names its dependency maps declare. One that is not a regular file or
-// cannot be read or decoded, or whose dependency maps do not decode, counts as declaring both,
-// since npm would not install from it as this lane reads it. readRegular follows a symlink to
+// cannot be read or decoded, or whose dependency maps do not decode, counts as declaring both
+// and is reported unread, since npm would not install from it as this lane reads it. readRegular follows a symlink to
 // a regular file wherever it points; one that leaves the build tree is vetoed by
 // resolutionOverridden's walk.
-func (lc *lockClosures) declaresInstall(dir string) (installs, workspaces bool, deps []string) {
+func (lc *lockClosures) declaresInstall(dir string) (installs, workspaces bool, deps []string, unread bool) {
 	data, err := readRegular(filepath.Join(lc.root, filepath.FromSlash(dir), "package.json"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, false, nil
+		return false, false, nil, false
 	}
 	var m map[string]json.RawMessage
 	if err != nil || json.Unmarshal(data, &m) != nil {
-		return true, true, nil
+		return true, true, nil, true
 	}
 	for _, field := range []string{"workspaces", "dependencies", "devDependencies", "optionalDependencies",
 		"peerDependencies", "bundleDependencies", "bundledDependencies"} {
@@ -449,13 +464,13 @@ func (lc *lockClosures) declaresInstall(dir string) (installs, workspaces bool, 
 		}
 		var declared map[string]json.RawMessage
 		if json.Unmarshal(m[field], &declared) != nil {
-			return true, true, nil
+			return true, true, nil, true
 		}
 		for name := range declared {
 			deps = append(deps, name)
 		}
 	}
-	return installs, workspaces, deps
+	return installs, workspaces, deps, false
 }
 
 func (lc *lockClosures) hasLock(dir string) bool {

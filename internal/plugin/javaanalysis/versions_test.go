@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -252,5 +253,93 @@ func TestResolveVersions_ResolvedMatchWinsOverUnresolved(t *testing.T) {
 	res := resolve(t, dir, "com.example.lib:widget")
 	if !res.Match.Resolved || res.Match.Version != "1.4.0" {
 		t.Fatalf("resolved match must win, got %+v", res.Match)
+	}
+}
+
+// MatchesComplete holds only for a POM-only build in which every module declares the coordinate
+// at a literal version or pulls in nothing; anything that can bring in another version leaves it
+// false.
+func TestResolveVersions_MatchesComplete(t *testing.T) {
+	dep := func(v string) string {
+		return `<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + v + `</version></dependency>`
+	}
+	other := `<dependency><groupId>org.other</groupId><artifactId>thing</artifactId><version>2.1.3</version></dependency>`
+	pom := func(deps string) string {
+		return `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version><dependencies>` + deps + `</dependencies></project>`
+	}
+	module := func(deps string) string {
+		return `<project><parent><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>
+<artifactId>m</artifactId><dependencies>` + deps + `</dependencies></project>`
+	}
+	const aggregator = `<project><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0.0</version>
+<packaging>pom</packaging><modules><module>a</module><module>b</module></modules>
+<dependencyManagement><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.0</version></dependency></dependencies></dependencyManagement></project>`
+	tests := []struct {
+		name     string
+		files    map[string]string
+		want     bool
+		versions []string
+	}{
+		{"literal pin", map[string]string{"pom.xml": pom(dep("1.4.0"))}, true, []string{"1.4.0"}},
+		{"exact-bracket pin", map[string]string{"pom.xml": pom(dep("[1.4.0]"))}, true, []string{"1.4.0"}},
+		{"modules pinning their own versions under a managing parent", map[string]string{
+			"pom.xml": aggregator, "a/pom.xml": module(dep("1.4.0")), "b/pom.xml": module(dep("1.3.0")),
+		}, true, []string{"1.4.0", "1.3.0"}},
+		{"module taking its version from the parent's dependencyManagement", map[string]string{
+			"pom.xml": aggregator, "a/pom.xml": module(dep("1.4.0")),
+			"b/pom.xml": module(`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId></dependency>`),
+		}, false, nil},
+		{"module pulling other packages", map[string]string{
+			"pom.xml": aggregator, "a/pom.xml": module(dep("1.4.0")), "b/pom.xml": module(other),
+		}, false, nil},
+		{"module whose parent is out of scope", map[string]string{
+			"pom.xml": pom(dep("1.4.0")), "b/pom.xml": `<project><parent><groupId>com.example</groupId><artifactId>corp</artifactId><version>1</version><relativePath>../../corp</relativePath></parent><artifactId>b</artifactId></project>`,
+		}, false, nil},
+		{"property version", map[string]string{
+			"pom.xml": `<project><properties><widget.version>1.4.0</widget.version></properties><dependencies>` + dep("${widget.version}") + `</dependencies></project>`,
+		}, false, nil},
+		{"range version", map[string]string{"pom.xml": pom(dep("[1.0,2.0)"))}, false, nil},
+		{"profile with dependencies", map[string]string{
+			"pom.xml": `<project><dependencies>` + dep("1.4.0") + `</dependencies><profiles><profile><id>legacy</id><dependencies>` + dep("1.2.0") + `</dependencies></profile></profiles></project>`,
+		}, false, nil},
+		{"core extensions", map[string]string{"pom.xml": pom(dep("1.4.0")), ".mvn/extensions.xml": `<extensions />`}, false, nil},
+		{"Gradle build beside the POM", map[string]string{
+			"pom.xml": pom(dep("1.4.0")), "svc/build.gradle": "dependencies {\n  implementation 'com.example.lib:widget:1.4.0'\n}\n",
+		}, false, nil},
+		{"Gradle settings in scope", map[string]string{"pom.xml": pom(dep("1.4.0")), "settings.gradle": "rootProject.name = 'x'\n"}, false, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := resolve(t, writeTree(t, tc.files), "com.example.lib:widget")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
+			}
+			var got []string
+			for _, m := range r.Matches {
+				got = append(got, m.Version)
+			}
+			if tc.versions != nil && !slices.Equal(got, tc.versions) {
+				t.Fatalf("Matches = %v, want %v", got, tc.versions)
+			}
+		})
+	}
+}
+
+// A subtree the walk cannot read may hold another module, so Matches cannot be complete.
+func TestResolveVersions_MatchesCompleteUnreadableDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-0 directory")
+	}
+	dir := writeTree(t, map[string]string{
+		"pom.xml":        `<project><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.4.0</version></dependency></dependencies></project>`,
+		"hidden/pom.xml": `<project />`,
+	})
+	hidden := filepath.Join(dir, "hidden")
+	if err := os.Chmod(hidden, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	if r := resolve(t, dir, "com.example.lib:widget"); r.MatchesComplete {
+		t.Fatalf("an unreadable subtree must leave MatchesComplete false; got %+v", r.Matches)
 	}
 }

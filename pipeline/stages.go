@@ -1565,15 +1565,16 @@ func singleVersion(v string) depVersions {
 	return depVersions{Version: v, Versions: []string{v}, Complete: true, Found: true}
 }
 
-// depVersionsOf reads a plugin resolution. A plugin that does not enumerate Matches yields its
-// Match alone, never complete.
+// depVersionsOf reads a plugin resolution. The set is complete only when the plugin asserts
+// MatchesComplete over a complete scan and every copy it lists is resolved; Match may still be
+// unresolved, as it is when the copies disagree.
 func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
 	dep := depVersions{Found: vr.Found}
 	if vr.Found && vr.Match.Resolved {
 		dep.Version = vr.Match.Version
 		dep.Versions = []string{dep.Version}
 	}
-	dep.Complete = vr.Partiality.Complete && len(vr.Matches) > 0 && dep.Version != ""
+	dep.Complete = vr.MatchesComplete && vr.Partiality.Complete && len(vr.Matches) > 0
 	for _, m := range vr.Matches {
 		if !m.Resolved {
 			dep.Complete = false
@@ -2678,7 +2679,8 @@ type presentRanges struct {
 }
 
 // extractVersionAxis reads every version codebase_inventory resolved for the adjudicated package.
-// An inventory that recorded a resolved_version with no set yields that version alone, never complete.
+// The set stands without a resolved_version, which is empty when the copies disagree. An inventory
+// that recorded a resolved_version with no set yields that version alone, never complete.
 func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool) {
 	arts, err := store.Query(caseID, artifact.TypeInventory)
 	if err != nil || len(arts) == 0 {
@@ -2689,13 +2691,16 @@ func extractVersionAxis(store artifact.Store, caseID string) (versionAxis, bool)
 		ResolvedVersions []string `json:"resolved_versions"`
 		VersionsComplete bool     `json:"versions_complete"`
 	}
-	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil || inv.ResolvedVersion == "" {
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
 		return versionAxis{}, false
 	}
-	if len(inv.ResolvedVersions) == 0 {
+	switch {
+	case len(inv.ResolvedVersions) > 0:
+		return versionAxis{Versions: inv.ResolvedVersions, Complete: inv.VersionsComplete}, true
+	case inv.ResolvedVersion != "":
 		return versionAxis{Versions: []string{inv.ResolvedVersion}}, true
 	}
-	return versionAxis{Versions: inv.ResolvedVersions, Complete: inv.VersionsComplete}, true
+	return versionAxis{}, false
 }
 
 // extractAlsoPresent joins each other affected package the inventory recorded to its ranges on the

@@ -48,6 +48,8 @@ func (s jsVersionStub) ResolveDependencyVersions(_ context.Context, req plugin.R
 		Found:      true,
 		Match:      match,
 		Matches:    []plugin.ResolvedDependency{match},
+		// The live resolver vouches for the set only when it read every version source in full.
+		MatchesComplete: s.resolved,
 	}, nil
 }
 

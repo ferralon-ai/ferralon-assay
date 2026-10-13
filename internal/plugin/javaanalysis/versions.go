@@ -3,7 +3,9 @@ package javaanalysis
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +44,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("javaanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	poms, gradles := buildFiles(req.BuildDir)
+	poms, gradles, sealed := scanBuildFiles(req.BuildDir)
 
 	var (
 		all         []plugin.ResolvedDependency
@@ -85,14 +87,27 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			}
 		}
 	}
+	// Gradle selects the highest version requested anywhere in the graph, which a declaration
+	// scan cannot see; only a POM-only build can rule other versions out.
+	res.MatchesComplete = len(res.Matches) > 0 && sealed && !parseFailed && len(gradles) == 0 &&
+		pomsCovered(poms, want)
 	return res, nil
 }
 
 // buildFiles returns the pom.xml and build.gradle (incl. build.gradle.kts) files under root,
 // skipping build-output/VCS trees, mirroring javaanalysis.javaFiles's source notion.
 func buildFiles(root string) (poms, gradles []string) {
+	poms, gradles, _ = scanBuildFiles(root)
+	return poms, gradles
+}
+
+// scanBuildFiles is buildFiles that also reports sealed: false when part of the tree could not
+// be walked or a Gradle settings file sits in it.
+func scanBuildFiles(root string) (poms, gradles []string, sealed bool) {
+	sealed = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			sealed = false
 			return nil //nolint:nilerr // an unreadable subtree yields no build files; keep walking.
 		}
 		if d.IsDir() {
@@ -106,10 +121,100 @@ func buildFiles(root string) (poms, gradles []string) {
 			poms = append(poms, path)
 		case "build.gradle", "build.gradle.kts":
 			gradles = append(gradles, path)
+		case "settings.gradle", "settings.gradle.kts":
+			sealed = false
 		}
 		return nil
 	})
-	return poms, gradles
+	return poms, gradles, sealed
+}
+
+// pomsCovered reports whether every POM fixes the coordinate's version for its module, so
+// Matches can hold every version the build installs. Maven takes the nearest declaration, and
+// dependencyManagement does not override a version declared directly, so a POM that declares the
+// coordinate at a literal version (no range, no ${...} a profile or -D could override) is
+// covered. A POM that does not declare it is covered only when it pulls nothing in: no
+// dependencies of its own, and a parent (whose dependencies it inherits) that is itself in scope
+// and checked here. Profiles that declare dependencies and Maven core extensions
+// (.mvn/extensions.xml), which can rewrite the model, leave the module uncovered.
+func pomsCovered(poms []string, want string) bool {
+	if want == "" {
+		return false
+	}
+	inScope := make(map[string]bool, len(poms))
+	for _, p := range poms {
+		inScope[filepath.Clean(p)] = true
+	}
+	for _, p := range poms {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return false
+		}
+		var proj pomModel
+		if err := unmarshalPOM(data, &proj); err != nil {
+			return false
+		}
+		dir := filepath.Dir(p)
+		if _, err := os.Lstat(filepath.Join(dir, ".mvn", "extensions.xml")); !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+		for _, prof := range proj.Profiles {
+			if len(prof.Deps) > 0 {
+				return false
+			}
+		}
+		declared, literal := false, true
+		for _, dep := range proj.Deps {
+			if normalizeCoordinate(strings.TrimSpace(dep.GroupID)+":"+strings.TrimSpace(dep.ArtifactID)) != want {
+				continue
+			}
+			declared = true
+			raw := strings.TrimSpace(dep.Version)
+			if _, pinned := mavenPin(raw); !pinned || !isLiteralVersion(raw) {
+				literal = false
+			}
+		}
+		switch {
+		case declared:
+			if !literal {
+				return false
+			}
+		case len(proj.Deps) > 0:
+			return false
+		case proj.Parent.ArtifactID != "":
+			if !inScope[parentPOMPath(dir, proj.Parent.RelativePath)] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pomModel is the subset of a POM pomsCovered reads beyond pomProject: the parent's location
+// and each profile's dependencies.
+type pomModel struct {
+	Parent struct {
+		ArtifactID   string `xml:"artifactId"`
+		RelativePath string `xml:"relativePath"`
+	} `xml:"parent"`
+	Deps     []pomDep `xml:"dependencies>dependency"`
+	Profiles []struct {
+		Deps []pomDep `xml:"dependencies>dependency"`
+	} `xml:"profiles>profile"`
+}
+
+// parentPOMPath resolves a <parent>'s relativePath (default ../pom.xml) against the child's
+// directory; a path naming a directory means the pom.xml inside it.
+func parentPOMPath(dir, rel string) string {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		rel = filepath.Join("..", "pom.xml")
+	}
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if !strings.HasSuffix(strings.ToLower(p), ".xml") {
+		p = filepath.Join(p, "pom.xml")
+	}
+	return filepath.Clean(p)
 }
 
 // --- pom.xml -----------------------------------------------------------------
@@ -210,20 +315,33 @@ func parsePOM(path string) ([]plugin.ResolvedDependency, bool) {
 // resolvePOMVersion resolves a raw <version> value to a literal. A bare literal passes
 // through; a single ${name} reference is looked up in props (one level, no recursion into
 // another ${...}); anything else (empty, partial interpolation, unresolved property) is
-// UNRESOLVED → ("", false). No guessing.
+// UNRESOLVED → ("", false). A version range is UNRESOLVED too; the hard-requirement form
+// "[1.2.3]" resolves to 1.2.3. No guessing.
 func resolvePOMVersion(raw string, props map[string]string) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
 	if isLiteralVersion(raw) {
-		return raw, true
+		return mavenPin(raw)
 	}
 	if name, ok := singlePropertyRef(raw); ok {
 		if v, present := props[name]; present && isLiteralVersion(v) {
-			return v, true
+			return mavenPin(v)
 		}
 	}
 	return "", false
+}
+
+// mavenPin returns the single version a literal Maven version requirement names: "1.2.3" and
+// "[1.2.3]" name 1.2.3; a range ("[1.0,2.0)", "(,1.0]") names none.
+func mavenPin(v string) (string, bool) {
+	if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+		v = strings.TrimSpace(v[1 : len(v)-1])
+	}
+	if v == "" || strings.ContainsAny(v, "[](),") {
+		return "", false
+	}
+	return v, true
 }
 
 // singlePropertyRef reports whether raw is exactly one "${name}" reference and returns name.

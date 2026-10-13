@@ -118,11 +118,16 @@ type Method struct {
 	Public bool
 	Edges  []Edge
 	// InitTriggers are the internal names of classes whose static initializer
-	// (<clinit>) this method's bytecode triggers — via new / getstatic / putstatic /
-	// invokestatic (JVMS §5.5). <clinit> is never an explicit invoke target, so a
-	// caller building a call graph must add an edge into each triggered class's
-	// <clinit> or a sink reachable only through static initialization is invisible.
+	// (<clinit>) this method's bytecode triggers — via new / invokestatic (JVMS §5.5).
+	// <clinit> is never an explicit invoke target, so a caller building a call graph
+	// must add an edge into each triggered class's <clinit> or a sink reachable only
+	// through static initialization is invisible.
 	InitTriggers []string
+	// StaticFieldRefs are the fields this method's getstatic / putstatic name. Each
+	// initializes the class or interface that declares the resolved field (JVMS
+	// §5.4.3.2, §5.5), which may be a superinterface or superclass of the named
+	// Owner, so the caller resolves the declarer over the loaded hierarchy.
+	StaticFieldRefs []FieldRef
 	// Annotations are the method's RuntimeVisibleAnnotations (JVMS §4.7.16), decoded
 	// to their type descriptors plus string-valued element pairs. Populated only when
 	// the attribute is present; framework-ingress detection (e.g. Spring @GetMapping)
@@ -134,6 +139,12 @@ type Method struct {
 	// is present; constructor/@Bean-method injection reads the per-parameter @Qualifier/
 	// @Value. Never a source of edges — advisory metadata only.
 	ParameterAnnotations [][]Annotation
+}
+
+// FieldRef is a symbolic field reference: the class the code names, plus the field's
+// name and descriptor.
+type FieldRef struct {
+	Owner, Name, Descriptor string
 }
 
 // Field is a declared field with the annotation surface dependency-injection
@@ -325,13 +336,22 @@ func (cp constPool) className(idx uint16) string {
 	return ""
 }
 
-// fieldOwner resolves a Fieldref constant to the internal name of the class that
-// declares the field — the class whose <clinit> a getstatic/putstatic triggers.
-func (cp constPool) fieldOwner(idx uint16) string {
-	if e, ok := cp.at(idx); ok && e.tag == cpFieldref {
-		return cp.className(e.ref1)
+// fieldRef resolves a Fieldref constant to its symbolic reference. Its Owner is the
+// class the code names, which may inherit the field rather than declare it.
+func (cp constPool) fieldRef(idx uint16) (FieldRef, bool) {
+	e, ok := cp.at(idx)
+	if !ok || e.tag != cpFieldref {
+		return FieldRef{}, false
 	}
-	return ""
+	nt, ok := cp.at(e.ref2)
+	if !ok || nt.tag != cpNameAndType {
+		return FieldRef{}, false
+	}
+	owner := cp.className(e.ref1)
+	if owner == "" {
+		return FieldRef{}, false
+	}
+	return FieldRef{Owner: owner, Name: cp.utf8(nt.ref1), Descriptor: cp.utf8(nt.ref2)}, true
 }
 
 // ParseClass parses one .class file into a Class with per-method call edges. It
@@ -417,12 +437,13 @@ func ParseClass(data []byte) (Class, error) {
 				return Class{}, r.err
 			}
 			if attrName == "Code" {
-				edges, triggers, err := parseCode(body, cp)
+				edges, triggers, fieldRefs, err := parseCode(body, cp)
 				if err != nil {
 					return Class{}, fmt.Errorf("classfile: %s%s Code: %w", name, desc, err)
 				}
 				m.Edges = edges
 				m.InitTriggers = triggers
+				m.StaticFieldRefs = fieldRefs
 			}
 			if attrName == attrRuntimeVisibleAnnotations {
 				annos, err := parseAnnotations(cp, body)

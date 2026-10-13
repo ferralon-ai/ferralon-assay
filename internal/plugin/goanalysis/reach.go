@@ -183,21 +183,24 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 // scanResult turns one govulncheck run over the loaded build into the reachability result: it
 // reconciles the findings against the build's call graph and withholds a refutation that files the
-// build left out, or exported methods govulncheck never searched, may contradict.
+// build left out, exported methods govulncheck never searched, or a library's callers may
+// contradict.
 func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDir string, env []string) (plugin.ReachabilityResult, error) {
 	cg, err := callGraphOf(load, "vta")
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
 	res := withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env)
-	return withholdForUnsearchedMethods(res, scanned, load.Packages), nil
+	res = withholdForUnsearchedMethods(res, scanned, load.Packages)
+	return withholdForLibraryEscape(res, scanned, load.Packages), nil
 }
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
 // (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
 // package that declares it imports the refuted module (for the standard library, a vulnerable
-// package), directly or through other packages, the search that found no path never covered it. Reach is read off the import graph, never the call graph, which is what misses
-// these methods. The result then declares unsearched_methods instead.
+// package), directly or through other packages, the search that found no path never covered it.
+// Reach is read off the import graph, never the call graph, which is what misses these methods.
+// The result then declares unsearched_methods instead.
 func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
 	r := res.Refutation
 	if r == nil {
@@ -222,6 +225,41 @@ func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []str
 		}
 	}
 	return false
+}
+
+// withholdForLibraryEscape drops a refutation a library's callers may contradict. With no main
+// package in the build, govulncheck searches only the calls the library makes itself. A value it
+// hands its caller (a function, an interface value, a struct carrying either, through a result, an
+// exported var or field, or an embedded type) can still run the module's code once the caller
+// calls it, and that call is outside the search. So when any of the build's packages reaches the
+// refuted module (for the standard library, a vulnerable package), or the load cannot say whether
+// one does, the result declares library_escape instead.
+func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil || slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return p.Name == "main" }) {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || libraryReaches(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+	}
+	return res
+}
+
+// libraryReaches reports whether one of the build's packages reaches module, counting a load in
+// which a package failed to load or type-check, since its imports may be incomplete.
+func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	incomplete := false
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types == nil || len(p.Errors) > 0 {
+			incomplete = true
+		}
+	})
+	if incomplete {
+		return true
+	}
+	return slices.ContainsFunc(pkgs, newModuleReach(pkgs, module, vulnerable).reachesModule)
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file

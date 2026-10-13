@@ -424,9 +424,10 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 
 // unsearchedMethods returns the exported methods a caller of the loaded non-main packages can invoke
 // that govulncheckEntries leaves out, each as its generic origin: a method of a generic type, whose
-// method set yields no function until instantiated, and a method promoted by embedding (into a
+// method set yields no function until instantiated, a method promoted by embedding (into a
 // package-level type or one declared in a function) from a type outside those packages or a generic
-// one, which reaches the method set only as a synthetic wrapper govulncheck does not enter.
+// one, which reaches the method set only as a synthetic wrapper govulncheck does not enter, and a
+// method of a type outside those packages that an alias names.
 // govulncheck searches none of them, so it can miss a call into a vulnerable module made only there.
 func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 	top := map[*types.Package]bool{}
@@ -451,14 +452,14 @@ func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
 		seen := map[*types.Func]bool{}
 		for _, obj := range p.TypesInfo.Defs {
 			tn, ok := obj.(*types.TypeName)
-			if !ok || tn.IsAlias() {
+			if !ok {
 				continue
 			}
-			named, ok := tn.Type().(*types.Named)
-			if !ok || types.IsInterface(named) {
+			typ := types.Unalias(tn.Type())
+			if types.IsInterface(typ) {
 				continue
 			}
-			for _, t := range []types.Type{named, types.NewPointer(named)} {
+			for _, t := range []types.Type{typ, types.NewPointer(typ)} {
 				ms := types.NewMethodSet(t)
 				for i := range ms.Len() {
 					fn, ok := ms.At(i).Obj().(*types.Func)

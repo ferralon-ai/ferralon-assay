@@ -46,6 +46,7 @@ func TestClassifyPartialityReason(t *testing.T) {
 		plugin.PartialReasonPluginLoad:        report.PartialityDidNotRun,
 		plugin.PartialReasonExcludedFiles:     report.PartialityDidNotRun,
 		plugin.PartialReasonUnsearchedMethods: report.PartialityDidNotRun,
+		plugin.PartialReasonLibraryEscape:     report.PartialityDidNotRun,
 	} {
 		if got := report.ClassifyPartialityReason(reason); got != want {
 			t.Errorf("ClassifyPartialityReason(%q) = %q, want %q", reason, got, want)

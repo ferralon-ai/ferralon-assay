@@ -649,10 +649,12 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 	}
 	for {
 		full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "package.json")
-		if data, err := os.ReadFile(full); err == nil {
+		if data, err := readRegular(full); err == nil {
 			if m := parsePkgManifest(data); m != nil {
 				return m, dir
 			}
+		} else if !os.IsNotExist(err) {
+			rs.prog.readFailed = true
 		}
 		if dir == "" {
 			return nil, ""
@@ -717,8 +719,11 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {
 	full := filepath.Join(rs.prog.root, "package.json")
-	data, err := os.ReadFile(full)
+	data, err := readRegular(full)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			rs.prog.readFailed = true
+		}
 		return nil, false
 	}
 	m := parsePkgManifest(data)
@@ -751,8 +756,11 @@ func (rs *resolver) workspaceMemberDirs(patterns []string) []string {
 
 func (rs *resolver) memberManifest(memberDir string) *pkgManifest {
 	full := filepath.Join(rs.prog.root, filepath.FromSlash(memberDir), "package.json")
-	data, err := os.ReadFile(full)
+	data, err := readRegular(full)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			rs.prog.readFailed = true
+		}
 		return nil
 	}
 	return parsePkgManifest(data)
@@ -825,8 +833,11 @@ func (rs *resolver) governingTsconfig(fromModule string) *tsconfigResolved {
 // The child's compilerOptions win; baseUrl/paths stay anchored to the tsconfig that
 // DECLARED them (governing-member scoping — C2's cross-member negative depends on this).
 func (rs *resolver) loadTsconfig(dir, rel string, depth int) *tsconfigResolved {
-	data, err := os.ReadFile(filepath.Join(rs.prog.root, filepath.FromSlash(rel)))
+	data, err := readRegular(filepath.Join(rs.prog.root, filepath.FromSlash(rel)))
 	if err != nil {
+		if !os.IsNotExist(err) {
+			rs.prog.readFailed = true
+		}
 		return nil
 	}
 	var raw rawTsconfig

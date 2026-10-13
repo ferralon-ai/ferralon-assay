@@ -17,7 +17,6 @@ package jsanalysis
 
 import (
 	"encoding/json"
-	"os"
 	"sort"
 	"strings"
 
@@ -54,7 +53,7 @@ type npmLockDep struct {
 }
 
 func (npmAdapter) Parse(sel selectedLock, manifests []manifestFile) ([]plugin.DependencyNode, []plugin.DependencyEdge, plugin.Partiality) {
-	data, err := os.ReadFile(sel.path)
+	data, err := readRegular(sel.path)
 	if err != nil {
 		return nil, nil, plugin.Partial(plugin.PartialReasonToolFailure)
 	}

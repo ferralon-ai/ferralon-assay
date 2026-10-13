@@ -367,8 +367,8 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 	return true
 }
 
-// launchToken matches, anywhere in a file, a launch setting under which Node resolves or
-// loads packages the lock does not describe: NODE_PATH (extra resolution directories),
+// launchToken matches, anywhere in a file, a launch setting or resolver hook under which Node
+// resolves or loads packages the lock does not describe: NODE_PATH (extra resolution directories),
 // NODE_OPTIONS (which can carry any flag below), NODE_PRESERVE_SYMLINKS, npm's node-options
 // (exported as NODE_OPTIONS to the scripts npm runs), and the node flags that preload a
 // module or a loader or keep symlinked paths: --require, --import, --loader,
@@ -376,8 +376,12 @@ func (lc *lockClosures) diskMatchesLock(lockDir string, g *lockGraph) bool {
 // argument of a node, nodejs or nodemon command: after the command name on the same line,
 // with no ;, | or & in between, as its own word (also as a quoted exec-form array element),
 // so `cp -r` and `rm -r` do not. A -r inside NODE_OPTIONS is caught by NODE_OPTIONS itself.
+// It also matches the resolver hooks first-party code or config can install: module-alias
+// (and its package.json _moduleDirectories and _moduleAliases), app-module-path, and patches
+// of Module._resolveFilename or Module._nodeModulePaths.
 var launchToken = regexp.MustCompile(
 	`\bNODE_PATH\b|\bNODE_OPTIONS\b|\bNODE_PRESERVE_SYMLINKS\b|\bnode-options\b` +
+		`|\b(?:_moduleDirectories|_moduleAliases|module-alias|app-module-path|_resolveFilename|_nodeModulePaths)\b` +
 		`|--(?:require|import|loader|experimental-loader|preserve-symlinks)\b` +
 		`|\b(?:node|nodejs|nodemon)(?:\.exe)?\b[^\n;|&]{0,256}[\s,"'\[]-r(?:[\s"'=,\]]|$)`)
 
@@ -386,6 +390,8 @@ var launchNeedles = [][]byte{
 	[]byte("NODE_PATH"), []byte("NODE_OPTIONS"), []byte("NODE_PRESERVE_SYMLINKS"),
 	[]byte("node-options"), []byte("--require"), []byte("--import"), []byte("--loader"),
 	[]byte("--experimental-loader"), []byte("--preserve-symlinks"), []byte("-r"),
+	[]byte("_moduleDirectories"), []byte("_moduleAliases"), []byte("module-alias"),
+	[]byte("app-module-path"), []byte("_resolveFilename"), []byte("_nodeModulePaths"),
 }
 
 // installerMarkers name files that mean something other than npm installs (or installed)

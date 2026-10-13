@@ -452,6 +452,23 @@ go(process.argv[2]);
 			held:  []*report.Package{qs, zed},
 		},
 		{
+			name: "module-alias with _moduleDirectories holds every advisory",
+			src: `require('module-alias/register');
+const qs = require('qs');
+function go(u) { return qs.parse(u); }
+go(process.argv[2]);
+`,
+			lock: `{"lockfileVersion":3,"packages":{
+"":{"name":"fixture","dependencies":{"module-alias":"2.2.3","qs":"6.0.0"}},
+"node_modules/module-alias":{"version":"2.2.3"},
+"node_modules/qs":{"version":"6.0.0"}}}`,
+			files: map[string]string{
+				"package.json":                    `{"name":"fixture","version":"1.0.0","_moduleDirectories":["vendor_modules"]}`,
+				"vendor_modules/zed/package.json": `{"name":"zed","version":"1.0.0"}`,
+			},
+			held: []*report.Package{qs, zed},
+		},
+		{
 			name: "a yarn.lock beside the npm lock holds every advisory",
 			src: `const qs = require('qs');
 function go(u) { return qs.parse(u); }

@@ -139,6 +139,14 @@ func TestLockClosures_LaunchTokens(t *testing.T) {
 		{"--preserve-symlinks-main in a script", "start.sh", "exec node --preserve-symlinks-main index.js\n", false},
 		{"NODE_PRESERVE_SYMLINKS in an env file", ".env", "NODE_PRESERVE_SYMLINKS=1\n", false},
 
+		// Resolver hooks first-party code or config installs.
+		{"module-alias _moduleDirectories in package.json", "package.json", `{"name":"app","_moduleDirectories":["vendor_modules"]}`, false},
+		{"module-alias _moduleAliases in package.json", "package.json", `{"name":"app","_moduleAliases":{"@lib":"vendor/lib"}}`, false},
+		{"module-alias registered in code", "index.js", "require('module-alias/register');\n", false},
+		{"app-module-path addPath", "index.js", "require('app-module-path').addPath(__dirname + '/vendor');\n", false},
+		{"a Module._resolveFilename patch", "src/hook.js", "const Module = require('module');\nconst orig = Module._resolveFilename;\nModule._resolveFilename = function (r, ...a) { return orig.call(this, r, ...a); };\n", false},
+		{"a Module._nodeModulePaths patch", "src/hook.js", "require('module')._nodeModulePaths = () => ['/opt/mods'];\n", false},
+
 		// -r as a node argument.
 		{"node -r in a Procfile", "Procfile", "web: node -r dotenv/config server.js\n", false},
 		{"nodejs -r", "bin/start", "#!/bin/sh\nexec nodejs -r ./apm server.js\n", false},

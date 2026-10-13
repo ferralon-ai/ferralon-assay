@@ -46,6 +46,8 @@ func TestResolveCodebaseInventory_SubjectJavaVersionReachesTargetEnv(t *testing.
 	}{
 		{"not provided", nil, nil},
 		{"provided", []AssessOption{WithSubjectJavaVersion("17.0.12")}, map[string]string{"java.version": "17.0.12"}},
+		{"profiles only", []AssessOption{WithSubjectMavenProfiles("release,!docs")}, map[string]string{"maven.profiles": "release,!docs"}},
+		{"both", []AssessOption{WithSubjectJavaVersion("17"), WithSubjectMavenProfiles(",")}, map[string]string{"java.version": "17", "maven.profiles": ","}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -54,7 +56,7 @@ func TestResolveCodebaseInventory_SubjectJavaVersionReachesTargetEnv(t *testing.
 			if _, lang, _, err := ResolveCodebaseInventory(context.Background(), codebase, "", opts...); err != nil || lang != "java" {
 				t.Fatalf("ResolveCodebaseInventory: lang %q err %v", lang, err)
 			}
-			if len(got.TargetEnv) != len(tt.want) || got.TargetEnv["java.version"] != tt.want["java.version"] {
+			if len(got.TargetEnv) != len(tt.want) || got.TargetEnv["java.version"] != tt.want["java.version"] || got.TargetEnv["maven.profiles"] != tt.want["maven.profiles"] {
 				t.Errorf("TargetEnv = %v, want %v", got.TargetEnv, tt.want)
 			}
 		})

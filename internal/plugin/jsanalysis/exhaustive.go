@@ -220,7 +220,7 @@ func specRecorded(recorded map[string]map[string]string, field, name, spec strin
 // yarn.lock does not record workspaces itself). A pattern filepath.Match cannot evaluate ("**")
 // matches nothing.
 func yarnWorkspace(lockDir, rel string) bool {
-	data, err := os.ReadFile(filepath.Join(lockDir, "package.json"))
+	data, err := readRegular(filepath.Join(lockDir, "package.json"))
 	if err != nil {
 		return false
 	}
@@ -313,13 +313,16 @@ func installedPackage(dir, installName, realRoot string, into, visited map[strin
 		return false
 	}
 	into[normalizeNPMCoordinate(installName)] = true
-	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+	// An unread package.json may name the copy as any package, so the tree is not fully read.
+	if data, err := readRegular(filepath.Join(dir, "package.json")); err == nil {
 		var m struct {
 			Name string `json:"name"`
 		}
 		if json.Unmarshal(data, &m) == nil && m.Name != "" {
 			into[normalizeNPMCoordinate(m.Name)] = true
 		}
+	} else if !os.IsNotExist(err) {
+		return false
 	}
 	if nested := filepath.Join(dir, "node_modules"); isDir(nested) {
 		return installedPackages(nested, realRoot, into, visited)

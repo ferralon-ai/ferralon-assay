@@ -141,10 +141,15 @@ func isManifest(name string) bool {
 // bool is false when the file cannot be read or is structurally unparseable (the caller
 // degrades partiality).
 func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
+	return parseManifestData(path, data)
+}
+
+// parseManifestData is parseManifest over contents already read from path.
+func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, bool) {
 	base := filepath.Base(path)
 	switch {
 	case base == "poetry.lock":

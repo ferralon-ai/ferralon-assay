@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -72,7 +71,7 @@ var (
 // readPackageJSON decodes the package.json at path. ok is false when it cannot be read, is not a
 // JSON object, or has a non-string name or a dependency field that is not a map of strings.
 func readPackageJSON(path string) (depManifest, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return depManifest{}, false
 	}

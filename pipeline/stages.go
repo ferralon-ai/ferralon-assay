@@ -1263,10 +1263,13 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		FixedVersion:   "13.0.1",
 		VersionScheme:  "nuget",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
-		// Every public route into JsonReader reading untrusted text, where the unbounded depth
-		// (private JsonReader.Push via SetToken) is reached. Fixed by defaulting MaxDepth in
-		// upstream 7e77bbe1beccceac4fc7b174b53abfefac278b66 and b6dc05be5a0f4808f06ec430f3bb59b24d3fbc3e.
+		// The unbounded depth is private JsonReader.Push, which every reader reaches through
+		// SetToken; naming it covers readers and calls no public entry below names (BsonReader,
+		// custom JsonReader subclasses, ReadAs*, a base-typed Read or Skip). The public entries
+		// keep the common routes visible in a path. Fixed by defaulting MaxDepth in upstream
+		// 7e77bbe1beccceac4fc7b174b53abfefac278b66 and b6dc05be5a0f4808f06ec430f3bb59b24d3fbc3e.
 		Symbols: []string{
+			"Newtonsoft.Json.JsonReader.Push",
 			"Newtonsoft.Json.JsonConvert.DeserializeObject",
 			"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
 			"Newtonsoft.Json.JsonConvert.PopulateObject",

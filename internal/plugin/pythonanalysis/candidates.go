@@ -93,14 +93,14 @@ func (s *pySurface) fullyReadUncached(path string) bool {
 	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	if _, ok := parseManifest(path); !ok {
+	if _, ok := parseManifestCoverage(path); !ok {
 		return false
 	}
 	switch base := filepath.Base(path); {
 	case base == "hatch_build.py":
 		return false
 	case base == "poetry.lock":
-		deps, _ := parseManifest(path)
+		deps, _ := parseManifestCoverage(path)
 		return poetryLockConsistent(path, deps)
 	case completeLockfiles[base] || base == "Pipfile.lock":
 		return true

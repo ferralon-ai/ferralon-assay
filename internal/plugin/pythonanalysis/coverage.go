@@ -192,11 +192,14 @@ func pyprojectDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 		}
 		return true
 	}
-	if !add(pp.Project.Dependencies) {
+	addProject := func(specs []string) bool {
+		return !slices.ContainsFunc(specs, setuptoolsJoins) && add(specs)
+	}
+	if !addProject(pp.Project.Dependencies) {
 		return out, false
 	}
 	for _, g := range slices.Sorted(maps.Keys(pp.Project.OptionalDependencies)) {
-		if !add(pp.Project.OptionalDependencies[g]) {
+		if !addProject(pp.Project.OptionalDependencies[g]) {
 			return out, false
 		}
 	}

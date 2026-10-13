@@ -124,6 +124,7 @@ const HeadSize = 64 << 10
 // Candidates walks root and returns, in walk order:
 //
 //   - every regular file, or symlink to a regular file inside root, that match accepts;
+//   - every device, socket or pipe that match accepts by name alone (it is never opened);
 //   - every symlink that escapes root (or does not resolve, a link cycle included), every
 //     symlink inside root to something that is neither a regular file nor a directory (opening a
 //     pipe would block the walk), every directory or file that cannot be read, and every
@@ -136,9 +137,9 @@ const HeadSize = 64 << 10
 // link, so whatever the target holds is classified once, at its real path.
 //
 // match sees the path and up to HeadSize bytes of the file's content (nil when the content
-// looks binary or the file is empty). fullyRead is asked only about a regular file match
-// accepted; every other candidate is not fully read. Skipped directories yield nothing, unless
-// they are symlinks leaving root.
+// looks binary, the file is empty, or it is not a regular file). fullyRead is asked only about
+// a regular file match accepted; every other candidate is not fully read. Skipped directories
+// yield nothing, unless they are symlinks leaving root.
 func Candidates(root string, match func(path string, head []byte) (why string, ok bool), fullyRead func(path string) bool) []Candidate {
 	var out []Candidate
 	add := func(path, why string, read bool) {
@@ -178,7 +179,11 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 			return nil
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
-			return nil // a device, socket or pipe declares nothing, and reading a pipe would block
+			// A device, socket or pipe is classified by name alone: opening a pipe would block.
+			if why, ok := match(e.Path, nil); ok {
+				add(e.Path, why, false)
+			}
+			return nil
 		}
 		if e.Symlink {
 			fi, err := os.Stat(e.Path)

@@ -8,9 +8,10 @@ import (
 )
 
 // TestBuildTreeSkipped pins the shared skip rule: exactly node_modules and site-packages,
-// case-sensitive, and nothing else. This walker, its skip rule and the symlinked-directory rule
-// resolutionOverridden applies are copied from internal/plugin/buildtree at 444cd8f (blob
-// 43f93477755565bdfa3fd0dabf8a313a22deb9b1); a change to either must be made to both.
+// case-sensitive, and nothing else. This walker, its skip rule, and the symlinked-directory and
+// symlink-to-a-non-regular-file rules resolutionOverridden applies are copied from
+// internal/plugin/buildtree at bc0233d (blob 0219ca2d925dae344581fe87d7774381431c7e62); a
+// change to either must be made to both.
 func TestBuildTreeSkipped(t *testing.T) {
 	for name, want := range map[string]bool{
 		"node_modules":  true,

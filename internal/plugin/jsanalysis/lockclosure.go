@@ -527,8 +527,9 @@ var nodeModulesLinker = regexp.MustCompile(`(?m)^\s*nodeLinker:\s*["']?node-modu
 //   - a tsconfig or jsconfig paths setting and a TypeScript runner, anywhere in the tree;
 //   - an installerMarker, a .yarnrc.yml that does not select the node_modules linker, or a
 //     node_modules holding pnpm's or yarn's state;
-//   - a symlink that leaves the build tree or does not resolve, a symlinked node_modules, or
-//     anything it cannot read;
+//   - a symlink that leaves the build tree or does not resolve, a symlink inside the tree to
+//     something that is neither a regular file nor a directory (opening a pipe would block the
+//     walk), a symlinked node_modules, or anything it cannot read;
 //   - a symlinked directory whose target the walk does not itself read. One inside the tree is
 //     read in full only when its target resolves inside the tree's real path to a directory the
 //     walk enters at that real path: not node_modules, site-packages or anything under one. The
@@ -591,6 +592,15 @@ func (lc *lockClosures) resolutionOverridden() bool {
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
 			return nil
+		}
+		if e.Symlink {
+			fi, err := os.Stat(e.Path)
+			if err != nil {
+				return veto()
+			}
+			if !fi.Mode().IsRegular() {
+				return veto() // opening a pipe would block
+			}
 		}
 		if npmLockNames[name] {
 			if npmLockParses(e.Path) {

@@ -617,7 +617,7 @@ python_req = "python_version >= '3.9'"
 		{"setup.py literal range", map[string]string{"setup.py": setupPy}, "jinja2", true, false, "", ">=3.0.0"},
 		{"setup.py literal exact pin", map[string]string{"setup.py": setupPy}, "markupsafe", true, true, "2.1.3", ""},
 		{"setup.py parenthesized specifier", map[string]string{"setup.py": setupPy}, "pydantic", true, false, "", ">=2.3"},
-		{"setup.py other keyword not read", map[string]string{"setup.py": setupPy}, "nose", false, false, "", ""},
+		{"setup.py tests_require read", map[string]string{"setup.py": setupPy}, "nose", true, false, "", ">=1"},
 		{"setup.py computed list rejected whole", map[string]string{"setup.py": setupPyComputed}, "aiohttp", false, false, "", ""},
 		{"PEP 621 multi-clause range kept whole", map[string]string{"pyproject.toml": pyproject}, "flask", true, false, "", ">=2.0,<3"},
 		{"PEP 621 exact pin resolves", map[string]string{"pyproject.toml": pyproject}, "deepdiff", true, true, "8.0.1", ""},
@@ -1161,6 +1161,28 @@ func TestResolveVersions_SetupCfgFileSymlinkEscape(t *testing.T) {
 	r := resolveVersion(t, root, "PyJWT")
 	if r.Found || !slices.Contains(r.Partiality.Reasons, plugin.PartialReasonToolFailure) {
 		t.Fatalf("symlink escape read: found=%v partiality=%+v", r.Found, r.Partiality)
+	}
+}
+
+// tests_require is read as a test-time declaration in setup.py and setup.cfg, and a computed
+// value takes the parse-failure path: a pin there at another version leaves the root pin
+// unresolved.
+func TestResolveVersions_TestsRequireVetoes(t *testing.T) {
+	for name, body := range map[string]map[string]string{
+		"setup.py literal":  {"svc/setup.py": "from setuptools import setup\nsetup(name='x', tests_require=['pyjwt==2.10.0'])\n"},
+		"setup.py computed": {"svc/setup.py": "from setuptools import setup\nT = ['pyjwt==2.10.0']\nsetup(name='x', tests_require=T)\n"},
+		"setup.cfg":         {"svc/setup.cfg": "[options]\ntests_require =\n    pyjwt==2.10.0\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tree := map[string]string{"requirements.txt": "pyjwt==2.8.0\n"}
+			for k, v := range body {
+				tree[k] = v
+			}
+			dir := writeTree(t, tree)
+			for i := 0; i < resolveRuns; i++ {
+				mustUnresolvedPy(t, resolveVersion(t, dir, "pyjwt"))
+			}
+		})
 	}
 }
 

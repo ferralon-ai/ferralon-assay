@@ -290,10 +290,11 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok
 	case "setup.py":
 		// Only literal declarations are read; anything computed or splatted may install any
-		// project, so it takes the parse-failure path.
+		// project, so it takes the parse-failure path, setup_requires and tests_require included.
 		deps, ok = parseSetupPy(data)
 		deps = append(deps, buildRequires(path, data)...)
-		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && setupPyComplete(data)
+		_, buildComplete := scanSetupPyKeys(string(data), setupPyBuildKeys)
+		return deps, originsFor(deps, manifestOrigin{dir: dir}), ok && setupPyComplete(data) && buildComplete
 	case "hatch_build.py":
 		// A build hook can add dependencies at run time: its literals are read, and a hook that
 		// mentions dependencies still takes the parse-failure path.
@@ -306,12 +307,13 @@ func parseManifestData(path string, data []byte) ([]plugin.ResolvedDependency, [
 	return deps, originsFor(deps, manifestOrigin{dir: dir, lock: base}), ok
 }
 
-// buildRequires returns the build-time requirements a build definition declares
-// ([build-system].requires in pyproject.toml, setup_requires in setup.cfg and setup.py) as
-// declared dependencies of the advisory path, so a coordinate a build installs is found rather
-// than read as absent. They are not runtime installs: the inventory does not carry them and no
-// lockfile is expected to cover them (exhaustive.go). Entries that are not well-formed PEP 508
-// requirements, and a setup_requires value that is not literal, are skipped.
+// buildRequires returns the build- and test-time requirements a build definition declares
+// ([build-system].requires in pyproject.toml, setup_requires and tests_require in setup.cfg and
+// setup.py) as declared dependencies of the advisory path, so a coordinate a build installs is
+// found rather than read as absent. They are not runtime installs: the inventory does not carry
+// them and no lockfile is expected to cover them (exhaustive.go). Entries that are not
+// well-formed PEP 508 requirements, and a setup_requires or tests_require value that is not
+// literal, are skipped.
 func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
 	var specs []string
 	source := filepath.Base(path)

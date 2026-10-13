@@ -31,7 +31,7 @@ func parseSetupCfg(path string, data []byte) ([]plugin.ResolvedDependency, bool)
 // setupCfgScan is what scanSetupCfg read from one setup.cfg.
 type setupCfgScan struct {
 	specs      []string // install_requires and extras_require entries, "file:" lists expanded
-	buildSpecs []string // setup_requires entries: build-time only
+	buildSpecs []string // setup_requires and tests_require entries: build- and test-time only
 	files      []string // requirement files a "file:" value named, each read in full
 	ok         bool
 }
@@ -52,7 +52,7 @@ func scanSetupCfg(path string, data []byte) setupCfgScan {
 		head    string   // the value text on the key line
 		cont    []string // the value's continuation lines
 	)
-	build := func() bool { return key == "setup_requires" }
+	build := func() bool { return key == "setup_requires" || key == "tests_require" }
 	add := func(spec string) {
 		spec = strings.TrimSpace(stripCfgInlineComment(spec))
 		if spec == "" {
@@ -120,7 +120,7 @@ func scanSetupCfg(path string, data []byte) setupCfgScan {
 		}
 		key = strings.ToLower(strings.TrimSpace(trimmed[:k]))
 		switch {
-		case section == "options" && (key == "install_requires" || key == "setup_requires"),
+		case section == "options" && (key == "install_requires" || key == "setup_requires" || key == "tests_require"),
 			section == "options.extras_require":
 			inList, head, cont = true, strings.TrimSpace(trimmed[k+1:]), nil
 		}
@@ -259,10 +259,10 @@ func setupPyComplete(data []byte) bool {
 }
 
 // setupPyRuntimeKeys are the setup() keywords that declare what installing the project
-// installs; setupPyBuildKeys declare what only building it installs.
+// installs; setupPyBuildKeys declare what only building or testing it installs.
 var (
 	setupPyRuntimeKeys = []string{"install_requires", "extras_require"}
-	setupPyBuildKeys   = []string{"setup_requires"}
+	setupPyBuildKeys   = []string{"setup_requires", "tests_require"}
 )
 
 // scanSetupPy returns the requirement strings of every literal install_requires list and

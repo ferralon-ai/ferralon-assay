@@ -2,15 +2,12 @@ package pythonanalysis
 
 import (
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 )
@@ -44,12 +41,6 @@ import (
 // PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
 // runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral
 // and below.
-
-// absent reports whether err from a filesystem call means the path is not there: it does not
-// exist, or one of its parent components is not a directory.
-func absent(err error) bool {
-	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
-}
 
 // laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
 // being set.
@@ -793,6 +784,30 @@ func scriptStat(p string) (regular, there, known bool) {
 	return fi.Mode().IsRegular(), true, true
 }
 
+// scriptGlob lists what a COPY source pattern matches. ok is false when the pattern has a
+// meta character before its last element or its directory is there but could not be listed:
+// filepath.Glob drops such errors, and a match it did not list may be copied anyway.
+func scriptGlob(pattern string) (matches []string, ok bool) {
+	dir, base := filepath.Split(pattern)
+	if strings.ContainsAny(dir, "*?[\\") {
+		return nil, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, absent(err)
+	}
+	for _, e := range entries {
+		m, err := filepath.Match(base, e.Name())
+		if err != nil {
+			return nil, false
+		}
+		if m {
+			matches = append(matches, filepath.Join(dir, e.Name()))
+		}
+	}
+	return matches, true
+}
+
 func scriptIsDir(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
@@ -936,7 +951,11 @@ func (st *scriptDockerStage) copyInstr(v *scriptVeto, ctxs []string, rest string
 			pattern := filepath.Join(ctx, rel)
 			matches := []string{pattern}
 			if glob {
-				matches, _ = filepath.Glob(pattern)
+				var ok bool
+				if matches, ok = scriptGlob(pattern); !ok {
+					unplaced = true
+					continue
+				}
 			}
 			for _, m := range matches {
 				regular, there, known := scriptStat(m)

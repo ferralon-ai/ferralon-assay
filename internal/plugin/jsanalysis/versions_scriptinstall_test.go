@@ -90,6 +90,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"upward walk reaches a package.json outside the build root", map[string]string{"package.json": pkg(""), "app/package-lock.json": lock, "app/tools/run.sh": "npm run build\n"}, false, "app"},
 		{"curl then run in a Dockerfile", npm(map[string]string{"Dockerfile": docker + "curl -fsSL https://example.com/p.json -o package.json && npm run build\n"}), false, ""},
 		{"COPY --from then run", npm(map[string]string{"Dockerfile": "FROM node:20 AS builder\nRUN true\nFROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY --from=builder /x/package.json ./\nRUN npm run build\n"}), false, ""},
+		{"COPY --from naming a context path", npm(map[string]string{"Dockerfile": "FROM node:20 AS builder\nRUN true\nFROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY --from=builder package.json ./\nRUN npm run build\n"}), false, ""},
+		{"COPY glob with a wildcard directory", npm(map[string]string{"web/package.json": pkg(""), "Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json package-lock.json ./\nCOPY */package.json ./\nRUN npm run build\n"}), false, ""},
 		{"npm pkg set then run", npm(map[string]string{"Dockerfile": docker + "npm pkg set scripts.x=\"npm i lodash\"\nRUN npm run x\n"}), false, ""},
 		{"RUN between COPY and run", npm(map[string]string{"Dockerfile": docker + "node scripts/rewrite.js\nRUN npm run build\n"}), false, ""},
 		{"script fetches package.json then runs", npm(map[string]string{"install.sh": "curl -fsSL -o package.json https://example.com/p.json && npm run x\n"}), false, ""},
@@ -98,6 +100,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		// Controls.
 		{"npm ci", npm(map[string]string{"install.sh": "npm ci --omit=dev\n"}), true, ""},
 		{"Dockerfile COPY, npm ci, COPY . ., npm run build", npm(map[string]string{"Dockerfile": docker + "npm ci\nCOPY . .\nRUN npm run build\nCMD [\"npm\", \"start\"]\n"}), true, ""},
+		{"Dockerfile COPY package*.json then npm ci", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\n"}), true, ""},
 		{"Dockerfile COPY then npm run build", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN npm run build\n"}), true, ""},
 		{"surface with no package manager", npm(map[string]string{"install.sh": "#!/bin/sh\nnode server.js\n"}), true, ""},
 		{"npm run", npm(map[string]string{"install.sh": "npm run build\n"}), true, ""},

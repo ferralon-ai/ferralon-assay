@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/types"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -314,16 +315,51 @@ var runTimeCallees = map[string]string{
 }
 
 // runTimeCalls returns the reasons runTimeCallees declares for the callees the program reaches
-// from govulncheck's entry points.
+// from govulncheck's entry points and from the exported methods those leave out (unsearchedMethods).
 func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 	var queue []*callgraph.Node
+	reasons := map[string]bool{}
+	declare := func(fn *ssa.Function) {
+		if obj, ok := fn.Object().(*types.Func); ok {
+			if r, ok := runTimeCallees[obj.FullName()]; ok {
+				reasons[r] = true
+			}
+		}
+	}
+	// A function the graph holds no node for (a generic origin, which ssautil.AllFunctions leaves
+	// out) is read directly: its static callees are declared and followed into the graph.
+	read := map[*ssa.Function]bool{}
+	var readBody func(fn *ssa.Function)
+	readBody = func(fn *ssa.Function) {
+		if fn == nil || read[fn] {
+			return
+		}
+		read[fn] = true
+		if n := graph.Nodes[fn]; n != nil {
+			queue = append(queue, n)
+			return
+		}
+		declare(fn)
+		for _, b := range fn.Blocks {
+			for _, instr := range b.Instrs {
+				if call, ok := instr.(ssa.CallInstruction); ok {
+					readBody(call.Common().StaticCallee())
+				}
+			}
+		}
+		for _, anon := range fn.AnonFuncs {
+			readBody(anon)
+		}
+	}
 	for _, fn := range s.govulncheckEntries() {
 		if n := graph.Nodes[fn]; n != nil {
 			queue = append(queue, n)
 		}
 	}
+	for _, m := range unsearchedMethods(slices.Collect(maps.Values(s.typePkg))) {
+		readBody(s.prog.FuncValue(m))
+	}
 	seen := map[*callgraph.Node]bool{}
-	reasons := map[string]bool{}
 	for len(queue) > 0 {
 		n := queue[0]
 		queue = queue[1:]
@@ -331,11 +367,7 @@ func (s *ssaProgram) runTimeCalls(graph *callgraph.Graph) []string {
 			continue
 		}
 		seen[n] = true
-		if fn, ok := n.Func.Object().(*types.Func); ok && n.Func.Object() != nil {
-			if r, ok := runTimeCallees[fn.FullName()]; ok {
-				reasons[r] = true
-			}
-		}
+		declare(n.Func)
 		for _, e := range n.Out {
 			queue = append(queue, e.Callee)
 		}
@@ -388,6 +420,62 @@ func (s *ssaProgram) memberFuncs(m ssa.Member) []*ssa.Function {
 		return fns
 	}
 	return nil
+}
+
+// unsearchedMethods returns the exported methods a caller of the loaded non-main packages can invoke
+// that govulncheckEntries leaves out, each as its generic origin: a method of a generic type, whose
+// method set yields no function until instantiated, and a method promoted by embedding (into a
+// package-level type or one declared in a function) from a type outside those packages or a generic
+// one, which reaches the method set only as a synthetic wrapper govulncheck does not enter.
+// govulncheck searches none of them, so it can miss a call into a vulnerable module made only there.
+func unsearchedMethods(pkgs []*packages.Package) []*types.Func {
+	top := map[*types.Package]bool{}
+	for _, p := range pkgs {
+		if p.Types != nil && p.Name != "main" {
+			top[p.Types] = true
+		}
+	}
+	searched := func(fn *types.Func) bool {
+		recv := fn.Signature().Recv().Type()
+		if ptr, ok := recv.(*types.Pointer); ok {
+			recv = ptr.Elem()
+		}
+		named, ok := types.Unalias(recv).(*types.Named)
+		return ok && top[fn.Pkg()] && named.TypeParams().Len() == 0 && named.Obj().Parent() == fn.Pkg().Scope()
+	}
+	var out []*types.Func
+	for _, p := range pkgs {
+		if !top[p.Types] || p.TypesInfo == nil {
+			continue
+		}
+		seen := map[*types.Func]bool{}
+		for _, obj := range p.TypesInfo.Defs {
+			tn, ok := obj.(*types.TypeName)
+			if !ok || tn.IsAlias() {
+				continue
+			}
+			named, ok := tn.Type().(*types.Named)
+			if !ok || types.IsInterface(named) {
+				continue
+			}
+			for _, t := range []types.Type{named, types.NewPointer(named)} {
+				ms := types.NewMethodSet(t)
+				for i := range ms.Len() {
+					fn, ok := ms.At(i).Obj().(*types.Func)
+					if !ok || !fn.Exported() {
+						continue
+					}
+					fn = fn.Origin()
+					if types.IsInterface(fn.Signature().Recv().Type()) || searched(fn) || seen[fn] {
+						continue
+					}
+					seen[fn] = true
+					out = append(out, fn)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func sortedKeys(set map[string]bool) []string {

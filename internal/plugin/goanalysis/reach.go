@@ -183,13 +183,45 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 // scanResult turns one govulncheck run over the loaded build into the reachability result: it
 // reconciles the findings against the build's call graph and withholds a refutation that files the
-// build left out may contradict.
+// build left out, or exported methods govulncheck never searched, may contradict.
 func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDir string, env []string) (plugin.ReachabilityResult, error) {
 	cg, err := callGraphOf(load, "vta")
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env), nil
+	res := withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env)
+	return withholdForUnsearchedMethods(res, scanned, load.Packages), nil
+}
+
+// withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
+// (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
+// package that declares it imports the refuted module (for the standard library, a vulnerable
+// package), directly or through other packages, the search that found no path never covered it. Reach is read off the import graph, never the call graph, which is what misses
+// these methods. The result then declares unsearched_methods instead.
+func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || unsearchedCallers(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	}
+	return res
+}
+
+// unsearchedCallers reports whether an unsearched method may call into module. A method whose
+// declaring package the load does not hold counts.
+func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	reach := newModuleReach(pkgs, module, vulnerable)
+	for _, m := range unsearchedMethods(pkgs) {
+		decl := reach.loaded[m.Pkg().Path()]
+		if decl == nil || reach.reachesModule(decl) {
+			return true
+		}
+	}
+	return false
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file

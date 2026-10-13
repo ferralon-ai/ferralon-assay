@@ -272,7 +272,7 @@ func TestReach_PlatformReceiver(t *testing.T) {
 		}})
 	}
 	cases = append(cases,
-		reachCase{name: "final value receiver taking an application callback", want: Undetermined, why: "higher-order re-entry:", classes: []classfile.Class{
+		reachCase{name: "final value receiver method not listed", want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/lang/StringBuilder", classes: []classfile.Class{
 			app(edge(classfile.EdgeVirtual, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;")), evil,
 		}},
 		reachCase{name: "final value receiver taking a final argument", want: NotExploitable, classes: []classfile.Class{

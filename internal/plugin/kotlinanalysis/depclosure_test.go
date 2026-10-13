@@ -837,3 +837,39 @@ func TestProgramClosureCoversInventory(t *testing.T) {
 		}
 	}
 }
+
+// TestLocateDependencyJar_CopiesAcrossCaches: the Gradle module cache and .m2 are one set of
+// candidates. Copies of a version whose bytes differ, even one per cache, leave the build's
+// bytes unknown and are a miss.
+func TestLocateDependencyJar_CopiesAcrossCaches(t *testing.T) {
+	jar := func(method string) map[string][]byte {
+		b := newKClassBuilder()
+		b.addMethod(method, "()V", []byte{opReturn})
+		return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
+	}
+	tests := []struct {
+		name          string
+		gradle, maven string // method the copy in each cache defines; "" = no copy
+		wantOK        bool
+	}{
+		{name: "gradle cache only", gradle: "a", wantOK: true},
+		{name: "m2 only", maven: "a", wantOK: true},
+		{name: "same bytes in both", gradle: "a", maven: "a", wantOK: true},
+		{name: "different bytes across caches", gradle: "a", maven: "b"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			dir := t.TempDir()
+			if tt.gradle != "" {
+				writeGradleCacheJar(t, dir, jacksonGroup, jacksonArtifact, jacksonVersion, jar(tt.gradle))
+			}
+			if tt.maven != "" {
+				writeJar(t, m2Path(dir, jacksonGroup, jacksonArtifact, jacksonVersion, "jar"), jar(tt.maven))
+			}
+			if _, ok := LocateDependencyJar(dir, jacksonGroup+":"+jacksonArtifact, jacksonVersion); ok != tt.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOK)
+			}
+		})
+	}
+}

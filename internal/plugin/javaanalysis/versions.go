@@ -22,6 +22,12 @@ import (
 // POM, or a gradle declaration with no literal version — is returned with Resolved=false (an
 // UNRESOLVED marker). The pipeline fails OPEN on UNRESOLVED, never fabricating a not-affected.
 //
+// A Gradle declaration's version is a request, not the resolved version: Gradle selects the
+// highest version requested anywhere in the graph, so a declared 2.0 ships as 2.5 when a
+// transitive dependency asks for 2.5. A Gradle declaration is Resolved only at the one version
+// the build's enforced locks hold for it (gradleBound); otherwise it is Found, not Resolved,
+// with its declared version kept as the Constraint.
+//
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
 //   - A build dir with NO pom.xml and NO build.gradle degrades Partiality to declared-partial
@@ -55,12 +61,17 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		}
 		all = append(all, deps...)
 	}
-	for _, g := range gradles {
-		deps, ok := parseGradle(g)
-		if !ok {
-			parseFailed = true
+	if len(gradles) > 0 {
+		locked, bound, _ := gradleLockBinding(req.BuildDir)
+		for _, g := range gradles {
+			deps, ok := parseGradle(g)
+			if !ok {
+				parseFailed = true
+			}
+			for _, d := range deps {
+				all = append(all, gradleBound(d, locked, bound))
+			}
 		}
-		all = append(all, deps...)
 	}
 
 	part := plugin.Complete()
@@ -277,6 +288,17 @@ func parseGradle(path string) ([]plugin.ResolvedDependency, bool) {
 		}
 	}
 	return out, true
+}
+
+// gradleBound states a Gradle declaration's version as Gradle resolves it: Resolved at the
+// lock's version when the build's locks bind (gradleLockedVersions) and hold exactly one version
+// of it, since a Match names one version and either of two could be the one that runs.
+// Otherwise it is not Resolved, and the declared version, if any, is kept as the Constraint.
+func gradleBound(d plugin.ResolvedDependency, locked map[string][]string, bound bool) plugin.ResolvedDependency {
+	if vs := locked[normalizeCoordinate(d.Coordinate)]; bound && len(vs) == 1 {
+		return plugin.ResolvedDependency{Coordinate: d.Coordinate, Version: vs[0], Resolved: true, Source: d.Source}
+	}
+	return plugin.ResolvedDependency{Coordinate: d.Coordinate, Source: d.Source, Constraint: d.Version}
 }
 
 // gradleConfiguration prefixes whose argument is a dependency declaration we read.

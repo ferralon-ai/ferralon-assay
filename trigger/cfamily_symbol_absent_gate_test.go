@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/cfamilyanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -313,10 +315,11 @@ func (s libfooAdvisories) Lookup(id string) (pipeline.AdvisoryFacts, bool) {
 
 // A package manager's pin outside the advisory's range does not disqualify a C/C++ advisory: the
 // tree also vendors an affected copy of the library, and no manifest records which copy is linked.
-// The row is undetermined and carries no package version, since the version never reached the
-// comparison; the pin stays in the SBOM. The rows run with and without a v prefix: the version
-// comparison accepts only semver, so a plain C version never compares, and the v-prefixed rows are
-// the ones that disqualify if a C/C++ version ever resolves.
+// The row is undetermined. It names the package with the pin as an inventory observation
+// (source_unpinned), never as a resolved version, and the pin stays in the SBOM. The rows run with
+// and without a v prefix: the version comparison accepts only semver, so a plain C version never
+// compares, and the v-prefixed rows are the ones that disqualify if a C/C++ version ever resolves.
+// The plain row is held by the package's PartialReason, which a resolved version would not carry.
 func TestCFamilyBaseline_PinOutsideRangeBesideVendoredCopyIsUndetermined(t *testing.T) {
 	const vendored = "#define FOO_VERSION \"1.0.0\"\nint foo_parse(const char *p) { return p != 0; }\n"
 	vcpkgStatus := func(v string) string {
@@ -340,8 +343,15 @@ func TestCFamilyBaseline_PinOutsideRangeBesideVendoredCopyIsUndetermined(t *test
 			tc.manifests["third_party/libfoo/foo.c"] = vendored
 			rep := runCFamilyBaselineTree(t, cfamilyGatePlugin{}, libfooAdvisories{fixed: tc.fixed}, tc.manifests, cfamilyAdvisoryID)
 			assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
-			if f := cfamilyRow(t, rep); f.Package != nil {
-				t.Errorf("row carries package %+v: a C/C++ version reached the version comparison", *f.Package)
+			want := report.Package{
+				Ecosystem:     "cfamily",
+				Name:          "libfoo",
+				Version:       tc.pin,
+				PURL:          "pkg:conan/libfoo",
+				PartialReason: cfamilySoleSourceUnproven,
+			}
+			if f := cfamilyRow(t, rep); f.Package == nil || *f.Package != want {
+				t.Errorf("row package = %+v, want the inventory observation %+v", f.Package, want)
 			}
 			var inSBOM bool
 			for _, p := range rep.SBOM.Packages {
@@ -353,5 +363,50 @@ func TestCFamilyBaseline_PinOutsideRangeBesideVendoredCopyIsUndetermined(t *test
 				t.Errorf("SBOM %+v does not carry libfoo at %s", rep.SBOM.Packages, tc.pin)
 			}
 		})
+	}
+}
+
+// cfamilySoleSourceUnproven is the code the C/C++ lane declares on every pin, spelled here because
+// cfamilyanalysis keeps it unexported.
+const cfamilySoleSourceUnproven = plugin.PartialReasonSourceUnpinned + ":sole_source_unproven"
+
+// A C/C++ row names its package in the VEX product ID and in the rendered HTML and SARIF text, and
+// shows the pin only as an inventory observation. The product ID is the advisory's versionless PURL,
+// the ID every lane emits for a package; it carries no version, so it cannot present the pin as
+// resolved.
+func TestCFamilyBaseline_RowNamesPackageWithPinAsObservation(t *testing.T) {
+	lock := map[string]string{
+		"conan.lock":    `{"version":"0.5","requires":["zlib/1.2.11#cac0f6daea041b0ccf42934163defb20%1765284699.337"],"build_requires":[],"python_requires":[]}`,
+		"conanfile.txt": "[requires]\nzlib/1.2.11\n",
+	}
+	rep := runCFamilyBaselineTree(t, cfamilyGatePlugin{}, cfamilyAdvisories{}, lock, cfamilyAdvisoryID)
+	assertUndetermined(t, rep, cfamilyAdvisoryID, report.ReasonAnalysisDidNotRun)
+	const label = "cfamily:zlib (pinned 1.2.11, not resolved)"
+
+	vex, err := projection.ProjectReportVEX(*rep)
+	if err != nil {
+		t.Fatalf("ProjectReportVEX: %v", err)
+	}
+	if got := vex.Statements[0].Products[0].ID; got != "pkg:conan/zlib" {
+		t.Errorf("VEX product ID = %q, want the advisory PURL pkg:conan/zlib", got)
+	}
+
+	sarif, err := projection.ProjectReportSARIF(*rep)
+	if err != nil {
+		t.Fatalf("ProjectReportSARIF: %v", err)
+	}
+	if got := sarif.Runs[0].Results[0].Properties.Scanner["package"]; got != label {
+		t.Errorf("SARIF package = %v, want %q", got, label)
+	}
+
+	html, err := projection.ProjectReportHTML(*rep)
+	if err != nil {
+		t.Fatalf("ProjectReportHTML: %v", err)
+	}
+	if !strings.Contains(string(html), label) {
+		t.Errorf("HTML report does not name %q", label)
+	}
+	if strings.Contains(string(html), "cfamily:zlib@") {
+		t.Error("HTML report row presents the pin as a resolved version")
 	}
 }

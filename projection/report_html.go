@@ -66,9 +66,12 @@ type reportHTMLView struct {
 func (v reportHTMLView) NotAssessedCount() int { return v.UndeterminedCount + v.WithheldCount }
 
 type reportHTMLLimit struct {
-	Reason     string
-	Label      string
-	Ecosystem  string
+	Reason    string
+	Label     string
+	Ecosystem string
+	// Package and Path locate a limit bounded to one package (report.PartialityNote).
+	Package    string
+	Path       string
 	Advisories []string
 	// Withheld is true when this limit suppressed verdicts (Advisories is non-empty), which is a
 	// materially different disclosure from a limit that merely narrowed coverage.
@@ -190,6 +193,8 @@ func ProjectReportHTML(r report.Report) ([]byte, error) {
 			Reason:     n.Reason,
 			Label:      reportHTMLLimitLabel(n.Reason),
 			Ecosystem:  n.Ecosystem,
+			Package:    n.Package,
+			Path:       n.Path,
 			Advisories: withheld,
 			Withheld:   len(withheld) > 0,
 		})
@@ -212,7 +217,7 @@ func MarshalReportHTML(r report.Report) ([]byte, error) {
 func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 	var pkg string
 	if f.Package != nil {
-		pkg = fmt.Sprintf("%s:%s@%s", f.Package.Ecosystem, f.Package.Name, f.Package.Version)
+		pkg = f.Package.Ecosystem + ":" + f.Package.Label()
 	}
 	var aliases string
 	if len(f.Advisory.Aliases) > 0 {

@@ -112,3 +112,28 @@ function route(req, res) {
 		t.Fatalf("a computed-member call must declare dynamic_dispatch; got %v", res.Partiality.Reasons)
 	}
 }
+
+// An empty ReachabilityRequest.Package means the admitted package or its resolved version is
+// unknown. The lane must then never refute, even for an installed dev-only package no code loads.
+func TestReachability_EmptyPackageNeverRefutes(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"package.json": `{"name":"app","version":"1.0.0","main":"index.js","devDependencies":{"left-pad":"1.3.0"}}`,
+		"package-lock.json": `{"name":"app","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{
+			"":{"name":"app","version":"1.0.0","devDependencies":{"left-pad":"1.3.0"}},
+			"node_modules/left-pad":{"version":"1.3.0","dev":true}}}`,
+		"index.js": "console.log('no dependency is loaded');\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, VulnID: "CVE-0000-0000"})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if res.Refutation != nil {
+		t.Fatalf("empty Package must yield no Refutation; got %+v", res.Refutation)
+	}
+}

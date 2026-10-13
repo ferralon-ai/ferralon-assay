@@ -1717,18 +1717,29 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	// empty ⇒ no element selected: the scalar-primary path ran (a v2 advisory, or a v3 advisory whose
 	// packages the target does not depend on → OPEN).
 	var selectedModule, selectedCoordinate string
+	// isRoot records that the adjudicated package is the scanned project itself (its manifest's own
+	// identity), so its vulnerable code is first-party and its version is the project's.
+	isRoot := false
 	if buildDir != "" {
+		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
+		resolve := func(module, coordinate, purl, scheme string) (string, []string, bool, error) {
+			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
+				return v, nil, true, nil
+			}
+			v, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			return v, flags, false, err
+		}
 		// v3 select-by-target: iterate the advisory's full affected set (producer-sorted,
 		// deterministic) and pick the FIRST package the assessed codebase actually depends on. This
 		// is the whole point of the multi-package block — a target on a SECONDARY package resolves
 		// into real version/symbol analysis instead of falling OPEN against an unmatched primary.
 		for _, pkg := range facts.AffectedPackages {
-			v, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, pkg.Module, pkg.Coordinate, pkg.VersionScheme, toolchain)
+			v, flags, rootPkg, err := resolve(pkg.Module, pkg.Coordinate, pkg.PURL, pkg.VersionScheme)
 			if err != nil {
 				return err
 			}
-			if v != "" {
-				resolvedVersion, partialityFlags = v, flags
+			if v != "" || rootPkg {
+				resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
 				break
 			}
@@ -1738,12 +1749,19 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
 		if selectedModule == "" && selectedCoordinate == "" {
-			v, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, facts.Module, facts.Coordinate, facts.VersionScheme, toolchain)
+			v, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
 			if err != nil {
 				return err
 			}
-			resolvedVersion, partialityFlags = v, flags
+			resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
 		}
+	}
+	// Non-Go no-manifest-entry oracle (manifest_membership.go): only consulted when nothing
+	// resolved and the package is not the project itself, since either is present by
+	// construction. A root package need not list itself, and may match with no version.
+	var membership *manifestMembership
+	if buildDir != "" && resolvedVersion == "" && !isRoot {
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
 	}
 
 	inv := struct {
@@ -1778,6 +1796,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// primary path (v2 advisory or v3-no-match) → extractors read the top-level scalar block.
 		SelectedModule     string `json:"selected_module,omitempty"`
 		SelectedCoordinate string `json:"selected_coordinate,omitempty"`
+		// Root is true when the adjudicated package is the scanned project itself. Read back by
+		// RootSubject.
+		Root bool `json:"root,omitempty"`
+		// ManifestMembership is the PyPI/npm manifest-membership fact the intake no-manifest-entry
+		// guard reads back (intakeManifestMembership). Absent ⇒ no fact ⇒ the guard fails open.
+		ManifestMembership *manifestMembership `json:"manifest_membership,omitempty"`
 	}{
 		Repo:               c.Request.Codebase.Repo,
 		Revision:           c.Request.Codebase.Revision,
@@ -1793,6 +1817,8 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		Toolchain:          toolchain,
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
+		Root:               isRoot,
+		ManifestMembership: membership,
 	}
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeInventory, "codebase inventory", inv)
 	return err
@@ -2182,11 +2208,11 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 }
 
 // goModRequires is the Go concrete manifest-membership oracle for the intake no-manifest-entry
-// guard: it reports whether buildDir/go.mod declares module (as the root module or a require), and
+// guard: it reports whether buildDir/go.mod declares module (as the root module, a package path
+// inside it, or a require), and
 // whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
 // unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
-// manifest actually parsed (inv.5). Other ecosystems have no S3-side manifest reader yet and so
-// carry no coordinate through this guard (they fail open); wiring a plugin oracle is a follow-up.
+// manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2199,11 +2225,11 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if err != nil {
 		return false, false
 	}
-	if mf.Module != nil && mf.Module.Mod.Path == module {
+	if mf.Module != nil && goPathOwner(buildDir, mf.Module.Mod.Path, module) != goOwnedElsewhere {
 		return true, true
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
+		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
 			return true, true
 		}
 	}
@@ -2393,6 +2419,20 @@ func validAffectedRanges(rngs []affectedRange) ([]affectedRange, bool) {
 // branch when selecting a branch-correct fix baseline from a multi-range (backport) advisory.
 func ResolvedVersion(store artifact.Store, caseID string) (string, bool) {
 	return extractResolvedVersion(store, caseID)
+}
+
+// RootSubject reports whether codebase_inventory adjudicated the advisory against the scanned
+// project itself rather than a dependency: the project's own manifest identity is the advisory's
+// package, so the vulnerable code is first-party.
+func RootSubject(store artifact.Store, caseID string) bool {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var inv struct {
+		Root bool `json:"root"`
+	}
+	return json.Unmarshal(arts[0].Payload, &inv) == nil && inv.Root
 }
 
 // Toolchain returns the subject's Go toolchain as the bounded fact codebase_inventory resolved.
@@ -2587,11 +2627,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 		return err
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	manifestHas, manifestKnown := goModRequires(buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),
-		advModule, manifestHas, manifestKnown,
+		coordinate, manifestHas, manifestKnown,
 	); disq {
 		res := DisqualResult{Disqualified: true, Reason: reason}
 		_, err := PutArtifact(store, c, s.Name(), artifact.TypeDiscovery, "disqualification discovery (un-adjudicable at intake)", res)
@@ -2837,6 +2877,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		VulnID:      vulnID,
 		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
+		Package:     admittedPackagePURL(store, c.ID),
 	})
 	if err != nil {
 		return err
@@ -3137,6 +3178,28 @@ func AdvisoryPURL(store artifact.Store, caseID string) string {
 	return purl
 }
 
+// admittedPackagePURL returns the assessed package's PURL pinned to the inventory-resolved
+// version, or "" when either is unknown or the assessed package is the scanned project itself
+// (RootSubject), whose own code always loads. Any version or qualifier the advisory PURL carries
+// is replaced: the resolved version is the one installed in the build.
+func admittedPackagePURL(store artifact.Store, caseID string) string {
+	if RootSubject(store, caseID) {
+		return ""
+	}
+	purl := AdvisoryPURL(store, caseID)
+	version, ok := ResolvedVersion(store, caseID)
+	if purl == "" || !ok {
+		return ""
+	}
+	if i := strings.IndexAny(purl, "?#"); i >= 0 {
+		purl = purl[:i]
+	}
+	if at := strings.LastIndexByte(purl, '@'); at > strings.LastIndexByte(purl, '/') {
+		purl = purl[:at]
+	}
+	return purl + "@" + version
+}
+
 // resolvedSinkSCIP reads the upstream vulnerable-symbol artifact and returns the first resolved SCIP
 // id, or "" if no symbol resolved (inv.7).
 func resolvedSinkSCIP(store artifact.Store, caseID string) (string, error) {
@@ -3188,6 +3251,7 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if ir.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, ir.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, ir.Partiality.Scoped)
 		}
 	}
 
@@ -3196,15 +3260,23 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 	} else if len(arts) > 0 {
 		var full struct {
 			Reachability plugin.ReachabilityResult `json:"reachability"`
+			CallGraph    plugin.CallGraphResult    `json:"call_graph"`
 		}
 		// Partiality is harvested whether or not any path was found, and BEFORE the
 		// path-count branch. Harvesting it only on len(Paths) > 0 dropped the disclosure
 		// on precisely the case it exists for: a reachability pass that resolved nothing
 		// because it could not see the code produces zero paths, and without the reason
 		// codes it is indistinguishable from a pass that looked and found nothing.
+		//
+		// The call graph's limits are harvested beside reachability's: a lane may declare a
+		// step that did not run only on its graph, and that limit must hold the verdict
+		// whether or not the graph has edges.
 		unmarshalled := json.Unmarshal(arts[0].Payload, &full) == nil
-		if unmarshalled && full.Reachability.Partiality.Reasons != nil {
+		if unmarshalled {
 			payload.PartialityFlags = append(payload.PartialityFlags, full.Reachability.Partiality.Reasons...)
+			payload.PartialityFlags = append(payload.PartialityFlags, full.CallGraph.Partiality.Reasons...)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.Reachability.Partiality.Scoped)
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, full.CallGraph.Partiality.Scoped)
 		}
 		if unmarshalled && len(full.Reachability.Paths) > 0 {
 			payload.ReachablePathCount = len(full.Reachability.Paths)
@@ -3227,11 +3299,12 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 			if res.Partiality.Reasons != nil {
 				payload.PartialityFlags = append(payload.PartialityFlags, res.Partiality.Reasons...)
 			}
+			payload.ScopedPartiality = appendScoped(payload.ScopedPartiality, res.Partiality.Scoped)
 		}
 	}
 
-	// Dependency-version resolution is the fourth partiality axis (alongside ingress,
-	// reachability and vulnerable-symbol above): the inventory stage records why it
+	// Dependency-version resolution is a partiality axis too (alongside ingress, call
+	// graph, reachability and vulnerable-symbol above): the inventory stage records why it
 	// could not pin an installed version. Harvesting it here keeps the footprint an
 	// honest account of what the pass could not establish.
 	if arts, err := store.Query(c.ID, artifact.TypeInventory); err != nil {
@@ -3251,6 +3324,14 @@ func (s exposureFootprintStage) Run(ctx context.Context, c *assessment.Assessmen
 
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeExposureFootprint, "exposure footprint (deterministic)", payload)
 	return err
+}
+
+// appendScoped copies a plugin's scoped limits into the footprint's form.
+func appendScoped(dst []artifact.ScopedPartialityFlag, scoped []plugin.ScopedReason) []artifact.ScopedPartialityFlag {
+	for _, r := range scoped {
+		dst = append(dst, artifact.ScopedPartialityFlag{Reason: r.Reason, Package: r.Package, Path: r.Path, Targets: r.Targets})
+	}
+	return dst
 }
 
 func exposureFootprintDepCount(store artifact.Store, caseID string) int {

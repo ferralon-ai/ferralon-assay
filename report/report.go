@@ -41,8 +41,10 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -148,6 +150,9 @@ type Package struct {
 	// written before this field decodes to false and is regenerated as direct/transitive
 	// on its next baseline run.
 	Direct bool `json:"direct"`
+	// Root marks the scanned project itself: an advisory against the repository's own package
+	// (grafana's advisory in the grafana repository), whose vulnerable code is first-party.
+	Root bool `json:"root,omitempty"`
 	// PartialReason discloses a limit on THIS package's own resolution using the open
 	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
 	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
@@ -159,6 +164,27 @@ type Package struct {
 	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
 	// scan-level PartialityNote, not this field.
 	PartialReason string `json:"partial_reason,omitempty"`
+}
+
+// Label is the package as a finding row names it: name@version for a resolved package. A
+// version the inventory observed without resolving it (PartialReason source_unpinned) is
+// shown as an observation, never as name@version, and a package with no version is its name.
+func (p Package) Label() string {
+	switch {
+	case p.Version == "":
+		return p.Name
+	case p.PinUnresolved():
+		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
+	default:
+		return p.Name + "@" + p.Version
+	}
+}
+
+// PinUnresolved reports whether Version is an inventory observation rather than a resolved
+// version (PartialReason source_unpinned). Such a version must never be presented as
+// name@version, in a label or in an identifier.
+func (p Package) PinUnresolved() bool {
+	return p.Version != "" && strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned)
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the
@@ -659,6 +685,11 @@ type PartialityNote struct {
 	// It is part of the note's identity for de-duplication: two failures of different
 	// steps are two disclosures, not one.
 	Detail string `json:"detail,omitempty"`
+	// Package and Path locate a limit the analyzer bounded to one package: the package whose code
+	// holds the blind spot (a PURL without a version; empty for first-party code or a scan-wide
+	// limit) and the location inside it. Disclosure only, and part of the note's identity.
+	Package string `json:"package,omitempty"`
+	Path    string `json:"path,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report
@@ -750,8 +781,8 @@ const (
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
-	// reported nothing about the advisory at all, so its silence is not a search that came back
-	// empty.
+	// reported nothing about the advisory at all. It may not know the advisory, or may never have
+	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
 	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
 	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's

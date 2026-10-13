@@ -686,13 +686,22 @@ func TestLoadProgram_BuildScripts(t *testing.T) {
 		keptBy("a loader in a python-shebang script keeps it", map[string]string{"bin/run": "#!/usr/bin/env python3\nimport runpy, sys\nrunpy.run_path(sys.argv[1])\n"}),
 		keptBy("relative import climbing above the build root keeps it", map[string]string{"app.py": "from .. import helpers\n"}),
 	}
-	var leafs []string
+	// The leaves are listed here, not read from the loader tables, so dropping one from a
+	// table turns its row red instead of removing it.
+	leafs := []string{
+		"run_path", "run_module", "exec", "execfile", "eval", "spec_from_file_location",
+		"spec_from_loader", "module_from_spec", "exec_module", "load_module", "SourceFileLoader",
+		"SourcelessFileLoader", "load_source", "load_compiled", "load_package", "iter_modules",
+		"zipimporter", "import_module", "__import__", "resolve_name", "entry_points",
+		"iter_entry_points", "load_entry_point", "walk_packages",
+	}
 	for _, m := range []map[string]bool{fileLoaderLeafs, dynamicImportLiteralLeafs, dynamicImportOpaqueLeafs} {
 		for l := range m {
-			leafs = append(leafs, l)
+			if !slices.Contains(leafs, l) {
+				t.Errorf("loader %s has no row", l)
+			}
 		}
 	}
-	slices.Sort(leafs)
 	for _, l := range leafs {
 		cases = append(cases, keptBy("loader "+l+" keeps it", map[string]string{"app.py": "import mod\n\ndef go(p):\n    return mod." + l + "(p)\n"}))
 	}
@@ -820,11 +829,12 @@ func TestLoadProgram_BuildScriptScanFailsClosed(t *testing.T) {
 
 // TestLoadProgram_RuntimeSetuptoolsStillCounts is the control for build-script exclusion:
 // a runtime module importing setuptools keeps its import and boundary edge while the
-// project's setup.py beside it is left out.
+// project's setup.py beside it is left out. Nothing mentions app.py, so only its file name
+// keeps it from being a candidate.
 func TestLoadProgram_RuntimeSetuptoolsStillCounts(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"requirements.txt": "setuptools\n",
-		"setup.py":         "from setuptools import setup\nsetup(name='app')\n",
+		"setup.py":         "from setuptools import setup\nsetup(name='proj')\n",
 		"app.py":           "import setuptools\n\ndef pkgs(d):\n    return setuptools.find_packages(d)\n",
 	})
 	prog, err := loadProgram(dir)
@@ -839,5 +849,41 @@ func TestLoadProgram_RuntimeSetuptoolsStillCounts(t *testing.T) {
 	res := callGraphOf(prog)
 	if !hasEdge(res.Edges, funcSCIP("app", nil, "pkgs", 1), "pypi:setuptools#setuptools.find_packages") {
 		t.Fatalf("runtime setuptools edge missing; edges: %+v", res.Edges)
+	}
+}
+
+// TestReadScanned: the build-tree scan reads a file whole or reports why it couldn't. The
+// walk opens each file before the scan sees it, so this is the only place an open that
+// fails here, after the walk's own succeeded, shows up.
+func TestReadScanned(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	old := maxScannedFile
+	maxScannedFile = 16
+	t.Cleanup(func() { maxScannedFile = old })
+	cases := []struct {
+		name, path, why string
+	}{
+		{"text", write("ok.txt", "python setup.py\n"), ""},
+		{"missing", filepath.Join(dir, "gone.txt"), "unreadable"},
+		{"too large", write("big.txt", strings.Repeat("x", 17)), "too large to scan"},
+		{"binary", write("bin.dat", "PK\x00\x01"), "binary"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			data, why := readScanned(c.path)
+			if why != c.why {
+				t.Fatalf("why = %q, want %q", why, c.why)
+			}
+			if why == "" && string(data) != "python setup.py\n" {
+				t.Errorf("data = %q", data)
+			}
+		})
 	}
 }

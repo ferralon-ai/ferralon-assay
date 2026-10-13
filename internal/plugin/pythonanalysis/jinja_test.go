@@ -1,6 +1,8 @@
 package pythonanalysis
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -103,13 +105,18 @@ func TestResolveRequirements_AirflowJinja(t *testing.T) {
 	}
 }
 
-// TestParseRequirementsTxt_AirflowJinja asserts the advisory (environment-blind)
+// TestParseManifest_AirflowJinjaRequirements asserts the advisory (environment-blind)
 // path is Jinja-aware too — both parsers share parseRequirementSpec, so the fix
-// must clear junk from resolvers as well.
-func TestParseRequirementsTxt_AirflowJinja(t *testing.T) {
-	deps, ok := parseRequirementsTxt([]byte(airflowRequirements))
+// must clear junk from resolvers as well. The file is read through parseManifest,
+// as ResolveDependencyVersions reads it.
+func TestParseManifest_AirflowJinjaRequirements(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requirements.txt")
+	if err := os.WriteFile(path, []byte(airflowRequirements), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps, _, ok := parseManifest(path)
 	if !ok {
-		t.Fatalf("parseRequirementsTxt returned not-ok")
+		t.Fatalf("parseManifest returned not-ok")
 	}
 	for _, d := range deps {
 		if junkName(d.Coordinate) {

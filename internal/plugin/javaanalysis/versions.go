@@ -179,7 +179,7 @@ func (p *pomProperties) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 //   - a ${prop} that resolves to a literal property (incl. project.version) → Resolved
 //   - missing, empty, or an unresolved ${prop} → UNRESOLVED (Resolved=false). NEVER guessed.
 func parsePOM(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -267,7 +267,7 @@ func isLiteralVersion(v string) bool {
 // interpolation ("$ver" / "${ver}") is UNRESOLVED (Resolved=false), NEVER guessed. Map-notation
 // without a version: key is likewise UNRESOLVED.
 func parseGradle(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

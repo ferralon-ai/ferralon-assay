@@ -73,9 +73,10 @@ var npmDocExts = map[string]bool{
 // or swap packages at install time.
 var npmRewriteWords = []string{"packageExtensions", "overrides", "resolutions", "pnpmfile"}
 
-// npmInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
-// content head (nil when binary or empty), names or holds a JavaScript install surface, and
-// the rule that matched. Every file ManifestCandidates classifies (jsCandidate) is one too.
+// npmInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
+// empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
+// a JavaScript install surface, and the rule that matched. Every file ManifestCandidates
+// classifies (jsCandidate) is one too.
 func npmInstallSurface(path string, head []byte) (string, bool) {
 	if why, ok := npmSurface(path, head); ok {
 		return why, true
@@ -129,8 +130,11 @@ var (
 // JSON head with a string name and version under .yarn or .pnpm-store is a cached package
 // copy.
 func npmSurfaceContent(path string, head []byte) (string, bool) {
-	if head == nil || npmDocExts[strings.ToLower(filepath.Ext(path))] {
+	if npmDocExts[strings.ToLower(filepath.Ext(path))] {
 		return "", false
+	}
+	if head == nil {
+		return buildtree.NULHeadMatch(path, npmSurfaceContent)
 	}
 	trimmed := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '{' {
@@ -189,15 +193,29 @@ func namesPackage(head []byte) bool {
 // the shared walk does not enter, laid out the way npm, yarn and pnpm install: each package
 // directory (scoped ones under their @scope), its own nested node_modules, and pnpm's
 // .pnpm/<id>/node_modules. Each copy is its package.json name at its version, or UNRESOLVED
-// when it names no version. A package directory whose package.json is present but cannot be
-// read, or a symlink in a node_modules that leaves root (an npm link), makes ok false. Other
-// symlinks are not followed, since what they point at inside root is read where it lies, and
-// a node_modules that is itself a symlink leaving root is already an unread surface
-// (buildtree.Candidates).
+// when it names no version. A directory or package.json that is there but cannot be read
+// makes ok false, and so does a symlink that leaves root or does not resolve (an npm link)
+// wherever this reads one: a package or @scope entry, a nested node_modules, a .pnpm/<id> or
+// its node_modules. A symlink inside root is not followed, since what it points at is read
+// where it lies. A node_modules the shared walk meets as a symlink is the walk's to judge
+// (buildtree.Candidates reports one that leaves root).
 func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
 	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
+	// realDir reports whether path is a directory to read where it lies, without following a
+	// symlink. read is false when the path is there but cannot be read, or is a symlink that
+	// escapes.
+	realDir := func(path string) (dir, read bool) {
+		info, err := os.Lstat(path)
+		switch {
+		case err != nil:
+			return false, absent(err)
+		case info.Mode()&fs.ModeSymlink != 0:
+			return false, !escapes(path)
+		}
+		return info.IsDir(), true
+	}
 	var readDir func(dir string)
 	readPkg := func(dir string) {
 		data, err := readRegular(filepath.Join(dir, "package.json"))
@@ -219,11 +237,14 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 				}
 			}
 			copies = append(copies, npmResolved(name, p.Version))
-		case !os.IsNotExist(err):
+		case !absent(err):
 			ok = false
 			return
 		}
-		if isRealDir(filepath.Join(dir, "node_modules")) {
+		switch d, read := realDir(filepath.Join(dir, "node_modules")); {
+		case !read:
+			ok = false
+		case d:
 			readDir(filepath.Join(dir, "node_modules"))
 		}
 	}
@@ -249,7 +270,18 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 					continue
 				}
 				for _, id := range ids {
-					if nm := filepath.Join(p, id.Name(), "node_modules"); id.IsDir() && isRealDir(nm) {
+					ip := filepath.Join(p, id.Name())
+					if id.Type()&fs.ModeSymlink != 0 && escapes(ip) {
+						ok = false
+					}
+					if id.Type()&fs.ModeSymlink != 0 || !id.IsDir() {
+						continue
+					}
+					nm := filepath.Join(ip, "node_modules")
+					switch d, read := realDir(nm); {
+					case !read:
+						ok = false
+					case d:
 						readDir(nm)
 					}
 				}
@@ -277,16 +309,15 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 		}
 	}
 	_ = buildtree.Walk(root, func(e buildtree.Entry, err error) error {
-		if err == nil && e.Skipped && !e.Symlink && e.D.Name() == "node_modules" {
+		switch {
+		case err != nil:
+			if !absent(err) {
+				ok = false
+			}
+		case e.Skipped && !e.Symlink && e.D.Name() == "node_modules":
 			readDir(e.Path)
 		}
 		return nil
 	})
 	return copies, ok
-}
-
-// isRealDir reports whether path is a directory and not a symlink to one.
-func isRealDir(path string) bool {
-	info, err := os.Lstat(path)
-	return err == nil && info.IsDir()
 }

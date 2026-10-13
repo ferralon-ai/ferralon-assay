@@ -45,6 +45,9 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 	}
 	read := func(path string) bool {
+		if wideMarked(path) {
+			return false
+		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
 	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
@@ -55,9 +58,22 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 	return manifests, unread
 }
 
-// pyInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
-// content head (nil when binary or empty), names or holds a Python install surface, and the
-// rule that matched. Every file ManifestCandidates classifies (pyCandidate) is one too.
+// wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.
+// pip decodes such a file, but the readers here take its bytes as UTF-8, so what they find in
+// it is not what it declares.
+func wideMarked(path string) bool {
+	data, err := readRegular(path)
+	if err != nil {
+		return false
+	}
+	return bytes.HasPrefix(data, []byte{0xFF, 0xFE}) || bytes.HasPrefix(data, []byte{0xFE, 0xFF}) ||
+		bytes.HasPrefix(data, []byte{0, 0, 0xFE, 0xFF})
+}
+
+// pyInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
+// empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
+// a Python install surface, and the rule that matched. Every file ManifestCandidates classifies
+// (pyCandidate) is one too.
 func pyInstallSurface(path string, head []byte) (string, bool) {
 	if why, ok := pySurfaceName(path); ok {
 		return why, true
@@ -131,7 +147,7 @@ var pySurfaceLockMarkers = []string{"requires-python", "requires_python", "pytho
 
 func pySurfaceContent(path string, head []byte) (string, bool) {
 	if head == nil {
-		return "", false
+		return buildtree.NULHeadMatch(path, pySurfaceContent)
 	}
 	src := string(head)
 	ext := strings.ToLower(filepath.Ext(path))

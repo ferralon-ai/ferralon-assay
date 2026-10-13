@@ -345,12 +345,6 @@ func buildRequires(path string, data []byte) []plugin.ResolvedDependency {
 
 // --- requirements.txt --------------------------------------------------------
 
-// parseRequirementsTxt parses requirements-file content with no file context, so a relative
-// path cannot be placed and makes it report false.
-func parseRequirementsTxt(data []byte) ([]plugin.ResolvedDependency, bool) {
-	return parseRequirementLines(data, "")
-}
-
 // parseRequirementLines parses a pip requirements file located in dir. Only an EXACT "=="
 // pin yields a resolved version; a range/compatible/prefix spec is UNRESOLVED, and so is a
 // URL or VCS requirement that names its project ("pkg @ https://...",
@@ -588,7 +582,7 @@ func isProjectNameRune(c rune) bool {
 // spec. It resolves ONLY an exact "==X.Y.Z" pin (not a "==1.4.*" prefix); anything else
 // (range, compatible, bare name) is UNRESOLVED. The extras group "[a,b]" is CAPTURED (PLAN-170
 // E2, replacing the old unconditional skip) and returned normalized; the advisory path
-// (parseRequirementsTxt, parsePyproject) ignores it, while the selected-set path resolves it
+// (parseRequirementLines, parsePyproject) ignores it, while the selected-set path resolves it
 // against the declared extras selection.
 func parseRequirementSpec(spec string) (name, version string, resolved bool, extras []string) {
 	// Name runs up to the first operator/extras/space.

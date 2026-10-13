@@ -653,7 +653,7 @@ func (rs *resolver) governingPackageJSON(fromModule string) (*pkgManifest, strin
 			if m := parsePkgManifest(data); m != nil {
 				return m, dir
 			}
-		} else if !os.IsNotExist(err) {
+		} else if !absent(err) {
 			rs.prog.readFailed = true
 		}
 		if dir == "" {
@@ -721,7 +721,7 @@ func (rs *resolver) rootManifest() (*pkgManifest, bool) {
 	full := filepath.Join(rs.prog.root, "package.json")
 	data, err := readRegular(full)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !absent(err) {
 			rs.prog.readFailed = true
 		}
 		return nil, false
@@ -740,6 +740,9 @@ func (rs *resolver) workspaceMemberDirs(patterns []string) []string {
 			base := strings.TrimSuffix(p, "/*")
 			entries, err := os.ReadDir(filepath.Join(rs.prog.root, filepath.FromSlash(base)))
 			if err != nil {
+				if !absent(err) {
+					rs.prog.readFailed = true
+				}
 				continue
 			}
 			for _, e := range entries {
@@ -758,7 +761,7 @@ func (rs *resolver) memberManifest(memberDir string) *pkgManifest {
 	full := filepath.Join(rs.prog.root, filepath.FromSlash(memberDir), "package.json")
 	data, err := readRegular(full)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !absent(err) {
 			rs.prog.readFailed = true
 		}
 		return nil
@@ -818,6 +821,9 @@ func (rs *resolver) governingTsconfig(fromModule string) *tsconfigResolved {
 		rel := path.Join(dir, "tsconfig.json")
 		if _, err := os.Stat(filepath.Join(rs.prog.root, filepath.FromSlash(rel))); err == nil {
 			return rs.loadTsconfig(dir, rel, 0)
+		} else if !absent(err) {
+			rs.prog.readFailed = true
+			return nil
 		}
 		if dir == "" {
 			return nil
@@ -835,7 +841,7 @@ func (rs *resolver) governingTsconfig(fromModule string) *tsconfigResolved {
 func (rs *resolver) loadTsconfig(dir, rel string, depth int) *tsconfigResolved {
 	data, err := readRegular(filepath.Join(rs.prog.root, filepath.FromSlash(rel)))
 	if err != nil {
-		if !os.IsNotExist(err) {
+		if !absent(err) {
 			rs.prog.readFailed = true
 		}
 		return nil

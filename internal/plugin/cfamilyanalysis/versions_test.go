@@ -534,3 +534,31 @@ func hasReason(reasons []string, want string) bool {
 	}
 	return false
 }
+
+// readManifests' two bookkeeping guards, checked on the manifest set itself because the inventory
+// declares source_unpinned or tool_failure on other grounds in both cases.
+func TestReadManifestsLockedAndPresent(t *testing.T) {
+	t.Run("a lock tier with no resolved entry does not lock its manager", func(t *testing.T) {
+		dir := writeFiles(t, map[string]string{
+			vcpkgStatusFile: "Package: zlib\nArchitecture: x64-linux\nStatus: install ok installed\n",
+			vcpkgFile:       `{"dependencies":["fmt"],"overrides":[{"name":"fmt","version":"10.2.1"}]}`,
+		})
+		ms := readManifests(dir)
+		if ms.locked[purlTypeVcpkg] {
+			t.Errorf("vcpkg locked by a status file that pins nothing")
+		}
+		if v := pinFor(t, dir, "fmt", vcpkgFile); v != "10.2.1" {
+			t.Errorf("fmt override = %q, want 10.2.1 kept: no lock pins anything for it to be missing from", v)
+		}
+	})
+	t.Run("a manifest that exists and does not read marks its manager present", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, conanTxtFile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ms := readManifests(dir)
+		if !ms.present[purlTypeConan] || !ms.parseFailed || ms.read != 0 {
+			t.Errorf("present=%v parseFailed=%v read=%d, want conan present, a failed read, none read", ms.present, ms.parseFailed, ms.read)
+		}
+	})
+}

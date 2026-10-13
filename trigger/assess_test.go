@@ -818,7 +818,7 @@ func TestFinding_RootPackage(t *testing.T) {
 			name: "a refutation naming no package is not grounds",
 			mutate: func(fx *groundsFixture) {
 				fx.reach.Searched = nil
-				fx.reach.Refutation = refutation("")
+				fx.reach.Refutation = &plugin.Refutation{Basis: plugin.RefutationAnalyzerSymbolNotReached, Detail: "no path reaches it"}
 			},
 			wantReason: report.ReasonVulnerableSymbolUnresolved,
 		},

@@ -91,7 +91,7 @@ func TestDispatch_OneRequestOneResponsePerOp(t *testing.T) {
 			}},
 		{"resolve_inventory", plugin.Request{Op: plugin.OpResolveInventory, ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir}},
 			func(r plugin.Response) bool {
-				return r.Inventory != nil && hasReason(r.Inventory.Partiality.Reasons, plugin.PartialReasonUnsupported)
+				return r.Inventory != nil && !r.Inventory.Partiality.Complete && hasReason(r.Inventory.Partiality.Reasons, plugin.PartialReasonNoManifest)
 			}},
 		{"capability_manifest", plugin.Request{Op: plugin.OpCapabilityManifest},
 			func(r plugin.Response) bool {

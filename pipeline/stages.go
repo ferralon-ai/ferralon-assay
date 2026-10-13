@@ -1770,8 +1770,8 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	if buildDir != "" {
 		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
 		resolve := func(module, coordinate, purl, scheme string) (depVersions, []string, bool, error) {
-			if hasRoot && root.Matches(buildDir, module, coordinate, purl) {
-				dep := singleVersion(root.Version)
+			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
+				dep := singleVersion(v)
 				dep.Found = true
 				return dep, nil, true, nil
 			}
@@ -2288,11 +2288,11 @@ func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if err != nil {
 		return false, false
 	}
-	if mf.Module != nil && goPathInModule(buildDir, mf.Module.Mod.Path, module) {
+	if mf.Module != nil && goPathOwner(buildDir, mf.Module.Mod.Path, module) != goOwnedElsewhere {
 		return true, true
 	}
 	for _, r := range mf.Require {
-		if r.Mod.Path == module {
+		if r.Mod.Path == module || strings.HasPrefix(module, r.Mod.Path+"/") {
 			return true, true
 		}
 	}

@@ -98,8 +98,9 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 	if !cg.Partiality.Complete {
 		// A call graph that is itself partial cannot fully corroborate any trace.
 		// Carry its incompleteness even when it listed no explicit reasons — the
-		// cause is unknown, which is exactly what the undetermined code says.
-		if len(cg.Partiality.Reasons) == 0 {
+		// cause is unknown, which is exactly what the undetermined code says. Scoped
+		// limits are a stated cause, carried below.
+		if len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 			reasons[plugin.PartialReasonReachabilityUndetermined] = true
 		}
 	}
@@ -125,10 +126,12 @@ func reconcile(paths []plugin.ReachPath, cg plugin.CallGraphResult, notReachable
 		reasons[plugin.PartialReasonReachabilityUndetermined] = true
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(sortedKeys(reasons)...)
+	part := plugin.Partial(sortedKeys(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return part
 }
 
 // Reachability runs govulncheck as a LIBRARY (golang.org/x/vuln/scan) over
@@ -180,13 +183,107 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 
 // scanResult turns one govulncheck run over the loaded build into the reachability result: it
 // reconciles the findings against the build's call graph and withholds a refutation that files the
-// build left out may contradict.
+// build left out, exported methods govulncheck never searched, or a library's callers may
+// contradict.
 func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDir string, env []string) (plugin.ReachabilityResult, error) {
 	cg, err := callGraphOf(load, "vta")
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	return withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env), nil
+	res := withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env)
+	res = withholdForUnsearchedMethods(res, scanned, load.Packages)
+	return withholdForLibraryEscape(res, scanned, load.Packages), nil
+}
+
+// withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
+// (unsearchedMethods) may contradict. A caller of the package can still invoke one, so when the
+// package that declares it imports the refuted module (for the standard library, a vulnerable
+// package), directly or through other packages, the search that found no path never covered it.
+// Reach is read off the import graph, never the call graph, which is what misses these methods.
+// The result then declares unsearched_methods instead.
+func withholdForUnsearchedMethods(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || unsearchedCallers(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonUnsearchedMethods)
+	}
+	return res
+}
+
+// unsearchedCallers reports whether an unsearched method may call into module. A method whose
+// declaring package the load does not hold counts.
+func unsearchedCallers(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	reach := newModuleReach(pkgs, module, vulnerable)
+	for _, m := range unsearchedMethods(pkgs) {
+		decl := reach.loaded[m.Pkg().Path()]
+		if decl == nil || reach.reachesModule(decl) {
+			return true
+		}
+	}
+	return false
+}
+
+// withholdForLibraryEscape drops a refutation an importer of the build's packages may contradict.
+// govulncheck searches only the calls the build's own packages make. A value an importable package
+// hands its importer (a function, an interface value, a struct carrying either, through a result, an
+// exported var or field, or an embedded type) can still run the module's code once the importer
+// calls it, and that call is outside the search, whether or not the build also has a main package.
+// So when any importable package reaches the refuted module (for the standard library, a
+// vulnerable package), or the load cannot say whether one does, the result declares library_escape
+// instead.
+func withholdForLibraryEscape(res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package) plugin.ReachabilityResult {
+	r := res.Refutation
+	if r == nil {
+		return res
+	}
+	module, ok := strings.CutPrefix(r.Package, "pkg:golang/")
+	if !ok || libraryReaches(pkgs, module, scanned.vulnerablePackages(module)) {
+		res.Refutation = nil
+		res.Partiality = withReason(res.Partiality, plugin.PartialReasonLibraryEscape)
+	}
+	return res
+}
+
+// libraryReaches reports whether one of the build's importable packages reaches module, counting a
+// load in which a package failed to load or type-check, since its imports may be incomplete.
+func libraryReaches(pkgs []*packages.Package, module string, vulnerable []string) bool {
+	incomplete := false
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types == nil || len(p.Errors) > 0 {
+			incomplete = true
+		}
+	})
+	if incomplete {
+		return true
+	}
+	reach := newModuleReach(pkgs, module, vulnerable)
+	return slices.ContainsFunc(pkgs, func(p *packages.Package) bool { return importable(p) && reach.reachesModule(p) })
+}
+
+// importable reports whether code outside the build's module can import p: it is not a main
+// package, and no element of its path below the module path is internal, which only the module's
+// own packages can import. Those callers are the build's mains, whose calls govulncheck searches.
+// An internal element in the module path itself still admits importers from other modules under
+// its parent, so it does not count.
+func importable(p *packages.Package) bool {
+	if isMain(p) {
+		return false
+	}
+	rel := p.PkgPath
+	if p.Module != nil {
+		rel = strings.TrimPrefix(rel, p.Module.Path)
+	}
+	return !slices.Contains(strings.Split(rel, "/"), "internal")
+}
+
+// isMain reports whether p is a main package with files the build compiles; a directory holding
+// only a test in package main is no program.
+func isMain(p *packages.Package) bool {
+	return p.Name == "main" && len(p.GoFiles) > 0
 }
 
 // withholdForLeftOutFiles drops a refutation that files the build left out may contradict: a file
@@ -293,7 +390,9 @@ func withReason(p plugin.Partiality, reason string) plugin.Partiality {
 	}
 	reasons := append(append([]string(nil), p.Reasons...), reason)
 	slices.Sort(reasons)
-	return plugin.Partial(reasons...)
+	out := plugin.Partial(reasons...)
+	out.Scoped = p.Scoped
+	return out
 }
 
 // envOr returns the last value env assigns to key, else def.

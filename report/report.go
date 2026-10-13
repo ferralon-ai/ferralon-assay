@@ -41,8 +41,10 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -159,6 +161,20 @@ type Package struct {
 	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
 	// scan-level PartialityNote, not this field.
 	PartialReason string `json:"partial_reason,omitempty"`
+}
+
+// Label is the package as a finding row names it: name@version for a resolved package. A
+// version the inventory observed without resolving it (PartialReason source_unpinned) is
+// shown as an observation, never as name@version, and a package with no version is its name.
+func (p Package) Label() string {
+	switch {
+	case p.Version == "":
+		return p.Name
+	case strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned):
+		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
+	default:
+		return p.Name + "@" + p.Version
+	}
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the

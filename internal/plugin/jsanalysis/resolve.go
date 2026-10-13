@@ -2,6 +2,7 @@ package jsanalysis
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -232,7 +233,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 // loading a file whose calls the lane did not follow, so the load alone does not bound what
 // runs (tracker#184 item 4). A tsconfig `paths` alias does not end the check: tsc does not
 // rewrite the specifier, so at run time Node resolves it itself. Only the manifest is read;
-// an uninstalled package has none.
+// an uninstalled package has none, and one that cannot be read safely keeps the limit.
 func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	conds := loadConditions(false)
 	switch {
@@ -260,16 +261,24 @@ func (rs *resolver) loadMeetsUnmodeledCondition(fromModule, spec string) bool {
 	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
 		return subpathHasUnmodeledCondition(self.exports, sub, conds)
 	}
-	mm := rs.installedManifest(fromModule, name)
+	mm, unsafe := rs.installedManifest(fromModule, name)
+	if unsafe {
+		return true
+	}
 	return mm != nil && mm.exports != nil && subpathHasUnmodeledCondition(mm.exports, sub, conds)
 }
 
+// maxInstalledManifest bounds the read of an installed package.json.
+const maxInstalledManifest = 1 << 20
+
 // installedManifest returns the package.json of npm package name that Node's node_modules
-// walk from fromModule's directory finds, or nil when none is installed.
-func (rs *resolver) installedManifest(fromModule, name string) *pkgManifest {
+// walk from fromModule's directory finds, or nil when none is installed. unsafe reports a
+// candidate it will not read: one whose real path leaves the build root, that is not a
+// regular file, or that exceeds maxInstalledManifest.
+func (rs *resolver) installedManifest(fromModule, name string) (mm *pkgManifest, unsafe bool) {
 	if name == "" || strings.ContainsAny(name, `\:`) || strings.Count(name, "/") > 1 || strings.Contains(name, "..") ||
 		(strings.Contains(name, "/") && !strings.HasPrefix(name, "@")) {
-		return nil
+		return nil, false
 	}
 	dir := path.Dir(fromModule)
 	for {
@@ -278,15 +287,48 @@ func (rs *resolver) installedManifest(fromModule, name string) *pkgManifest {
 		}
 		if path.Base(dir) != "node_modules" {
 			full := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name), "package.json")
-			if data, err := os.ReadFile(full); err == nil {
-				return parsePkgManifest(data)
+			if _, err := os.Lstat(full); err == nil {
+				data, ok := readInRoot(rs.prog.root, full, maxInstalledManifest)
+				if !ok {
+					return nil, true
+				}
+				return parsePkgManifest(data), false
 			}
 		}
 		if dir == "" {
-			return nil
+			return nil, false
 		}
 		dir = path.Dir(dir)
 	}
+}
+
+// readInRoot reads file when its real path lies under root's real path, it is a regular
+// file, and it holds at most limit bytes; otherwise it reports false.
+func readInRoot(root, file string, limit int64) ([]byte, bool) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, false
+	}
+	real, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return nil, false
+	}
+	if rel, err := filepath.Rel(realRoot, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, false
+	}
+	f, err := os.Open(real)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil, false
+	}
+	return data, true
 }
 
 // subpathHasUnmodeledCondition reports whether any conditions map exportsTargets would walk

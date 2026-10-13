@@ -481,3 +481,61 @@ func TestTargetEnvKeys_MatchThePipeline(t *testing.T) {
 		t.Errorf(`"java.version" not read as the Java version: evalJDK = %v`, got)
 	}
 }
+
+// R3-B2: a build started in a nested reactor reads that reactor's .mvn/maven.config, not the
+// scan root's. Here it selects p, which moves base to 2.0. That file isn't parsed, so its
+// presence (or a .mvn that can't be searched) withholds; a nested .mvn without one doesn't.
+func TestMavenProfile_NestedReactorMavenConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		setup    func(t *testing.T, sub string)
+		withheld bool
+	}{
+		{"a nested maven.config selecting the profile", func(t *testing.T, sub string) {
+			writeFile(t, filepath.Join(sub, ".mvn", "maven.config"), "-Pp\n")
+		}, true},
+		{"a nested maven.config naming no profile", func(t *testing.T, sub string) {
+			writeFile(t, filepath.Join(sub, ".mvn", "maven.config"), "-T 1C\n")
+		}, true},
+		{"a nested .mvn that can't be searched", func(t *testing.T, sub string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root ignores directory permissions")
+			}
+			mvn := filepath.Join(sub, ".mvn")
+			if err := os.MkdirAll(mvn, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(mvn, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(mvn, 0o755) })
+		}, true},
+		{"control, no nested maven.config", func(t *testing.T, sub string) {}, false},
+		{"control, a nested .mvn with only jvm.config", func(t *testing.T, sub string) {
+			writeFile(t, filepath.Join(sub, ".mvn", "jvm.config"), "-Xmx1g\n")
+		}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1</version></project>`)
+			sub := filepath.Join(dir, "sub")
+			writeFile(t, filepath.Join(sub, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>sub</artifactId><version>1</version>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency></dependencies>
+<profiles><profile><id>p</id>
+<dependencies><dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>2.0</version></dependency></dependencies>
+</profile></profiles></project>`)
+			for _, v := range []string{"1.0", "2.0"} {
+				writeCachePOM(t, m2, "org.base", "base", v, `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>`+v+`</version></project>`)
+			}
+			tt.setup(t, sub)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "")))
+			withheld := !inv.Partiality.Complete && hasStr(inv.Partiality.Reasons, reasonProfileActivation)
+			if withheld != tt.withheld {
+				t.Errorf("withheld = %v, want %v; got %+v", withheld, tt.withheld, inv.Partiality)
+			}
+			if !tt.withheld && findNode(t, inv, "pkg:maven/org.base/base@1.0") == nil {
+				t.Error("control: base must resolve at 1.0")
+			}
+		})
+	}
+}

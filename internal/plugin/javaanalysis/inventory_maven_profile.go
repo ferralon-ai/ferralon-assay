@@ -33,6 +33,7 @@ package javaanalysis
 // outside module or a repository. It is mirrored run-wide.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -190,9 +191,14 @@ func profileToken(tok string) (id string, off, ok bool) {
 // withMavenConfig returns targetEnv plus what buildDir's .mvn/maven.config says about profile
 // selection. Maven reads that file from the first .mvn directory at or above the directory it
 // starts in; every -P or --activate-profiles in it counts. A file that can't be read, or a
-// selection in it this reader can't parse, makes every reactor profile undecided.
-func withMavenConfig(targetEnv map[string]string, buildDir string) map[string]string {
+// selection in it this reader can't parse, makes every reactor profile undecided. So does a
+// maven.config nested between buildDir and a reactor POM (nestedMavenConfig): a build started
+// there reads that file instead, and it isn't read here.
+func withMavenConfig(targetEnv map[string]string, buildDir string, pomPaths []string) map[string]string {
 	ids, unknown, found := readMavenConfig(buildDir)
+	if nestedMavenConfig(buildDir, pomPaths) {
+		unknown, found = true, true
+	}
 	if !found || (len(ids) == 0 && !unknown) {
 		return targetEnv
 	}
@@ -207,6 +213,26 @@ func withMavenConfig(targetEnv map[string]string, buildDir string) map[string]st
 		out[mavenConfigUnknown] = "true"
 	}
 	return out
+}
+
+// nestedMavenConfig reports whether a .mvn/maven.config is present, or can't be ruled absent, in
+// a directory below buildDir that holds a reactor POM or lies between one and buildDir.
+func nestedMavenConfig(buildDir string, pomPaths []string) bool {
+	root := filepath.Clean(buildDir)
+	seen := map[string]bool{}
+	for _, p := range pomPaths {
+		for dir := filepath.Dir(filepath.Clean(p)); dir != root && !seen[dir]; dir = filepath.Dir(dir) {
+			seen[dir] = true
+			if rel, err := filepath.Rel(root, dir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return true // not below buildDir: what governs it isn't known
+			}
+			_, err := os.Lstat(filepath.Join(dir, ".mvn", "maven.config"))
+			if err == nil || !(os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func readMavenConfig(buildDir string) (ids []string, unknown, found bool) {

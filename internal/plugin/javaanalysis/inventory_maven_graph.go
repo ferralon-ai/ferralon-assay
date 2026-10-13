@@ -15,7 +15,7 @@ import (
 // contributes nodes keyed by its own relative path (Membership.Project), so the same PURL in two
 // modules gets distinct IDs (per-instance keying).
 func resolveMaven(buildDir string, pomPaths []string, cache *mavenCache, targetEnv map[string]string) plugin.DependencyInventory {
-	targetEnv = withMavenConfig(targetEnv, buildDir)
+	targetEnv = withMavenConfig(targetEnv, buildDir, pomPaths)
 	var reactorList []*mvnPOM
 	reactor := map[string]*mvnPOM{}
 	for _, p := range pomPaths {

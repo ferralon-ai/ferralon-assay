@@ -26,6 +26,16 @@ type Engine struct {
 	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
 	overridable map[string]bool              // hasOverridable cache
 	loadable    map[string]bool              // platformLoadable cache
+	lambdas     map[string][]lambdaSite      // interface a lambda object implements -> its sites
+}
+
+// lambdaSite is a LambdaMetafactory call site in class from. The object it produces
+// answers a call to name with one of descs by running handle.
+type lambdaSite struct {
+	from   string
+	name   string
+	descs  []string
+	handle classfile.MethodHandle
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
@@ -37,12 +47,19 @@ func NewEngine(classes []classfile.Class) *Engine {
 		subtypes:    map[string][]string{},
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
+		lambdas:     map[string][]lambdaSite{},
 	}
 	for i := range classes {
 		c := &classes[i]
 		e.classes[c.Name] = c
 		for j := range c.Methods {
 			e.declared[c.Methods[j].Ref.String()] = &c.Methods[j]
+			for _, edge := range c.Methods[j].Edges {
+				site, ifaces := lambdaSiteOf(c.Name, edge)
+				for _, t := range ifaces {
+					e.lambdas[t] = append(e.lambdas[t], site)
+				}
+			}
 		}
 	}
 	for _, c := range e.classes {
@@ -208,14 +225,17 @@ func declaresInstanceBody(c *classfile.Class) bool {
 }
 
 // hasAppSubtype reports whether some in-classpath class other than typ is a direct
-// subtype of typ — i.e. an application object of the (possibly JDK) type could exist
-// and be passed as a callback. The re-entry rule names it as the witness; it does not
+// subtype of typ, or a loaded lambda implements typ — i.e. an application object of
+// the (possibly JDK) type could exist and be passed as a callback. The re-entry rule names it as the witness; it does not
 // gate the hazard, since an app class can reach typ through a platform intermediate.
 //
 // Every name in e.subtypes is a loaded class, so a direct subtype other than typ itself
 // is exactly the witness; walking the whole closure (all loaded classes, for
 // java/lang/Object) on every call edge made large classpaths quadratic.
 func (e *Engine) hasAppSubtype(typ string) bool {
+	if len(e.lambdas[typ]) > 0 {
+		return true
+	}
 	for _, c := range e.subtypes[typ] {
 		if c != typ {
 			return true
@@ -332,11 +352,14 @@ var platformPrefixes = []string{
 //
 // The hazard rules are the soundness of the whole analysis; each is the seam where a
 // missed edge would produce a false not_exploitable:
-//   - invokedynamic and reflection (isReflection): the target is decided at runtime
-//     (a lambda's metafactory, Class.forName, a deserialized object's hooks) and is
-//     invisible to a static graph.
+//   - invokedynamic, except the two bootstraps whose behaviour is fixed by the JDK
+//     (resolveDynamic), and reflection (isReflection): the target is decided at
+//     runtime (Class.forName, a deserialized object's hooks) and is invisible to a
+//     static graph.
 //   - a virtual/interface call whose receiver type is out of classpath: real
-//     dispatch could land on anything, including the sink.
+//     dispatch could land on anything, including the sink. The exceptions are an
+//     array receiver and the listed methods of a final JDK value class
+//     (valueReceiverMethods), whose bodies reach no application object.
 //   - a call whose body lives in an UNLOADED DEPENDENCY (not loaded, not platform):
 //     the dependency's bytecode was never opened, so the sink could be anywhere
 //     beneath it. Covers a direct static/special call, a method inherited from such
@@ -350,7 +373,7 @@ var platformPrefixes = []string{
 //     overrides, or objects it holds (platformBodyOn).
 func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
 	if edge.Kind == classfile.EdgeDynamic {
-		return nil, true, "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+		return e.resolveDynamic(from, edge)
 	}
 	if isReflection(edge.To) {
 		return nil, true, "reflection: " + edge.To.String()
@@ -379,6 +402,18 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		return nil, false, ""
 	case classfile.EdgeVirtual, classfile.EdgeInterface:
 		if _, known := e.classes[edge.To.Owner]; !known {
+			switch {
+			case strings.HasPrefix(edge.To.Owner, "["):
+				// An array's methods are Object's plus clone; none calls back.
+				return nil, false, ""
+			case valueReceiverMethods[edge.To.Owner+"."+edge.To.Name+edge.To.Descriptor] != valueUnlisted:
+				// The receiver is exactly this final class, and this body reads
+				// only it, value arguments and JDK-internal state.
+				return nil, false, ""
+			}
+			// Any other platform receiver can be a JDK object holding application
+			// objects (an ArrayList whose hashCode calls each element's hashCode),
+			// which no rule here can bound without a model of the JDK's bodies.
 			return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
 		}
 		// CHA: every class in the receiver's subtype closure dispatches to the method
@@ -388,16 +423,37 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		seen := map[*classfile.Method]bool{}
 		var outside, platformExits []string
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
+			// A lambda object implementing c answers the call with its
+			// implementation, wherever the object was created.
+			for _, site := range e.lambdas[c] {
+				if !site.answers(edge.To.Name, edge.To.Descriptor) {
+					continue
+				}
+				ts, h, w := e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
+				if h {
+					return nil, true, w
+				}
+				for _, t := range ts {
+					if !seen[t] {
+						seen[t] = true
+						targets = append(targets, t)
+					}
+				}
+			}
 			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
 			if m == nil {
+				// Only an object whose exact class is c runs what c resolves to. An
+				// abstract class or interface has none: its loaded concrete subtypes
+				// are in the closure, and a lambda implementing it was added above.
 				// An Object body (unloaded is exactly [Object]) never calls an
 				// argument; it still runs on c.
+				if !e.isConcrete(c) {
+					continue
+				}
 				if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
 					outside = append(outside, unloaded...)
 				}
-				if e.isConcrete(c) {
-					platformExits = append(platformExits, c)
-				}
+				platformExits = append(platformExits, c)
 				continue
 			}
 			if !m.Abstract && !seen[m] {
@@ -434,6 +490,239 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 	}
 	return nil, false, ""
 }
+
+// The bootstrap methods whose call sites the engine resolves (JDK API facts).
+var (
+	lambdaBootstraps = map[string]bool{
+		"java/lang/invoke/LambdaMetafactory.metafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;": true,
+		"java/lang/invoke/LambdaMetafactory.altMetafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;":                                                                    true,
+	}
+	concatBootstraps = map[string]bool{
+		"java/lang/invoke/StringConcatFactory.makeConcat(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;":                                                   true,
+		"java/lang/invoke/StringConcatFactory.makeConcatWithConstants(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;": true,
+	}
+)
+
+// resolveDynamic resolves an invokedynamic site by its bootstrap method. Two are
+// fixed by the JDK and resolved:
+//   - LambdaMetafactory builds an object whose functional method calls the
+//     implementation handle (bootstrap argument 1). The implementation counts as
+//     reached where the lambda is created, and CHA dispatch on any interface the
+//     object implements reaches it again (lambdaSiteOf), so a call from a root that
+//     never reaches the creation site still finds it. A lambda handed to the
+//     platform is caught by the re-entry rule at that call.
+//   - StringConcatFactory calls String.valueOf, hence toString(), on each dynamic
+//     argument and nothing else; each toString is resolved as a virtual call.
+//
+// Every other bootstrap, or a site with no bootstrap entry, stays a hazard.
+func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.Method, bool, string) {
+	opaque := "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+	b := edge.Bootstrap
+	if b == nil || b.Method.Kind != classfile.RefInvokeStatic {
+		return nil, true, opaque
+	}
+	switch boot := b.Method.Ref.String(); {
+	case lambdaBootstraps[boot]:
+		if len(b.Args) < 2 || b.Args[1].Handle == nil {
+			return nil, true, opaque
+		}
+		return e.lambdaImpl(from, *b.Args[1].Handle, opaque)
+	case concatBootstraps[boot]:
+		var targets []*classfile.Method
+		hazard, why := false, ""
+		for _, p := range paramTypes(edge.To.Descriptor) {
+			ts, h, w := e.resolveTargets(from, classfile.Edge{To: classfile.MethodRef{Owner: p, Name: "toString", Descriptor: "()Ljava/lang/String;"}, Kind: classfile.EdgeVirtual})
+			targets = append(targets, ts...)
+			if h && !hazard {
+				hazard, why = true, w+" (string concatenation toString)"
+			}
+		}
+		return targets, hazard, why
+	}
+	return nil, true, opaque
+}
+
+// lambdaImpl resolves a lambda's implementation handle, naming opaque when the
+// handle itself cannot be followed.
+func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
+	ts, hz, w := e.resolveHandle(from, h)
+	switch {
+	case hz && w == "":
+		w = opaque
+	case hz:
+		w += " (lambda implementation)"
+	}
+	return ts, hz, w
+}
+
+// lambdaSiteOf indexes a LambdaMetafactory site in class from by every interface
+// its object implements: the indy return type, plus altMetafactory's marker
+// interfaces. The functional method is the indy name with the erased SAM
+// descriptor (bootstrap argument 0) or a bridge descriptor. altMetafactory's flags
+// and counts are integer constants the parser leaves empty, so after the three
+// fixed arguments every class is a marker and every method type a bridge. Any other
+// edge returns no interfaces.
+func lambdaSiteOf(from string, edge classfile.Edge) (lambdaSite, []string) {
+	b := edge.Bootstrap
+	if edge.Kind != classfile.EdgeDynamic || b == nil || b.Method.Kind != classfile.RefInvokeStatic ||
+		!lambdaBootstraps[b.Method.Ref.String()] || len(b.Args) < 2 || b.Args[1].Handle == nil {
+		return lambdaSite{}, nil
+	}
+	produced, ok := returnRefType(edge.To.Descriptor)
+	if !ok {
+		return lambdaSite{}, nil
+	}
+	site := lambdaSite{from: from, name: edge.To.Name, handle: *b.Args[1].Handle}
+	if d := b.Args[0].MethodType; d != "" {
+		site.descs = append(site.descs, d)
+	}
+	ifaces := []string{produced}
+	for i := 3; i < len(b.Args); i++ {
+		if c := b.Args[i].Class; c != "" {
+			ifaces = append(ifaces, c)
+		}
+		if d := b.Args[i].MethodType; d != "" {
+			site.descs = append(site.descs, d)
+		}
+	}
+	return site, ifaces
+}
+
+// answers reports whether the site's object runs its implementation for a call to
+// name+desc. A site with no SAM descriptor answers every descriptor of the name.
+func (s lambdaSite) answers(name, desc string) bool {
+	if name != s.name {
+		return false
+	}
+	if len(s.descs) == 0 {
+		return true
+	}
+	for _, d := range s.descs {
+		if d == desc {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveHandle resolves the call a lambda's implementation method handle makes,
+// by its reference kind (JVMS §5.4.3.5). Invoking a static or constructor handle
+// initializes its class (JVMS §5.5), so those also reach the class's static
+// initializers. A field handle or unknown kind returns a hazard with an empty reason
+// for the caller to fill.
+func (e *Engine) resolveHandle(from string, h classfile.MethodHandle) ([]*classfile.Method, bool, string) {
+	var kind classfile.EdgeKind
+	switch h.Kind {
+	case classfile.RefInvokeVirtual:
+		kind = classfile.EdgeVirtual
+	case classfile.RefInvokeInterface:
+		kind = classfile.EdgeInterface
+	case classfile.RefInvokeSpecial:
+		kind = classfile.EdgeSpecial
+	case classfile.RefInvokeStatic:
+		kind = classfile.EdgeStatic
+	case classfile.RefNewInvokeSpecial:
+		// A constructor reference makes a fresh object, never `this` of from.
+		from, kind = "", classfile.EdgeSpecial
+	default:
+		return nil, true, ""
+	}
+	targets, hazard, why := e.resolveTargets(from, classfile.Edge{To: h.Ref, Kind: kind})
+	if h.Kind == classfile.RefInvokeStatic || h.Kind == classfile.RefNewInvokeSpecial {
+		ts, ih, iw := e.initTargets(h.Ref.Owner)
+		targets = append(targets, ts...)
+		if ih && !hazard {
+			hazard, why = true, iw
+		}
+	}
+	return targets, hazard, why
+}
+
+// initTargets returns the static initializers initializing owner runs, and a hazard
+// when one belongs to an unopened dependency (as Reach does for an InitTrigger).
+func (e *Engine) initTargets(owner string) (targets []*classfile.Method, hazard bool, why string) {
+	for _, cls := range e.initClosure(owner) {
+		if dep, ok := e.unloadedDependency([]string{cls}); ok {
+			if !hazard {
+				hazard, why = true, "unloaded_dependency: static initializer of unopened "+dep
+			}
+			continue
+		}
+		if m := e.declared[(classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}).String()]; m != nil {
+			targets = append(targets, m)
+		}
+	}
+	return targets, hazard, why
+}
+
+// A valueReceiverMethods entry says why a value-class method is a leaf.
+const (
+	valueUnlisted   = iota // not listed: the call stays a hazard
+	valueArgs              // every reference parameter is a value class
+	valueComparedTo        // its Object parameter is only tested with instanceof
+)
+
+// valueReceiverMethods lists, by owner.name+descriptor, the methods of the final
+// value classes whose JDK bodies (OpenJDK 17/21) read only the receiver, value
+// arguments and JDK-internal state: no service or provider lookup, no class named
+// by configuration, and no call on an argument. A hand-listed JDK fact. Leaving a
+// method out keeps it a hazard; listing one that reaches a provider turns a hidden
+// edge into a silent leaf. String.getBytes(String) is out for that reason:
+// Charset.forName finds charsets through CharsetProvider services, which can be
+// application classes. So are getBytes(), the case mappings and every method
+// taking a CharSequence, Object or functional argument.
+var valueReceiverMethods = func() map[string]int {
+	m := map[string]int{}
+	add := func(owner string, kind int, methods ...string) {
+		for _, s := range methods {
+			m[owner+"."+s] = kind
+		}
+	}
+	const str = "Ljava/lang/String;"
+	add("java/lang/String", valueArgs,
+		"length()I", "isEmpty()Z", "isBlank()Z", "charAt(I)C", "codePointAt(I)I",
+		"hashCode()I", "toString()"+str, "toCharArray()[C", "intern()"+str,
+		"substring(I)"+str, "substring(II)"+str, "subSequence(II)Ljava/lang/CharSequence;",
+		"indexOf(I)I", "indexOf(II)I", "indexOf("+str+")I", "indexOf("+str+"I)I",
+		"lastIndexOf(I)I", "lastIndexOf(II)I", "lastIndexOf("+str+")I", "lastIndexOf("+str+"I)I",
+		"startsWith("+str+")Z", "startsWith("+str+"I)Z", "endsWith("+str+")Z",
+		"trim()"+str, "strip()"+str, "stripLeading()"+str, "stripTrailing()"+str,
+		"concat("+str+")"+str, "repeat(I)"+str, "replace(CC)"+str,
+		"equalsIgnoreCase("+str+")Z", "compareTo("+str+")I", "compareToIgnoreCase("+str+")I",
+		"contentEquals(Ljava/lang/StringBuffer;)Z",
+		"regionMatches(I"+str+"II)Z", "regionMatches(ZI"+str+"II)Z",
+		"matches("+str+")Z", "replaceAll("+str+str+")"+str, "replaceFirst("+str+str+")"+str,
+		"split("+str+")[Ljava/lang/String;", "split("+str+"I)[Ljava/lang/String;")
+	add("java/lang/String", valueComparedTo, "equals(Ljava/lang/Object;)Z", "compareTo(Ljava/lang/Object;)I")
+	for _, sb := range []string{"java/lang/StringBuilder", "java/lang/StringBuffer"} {
+		self := "L" + sb + ";"
+		add(sb, valueArgs,
+			"length()I", "charAt(I)C", "toString()"+str, "setLength(I)V",
+			"append("+str+")"+self, "append(Ljava/lang/StringBuffer;)"+self, "append([C)"+self,
+			"append([CII)"+self, "append(C)"+self, "append(I)"+self, "append(J)"+self,
+			"append(Z)"+self, "append(F)"+self, "append(D)"+self,
+			"insert(I"+str+")"+self, "insert(IC)"+self, "insert(II)"+self,
+			"reverse()"+self, "delete(II)"+self, "deleteCharAt(I)"+self,
+			"replace(II"+str+")"+self, "setCharAt(IC)V",
+			"indexOf("+str+")I", "lastIndexOf("+str+")I", "substring(I)"+str, "substring(II)"+str,
+			"compareTo("+self+")I")
+	}
+	boxed := map[string][]string{
+		"java/lang/Integer":   {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Long":      {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Short":     {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Byte":      {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Float":     {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "isNaN()Z", "isInfinite()Z"},
+		"java/lang/Double":    {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "isNaN()Z", "isInfinite()Z"},
+		"java/lang/Character": {"charValue()C"},
+		"java/lang/Boolean":   {"booleanValue()Z"},
+	}
+	for owner, ms := range boxed {
+		add(owner, valueArgs, append(ms, "hashCode()I", "toString()"+str, "compareTo(L"+owner+";)I")...)
+		add(owner, valueComparedTo, "equals(Ljava/lang/Object;)Z", "compareTo(Ljava/lang/Object;)I")
+	}
+	return m
+}()
 
 // valueClasses are final JDK classes whose instances hold only characters and
 // primitives (JDK fact): handing one to a platform method gives the method no

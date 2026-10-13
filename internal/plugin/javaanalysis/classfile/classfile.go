@@ -54,6 +54,19 @@ const (
 	accClassAbstract  = 0x0400
 )
 
+// Method-handle reference kinds (JVMS §4.4.8, Table 5.4.3.5-A).
+const (
+	RefGetField         = 1
+	RefGetStatic        = 2
+	RefPutField         = 3
+	RefPutStatic        = 4
+	RefInvokeVirtual    = 5
+	RefInvokeStatic     = 6
+	RefInvokeSpecial    = 7
+	RefNewInvokeSpecial = 8
+	RefInvokeInterface  = 9
+)
+
 // MethodRef is a resolved call target (or declared method), named the way the JVM
 // names it: internal owner class, method name, and JVM descriptor. Identity is all
 // three — descriptor, not arity, distinguishes same-name same-arity overloads.
@@ -95,11 +108,41 @@ func (k EdgeKind) String() string {
 }
 
 // Edge is one call site: the referenced callee and its dispatch kind. For a
-// dynamic edge the callee Owner is "" — the real target is bootstrap-decided and
-// invisible to a static graph, which is why the caller must treat it as a hazard.
+// dynamic edge the callee Owner is "" and the target is decided by the bootstrap
+// method; Bootstrap carries it so the caller can recognise the bootstraps whose
+// behaviour is known (a lambda metafactory, string concatenation) and treat every
+// other one as a hazard.
 type Edge struct {
 	To   MethodRef
 	Kind EdgeKind
+	// Bootstrap is the invokedynamic site's bootstrap method and static arguments
+	// (JVMS §4.7.23). nil for every other kind, and for an indy site whose class
+	// carries no BootstrapMethods entry for it.
+	Bootstrap *Bootstrap
+}
+
+// MethodHandle is a CONSTANT_MethodHandle (JVMS §4.4.8): a reference kind and the
+// member it names. Ref is set for the method kinds (RefInvokeVirtual through
+// RefInvokeInterface) only; a field handle keeps just its Kind.
+type MethodHandle struct {
+	Kind uint8
+	Ref  MethodRef
+}
+
+// BootstrapArg is one static argument of a bootstrap method. At most one field is
+// set, by the constant's kind; any other constant (a string, a number) leaves all
+// three empty.
+type BootstrapArg struct {
+	Handle     *MethodHandle // CONSTANT_MethodHandle
+	MethodType string        // CONSTANT_MethodType: the descriptor
+	Class      string        // CONSTANT_Class: the internal name
+}
+
+// Bootstrap is one BootstrapMethods entry: the bootstrap method handle and its
+// static arguments, in order.
+type Bootstrap struct {
+	Method MethodHandle
+	Args   []BootstrapArg
 }
 
 // Method is a declared method with its extracted call edges. Native and Abstract
@@ -221,8 +264,9 @@ var ErrBadMagic = errors.New("classfile: bad magic (not a .class)")
 type cpEntry struct {
 	tag   uint8
 	utf8  string
-	ref1  uint16 // class_index / name_index / reference_index
+	ref1  uint16 // class_index / name_index / reference_index / bootstrap_method_attr_index
 	ref2  uint16 // name_and_type_index / descriptor_index
+	kind  uint8  // MethodHandle reference_kind
 	valid bool
 }
 
@@ -416,6 +460,7 @@ func ParseClass(data []byte) (Class, error) {
 
 	methodCount := int(r.u2())
 	methods := make([]Method, 0, methodCount)
+	indySites := make([][]indySite, methodCount)
 	for i := 0; i < methodCount; i++ {
 		acc := r.u2()
 		name := cp.utf8(r.u2())
@@ -437,12 +482,13 @@ func ParseClass(data []byte) (Class, error) {
 				return Class{}, r.err
 			}
 			if attrName == "Code" {
-				edges, triggers, fieldRefs, err := parseCode(body, cp)
+				edges, triggers, fieldRefs, indy, err := parseCode(body, cp)
 				if err != nil {
 					return Class{}, fmt.Errorf("classfile: %s%s Code: %w", name, desc, err)
 				}
 				m.Edges = edges
 				m.InitTriggers = triggers
+				indySites[i] = indy
 				m.StaticFieldRefs = fieldRefs
 			}
 			if attrName == attrRuntimeVisibleAnnotations {
@@ -473,16 +519,111 @@ func ParseClass(data []byte) (Class, error) {
 		return Class{}, errors.New("classfile: missing this_class name")
 	}
 
-	// Class-level attributes table. Previously unread (the edge graph needs nothing
-	// past the methods); it is now walked only to decode the class's
-	// RuntimeVisibleAnnotations — every other attribute is skipped by length exactly as
-	// before, so a class carrying no annotations parses identically.
-	classAnnos, err := parseClassAnnotations(r, cp)
+	// Class-level attributes table: the class's RuntimeVisibleAnnotations and its
+	// BootstrapMethods; every other attribute is skipped by length.
+	classAnnos, bootstraps, err := parseClassAttributes(r, cp)
 	if err != nil {
 		return Class{}, err
 	}
+	// An indy site names its bootstrap by index into BootstrapMethods, which follows
+	// the methods in the file, so the sites are bound only now. An index past the
+	// table leaves Bootstrap nil, and the caller keeps the site a hazard.
+	for i, sites := range indySites {
+		for _, s := range sites {
+			if int(s.bootstrap) < len(bootstraps) {
+				methods[i].Edges[s.edge].Bootstrap = bootstraps[s.bootstrap]
+			}
+		}
+	}
 
-	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Abstract: classAcc&(accClassInterface|accClassAbstract) != 0, Public: classAcc&accClassPublic != 0, Fields: fields, Methods: methods, Annotations: classAnnos}, nil
+	return Class{
+		Name: thisClass, Super: superClass, Interfaces: ifaces,
+		Abstract: classAcc&(accClassAbstract|accClassInterface) != 0,
+		Public:   classAcc&accClassPublic != 0,
+		Fields:   fields, Methods: methods, Annotations: classAnnos,
+	}, nil
+}
+
+// indySite locates one invokedynamic edge in a method's edge list and the
+// BootstrapMethods index its constant names.
+type indySite struct {
+	edge      int
+	bootstrap uint16
+}
+
+// attrBootstrapMethods is the JVMS §4.7.23 class attribute the invokedynamic sites
+// index into.
+const attrBootstrapMethods = "BootstrapMethods"
+
+// parseBootstrapMethods decodes a BootstrapMethods attribute body over a sub-reader.
+// A bootstrap reference that is not a method handle, or an argument index outside the
+// pool, is a malformed class: an error, which the caller declares, never a guess.
+func parseBootstrapMethods(cp constPool, body []byte) ([]*Bootstrap, error) {
+	br := &reader{b: body}
+	n := int(br.u2())
+	out := make([]*Bootstrap, 0, n)
+	for i := 0; i < n; i++ {
+		mh, ok := cp.methodHandle(br.u2())
+		if br.err != nil {
+			return nil, br.err
+		}
+		if !ok {
+			return nil, fmt.Errorf("classfile: bootstrap method %d is not a method handle", i)
+		}
+		argc := int(br.u2())
+		bs := &Bootstrap{Method: mh, Args: make([]BootstrapArg, 0, argc)}
+		for a := 0; a < argc; a++ {
+			idx := br.u2()
+			if br.err != nil {
+				return nil, br.err
+			}
+			e, ok := cp.at(idx)
+			if !ok {
+				return nil, fmt.Errorf("classfile: bootstrap method %d argument %d: bad constant index %d", i, a, idx)
+			}
+			var arg BootstrapArg
+			switch e.tag {
+			case cpMethodHandle:
+				h, ok := cp.methodHandle(idx)
+				if !ok {
+					return nil, fmt.Errorf("classfile: bootstrap method %d argument %d: malformed method handle", i, a)
+				}
+				arg.Handle = &h
+			case cpMethodType:
+				arg.MethodType = cp.utf8(e.ref1)
+			case cpClass:
+				arg.Class = cp.utf8(e.ref1)
+			}
+			bs.Args = append(bs.Args, arg)
+		}
+		out = append(out, bs)
+	}
+	return out, nil
+}
+
+// methodHandle resolves a CONSTANT_MethodHandle. A method kind must reference a
+// Methodref or InterfaceMethodref; a field kind keeps only its kind. ok is false for
+// any other constant, an unknown kind, or a corrupt reference.
+func (cp constPool) methodHandle(idx uint16) (MethodHandle, bool) {
+	e, ok := cp.at(idx)
+	if !ok || e.tag != cpMethodHandle {
+		return MethodHandle{}, false
+	}
+	switch {
+	case e.kind >= RefGetField && e.kind <= RefPutStatic:
+		return MethodHandle{Kind: e.kind}, true
+	case e.kind >= RefInvokeVirtual && e.kind <= RefInvokeInterface:
+		target, ok := cp.at(e.ref1)
+		if !ok || (target.tag != cpMethodref && target.tag != cpInterfaceMethodref) {
+			return MethodHandle{}, false
+		}
+		ref, ok := resolveMethodRef(cp, e.ref1)
+		if !ok {
+			return MethodHandle{}, false
+		}
+		return MethodHandle{Kind: e.kind, Ref: ref}, true
+	}
+	return MethodHandle{}, false
 }
 
 // parseParameterAnnotations decodes a RuntimeVisibleParameterAnnotations attribute
@@ -514,30 +655,38 @@ func parseParameterAnnotations(cp constPool, body []byte) ([][]Annotation, error
 	return params, nil
 }
 
-// parseClassAnnotations walks the class-level attributes table (which begins at r's
-// current position) and returns any RuntimeVisibleAnnotations found. A truncated table
-// or a malformed annotation body is a completeness hazard, not a panic: it surfaces as
-// an error so the caller records the class as Failed (declared partiality), never a
-// silently-dropped annotation. Non-annotation attributes are skipped by length.
-func parseClassAnnotations(r *reader, cp constPool) ([]Annotation, error) {
+// parseClassAttributes walks the class-level attributes table (which begins at r's
+// current position) and returns any RuntimeVisibleAnnotations and the
+// BootstrapMethods table. A truncated table or a malformed body is a completeness
+// hazard, not a panic: it surfaces as an error so the caller records the class as
+// Failed (declared partiality). Other attributes are skipped by length.
+func parseClassAttributes(r *reader, cp constPool) ([]Annotation, []*Bootstrap, error) {
 	n := int(r.u2())
 	var annos []Annotation
+	var bootstraps []*Bootstrap
 	for i := 0; i < n; i++ {
 		attrName := cp.utf8(r.u2())
 		attrLen := int(r.u4())
 		body := r.bytes(attrLen)
 		if r.err != nil {
-			return nil, r.err
+			return nil, nil, r.err
 		}
-		if attrName == attrRuntimeVisibleAnnotations {
+		switch attrName {
+		case attrRuntimeVisibleAnnotations:
 			a, err := parseAnnotations(cp, body)
 			if err != nil {
-				return nil, fmt.Errorf("classfile: class annotations: %w", err)
+				return nil, nil, fmt.Errorf("classfile: class annotations: %w", err)
 			}
 			annos = append(annos, a...)
+		case attrBootstrapMethods:
+			bs, err := parseBootstrapMethods(cp, body)
+			if err != nil {
+				return nil, nil, err
+			}
+			bootstraps = bs
 		}
 	}
-	return annos, nil
+	return annos, bootstraps, nil
 }
 
 // parseAnnotations decodes a RuntimeVisibleAnnotations attribute body (JVMS §4.7.16)
@@ -663,7 +812,7 @@ func parseConstPool(r *reader) (constPool, error) {
 			e.ref1 = r.u2()
 			e.ref2 = r.u2()
 		case cpMethodHandle:
-			r.u1() // reference_kind
+			e.kind = r.u1()
 			e.ref1 = r.u2()
 		default:
 			return nil, fmt.Errorf("classfile: unknown constant pool tag %d at slot %d", tag, i)
@@ -694,8 +843,8 @@ func skipAttributes(r *reader) {
 
 // resolveMethodRef turns a Methodref/InterfaceMethodref/InvokeDynamic constant into
 // a MethodRef. For invokedynamic/dynamic the owner is "" — the real target is
-// decided by a bootstrap method the static graph cannot follow, so the caller
-// treats the edge as a completeness hazard rather than a resolved call. ok is false
+// decided by a bootstrap method, so the caller treats the edge as a completeness
+// hazard unless it recognises the bootstrap (Edge.Bootstrap). ok is false
 // for any other constant kind or a corrupt index.
 func resolveMethodRef(cp constPool, idx uint16) (MethodRef, bool) {
 	e, ok := cp.at(idx)

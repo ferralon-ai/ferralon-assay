@@ -6,7 +6,6 @@ package pythonanalysis
 // and nothing here ever derives a version from a range.
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -157,7 +156,7 @@ func readRequirementSpecs(dir, spec string) (specs, files []string, ok bool) {
 		if !local {
 			return specs, files, false
 		}
-		data, err := os.ReadFile(target)
+		data, err := readRegular(target)
 		if err != nil {
 			return specs, files, false
 		}

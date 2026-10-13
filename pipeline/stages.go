@@ -1748,6 +1748,13 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
 		}
 	}
+	// Non-Go no-manifest-entry oracle (manifest_membership.go): only consulted when nothing
+	// resolved and the package is not the project itself, since either is present by
+	// construction. A root package need not list itself, and may match with no version.
+	var membership *manifestMembership
+	if buildDir != "" && resolvedVersion == "" && !isRoot {
+		membership = resolveManifestMembership(ctx, s.plugin, buildDir, language, AffectedPackageKeys(facts))
+	}
 
 	inv := struct {
 		Repo     string `json:"repo"`
@@ -1784,6 +1791,9 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// Root is true when the adjudicated package is the scanned project itself. Read back by
 		// RootSubject.
 		Root bool `json:"root,omitempty"`
+		// ManifestMembership is the PyPI/npm manifest-membership fact the intake no-manifest-entry
+		// guard reads back (intakeManifestMembership). Absent ⇒ no fact ⇒ the guard fails open.
+		ManifestMembership *manifestMembership `json:"manifest_membership,omitempty"`
 	}{
 		Repo:               c.Request.Codebase.Repo,
 		Revision:           c.Request.Codebase.Revision,
@@ -1800,6 +1810,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		SelectedModule:     selectedModule,
 		SelectedCoordinate: selectedCoordinate,
 		Root:               isRoot,
+		ManifestMembership: membership,
 	}
 	_, err := PutArtifact(store, c, s.Name(), artifact.TypeInventory, "codebase inventory", inv)
 	return err
@@ -2193,8 +2204,7 @@ func extractAdvisoryModule(store artifact.Store, caseID string) (string, bool) {
 // inside it, or a require), and
 // whether the manifest was readable at all. manifestKnown=false — no build dir, or an absent /
 // unparseable go.mod — forces the caller to fail OPEN, because absence is only PROVABLE against a
-// manifest actually parsed (inv.5). Other ecosystems have no S3-side manifest reader yet and so
-// carry no coordinate through this guard (they fail open); wiring a plugin oracle is a follow-up.
+// manifest actually parsed (inv.5). PyPI and npm use the plugin oracle in manifest_membership.go.
 func goModRequires(buildDir, module string) (present bool, manifestKnown bool) {
 	if buildDir == "" || module == "" {
 		return false, false
@@ -2609,11 +2619,11 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 		return err
 	}
 	advModule, _ := extractAdvisoryModule(store, c.ID)
-	manifestHas, manifestKnown := goModRequires(buildDir, advModule)
+	coordinate, manifestHas, manifestKnown := intakeManifestMembership(store, c.ID, buildDir, advModule)
 	if disq, reason := intakeDisqualify(
 		extractAdvisoryEcosystem(store, c.ID),
 		extractCodebaseEcosystem(store, c.ID),
-		advModule, manifestHas, manifestKnown,
+		coordinate, manifestHas, manifestKnown,
 	); disq {
 		res := DisqualResult{Disqualified: true, Reason: reason}
 		_, err := PutArtifact(store, c, s.Name(), artifact.TypeDiscovery, "disqualification discovery (un-adjudicable at intake)", res)

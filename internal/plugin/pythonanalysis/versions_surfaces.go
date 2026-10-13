@@ -26,7 +26,8 @@ import (
 // versionSurfaces returns the manifests version resolution parses, and whether any other
 // install surface under root goes unread.
 func versionSurfaces(root string) (manifests []string, unread bool) {
-	manifests = manifestFiles(root)
+	manifests, walked := manifestFiles(root)
+	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
 	for _, m := range manifests {
 		discovered[m] = true

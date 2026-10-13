@@ -810,8 +810,22 @@ func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
 	return pipeline.WithSubjectMavenProfiles(v)
 }
 
+// subjectOptions returns every condition the caller states about the subject build: its Go
+// toolchain, its Java version and its Maven profile selection. run and baseline both take the
+// whole list, so a subject condition added here reaches both commands.
+func (f *runFlags) subjectOptions() []pipeline.AssessOption {
+	var opts []pipeline.AssessOption
+	for _, opt := range []pipeline.AssessOption{f.subjectToolchainOption(), f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
+		if opt != nil {
+			opts = append(opts, opt)
+		}
+	}
+	return opts
+}
+
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus, the subject's Java version and its Maven profile selection.
+// corpus and every subject condition. The subject-toolchain reachability gate is left out: it is
+// the run path's rollout switch, not a fact about the subject, so baseline measures with it off.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
 	opt, err := f.advisoryCorpusOption()
@@ -821,18 +835,11 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 	if opt != nil {
 		opts = append(opts, opt)
 	}
-	if opt := f.subjectJavaOption(); opt != nil {
-		opts = append(opts, opt)
-	}
-	if opt := f.subjectMavenProfilesOption(); opt != nil {
-		opts = append(opts, opt)
-	}
-	return opts, nil
+	return append(opts, f.subjectOptions()...), nil
 }
 
 // runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
-// corpus, the subject's Go toolchain, Java version and Maven profile selection, and the
-// subject-toolchain reachability gate.
+// corpus, every subject condition, and the subject-toolchain reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
 	opt, err := f.advisoryCorpusOption()
@@ -842,10 +849,9 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	if opt != nil {
 		opts = append(opts, opt)
 	}
-	for _, opt := range []pipeline.AssessOption{f.subjectToolchainOption(), f.subjectJavaOption(), f.subjectMavenProfilesOption(), subjectToolchainReachOption()} {
-		if opt != nil {
-			opts = append(opts, opt)
-		}
+	opts = append(opts, f.subjectOptions()...)
+	if opt := subjectToolchainReachOption(); opt != nil {
+		opts = append(opts, opt)
 	}
 	return opts, nil
 }

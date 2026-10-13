@@ -68,6 +68,30 @@ func TestBaselineAssessOptions_CarriesSubjectMavenProfiles(t *testing.T) {
 	}
 }
 
+// TestBaselineAssessOptions_CarriesEverySubjectCondition pins baseline to the same subject
+// conditions as run, and keeps run's reachability rollout gate out of it.
+func TestBaselineAssessOptions_CarriesEverySubjectCondition(t *testing.T) {
+	t.Setenv(envAdvisoryCorpusDir, "")
+	t.Setenv(envAdvisoryCorpusPolicy, "")
+	t.Setenv(subjectJavaEnv, "")
+	t.Setenv(subjectMavenProfilesEnv, "")
+	t.Setenv(envCIGoVersion, "")
+	t.Setenv(envSubjectToolchainReach, "1")
+	f := runFlagsFor(t, "-subject-java-version", "17.0.12", "-subject-maven-profiles", "release,!docs", "-subject-go-version", "1.22.5")
+	opts, err := f.baselineAssessOptions(func(*pipeline.AssessConfig) {})
+	if err != nil {
+		t.Fatalf("baselineAssessOptions: %v", err)
+	}
+	cfg := applyAll(opts)
+	if cfg.SubjectJavaVersion != "17.0.12" || cfg.SubjectMavenProfiles != "release,!docs" || cfg.SubjectGoVersion != "1.22.5" {
+		t.Errorf("subject conditions = java %q, profiles %q, go %q; want 17.0.12, release,!docs, 1.22.5",
+			cfg.SubjectJavaVersion, cfg.SubjectMavenProfiles, cfg.SubjectGoVersion)
+	}
+	if cfg.SubjectToolchainReachability {
+		t.Error("baseline took the run path's subject-toolchain reachability gate")
+	}
+}
+
 // TestRunAssessOptions pins the run path's option list: every subject statement the flags and env
 // carry reaches AssessConfig, after the plugin, and a corpus error stops assembly.
 func TestRunAssessOptions(t *testing.T) {

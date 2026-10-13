@@ -10,7 +10,8 @@ import (
 // TestCallGraph_StaticPrefixLoads pins how a load with a literal prefix and a runtime
 // suffix is accounted for: real edges when every file the prefix names is an in-tree
 // module, and in every case a run-wide limit, because the suffix may traverse out of the
-// prefix (prefixSuffixMayTraverse). Nothing is scoped to a package.
+// prefix (prefixSuffixMayTraverse). None of these is attributed to a package; package
+// prefixes are in scoped_test.go.
 func TestCallGraph_StaticPrefixLoads(t *testing.T) {
 	const (
 		uninspectable = plugin.PartialReasonUninspectablePackage
@@ -24,12 +25,6 @@ func TestCallGraph_StaticPrefixLoads(t *testing.T) {
 		absent  []string
 		edges   [][2]string // caller, callee
 	}{
-		{
-			name:    "literal dynamic import is a package load, not a computed specifier",
-			files:   map[string]string{"app.js": "async function f(s) { const J = await import('json5'); return J.parse(s); }\nf(process.argv);\n"},
-			runWide: []string{uninspectable},
-			absent:  []string{dynImport},
-		},
 		{
 			name: "first-party prefix gets module-init edges",
 			files: map[string]string{
@@ -85,17 +80,6 @@ func TestCallGraph_StaticPrefixLoads(t *testing.T) {
 			name:    "prefix into a missing dir stays run-wide",
 			files:   map[string]string{"app.js": "function load(n) { return require('./nope/' + n); }\nload(process.argv[2]);\n"},
 			runWide: []string{computedReq},
-		},
-		{
-			// 'lodash/' + '../json5' leaves lodash, so a package prefix bounds nothing.
-			name:    "package prefix stays run-wide",
-			files:   map[string]string{"app.js": "function load(n) { return require('lodash/' + n); }\nload(process.argv[2]);\n"},
-			runWide: []string{computedReq},
-		},
-		{
-			name:    "package template prefix stays run-wide",
-			files:   map[string]string{"app.mjs": "async function load(n) { return import(`lodash/${n}`); }\nload(process.argv[2]);\n"},
-			runWide: []string{dynImport},
 		},
 		{
 			name:    "bare scope prefix stays run-wide",

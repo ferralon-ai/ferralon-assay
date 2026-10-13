@@ -20,16 +20,21 @@ const (
 	// prefixFirstParty: every file the prefix names is an in-tree module, and the call
 	// graph gets a real edge to each one's top-level frame (see prefixSuffixMayTraverse).
 	prefixFirstParty
+	// prefixPackage: the load reaches into one npm package (`require('pkg/' + n)`); it is a
+	// limit attributed to that package (see prefixSuffixMayTraverse).
+	prefixPackage
 )
 
 // prefixSuffixMayTraverse records that the runtime part of a static-prefix specifier is
 // unconstrained, so the prefix bounds where the load can land only up to path traversal.
 // Node normalizes `..` segments in a specifier before resolving it: './plugins/' + n with
-// n = '../node_modules/json5' loads json5. When the suffix comes from input, that is a
-// path-traversal load, exactly where a refutation must not stand. So while this holds, a
-// first-party prefix still gets real edges to the modules it names, but also keeps its
-// run-wide computed limit. Narrowing it needs proof that a suffix cannot carry a '..'
-// segment, which a lexical scan cannot give today.
+// n = '../node_modules/json5' loads json5, and 'lodash/' + '../json5' does the same from
+// inside the lodash prefix. When the suffix comes from input, that is a path-traversal
+// load, exactly where a refutation must not stand. So while this holds, a first-party
+// prefix still gets real edges to the modules it names, but also keeps its run-wide
+// computed limit, and a package prefix's limit is attributed to the package with
+// unbounded Targets rather than its resolution reach. Narrowing it needs proof that a
+// suffix cannot carry a '..' segment, which a lexical scan cannot give today.
 const prefixSuffixMayTraverse = true
 
 // maxPrefixWalk bounds the directory walk behind one first-party prefix load; a larger
@@ -45,16 +50,71 @@ var prefixCodeExtensions = map[string]bool{
 }
 
 // classifyPrefixLoad decides how a static-prefix load in fromModule is accounted for. For
-// prefixFirstParty it returns the in-tree modules the load can reach. Any prefix that is
-// not relative (a package, a builtin, an alias, an absolute path) is prefixUnbounded.
-func (rs *resolver) classifyPrefixLoad(fromModule string, pl prefixLoad) (prefixLoadKind, []string) {
-	if !isRelativeSpecifier(pl.prefix) {
-		return prefixUnbounded, nil
+// prefixFirstParty it returns the in-tree modules the load can reach; for prefixPackage, the
+// npm package it reaches into.
+func (rs *resolver) classifyPrefixLoad(fromModule string, pl prefixLoad) (prefixLoadKind, []string, string) {
+	switch {
+	case isRelativeSpecifier(pl.prefix):
+		if mods, ok := rs.enumeratePrefix(fromModule, pl.prefix); ok {
+			return prefixFirstParty, mods, ""
+		}
+		return prefixUnbounded, nil, ""
+	case strings.HasPrefix(pl.prefix, "/"), strings.HasPrefix(pl.prefix, "#"), strings.HasPrefix(pl.prefix, "node:"):
+		return prefixUnbounded, nil, ""
 	}
-	if mods, ok := rs.enumeratePrefix(fromModule, pl.prefix); ok {
-		return prefixFirstParty, mods
+	pkg, ok := prefixPackageName(pl.prefix)
+	if !ok {
+		return prefixUnbounded, nil, ""
 	}
-	return prefixUnbounded, nil
+	if builtin, _ := nodeBuiltin(pkg); builtin {
+		return prefixUnbounded, nil, ""
+	}
+	// A prefix some first-party mapping claims (a tsconfig paths alias, a workspace member,
+	// the package's own name) can land in first-party code; leave it unbounded.
+	if _, _, ok := rs.resolveTsPaths(fromModule, pl.prefix+"x"); ok {
+		return prefixUnbounded, nil, ""
+	}
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name == pkg {
+		return prefixUnbounded, nil, ""
+	}
+	if rs.isWorkspaceMemberName(pkg) {
+		return prefixUnbounded, nil, ""
+	}
+	return prefixPackage, nil, pkg
+}
+
+// prefixPackageName returns the package a bare prefix reaches into when the prefix spells
+// out a complete package name followed by '/': "pkg/..." or "@scope/pkg/...".
+func prefixPackageName(prefix string) (string, bool) {
+	parts := strings.SplitN(prefix, "/", 3)
+	var name string
+	switch {
+	case strings.HasPrefix(prefix, "@"):
+		if len(parts) < 3 {
+			return "", false
+		}
+		name = parts[0] + "/" + parts[1]
+	default:
+		if len(parts) < 2 {
+			return "", false
+		}
+		name = parts[0]
+	}
+	return name, validNPMName(name)
+}
+
+// isWorkspaceMemberName reports whether name is a workspace member's package name.
+func (rs *resolver) isWorkspaceMemberName(name string) bool {
+	root, ok := rs.rootManifest()
+	if !ok || len(root.workspaces) == 0 {
+		return false
+	}
+	for _, member := range rs.workspaceMemberDirs(root.workspaces) {
+		if mm := rs.memberManifest(member); mm != nil && mm.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // errPrefixUnbounded stops a prefix walk that met something it cannot enumerate.

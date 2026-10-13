@@ -29,6 +29,11 @@ type program struct {
 	// provenance) the resolver injection point exposes; nil until the first resolver()
 	// call computes it once. It reads the static bundler configs and executes nothing (C4).
 	buildCtx *buildContext
+	// locks indexes the governing npm lockfiles for scoped-limit Targets; nil until first use.
+	locks *lockClosures
+	// pkgJSONs caches parsed package.json manifests by build-relative dir (nil = absent or
+	// unparseable).
+	pkgJSONs map[string]*pkgManifest
 }
 
 // moduleIndex is one module's resolution surface: the names it binds (imports), the
@@ -59,6 +64,7 @@ func (d funcDecl) scip() string {
 // resolve import-scoped calls).
 type fileParse struct {
 	module    string
+	file      string // build-relative source path, '/'-joined, with extension
 	escapes   fileEscapes
 	decls     []decl
 	calls     []callSite
@@ -111,7 +117,7 @@ func loadProgram(buildDir string) (*program, error) {
 		moduleSet: map[string]bool{},
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := readRegular(f)
 		if err != nil {
 			prog.readFailed = true
 			continue
@@ -126,7 +132,7 @@ func loadProgram(buildDir string) (*program, error) {
 		if pr.skipped {
 			prog.skipped = true
 		}
-		fp := fileParse{module: pr.module, escapes: pr.escapes, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
+		fp := fileParse{module: pr.module, file: filepath.ToSlash(mustRel(buildDir, f)), escapes: pr.escapes, decls: pr.decls, calls: pr.calls, ingresses: pr.ingresses, bindings: pr.bindings}
 		prog.files = append(prog.files, fp)
 		prog.moduleSet[pr.module] = true
 		prog.indexModule(fp)
@@ -196,14 +202,23 @@ func CallGraph(_ context.Context, req plugin.CallGraphRequest) (plugin.CallGraph
 	return res, err
 }
 
-// partialFlags accumulates the call graph's declared limits across all files.
+// partialFlags accumulates the call graph's run-wide declared limits across all files.
 type partialFlags struct {
 	unresolved    bool // an ambiguous/unknown callee (dynamic_dispatch)
-	uninspectable bool // a bare specifier into a package this cycle cannot open (uninspectable_package)
+	uninspectable bool // out-of-tree code no single package accounts for (uninspectable_package)
 	dynImport     bool // a runtime-computed ESM target import(expr) (dynamic_import_specifier)
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
+}
+
+// mustRel is filepath.Rel for a path known to lie under root.
+func mustRel(root, p string) string {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return p
+	}
+	return rel
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -223,11 +238,47 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	provByEdge := map[plugin.CallEdge]provenance{}
 	rootsSet := map[string]bool{}
 	var flags partialFlags
+	scoped := newScopedLimits(prog.lockClosures())
 	addEdge := func(e plugin.CallEdge, prov provenance) {
 		if !seen[e] {
 			seen[e] = true
 			edges = append(edges, e)
 			provByEdge[e] = prov
+		}
+	}
+	// packageLimit records a limit inside one npm package, or a run-wide one when the code
+	// cannot be pinned to a package.
+	packageLimit := func(reason, pkg string, f fileParse) {
+		if pkg == "" {
+			accumulateReason(&flags, reason)
+			return
+		}
+		scoped.addPackageLoad(reason, pkg, f.module, f.file)
+	}
+
+	// boundaryLimit records the uninspectable_package limit of a call into the boundary node
+	// target, whose package module from loaded. The limit is attributed the way loading the
+	// specifier is (outOfTreeLoad), under either load's conditions, so a self-reference or
+	// anything else no single package accounts for stays run-wide. A call that cannot be tied
+	// to one load (from == "") stays attributed but unbounded.
+	boundaryLimit := func(target, from string, f fileParse) {
+		reason := plugin.PartialReasonUninspectablePackage
+		at := from
+		if at == "" {
+			at = f.module
+		}
+		spec := boundarySpec(target)
+		pkg, out := rs.outOfTreeLoad(at, spec, true)
+		if esm, outESM := rs.outOfTreeLoad(at, spec, false); !out || !outESM || esm != pkg {
+			pkg = ""
+		}
+		switch {
+		case pkg == "":
+			accumulateReason(&flags, reason)
+		case from == "":
+			scoped.addUnbounded(reason, pkg, f.file)
+		default:
+			scoped.addPackageLoad(reason, pkg, from, f.file)
 		}
 	}
 
@@ -249,8 +300,8 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		// A module that loads an out-of-tree package runs that package's code, whatever it
 		// later does with the binding, so the run executed code this lane did not open.
 		for _, ls := range f.bindings.specifiers {
-			if !flags.uninspectable && rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
-				flags.uninspectable = true
+			if pkg, out := rs.outOfTreeLoad(f.module, ls.spec, ls.viaRequire); out {
+				packageLimit(plugin.PartialReasonUninspectablePackage, pkg, f)
 			}
 			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
 				flags.unreadModule = true
@@ -261,25 +312,34 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				flags.dynImport = true
 			}
 		}
-		// A static-prefix load whose files are all in-tree modules gets an edge to each.
-		// Its suffix may still traverse out of the prefix (prefixSuffixMayTraverse), so the
-		// computed limit stays run-wide beside the edges.
+		// A static-prefix load reaches the files its prefix names: an edge to each when they
+		// are all in-tree modules, a limit attributed to the package a bare prefix names.
+		// Either way the suffix may traverse out of the prefix (prefixSuffixMayTraverse), so
+		// a first-party prefix keeps its run-wide limit beside the edges and a package
+		// prefix's limit has unbounded Targets.
 		for _, pl := range f.bindings.prefixLoads {
 			reason, algo := plugin.PartialReasonComputedRequireSpecifier, algoCJS
 			if pl.dyn {
 				reason, algo = plugin.PartialReasonDynamicImportSpecifier, algoESM
 			}
-			kind, mods := rs.classifyPrefixLoad(f.module, pl)
-			if kind == prefixFirstParty {
+			switch kind, mods, pkg := rs.classifyPrefixLoad(f.module, pl); kind {
+			case prefixFirstParty:
 				caller := sym(funcSCIP(f.module, pl.caller.enclosing, pl.caller.name, pl.caller.arity))
 				for _, m := range mods {
 					addEdge(plugin.CallEdge{Caller: caller, Callee: sym(moduleInitSCIP(m))}, provenance{Algo: algo})
 				}
-				if !prefixSuffixMayTraverse {
-					continue
+				if prefixSuffixMayTraverse {
+					accumulateReason(&flags, reason)
 				}
+			case prefixPackage:
+				if prefixSuffixMayTraverse {
+					scoped.addUnbounded(reason, pkg, f.file)
+				} else {
+					packageLimit(reason, pkg, f)
+				}
+			default:
+				accumulateReason(&flags, reason)
 			}
-			accumulateReason(&flags, reason)
 		}
 		// Module code runs when the module is loaded, and any first-party module may be
 		// loaded, so every module's top-level frame is a root.
@@ -303,20 +363,24 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 				addEdge(plugin.CallEdge{Caller: caller, Callee: sym(target)}, r.Prov)
 				continue
 			}
-			if target, prov, ok := br.callee(f.module, cs); ok {
+			if target, from, prov, ok := br.callee(f.module, cs); ok {
 				// An edge into a package-boundary node names the dependency member the call
 				// enters; it is not an inspection of the package, which stays uninspectable.
+				// The limit belongs to that package, bounded by its resolution reach from the
+				// module that loaded it.
 				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
 				if !seen[e] {
 					seen[e] = true
 					edges = append(edges, e)
 					provByEdge[e] = prov
 				}
-				flags.uninspectable = true
+				boundaryLimit(target, from, f)
 			}
 			switch r.Kind {
 			case resolvePackage:
-				flags.uninspectable = true
+				packageLimit(plugin.PartialReasonUninspectablePackage, r.Package, f)
+			case resolveBuiltin:
+				// Runtime code that loads nothing; whatever it calls back is a root.
 			default: // resolveUnresolved (or a first-party module with no unique symbol)
 				accumulateReason(&flags, r.Reason)
 			}
@@ -349,7 +413,7 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 	}
 
 	return plugin.CallGraphResult{
-		Partiality: callGraphPartiality(prog, flags),
+		Partiality: callGraphPartiality(prog, flags, scoped.list()),
 		Algorithm:  "source-lexical",
 		Edges:      edges,
 		Roots:      roots,
@@ -376,7 +440,9 @@ func accumulateReason(flags *partialFlags, reason string) {
 // prototype/dynamic dispatch, dependency source, or runtime-computed loads, so partiality
 // is the honest norm for non-trivial JS/TS. The three module-resolution codes (PLAN-162
 // C5) split the former blanket dynamic_dispatch into reviewer-legible conditions.
-func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
+//
+// A limit inside one npm package is scoped to it (Partiality.Scoped) rather than run-wide.
+func callGraphPartiality(prog *program, flags partialFlags, scoped []plugin.ScopedReason) plugin.Partiality {
 	var reasons []string
 	if flags.unresolved {
 		reasons = append(reasons, plugin.PartialReasonDynamicDispatch)
@@ -402,8 +468,10 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	if flags.evaluated {
 		reasons = append(reasons, plugin.PartialReasonEvaluatedCode)
 	}
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(reasons...)
+	p := plugin.Partial(reasons...)
+	p.Scoped = scoped
+	return p
 }

@@ -41,8 +41,10 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -148,6 +150,9 @@ type Package struct {
 	// written before this field decodes to false and is regenerated as direct/transitive
 	// on its next baseline run.
 	Direct bool `json:"direct"`
+	// Root marks the scanned project itself: an advisory against the repository's own package
+	// (grafana's advisory in the grafana repository), whose vulnerable code is first-party.
+	Root bool `json:"root,omitempty"`
 	// PartialReason discloses a limit on THIS package's own resolution using the open
 	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
 	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
@@ -159,6 +164,27 @@ type Package struct {
 	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
 	// scan-level PartialityNote, not this field.
 	PartialReason string `json:"partial_reason,omitempty"`
+}
+
+// Label is the package as a finding row names it: name@version for a resolved package. A
+// version the inventory observed without resolving it (PartialReason source_unpinned) is
+// shown as an observation, never as name@version, and a package with no version is its name.
+func (p Package) Label() string {
+	switch {
+	case p.Version == "":
+		return p.Name
+	case p.PinUnresolved():
+		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
+	default:
+		return p.Name + "@" + p.Version
+	}
+}
+
+// PinUnresolved reports whether Version is an inventory observation rather than a resolved
+// version (PartialReason source_unpinned). Such a version must never be presented as
+// name@version, in a label or in an identifier.
+func (p Package) PinUnresolved() bool {
+	return p.Version != "" && strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned)
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the

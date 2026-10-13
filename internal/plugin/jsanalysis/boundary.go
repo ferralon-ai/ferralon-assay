@@ -23,7 +23,8 @@ import (
 // "npm:" scheme keeps every boundary id disjoint from the lane's "scip-typescript " ids.
 //
 // The package stays uninspectable: a boundary node has no outgoing edges, and the graph
-// keeps declaring uninspectable_package for every call that reaches one.
+// declares uninspectable_package against the boundary's package for every call that
+// reaches one.
 const (
 	boundaryScheme = "npm:"
 	callBoundary   = "<call>"
@@ -56,12 +57,18 @@ func isBoundaryID(scip string) bool {
 // boundaryPackage returns the package name a boundary id belongs to ("@scope/pkg" for
 // npm:@scope/pkg/sub#x).
 func boundaryPackage(scip string) string {
+	name, _ := splitBareSpecifier(boundarySpec(scip))
+	return name
+}
+
+// boundarySpec returns the specifier a boundary id was imported through ("@scope/pkg/sub"
+// for npm:@scope/pkg/sub#x).
+func boundarySpec(scip string) string {
 	spec := strings.TrimPrefix(scip, boundaryScheme)
 	if i := strings.IndexByte(spec, '#'); i >= 0 {
 		spec = spec[:i]
 	}
-	name, _ := splitBareSpecifier(spec)
-	return name
+	return spec
 }
 
 // boundaryResolver traces call sites to boundary nodes over one parsed program.
@@ -69,10 +76,13 @@ type boundaryResolver struct {
 	rs       *resolver
 	pkgSpec  map[string]bool           // module+"\x00"+specifier → the specifier resolves to a package
 	handlers map[string]*receiverModel // handler frame SCIP → the model typing its parameters
+	// handlerFrom is the module whose router registered each handler, where the package the
+	// model types was loaded; "" when routers in different modules register the same handler.
+	handlerFrom map[string]string
 }
 
 func newBoundaryResolver(prog *program, rs *resolver) *boundaryResolver {
-	br := &boundaryResolver{rs: rs, pkgSpec: map[string]bool{}, handlers: map[string]*receiverModel{}}
+	br := &boundaryResolver{rs: rs, pkgSpec: map[string]bool{}, handlers: map[string]*receiverModel{}, handlerFrom: map[string]string{}}
 	for _, f := range prog.files {
 		for _, in := range f.ingresses {
 			if len(in.router) == 0 {
@@ -88,37 +98,43 @@ func newBoundaryResolver(prog *program, rs *resolver) *boundaryResolver {
 			}
 			if scip := prog.resolveIngressSymbol(f.module, in); scip != "" {
 				br.handlers[scip] = m
+				if from, seen := br.handlerFrom[scip]; seen && from != f.module {
+					br.handlerFrom[scip] = ""
+				} else {
+					br.handlerFrom[scip] = f.module
+				}
 			}
 		}
 	}
 	return br
 }
 
-// callee returns the boundary node a call site enters, with the provenance of the
-// resolution, or ok=false when the call does not reach a package member.
-func (br *boundaryResolver) callee(module string, cs callSite) (string, provenance, bool) {
+// callee returns the boundary node a call site enters, the module the entered package was
+// loaded from ("" when that is not one module), and the provenance of the resolution, or
+// ok=false when the call does not reach a package member.
+func (br *boundaryResolver) callee(module string, cs callSite) (string, string, provenance, bool) {
 	if cs.calleeFrame || cs.receiverThis || len(cs.chain) == 0 {
-		return "", provenance{}, false
+		return "", "", provenance{}, false
 	}
 	if cs.headParam.idx >= 0 {
 		// The head is a parameter: only a parameter the receiver table types names a package.
 		owner := funcSCIP(module, cs.headParam.enclosing, cs.headParam.name, cs.headParam.arity)
 		m := br.handlers[owner]
 		if m == nil {
-			return "", provenance{}, false
+			return "", "", provenance{}, false
 		}
 		typ := m.paramType(cs.headParam.arity, cs.headParam.idx)
 		if typ == "" {
-			return "", provenance{}, false
+			return "", "", provenance{}, false
 		}
 		ref := boundaryRef{spec: m.pkg, members: append([]string{typ}, cs.chain[1:]...)}
-		return ref.id(), provenance{Algo: algoReceiverModel}, true
+		return ref.id(), br.handlerFrom[owner], provenance{Algo: algoReceiverModel}, true
 	}
 	ref, algo, ok := br.valueAlgo(module, cs.chain, 0)
 	if !ok {
-		return "", provenance{}, false
+		return "", "", provenance{}, false
 	}
-	return ref.id(), provenance{Algo: algo}, true
+	return ref.id(), module, provenance{Algo: algo}, true
 }
 
 func (br *boundaryResolver) value(module string, chain []string, depth int) (boundaryRef, bool) {
@@ -245,11 +261,16 @@ type buildPackages struct {
 	inTree   map[string]bool
 	declared map[string]bool
 	locked   map[string]bool // keyed by originPURL
+	// unread is set when a package.json exists that could not be read: its name and
+	// dependencies are unknown, so no package is taken to be a dependency.
+	unread bool
 }
 
 func readBuildPackages(ctx context.Context, buildDir string) buildPackages {
 	bp := buildPackages{inTree: map[string]bool{}, declared: map[string]bool{}, locked: map[string]bool{}}
-	for _, mf := range manifestsUnder(buildDir) {
+	manifests, read := manifestsUnder(buildDir)
+	bp.unread = !read
+	for _, mf := range manifests {
 		if mf.pkg.Name != "" {
 			bp.inTree[strings.ToLower(mf.pkg.Name)] = true
 		}
@@ -272,7 +293,7 @@ func readBuildPackages(ctx context.Context, buildDir string) buildPackages {
 // isDependency reports whether name is a package this build depends on rather than one of
 // its own: declared or locked, and not the name of any in-tree package.json.
 func (bp buildPackages) isDependency(name string) bool {
-	if name == "" || bp.inTree[name] {
+	if name == "" || bp.unread || bp.inTree[name] {
 		return false
 	}
 	return bp.declared[name] || bp.locked[originPURL(name)]

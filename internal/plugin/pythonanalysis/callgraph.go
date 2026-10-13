@@ -468,13 +468,14 @@ var loaderModules = map[string]bool{
 var loaderTopPlain = map[string]bool{"reload": true, "invalidate_caches": true, "get_data": true, "extend_path": true}
 
 // loaderAttrPlain accepts what a plain use of the loader module named module may reach. From
-// a from-import (r nil) that is any builtin, or a name in loaderTopPlain. Through attributes
+// a from-import (r nil) that is any builtin but a dunder (a module's __dict__ reaches every
+// loader by a key built at runtime), or a name in loaderTopPlain. Through attributes
 // it is a chain of ordinary names ending in a call or in a class or exception name, so
 // importlib.metadata.version("x") is plain while importlib.util handed on as a value is not.
 func loaderAttrPlain(module string) func(name string, r []rune, end int) bool {
 	return func(name string, r []rune, end int) bool {
 		if r == nil {
-			return module == "builtins" || module == "__builtins__" || loaderTopPlain[name]
+			return (module == "builtins" || module == "__builtins__") && !strings.HasPrefix(name, "__") || loaderTopPlain[name]
 		}
 		for {
 			j := skipSpaceRunes(r, end)

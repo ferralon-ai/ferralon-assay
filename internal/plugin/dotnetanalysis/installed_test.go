@@ -28,6 +28,69 @@ func centralTransitiveLock(requested, resolved string) string {
 		`"Newtonsoft.Json": {"type": "CentralTransitive", "requested": "` + requested + `", "resolved": "` + resolved + `"}}}}`
 }
 
+// installedOf runs the input-reading half of ResolveDependencyVersions and returns the
+// copies of coordinate it kept. A parse failure counts as one unknown copy, as the resolver
+// treats it.
+func installedOf(t *testing.T, dir, coordinate string) (plugin.DependencyVersionResult, []plugin.ResolvedDependency) {
+	t.Helper()
+	res, copies, parseFailed, err := installedSet(plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: coordinate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := normalizeNuGetCoordinate(coordinate)
+	var kept []plugin.ResolvedDependency
+	for _, c := range copies {
+		if normalizeNuGetCoordinate(c.dep.Coordinate) == want {
+			kept = append(kept, c.dep)
+		}
+	}
+	if parseFailed {
+		kept = append(kept, plugin.ResolvedDependency{Coordinate: coordinate})
+	}
+	return res, kept
+}
+
+// checkKept asserts what the input reading handed on: version "" wants at least one unknown
+// copy (an input the lane couldn't read withholds); any other version wants copies that all
+// resolve to exactly it. Whether several copies agree is not this lane's rule, so no row here
+// relies on it.
+func checkKept(t *testing.T, kept []plugin.ResolvedDependency, version string) {
+	t.Helper()
+	if len(kept) == 0 {
+		t.Fatal("no copy kept")
+	}
+	if version == "" {
+		if !slices.ContainsFunc(kept, func(d plugin.ResolvedDependency) bool { return !d.Resolved }) {
+			t.Fatalf("want an unknown copy; got %+v", kept)
+		}
+		return
+	}
+	for _, d := range kept {
+		if !d.Resolved || d.Version != version {
+			t.Fatalf("want every copy resolved %s; got %+v", version, kept)
+		}
+	}
+}
+
+// checkKeptSet asserts the kept copies all resolve and carry exactly the distinct versions
+// want, in any order.
+func checkKeptSet(t *testing.T, kept []plugin.ResolvedDependency, want []string) {
+	t.Helper()
+	var got []string
+	for _, d := range kept {
+		if !d.Resolved {
+			t.Fatalf("want only resolved copies; got %+v", kept)
+		}
+		if !slices.Contains(got, d.Version) {
+			got = append(got, d.Version)
+		}
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("kept versions = %v, want %v", got, want)
+	}
+}
+
 func msbuild(items string) string {
 	return `<Project>` + items + `</Project>`
 }
@@ -44,8 +107,9 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 	cases := []struct {
 		name    string
 		files   map[string]string
-		version string // "" means Found but UNRESOLVED
-		reason  string // a partiality reason the result must carry
+		version string   // "" wants an unknown copy
+		kept    []string // when set, the distinct resolved versions kept, and no unknown copy
+		reason  string   // a partiality reason the result must carry
 	}{
 		{
 			name: "restore output is the installed set",
@@ -92,6 +156,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 				"B/B.csproj":                csproj("Other", "1.0.0"),
 				"B/obj/project.assets.json": assetsJSON(map[string]string{"Other/1.0.0": "package", "Newtonsoft.Json/12.0.1": "package"}),
 			},
+			kept: []string{"12.0.1", "13.0.3"},
 		},
 		{
 			name: "restore output that lists only a project reference of that name",
@@ -163,6 +228,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 				"B/B.csproj":              csproj("Other", "1.0.0"),
 				"B/Directory.Build.props": msbuild(newtonsoftRef12),
 			},
+			kept: []string{"12.0.1", "13.0.3"},
 		},
 		{
 			name: "an injected pin is the project's declaration",
@@ -207,6 +273,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 				"A/Directory.Build.props": msbuild(`<Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />`),
 				"A/A.csproj":              pinA,
 			},
+			kept: []string{"12.0.1", "13.0.3"},
 		},
 		{
 			name: "a Directory.Build.props with an import it can't follow",
@@ -594,6 +661,7 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 				"B/Directory.Build.props": msbuild(newtonsoftRef12),
 				"B/B.csproj":              `<Project Sdk="Microsoft.NET.Sdk" />`,
 			},
+			kept: []string{"12.0.1", "13.0.3"},
 		},
 		{
 			name: "R4: a Choose in Directory.Build.props",
@@ -614,16 +682,11 @@ func TestVersions_UnreadSurfaces(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := versionsOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
-			if !r.Found {
-				t.Fatalf("Newtonsoft.Json not found; got %+v", r)
-			}
-			if tc.version == "" {
-				if r.Match.Resolved || r.Match.Version != "" {
-					t.Fatalf("want UNRESOLVED; got %+v", r.Match)
-				}
-			} else if !r.Match.Resolved || r.Match.Version != tc.version {
-				t.Fatalf("want resolved %s; got %+v", tc.version, r.Match)
+			r, kept := installedOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
+			if tc.kept != nil {
+				checkKeptSet(t, kept, tc.kept)
+			} else {
+				checkKept(t, kept, tc.version)
 			}
 			if tc.reason != "" && !slices.Contains(r.Partiality.Reasons, tc.reason) {
 				t.Errorf("want reason %q; got %v", tc.reason, r.Partiality.Reasons)

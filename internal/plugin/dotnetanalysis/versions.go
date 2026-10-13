@@ -51,16 +51,36 @@ import (
 // pipeline disqualification predicate (pipeline/nuget_version.go), never here.
 //
 // Several copies of one package (two projects, two target frameworks, a lockfile beside a
-// project file): installedCopies decides which copies each project actually installs, and
-// matchNuGet never picks one copy out of several distinct versions. See their doc comments
-// for the rules.
+// project file): installedCopies decides which copies each project actually installs. See
+// its doc comment for the rules.
 func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	res, copies, parseFailed, err := installedSet(req)
+	if err != nil {
+		return plugin.DependencyVersionResult{}, err
+	}
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	res.Match, res.Found = matchNuGet(copies, want)
+	if parseFailed && want != "" {
+		if !res.Found {
+			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
+		}
+		res.Found = true
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
+	return res, nil
+}
+
+// installedSet reads every manifest under req.BuildDir and returns the result without a
+// Match (Partiality and All), the copies of the requested package installedCopies kept, and
+// whether a manifest or restore output failed to parse.
+func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, []nugetCopy, bool, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
-		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: stat build dir %q: %w", req.BuildDir, err)
+		return plugin.DependencyVersionResult{}, nil, false, fmt.Errorf("dotnetanalysis: stat build dir %q: %w", req.BuildDir, err)
 	}
 	if !info.IsDir() {
-		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
+		return plugin.DependencyVersionResult{}, nil, false, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
 	manifests := manifestFiles(req.BuildDir)
@@ -119,17 +139,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(reasons...)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchNuGet(copies, want)
-	if parseFailed && want != "" {
-		if !res.Found {
-			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
-		}
-		res.Found = true
-		res.Match.Version = ""
-		res.Match.Resolved = false
-	}
-	return res, nil
+	return plugin.DependencyVersionResult{Partiality: part, All: all}, copies, parseFailed, nil
 }
 
 // nugetCopy is one manifest entry together with where it came from, which installedCopies
@@ -165,49 +175,28 @@ func manifestKind(base string) string {
 	}
 }
 
-// matchNuGet selects the Match for the normalized coordinate want across the copies
-// installedCopies kept: every project's installed set, every target framework of every
-// lockfile. The predicate reads a single Match, so the rule is:
+// matchNuGet selects the Match for the normalized coordinate want from the copies
+// installedCopies kept. A resolved copy wins over an unresolved one for the same id.
 //
-//   - every matching copy resolved to the SAME version (N copies of one version count as one):
-//     Match is that version, Resolved=true;
-//   - two or more distinct resolved versions, or any matching copy whose version is unknown:
-//     Match is UNRESOLVED (Resolved=false, Version empty).
-//
-// Picking one copy would let a range that straddles the installed set rule the advisory
-// not-affected on the copy that happens to sit outside it while a vulnerable copy still
-// ships. UNRESOLVED makes the predicate fail OPEN instead. Versions compare as exact strings:
-// two spellings of one version ("12.0" and "12.0.0") read as distinct, which can only fail
-// open.
+// SEAM(agreement): whether several copies of one package agree (distinct versions, or any
+// unresolved copy beside a resolved one) is the shared agreement rule's call, not this
+// lane's. Once that predicate is on main, this selection hands it the copies installedCopies
+// kept, the unknown copies included, instead of picking one here.
 func matchNuGet(copies []nugetCopy, want string) (plugin.ResolvedDependency, bool) {
-	if want == "" {
-		return plugin.ResolvedDependency{}, false
-	}
 	var (
-		match    plugin.ResolvedDependency
-		found    bool
-		unknown  bool
-		versions = make(map[string]struct{})
+		match plugin.ResolvedDependency
+		found bool
 	)
-	for _, c := range copies {
-		if normalizeNuGetCoordinate(c.dep.Coordinate) != want {
-			continue
-		}
-		if !found {
-			match, found = c.dep, true
-		}
-		if !c.dep.Resolved {
-			unknown = true
-			continue
-		}
-		if len(versions) == 0 {
-			match = c.dep
-		}
-		versions[c.dep.Version] = struct{}{}
+	if want == "" {
+		return match, found
 	}
-	if found && (unknown || len(versions) != 1) {
-		match.Version = ""
-		match.Resolved = false
+	for _, c := range copies {
+		if normalizeNuGetCoordinate(c.dep.Coordinate) == want {
+			match, found = c.dep, true
+			if c.dep.Resolved {
+				break
+			}
+		}
 	}
 	return match, found
 }
@@ -300,7 +289,7 @@ type packagesLockEntry struct {
 //
 // Each target framework (and each <tfm>/<rid> target) is its own resolution, and they can
 // disagree (net6.0 → 13.0.1, net8.0 → 13.0.3). Every distinct (id, version) across them is
-// kept so matchNuGet sees the split; only exact repeats collapse. Frameworks and ids are
+// kept so the split reaches the Match; only exact repeats collapse. Frameworks and ids are
 // walked in sorted order so All is identical across runs. The "requested" range of every
 // Direct entry is returned per id, one per target, for installedCopies' staleness check.
 func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, lockRequests, bool) {

@@ -34,11 +34,6 @@ import (
 //   - An unparseable build file degrades Partiality to declared-partial (tool_failure), and
 //     every requested coordinate becomes Found and UNRESOLVED: the broken file could declare
 //     any artifact at any version.
-//
-// Several declarations of one coordinate (modules of a multi-module build, Maven and Gradle
-// side by side, two configurations in one build.gradle): Match is chosen by
-// matchCoordinate, which never picks one declaration out of several distinct versions. See
-// its doc comment for the rule.
 func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
@@ -77,9 +72,20 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	want := normalizeCoordinate(req.Coordinate)
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	res.Match, res.Found = matchCoordinate(all, want)
+	want := normalizeCoordinate(req.Coordinate)
+	if want != "" {
+		for _, d := range all {
+			if normalizeCoordinate(d.Coordinate) == want {
+				res.Found = true
+				res.Match = d
+				// A resolved match wins over an UNRESOLVED one for the same coordinate.
+				if d.Resolved {
+					break
+				}
+			}
+		}
+	}
 	if parseFailed && want != "" {
 		if !res.Found {
 			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
@@ -89,55 +95,6 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		res.Match.Resolved = false
 	}
 	return res, nil
-}
-
-// matchCoordinate selects the Match for the normalized coordinate want across every
-// declaration in all, from every pom.xml and build.gradle in the tree. The predicate reads a
-// single Match, so the rule is:
-//
-//   - every matching declaration resolved to the SAME version (N declarations of one version
-//     count as one): Match is that version, Resolved=true;
-//   - two or more distinct resolved versions, or any matching declaration whose version is
-//     unknown (BOM- or platform-managed, an unresolved property): Match is UNRESOLVED
-//     (Resolved=false, Version empty).
-//
-// Picking one declaration would let a range that straddles the build's copies rule the
-// advisory not-affected on the module that happens to sit outside it while another module
-// still ships a vulnerable one. An unknown declaration can be managed to any version, so it
-// vetoes a literal one beside it. UNRESOLVED makes the predicate fail OPEN instead. Versions
-// compare as exact strings: two spellings of one version read as distinct, which can only
-// fail open.
-func matchCoordinate(all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
-	if want == "" {
-		return plugin.ResolvedDependency{}, false
-	}
-	var (
-		match    plugin.ResolvedDependency
-		found    bool
-		unknown  bool
-		versions = make(map[string]struct{})
-	)
-	for _, d := range all {
-		if normalizeCoordinate(d.Coordinate) != want {
-			continue
-		}
-		if !found {
-			match, found = d, true
-		}
-		if !d.Resolved {
-			unknown = true
-			continue
-		}
-		if len(versions) == 0 {
-			match = d
-		}
-		versions[d.Version] = struct{}{}
-	}
-	if found && (unknown || len(versions) != 1) {
-		match.Version = ""
-		match.Resolved = false
-	}
-	return match, found
 }
 
 // buildFiles returns the pom.xml and build.gradle (incl. build.gradle.kts) files under root,

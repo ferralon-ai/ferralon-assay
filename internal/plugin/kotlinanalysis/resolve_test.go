@@ -125,34 +125,6 @@ func TestResolveDependencyVersions_NoBuildFile(t *testing.T) {
 	}
 }
 
-// TestResolveDependencyVersions_ModulesDisagree proves the Kotlin lane inherits the shared
-// parser's multi-declaration rule through the delegate: two modules pinning different
-// versions leave the coordinate UNRESOLVED, and P2 then refuses to pick a JAR version.
-func TestResolveDependencyVersions_ModulesDisagree(t *testing.T) {
-	dir := t.TempDir()
-	for _, m := range []struct{ sub, version string }{{"app", "1.2.3"}, {"lib", "1.3.0"}} {
-		if err := os.MkdirAll(filepath.Join(dir, m.sub), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		writeBuildFile(t, filepath.Join(dir, m.sub), "build.gradle.kts",
-			"dependencies {\n    implementation(\"com.example:widget:"+m.version+"\")\n}\n")
-	}
-	res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{
-		BuildDir: dir, Coordinate: "com.example:widget",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
-		t.Fatalf("modules disagree, want Found+UNRESOLVED; got Found=%v %+v", res.Found, res.Match)
-	}
-	if _, _, ok := coordinateAndVersion(context.Background(), plugin.ResolveSymbolsRequest{
-		BuildDir: dir, PURL: "pkg:maven/com.example/widget",
-	}); ok {
-		t.Error("an unresolved version must not pick a dependency JAR")
-	}
-}
-
 // --- P2: ResolveDependencySymbols --------------------------------------------
 
 // writeJarFixture emits a JAR of the given internalName->classBytes entries into the Gradle

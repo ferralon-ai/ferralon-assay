@@ -276,94 +276,15 @@ func TestResolveVersions_CorpusRepros(t *testing.T) {
 	}
 }
 
-func pomWith(artifact, depVersion string) string {
-	v := ""
-	if depVersion != "" {
-		v = "<version>" + depVersion + "</version>"
-	}
-	return `<project><groupId>com.example</groupId><artifactId>` + artifact + `</artifactId><version>1.0.0</version>
-  <properties><widget.version>1.4.0</widget.version></properties>
-  <dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId>` + v + `</dependency></dependencies>
-</project>`
-}
-
-// When the build declares a coordinate more than once, no single declaration decides: two
-// distinct versions, or any declaration whose version is unknown, leave Match UNRESOLVED so
-// the predicate fails open. The Kotlin lane delegates here, so these rows cover it too.
-func TestResolveVersions_MultipleDeclarations(t *testing.T) {
-	cases := []struct {
-		name    string
-		files   map[string]string
-		version string // "" means Found but UNRESOLVED
-	}{
-		{
-			name: "multi-module Maven build pins different versions",
-			files: map[string]string{
-				"pom.xml":       pomWith("parent", "1.4.0"),
-				"core/pom.xml":  pomWith("core", "1.4.0"),
-				"admin/pom.xml": pomWith("admin", "1.5.0"),
-			},
-		},
-		{
-			name: "Gradle modules pin different versions",
-			files: map[string]string{
-				"app/build.gradle":     "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n}\n",
-				"lib/build.gradle.kts": "dependencies {\n    implementation(\"com.example.lib:widget:1.5.0\")\n}\n",
-			},
-		},
-		{
-			name: "two configurations in one build.gradle pin different versions",
-			files: map[string]string{"build.gradle": `dependencies {
-    implementation 'com.example.lib:widget:1.4.0'
-    testImplementation 'com.example.lib:widget:1.5.0'
-}`},
-		},
-		{
-			name: "Maven and Gradle disagree",
-			files: map[string]string{
-				"pom.xml":      pomWith("app", "1.5.0"),
-				"build.gradle": "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n}\n",
-			},
-		},
-		{
-			name: "a platform-managed declaration beside a literal one",
-			files: map[string]string{"build.gradle": `dependencies {
-    implementation 'com.example.lib:widget'
-    implementation 'com.example.lib:widget:1.4.0'
-}`},
-		},
-		{
-			name: "a BOM-managed module beside a pinned module",
-			files: map[string]string{
-				"core/pom.xml":  pomWith("core", "1.4.0"),
-				"admin/pom.xml": pomWith("admin", ""),
-			},
-		},
-		{
-			name: "every declaration agrees",
-			files: map[string]string{
-				"pom.xml":          pomWith("parent", "1.4.0"),
-				"core/pom.xml":     pomWith("core", "${widget.version}"),
-				"app/build.gradle": "dependencies {\n    implementation 'com.example.lib:widget:1.4.0'\n    testImplementation group: 'com.example.lib', name: 'widget', version: '1.4.0'\n}\n",
-			},
-			version: "1.4.0",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			res := resolve(t, writeTree(t, tc.files), "com.example.lib:widget")
-			if !res.Found {
-				t.Fatal("com.example.lib:widget not found")
-			}
-			if tc.version == "" {
-				if res.Match.Resolved || res.Match.Version != "" {
-					t.Fatalf("declarations straddle, want UNRESOLVED; got %+v", res.Match)
-				}
-				return
-			}
-			if !res.Match.Resolved || res.Match.Version != tc.version {
-				t.Fatalf("want resolved %s; got %+v", tc.version, res.Match)
-			}
-		})
+// A resolved match for a coordinate that ALSO appears versionless elsewhere must win (the
+// resolver prefers a Resolved match over an UNRESOLVED one for the same coordinate).
+func TestResolveVersions_ResolvedMatchWinsOverUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{"build.gradle": `dependencies {
+    implementation 'com.example.lib:widget'          // UNRESOLVED, appears first
+    implementation 'com.example.lib:widget:1.4.0'    // RESOLVED
+}`})
+	res := resolve(t, dir, "com.example.lib:widget")
+	if !res.Match.Resolved || res.Match.Version != "1.4.0" {
+		t.Fatalf("resolved match must win, got %+v", res.Match)
 	}
 }

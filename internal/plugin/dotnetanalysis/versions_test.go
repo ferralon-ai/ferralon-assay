@@ -306,18 +306,21 @@ func lockEntries(typ, requested string, byTFM map[string]string) string {
 	return s + "}}"
 }
 
-// When the copies of a package straddle versions, no single copy decides: Match is
-// UNRESOLVED so the predicate fails open. Each row runs 50 times so a map-order draw
-// can't pass on a lucky run.
-func TestVersions_MultipleCopies(t *testing.T) {
+// Every copy the tree installs is handed on: each project's own installed set and every
+// target framework of a lockfile, so copies that straddle versions all reach the agreement
+// rule. A copy whose version the inputs don't determine is handed on as unknown, and a
+// lockfile covers only the project beside it, while current.
+func TestVersions_InstalledCopies(t *testing.T) {
 	cases := []struct {
 		name    string
 		files   map[string]string
-		version string // "" means Found but UNRESOLVED
+		version string   // "" wants an unknown copy
+		kept    []string // when set, the distinct resolved versions kept, and no unknown copy
 	}{
 		{
 			name:  "lockfile target frameworks disagree",
 			files: map[string]string{"App/packages.lock.json": lockJSON(map[string]string{"net6.0": "13.0.1", "net8.0": "13.0.3"})},
+			kept:  []string{"13.0.1", "13.0.3"},
 		},
 		{
 			name: "two projects pin different versions",
@@ -332,6 +335,7 @@ func TestVersions_MultipleCopies(t *testing.T) {
 				"A/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.1"}),
 				"B/packages.lock.json": lockJSON(map[string]string{"net8.0": "13.0.3"}),
 			},
+			kept: []string{"13.0.1", "13.0.3"},
 		},
 		{
 			name: "packages.config and a project pin disagree",
@@ -687,22 +691,12 @@ func TestVersions_MultipleCopies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writeTree(t, tc.files)
-			for run := range 50 {
-				r := versionsOf(t, dir, "Newtonsoft.Json")
-				if !r.Found {
-					t.Fatalf("run %d: Newtonsoft.Json not found", run)
-				}
-				if tc.version == "" {
-					if r.Match.Resolved || r.Match.Version != "" {
-						t.Fatalf("run %d: copies straddle, want UNRESOLVED; got %+v", run, r.Match)
-					}
-					continue
-				}
-				if !r.Match.Resolved || r.Match.Version != tc.version {
-					t.Fatalf("run %d: want resolved %s; got %+v", run, tc.version, r.Match)
-				}
+			_, kept := installedOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
+			if tc.kept != nil {
+				checkKeptSet(t, kept, tc.kept)
+				return
 			}
+			checkKept(t, kept, tc.version)
 		})
 	}
 }

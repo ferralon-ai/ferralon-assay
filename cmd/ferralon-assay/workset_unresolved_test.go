@@ -9,6 +9,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/pythonanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -44,6 +45,15 @@ type pythonInventory struct {
 
 func (pythonInventory) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	return pythonanalysis.ResolveDependencyVersions(ctx, req)
+}
+
+// jsInventory is the real JS lane's manifest reader behind the analyzer double.
+type jsInventory struct {
+	unsearchingAnalyzer
+}
+
+func (jsInventory) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	return jsanalysis.ResolveDependencyVersions(ctx, req)
 }
 
 func mavenRecord(id, coordinate string) map[string]any {
@@ -107,6 +117,26 @@ func pythonTree(t *testing.T, requirements string) *acquired {
 	return &acquired{
 		buildDir: dir, language: checkout.LangPython, repo: "example.com/fixture",
 		plugin: pythonInventory{unsearchingAnalyzer{language: checkout.LangPython}},
+	}
+}
+
+// jsTree writes a JS tree with no lockfile, so the real JS reader seeds every package.json
+// declaration as unresolved, and returns an *acquired over that reader.
+func jsTree(t *testing.T) *acquired {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"index.js":     "module.exports = 1;\n",
+		"package.json": `{"name":"app","dependencies":{"@acme/widget":"^1.0.0"}}`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return &acquired{
+		buildDir: dir, language: checkout.LangJS, repo: "example.com/fixture",
+		plugin: jsInventory{unsearchingAnalyzer{language: checkout.LangJS}},
 	}
 }
 
@@ -221,6 +251,12 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantQueried: []string{"requests@2.31.0"},
 			wantSkipped: map[string]string{"flask": "pkg:pypi/flask"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:        "js osv: a scoped package declared with no lockfile is named",
+			acq:         jsTree,
+			wantSkipped: map[string]string{"@acme/widget": "pkg:npm/%40acme/widget"},
+			wantSource:  report.WorkSetBuiltinLanguageSet,
 		},
 	}
 

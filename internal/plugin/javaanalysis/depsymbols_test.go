@@ -130,8 +130,9 @@ public class Client {
 	}
 }
 
-// An advisory that names a class stands for every method the class declares; its static
-// initializer runs on class load and is not a call target.
+// An advisory that names a class stands for every method the class declares, its static
+// initializer included: touching a static field of the class runs <clinit>, and the reach
+// engine follows that, so leaving it out would narrow the sink set.
 func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 	build := t.TempDir()
 	if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(netkitPom), 0o644); err != nil {
@@ -149,6 +150,7 @@ func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher")
 	want := []string{
 		depEdgeSymbol(classfile.MethodRef{Owner: "com/evil/netkit/UrlFetcher", Name: "<init>", Descriptor: "()V"}),
+		depEdgeSymbol(classfile.MethodRef{Owner: "com/evil/netkit/UrlFetcher", Name: "<clinit>", Descriptor: "()V"}),
 		depEdgeSymbol(netkitFetch),
 	}
 	sort.Strings(want)
@@ -245,44 +247,228 @@ public class Client {
 	}
 }
 
+// realPath is path with every symlink resolved: what locateArtifactJar returns.
+func realPath(t *testing.T, path string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
 // A JAR found only in the Gradle module cache resolves the same way.
 func TestLocateArtifactJar_GradleCache(t *testing.T) {
 	build := t.TempDir()
 	jar := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar")
 	writeJar(t, jar, "com/evil/netkit/UrlFetcher.class", emitClass(&cpb{}, "com/evil/netkit/UrlFetcher", nil))
-	got, ok, ambiguous := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
-	if !ok || ambiguous || got != jar {
-		t.Errorf("locateArtifactJar = %q, %v, %v; want %q", got, ok, ambiguous, jar)
+	got, found := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
+	if found != jarFound || got != realPath(t, jar) {
+		t.Errorf("locateArtifactJar = %q, %v; want %q", got, found, jar)
 	}
-	if _, ok, _ := locateArtifactJar(build, "com.evil:netkit", "2.0.0"); ok {
-		t.Error("located a version that is not cached")
+	if _, found := locateArtifactJar(build, "com.evil:netkit", "2.0.0"); found != jarMissing {
+		t.Errorf("a version that is not cached: %v, want missing", found)
 	}
 }
 
 // Copies in the Maven repository and the Gradle cache are compared whichever cache comes
-// first: the same bytes resolve, different bytes resolve neither, and the resolver reports
-// the miss.
+// first: the same bytes resolve, different bytes resolve neither, and a copy that cannot be
+// read, first or later, resolves neither and says so.
 func TestLocateArtifactJar_ComparesEveryCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("file modes do not stop root reading a copy")
+	}
 	class := func(owner string) []byte { return emitClass(&cpb{}, owner, nil) }
 	for _, tc := range []struct {
-		name          string
-		gradleOwner   string
-		wantAmbiguous bool
+		name        string
+		gradleOwner string
+		unreadable  string // "m2" or "gradle"
+		want        jarLookup
 	}{
-		{"same bytes", "com/evil/netkit/UrlFetcher", false},
-		{"different bytes", "com/evil/netkit/Other", true},
+		{name: "same bytes", gradleOwner: "com/evil/netkit/UrlFetcher", want: jarFound},
+		{name: "different bytes", gradleOwner: "com/evil/netkit/Other", want: jarCopiesDiffer},
+		{name: "first copy unreadable", gradleOwner: "com/evil/netkit/UrlFetcher", unreadable: "m2", want: jarUnreadable},
+		{name: "later copy unreadable", gradleOwner: "com/evil/netkit/UrlFetcher", unreadable: "gradle", want: jarUnreadable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			build := t.TempDir()
-			m2 := filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
-			writeJar(t, m2, "com/evil/netkit/UrlFetcher.class", class("com/evil/netkit/UrlFetcher"))
-			gradle := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar")
-			writeJar(t, gradle, "com/evil/netkit/UrlFetcher.class", class(tc.gradleOwner))
-			got, ok, ambiguous := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
-			if ambiguous != tc.wantAmbiguous || ok == tc.wantAmbiguous || (ok && got != m2) {
-				t.Fatalf("locateArtifactJar = %q, %v, %v; want ambiguous=%v", got, ok, ambiguous, tc.wantAmbiguous)
+			copies := map[string]string{
+				"m2":     filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"),
+				"gradle": filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar"),
+			}
+			writeJar(t, copies["m2"], "com/evil/netkit/UrlFetcher.class", class("com/evil/netkit/UrlFetcher"))
+			writeJar(t, copies["gradle"], "com/evil/netkit/UrlFetcher.class", class(tc.gradleOwner))
+			if tc.unreadable != "" {
+				if err := os.Chmod(copies[tc.unreadable], 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(copies[tc.unreadable], 0o644) })
+			}
+			got, found := locateArtifactJar(build, "com.evil:netkit", "1.0.0")
+			if found != tc.want || (found == jarFound) != (got != "") || (found == jarFound && got != realPath(t, copies["m2"])) {
+				t.Fatalf("locateArtifactJar = %q, %v; want %v", got, found, tc.want)
 			}
 		})
+	}
+}
+
+// A cached JAR is read only from inside the cache. A version or coordinate that walks out of
+// it, or a cached copy that is a symlink out of it, is reported as a tool failure scoped to the
+// package, never bound and reported complete. Links that stay inside the cache, and a cache root
+// that is itself a symlink, are fine.
+func TestLocateArtifactJar_StaysInsideTheCache(t *testing.T) {
+	fetchJar := func(t *testing.T, path string) {
+		t.Helper()
+		b := &cpb{}
+		writeJar(t, path, "com/evil/netkit/UrlFetcher.class", emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
+	}
+	m2Jar := func(build, version string) string {
+		return filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", version, "netkit-"+version+".jar")
+	}
+	symlink := func(t *testing.T, target, link string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const traversal = "../../../../../planted/fake"
+	for _, tc := range []struct {
+		name    string
+		version string
+		setup   func(t *testing.T, build string)
+		want    jarLookup
+	}{
+		{name: "version walks out of the cache", version: traversal, setup: func(t *testing.T, build string) {
+			// Where a lexical join of the version lands: inside the build, outside the cache.
+			fetchJar(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", traversal, "netkit-"+traversal+".jar"))
+		}, want: jarUnreadable},
+		{name: "cached jar links out of the cache", version: "1.0.0", setup: func(t *testing.T, build string) {
+			outside := filepath.Join(t.TempDir(), "elsewhere.jar")
+			fetchJar(t, outside)
+			symlink(t, outside, m2Jar(build, "1.0.0"))
+		}, want: jarUnreadable},
+		{name: "gradle copy links out of the cache", version: "1.0.0", setup: func(t *testing.T, build string) {
+			outside := filepath.Join(t.TempDir(), "elsewhere.jar")
+			fetchJar(t, outside)
+			symlink(t, outside, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b2c", "netkit-1.0.0.jar"))
+		}, want: jarUnreadable},
+		{name: "version directory links out of the cache", version: "1.0.0", setup: func(t *testing.T, build string) {
+			outside := t.TempDir()
+			fetchJar(t, filepath.Join(outside, "netkit-1.0.0.jar"))
+			symlink(t, outside, filepath.Dir(m2Jar(build, "1.0.0")))
+		}, want: jarUnreadable},
+		{name: "link inside the cache", version: "1.0.0", setup: func(t *testing.T, build string) {
+			real := filepath.Join(build, ".m2", "repository", "blobs", "netkit.jar")
+			fetchJar(t, real)
+			symlink(t, real, m2Jar(build, "1.0.0"))
+		}, want: jarFound},
+		{name: "cache root is a symlink", version: "1.0.0", setup: func(t *testing.T, build string) {
+			repo := t.TempDir()
+			fetchJar(t, filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"))
+			symlink(t, repo, filepath.Join(build, ".m2", "repository"))
+		}, want: jarFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := filepath.Join(t.TempDir(), "a", "b", "c", "d", "proj")
+			if err := os.MkdirAll(build, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(build, "pom.xml"), strings.Replace(netkitPom, "<artifactId>netkit</artifactId><version>1.0.0</version>",
+				"<artifactId>netkit</artifactId><version>"+tc.version+"</version>", 1))
+			tc.setup(t, build)
+			writeNetkitOwnPom(t, build)
+
+			if _, found := locateArtifactJar(build, "com.evil:netkit", tc.version); found != tc.want {
+				t.Fatalf("locateArtifactJar = %v, want %v", found, tc.want)
+			}
+			res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+			if tc.want == jarFound {
+				if !res.Partiality.Complete || len(res.Resolved) != 1 {
+					t.Fatalf("want fetch resolved and complete, got %+v", res)
+				}
+				return
+			}
+			if len(res.Resolved) != 0 || res.Partiality.Complete {
+				t.Fatalf("bound a JAR from outside the cache: %+v", res)
+			}
+			if len(res.Partiality.Scoped) != 1 || res.Partiality.Scoped[0].Reason != plugin.PartialReasonToolFailure || res.Partiality.Scoped[0].Package != netkitPURL {
+				t.Errorf("want one scoped %s on %s, got %+v", plugin.PartialReasonToolFailure, netkitPURL, res.Partiality.Scoped)
+			}
+		})
+	}
+}
+
+// A JAR that is there but cannot be read as a JAR, or holds a class that fails to parse, is a
+// tool failure scoped to the package. Symbols from the classes that did parse still resolve.
+func TestResolveDependencySymbols_UnreadableJarIsScopedToolFailure(t *testing.T) {
+	jarPath := func(build string) string {
+		return filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
+	}
+	for _, tc := range []struct {
+		name         string
+		write        func(t *testing.T, path string)
+		wantResolved int
+		wantPath     string
+	}{
+		{name: "not a zip", write: func(t *testing.T, path string) {
+			writeFile(t, path, "not a jar")
+		}, wantPath: "netkit-1.0.0.jar"},
+		{name: "a class fails to parse", write: func(t *testing.T, path string) {
+			b := &cpb{}
+			writeJarEntries(t, path, map[string][]byte{
+				"com/evil/netkit/UrlFetcher.class": emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}),
+				"com/evil/netkit/Broken.class":     {0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00},
+			})
+		}, wantResolved: 1, wantPath: "netkit-1.0.0.jar!com/evil/netkit/Broken.class"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := buildNetkitFixture(t, true)
+			writeNetkitOwnPom(t, build)
+			tc.write(t, jarPath(build))
+			res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+			if len(res.Resolved) != tc.wantResolved || res.Partiality.Complete {
+				t.Fatalf("want %d resolved and partial, got %+v", tc.wantResolved, res)
+			}
+			if len(res.Partiality.Scoped) != 1 {
+				t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
+			}
+			sr := res.Partiality.Scoped[0]
+			if sr.Reason != plugin.PartialReasonToolFailure || sr.Package != netkitPURL || sr.Path != tc.wantPath {
+				t.Errorf("scoped reason = %+v, want %s on %s at %q", sr, plugin.PartialReasonToolFailure, netkitPURL, tc.wantPath)
+			}
+			if !slices.Contains(res.Partiality.Reasons, plugin.PartialReasonToolFailure) {
+				t.Errorf("run-wide mirror missing: %v", res.Partiality.Reasons)
+			}
+		})
+	}
+}
+
+// A Gradle lockfile that locks the coordinate at two versions (one per configuration) keeps
+// both: each version's JAR is looked up, and one missing from every cache is reported.
+func TestResolveDependencySymbols_GradleLockTwoVersions(t *testing.T) {
+	build := t.TempDir()
+	writeFile(t, filepath.Join(build, "build.gradle"), "dependencies { implementation 'com.evil:netkit:1.0.0' }\n")
+	writeFile(t, filepath.Join(build, "src", "main", "java", "A.java"), "class A{}")
+	writeFile(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath\ncom.evil:netkit:2.0.0=runtimeClasspath\nempty=\n")
+	b := &cpb{}
+	writeJar(t, filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1", "com.evil", "netkit", "1.0.0", "0a1b", "netkit-1.0.0.jar"),
+		"com/evil/netkit/UrlFetcher.class", emitClass(b, "com/evil/netkit/UrlFetcher", []mspec{{"fetch", "(Ljava/lang/String;)Ljava/lang/String;", []byte{0xB1}}}))
+
+	res := resolveNetkit(t, build, "com.evil.netkit.UrlFetcher.fetch")
+	if res.Partiality.Complete {
+		t.Fatalf("2.0.0's JAR is in no cache, yet the result is complete: %+v", res)
+	}
+	var paths []string
+	for _, sr := range res.Partiality.Scoped {
+		if sr.Reason == reasonNoDependencyArtifact && sr.Package == netkitPURL {
+			paths = append(paths, sr.Path)
+		}
+	}
+	if !reflect.DeepEqual(paths, []string{"com.evil:netkit:2.0.0"}) {
+		t.Errorf("scoped %s paths = %v, want [com.evil:netkit:2.0.0]", reasonNoDependencyArtifact, paths)
 	}
 }
 

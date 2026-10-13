@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -34,9 +35,10 @@ func newGradleCache(root string) *gradleCache {
 }
 
 // pom returns the cached POM for a locked coordinate, or (nil,false) on a cache-miss. The first
-// hash dir (lexicographically) that holds the POM wins — deterministic.
+// hash dir (lexicographically) that holds the POM wins — deterministic. A coordinate that cannot
+// name a cache path, or a POM that resolves outside the cache, is a miss.
 func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
-	if c.root == "" || g == "" || a == "" || v == "" {
+	if c.root == "" || !validGAV(g, a, v) {
 		return nil, false
 	}
 	base := filepath.Join(c.root, g, a, v)
@@ -52,7 +54,14 @@ func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
 	}
 	sort.Strings(names)
 	for _, h := range names {
-		if p, ok := parseMavenPOM(filepath.Join(base, h, a+"-"+v+".pom")); ok {
+		path, st := inCache(c.root, filepath.Join(g, a, v, h, a+"-"+v+".pom"))
+		if st == cacheEscape {
+			return nil, false
+		}
+		if st != cacheHit {
+			continue
+		}
+		if p, ok := parseMavenPOM(path); ok {
 			return p, true
 		}
 	}
@@ -61,7 +70,7 @@ func (c *gradleCache) pom(g, a, v string) (*mvnPOM, bool) {
 
 // digest reads the on-disk .sha1 sidecar for a locked coordinate (jar preferred), "" when absent.
 func (c *gradleCache) digest(g, a, v string) string {
-	if c.root == "" {
+	if c.root == "" || !validGAV(g, a, v) {
 		return ""
 	}
 	base := filepath.Join(c.root, g, a, v)
@@ -78,7 +87,14 @@ func (c *gradleCache) digest(g, a, v string) string {
 	sort.Strings(names)
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {
 		for _, h := range names {
-			if data, err := os.ReadFile(filepath.Join(base, h, a+"-"+v+ext)); err == nil {
+			path, st := inCache(c.root, filepath.Join(g, a, v, h, a+"-"+v+ext))
+			if st == cacheEscape {
+				return ""
+			}
+			if st != cacheHit {
+				continue
+			}
+			if data, err := os.ReadFile(path); err == nil {
 				if s := strings.TrimSpace(string(data)); s != "" {
 					return "sha1:" + strings.Fields(s)[0]
 				}
@@ -99,11 +115,13 @@ func (e lockedEntry) ga() string { return e.group + ":" + e.artifact }
 
 // readLockfiles parses every gradle.lockfile and gradle/dependency-locks/<config>.lockfile under
 // root. Lines are "g:a:v=conf1,conf2"; "empty=..." and comments are ignored. Returns the merged
-// map "g:a" -> entry (first-seen version wins; configs accumulated) and the set of lockfile rel
-// paths, plus whether any lockfile existed at all.
-func readLockfiles(root string) (map[string]*lockedEntry, []string, bool) {
+// map "g:a:v" -> entry (configs accumulated), the set of lockfile rel paths, whether any lockfile
+// existed at all, and every line that is neither of those nor a coordinate ("file:line").
+// A group:artifact locked at two versions (compileClasspath at one, runtimeClasspath at another,
+// or different lockfiles) keeps both: either can be the code that runs.
+func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []string) {
 	out := map[string]*lockedEntry{}
-	var files []string
+	var files, unparsed []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr
@@ -118,25 +136,29 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool) {
 		if name != "gradle.lockfile" && !strings.HasSuffix(name, ".lockfile") {
 			return nil
 		}
-		files = append(files, relToBase(root, path))
+		rel := relToBase(root, path)
+		files = append(files, rel)
 		data, rerr := os.ReadFile(path)
 		if rerr != nil {
+			unparsed = append(unparsed, rel)
 			return nil
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for n, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "empty=") {
 				continue
 			}
 			coord, configs, ok := splitLockLine(line)
 			if !ok {
+				unparsed = append(unparsed, rel+":"+strconv.Itoa(n+1))
 				continue
 			}
 			g, a, v, ok := splitGAV(coord)
 			if !ok {
+				unparsed = append(unparsed, rel+":"+strconv.Itoa(n+1))
 				continue
 			}
-			key := g + ":" + a
+			key := g + ":" + a + ":" + v
 			if e, seen := out[key]; seen {
 				e.configs = mergeReasons(e.configs, configs...)
 				continue
@@ -146,7 +168,8 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool) {
 		return nil
 	})
 	sort.Strings(files)
-	return out, files, len(files) > 0
+	sort.Strings(unparsed)
+	return out, files, len(files) > 0, unparsed
 }
 
 func splitLockLine(line string) (coord string, configs []string, ok bool) {
@@ -299,7 +322,7 @@ func stripTOMLComment(line string) string {
 // resolveGradle builds the selected graph by joining locked versions (nodes) with cached-POM
 // edges. No lockfile ⇒ declared-direct only with the gradle_transitive residue.
 func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInventory {
-	locked, lockFiles, haveLock := readLockfiles(buildDir)
+	locked, lockFiles, haveLock, unparsed := readLockfiles(buildDir)
 	catalog := readCatalog(buildDir)
 	declared := gradleDeclaredDirect(buildDir) // "g:a" -> declared (script/catalog) direct set
 
@@ -312,8 +335,9 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		lockRel = lockFiles[0]
 	}
 
-	// Node set from the lockfile (the authoritative selected versions).
-	nodeID := map[string]string{} // "g:a" -> node ID
+	// Node set from the lockfile (the authoritative selected versions). A group:artifact locked at
+	// several versions gets a node per version.
+	nodeIDs := map[string][]string{} // "g:a" -> node IDs, one per locked version
 	keys := make([]string, 0, len(locked))
 	for k := range locked {
 		keys = append(keys, k)
@@ -322,20 +346,25 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 
 	var nodes []plugin.DependencyNode
 	var reasons []string
+	if len(unparsed) > 0 {
+		// A line that is not a coordinate may lock one: the node set is not known in full.
+		reasons = mergeReasons(reasons, reasonGradleLockUnparsed)
+	}
 	for _, k := range keys {
 		e := locked[k]
+		ga := e.ga()
 		cfg := ""
 		if len(e.configs) > 0 {
 			cfg = e.configs[0]
 		}
 		purl := mavenPURL(e.group, e.artifact, e.version)
 		id := "|" + cfg + "|" + purl
-		nodeID[k] = id
+		nodeIDs[ga] = append(nodeIDs[ga], id)
 		nodes = append(nodes, plugin.DependencyNode{
 			ID:      id,
 			PURL:    purl,
 			Version: e.version,
-			Direct:  func() bool { _, ok := declared[k]; return ok }(),
+			Direct:  func() bool { _, ok := declared[ga]; return ok }(),
 			Membership: plugin.DependencyMembership{
 				Target: cfg,
 			},
@@ -351,10 +380,13 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		})
 	}
 
-	// Edges from cached POMs, filtered to the locked set (drift Q5).
+	// Edges from cached POMs, filtered to the locked set (drift Q5). A child locked at several
+	// versions gets an edge to each: the lockfile does not say which one this parent's
+	// configuration selected.
 	var edges []plugin.DependencyEdge
 	for i, k := range keys {
 		e := locked[k]
+		parentID := nodes[i].ID
 		pom, ok := cache.pom(e.group, e.artifact, e.version)
 		if !ok {
 			// Cached POM absent → this node's out-edges undetermined (per-node, never edgeless).
@@ -366,9 +398,8 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 			if strings.EqualFold(d.Scope, "test") || strings.EqualFold(d.Scope, "provided") || strings.EqualFold(d.Optional, "true") {
 				continue
 			}
-			childKey := d.GroupID + ":" + d.ArtifactID
-			if cid, present := nodeID[childKey]; present {
-				edges = append(edges, plugin.DependencyEdge{Parent: nodeID[k], Child: cid})
+			for _, cid := range nodeIDs[d.GroupID+":"+d.ArtifactID] {
+				edges = append(edges, plugin.DependencyEdge{Parent: parentID, Child: cid})
 			}
 		}
 	}
@@ -381,7 +412,7 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 	// report Complete while silently omitting the unlocked subproject's dependencies.
 	var declaredKeys []string
 	for k := range declared {
-		if _, locked := nodeID[k]; !locked {
+		if _, locked := nodeIDs[k]; !locked {
 			declaredKeys = append(declaredKeys, k)
 		}
 	}

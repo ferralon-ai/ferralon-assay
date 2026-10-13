@@ -3,7 +3,9 @@ package javaanalysis
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -14,32 +16,35 @@ import (
 // partial run-wide and no sink is ever reported Searched for it.
 const reasonMultipleProjectsUnsupported = "multiple_projects_unsupported"
 
-// multipleProjects reports whether buildDir holds more than one project: a POM that lists
-// <modules>, more than one pom.xml, or more than one Gradle build script that sits beside a
-// src directory. why names the evidence, for the partiality path.
+// multipleProjects reports whether buildDir holds more than one project. The recognizer is
+// inverted: anything that can name a second project counts unless it is read in full and names
+// none. Maven: a POM that lists <modules>, in any profile too, or more than one pom.xml. Gradle:
+// a root settings script that includes more than one project, or one beside root code, or that
+// includes a build, or that cannot be read; a settings script below the root; or more than one
+// build script beside a src directory. The walk enters every directory but VCS metadata,
+// installed-package trees and the local dependency caches, since a project in bin/ or a dot-dir
+// is still a project. why names the evidence, for the partiality path.
 func multipleProjects(buildDir string) (multi bool, why string) {
-	poms := findPOMs(buildDir)
-	for _, p := range poms {
-		if pom, ok := parseMavenPOM(p); ok && len(pom.Modules) > 0 {
-			return true, relSlash(buildDir, p) + " lists modules"
-		}
+	skip := map[string]bool{}
+	for _, root := range append(mavenRepoRoots(buildDir), gradleCacheRoots(buildDir)...) {
+		skip[filepath.Clean(root)] = true
 	}
-	if len(poms) > 1 {
-		return true, relSlash(buildDir, poms[0]) + ", " + relSlash(buildDir, poms[1])
-	}
-
-	var gradle []string
+	var poms, gradle, settings []string
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // an unreadable subtree holds no project we can see
 		}
 		if d.IsDir() {
-			if path != buildDir && skipDir(d.Name()) {
+			if path != buildDir && (projectWalkSkip(d.Name()) || skip[filepath.Clean(path)]) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		switch d.Name() {
+		case "pom.xml":
+			poms = append(poms, path)
+		case "settings.gradle", "settings.gradle.kts":
+			settings = append(settings, path)
 		case "build.gradle", "build.gradle.kts":
 			if info, err := os.Stat(filepath.Join(filepath.Dir(path), "src")); err == nil && info.IsDir() {
 				gradle = append(gradle, path)
@@ -47,11 +52,196 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		}
 		return nil
 	})
+
+	for _, p := range poms {
+		if pomListsModules(p) {
+			return true, relSlash(buildDir, p) + " lists modules"
+		}
+	}
+	if len(poms) > 1 {
+		return true, relSlash(buildDir, poms[0]) + ", " + relSlash(buildDir, poms[1])
+	}
+
+	for _, p := range settings {
+		if filepath.Dir(p) != filepath.Clean(buildDir) {
+			return true, relSlash(buildDir, p) + " defines another build"
+		}
+		projects, ok := gradleSettingsProjects(p)
+		if !ok {
+			return true, relSlash(buildDir, p) + " cannot be read in full"
+		}
+		count := len(projects)
+		if info, err := os.Stat(filepath.Join(buildDir, "src")); err == nil && info.IsDir() {
+			count++ // the root project has code of its own
+		}
+		if count > 1 {
+			return true, relSlash(buildDir, p) + " includes " + strings.Join(projects, ", ")
+		}
+	}
 	if len(gradle) > 1 {
 		sort.Strings(gradle)
 		return true, relSlash(buildDir, gradle[0]) + ", " + relSlash(buildDir, gradle[1])
 	}
 	return false, ""
+}
+
+// projectWalkSkip names the directories the project walk never enters: VCS metadata and
+// installed-package trees, which hold no project of this build.
+func projectWalkSkip(name string) bool {
+	switch name {
+	case ".git", "node_modules", "site-packages":
+		return true
+	}
+	return false
+}
+
+// pomListsModules reports whether the POM lists any <module>, at the top level or in a
+// profile. A profile's modules join the reactor whenever the profile is active.
+func pomListsModules(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var x struct {
+		Modules  []string `xml:"modules>module"`
+		Profiles []struct {
+			Modules []string `xml:"modules>module"`
+		} `xml:"profiles>profile"`
+	}
+	if unmarshalPOM(data, &x) != nil {
+		return false
+	}
+	if len(x.Modules) > 0 {
+		return true
+	}
+	for _, pr := range x.Profiles {
+		if len(pr.Modules) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	settingsIncludeWord = regexp.MustCompile(`\binclude\w*`)
+	settingsApplyWord   = regexp.MustCompile(`\bapply\b`)
+	settingsStringArg   = regexp.MustCompile(`^\s*(?:"([^"$\\]*)"|'([^'\\]*)')`)
+)
+
+// gradleSettingsProjects returns the project paths a settings script includes. ok is false
+// when the script cannot be read, applies another script, includes a build, or names projects
+// in any form other than include/includeFlat over string literals (a loop, a variable, a
+// helper function): those can include any number of projects.
+func gradleSettingsProjects(path string) ([]string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	src := stripGradleComments(string(data))
+	if settingsApplyWord.MatchString(src) {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var projects []string
+	for _, loc := range settingsIncludeWord.FindAllStringIndex(src, -1) {
+		word := src[loc[0]:loc[1]]
+		if word != "include" && word != "includeFlat" {
+			return nil, false
+		}
+		args, ok := gradleStringArgs(src[loc[1]:])
+		if !ok {
+			return nil, false
+		}
+		for _, a := range args {
+			a = strings.TrimPrefix(a, ":")
+			if a == "" {
+				return nil, false
+			}
+			if !seen[a] {
+				seen[a] = true
+				projects = append(projects, a)
+			}
+		}
+	}
+	sort.Strings(projects)
+	return projects, true
+}
+
+// gradleStringArgs reads the argument list after an include keyword: one or more string
+// literals separated by commas, optionally in parentheses. ok is false for anything else.
+func gradleStringArgs(rest string) ([]string, bool) {
+	rest = strings.TrimLeft(rest, " \t")
+	paren := strings.HasPrefix(rest, "(")
+	if paren {
+		rest = rest[1:]
+	}
+	var out []string
+	for {
+		m := settingsStringArg.FindStringSubmatch(rest)
+		if m == nil {
+			return nil, false
+		}
+		out = append(out, m[1]+m[2])
+		rest = rest[len(m[0]):]
+		trimmed := strings.TrimLeft(rest, " \t\r\n")
+		if strings.HasPrefix(trimmed, ",") {
+			rest = trimmed[1:]
+			continue
+		}
+		if paren {
+			if !strings.HasPrefix(trimmed, ")") {
+				return nil, false
+			}
+			trimmed = trimmed[1:]
+		}
+		// The statement must end here: a trailing method call or operator could change what
+		// the literals name.
+		end := strings.TrimLeft(trimmed, " \t")
+		if end != "" && !strings.HasPrefix(end, "\n") && !strings.HasPrefix(end, "\r") && !strings.HasPrefix(end, ";") {
+			return nil, false
+		}
+		return out, true
+	}
+}
+
+// stripGradleComments removes // line and /* */ block comments outside string literals.
+func stripGradleComments(src string) string {
+	var b strings.Builder
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case c == '"' || c == '\'':
+			j := i + 1
+			for j < len(src) && src[j] != c && src[j] != '\n' {
+				if src[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			if j >= len(src) {
+				j = len(src) - 1
+			}
+			b.WriteString(src[i : j+1])
+			i = j
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			if i < len(src) {
+				b.WriteByte('\n')
+			}
+		case c == '/' && i+1 < len(src) && src[i+1] == '*':
+			end := strings.Index(src[i+2:], "*/")
+			if end < 0 {
+				return b.String()
+			}
+			i += end + 3
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // withMultipleProjects adds the run-wide multiple_projects_unsupported reason to p, with an

@@ -35,6 +35,21 @@ var closureFixture = struct {
 // artifacts named in uncached, and returns the inventory and a cache over that repository.
 func buildClosureFixture(t *testing.T, uncached ...string) (inventoryIndex, *mavenCache) {
 	t.Helper()
+	return buildClosureFixtureWith(t, closureVariant{uncached: uncached})
+}
+
+// closureVariant alters the fixture: uncached artifacts get no POM, resolver overrides a node's
+// Provenance.Resolver, and project replaces the XML between an artifact's <version>1</version>
+// and </project> (parent, dependencies, properties).
+type closureVariant struct {
+	uncached []string
+	resolver map[string]string
+	project  map[string]string
+}
+
+func buildClosureFixtureWith(t *testing.T, v closureVariant) (inventoryIndex, *mavenCache) {
+	t.Helper()
+	uncached := v.uncached
 	repo := t.TempDir()
 	var inv plugin.DependencyInventory
 	id := func(a string) string { return "|compile|pkg:maven/org.t/" + a + "@1" }
@@ -43,11 +58,18 @@ func buildClosureFixture(t *testing.T, uncached ...string) (inventoryIndex, *mav
 			ID: id(a), PURL: "pkg:maven/org.t/" + a + "@1", Version: "1", Direct: closureFixture.direct[a],
 			Provenance: plugin.DependencyProvenance{Resolver: "maven-effective"},
 		})
+		if r, ok := v.resolver[a]; ok {
+			inv.Nodes[len(inv.Nodes)-1].Provenance.Resolver = r
+		}
 		if slices.Contains(uncached, a) {
 			continue
 		}
+		body := `<dependencies>` + deps + `</dependencies>`
+		if b, ok := v.project[a]; ok {
+			body = b
+		}
 		pom := `<project><modelVersion>4.0.0</modelVersion><groupId>org.t</groupId><artifactId>` + a +
-			`</artifactId><version>1</version><dependencies>` + deps + `</dependencies></project>`
+			`</artifactId><version>1</version>` + body + `</project>`
 		p := filepath.Join(repo, pomRelPath("org.t", a, "1"))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
@@ -72,6 +94,8 @@ func TestUnloadedJarTargets(t *testing.T) {
 		name     string
 		jar      string
 		uncached []string
+		resolver map[string]string
+		project  map[string]string
 		want     []string
 	}{
 		{name: "transitive jar, closure known", jar: "org.t:j", want: full},
@@ -79,9 +103,22 @@ func TestUnloadedJarTargets(t *testing.T) {
 		{name: "jar metadata uncached", jar: "org.t:j", uncached: []string{"j"}, want: nil},
 		{name: "first-party closure metadata uncached", jar: "org.t:j", uncached: []string{"d"}, want: nil},
 		{name: "jar not in the inventory", jar: "org.t:nope", want: nil},
+		// Gradle's variant-aware resolution can select dependencies the POMs don't declare, so a
+		// Gradle-resolved node's closure isn't read from POMs even when they're cached.
+		{name: "gradle-resolved node in the closure", jar: "org.t:j", resolver: map[string]string{"j": "gradle-lockfile"}, want: nil},
+		// A parent can declare dependencies; a chain that stops early under-reads.
+		{name: "parent pom missing", jar: "org.t:j", project: map[string]string{
+			"j": `<parent><groupId>org.t</groupId><artifactId>gone</artifactId><version>1</version></parent>`,
+		}, want: nil},
+		{name: "uninterpolable coordinate", jar: "org.t:j", project: map[string]string{
+			"j": `<dependencies><dependency><groupId>org.t</groupId><artifactId>${undefined}</artifactId><version>1</version></dependency></dependencies>`,
+		}, want: nil},
+		{name: "interpolated coordinate", jar: "org.t:j", project: map[string]string{
+			"j": `<properties><x.name>x</x.name></properties><dependencies><dependency><groupId>${project.groupId}</groupId><artifactId>${x.name}</artifactId><version>1</version></dependency></dependencies>`,
+		}, want: full},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ix, cache := buildClosureFixture(t, tc.uncached...)
+			ix, cache := buildClosureFixtureWith(t, closureVariant{uncached: tc.uncached, resolver: tc.resolver, project: tc.project})
 			got := unloadedJarTargets(ix, cache, tc.jar)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("targets = %q, want %q", got, tc.want)

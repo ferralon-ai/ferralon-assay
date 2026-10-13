@@ -41,6 +41,7 @@ const (
 	reasonGradleUncached     = plugin.PartialReasonRelationshipUnexpressed + ":gradle_uncached"     // a locked coordinate's cached POM is absent; its out-edges undetermined
 	reasonGradleSubstitution = plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution" // a dependencySubstitution swapped identity; cached-POM edges may not match the locked entry
 	reasonGradleVariant      = plugin.PartialReasonSourceUnpinned + ":gradle_variant"               // Gradle Module Metadata (.module) variant selection not recoverable from the POM alone
+	reasonGradleLockUnparsed = plugin.PartialReasonToolFailure + ":gradle_lockfile_unparsed"        // a lockfile line or file could not be read as a coordinate; the locked node set is not known in full
 )
 
 // ResolveInventory resolves the whole dependency graph for the module rooted at req.BuildDir.

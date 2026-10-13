@@ -47,6 +47,23 @@ func TestMultipleProjects(t *testing.T) {
 		{"single gradle project", map[string]string{"build.gradle": "", "src/main/java/A.java": "class A {}"}, false},
 		{"gradle subprojects with code", map[string]string{"settings.gradle": "include 'a', 'b'", "a/build.gradle": "", "a/src/main/java/A.java": "", "b/build.gradle.kts": "", "b/src/main/java/B.java": ""}, true},
 		{"gradle root without code plus one subproject", map[string]string{"build.gradle": "", "a/build.gradle": "", "a/src/main/java/A.java": ""}, false},
+		// Maven modules in a profile join the reactor whenever the profile is active.
+		{"pom with modules in a profile", map[string]string{"pom.xml": "<project><artifactId>p</artifactId><profiles><profile><id>all</id><modules><module>a</module></modules></profile></profiles></project>"}, true},
+		// No directory hides a project: bin/, build/ and dot-dirs are walked.
+		{"second pom under bin", map[string]string{"pom.xml": "<project><artifactId>a</artifactId></project>", "bin/pom.xml": "<project><artifactId>b</artifactId></project>"}, true},
+		{"gradle subproject under bin", map[string]string{"build.gradle": "", "src/main/java/A.java": "", "bin/build.gradle": "", "bin/src/main/java/B.java": ""}, true},
+		{"gradle subproject under a dot-dir", map[string]string{"build.gradle": "", "src/main/java/A.java": "", ".tools/build.gradle.kts": "", ".tools/src/main/java/B.java": ""}, true},
+		{"gradle subproject in node_modules is not the build's", map[string]string{"build.gradle": "", "src/main/java/A.java": "", "node_modules/x/build.gradle": "", "node_modules/x/src/A.java": ""}, false},
+		// settings.gradle is read: a subproject configured from the root has no build script.
+		{"settings include, configured from the root", map[string]string{"settings.gradle": "include 'api'\n", "build.gradle": "subprojects { apply plugin: 'java' }\n", "src/main/java/A.java": "", "api/src/main/java/B.java": ""}, true},
+		{"settings includes two projects", map[string]string{"settings.gradle.kts": "rootProject.name = \"x\"\ninclude(\n  \":api\",\n  \":core\",\n)\n", "build.gradle.kts": ""}, true},
+		{"settings includes one project, root has no code", map[string]string{"settings.gradle.kts": "rootProject.name = \"x\"\ninclude(\"app\")\n", "app/build.gradle.kts": "", "app/src/main/java/A.java": ""}, false},
+		{"settings include in a comment", map[string]string{"settings.gradle": "// include 'api'\n/* include 'core' */\nrootProject.name = 'x'\n", "build.gradle": "", "src/main/java/A.java": ""}, false},
+		{"settings includes a build", map[string]string{"settings.gradle": "includeBuild('../lib')\n", "build.gradle": ""}, true},
+		{"settings includes in a loop", map[string]string{"settings.gradle": "file('modules').eachDir { include it.name }\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings includes an interpolated name", map[string]string{"settings.gradle": "def n = 'api'\ninclude \"${n}\"\n", "build.gradle": ""}, true},
+		{"settings applies another script", map[string]string{"settings.gradle": "apply from: 'more.gradle'\n", "build.gradle": "", "src/main/java/A.java": ""}, true},
+		{"settings below the root", map[string]string{"build.gradle": "", "src/main/java/A.java": "", "tools/settings.gradle": "", "tools/build.gradle": ""}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

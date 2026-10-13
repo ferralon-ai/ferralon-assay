@@ -24,7 +24,8 @@ import (
 // the JAR's code could call, callbacks into first-party code included (depclosure.go):
 //   - no version resolved, no cache holds the resolved version's JAR, or the build declares a
 //     classifier or non-jar type for it → tool_failure:no_dependency_artifact;
-//   - the JAR is unreadable, or some classes in it fail to parse → tool_failure.
+//   - a cached copy is unreadable or resolves outside its cache, the JAR is unreadable, or some
+//     classes in it fail to parse → tool_failure.
 // Each scoped reason is also listed run-wide in Reasons. An advisory symbol that matches
 // nothing in a fully read JAR is advisory_symbol_unresolved.
 
@@ -99,12 +100,15 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": artifact variant declared"))
 			continue
 		}
-		jarPath, ok, ambiguous := locateArtifactJar(buildDir, coordinate, v)
-		switch {
-		case ambiguous:
+		jarPath, found := locateArtifactJar(buildDir, coordinate, v)
+		switch found {
+		case jarCopiesDiffer:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": cached copies differ"))
 			continue
-		case !ok:
+		case jarUnreadable:
+			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, coordinate+":"+v+": cached copy unreadable or outside the cache"))
+			continue
+		case jarMissing:
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v))
 			continue
 		}
@@ -164,9 +168,9 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 // '.'; a trailing "(...)" descriptor or arity marker is ignored). A shorter form
 // ("ObjectMapper.readValue", "readValue") matches nothing: a lookalike class elsewhere in the
 // JAR could satisfy it while the vulnerable method goes unchecked, so it stays unresolved.
-// A symbol that names a class stands for every method the class declares, constructors
-// included: entering the class's code means calling one of them. Static initializers are
-// left out; they run on class load, not on a call.
+// A symbol that names a class stands for every method the class declares, constructors and
+// the static initializer included: entering the class's code means running one of them, and
+// touching a static field runs <clinit> without calling anything else the class declares.
 func matchJarSymbols(classes []classfile.Class, coordinate string, wanted []string) map[string][]plugin.Symbol {
 	out := map[string][]plugin.Symbol{}
 	for _, w := range wanted {
@@ -181,9 +185,6 @@ func matchJarSymbols(classes []classfile.Class, coordinate string, wanted []stri
 				continue
 			}
 			for _, m := range c.Methods {
-				if m.Ref.Name == "<clinit>" {
-					continue
-				}
 				if classHit || fqcn+"."+m.Ref.Name == want {
 					out[w] = append(out[w], dependencyMethodSymbol(m.Ref, coordinate))
 				}

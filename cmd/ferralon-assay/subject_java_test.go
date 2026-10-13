@@ -45,3 +45,37 @@ func TestSubjectJavaOption(t *testing.T) {
 		})
 	}
 }
+
+// TestBaselineAssessOptions_CarriesSubjectJava pins that baseline, which builds its own option
+// list, passes the subject's Java version through rather than parsing the flag and dropping it.
+func TestBaselineAssessOptions_CarriesSubjectJava(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"flag", []string{"-subject-java-version", "17"}, "17"},
+		{"neither set", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(subjectJavaEnv, "")
+			f := runFlagsFor(t, tt.args...)
+			pluginApplied := false
+			opts, err := f.baselineAssessOptions(func(*pipeline.AssessConfig) { pluginApplied = true })
+			if err != nil {
+				t.Fatalf("baselineAssessOptions: %v", err)
+			}
+			cfg := pipeline.AssessConfig{}
+			for _, opt := range opts {
+				opt(&cfg)
+			}
+			if !pluginApplied {
+				t.Error("plugin option dropped")
+			}
+			if cfg.SubjectJavaVersion != tt.want {
+				t.Errorf("SubjectJavaVersion = %q, want %q", cfg.SubjectJavaVersion, tt.want)
+			}
+		})
+	}
+}

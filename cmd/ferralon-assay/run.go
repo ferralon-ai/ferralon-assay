@@ -790,6 +790,23 @@ func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
 	return pipeline.WithSubjectJavaVersion(v)
 }
 
+// baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
+// corpus and the subject's Java version.
+func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
+	opts := []pipeline.AssessOption{withPlugin}
+	opt, err := f.advisoryCorpusOption()
+	if err != nil {
+		return nil, err
+	}
+	if opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := f.subjectJavaOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	return opts, nil
+}
+
 // trustObservedGo reports whether the observed runner toolchain may be treated as a statement about
 // the subject. Fails closed: any value that is not an explicit true reads as untrusted.
 func trustObservedGo() bool {

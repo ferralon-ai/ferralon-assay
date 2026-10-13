@@ -424,8 +424,12 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		// declarations in the closure. A class that inherits the body from outside the
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
-		var outside, platformExits []string
+		var outside, abstractOutside, platformExits []string
+		implemented := false
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
+			if e.isConcrete(c) || len(e.lambdas[c]) > 0 {
+				implemented = true
+			}
 			// A lambda object implementing c answers the call with its
 			// implementation, wherever the object was created.
 			for _, site := range e.lambdas[c] {
@@ -448,9 +452,12 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				// Only an object whose exact class is c runs what c resolves to. An
 				// abstract class or interface has none: its loaded concrete subtypes
 				// are in the closure, and a lambda implementing it was added above.
+				// Where neither exists, its supertypes still say where the unseen
+				// receiver's code may come from.
 				// An Object body (unloaded is exactly [Object]) never calls an
 				// argument; it still runs on c.
 				if !e.isConcrete(c) {
+					abstractOutside = append(abstractOutside, unloaded...)
 					continue
 				}
 				if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
@@ -463,6 +470,17 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				seen[m] = true
 				targets = append(targets, m)
 			}
+		}
+		if !implemented {
+			// No loaded class or lambda can be the receiver: the object is generated
+			// at runtime (a Proxy, a CGLIB or ByteBuddy subclass, a Spring Data
+			// repository, a Feign client) or comes from outside the classpath, and
+			// runs code the graph cannot see.
+			outside = append(outside, abstractOutside...)
+			if dep, ok := e.unloadedDependency(outside); ok {
+				return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+			}
+			return nil, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
 		}
 		if dep, ok := e.unloadedDependency(outside); ok {
 			return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep

@@ -85,6 +85,83 @@ func TestReach_LambdaDispatchFromAnyRoot(t *testing.T) {
 	})
 }
 
+const noImplWhy = "no loaded implementor: "
+
+// A call whose receiver type has no loaded concrete subtype and no lambda reaches
+// an object generated at runtime or loaded from outside the classpath. The engine
+// knows none of the frameworks below; each row is only the shape they leave in the
+// bytecode, called from a handler method.
+func TestReach_NoLoadedImplementor(t *testing.T) {
+	const (
+		ctl      = "com/acme/OrderController"
+		handleD  = "(Ljava/lang/String;)V"
+		consumer = "java/util/function/Consumer"
+		acceptD  = "(Ljava/lang/Object;)V"
+		saveD    = "(Ljava/lang/Object;)Ljava/lang/Object;"
+	)
+	handle := mref(ctl, "handle", handleD)
+	controller := func(calls ...classfile.Edge) classfile.Class {
+		return class(ctl, "java/lang/Object", nil, meth(ctl, "<init>", "()V"), meth(ctl, "handle", handleD, calls...))
+	}
+	extending := func(c classfile.Class, supers ...string) classfile.Class {
+		c.Interfaces = supers
+		return c
+	}
+	abstractClass := func(name string, methods ...classfile.Method) classfile.Class {
+		c := class(name, "java/lang/Object", nil, methods...)
+		c.Abstract = true
+		return c
+	}
+	sink := iface("com/acme/Sink")
+	sinkImpl := func(edges ...classfile.Edge) classfile.Class {
+		return class("com/acme/LogSink", "java/lang/Object", []string{"com/acme/Sink"},
+			meth("com/acme/LogSink", "<init>", "()V"), meth("com/acme/LogSink", "accept", acceptD, edges...))
+	}
+	callSink := edge(classfile.EdgeInterface, "com/acme/Sink", "accept", acceptD)
+	runReachCases(t, []reachCase{
+		{name: "interface over Consumer, no implementor", ingress: handle, want: Undetermined, why: noImplWhy, classes: []classfile.Class{
+			controller(callSink), extending(sink, consumer)}},
+		{name: "interface over an unopened dependency interface", ingress: handle, want: Undetermined,
+			why: "unloaded_dependency: com/acme/Sink.accept" + acceptD + " inherits from unopened com/lib/Listener", classes: []classfile.Class{
+				controller(callSink), extending(sink, "com/lib/Listener")}},
+		// Proxy.newProxyInstance(loader, {OrderHandler.class}, handler).
+		{name: "Proxy-backed handler interface", ingress: handle, want: Undetermined, why: noImplWhy, classes: []classfile.Class{
+			controller(edge(classfile.EdgeInterface, "com/acme/OrderHandler", "handle", handleD)),
+			iface("com/acme/OrderHandler", abstractMeth("com/acme/OrderHandler", "handle", handleD))}},
+		// A CGLIB or ByteBuddy subclass supplies the abstract method.
+		{name: "CGLIB or ByteBuddy subclass of an abstract class", ingress: handle, want: Undetermined, why: noImplWhy, classes: []classfile.Class{
+			controller(edge(classfile.EdgeVirtual, "com/acme/AuditedService", "audit", handleD)),
+			abstractClass("com/acme/AuditedService", meth("com/acme/AuditedService", "<init>", "()V"),
+				abstractMeth("com/acme/AuditedService", "audit", handleD))}},
+		{name: "Spring Data repository, inherited method", ingress: handle, want: Undetermined,
+			why: "unloaded_dependency: com/acme/OrderRepository.save" + saveD + " inherits from unopened org/springframework/data/jpa/repository/JpaRepository", classes: []classfile.Class{
+				controller(edge(classfile.EdgeInterface, "com/acme/OrderRepository", "save", saveD)),
+				extending(iface("com/acme/OrderRepository"), "org/springframework/data/jpa/repository/JpaRepository")}},
+		{name: "Spring Data repository, declared query method", ingress: handle, want: Undetermined, why: noImplWhy, classes: []classfile.Class{
+			controller(edge(classfile.EdgeInterface, "com/acme/OrderRepository", "findByName", "(Ljava/lang/String;)Ljava/util/List;")),
+			extending(iface("com/acme/OrderRepository", abstractMeth("com/acme/OrderRepository", "findByName", "(Ljava/lang/String;)Ljava/util/List;")),
+				"org/springframework/data/repository/CrudRepository")}},
+		// @FeignClient("payments") interface PaymentClient { ... }
+		{name: "Feign client interface", ingress: handle, want: Undetermined, why: noImplWhy, classes: []classfile.Class{
+			controller(edge(classfile.EdgeInterface, "com/acme/PaymentClient", "charge", handleD)),
+			iface("com/acme/PaymentClient", abstractMeth("com/acme/PaymentClient", "charge", handleD))}},
+		{name: "loaded implementor answers", ingress: handle, want: NotExploitable, classes: []classfile.Class{
+			controller(callSink), extending(sink, consumer), sinkImpl()}},
+		{name: "loaded implementor reaches the sink", ingress: handle, want: ReachableCandidate, classes: []classfile.Class{
+			controller(callSink), extending(sink, consumer), sinkImpl(sinkCall()...)}},
+		{name: "loaded implementor of an abstract subclass answers", ingress: handle, want: NotExploitable, classes: []classfile.Class{
+			controller(edge(classfile.EdgeVirtual, "com/acme/AuditedService", "audit", handleD)),
+			abstractClass("com/acme/AuditedService", meth("com/acme/AuditedService", "<init>", "()V"),
+				abstractMeth("com/acme/AuditedService", "audit", handleD)),
+			class("com/acme/FileAudit", "com/acme/AuditedService", nil, meth("com/acme/FileAudit", "<init>", "()V"),
+				meth("com/acme/FileAudit", "audit", handleD))}},
+		{name: "lambda answers", ingress: mref(svc, "handle", "(Ljava/lang/String;)V"), want: NotExploitable,
+			classes: lambdaSvc(edge(classfile.EdgeInterface, transformer, "apply", applyDesc),
+				transformerSite(handleArg(classfile.RefInvokeStatic, "com/acme/Impls", "upper", applyDesc)),
+				class("com/acme/Impls", "java/lang/Object", nil, staticMeth("com/acme/Impls", "upper", applyDesc)))},
+	})
+}
+
 func TestHasAppSubtype_LambdaIsAWitness(t *testing.T) {
 	e := NewEngine(lambdaSvc(edge(classfile.EdgeInterface, transformer, "apply", applyDesc), transformerSite(staticImpl)))
 	if !e.hasAppSubtype(transformer) {

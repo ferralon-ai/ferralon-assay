@@ -323,7 +323,9 @@ func TestReach_PlatformBodyRunsOnThis(t *testing.T) {
 			class("com/acme/MixList", "java/util/AbstractList", []string{"com/acme/Sized"}, meth("com/acme/MixList", "<init>", "()V")),
 			iface("com/acme/Sized", meth("com/acme/Sized", "size", "()I", sinkCall()...)),
 		}},
-		{name: "abstract class has no instances of its own", want: NotExploitable, classes: []classfile.Class{
+		// A CGLIB or ByteBuddy subclass generated at runtime is the only possible
+		// receiver, and AbstractCollection.toString calls its iterator().
+		{name: "abstract class with no loaded subclass", want: Undetermined, why: noImplWhy, classes: []classfile.Class{
 			app(edge(classfile.EdgeVirtual, "com/acme/AbsList", "toString", toStr)),
 			func() classfile.Class {
 				c := class("com/acme/AbsList", "java/util/AbstractList", nil, meth("com/acme/AbsList", "iterator", "()Ljava/util/Iterator;", sinkCall()...))

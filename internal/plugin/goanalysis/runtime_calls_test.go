@@ -45,6 +45,12 @@ func TestCallGraph_RunTimeCalls(t *testing.T) {
 		{"a library's init beside main", "func main() {}\n", map[string]string{
 			"lib/lib.go": lib + "func f() {}\n\nfunc init() { reflect.ValueOf(f).Call(nil) }\n",
 		}, reflective},
+		{"an exported method of a library's generic type beside main", "func main() {}\n", map[string]string{
+			"lib/lib.go": lib + "type Box[T any] struct{ v T }\n\nfunc (b Box[T]) Dispatch() { reflect.ValueOf(b.v).Call(nil) }\n",
+		}, reflective},
+		{"an exported method of a generic type in a module without a main", "", map[string]string{
+			"lib.go": "package m\n\nimport \"reflect\"\n\ntype Box[T any] struct{ v T }\n\nfunc (b *Box[T]) Dispatch() { reflect.ValueOf(b.v).Call(nil) }\n",
+		}, reflective},
 		{"an unexported library function no entry point reaches", "func main() {}\n", map[string]string{
 			"lib/lib.go": lib + "func dispatch(v any) { reflect.ValueOf(v).Call(nil) }\n",
 		}, nil},

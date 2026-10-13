@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -503,6 +505,63 @@ func TestGradleRootPackage_VersionAllowlist(t *testing.T) {
 	}
 }
 
+// TestGradleRootPackage_UnreadableWrapperIsNotStock: wrapper properties that are a FIFO, or a file
+// that can't be opened, are refused without waiting on a writer, and the root keeps its name but
+// not its version.
+func TestGradleRootPackage_UnreadableWrapperIsNotStock(t *testing.T) {
+	const stock = "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n"
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, props string)
+	}{
+		{"a FIFO", func(t *testing.T, props string) {
+			if err := syscall.Mkfifo(props, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"stock properties that can't be opened", func(t *testing.T, props string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root ignores file permissions")
+			}
+			if err := os.WriteFile(props, []byte(stock), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(props, 0); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTree(t, map[string]string{
+				"settings.gradle": "rootProject.name = 'lib'\n",
+				"build.gradle":    "group = 'com.example'\nversion = '1.2.3'\n",
+			})
+			props := filepath.Join(dir, "gradle", "wrapper", "gradle-wrapper.properties")
+			if err := os.MkdirAll(filepath.Dir(props), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, props)
+			type result struct {
+				pkg RootPackage
+				ok  bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				pkg, ok := ReadRootPackage(context.Background(), dir, checkout.LangJava)
+				done <- result{pkg, ok}
+			}()
+			select {
+			case r := <-done:
+				if want := (RootPackage{PURLType: "maven", Name: "com.example:lib"}); !r.ok || r.pkg != want {
+					t.Fatalf("got %+v, %v; want %+v", r.pkg, r.ok, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("ReadRootPackage did not return: the wrapper properties were opened blocking")
+			}
+		})
+	}
+}
+
 func TestGradleRootPackage_NameOnlyInACommentPublishesNothing(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"settings.gradle": "// rootProject.name = 'lib'\n",
@@ -555,6 +614,11 @@ func TestMavenRootPackage_VersionWriters(t *testing.T) {
 		{"a Maven wrapper naming two distributions", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "distributionUrl = https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.8.8/apache-maven-3.8.8-bin.zip\n"}, "", ""},
 		{"a Maven wrapper with an escaped key", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "distribution\\Url=https://repo.example.com/apache-maven-3.9.9-bin.zip\n"}, "", ""},
 		{"a Maven wrapper with a continued line", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\\\n" + mvnwStock}, "", ""},
+		{"a Maven wrapper hiding a custom distribution behind a lone carriage return", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": mvnwStock + "# mirror\rdistributionUrl=https://repo.example.com/apache-maven-3.9.9-custom-bin.zip\n"}, "", ""},
+		{"a Maven wrapper with a comment that ends in a backslash", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "# mirror \\\n" + mvnwStock}, "", ""},
+		{"a Maven wrapper with a form feed", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\f\n" + mvnwStock}, "", ""},
+		{"a Maven wrapper with another control byte", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\x00\n" + mvnwStock}, "", ""},
+		{"a Maven wrapper with a byte outside ASCII", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "# r\u00e9sum\u00e9\n" + mvnwStock}, "", ""},
 		{"a Maven wrapper properties file that cannot be read", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties/x": ""}, "", ""},
 		{"a Maven wrapper with no distribution", map[string]string{"pom.xml": single, ".mvn/wrapper/maven-wrapper.properties": "wrapperVersion=3.3.2\n"}, "", ""},
 		{"a custom Maven wrapper above a .mvn of the project's own", map[string]string{"a/pom.xml": single, "a/.mvn/maven.config": "-T 4\n", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.example.com/apache-maven-3.9.9-custom-bin.zip\n"}, "a", ""},

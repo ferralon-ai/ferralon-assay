@@ -87,13 +87,32 @@ func jacksonJar() map[string][]byte {
 	return map[string][]byte{objectMapper: b.build(objectMapper, "java/lang/Object")}
 }
 
+// gradleLocking is the locking statement the Java lane's lock confirmation requires before it
+// takes a lockfile's versions as the build's: without it Gradle never reads the lock.
+const gradleLocking = "dependencyLocking { lockAllConfigurations() }\n"
+
+// enforceLocking appends gradleLocking to dir's build.gradle.kts.
+func enforceLocking(t *testing.T, dir string) {
+	t.Helper()
+	p := filepath.Join(dir, "build.gradle.kts")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, append(data, gradleLocking...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // gradleJacksonBuild declares jackson-databind (and any extra implementation lines) in
-// build.gradle.kts, locks every declared coordinate on runtimeClasspath with its POM cached, and
-// caches the jackson JAR. The lock is what lets an empty search be Searched: without one the
-// inventory declares gradle_transitive and the op withholds Searched.
+// build.gradle.kts, enforces locking, locks every declared coordinate on runtimeClasspath with
+// its POM cached, and caches the jackson JAR. The confirmed lock is what lets an empty search be
+// Searched: without one the inventory declares gradle_transitive (no lockfile) or
+// gradle_lockfile_unconfirmed and the op withholds Searched.
 func gradleJacksonBuild(t *testing.T, extra string) string {
 	t.Helper()
 	dir := unlockedJacksonBuild(t, extra)
+	enforceLocking(t, dir)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	coords := []string{jacksonGroup + ":" + jacksonArtifact + ":" + jacksonVersion}
@@ -655,7 +674,7 @@ func lockedJacksonBuild(t *testing.T, lockfiles map[string]string) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := t.TempDir()
-	writeBuildFile(t, dir, "build.gradle.kts", "dependencies {\n    implementation(\""+jacksonGroup+":"+jacksonArtifact+":2.9.8\")\n}\n")
+	writeBuildFile(t, dir, "build.gradle.kts", "dependencies {\n    implementation(\""+jacksonGroup+":"+jacksonArtifact+":2.9.8\")\n}\n"+gradleLocking)
 	for rel, content := range lockfiles {
 		p := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -709,13 +728,15 @@ func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
 			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt,testRuntimeClasspath\nempty=\n"},
 		},
 		{
+			// A legacy gradle/dependency-locks directory leaves the lock unconfirmed, so the
+			// inventory is incomplete and the closure, hence Targets, unbounded.
 			name: "two runtime versions: named miss",
 			lockfiles: map[string]string{
 				"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\nempty=\n",
 				"gradle/dependency-locks/runtimeClasspath.lockfile": ga + ":2.9.9=runtimeClasspath\n",
 			},
 			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9", Targets: bounded}},
+				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9"}},
 		},
 		{
 			// Spring Boot's bootJar packages productionRuntimeClasspath.
@@ -730,10 +751,12 @@ func TestReachability_GradleLockRuntimeVersion(t *testing.T) {
 				Path: ga + ": runtime classpaths lock 2.9.8, 2.9.9", Targets: bounded}},
 		},
 		{
+			// No POM is cached for 2.+, so the inventory is incomplete (gradle_uncached) and the
+			// closure, hence Targets, unbounded.
 			name:      "runtime version not concrete: named miss",
 			lockfiles: map[string]string{"gradle.lockfile": ga + ":2.9.8=kapt\n" + ga + ":2.+=runtimeClasspath\nempty=\n"},
 			wantScoped: []plugin.ScopedReason{{Reason: partialReasonRuntimeVersionAmbiguous, Package: jacksonPURL,
-				Path: ga + ": runtime classpaths lock 2.+", Targets: bounded}},
+				Path: ga + ": runtime classpaths lock 2.+"}},
 		},
 	}
 	for _, tt := range tests {
@@ -871,7 +894,7 @@ func TestMissingJarReasonIsDistinct(t *testing.T) {
 // narrow a limit away from an admitted package.
 func TestProgramClosureCoversInventory(t *testing.T) {
 	const ga = jacksonGroup + ":" + jacksonArtifact
-	dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.9=runtimeClasspath\nempty=\n"})
+	dir := lockedJacksonBuild(t, map[string]string{"gradle.lockfile": ga + ":2.9.8=runtimeClasspath\nempty=\n"})
 	inv, err := javaanalysis.ResolveInventory(context.Background(), plugin.ResolveInventoryRequest{BuildDir: dir})
 	if err != nil {
 		t.Fatal(err)

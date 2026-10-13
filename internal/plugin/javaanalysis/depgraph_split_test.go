@@ -20,7 +20,7 @@ func TestBuildDependencyGraph_SplitPackages(t *testing.T) {
 		fetch   = "(Ljava/lang/String;)Ljava/lang/String;"
 		option  = "com/sun/tools/javac/main/Option"
 	)
-	write := func(t *testing.T, pom string, mrOption bool, corruptGone bool) string {
+	write := func(t *testing.T, pom string, mrOption bool, corruptGone bool, extra map[string][]byte) string {
 		t.Helper()
 		build := t.TempDir()
 		if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(pom), 0o644); err != nil {
@@ -37,6 +37,9 @@ func TestBuildDependencyGraph_SplitPackages(t *testing.T) {
 		entries := map[string][]byte{fetcher + ".class": classBytes}
 		if mrOption {
 			entries["META-INF/versions/11/"+option+".class"] = classBytes
+		}
+		for n, data := range extra {
+			entries[n] = data
 		}
 		p := filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar")
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -89,15 +92,22 @@ func TestBuildDependencyGraph_SplitPackages(t *testing.T) {
 		corrupt  bool
 		from     string
 		want     depreach.Verdict
+		extra    map[string][]byte
 	}{
-		{"a dependency JAR defines Option only under META-INF/versions/11/: unopened", netkitPom, true, false, "opt", depreach.Undetermined},
-		{"control: nothing defines com/sun/tools/javac/main, so Option is the JDK's", netkitPom, false, false, "opt", depreach.NotExploitable},
-		{"an uncached dependency JAR may define javax/xml/parsers: unopened", withUncached, false, false, "parsers", depreach.Undetermined},
-		{"a corrupt dependency JAR may define javax/xml/parsers: unopened", withUncached, false, true, "parsers", depreach.Undetermined},
-		{"control: every dependency JAR found, so javax/xml/parsers is the JDK's", netkitPom, false, false, "parsers", depreach.NotExploitable},
+		{"a dependency JAR defines Option only under META-INF/versions/11/: unopened", netkitPom, true, false, "opt", depreach.Undetermined, nil},
+		{"control: nothing defines com/sun/tools/javac/main, so Option is the JDK's", netkitPom, false, false, "opt", depreach.NotExploitable, nil},
+		{"an uncached dependency JAR may define javax/xml/parsers: unopened", withUncached, false, false, "parsers", depreach.Undetermined, nil},
+		{"a corrupt dependency JAR may define javax/xml/parsers: unopened", withUncached, false, true, "parsers", depreach.Undetermined, nil},
+		{"control: every dependency JAR found, so javax/xml/parsers is the JDK's", netkitPom, false, false, "parsers", depreach.NotExploitable, nil},
+		{"a dependency JAR nests BOOT-INF/lib/javac-shaded.jar: unopened", netkitPom, false, false, "opt", depreach.Undetermined,
+			map[string][]byte{"BOOT-INF/lib/javac-shaded.jar": []byte("PK nested")}},
+		{"a dependency JAR's manifest names Class-Path: javac-shaded.jar: unopened", netkitPom, false, false, "opt", depreach.Undetermined,
+			map[string][]byte{"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nClass-Path: javac-shaded.jar\n\n")}},
+		{"control: a dependency JAR's manifest has no Class-Path, so Option is the JDK's", netkitPom, false, false, "opt", depreach.NotExploitable,
+			map[string][]byte{"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nCreated-By: test\n\n")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dg, err := buildDependencyGraph(context.Background(), write(t, tc.pom, tc.mrOption, tc.corrupt))
+			dg, err := buildDependencyGraph(context.Background(), write(t, tc.pom, tc.mrOption, tc.corrupt, tc.extra))
 			if err != nil {
 				t.Fatalf("buildDependencyGraph: %v", err)
 			}

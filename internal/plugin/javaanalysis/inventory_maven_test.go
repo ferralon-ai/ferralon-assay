@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -298,5 +299,64 @@ func TestMaven_ManagementOverridesTransitiveVersion(t *testing.T) {
 				t.Errorf("inventory partial: %v", inv.Partiality.Reasons)
 			}
 		})
+	}
+}
+
+// A dependency declared with a classifier or a non-jar type names a different file than the
+// main JAR. The node says so, and when such a declaration loses mediation to a plain one of
+// the same GA, the winner says so too: the build may put both files on the classpath.
+func TestMaven_ArtifactVariantIsMarked(t *testing.T) {
+	for _, tc := range []struct {
+		name, deps string
+		variant    bool
+	}{
+		{"plain jar", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></dependency>`, false},
+		{"classifier", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><classifier>linux-x86_64</classifier></dependency>`, true},
+		{"test-jar type", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><type>test-jar</type></dependency>`, true},
+		{"losing classifier declaration", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></dependency>
+<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><classifier>linux-x86_64</classifier></dependency>`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies>`+tc.deps+`</dependencies></project>`)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(t.TempDir()), nil))
+			n := findNode(t, inv, "pkg:maven/io.netty/netty-transport@4.1.0")
+			if n == nil {
+				t.Fatalf("missing node; got %+v", inv.Nodes)
+			}
+			if got := slices.Contains(n.Partiality.Reasons, reasonMavenArtifactVariant); got != tc.variant {
+				t.Errorf("variant reason on node = %v, want %v (%+v)", got, tc.variant, n.Partiality)
+			}
+		})
+	}
+}
+
+// A transitive declaration of another file of an already-selected GA loses mediation but can
+// still reach the classpath, so the winning node is marked.
+func TestMaven_LosingTransitiveVariantMarksWinner(t *testing.T) {
+	dir := t.TempDir()
+	m2 := t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies>
+<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></dependency>
+<dependency><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version></dependency>
+</dependencies></project>`)
+	writeCachePOM(t, m2, "org.top", "top", "1.0", `<project>
+<groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><classifier>linux-x86_64</classifier></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "io.netty", "netty-transport", "4.1.0", `<project><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></project>`)
+
+	inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
+	n := findNode(t, inv, "pkg:maven/io.netty/netty-transport@4.1.0")
+	if n == nil || !slices.Contains(n.Partiality.Reasons, reasonMavenArtifactVariant) {
+		t.Errorf("winner not marked: %+v", n)
+	}
+	// The package is in the inventory either way; a graph-level reason would block every
+	// not_exploitable of the ecosystem for what is a byte-binding concern.
+	if slices.Contains(inv.Partiality.Reasons, reasonMavenArtifactVariant) {
+		t.Errorf("variant raised to a graph limit: %v", inv.Partiality.Reasons)
 	}
 }

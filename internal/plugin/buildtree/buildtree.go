@@ -185,7 +185,8 @@ func Candidates(root string, match func(path string, head []byte) (why string, o
 			return nil
 		}
 		if !e.Symlink && !e.D.Type().IsRegular() {
-			// A device, socket or pipe is classified by name alone: opening a pipe would block.
+			// A device, socket or pipe is not opened here (opening a pipe would block): match gets a
+			// nil head, and a content rule that re-reads it is refused.
 			if why, ok := match(e.Path, nil); ok {
 				add(e.Path, why, false)
 			}

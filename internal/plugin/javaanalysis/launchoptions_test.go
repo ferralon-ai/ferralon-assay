@@ -222,6 +222,27 @@ func TestLaunchOptionReasons(t *testing.T) {
 		{"jvmArgs after a test block closes", map[string]string{"build.gradle.kts": "tasks.test {\n    useJUnitPlatform()\n}\ntasks.named<JavaExec>(\"run\") { jvmArgs(\"-javaagent:/a.jar\") }\n"}, agentOnly},
 		{"unclosed test block", map[string]string{"build.gradle.kts": "tasks.test {\n    jvmArgs(\"-javaagent:/a.jar\")\n"}, agentOnly},
 		{"unrecognised test-like task", map[string]string{"build.gradle.kts": "integrationTest {\n    jvmArgs(\"-javaagent:/a.jar\")\n}\n"}, agentOnly},
+		// The innermost block holding a jvmArgs decides: a run block inside a test block is run.
+		{"run block nested in a test block", map[string]string{"build.gradle.kts": "tasks.test {\n    useJUnitPlatform()\n    tasks.named<JavaExec>(\"run\") { jvmArgs(\"-javaagent:/otel.jar\") }\n}\n"}, agentOnly},
+		{"groovy run block nested in a test block", map[string]string{"build.gradle": "test {\n    tasks.named('run') {\n        jvmArgs '-javaagent:/otel.jar'\n    }\n}\n"}, agentOnly},
+		{"bootRun block nested in a withType<Test> block", map[string]string{"build.gradle.kts": "tasks.withType<Test>().configureEach {\n    tasks.named<BootRun>(\"bootRun\") { jvmArgs(\"-javaagent:/otel.jar\") }\n}\n"}, agentOnly},
+		{"jvmArgumentProviders in a run block nested in a test block", map[string]string{"build.gradle.kts": "tasks.test {\n    tasks.named<JavaExec>(\"run\") { jvmArgumentProviders.add(OtelAgent()) }\n}\n"}, optionOnly},
+		{"test block jvmArgs after a nested block", map[string]string{"build.gradle.kts": "tasks.test {\n    tasks.named<JavaExec>(\"run\") { mainClass.set(\"a.Main\") }\n    jvmArgs(\"-javaagent:/a.jar\")\n}\n"}, []string{}},
+		// A brace the reader cannot classify leaves the test block unclosed; it never stretches
+		// the block over a later run block's jvmArgs.
+		{"block comment brace in a test block", map[string]string{"build.gradle.kts": "tasks.named<JavaExec>(\"run\") {\n    tasks.test { /* { */ }\n    jvmArgs(\"-javaagent:/otel.jar\")\n}\n"}, agentOnly},
+		{"groovy block comment brace in a test block", map[string]string{"build.gradle": "tasks.named('run') {\n    test { /* { */ }\n    jvmArgs '-javaagent:/otel.jar'\n}\n"}, agentOnly},
+		{"slashy string brace in a test block", map[string]string{"build.gradle": "tasks.named('run') {\n    test { def re = /{/ }\n    jvmArgs '-javaagent:/otel.jar'\n}\n"}, agentOnly},
+		{"dollar-slashy string brace in a test block", map[string]string{"build.gradle": "tasks.named('run') {\n    test { def re = $/{/$ }\n    jvmArgs '-javaagent:/otel.jar'\n}\n"}, agentOnly},
+		{"template brace in a test block", map[string]string{"build.gradle.kts": "tasks.named<JavaExec>(\"run\") {\n    tasks.test { val s = \"${if (true) \"{\" else \"\"}\" }\n    jvmArgs(\"-javaagent:/otel.jar\")\n}\n"}, agentOnly},
+		{"raw string brace in a test block", map[string]string{"build.gradle.kts": "tasks.named<JavaExec>(\"run\") {\n    tasks.test { val s = \"\"\"a\"{\"b\"\"\" }\n    jvmArgs(\"-javaagent:/otel.jar\")\n}\n"}, agentOnly},
+		{"groovy triple-quoted brace in a test block", map[string]string{"build.gradle": "tasks.named('run') {\n    test { def s = '''a'{'b''' }\n    jvmArgs '-javaagent:/otel.jar'\n}\n"}, agentOnly},
+		{"a stray closing brace stops the reader", map[string]string{"build.gradle.kts": "}\ntasks.test {\n    jvmArgs(\"-javaagent:/a.jar\")\n}\n"}, agentOnly},
+		{"nested block comment closes once in Kotlin", map[string]string{"build.gradle.kts": "tasks.named<JavaExec>(\"run\") {\n    tasks.test { /* /* */ { */ }\n    jvmArgs(\"-javaagent:/otel.jar\")\n}\n"}, agentOnly},
+		{"test block opener in a comment", map[string]string{"build.gradle.kts": "tasks.named<JavaExec>(\"run\") { /* tasks.test { */\n    jvmArgs(\"-javaagent:/otel.jar\")\n}\n"}, agentOnly},
+		{"test block opener in a line comment", map[string]string{"build.gradle": "tasks.named('run') { // tasks.test {\n    jvmArgs '-javaagent:/otel.jar'\n}\n"}, agentOnly},
+		{"test block with comments, templates and strings", map[string]string{"build.gradle.kts": "tasks.test {\n    /* note { /* nested } */ */\n    val n = \"${project.name}-${listOf(1).map { it }}-${\"}\"}-${'}'}\" + '}' + \"\"\"}\"\"\" + \"\"\"C:\\\"\"\" + `a}`\n    jvmArgs(\"-javaagent:/a.jar\", \"-Dout=\" + 4 / 2)\n}\n"}, []string{}},
+		{"groovy test block with comments and strings", map[string]string{"build.gradle": "test {\n    /* { /* */\n    def s = \"${project.name}\" + '}' + '''}'''\n    jvmArgs '-javaagent:/a.jar'\n}\n"}, []string{}},
 
 		// Sound probes.
 		{"P1 dockerfile shell form, quoted -D", map[string]string{"Dockerfile": `ENTRYPOINT java "-Djava.security.manager=allow" com.example.Main` + "\n"}, optionOnly},

@@ -13,7 +13,7 @@ import (
 // artifacts or in JDK modules a class-path launch does not resolve.
 var (
 	jdkClasses = []string{
-		"jdk/jfr/Event", "jdk/internal/misc/VM", "sun/misc/Signal", "sun/net/www/protocol/http/Handler",
+		"java/lang/Character", "jdk/jfr/Event", "jdk/internal/misc/VM", "sun/misc/Signal", "sun/net/www/protocol/http/Handler",
 		"javax/accessibility/Accessible", "javax/annotation/processing/Filer", "javax/crypto/Cipher",
 		"javax/imageio/ImageIO", "javax/lang/model/SourceVersion", "javax/management/JMX", "javax/naming/Context",
 		"javax/net/ssl/SSLEngine", "javax/print/Doc", "javax/rmi/ssl/SslRMIClientSocketFactory",
@@ -31,7 +31,8 @@ var (
 		"org/w3c/dom/events/EventTarget", "org/w3c/dom/css/CSSRule", "org/xml/sax/Locator",
 	}
 	jarClasses = []string{
-		"com/sun/tools/xjc/outline/Outline", "com/sun/tools/ws/WsImport", "com/sun/tools/jxc/SchemaGenerator",
+		"javax/security/auth/message/config/AuthConfigFactory", "javax/security/auth/message/AuthStatus",
+		"com/sun/tools/xjc/Driver", "com/sun/tools/xjc/outline/Outline", "com/sun/tools/ws/WsImport", "com/sun/tools/jxc/SchemaGenerator",
 		"org/w3c/dom/svg/SVGDocument", "org/w3c/dom/smil/ElementTimeControl",
 		"sun/net/www/protocol/s3/Handler", "sun/jvm/hotspot/HotSpotAgent", "jdk/vm/ci/meta/JavaKind",
 		"javax/xml/Other", "javax/swing2/JList",
@@ -88,4 +89,45 @@ func TestReach_PlatformIsExactPackages(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestReach_JarClassesUnderJDKPrefixes: Tomcat's jaspic API (javax/security/auth/message)
+// and jaxb-xjc (com/sun/tools/xjc) ship classes with static initializers under package
+// families the JDK also uses. Initializing one unopened is unseen code, and a provider
+// D the JDK could load must not be rooted from it as if it were a JDK body. A loaded
+// class extending a jar's exception is a type the JDK can hold, unlike the JDK's own
+// exceptions.
+func TestReach_JarClassesUnderJDKPrefixes(t *testing.T) {
+	const d = "com/acme/D"
+	provider := classfile.Class{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+		clinitCallingSink(d),
+	}}
+	initializes := func(owner string, refs []classfile.FieldRef, edges ...classfile.Edge) classfile.Class {
+		return classfile.Class{Name: holeMain, Super: objectClass, Public: true, Methods: []classfile.Method{
+			{Ref: holeIngress, Static: true, Public: true, InitTriggers: []string{owner}, StaticFieldRefs: refs, Edges: edges}}}
+	}
+	const jaspic = "javax/security/auth/message/config/AuthConfigFactory"
+	const xjc = "com/sun/tools/xjc/Driver"
+	extendsException := func(super string) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")),
+			{Name: d, Super: super, Public: true, Methods: []classfile.Method{callsSink(d, "start", "()V")}},
+		}
+	}
+	runHoleCases(t, []holeCase{
+		{name: "jaspic AuthConfigFactory static field: its <clinit> is unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why:     "static initializer of unopened " + jaspic,
+			classes: []classfile.Class{initializes(jaspic, []classfile.FieldRef{{Owner: jaspic, Name: "DEFAULT_FACTORY_SECURITY_PROPERTY", Descriptor: "Ljava/lang/String;"}}), provider}},
+		{name: "jaxb-xjc Driver static call: its <clinit> and body are unopened", want: Undetermined, kind: HazardKindUnloadedDependency,
+			why:     "unopened " + xjc,
+			classes: []classfile.Class{initializes(xjc, nil, edge(classfile.EdgeStatic, xjc, "run", "([Ljava/lang/String;)I")), provider}},
+		{name: "JDK control: java/lang static initializer roots the JDK-loadable provider", want: ReachableCandidate, via: "D.<clinit>",
+			classes: []classfile.Class{initializes("java/lang/Character", []classfile.FieldRef{{Owner: "java/lang/Character", Name: "MAX_RADIX", Descriptor: "I"}}), provider}},
+		{name: "JDK control: javax/xml/parsers static call roots the JDK-loadable provider", want: ReachableCandidate, via: "D.<clinit>",
+			classes: []classfile.Class{initializes("javax/xml/parsers/SAXParserFactory", nil, edge(classfile.EdgeStatic, "javax/xml/parsers/SAXParserFactory", "newDefaultInstance", "()Ljavax/xml/parsers/SAXParserFactory;")), provider}},
+		{name: "a class extending jaxb-xjc's exception is JDK-holdable: its overridable methods are roots", want: ReachableCandidate, via: "D.start",
+			classes: extendsException("com/sun/tools/xjc/BadCommandLineException")},
+		{name: "JDK control: a class extending a JDK exception is not", want: NotExploitable,
+			classes: extendsException("javax/xml/parsers/ParserConfigurationException")},
+	})
 }

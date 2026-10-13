@@ -753,6 +753,11 @@ const (
 	// reported nothing about the advisory at all, so its silence is not a search that came back
 	// empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but no affected
+	// version range was available for the package, so it was admitted at every installed
+	// version and nothing establishes that this version is affected. The path stays on the finding
+	// as evidence.
+	ReasonAdvisoryRangeAbsent = "advisory_range_absent"
 	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
 	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
 	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but

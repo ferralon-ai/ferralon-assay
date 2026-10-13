@@ -74,54 +74,37 @@ func TestGoToolchainArmOrder_CandidateOutranksUndetermined(t *testing.T) {
 		assertUndetermined(t, rep, "GO-2021-0264", report.ReasonGoToolchainNotScanned)
 	})
 
-	t.Run("path found: reachable_candidate, never undetermined", func(t *testing.T) {
+	// The candidate arm answers first; because the advisory declares no range, it answers
+	// undetermined/advisory_range_absent with the path kept, never the toolchain reason.
+	t.Run("path found: the candidate arm answers, never the toolchain check", func(t *testing.T) {
 		rep := runGoBaseline(t, goFloorMod, stdlibNoRangeAdvisory,
 			pipeline.WithPlugin(toolchainCandidatePlugin{}))
 
 		if len(rep.Advisories) != 1 {
-			t.Fatalf("advisories[] = %+v, want exactly the candidate finding", rep.Advisories)
+			t.Fatalf("advisories[] = %+v, want exactly the candidate-arm finding", rep.Advisories)
 		}
 		f := rep.Advisories[0]
-		if f.Verdict != report.VerdictReachableCandidate {
-			t.Fatalf("GO-2021-0264 verdict = %q, want %q — a path WAS found, and the undetermined check must not reach an advisory the candidate arm already answered",
-				f.Verdict, report.VerdictReachableCandidate)
+		if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonAdvisoryRangeAbsent {
+			t.Fatalf("GO-2021-0264 = %s/%q, want undetermined/%q — a path WAS found, and the toolchain check must not reach an advisory the candidate arm already answered",
+				f.Verdict, f.UndeterminedReason, report.ReasonAdvisoryRangeAbsent)
 		}
-		if f.UndeterminedReason != "" {
-			t.Errorf("candidate carries undetermined_reason %q", f.UndeterminedReason)
-		}
-		if f.Evidence.ReachablePath == "" {
-			t.Error("candidate carries no reachable_path; the fixture did not actually produce a candidate pair, so this test would pass vacuously")
-		}
-		if f.Evidence.Grade != report.GradeAttackerTainted {
-			t.Errorf("grade = %q, want %q — the attacker-controllable ingress is on the trace", f.Evidence.Grade, report.GradeAttackerTainted)
+		if f.Evidence.ReachablePath == "" || len(f.Evidence.CallPath) == 0 || f.Evidence.EntryPoint == nil {
+			t.Error("the range-absent row dropped the path; the fixture did not actually produce a candidate pair, or the evidence was not kept")
 		}
 		if err := rep.Validate(); err != nil {
 			t.Errorf("report invalid: %v", err)
 		}
-
-		// A finding with an established verdict must not ALSO be disclosed as a coverage limit: the
-		// limit and the undetermined row appear together or not at all.
 		for _, n := range rep.Partiality {
 			if n.Reason == report.ReasonGoToolchainNotScanned || n.Reason == report.ReasonGoToolchainUnresolved {
-				t.Errorf("limit %q emitted alongside a reachable candidate", n.Reason)
+				t.Errorf("toolchain limit %q emitted for an advisory the candidate arm answered", n.Reason)
 			}
 		}
-
-		// At the wire, candidate and undetermined share the `under_investigation` status, so status
-		// alone cannot tell them apart. The impact statement is the discriminator: a candidate
-		// carries one, an undetermined finding must not (it has no finding to characterize).
 		doc, err := projection.ProjectReportVEX(*rep)
 		if err != nil {
 			t.Fatalf("ProjectReportVEX: %v", err)
 		}
-		if len(doc.Statements) != 1 {
-			t.Fatalf("OpenVEX statements = %d, want 1", len(doc.Statements))
-		}
-		if doc.Statements[0].Status != projection.VEXStatusUnderInvestigation {
-			t.Errorf("status = %q, want %q", doc.Statements[0].Status, projection.VEXStatusUnderInvestigation)
-		}
-		if doc.Statements[0].ImpactStatement == "" {
-			t.Error("candidate statement carries no impact statement — at the wire it is now indistinguishable from an undetermined row")
+		if len(doc.Statements) != 1 || doc.Statements[0].Status != projection.VEXStatusUnderInvestigation {
+			t.Fatalf("OpenVEX statements = %+v, want one under_investigation", doc.Statements)
 		}
 	})
 }

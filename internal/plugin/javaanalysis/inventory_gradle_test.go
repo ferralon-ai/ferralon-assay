@@ -550,7 +550,11 @@ func TestGradle_LockPinsRuntimeClasspath(t *testing.T) {
 			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
 		{"STRICT, a legacy lock for another configuration only", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=compileClasspath\n", false,
 			map[string]string{"testRuntimeClasspath.lockfile": "com.evil:netkit:1.0.0\n"}},
-		{"entries for runtimeClasspath beside a legacy lock", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", true,
+		// R7-B1: which of the two lock states Gradle binds isn't decided here, so a legacy
+		// directory unpins even a configuration gradle.lockfile holds entries for.
+		{"R7-B1 entries for runtimeClasspath beside a legacy runtimeClasspath lock at another version", enforced + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", false,
+			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
+		{"R7-B1 STRICT, entries for runtimeClasspath beside a legacy runtimeClasspath lock", strict + dynamic, "build.gradle", "com.evil:netkit:1.0.0=runtimeClasspath\n", false,
 			map[string]string{"runtimeClasspath.lockfile": "com.evil:netkit:2.0.0\n"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -566,6 +570,9 @@ func TestGradle_LockPinsRuntimeClasspath(t *testing.T) {
 			}
 			if !tt.resolved && inv.Partiality.Complete {
 				t.Errorf("want partial; got %+v", inv.Partiality)
+			}
+			if !tt.resolved && findNode(t, inv, mavenPURL("com.evil", "netkit", "")) == nil {
+				t.Errorf("netkit not found unversioned; nodes %+v", inv.Nodes)
 			}
 		})
 	}

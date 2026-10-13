@@ -122,23 +122,28 @@ type gradleProjectLock struct {
 }
 
 // gradleConfigPinned reports whether Gradle resolves a project's configuration only to versions
-// its lock state holds. In the default lock mode a configuration with no lock state, or with
-// empty lock state, is not constrained at all, so it is pinned only when the lock holds an entry
-// for it. STRICT mode fails the build for a configuration with no lock state, so there it is
-// pinned unless an "empty=" line names it, or the project's legacy lock directory could hold the
-// state Gradle uses instead (gradleLegacyLocks).
+// its lock state holds. A project whose legacy lock directory could hold lock state
+// (gradleLegacyLocks) is never pinned, whatever gradle.lockfile says: which of the two Gradle
+// binds isn't decided here, and the legacy lines aren't read as versions. Otherwise, in the
+// default lock mode a configuration with no lock state, or with empty lock state, is not
+// constrained at all, so it is pinned only when the lock holds an entry for it. STRICT mode fails
+// the build for a configuration with no lock state, so there it is pinned unless an "empty=" line
+// names it.
 func gradleConfigPinned(dir string, lock *gradleProjectLock, strict bool, conf string) bool {
+	if gradleLegacyLocks(dir) {
+		return false
+	}
 	if lock != nil && lock.entries[conf] {
 		return true
 	}
-	return strict && (lock == nil || !lock.empty[conf]) && !gradleLegacyLocks(dir)
+	return strict && (lock == nil || !lock.empty[conf])
 }
 
 // gradleLegacyLocks reports whether project dir's gradle/dependency-locks could hold lock state.
-// For a configuration gradle.lockfile has no state for, Gradle falls back to
-// gradle/dependency-locks/<configuration>.lockfile, whose lines this reader does not take as
-// versions; so a configuration STRICT mode leaves silent there is pinned to versions not read
-// here. The directory present, or not ruled absent (an error other than not-exist), counts.
+// Gradle reads gradle/dependency-locks/<configuration>.lockfile as a configuration's lock state,
+// and this reader does not take those lines as versions, so a configuration may be pinned to
+// versions not read here. The directory present, or not ruled absent (an error other than
+// not-exist), counts.
 func gradleLegacyLocks(dir string) bool {
 	_, err := os.Lstat(filepath.Join(dir, "gradle", "dependency-locks"))
 	return err == nil || !missing(err)

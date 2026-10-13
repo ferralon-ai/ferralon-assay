@@ -659,6 +659,11 @@ type PartialityNote struct {
 	// It is part of the note's identity for de-duplication: two failures of different
 	// steps are two disclosures, not one.
 	Detail string `json:"detail,omitempty"`
+	// Package and Path locate a limit the analyzer bounded to one package: the package whose code
+	// holds the blind spot (a PURL without a version; empty for first-party code or a scan-wide
+	// limit) and the location inside it. Disclosure only, and part of the note's identity.
+	Package string `json:"package,omitempty"`
+	Path    string `json:"path,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report
@@ -750,8 +755,8 @@ const (
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
-	// reported nothing about the advisory at all, so its silence is not a search that came back
-	// empty.
+	// reported nothing about the advisory at all. It may not know the advisory, or may never have
+	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
 	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but the advisory
 	// records no affected version range the version axis can bound, so it was admitted at every installed

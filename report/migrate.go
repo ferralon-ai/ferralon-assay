@@ -111,7 +111,7 @@ func UndeterminedDetail(reason string) string {
 	case ReasonVulnerableSymbolUnresolved:
 		return "the advisory's vulnerable functions were not all located inside the affected package and searched, so no verdict was established"
 	case ReasonAdvisoryUnknownToAnalyzer:
-		return "the analyzer that traces calls to this advisory's vulnerable functions reported nothing about the advisory, so no verdict was established"
+		return "the analyzer that traces calls to this advisory's vulnerable functions reported nothing about the advisory (it may not know the advisory, or may not analyze the affected module), so no verdict was established"
 	case ReasonAdvisoryRangeAbsent:
 		return "a path reaches this advisory's vulnerable code, but the advisory records no affected version range that can be checked against the installed version, so no verdict was established for it"
 	case ReasonUnspecifiedLimit:

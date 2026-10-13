@@ -21,6 +21,7 @@ type groundsFixture struct {
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
+	scoped          []artifact.ScopedPartialityFlag
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -40,8 +41,10 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 		Partiality: plugin.Complete(),
 		Edges:      []plugin.CallEdge{depEdge("main", "lib")},
 	}, fx.reach)
-	if fx.footprint != nil {
-		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{PartialityFlags: fx.footprint})
+	if fx.footprint != nil || fx.scoped != nil {
+		putJSON(t, store, aid, artifact.TypeExposureFootprint, artifact.ExposureFootprintPayload{
+			PartialityFlags: fx.footprint, ScopedPartiality: fx.scoped,
+		})
 	}
 	return finding(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg)
 }
@@ -286,6 +289,281 @@ func TestFinding_PositiveGrounds(t *testing.T) {
 	}
 }
 
+// netNotReached is the Go 1c shape: govulncheck matched the advisory to golang.org/x/net in the
+// build and traced no call to its vulnerable functions, which goanalysis states as a refutation.
+func netNotReached() groundsFixture {
+	return groundsFixture{
+		pkg:             &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.1.0", PURL: "pkg:golang/golang.org/x/net@v0.1.0"},
+		advisoryPURL:    "pkg:golang/golang.org/x/net",
+		advisorySymbols: []string{"html.Parse"},
+		resolution:      plugin.SymbolResolutionResult{Partiality: plugin.Complete()},
+		reach: plugin.ReachabilityResult{
+			Partiality: plugin.Complete(),
+			Refutation: &plugin.Refutation{
+				Basis:   plugin.RefutationAnalyzerSymbolNotReached,
+				Package: "pkg:golang/golang.org/x/net",
+				Detail:  "govulncheck matched the advisory to golang.org/x/net v0.1.0 and found no call path to its vulnerable functions",
+			},
+		},
+	}
+}
+
+// TestFinding_GoGovulncheckEvidence: Go not_exploitable rests on govulncheck's own evidence for
+// the advisory (1c), and govulncheck's silence about it is said as such.
+func TestFinding_GoGovulncheckEvidence(t *testing.T) {
+	cases := []struct {
+		name       string
+		mutate     func(*groundsFixture)
+		wantReason string // "" = not_exploitable
+	}{
+		{name: "module matched, no symbol reached: not exploitable", mutate: func(*groundsFixture) {}},
+		{
+			name:   "reflection without a reflective call does not block the refutation",
+			mutate: func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonReflection} },
+		},
+		{
+			name: "a reflective call blocks the refutation",
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{plugin.PartialReasonReflection, plugin.PartialReasonReflectiveCall}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "a plugin load blocks the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonPluginLoad} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "files the build left out block the refutation",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonExcludedFiles} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name:       "cgo blind spot keeps undetermined",
+			mutate:     func(fx *groundsFixture) { fx.footprint = []string{plugin.PartialReasonCgo} },
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "refutation of another module",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Package = "pkg:golang/golang.org/x/text"
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "refutation of a package path inside the module does not match the module",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation.Package = "pkg:golang/golang.org/x/net/html"
+			},
+			wantReason: report.ReasonVulnerableSymbolUnresolved,
+		},
+		{
+			name: "govulncheck has no finding for the advisory",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer}
+			},
+			wantReason: report.ReasonAdvisoryUnknownToAnalyzer,
+		},
+		{
+			name: "no finding plus another did_not_run limit",
+			mutate: func(fx *groundsFixture) {
+				fx.reach.Refutation = nil
+				fx.footprint = []string{plugin.PartialReasonAdvisoryUnknownToAnalyzer, plugin.PartialReasonCgo}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := netNotReached()
+			tc.mutate(&fx)
+			f := fx.finding(t)
+			if tc.wantReason != "" {
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.wantReason {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tc.wantReason)
+				}
+				return
+			}
+			if f.Verdict != report.VerdictNotExploitable {
+				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
+			}
+			if want := "golang.org/x/net@v0.1.0: govulncheck matched"; !strings.Contains(f.Evidence.Detail, want) {
+				t.Errorf("detail = %q, want it to name %q", f.Evidence.Detail, want)
+			}
+		})
+	}
+}
+
+// TestFinding_ScopedLimits: a scoped limit blocks not_exploitable exactly as the same run-wide
+// reason would, unless its Targets are bounded and exclude the admitted package (contract §4).
+func TestFinding_ScopedLimits(t *testing.T) {
+	const (
+		xnet  = "pkg:golang/golang.org/x/net"
+		xtext = "pkg:golang/golang.org/x/text"
+		cgo   = plugin.PartialReasonCgo
+	)
+	cases := []struct {
+		name       string
+		base       func() groundsFixture
+		mutate     func(*groundsFixture)
+		wantReason string // "" = not_exploitable
+	}{
+		{
+			name: "targets exclude the package: refutation stands",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "", Path: "example.com/app/native", Targets: []string{"", xtext}}}
+			},
+		},
+		{
+			name: "targets include the package",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{"", xtext, xnet}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "the blind spot is inside the package",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: xnet, Targets: []string{xtext}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "unbounded targets count against every advisory",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: xtext}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "empty targets are unbounded, as a JSON round-trip reads them",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: xtext, Targets: []string{}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "first-party target does not match a dependency",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{""}}}
+			},
+		},
+		{
+			name: "target matched by versionless PURL with a version present",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{xnet + "@v0.1.0"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a bare module path is not a package URL and counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"golang.org/x/net"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a target that does not parse counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"not a purl"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a package URL with no name counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Package: "golang.org/x/net", Targets: []string{"pkg:golang/"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "a package path inside the module counts",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{"", xnet + "/http2"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "unresolved package cannot be excluded",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.pkg = &report.Package{Ecosystem: "Go", Name: "golang.org/x/net"}
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{xtext}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "an inherent scoped limit does not block",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonReflection, Targets: []string{xnet}}}
+			},
+		},
+		{
+			name: "pypi target matched under PEP 503",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonToolFailure, Targets: []string{"pkg:pypi/PyYAML"}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+		{
+			name: "pypi target of another package",
+			base: yamlSearched,
+			mutate: func(fx *groundsFixture) {
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonToolFailure, Targets: []string{"pkg:pypi/requests"}}}
+			},
+		},
+		{
+			name: "a run-wide reason still blocks whatever the scoped ones say",
+			base: netNotReached,
+			mutate: func(fx *groundsFixture) {
+				fx.footprint = []string{cgo}
+				fx.scoped = []artifact.ScopedPartialityFlag{{Reason: cgo, Targets: []string{xtext}}}
+			},
+			wantReason: report.ReasonAnalysisDidNotRun,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := tc.base()
+			tc.mutate(&fx)
+			f := fx.finding(t)
+			if tc.wantReason != "" {
+				if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.wantReason {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tc.wantReason)
+				}
+				return
+			}
+			if f.Verdict != report.VerdictNotExploitable {
+				t.Fatalf("got %s/%q, want not_exploitable", f.Verdict, f.UndeterminedReason)
+			}
+		})
+	}
+}
+
+// An advisory_unknown_to_analyzer row stands on the lane's own limit, which partialityNotes
+// already publishes at scan scope; the row owes no second note.
+func TestLimitNoteFor_AdvisoryUnknownToAnalyzerOwesNoNote(t *testing.T) {
+	if note, ok := limitNoteFor(report.AdvisoryFinding{
+		Verdict: report.VerdictUndetermined, UndeterminedReason: report.ReasonAdvisoryUnknownToAnalyzer,
+	}); ok {
+		t.Errorf("note = %+v, want none", note)
+	}
+}
+
 // TestLimitNoteFor_GroundsReasonsScopeToPackageEcosystem: the gate's reasons are about the
 // finding's package, so their scan-level note is scoped to its ecosystem, not to Go.
 func TestLimitNoteFor_GroundsReasonsScopeToPackageEcosystem(t *testing.T) {
@@ -405,5 +683,33 @@ func TestFinding_AliasedDependencyCallIsNotGrounds(t *testing.T) {
 	f := fx.finding(t)
 	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonVulnerableSymbolUnresolved {
 		t.Fatalf("got %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonVulnerableSymbolUnresolved)
+	}
+}
+
+// TestScopedLimitCounts pins the failing-wide matches TestFinding_ScopedLimits cannot reach through a
+// dependency fixture: the Go toolchain subject and a Go package-path admission.
+func TestScopedLimitCounts(t *testing.T) {
+	stdlib := pkgKey{typ: "golang", name: "stdlib"}
+	http2 := pkgKey{typ: "golang", name: "golang.org/x/net/http2"}
+	cases := []struct {
+		name     string
+		flag     artifact.ScopedPartialityFlag
+		admitted pkgKey
+		want     bool
+	}{
+		{"stdlib: a Go module target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:golang/golang.org/x/text"}}, stdlib, true},
+		{"stdlib: a first-party target counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{""}}, stdlib, true},
+		{"stdlib: a first-party package counts", artifact.ScopedPartialityFlag{Reason: "cgo", Targets: []string{"pkg:npm/lodash"}}, stdlib, true},
+		{"stdlib: another ecosystem's targets do not count", artifact.ScopedPartialityFlag{Reason: "tool_failure", Package: "pkg:npm/lodash", Targets: []string{"pkg:npm/lodash"}}, stdlib, false},
+		{"package path admitted, its module targeted", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/net"}}, http2, true},
+		{"module paths sharing a prefix but not a path boundary", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/golang.org/x/netx"}}, pkgKey{typ: "golang", name: "golang.org/x/net"}, false},
+		{"a module path in another case", artifact.ScopedPartialityFlag{Reason: "cgo", Package: "pkg:golang/golang.org/x/text", Targets: []string{"pkg:golang/github.com/BurntSushi/toml"}}, pkgKey{typ: "golang", name: "github.com/burntsushi/toml"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scopedLimitCounts(tc.flag, tc.admitted, true); got != tc.want {
+				t.Errorf("scopedLimitCounts(%+v, %v) = %v, want %v", tc.flag, tc.admitted, got, tc.want)
+			}
+		})
 	}
 }

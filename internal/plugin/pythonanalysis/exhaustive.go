@@ -178,7 +178,7 @@ var completeLockfiles = map[string]bool{"uv.lock": true, "pdm.lock": true, "poet
 // read (lexical) found exactly the package names the decode does. The advisory path's Found is
 // computed from the lexical read, so a package it missed would otherwise read as absent.
 func poetryLockConsistent(path string, lexical []plugin.ResolvedDependency) bool {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return false
 	}
@@ -213,11 +213,15 @@ func firstPartyNames(manifests []string) (names map[string]bool, ok bool) {
 	for _, m := range manifests {
 		switch filepath.Base(m) {
 		case "uv.lock":
-			for _, n := range uvRootNames(m) {
+			roots, read := uvRootNames(m)
+			if !read {
+				return nil, false
+			}
+			for _, n := range roots {
 				names[n] = true
 			}
 		case "pyproject.toml":
-			data, err := os.ReadFile(m)
+			data, err := readRegular(m)
 			if err != nil {
 				return nil, false
 			}
@@ -240,7 +244,7 @@ func firstPartyNames(manifests []string) (names map[string]bool, ok bool) {
 				}
 			}
 		case "setup.cfg":
-			data, err := os.ReadFile(m)
+			data, err := readRegular(m)
 			if err != nil {
 				return nil, false
 			}
@@ -248,7 +252,7 @@ func firstPartyNames(manifests []string) (names map[string]bool, ok bool) {
 				names[normalizePyCoordinate(n)] = true
 			}
 		case "setup.py":
-			data, err := os.ReadFile(m)
+			data, err := readRegular(m)
 			if err != nil {
 				return nil, false
 			}
@@ -289,7 +293,7 @@ func setupCfgNamed(manifests []string, setupPy string) bool {
 	cfg := filepath.Join(filepath.Dir(setupPy), "setup.cfg")
 	for _, m := range manifests {
 		if m == cfg {
-			data, err := os.ReadFile(m)
+			data, err := readRegular(m)
 			return err == nil && setupCfgName(string(data)) != ""
 		}
 	}
@@ -324,14 +328,15 @@ func setupPyLiteralNames(src string) (names []string, ok bool) {
 }
 
 // uvRootNames returns the normalized names of a uv.lock's project/workspace-member packages.
-func uvRootNames(path string) []string {
-	data, err := os.ReadFile(path)
+// read is false when the lock cannot be read.
+func uvRootNames(path string) (names []string, read bool) {
+	data, err := readRegular(path)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var lock uvLock
 	if toml.Unmarshal(data, &lock) != nil {
-		return nil
+		return nil, true
 	}
 	var out []string
 	for _, p := range lock.Package {
@@ -339,7 +344,7 @@ func uvRootNames(path string) []string {
 			out = append(out, normalizePyCoordinate(p.Name))
 		}
 	}
-	return out
+	return out, true
 }
 
 // installedDistName returns the normalized distribution name of an installed-metadata entry
@@ -394,7 +399,7 @@ func includeTarget(line string) (string, bool) {
 // Any other backend computes the field from something never read (a hatch_build.py metadata
 // hook, a plugin), so the declared set is unknown.
 func pyprojectDynamicCovered(path string, manifests []string) bool {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return false
 	}

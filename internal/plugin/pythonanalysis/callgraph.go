@@ -116,7 +116,7 @@ func loadProgram(buildDir string) (*program, error) {
 
 	prog := &program{funcsByName: map[string][]funcDecl{}}
 	for _, p := range paths {
-		data, readErr := os.ReadFile(p)
+		data, readErr := readRegular(p)
 		if readErr != nil {
 			prog.readFailed = true
 			continue
@@ -152,9 +152,13 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
+	declared, read := declaredDistributions(buildDir)
+	if !read {
+		prog.readFailed = true
+	}
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
-		declared:   declaredDistributions(buildDir),
+		declared:   declared,
 		firstParty: firstPartyTops(modules),
 	}
 	return prog, nil

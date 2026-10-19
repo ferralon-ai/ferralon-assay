@@ -77,29 +77,58 @@ func unwalkedBuild(root string) string {
 	return ""
 }
 
+// The settings allow-list. A settings script is read as literal only when every non-blank line,
+// comments stripped, is one of these forms in its block; any other line, anywhere, sends the build to
+// the broad fallback. A string literal holds no quote, backslash or $, so its end and its value are
+// what the text says.
+const settingsLit = `(?:"[^"$\\\n]*"|'[^'$\\\n]*')`
+
+// settingsFilterLit is a repository content-filter argument: a regex may carry backslashes, and only
+// filters which artifacts a repository serves.
+const settingsFilterLit = `(?:"[^"$\n]*"|'[^'$\n]*')`
+
 var (
-	// settingsStringLit is a quoted string with no escape and no interpolation; a backslash or a $
-	// leaves the string to the broad fallback, since its end or its value isn't read here.
-	settingsStringLit = `(?:"[^"$\\\n]*"|'[^'\\\n]*')`
-	// settingsIncludeLit is an include or includeFlat whose arguments start with string literals, in
-	// parentheses or not; settingsCallEnds decides whether the literals are the whole call.
-	settingsIncludeLit = regexp.MustCompile(`\b(include|includeFlat)(\s*\()?\s*(` + settingsStringLit + `(?:\s*,\s*` + settingsStringLit + `)*)(\s*\))?`)
-	// settingsIncludeBuildLit is an includeBuild whose argument starts with a string literal.
-	settingsIncludeBuildLit = regexp.MustCompile(`\bincludeBuild(\s*\()?\s*(` + settingsStringLit + `)(\s*\))?`)
-	// settingsProjectDirLit is a projectDir set to file() of one string literal.
-	settingsProjectDirLit = regexp.MustCompile(`\bprojectDir\s*=\s*file\s*\(\s*(` + settingsStringLit + `)\s*\)`)
-	// settingsProjectForm is every keyword that can add a project or move one; each must be one of
-	// the literal forms above, or the script is read as naming projects this reader can't see.
-	settingsProjectForm = regexp.MustCompile(`\b(?:include|includeFlat|includeBuild|projectDir)\b|\bapply\s*\(?\s*from\b`)
-	settingsLitArg      = regexp.MustCompile(settingsStringLit)
+	settingsRootLine      = regexp.MustCompile(`^rootProject\.name\s*=\s*` + settingsLit + `$`)
+	settingsIncludeLine   = regexp.MustCompile(`^(include|includeFlat)\s*(\(?)\s*(` + settingsLit + `(?:\s*,\s*` + settingsLit + `)*)?\s*(,?)\s*(\)?)$`)
+	settingsIncludeMore   = regexp.MustCompile(`^(` + settingsLit + `(?:\s*,\s*` + settingsLit + `)*)?\s*(,?)\s*(\)?)$`)
+	settingsIncludeBuild  = regexp.MustCompile(`^includeBuild\s*(?:\(\s*(` + settingsLit + `)\s*\)|(` + settingsLit + `))\s*(\{?)$`)
+	settingsProjectDir    = regexp.MustCompile(`^project\s*\(\s*` + settingsLit + `\s*\)\s*\.\s*projectDir\s*=\s*file\s*\(\s*(` + settingsLit + `)\s*\)$`)
+	settingsFeature       = regexp.MustCompile(`^enableFeaturePreview\s*\(\s*` + settingsLit + `\s*\)$`)
+	settingsBlock         = regexp.MustCompile(`^([A-Za-z]+)\s*\{$`)
+	settingsRepo          = regexp.MustCompile(`^(?:google|mavenCentral|gradlePluginPortal|mavenLocal)\s*\(\s*\)$|^maven\s*\(\s*` + settingsLit + `\s*\)$|^maven\s*\{\s*url\s*(?:=\s*)?(?:uri\s*\(\s*` + settingsLit + `\s*\)|` + settingsLit + `)\s*\}$`)
+	settingsMavenLine     = regexp.MustCompile(`^(?:url|name)\s*(?:=\s*)?(?:uri\s*\(\s*` + settingsLit + `\s*\)|` + settingsLit + `)$`)
+	settingsContentFilter = regexp.MustCompile(`^(?:include|exclude)(?:Group|GroupByRegex|GroupAndSubgroups|Module|ModuleByRegex|Version|VersionByRegex)\s*\(?\s*` + settingsFilterLit + `(?:\s*,\s*` + settingsFilterLit + `)*\s*\)?$`)
+	settingsReposMode     = regexp.MustCompile(`^repositoriesMode\s*(?:\.\s*set\s*\(\s*RepositoriesMode\.[A-Z_]+\s*\)|=\s*RepositoriesMode\.[A-Z_]+)$`)
+	settingsPluginLine    = regexp.MustCompile(`^(?:id\s*\(\s*(` + settingsLit + `)\s*\)|id\s+(` + settingsLit + `)|kotlin\s*\(\s*` + settingsLit + `\s*\))(?:\s+version\s+` + settingsLit + `)?(?:\s+apply\s+false)?$`)
+	settingsIncludeName   = regexp.MustCompile(settingsLit)
 )
 
-// gradleSettingsDirs returns every directory root's settings scripts name literally: each project
-// on an include path, each includeFlat sibling, each projectDir = file(...) and each includeBuild.
-// literal is false when a script can't be read, or names projects in any other form (a variable, an
-// interpolated string, an apply from, a path include), since then any directory could be one.
+// settingsPlugins are the settings plugins a literal settings script may apply; each configures
+// toolchains or build scans and adds no project.
+var settingsPlugins = map[string]bool{
+	"org.gradle.toolchains.foojay-resolver-convention": true,
+	"org.gradle.toolchains.foojay-resolver":            true,
+	"com.gradle.enterprise":                            true,
+	"com.gradle.develocity":                            true,
+	"com.gradle.common-custom-user-data-gradle-plugin": true,
+}
+
+// settingsBlocks maps each block a literal settings script may open, by the block it sits in, to
+// the block it opens. A block not listed here is not literal.
+var settingsBlocks = map[string]map[string]string{
+	"":                               {"pluginManagement": "pluginManagement", "dependencyResolutionManagement": "dependencyResolutionManagement", "plugins": "settingsPlugins"},
+	"pluginManagement":               {"repositories": "repositories", "plugins": "managedPlugins"},
+	"dependencyResolutionManagement": {"repositories": "repositories"},
+	"repositories":                   {"google": "repository", "mavenCentral": "repository", "gradlePluginPortal": "repository", "maven": "maven"},
+	"repository":                     {"content": "content"},
+	"maven":                          {"content": "content"},
+}
+
+// gradleSettingsDirs returns every directory root's settings scripts name: each project on an
+// include path, each includeFlat sibling, each projectDir = file(...) and each includeBuild. literal
+// is false when a script can't be read, or holds any line outside the settings allow-list, since
+// then any directory could be a project.
 func gradleSettingsDirs(root string) (dirs []string, literal bool) {
-	literal = true
 	for _, path := range gradleSettingsIn(root) {
 		data, err := readRegular(path)
 		if err != nil {
@@ -109,73 +138,161 @@ func gradleSettingsDirs(root string) (dirs []string, literal bool) {
 		if !ok {
 			return dirs, false
 		}
-		matched := 0
-		for _, ix := range settingsIncludeLit.FindAllStringSubmatchIndex(src, -1) {
-			matched++
-			if !settingsCallEnds(src, ix, false) {
-				literal = false
-				continue
-			}
-			for _, a := range settingsLitArg.FindAllString(src[ix[6]:ix[7]], -1) {
-				name := strings.TrimPrefix(a[1:len(a)-1], ":")
-				if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
-					literal = false
-					continue
-				}
-				if src[ix[2]:ix[3]] == "includeFlat" {
-					dirs = append(dirs, filepath.Join(filepath.Dir(root), name))
-					continue
-				}
-				dir := root
-				for _, seg := range strings.Split(name, ":") {
-					dir = filepath.Join(dir, seg)
-					dirs = append(dirs, dir)
-				}
-			}
-		}
-		for _, ix := range settingsIncludeBuildLit.FindAllStringSubmatchIndex(src, -1) {
-			matched++
-			if !settingsCallEnds(src, ix, true) {
-				literal = false
-				continue
-			}
-			dirs = append(dirs, settingsLitDir(root, src[ix[4]:ix[5]]))
-		}
-		for _, ix := range settingsProjectDirLit.FindAllStringSubmatchIndex(src, -1) {
-			matched++
-			if !settingsStatementEnds(src[ix[1]:], false) {
-				literal = false
-				continue
-			}
-			dirs = append(dirs, settingsLitDir(root, src[ix[2]:ix[3]]))
-		}
-		if len(settingsProjectForm.FindAllString(src, -1)) != matched {
-			literal = false
+		named, ok := settingsLiteralDirs(root, src)
+		dirs = append(dirs, named...)
+		if !ok {
+			return dirs, false
 		}
 	}
-	return dirs, literal
+	return dirs, true
 }
 
-// settingsCallEnds reports whether the call matched at ix (its open-paren group third from last,
-// its close-paren group last) is its literals alone: parentheses balanced, then the end of
-// the statement. Anything else after the literals (another argument, a +, a method call) means the
-// call names more than the literals say. block admits a configuration block after an includeBuild.
-func settingsCallEnds(src string, ix []int, block bool) bool {
-	n := len(ix)
-	open, closed := ix[n-6] >= 0, ix[n-2] >= 0
-	return open == closed && settingsStatementEnds(src[ix[1]:], block && closed)
+// settingsLiteralDirs reads src line by line against the settings allow-list, returning the
+// directories it names and whether every line is allowed.
+func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
+	var (
+		stack []string // the blocks open around the current line
+		cont  string   // "(" or "," while an include's arguments continue on the next line
+		flat  bool     // the continuing include is an includeFlat
+	)
+	in := func() string {
+		if len(stack) == 0 {
+			return ""
+		}
+		return stack[len(stack)-1]
+	}
+	include := func(list string, isFlat bool) bool {
+		for _, a := range settingsIncludeName.FindAllString(list, -1) {
+			name := strings.TrimPrefix(a[1:len(a)-1], ":")
+			if name == "" || strings.ContainsAny(name, "/") || strings.Contains(name, "..") {
+				return false
+			}
+			if isFlat {
+				dirs = append(dirs, filepath.Join(filepath.Dir(root), name))
+				continue
+			}
+			dir := root
+			for _, seg := range strings.Split(name, ":") {
+				dir = filepath.Join(dir, seg)
+				dirs = append(dirs, dir)
+			}
+		}
+		return true
+	}
+	for _, line := range strings.Split(src, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), ";"))
+		if line == "" {
+			continue
+		}
+		if cont != "" {
+			m := settingsIncludeMore.FindStringSubmatch(line)
+			if m == nil || !include(m[1], flat) {
+				return dirs, false
+			}
+			switch {
+			case cont == "(" && m[3] == ")":
+				cont = ""
+			case cont == "," && m[3] == ")":
+				return dirs, false
+			case cont == "," && m[2] == "":
+				cont = ""
+			}
+			continue
+		}
+		if line == "}" {
+			if len(stack) == 0 {
+				return dirs, false
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		if m := settingsBlock.FindStringSubmatch(line); m != nil {
+			next, allowed := settingsBlocks[in()][m[1]]
+			if !allowed {
+				return dirs, false
+			}
+			stack = append(stack, next)
+			continue
+		}
+		switch in() {
+		case "":
+			if m := settingsIncludeLine.FindStringSubmatch(line); m != nil {
+				if !include(m[3], m[1] == "includeFlat") {
+					return dirs, false
+				}
+				switch {
+				case m[2] == "(" && m[5] == "":
+					cont, flat = "(", m[1] == "includeFlat"
+				case m[2] == "" && m[5] == ")":
+					return dirs, false
+				case m[2] == "" && m[4] == ",":
+					cont, flat = ",", m[1] == "includeFlat"
+				case m[3] == "":
+					return dirs, false
+				}
+				continue
+			}
+			if m := settingsProjectDir.FindStringSubmatch(line); m != nil {
+				dirs = append(dirs, settingsLitDir(root, m[1]))
+				continue
+			}
+			if settingsRootLine.MatchString(line) || settingsFeature.MatchString(line) {
+				continue
+			}
+			fallthrough
+		case "pluginManagement":
+			if m := settingsIncludeBuild.FindStringSubmatch(line); m != nil {
+				dirs = append(dirs, settingsLitDir(root, m[1]+m[2]))
+				if m[3] == "{" {
+					stack = append(stack, "includedBuild")
+				}
+				continue
+			}
+		case "dependencyResolutionManagement":
+			if settingsReposMode.MatchString(line) {
+				continue
+			}
+		case "repositories":
+			if settingsRepo.MatchString(line) {
+				continue
+			}
+		case "maven":
+			if settingsMavenLine.MatchString(line) {
+				continue
+			}
+		case "content":
+			if settingsContentFilter.MatchString(line) {
+				continue
+			}
+		case "includedBuild":
+			if strings.HasPrefix(line, "name") && settingsMavenLine.MatchString(line) {
+				continue
+			}
+		case "managedPlugins":
+			if settingsPluginLine.MatchString(line) {
+				continue
+			}
+		case "settingsPlugins":
+			if m := settingsPluginLine.FindStringSubmatch(line); m != nil && settingsPlugins[settingsUnquote(m[1]+m[2])] {
+				continue
+			}
+		}
+		return dirs, false
+	}
+	return dirs, cont == "" && len(stack) == 0
 }
 
-// settingsStatementEnds reports whether rest starts at the end of a statement: a newline, a
-// semicolon or the end of the script, or a block opening when block is set.
-func settingsStatementEnds(rest string, block bool) bool {
-	rest = strings.TrimLeft(rest, " \t\r")
-	return rest == "" || rest[0] == '\n' || rest[0] == ';' || block && rest[0] == '{'
+// settingsUnquote strips the quotes from a settings string literal, or returns "" for no literal.
+func settingsUnquote(lit string) string {
+	if len(lit) < 2 {
+		return ""
+	}
+	return lit[1 : len(lit)-1]
 }
 
 // settingsLitDir is the directory a quoted settings path names, relative to root.
 func settingsLitDir(root, lit string) string {
-	return filepath.Join(root, filepath.FromSlash(lit[1:len(lit)-1]))
+	return filepath.Join(root, filepath.FromSlash(settingsUnquote(lit)))
 }
 
 // holdsGradleScript reports whether a build or settings script sits anywhere under dir, or dir

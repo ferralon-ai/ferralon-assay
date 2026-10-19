@@ -249,11 +249,11 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
-			name: "osv: a coordinate whose Match withholds is queried at its pins and named",
+			name: "osv: a coordinate whose Match withholds is named and none of its pins is queried",
 			acq: func(t *testing.T) *acquired {
 				return javaTree(t, javaDecided(minioUnresolved, widgetResolved, minioResolved))
 			},
-			wantQueried: []string{widget + "@1.0.0", minio + "@8.5.4"},
+			wantQueried: []string{widget + "@1.0.0"},
 			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
@@ -290,13 +290,12 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
-			name: "python osv: a pin beside a second copy in tox.ini is named",
+			name: "python osv: pins the reader withholds over an unread tox.ini are named, not queried",
 			acq: func(t *testing.T) *acquired {
 				return pythonToxTree(t, "requests==2.31.0\njinja2==3.1.4\n", "[testenv]\ndeps =\n    jinja2==3.1.2\n")
 			},
-			wantQueried: []string{"jinja2@3.1.4", "requests@2.31.0"},
 			wantSkipped: map[string]string{"jinja2": "pkg:pypi/jinja2", "requests": "pkg:pypi/requests"},
-			wantSource:  workSetSourceBuiltinUnionOSV,
+			wantSource:  report.WorkSetBuiltinLanguageSet,
 		},
 		{
 			name:        "js osv: a scoped package declared with no lockfile is named",
@@ -426,5 +425,23 @@ func TestWorkSet_UnresolvedAdmissionIsUndetermined(t *testing.T) {
 				t.Errorf("%s carries version %q that nothing resolved", tt.id, found.Package.Version)
 			}
 		})
+	}
+}
+
+// TestReviewGlobalVersionVetoMustReachOSVInventory is the ferralon-ai/tracker#238 repro: jinja2 is
+// pinned in requirements.txt and tox.ini holds another copy, so the Python reader returns Found and
+// unresolved. The inventory must list it unresolved, with no version, and keep it out of resolved.
+func TestReviewGlobalVersionVetoMustReachOSVInventory(t *testing.T) {
+	acq := pythonToxTree(t, "jinja2==3.1.4\n", "[testenv]\ndeps = jinja2==3.1.2\n")
+	match, err := acq.plugin.ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: "jinja2"})
+	if err != nil || !match.Found || match.Match.Resolved {
+		t.Fatalf("fixture must be found/unresolved: %v %+v", err, match)
+	}
+	resolved, unresolved, notes := dependencyInventory(context.Background(), acq)
+	if len(resolved) > 0 {
+		t.Fatalf("OSV inventory calls unresolved jinja2 resolved: resolved=%+v unresolved=%+v notes=%+v", resolved, unresolved, notes)
+	}
+	if len(unresolved) != 1 || unresolved[0].Name != "jinja2" || unresolved[0].Version != "" {
+		t.Fatalf("unresolved = %+v, want jinja2 with no version", unresolved)
 	}
 }

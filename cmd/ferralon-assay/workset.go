@@ -528,9 +528,9 @@ func aliasIndex() map[string]string {
 // All is evidence; the per-coordinate Match is the reader's decision. A reader can withhold a
 // coordinate whose every declaration in All is pinned (an unread surface may hold another copy, or
 // copies disagree), and a copy it reads outside All (an installed distribution) can settle the
-// version. So each coordinate with no unresolved copy is checked against its Match: a withheld
-// Match puts the coordinate in unresolved too, and a resolved Match's version is queried with the
-// declared ones.
+// version. So every coordinate with a pinned copy is checked against its Match: a withheld Match
+// moves the coordinate to unresolved and none of its pins is queried; a resolved Match's version is
+// queried with the declared pins.
 func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	eco := ecosystemForLanguage(acq.language)
 	if eco == "" {
@@ -583,14 +583,14 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	return resolved, unresolved, notes
 }
 
-// confirmByMatch asks the reader for the Match of every coordinate that has resolved copies and no
-// unresolved one. A coordinate already in unresolved is disclosed whatever its Match says, so it
-// costs no call. A failed call withholds the coordinate rather than trusting All.
+// confirmByMatch asks the reader for the Match of every coordinate that has a pinned copy. A failed
+// call withholds the coordinate rather than trusting All.
 func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package) {
-	withheld := make(map[string]bool, len(unresolved))
+	named := make(map[string]bool, len(unresolved))
 	for _, u := range unresolved {
-		withheld[u.Name] = true
+		named[u.Name] = true
 	}
+	withheld := make(map[string]bool)
 	have := make(map[report.Package]bool, len(resolved))
 	seen := make(map[string]bool, len(resolved))
 	var names []string
@@ -601,22 +601,29 @@ func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, un
 			names = append(names, r.Name)
 		}
 	}
+	var extra []report.Package
 	for _, name := range names {
-		if withheld[name] {
-			continue
-		}
 		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name})
 		if err != nil || !vr.Found || !vr.Match.Resolved || vr.Match.Version == "" {
 			withheld[name] = true
-			unresolved = append(unresolved, report.Package{Ecosystem: eco, Name: name})
+			if !named[name] {
+				named[name] = true
+				unresolved = append(unresolved, report.Package{Ecosystem: eco, Name: name})
+			}
 			continue
 		}
 		if p := (report.Package{Ecosystem: eco, Name: name, Version: vr.Match.Version}); !have[p] {
 			have[p] = true
-			resolved = append(resolved, p)
+			extra = append(extra, p)
 		}
 	}
-	return resolved, unresolved
+	kept := resolved[:0]
+	for _, r := range resolved {
+		if !withheld[r.Name] {
+			kept = append(kept, r)
+		}
+	}
+	return append(kept, extra...), unresolved
 }
 
 // versionlessPURL renders a dependency coordinate as the versionless PURL a PartialityNote's Package

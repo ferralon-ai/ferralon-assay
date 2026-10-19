@@ -1486,13 +1486,13 @@ func (codebaseInventory) Status() assessment.Status { return assessment.StatusIn
 // U7 comparator had no reachable input and the axis was dark for exactly the advisory class whose
 // verdict depends on the toolchain. There is no "separate comparator path off the
 // AdvisoryTable" — the AdvisoryTable supplies the affected RANGE, never a version.
-func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (version, presence string, partiality []string, err error) {
+func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDir, language, module, coordinate, scheme string, toolchain ToolchainFact) (version, presence string, found bool, partiality []string, err error) {
 	if scheme == "go-toolchain" {
 		switch toolchain.Bound {
 		case ToolchainBoundExact, ToolchainBoundMinimum:
-			return toolchain.Version, toolchain.Version, nil, nil
+			return toolchain.Version, toolchain.Version, true, nil, nil
 		default:
-			return "", "", nil, nil
+			return "", "", false, nil, nil
 		}
 	}
 	switch {
@@ -1506,16 +1506,16 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		// unqualified).
 		v, manifestRead := moduleVersionFromGoMod(buildDir, module)
 		if !manifestRead {
-			return "", "", []string{plugin.PartialReasonNoManifest}, nil
+			return "", "", false, []string{plugin.PartialReasonNoManifest}, nil
 		}
-		return v, v, nil, nil
+		return v, v, v != "", nil, nil
 	case coordinate != "" && s.plugin != nil && s.plugin.Language() == language:
 		vr, err := s.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
 			BuildDir:   buildDir,
 			Coordinate: coordinate,
 		})
 		if err != nil {
-			return "", "", nil, err
+			return "", "", false, nil, err
 		}
 		v := ""
 		if vr.Found && vr.Match.Resolved {
@@ -1533,7 +1533,7 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 		if !vr.Partiality.Complete {
 			flags = append(flags, vr.Partiality.Reasons...)
 		}
-		return v, p, flags, nil
+		return v, p, vr.Found, flags, nil
 	}
 	// A managed-ecosystem coordinate with no language-matched analyzer available (the
 	// assay-plugin-<lang> binary is not on PATH, so acquire selected nothing, or the
@@ -1542,9 +1542,9 @@ func (s codebaseInventory) resolveDependencyVersion(ctx context.Context, buildDi
 	// disqualifies the advisory on a version comparison that never happened. Disclose the
 	// absence instead; the verdict is untouched.
 	if coordinate != "" {
-		return "", "", []string{plugin.PartialReasonNoPlugin}, nil
+		return "", "", false, []string{plugin.PartialReasonNoPlugin}, nil
 	}
-	return "", "", nil, nil
+	return "", "", false, nil, nil
 }
 
 // PackageKey is one dependency identity an advisory's facts name: the key codebase_inventory
@@ -1722,12 +1722,12 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 	isRoot := false
 	if buildDir != "" {
 		root, hasRoot := ReadRootPackage(ctx, buildDir, language)
-		resolve := func(module, coordinate, purl, scheme string) (string, string, []string, bool, error) {
+		resolve := func(module, coordinate, purl, scheme string) (string, string, bool, []string, bool, error) {
 			if v, ok := root.Matches(buildDir, module, coordinate, purl); hasRoot && ok {
-				return v, v, nil, true, nil
+				return v, v, true, nil, true, nil
 			}
-			v, p, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
-			return v, p, flags, false, err
+			v, p, found, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
+			return v, p, found, flags, false, err
 		}
 		presenceSelected := false
 		// v3 select-by-target: iterate the advisory's full affected set (producer-sorted,
@@ -1735,14 +1735,17 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// is the whole point of the multi-package block — a target on a SECONDARY package resolves
 		// into real version/symbol analysis instead of falling OPEN against an unmatched primary.
 		for _, pkg := range facts.AffectedPackages {
-			v, p, flags, rootPkg, err := resolve(pkg.Module, pkg.Coordinate, pkg.PURL, pkg.VersionScheme)
+			v, p, found, flags, rootPkg, err := resolve(pkg.Module, pkg.Coordinate, pkg.PURL, pkg.VersionScheme)
 			if err != nil {
 				return err
 			}
 			if !presenceSelected && (p != "" || rootPkg) {
 				presenceVersion, presenceSelected = p, true
 			}
-			if v != "" || rootPkg {
+			// A package the target declares stops the walk even when its version is unresolved:
+			// moving on would adjudicate the advisory on another package's ranges while this one
+			// may sit inside its own. It is selected with no version, so the version axis stays open.
+			if v != "" || found || rootPkg {
 				resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
 				break
@@ -1753,7 +1756,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
 		if selectedModule == "" && selectedCoordinate == "" {
-			v, p, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
+			v, p, _, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
 			if err != nil {
 				return err
 			}

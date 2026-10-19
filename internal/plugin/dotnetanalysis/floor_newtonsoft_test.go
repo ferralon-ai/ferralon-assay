@@ -6,6 +6,7 @@ package dotnetanalysis
 // keep the advisory out of not_exploitable.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,42 +25,62 @@ var (
 	sigInstGetString = []byte{0x20, 0x00, 0x0E}       // instance string M()
 )
 
-// TestFloorNewtonsoft_SymbolSet pins the floor entry. Dropping JsonReader.Push reopens the
-// BsonReader, ReadAs* and custom-reader routes; dropping a public entry hides the common
-// routes from the path.
+// floorNewtonsoftSymbols is the floor entry: the unbounded JsonReader.Push plus the public
+// read entries. SerializeObject only writes, so it is not one.
+var floorNewtonsoftSymbols = []string{
+	"Newtonsoft.Json.JsonReader.Push",
+	"Newtonsoft.Json.JsonConvert.DeserializeObject",
+	"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
+	"Newtonsoft.Json.JsonConvert.PopulateObject",
+	"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+	"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+	"Newtonsoft.Json.JsonSerializer.Deserialize",
+	"Newtonsoft.Json.JsonSerializer.Populate",
+	"Newtonsoft.Json.JsonTextReader.Read",
+	"Newtonsoft.Json.JsonTextReader.ReadAsync",
+	"Newtonsoft.Json.Linq.JToken.Parse",
+	"Newtonsoft.Json.Linq.JToken.ReadFrom",
+	"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+	"Newtonsoft.Json.Linq.JToken.Load",
+	"Newtonsoft.Json.Linq.JToken.LoadAsync",
+	"Newtonsoft.Json.Linq.JObject.Parse",
+	"Newtonsoft.Json.Linq.JObject.Load",
+	"Newtonsoft.Json.Linq.JObject.LoadAsync",
+	"Newtonsoft.Json.Linq.JArray.Parse",
+	"Newtonsoft.Json.Linq.JArray.Load",
+	"Newtonsoft.Json.Linq.JArray.LoadAsync",
+	"Newtonsoft.Json.Linq.JConstructor.Load",
+	"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+	"Newtonsoft.Json.Linq.JProperty.Load",
+	"Newtonsoft.Json.Linq.JProperty.LoadAsync",
+}
+
+// TestFloorNewtonsoft_SymbolSet pins the built-in entry and the regenerated on-disk advisory.
+// Dropping JsonReader.Push reopens the BsonReader, ReadAs* and custom-reader routes; dropping
+// a public entry hides the common routes from the path.
 func TestFloorNewtonsoft_SymbolSet(t *testing.T) {
-	want := []string{
-		"Newtonsoft.Json.JsonReader.Push",
-		"Newtonsoft.Json.JsonConvert.DeserializeObject",
-		"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
-		"Newtonsoft.Json.JsonConvert.PopulateObject",
-		"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
-		"Newtonsoft.Json.JsonConvert.DeserializeXNode",
-		"Newtonsoft.Json.JsonSerializer.Deserialize",
-		"Newtonsoft.Json.JsonSerializer.Populate",
-		"Newtonsoft.Json.JsonTextReader.Read",
-		"Newtonsoft.Json.JsonTextReader.ReadAsync",
-		"Newtonsoft.Json.Linq.JToken.Parse",
-		"Newtonsoft.Json.Linq.JToken.ReadFrom",
-		"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
-		"Newtonsoft.Json.Linq.JToken.Load",
-		"Newtonsoft.Json.Linq.JToken.LoadAsync",
-		"Newtonsoft.Json.Linq.JObject.Parse",
-		"Newtonsoft.Json.Linq.JObject.Load",
-		"Newtonsoft.Json.Linq.JObject.LoadAsync",
-		"Newtonsoft.Json.Linq.JArray.Parse",
-		"Newtonsoft.Json.Linq.JArray.Load",
-		"Newtonsoft.Json.Linq.JArray.LoadAsync",
-		"Newtonsoft.Json.Linq.JConstructor.Load",
-		"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
-		"Newtonsoft.Json.Linq.JProperty.Load",
-		"Newtonsoft.Json.Linq.JProperty.LoadAsync",
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "corpus", "testdata", "advisories", floorNewtonsoftCVE+".json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := slices.Clone(pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols)
-	slices.Sort(got)
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Fatalf("%s floor symbols = %v\nwant %v", floorNewtonsoftCVE, got, want)
+	var onDisk struct{ Symbols []string }
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatal(err)
+	}
+	want := slices.Sorted(slices.Values(floorNewtonsoftSymbols))
+	for _, tt := range []struct {
+		source string
+		got    []string
+	}{
+		{"pipeline.AdvisoryTable", pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols},
+		{"corpus/testdata/advisories", onDisk.Symbols},
+	} {
+		t.Run(tt.source, func(t *testing.T) {
+			got := slices.Sorted(slices.Values(tt.got))
+			if !slices.Equal(got, want) {
+				t.Fatalf("%s %s symbols = %v\nwant %v", tt.source, floorNewtonsoftCVE, got, want)
+			}
+		})
 	}
 }
 

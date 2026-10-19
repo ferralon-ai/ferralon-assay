@@ -1075,6 +1075,31 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			a.editPOM(`<modelVersion>4.0.0</modelVersion>`, `<modelVersion>4.0.0</modelVersion>`+
 				`<parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>`)
 		}, reasonLaunchEntryProfileProperty},
+		{"CI workflow -D overrides a property mainClass: launch_entry_cli_property", func(a *appFixture) {
+			a.propertyMain()
+			a.verticle()
+			writeFileT(t, filepath.Join(a.build, ".github", "workflows", "ci.yml"), ciMaven("-Dapp.main=io.vertx.core.Launcher"))
+		}, reasonLaunchEntryCLIProperty},
+		{".mvn/maven.config -D overrides a property mainClass: launch_entry_cli_property", func(a *appFixture) {
+			a.propertyMain()
+			a.verticle()
+			writeFileT(t, filepath.Join(a.build, ".mvn", "maven.config"), "-Dapp.main=io.vertx.core.Launcher\n")
+		}, reasonLaunchEntryCLIProperty},
+		{"CI workflow -D sets an unrelated property: searched", func(a *appFixture) {
+			a.propertyMain()
+			writeFileT(t, filepath.Join(a.build, ".github", "workflows", "ci.yml"), ciMaven("-Ddeploy.env=prod"))
+		}, ""},
+		{"unreadable checkout file under a property mainClass: launch_entry_cli_property", func(a *appFixture) {
+			a.propertyMain()
+			ci := filepath.Join(a.build, ".github", "workflows", "ci.yml")
+			writeFileT(t, ci, ciMaven("-Dapp.main=io.vertx.core.Launcher"))
+			if err := os.Chmod(ci, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.ReadFile(ci); err == nil {
+				t.Skip("file permissions do not stop this user reading")
+			}
+		}, reasonLaunchEntryCLIProperty},
 		{"literal mainClass under a read parent with no launch profile: searched", func(a *appFixture) {
 			a.cachedParent(profileSetting("deploy.env", "prod"))
 		}, ""},
@@ -1115,6 +1140,11 @@ func (a *appFixture) propertyMain() {
 	a.t.Helper()
 	a.editPOM(pomMainClass, `<mainClass>${app.main}</mainClass>`)
 	a.editPOM(`<dependencies>`, `<properties><app.main>com.acme.App</app.main></properties><dependencies>`)
+}
+
+// ciMaven is a GitHub Actions workflow that builds with mvn and the given option.
+func ciMaven(opt string) string {
+	return "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: mvn -B " + opt + " package\n"
 }
 
 // verticle writes a first-party MainVerticle whose start() calls the sink; no main reaches it,

@@ -38,7 +38,9 @@ import (
 // build, a Main-Verticle attribute), an unresolved ${...}, or packaging other than jar
 // (launch_entry_unmapped); a ${...} entry whose property a <profile> sets, in the POM or any
 // POM it inherits from, or whose parent chain is not all read (launch_entry_profile_property);
-// a <profile> in that chain that names a launch class itself (launch_entry_profile_plugin); war
+// a ${...} entry whose property a -D<key> or --define <key> sets anywhere in the checkout the
+// launch-option scan reads (a CI workflow's mvn command, .mvn/maven.config, a script), or with a
+// file in that scan that cannot be read (launch_entry_cli_property); a <profile> in that chain that names a launch class itself (launch_entry_profile_plugin); war
 // packaging or a built .war (war_packaging); and a first-party
 // class a container calls back without any call the search can see (container_callback):
 // one whose ancestors include a servlet Filter, listener, GenericServlet, Servlet,
@@ -57,6 +59,7 @@ const (
 
 	reasonLaunchEntryProfileProperty = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_profile_property"
 	reasonLaunchEntryProfilePlugin   = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_profile_plugin"
+	reasonLaunchEntryCLIProperty     = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_cli_property"
 )
 
 // launchEntry is the launch mains the build names and the reasons its entry shape withholds
@@ -122,7 +125,7 @@ var springBootLaunchers = map[string]bool{
 // findLaunchEntry reads the launch entry of the projects whose class output fp read.
 // lookup returns a loaded class (first-party or dependency) by binary name.
 func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string) (*classfile.Class, bool)) launchEntry {
-	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, cache: newMavenCache(buildDir)}
+	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, propKeys: map[string]bool{}, cache: newMavenCache(buildDir)}
 	for _, dir := range fp.projectDirs() {
 		r.maven(filepath.Join(dir, "pom.xml"))
 		for _, n := range []string{"build.gradle", "build.gradle.kts"} {
@@ -135,6 +138,9 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 	}
 	for _, root := range fp.roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
+	}
+	if len(r.propKeys) > 0 && checkoutDefines(buildDir, r.propKeys) {
+		r.reasons[reasonLaunchEntryCLIProperty] = true
 	}
 
 	firstParty := map[string]*classfile.Class{}
@@ -212,9 +218,10 @@ func containerCallback(c *classfile.Class, lookup func(string) (*classfile.Class
 }
 
 type entryReader struct {
-	reasons map[string]bool
-	named   map[string]bool
-	cache   *mavenCache
+	reasons  map[string]bool
+	named    map[string]bool
+	propKeys map[string]bool // POM properties a launch entry resolved through
+	cache    *mavenCache
 }
 
 var (
@@ -283,6 +290,7 @@ func (r *entryReader) maven(path string) {
 			if !complete || profileProps[key] {
 				r.reasons[reasonLaunchEntryProfileProperty] = true
 			}
+			r.propKeys[key] = true
 			return val
 		})
 		r.name(v)

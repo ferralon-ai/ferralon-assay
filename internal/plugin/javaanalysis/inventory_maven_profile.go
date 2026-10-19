@@ -1156,6 +1156,30 @@ func (ps profileScope) referencedProps(raws ...string) map[string]bool {
 	return seen
 }
 
+// propsReachConsumer reports whether a consumer of a cached POM chain can read any of props: a
+// reference to one, directly or through other properties' values, from text of the chain a
+// consumer reads (pomRefs). A dependency's or imported BOM's properties never reach the consumer's
+// model, and their build never runs there, so a property referenced nowhere else changes nothing
+// the consumer resolves. A POM whose references couldn't all be read reaches everything.
+func (ps profileScope) propsReachConsumer(chain []*mvnPOM, props map[string]string) bool {
+	var seeds []string
+	for _, p := range chain {
+		if !p.refsRead {
+			return true
+		}
+		for name := range p.refs {
+			seeds = append(seeds, "${"+name+"}")
+		}
+	}
+	reached := ps.referencedProps(seeds...)
+	for k := range props {
+		if reached[k] {
+			return true
+		}
+	}
+	return false
+}
+
 // profileTouches returns what profile idx can change: its own consequential declarations, a
 // re-declaration's scope or optional change included (it moves how the graph mediates and scopes
 // that dependency), and every consequential declaration whose coordinates reference a property it
@@ -1297,11 +1321,16 @@ func bomProfilesDecided(bom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCac
 	if chain.parentMissing {
 		return false
 	}
+	var profileList []mvnProfile
+	for _, anc := range chain.poms {
+		profileList = append(profileList, anc.Profiles...)
+	}
+	ps := newProfileScope(chain.poms, profileList, true, true)
 	env := activationEnv{targetEnv: targetEnv}
 	for _, anc := range chain.poms {
 		for i, st := range evalProfiles(anc.Profiles, env) {
 			pr := anc.Profiles[i]
-			if st == triUnknown && (len(pr.DepMgmt) > 0 || len(pr.Properties) > 0 || profileUnlisted(pr, true)) {
+			if st == triUnknown && (len(pr.DepMgmt) > 0 || len(pr.Properties) > 0 && ps.propsReachConsumer(chain.poms, pr.Properties) || profileUnlisted(pr, true)) {
 				return false
 			}
 		}

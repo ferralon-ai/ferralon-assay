@@ -128,6 +128,10 @@ type mvnPOM struct {
 	Deps       []mvnDep
 	Modules    []string
 	Profiles   []mvnProfile
+	// refs are the property names the POM's text references where a consumer of the POM can
+	// read them (see pomRefs); refsRead is false when they couldn't all be read.
+	refs     map[string]bool
+	refsRead bool
 }
 
 type mvnParent struct{ GroupID, ArtifactID, Version, RelativePath string }
@@ -361,6 +365,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	if p.Properties == nil {
 		p.Properties = map[string]string{}
 	}
+	p.refs, p.refsRead = pomRefs(data)
 	for _, m := range xp.Modules {
 		if m = javaTrim(m); m != "" {
 			p.Modules = append(p.Modules, m)
@@ -610,7 +615,7 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 			if anyVersion || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
 				bounded = false // what it changes can't be read, or reaches past the dependency graph
 			}
-			if len(profileList[idx].Properties) > 0 {
+			if len(profileList[idx].Properties) > 0 && (pom.path != "" || ps.propsReachConsumer(chain.poms, profileList[idx].Properties)) {
 				bounded = false // a property can reach plugin configuration or a repository, which this reader doesn't follow
 			}
 			if bounded && len(touched) == 0 {

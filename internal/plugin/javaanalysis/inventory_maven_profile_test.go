@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -1018,6 +1019,109 @@ func TestMavenProfile_ImportedBOMProfileManagedVersionWithholds(t *testing.T) {
 			resolved := findNode(t, toJSON(t, raw), "pkg:maven/org.x/x@1.0") != nil
 			if want := tt.mgmt != "2.0"; resolved != want {
 				t.Errorf("org.x:x@1.0 resolved = %v, want %v", resolved, want)
+			}
+		})
+	}
+}
+
+// A dependency's properties never reach the consumer's model and its build never runs there, so
+// an undecided profile in its lineage that only sets properties costs nothing unless text a
+// consumer reads references one, directly or through another property. An expression the reader
+// can't take apart reaches everything.
+func TestMavenProfile_DependencyPOMPropertyReachesConsumer(t *testing.T) {
+	const repo = `<repositories><repository><id>r</id><url>https://${p.prop}/</url></repository></repositories>`
+	const build = `<build><plugins><plugin><artifactId>a</artifactId><configuration><s>${p.prop}</s></configuration></plugin></plugins></build>`
+	dep := func(extra string) string {
+		return `<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version>` + extra + `</dependency></dependencies>`
+	}
+	for _, tt := range []struct {
+		name, where     string // where: the profile sits in top's POM or its parent
+		top, profileExt string
+		withheld        bool
+	}{
+		{"read nowhere", "top", "", "", false},
+		{"read by the POM's build", "top", build, "", false},
+		{"read by the profile's own build", "top", "", build, false},
+		{"read by reporting", "top", `<reporting><plugins><plugin><artifactId>r</artifactId><configuration><s>${p.prop}</s></configuration></plugin></plugins></reporting>`, "", false},
+		{"read in a comment", "top", `<!-- ${p.prop} -->`, "", false},
+		{"read through another property by the build", "top", `<properties><alias>${p.prop}</alias></properties>` + build, "", false},
+		{"parent profile, read by the child's build", "parent", build, "", false},
+		{"read by a repository", "top", repo, "", true},
+		{"read by a relocation", "top", `<distributionManagement><relocation><groupId>${p.prop}</groupId></relocation></distributionManagement>`, "", true},
+		{"read by an exclusion", "top", dep(`<exclusions><exclusion><groupId>${p.prop}</groupId><artifactId>z</artifactId></exclusion></exclusions>`), "", true},
+		{"read by a classifier", "top", dep(`<classifier>${p.prop}</classifier>`), "", true},
+		{"read by a dependency's version", "top", `<properties><p.prop>3.0</p.prop></properties>` + strings.Replace(dep(""), "3.0", "${p.prop}", 1), "", true},
+		{"read through another property by a repository", "top", `<properties><alias>${p.prop}</alias></properties>` + strings.Replace(repo, "p.prop", "alias", 1), "", true},
+		{"parent profile, read by the child's repository", "parent", repo, "", true},
+		{"read by an attribute", "top", `<repositories><repository><id>r</id><url x="${p.prop}">https://r/</url></repository></repositories>`, "", true},
+		{"nested expression", "top", strings.Replace(repo, "${p.prop}", "${a.${b}}", 1), "", true},
+		{"unterminated expression", "top", strings.Replace(repo, "${p.prop}", "${p.prop", 1), "", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version></dependency></dependencies></project>`)
+			profile := `<profiles><profile><id>tp</id><activation><jdk>1.8</jdk></activation><properties><p.prop>v</p.prop></properties>` + tt.profileExt + `</profile></profiles>`
+			topProfile, parentProfile := profile, ""
+			if tt.where == "parent" {
+				topProfile, parentProfile = "", profile
+			}
+			writeCachePOM(t, m2, "org.top", "top-parent", "1.0", `<project><groupId>org.top</groupId><artifactId>top-parent</artifactId><version>1.0</version><packaging>pom</packaging>`+parentProfile+`</project>`)
+			writeCachePOM(t, m2, "org.top", "top", "1.0", `<project><parent><groupId>org.top</groupId><artifactId>top-parent</artifactId><version>1.0</version></parent>
+<artifactId>top</artifactId>`+tt.top+topProfile+`</project>`)
+			writeCachePOM(t, m2, "org.x", "x", "3.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version></project>`)
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil)
+			if got := hasReason(raw.Partiality, reasonProfileActivation); got != tt.withheld {
+				t.Errorf("profile_activation = %v, want %v: %+v", got, tt.withheld, raw.Partiality)
+			}
+		})
+	}
+}
+
+// The same holds for an imported BOM's lineage, whether the BOM is imported by the module or read
+// for what an undecided module profile's import would manage.
+func TestMavenProfile_ImportedBOMPropertyReachesConsumer(t *testing.T) {
+	const imp = `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`
+	for _, tt := range []struct {
+		name        string
+		viaProfile  bool   // the module imports the BOM from an undecided profile
+		managed     string // the BOM's managed version of org.x:x
+		withheld    bool   // module import: profile_activation reported
+		unboundedBy bool   // profile import: the module profile is left unbounded
+	}{
+		{"module import, property read by the build", false, "1.0", false, false},
+		{"module import, property read by a managed version", false, "${p.prop}", true, false},
+		{"profile import, property read by the build", true, "1.0", true, false},
+		{"profile import, property read by a managed version", true, "${p.prop}", true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			module := imp + `<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency></dependencies>`
+			if tt.viaProfile {
+				module = `<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency></dependencies>
+<profiles><profile><id>mp</id><activation><jdk>11</jdk></activation>` + imp + `</profile></profiles>`
+			}
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>`+module+`</project>`)
+			writeCachePOM(t, m2, "org.bom", "bom-parent", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version><packaging>pom</packaging>
+<profiles><profile><id>bp</id><activation><jdk>11</jdk></activation><properties><p.prop>2.0</p.prop></properties></profile></profiles>
+<build><plugins><plugin><artifactId>a</artifactId><configuration><s>${p.prop}</s></configuration></plugin></plugins></build></project>`)
+			writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>
+<artifactId>bom</artifactId><packaging>pom</packaging><properties><p.prop>1.0</p.prop></properties>
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>`+tt.managed+`</version></dependency></dependencies></dependencyManagement></project>`)
+			for _, v := range []string{"1.0", "2.0"} {
+				writeCachePOM(t, m2, "org.x", "x", v, `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>`+v+`</version></project>`)
+			}
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", ""))
+			if got := hasReason(raw.Partiality, reasonProfileActivation); got != tt.withheld {
+				t.Errorf("profile_activation = %v, want %v: %+v", got, tt.withheld, raw.Partiality)
+			}
+			if !tt.viaProfile {
+				return
+			}
+			if len(raw.Partiality.Scoped) != 1 || (raw.Partiality.Scoped[0].Targets == nil) != tt.unboundedBy {
+				t.Errorf("want one profile_activation, unbounded %v; got %+v", tt.unboundedBy, raw.Partiality.Scoped)
 			}
 		})
 	}

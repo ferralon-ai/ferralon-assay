@@ -49,9 +49,11 @@ func TestVersionOutsideRange_Introduced(t *testing.T) {
 		{"introduced-only admits far above", "5.0.0", affectedRange{LowerInclusive: "2.0.0", Scheme: "npm"}, false, true},
 		{"gomod introduced-only admits far above", "v5.0.0", affectedRange{LowerInclusive: "v2.0.0", Scheme: "gomod"}, false, true},
 
-		// last_affected is inclusive.
+		// last_affected never places a version outside: an unpatched record may be stale.
 		{"last_affected itself is inside", "1.4.2", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, false, true},
-		{"past last_affected is outside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, true, true},
+		{"past last_affected is inside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, false, true},
+		{"below introduced with last_affected is outside", "0.9.0", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, true, true},
+		{"past an unparseable last_affected is inside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "garbage", Scheme: "npm"}, false, true},
 
 		// One row per comparator.
 		{"pypi beta below an rc introduced is outside", "2.0.0b1", affectedRange{LowerInclusive: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, true, true},
@@ -121,7 +123,9 @@ func TestDisqual_IntroducedBound(t *testing.T) {
 		{"inside the second range is admitted", multerRanges(), "3.0.0-alpha.1", false, ""},
 		{"unparseable introduced is admitted", []map[string]string{{"lower_inclusive": "garbage", "upper_exclusive": "2.2.0", "scheme": "npm"}}, "1.4.2", false, ""},
 		{"introduced-only range disqualifies below", []map[string]string{{"lower_inclusive": "2.0.0", "scheme": "npm"}}, "1.4.2", true, ReasonVersionNotInRange},
-		{"last_affected-only range disqualifies above", []map[string]string{{"last_affected": "1.4.2", "scheme": "npm"}}, "1.5.0", true, ReasonVersionNotInRange},
+		{"last_affected-only range admits above", []map[string]string{{"last_affected": "1.4.2", "scheme": "npm"}}, "1.5.0", false, ""},
+		{"last_affected range admits above its introduced", []map[string]string{{"lower_inclusive": "1.0.0", "last_affected": "1.4.2", "scheme": "npm"}}, "1.5.0", false, ""},
+		{"last_affected range disqualifies below its introduced", []map[string]string{{"lower_inclusive": "1.0.0", "last_affected": "1.4.2", "scheme": "npm"}}, "0.9.0", true, ReasonVersionNotInRange},
 		{"GIT range is admitted", []map[string]string{{"lower_inclusive": "2.0.0", "upper_exclusive": "2.2.0", "scheme": "npm", "type": "GIT"}}, "1.4.2", false, ""},
 	}
 	for _, tt := range tests {
@@ -284,7 +288,8 @@ func TestIntake_DisagreeingLegacyRangesAdmit(t *testing.T) {
 	}
 }
 
-// A last_affected bound decoded from affected[] reaches the axis as an inclusive upper end.
+// A range decoded from affected[] with introduced and last_affected reaches the axis: its introduced
+// bound places a version below it outside, and its last_affected bound leaves it open above.
 func TestCorpusDecode_LastAffectedReachesAxis(t *testing.T) {
 	const doc = `{
   "schema_version": "ferralon.normalized_advisory.v3",
@@ -309,8 +314,13 @@ func TestCorpusDecode_LastAffectedReachesAxis(t *testing.T) {
 	}
 	p := facts.AffectedPackages[0]
 	rngs := buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, "npm")
-	if outside, ok := versionOutsideRanges("1.5.0", rngs); !outside || !ok {
-		t.Fatalf("versionOutsideRanges(1.5.0, %+v) = (%v, %v), want (true, true)", rngs, outside, ok)
+	for _, tt := range []struct {
+		ver     string
+		outside bool
+	}{{"0.9.0", true}, {"1.2.0", false}, {"1.5.0", false}} {
+		if outside, ok := versionOutsideRanges(tt.ver, rngs); outside != tt.outside || !ok {
+			t.Errorf("versionOutsideRanges(%s, %+v) = (%v, %v), want (%v, true)", tt.ver, rngs, outside, ok, tt.outside)
+		}
 	}
 }
 

@@ -1,7 +1,7 @@
 // ferralon-assay/pipeline/affected_bounds.go
 //
-// The per-range reading of an advisory's affected set for the version axis: introduced,
-// upper-exclusive and last_affected bounds under each ecosystem's comparator.
+// The per-range reading of an advisory's affected set for the version axis: introduced and
+// upper-exclusive bounds under each ecosystem's comparator.
 package pipeline
 
 import (
@@ -11,8 +11,8 @@ import (
 )
 
 // versionOutsideRange reports whether ver is provably outside one affected range: below its
-// inclusive LowerInclusive bound, at or past its UpperExclusive bound, or past its inclusive
-// LastAffected bound. It is the single in-range test the version axis applies per range.
+// inclusive LowerInclusive bound, or at or past its UpperExclusive bound. A LastAffected bound
+// never places a version outside. It is the single in-range test the version axis applies per range.
 //
 // Not being outside admits the advisory, so every uncertainty resolves toward admission. A bound
 // the scheme cannot order contributes no proof; a range type other than SEMVER or ECOSYSTEM (GIT,
@@ -58,20 +58,16 @@ func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool)
 	return cmp < 0, true
 }
 
-// versionAboveRangeTop reports whether ver orders past rng's upper end. UpperExclusive wins when
-// present; LastAffected is inclusive; a range floored by LowerInclusive with neither is open-ended
-// above. A range with no bound at all keeps the upper-exclusive reading of an empty bound.
+// versionAboveRangeTop reports whether ver orders past rng's upper end. Only UpperExclusive is an
+// upper end. A range with a LastAffected bound and no UpperExclusive is open-ended above, as is one
+// floored by LowerInclusive alone: GHSA writes "<= X" for an advisory with no patch yet, so a
+// release past X may still be affected. A range with no bound at all keeps the upper-exclusive
+// reading of an empty bound.
 func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 	switch {
 	case rng.UpperExclusive != "":
 		return versionOutsideUpper(ver, rng)
-	case rng.LastAffected != "":
-		cmp, ok := compareVersions(ver, rng.LastAffected, rng.Scheme)
-		if !ok {
-			return false, false
-		}
-		return cmp > 0, true
-	case rng.LowerInclusive != "":
+	case rng.LastAffected != "" || rng.LowerInclusive != "":
 		return false, true
 	default:
 		return versionOutsideUpper(ver, rng)

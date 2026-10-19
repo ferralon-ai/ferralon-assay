@@ -677,6 +677,10 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 		f.Package = nil
 		return f
 	}
+	noVersion := func(f report.AdvisoryFinding) report.AdvisoryFinding {
+		f.Package = &report.Package{Ecosystem: "npm", Name: "qs"}
+		return f
+	}
 	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
 	cases := []struct {
 		name    string
@@ -693,11 +697,14 @@ func TestWithInventoryLimits_Disqualified(t *testing.T) {
 			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
 		{"symbol axis", disq(pipeline.ReasonSymbolAbsent), ambiguous, false},
 		{"ecosystem mismatch", disq(pipeline.ReasonAdvisoryEcosystemMismatch), ambiguous, false},
-		{"version out of range, no package", noPkg(disq(pipeline.ReasonVersionNotInRange)), ambiguous, true},
+		{"version set, no single version", noVersion(disq(pipeline.ReasonVersionNotInRange)), ambiguous, true},
+		{"version set, limit of another ecosystem", noVersion(disq(pipeline.ReasonVersionNotInRange)),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"toolchain version out of range, no package", noPkg(disq(pipeline.ReasonVersionNotInRange)), ambiguous, false},
 		{"absent from the manifest, no package", noPkg(disq(pipeline.ReasonNoManifestEntry)),
 			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), true},
-		{"version out of range, no package, no limit", noPkg(disq(pipeline.ReasonVersionNotInRange)), nil, false},
-		{"version out of range, no package, inherent limit", noPkg(disq(pipeline.ReasonVersionNotInRange)),
+		{"absent from the manifest, no package, no limit", noPkg(disq(pipeline.ReasonNoManifestEntry)), nil, false},
+		{"absent from the manifest, no package, inherent limit", noPkg(disq(pipeline.ReasonNoManifestEntry)),
 			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
 		{"symbol axis, no package", noPkg(disq(pipeline.ReasonSymbolAbsent)), ambiguous, false},
 	}

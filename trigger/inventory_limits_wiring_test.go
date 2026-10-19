@@ -195,9 +195,8 @@ func (p multiCopyJSPlugin) ResolveInventory(context.Context, plugin.ResolveInven
 
 // TestInventoryLimits_MultiCopyDisqualification runs a whole scan over a lockfile that installs
 // left-pad at 1.4.0 and, nested, at 1.5.0, both outside FERRALON-JS-DEP-0001's range. The copies
-// disagree, so the row is disqualified on the version set with no single version and no Package.
-// Under a did_not_run inventory limit the row still becomes undetermined: the limit cannot be
-// matched to the row's ecosystem, so it applies.
+// disagree, so the row is disqualified on the version set, and its Package names left-pad with no
+// single version. Under a did_not_run npm inventory limit the row becomes undetermined.
 func TestInventoryLimits_MultiCopyDisqualification(t *testing.T) {
 	dir := t.TempDir()
 	lock := `{"name": "app", "lockfileVersion": 3, "packages": {
@@ -231,8 +230,8 @@ func TestInventoryLimits_MultiCopyDisqualification(t *testing.T) {
 		t.Fatalf("no %s row in the report", advisory.ID)
 		return report.AdvisoryFinding{}
 	}
-	if f := run(plugin.Complete()); f.Verdict != report.VerdictDisqualified || f.Package != nil {
-		t.Fatalf("control: verdict = %s (%s), package %+v; want disqualified with no package", f.Verdict, f.Evidence.Detail, f.Package)
+	if f := run(plugin.Complete()); f.Verdict != report.VerdictDisqualified || f.Package == nil || f.Package.Name != "left-pad" || f.Package.Version != "" {
+		t.Fatalf("control: verdict = %s (%s), package %+v; want disqualified, left-pad with no version", f.Verdict, f.Evidence.Detail, f.Package)
 	}
 	if f := run(plugin.Partial(plugin.PartialReasonLockfileAmbiguous)); f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
 		t.Fatalf("with a did_not_run inventory limit: verdict = %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonAnalysisDidNotRun)

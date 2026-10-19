@@ -127,12 +127,12 @@ func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 // disqualification compares the built artifact and an ecosystem mismatch compares the lane, so
 // neither depends on the inventory and both stand.
 //
-// A disqualification with no Package (the package is absent from the manifest, or its copies
-// disagree so no single version names it) cannot be matched to a limit's ecosystem, so any
-// did-not-run limit demotes it.
+// A package absent from the manifest has no Package to match a limit's ecosystem against, so any
+// did-not-run limit demotes it. Any other row with no Package is a Go toolchain row, whose version
+// is the toolchain's rather than the inventory's, so it stands.
 func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
-	rests := restsOnInventory(f)
-	if !(f.Verdict == report.VerdictNotExploitable || rests) || (f.Package == nil && !rests) {
+	absent := f.Verdict == report.VerdictDisqualified && f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
+	if !(f.Verdict == report.VerdictNotExploitable || restsOnInventory(f)) || (f.Package == nil && !absent) {
 		return f
 	}
 	for _, n := range limits {

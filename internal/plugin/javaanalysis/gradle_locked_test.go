@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -320,9 +321,10 @@ func TestGradleProjectsPinned_UnreadScript(t *testing.T) {
 	}
 }
 
-// The locks bind only declarations in scripts of the projects the root settings script
-// creates. A nested build with its own settings, or a directory no settings include, resolves
-// without them.
+// The locks speak only for the projects the root settings script creates. A Gradle script
+// anywhere else, a nested build with its own settings or a directory no settings include,
+// leaves them unbound, so no copy resolves and the Match can't name the root's version while
+// the other build ships its own.
 func TestResolveVersions_GradleBindsOnlyTheProjectSet(t *testing.T) {
 	type entry struct {
 		resolved            bool
@@ -348,10 +350,10 @@ func TestResolveVersions_GradleBindsOnlyTheProjectSet(t *testing.T) {
 		{"a nested build with its own settings", with(map[string]string{
 			"services/legacy/settings.gradle": "rootProject.name = 'legacy'\n",
 			"services/legacy/build.gradle":    outsideDecl,
-		}), []entry{{false, "", "3.0"}, {true, "2.5", ""}}},
+		}), []entry{{false, "", "2.0"}, {false, "", "3.0"}}},
 		{"a directory no settings include", with(map[string]string{
 			"examples/build.gradle": outsideDecl,
-		}), []entry{{false, "", "3.0"}, {true, "2.5", ""}}},
+		}), []entry{{false, "", "2.0"}, {false, "", "3.0"}}},
 		{"control, an included subproject", with(map[string]string{
 			"settings.gradle":     "include 'app'\n",
 			"app/build.gradle":    gradleLockingOn + gradleWidgetDecl,
@@ -369,10 +371,164 @@ func TestResolveVersions_GradleBindsOnlyTheProjectSet(t *testing.T) {
 					got = append(got, entry{d.Resolved, d.Version, d.Constraint})
 				}
 			}
-			sort.Slice(got, func(i, j int) bool { return !got[i].resolved && got[j].resolved })
+			sort.Slice(got, func(i, j int) bool { return got[i].constraint < got[j].constraint })
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("All widget entries = %+v, want %+v", got, tt.want)
 			}
+			if res.Match.Resolved != tt.want[0].resolved {
+				t.Errorf("Match = %+v, want resolved %v", res.Match, tt.want[0].resolved)
+			}
 		})
+	}
+}
+
+// Gradle opens each project's lock by path. A project directory the walk can't list, skips,
+// or reaches only through a symlink leaves its lock state unknown, and a Gradle script the
+// locks don't speak for leaves them unbound; a project directory that genuinely isn't there
+// holds no lock, so it fails on its own grounds and not as an unread lock. Each row names
+// the reason it expects, so a guard that only moves the outcome to a later check still shows.
+func TestGradleLockBinding_EnumerationUncertainty(t *testing.T) {
+	appDecl, appLock := gradleWidgetAt("2.5")
+	libDecl, libLock := gradleWidgetAt("3.0")
+	tree := func(include string, extra map[string]string) map[string]string {
+		m := map[string]string{
+			"settings.gradle":     "include " + include + "\n",
+			"build.gradle":        gradleLockingStrict,
+			"app/build.gradle":    gradleLockingStrict + appDecl,
+			"app/gradle.lockfile": appLock,
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	lib := func(dir string) map[string]string {
+		return map[string]string{dir + "/build.gradle": gradleLockingStrict + libDecl, dir + "/gradle.lockfile": libLock}
+	}
+	chmod := func(rel string, mode os.FileMode) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root lists and traverses any directory")
+			}
+			p := filepath.Join(dir, rel)
+			if err := os.Chmod(p, mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if _, err := os.ReadDir(p); err == nil {
+				t.Fatalf("%s is still listable at %v", rel, mode)
+			}
+		}
+	}
+	for _, tt := range []struct {
+		name     string
+		files    map[string]string
+		setup    func(t *testing.T, dir string)
+		versions []string
+		why      string // empty: complete
+	}{
+		{name: "control, every project listed", files: tree("'app', 'lib'", lib("lib")), versions: []string{"2.5", "3.0"}},
+		{name: "permission denial, the project walked after app", files: tree("'app', 'lib'", lib("lib")),
+			setup: chmod("lib", 0o111), versions: []string{"2.5"}, why: "lib/gradle.lockfile can't be read"},
+		{name: "permission denial, the project walked before app", files: tree("'aaa', 'app'", lib("aaa")),
+			setup: chmod("aaa", 0o111), versions: []string{"2.5"}, why: "aaa/gradle.lockfile can't be read"},
+		{name: "an intermediate project that can't be traversed", files: tree("'app', 'a:b'", lib("a/b")),
+			setup: chmod("a", 0), versions: []string{"2.5"}, why: "a/b/gradle.lockfile can't be read"},
+		{name: "a project in a directory the walk skips", files: tree("'app', 'build'", lib("build")),
+			versions: []string{"2.5"}, why: "build/gradle.lockfile can't be read"},
+		{name: "a symlinked project directory", files: tree("'app', 'lib'", lib("shared/lib")), setup: func(t *testing.T, dir string) {
+			if err := os.Symlink(filepath.Join(dir, "shared", "lib"), filepath.Join(dir, "lib")); err != nil {
+				t.Fatal(err)
+			}
+		}, versions: []string{"2.5"}, why: "lib/gradle.lockfile can't be read"},
+		// Genuine absence is no unread lock: the build fails the SAFE check for the missing
+		// project's script instead, before the lock state is ever asked about.
+		{name: "a missing project directory", files: tree("'app', 'gone'", nil), versions: []string{"2.5"},
+			why: "gone is a project with no build script to read"},
+		{name: "a project path through a regular file", files: tree("'app', 'f:lib'", map[string]string{"f": "not a directory\n"}),
+			versions: []string{"2.5"}, why: "f is a project with no build script to read"},
+		{name: "a stale lock where a removed project was", files: tree("'app'", map[string]string{"removed/gradle.lockfile": libLock}),
+			versions: []string{"2.5"}},
+		{name: "conflicting locks, root and subproject", files: func() map[string]string {
+			m := tree("'app'", nil)
+			m["build.gradle"] = gradleLockingStrict + libDecl
+			m["gradle.lockfile"] = libLock
+			return m
+		}(), versions: []string{"2.5", "3.0"}},
+		{name: "legacy lock state that can't be ruled out", files: tree("'app', 'lib'", lib("lib")), setup: func(t *testing.T, dir string) {
+			if err := os.MkdirAll(filepath.Join(dir, "lib", "gradle"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			chmod("lib/gradle", 0)(t, dir)
+		}, versions: []string{"2.5", "3.0"}, why: "lib's runtimeClasspath is not pinned"},
+		{name: "STRICT project with no lock, depending only on app", files: tree("'app', 'lib'", map[string]string{
+			"lib/build.gradle": gradleLockingStrict + "dependencies {\n    implementation project(':app')\n}\n",
+		}), versions: []string{"2.5"}, why: "lib is STRICT and no lock was read for it"},
+		{name: "a nested independent build", files: tree("'app'", map[string]string{
+			"services/legacy/settings.gradle": "rootProject.name = 'legacy'\n",
+			"services/legacy/build.gradle":    libDecl,
+		}), versions: []string{"2.5"}, why: "services/legacy/build.gradle is a build script outside"},
+		{name: "a nested independent build walked before the projects", files: tree("'app'", map[string]string{
+			"aaa/settings.gradle": "rootProject.name = 'legacy'\n",
+			"aaa/build.gradle":    libDecl,
+		}), versions: []string{"2.5"}, why: "aaa/build.gradle is a build script outside"},
+		{name: "an unincluded directory the walk can't list", files: tree("'app'", map[string]string{"docs/README": "x\n"}),
+			setup: chmod("docs", 0), versions: []string{"2.5"}, why: "docs can't be listed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeTree(t, tt.files)
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+			deps, complete, why := gradleLockedVersions(dir, "com.example.lib:widget")
+			var got []string
+			for _, d := range deps {
+				got = append(got, d.Version)
+			}
+			if !reflect.DeepEqual(got, tt.versions) {
+				t.Errorf("versions = %v, want %v", got, tt.versions)
+			}
+			if complete != (tt.why == "") || !strings.Contains(why, tt.why) {
+				t.Errorf("complete = %v, why = %q; want complete %v, why containing %q", complete, why, tt.why == "", tt.why)
+			}
+			if !complete {
+				if res := resolve(t, dir, "com.example.lib:widget"); res.Match.Resolved {
+					t.Errorf("Match = %+v resolved while the locks don't bind", res.Match)
+				}
+			}
+		})
+	}
+}
+
+// The public resolver withholds when a readable subproject lock sits in a directory that can't
+// be listed, the root's lock holding another version.
+func TestResolveVersions_UnlistableSubprojectLockWithholds(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists any directory")
+	}
+	decl := "dependencies {\n    implementation 'com.example.lib:widget'\n}\n"
+	dir := writeTree(t, map[string]string{
+		"settings.gradle":     "include 'app'\n",
+		"build.gradle":        gradleLockingStrict + decl,
+		"gradle.lockfile":     gradleWidgetLock,
+		"app/build.gradle":    gradleLockingStrict + decl,
+		"app/gradle.lockfile": strings.ReplaceAll(gradleWidgetLock, "2.5", "1.0"),
+	})
+	app := filepath.Join(dir, "app")
+	if err := os.Chmod(app, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(app, 0o755) })
+	if _, err := os.ReadDir(app); err == nil {
+		t.Fatal("app is still listable")
+	}
+	if _, err := os.ReadFile(filepath.Join(app, "gradle.lockfile")); err != nil {
+		t.Fatalf("app's lock must stay readable by path: %v", err)
+	}
+	if res := resolve(t, dir, "com.example.lib:widget"); res.Match.Resolved {
+		t.Errorf("Match = %+v resolved; app locks 1.0", res.Match)
+	}
+	if deps, complete, why := gradleLockedVersions(dir, "com.example.lib:widget"); complete || !strings.Contains(why, "app/gradle.lockfile") {
+		t.Errorf("complete = %v, why = %q, deps %+v; want incomplete naming app/gradle.lockfile", complete, why, deps)
 	}
 }

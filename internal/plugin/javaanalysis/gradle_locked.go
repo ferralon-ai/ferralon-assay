@@ -1,6 +1,7 @@
 package javaanalysis
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -81,12 +82,11 @@ func gradleLockedVersions(root, coordinate string) (deps []plugin.ResolvedDepend
 
 // gradleLockBinding reads every lock under root once for gradleLockedVersions: each locked
 // coordinate (normalized) to its sorted versions, and whether and why not those bind. The lock
-// state comes from readLockfiles' walk, which never reads a lock in a directory it skips or
-// can't list, or behind a symlinked directory, while Gradle reads each project's lock by path.
-// Two checks keep such a project from passing: the inventory's predicate
-// (gradleLockConfirmation) reads each project's scripts by path and finds it declaring with no
-// lock read for it, and gradleProjectsPinned refuses a STRICT project with no lock state read,
-// which gradleConfigPinned alone would count as pinned.
+// state comes from readLockfiles, which reports a project directory its walk didn't list as
+// unread. The locks speak only for the projects the root settings script creates, so a Gradle
+// build script anywhere else, or a directory whose scripts can't be enumerated, leaves them
+// unbound (gradleScriptOutsideSet). gradleProjectsPinned also refuses a STRICT project with no
+// lock state read, which gradleConfigPinned alone would count as pinned.
 func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	locked, _, haveLock, unparsed, state := readLockfiles(root)
 	versions := map[string][]string{}
@@ -101,7 +101,7 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 		return versions, false, "no lock state"
 	}
 	if len(unparsed) > 0 {
-		return versions, false, unparsed[0] + " is not a lock line"
+		return versions, false, unparsed[0] + " can't be read as lock state"
 	}
 	if _, unknown := gradleLockConfirmation(root, locked, state); unknown != "" {
 		return versions, false, unknown // gradleBuildSafe first among its reasons
@@ -109,6 +109,9 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 	projects, ok := gradleProjects(root)
 	if !ok {
 		return versions, false, "the settings script can't be read in full"
+	}
+	if why := gradleScriptOutsideSet(root, projects); why != "" {
+		return versions, false, why
 	}
 	rootSrcs, ok := readGradleSources(gradleScriptsIn(root))
 	if !ok {
@@ -118,6 +121,33 @@ func gradleLockBinding(root string) (map[string][]string, bool, string) {
 		return versions, false, why
 	}
 	return versions, true, ""
+}
+
+// gradleScriptOutsideSet names the first reason the build's locks don't speak for every Gradle
+// declaration ResolveDependencyVersions reads: a build script in a directory outside the project
+// set (a nested build with its own settings, an unincluded directory, the target of a symlinked
+// project directory), or a directory under root the walk can't list, which could hold one.
+// Directories buildFiles skips are skipped here too, since no declaration is read from them.
+func gradleScriptOutsideSet(root string, projects map[string]bool) string {
+	var why string
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			why = relToBase(root, path) + " can't be listed"
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if path != root && skipDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if (d.Name() == "build.gradle" || d.Name() == "build.gradle.kts") && !projects[filepath.Dir(path)] {
+			why = relToBase(root, path) + " is a build script outside the settings' project set"
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return why
 }
 
 // gradleProjectsPinned reports whether, in every project, each configuration a declaration can
@@ -149,7 +179,9 @@ func gradleProjectsPinned(root string, projects map[string]bool, rootSrcs []stri
 		}
 		if strict && state[dir] == nil {
 			// gradleConfigPinned counts STRICT with no lock state as pinned, since Gradle fails
-			// a project with none; here the walk may only have missed a lock Gradle reads.
+			// a project with none. readLockfiles already reports a project directory it couldn't
+			// list, so this is a listed project holding no lock: its build fails, and no version
+			// read for it is one the build produced.
 			return relToBase(root, dir) + " is STRICT and no lock was read for it", false
 		}
 		for _, c := range confs {

@@ -63,19 +63,13 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 	if len(gradles) > 0 {
 		locked, bound, _ := gradleLockBinding(req.BuildDir)
-		// The locks speak only for the projects the root settings script creates; a script
-		// elsewhere (a nested build with its own settings, an unincluded directory, the target
-		// of a symlinked project directory) is not bound by them.
-		// bound is already false when the set can't be read in full.
-		projects, _ := gradleProjects(req.BuildDir)
 		for _, g := range gradles {
 			deps, ok := parseGradle(g)
 			if !ok {
 				parseFailed = true
 			}
-			inSet := projects[filepath.Clean(filepath.Dir(g))]
 			for _, d := range deps {
-				all = append(all, gradleBound(d, locked, bound && inSet))
+				all = append(all, gradleBound(d, locked, bound))
 			}
 		}
 	}
@@ -91,6 +85,10 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
 	want := normalizeCoordinate(req.Coordinate)
 	if want != "" {
+		// SEAM(matchCoordinate): the Java copy-agreement rule replaces this loop and its
+		// resolved-wins break, taking the gradleBound entries of all as they stand. Until then no
+		// Gradle copy resolves unless the locks bind every Gradle declaration read here
+		// (gradleLockBinding).
 		for _, d := range all {
 			if normalizeCoordinate(d.Coordinate) == want {
 				res.Found = true

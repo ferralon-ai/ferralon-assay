@@ -156,19 +156,28 @@ func gradleLegacyLocks(dir string) bool {
 // project's lock state per configuration (project dir -> state).
 // A group:artifact locked at two versions (compileClasspath at one, runtimeClasspath at another,
 // or different lockfiles) keeps both: either can be the code that runs.
+// Gradle opens each project's lock by path, while this walk skips some directory names, can't
+// list some directories and doesn't follow a symlinked one. A project directory the walk didn't
+// list is reported among the unparsed, as its gradle.lockfile, unless it is genuinely absent
+// (gradleProjectDirAbsent): its lock state isn't known.
 func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []string, map[string]*gradleProjectLock) {
 	out := map[string]*lockedEntry{}
 	state := map[string]*gradleProjectLock{}
 	var files, unparsed []string
 	projects, _ := gradleProjects(root)
+	listed := map[string]bool{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			if d != nil && d.IsDir() {
+				delete(listed, filepath.Clean(path)) // its entries couldn't be read
+			}
 			return nil //nolint:nilerr
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
+			listed[filepath.Clean(path)] = true
 			return nil
 		}
 		project, ok := gradleLockProject(root, path, projects)
@@ -219,9 +228,25 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 		}
 		return nil
 	})
+	for dir := range projects {
+		if !listed[dir] && !gradleProjectDirAbsent(dir) {
+			unparsed = append(unparsed, relToBase(root, filepath.Join(dir, "gradle.lockfile")))
+		}
+	}
 	sort.Strings(files)
 	sort.Strings(unparsed)
 	return out, files, len(files) > 0, unparsed, state
+}
+
+// gradleProjectDirAbsent reports whether project dir is genuinely not there, so it holds no lock
+// state: nothing at the path, a path component that isn't a directory, or a path that isn't one.
+// A directory that is there, or a path that can't be looked at, may hold a lock Gradle reads.
+func gradleProjectDirAbsent(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return missing(err)
+	}
+	return !info.IsDir()
 }
 
 // gradleLockProject reports whether path is where Gradle keeps a project's lock state, and

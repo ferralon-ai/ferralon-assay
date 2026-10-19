@@ -423,7 +423,7 @@ var inertEncodings = map[string]bool{
 	"UTF-16BE": true, "UTF-16LE": true, "COMPAT": true,
 }
 
-var inertFlags = map[string]bool{
+var inertJVMFlags = map[string]bool{
 	"-server": true, "-client": true, "-ea": true, "-da": true, "-esa": true, "-dsa": true,
 	"-enableassertions": true, "-disableassertions": true,
 	"-enablesystemassertions": true, "-disablesystemassertions": true,
@@ -462,7 +462,7 @@ func classifyLaunchOption(opt string) optionClass {
 			return optionInert
 		}
 	}
-	if inertFlags[opt] {
+	if inertJVMFlags[opt] {
 		return optionInert
 	}
 	for _, p := range inertFlagPrefixes {

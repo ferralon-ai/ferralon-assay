@@ -446,6 +446,13 @@ type advisoryDoc struct {
 	// repeated per element — they are shared across every package and stay top-level.
 	AffectedPackages []docAffectedPackage `json:"affected_packages,omitempty"`
 
+	// Affected is the published corpus's spelling of the same multi-package set (`affected[]`, which
+	// the corpus documents as authoritative and complete; its flat top-level block names the primary
+	// only). Its entries carry no per-package symbols and spell the range bounds differently, so
+	// affectedPackages maps them onto the affected_packages shape. Read only when affected_packages is
+	// absent.
+	Affected []docAffectedEntry `json:"affected,omitempty"`
+
 	// --- ferralon.normalized_advisory.v4 additive block -----------------------------------------
 	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol identity
 	// (Kind/Package/Enclosing/Name/Descriptor/SCIP), coexisting with the bare `symbols []string` above.
@@ -480,6 +487,57 @@ type docAffectedPackage struct {
 	FixedVersion   string     `json:"fixed_version,omitempty"`
 	AffectedRanges []docRange `json:"affected_ranges,omitempty"`
 	Symbols        []string   `json:"symbols,omitempty"`
+}
+
+// docAffectedEntry is one entry of the published corpus's affected[] set. An entry whose source
+// stated no package URL omits purl.
+type docAffectedEntry struct {
+	Coordinate    string             `json:"coordinate,omitempty"`
+	PURL          string             `json:"purl,omitempty"`
+	VersionScheme string             `json:"version_scheme,omitempty"`
+	Ranges        []docAffectedRange `json:"ranges,omitempty"`
+	FixedVersions []string           `json:"fixed_versions,omitempty"`
+}
+
+// docAffectedRange is one affected[] range. UpperExclusive is the exclusive bound the flat shape
+// spells `fixed`; Fixed names the fixing release, which the flat shape spells `fixed_version`.
+type docAffectedRange struct {
+	Introduced     string `json:"introduced,omitempty"`
+	UpperExclusive string `json:"upper_exclusive,omitempty"`
+	LastAffected   string `json:"last_affected,omitempty"`
+	Fixed          string `json:"fixed,omitempty"`
+}
+
+// affectedPackages returns the multi-package set in the affected_packages shape. A document that
+// carries affected_packages uses it as is. Otherwise each affected[] entry maps across and takes
+// the advisory's symbols, since a published entry carries none: whichever element select-by-target
+// picks searches the same symbols a read of the primary alone would have.
+func (d advisoryDoc) affectedPackages() []docAffectedPackage {
+	if len(d.AffectedPackages) > 0 || len(d.Affected) == 0 {
+		return d.AffectedPackages
+	}
+	pkgs := make([]docAffectedPackage, 0, len(d.Affected))
+	for _, e := range d.Affected {
+		p := docAffectedPackage{
+			Coordinate:    e.Coordinate,
+			PURL:          e.PURL,
+			VersionScheme: e.VersionScheme,
+			Symbols:       d.Symbols,
+		}
+		if len(e.FixedVersions) == 1 {
+			p.FixedVersion = e.FixedVersions[0]
+		}
+		for _, r := range e.Ranges {
+			p.AffectedRanges = append(p.AffectedRanges, docRange{
+				Introduced:   r.Introduced,
+				Fixed:        r.UpperExclusive,
+				LastAffected: r.LastAffected,
+				FixedVersion: r.Fixed,
+			})
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs
 }
 
 // docTrigger is the v3 per-CVE reach descriptor. IngressKind is a closed set
@@ -930,7 +988,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// UNCHANGED; the array decodes alongside it.
 	var affectedPkgs []AffectedPackage
 	var droppedPkgs []string
-	for _, p := range d.AffectedPackages {
+	for _, p := range d.affectedPackages() {
 		if !schemeRecognized(p.VersionScheme) {
 			droppedPkgs = append(droppedPkgs, p.PURL)
 			continue // fail open: drop this element, keep the document

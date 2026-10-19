@@ -57,10 +57,13 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// exhaustiveManifestSet reports whether the parsed manifests (found under root) enumerate every
-// installable package. perFile maps each manifest path to what parseManifest returned for it.
-// The cheap manifest checks run before the walks of the build dir.
-func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
+// manifestSetCovers reports whether the parsed manifests (found under root) meet every condition
+// above but the last: the complete lockfiles govern every manifest and every install surface is
+// read, so the lockfiles enumerate every package an install from them creates. Exhaustive adds
+// installedCopyPresent(root, coord, true). perFile maps each manifest path to what
+// parseManifestCoverage returned for it. The cheap manifest checks run before the walk of the
+// build dir.
+func manifestSetCovers(root, coordinate string, manifests []string, perFile map[string][]plugin.ResolvedDependency, parseFailed bool) bool {
 	if parseFailed || len(manifests) == 0 {
 		return false
 	}
@@ -103,10 +106,7 @@ func exhaustiveManifestSet(root, coordinate string, manifests []string, perFile 
 			}
 		}
 	}
-	if !buildtree.AllFullyRead(newPySurface(root).candidates()) {
-		return false
-	}
-	return !installedCopyPresent(root, coord)
+	return buildtree.AllFullyRead(newPySurface(root).candidates())
 }
 
 // governingLocks returns the complete lockfiles in the nearest directory at or above dir (and
@@ -130,9 +130,10 @@ func governingLocks(dir, root string, locks map[string][]*pyLock) []*pyLock {
 
 // installedCopyPresent walks root and reports whether an installed copy of coord may be in it:
 // installed metadata (*.dist-info, *.egg-info, .egg-link, .egg) or a distribution archive named
-// for it. A site-packages directory is not entered, so its entries are checked one level deep.
-// An entry the walk cannot read counts as present.
-func installedCopyPresent(root, coord string) bool {
+// for it. A site-packages directory is not entered, so with sitePackages its entries are checked
+// one level deep; without, it is left to installedCopies, which enumerates it. An entry the walk
+// cannot read counts as present.
+func installedCopyPresent(root, coord string, sitePackages bool) bool {
 	found := false
 	hit := func() error {
 		found = true
@@ -147,7 +148,7 @@ func installedCopyPresent(root, coord string) bool {
 		}
 		name := e.D.Name()
 		if e.Skipped {
-			if name != "site-packages" {
+			if !sitePackages || name != "site-packages" {
 				return nil
 			}
 			entries, err := os.ReadDir(e.Path)

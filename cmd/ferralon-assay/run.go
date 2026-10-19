@@ -46,6 +46,10 @@ const (
 	envOSVWorkSet       = brand.EnvPrefix + "_OSV_WORK_SET"
 	envSubjectGoVersion = brand.EnvPrefix + "_SUBJECT_GO_VERSION"
 	envCIGoVersion      = brand.EnvPrefix + "_CI_GO_VERSION"
+	// envSubjectJavaVersion is the env channel for -subject-java-version.
+	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
+	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
+	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
 )
 
 // envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
@@ -68,14 +72,17 @@ const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 //     (env.InActions). It is zero-permission (job summary + ::warning:: annotations)
 //     and therefore survives forked PRs.
 //   - Tier 1 is gated per-surface on the detected capabilities: SARIF when
-//     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue.
+//     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue and
+//     the run may write it (onDefault; see issueRun): a non-PR run on the default branch.
+//     The dashboard Issue is repository-wide, so a branch or PR run never opens or rewrites
+//     it: a setup branch's first push would otherwise open it before anyone merged anything.
 //     Each of these three surfaces is now individually toggle-gated (default-on,
 //     opt-out via ASSAY_CODE_SCANNING / ASSAY_PR_COMMENT / ASSAY_ISSUE), while
 //     Pages stays opt-in. Every toggle is AND-ed with write capability inside Detect,
 //     so on a forked PR (read-only token) all three are absent regardless of the
 //     toggles — a forked PR composes only Tier 0 + Local, the forked-PR safety
-//     guarantee. A push build has CanComment=false (no PR), so it gets SARIF + Issue
-//     but no PR comment.
+//     guarantee. A push build has CanComment=false (no PR), so it gets SARIF, plus the
+//     Issue on the default branch, but no PR comment.
 //   - Tier 2 (NewTier2Pages) is added only when caps.CanPages (ASSAY_PAGES opt-in
 //     AND a write token).
 //   - The Ferralon run-snapshot sink (runSnapshot, resolved by the caller from
@@ -88,7 +95,7 @@ const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 //
 // The selector reads no live environment: every decision flows from the passed Env,
 // so it is pure and unit-testable (construct an Env literal, assert the composition).
-func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSink) []resultsink.ResultSink {
+func selectSinks(env github.Env, outDir string, onDefault bool, runSnapshot resultsink.ResultSink) []resultsink.ResultSink {
 	sinks := []resultsink.ResultSink{resultsink.NewLocal(outDir)}
 
 	if !env.InActions {
@@ -105,7 +112,7 @@ func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSin
 	if caps.CanComment {
 		sinks = append(sinks, github.NewTier1PRComment(env, nil))
 	}
-	if caps.CanIssue {
+	if caps.CanIssue && onDefault {
 		sinks = append(sinks, github.NewTier1Issue(env, nil))
 	}
 	if caps.CanPages {
@@ -144,6 +151,8 @@ func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSin
 // (a writer who can change that file can already change what is scanned), and narrowing it would
 // mean reading the default branch's copy of the config, which is a change to what is READ, not to
 // delivery selection. Out of scope here; recorded so it is a decision and not an oversight.
+// That boundary covers the run snapshot only. The dashboard Issue does not follow it: issueRun
+// ignores analyze.ref and requires a non-PR run on the default branch.
 func canonicalDeliveryRefs(analyzeRef, refName, defaultBranch string) (analyzed, canonical string) {
 	if analyzeRef != "" {
 		return analyzeRef, analyzeRef
@@ -173,10 +182,55 @@ func selectRunSnapshotSink(url, analyzedRef, canonicalRef string, token ferralon
 	if url == "" {
 		return nil
 	}
-	if analyzedRef == "" || canonicalRef == "" || analyzedRef != canonicalRef {
+	if !onCanonicalRef(analyzedRef, canonicalRef) {
 		return nil
 	}
 	return ferralon.NewRunSnapshot(url, token)
+}
+
+// onCanonicalRef reports whether this run analyzed the repository's canonical ref, the pair
+// canonicalDeliveryRefs derives. Both must be known.
+func onCanonicalRef(analyzedRef, canonicalRef string) bool {
+	return analyzedRef != "" && canonicalRef != "" && analyzedRef == canonicalRef
+}
+
+// issueRun reports whether this run may open or rewrite the dashboard Issue: a run that is not a
+// pull request, triggered on the repository's default branch, both refs known.
+//
+// It deliberately ignores analyze.ref, so the Issue does NOT follow the run snapshot's
+// self-designation trust boundary (canonicalDeliveryRefs). analyze.ref is read from the
+// checked-out ferralon.yml, so on any branch it makes the run canonical, and a setup branch
+// carrying one would open the Issue before its PR merged. A default-branch run of an analyze.ref
+// repository still analyzed the designated ref.
+//
+// Pull-request events are excluded by name: a pull_request_target run's ref is the base branch.
+// A schedule run's payload carries no repository, so the default branch arrives empty; GitHub
+// runs schedules on the default branch (GITHUB_REF), so the triggering ref stands in for it.
+func issueRun(eventName, refName, defaultBranch string) bool {
+	switch eventName {
+	case "pull_request", "pull_request_target":
+		return false
+	case "schedule":
+		if defaultBranch == "" {
+			defaultBranch = refName
+		}
+	}
+	return refName != "" && defaultBranch != "" && refName == defaultBranch
+}
+
+// deliveryRefs is what the delivery gates read about this run: the triggering ref
+// (GITHUB_REF_NAME), the repository default (FERRALON_DEFAULT_BRANCH) and the resolved analyze.ref.
+type deliveryRefs struct {
+	refName, defaultBranch, analyzeRef string
+}
+
+// composeSinks resolves both delivery gates and composes the sinks. The run snapshot follows the
+// canonical ref (selectRunSnapshotSink); the dashboard Issue follows issueRun. It reads no live
+// environment, so the two gates are testable together.
+func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, token ferralon.TokenSource) []resultsink.ResultSink {
+	analyzedRef, canonicalRef := canonicalDeliveryRefs(refs.analyzeRef, refs.refName, refs.defaultBranch)
+	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, token)
+	return selectSinks(env, outDir, issueRun(env.EventName, refs.refName, refs.defaultBranch), runSnapshot)
 }
 
 // publishResult renders the projections once and publishes the Result to every sink
@@ -199,10 +253,9 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 		return err
 	}
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
-	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
-	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
+	refs := deliveryRefs{refName: os.Getenv(envRefName), defaultBranch: os.Getenv(envDefaultBranch), analyzeRef: analyzeRef}
 	env := github.DetectEnv(surfaceToggles())
-	return publishAll(ctx, selectSinks(env, outDir, runSnapshot), res, env.StepSummaryPath, os.Stderr)
+	return publishAll(ctx, composeSinks(env, outDir, runsURL, refs, resolveOIDCToken), res, env.StepSummaryPath, os.Stderr)
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in
@@ -397,6 +450,8 @@ type runFlags struct {
 	houseCanaries    *bool
 	osvWorkSet       *bool
 	subjectGo        *string
+	subjectJava      *string
+	subjectMvnProf   *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -458,6 +513,12 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
+
+		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
+		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
+
+		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
+		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax: its -P list together with settings.xml <activeProfiles>, e.g. \"release,!docs\", or \",\" for none; overrides "+envSubjectMavenProfiles+" (default: unstated, and every profile of the reactor and its parents is reported as undecided)"),
 	}
 }
 
@@ -771,6 +832,82 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	return pipeline.WithSubjectToolchain(declared, observed, trustObservedGo())
 }
 
+// subjectJavaOption passes the subject's Java version (-subject-java-version, then
+// envSubjectJavaVersion) to inventory resolution, or returns nil when neither is set.
+func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
+	v := strings.TrimSpace(*f.subjectJava)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
+	}
+	if v == "" {
+		return nil
+	}
+	return pipeline.WithSubjectJavaVersion(v)
+}
+
+// subjectMavenProfilesOption passes the subject build's explicit Maven profile selection
+// (-subject-maven-profiles, then envSubjectMavenProfiles) to inventory resolution, or returns nil
+// when neither is set.
+func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
+	v := strings.TrimSpace(*f.subjectMvnProf)
+	if v == "" {
+		v = strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
+	}
+	if v == "" {
+		return nil
+	}
+	return pipeline.WithSubjectMavenProfiles(v)
+}
+
+// subjectOptions returns the subject conditions run and baseline both take: the Java version and
+// the Maven profile selection. A condition added here reaches both commands.
+func (f *runFlags) subjectOptions() []pipeline.AssessOption {
+	var opts []pipeline.AssessOption
+	for _, opt := range []pipeline.AssessOption{f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
+		if opt != nil {
+			opts = append(opts, opt)
+		}
+	}
+	return opts
+}
+
+// baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
+// corpus and the shared subject conditions. The subject Go toolchain and its reachability gate
+// stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
+func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
+	opts := []pipeline.AssessOption{withPlugin}
+	opt, err := f.advisoryCorpusOption()
+	if err != nil {
+		return nil, err
+	}
+	if opt != nil {
+		opts = append(opts, opt)
+	}
+	return append(opts, f.subjectOptions()...), nil
+}
+
+// runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
+// corpus, the subject Go toolchain, the shared subject conditions, and the subject-toolchain
+// reachability gate.
+func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
+	opts := []pipeline.AssessOption{withPlugin}
+	opt, err := f.advisoryCorpusOption()
+	if err != nil {
+		return nil, err
+	}
+	if opt != nil {
+		opts = append(opts, opt)
+	}
+	if opt := f.subjectToolchainOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	opts = append(opts, f.subjectOptions()...)
+	if opt := subjectToolchainReachOption(); opt != nil {
+		opts = append(opts, opt)
+	}
+	return opts, nil
+}
+
 // trustObservedGo reports whether the observed runner toolchain may be treated as a statement about
 // the subject. Fails closed: any value that is not an explicit true reads as untrusted.
 func trustObservedGo() bool {
@@ -832,18 +969,10 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		return nil, err
 	}
 
-	assessOptions := []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin)}
-	if opt, err := f.advisoryCorpusOption(); err != nil {
+	assessOptions, err := f.runAssessOptions(pipeline.WithPlugin(acq.plugin))
+	if err != nil {
 		acq.cleanup()
 		return nil, err
-	} else if opt != nil {
-		assessOptions = append(assessOptions, opt)
-	}
-	if opt := f.subjectToolchainOption(); opt != nil {
-		assessOptions = append(assessOptions, opt)
-	}
-	if opt := subjectToolchainReachOption(); opt != nil {
-		assessOptions = append(assessOptions, opt)
 	}
 
 	// Resolved AFTER advisoryCorpusOption, which is what decides the fact source the widener

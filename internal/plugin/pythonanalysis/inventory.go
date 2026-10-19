@@ -46,7 +46,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		return plugin.DependencyInventory{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
+	manifests, read := manifestFiles(req.BuildDir)
 
 	var (
 		nodes       []plugin.DependencyNode
@@ -96,8 +96,14 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		return edges[i].Child < edges[j].Child
 	})
 
+	// A directory the walk could not read may hold a manifest the inventory is missing.
+	if !read {
+		parseFailed = true
+	}
 	part := plugin.Complete()
 	switch {
+	case len(manifests) == 0 && parseFailed:
+		part = plugin.Partial(plugin.PartialReasonNoManifest, plugin.PartialReasonToolFailure)
 	case len(manifests) == 0:
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
 	case parseFailed:

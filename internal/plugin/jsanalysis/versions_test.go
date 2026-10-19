@@ -590,3 +590,88 @@ func TestResolveVersions_BerryNpmRangeIsNotAlias(t *testing.T) {
 	}
 	mustMatch(t, resolveJS(t, dir, "left-pad"), "1.3.0")
 }
+
+// MatchesComplete holds only when lockfiles read in full govern every package.json and every
+// installed copy was read; anything that could carry another version leaves it false.
+func TestResolveVersions_MatchesComplete(t *testing.T) {
+	const (
+		pkg    = `{"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}}`
+		lockV3 = `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}},
+  "node_modules/left-pad": {"version":"1.3.0"},
+  "node_modules/wrapper": {"version":"2.0.0"},
+  "node_modules/wrapper/node_modules/left-pad": {"version":"1.4.0"}}}`
+		lockGit = `{"name":"app","lockfileVersion":1,"dependencies":{"left-pad":{"version":"1.3.0"},"wrapper":{"version":"github:acme/wrapper#abc123"}}}`
+	)
+	tests := []struct {
+		name     string
+		files    map[string]string
+		want     bool
+		versions []string
+	}{
+		{"lock covers every copy", map[string]string{"package.json": pkg, "package-lock.json": lockV3}, true, []string{"1.3.0", "1.4.0"}},
+		{"installed copies join the set", map[string]string{
+			"package.json": pkg, "package-lock.json": lockV3,
+			"node_modules/left-pad/package.json":                      `{"name":"left-pad","version":"1.3.0"}`,
+			"node_modules/wrapper/node_modules/left-pad/package.json": `{"name":"left-pad","version":"1.4.0"}`,
+		}, true, nil},
+		{"package.json only", map[string]string{"package.json": pkg}, false, nil},
+		{"an unlocked sibling project", map[string]string{
+			"package.json": pkg, "package-lock.json": lockV3, "web/package.json": `{"name":"web","dependencies":{"left-pad":"^1.0.0"}}`,
+		}, false, nil},
+		{"garbage yarn.lock", map[string]string{"package.json": pkg, "yarn.lock": "garbage {{{\n"}, false, nil},
+		{"a git dependency the lock cannot enumerate", map[string]string{"package.json": pkg, "package-lock.json": lockGit}, false, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := resolveJS(t, writeLockTree(t, tc.files), "left-pad")
+			if r.MatchesComplete != tc.want {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.want, r.Matches)
+			}
+			var got []string
+			for _, m := range r.Matches {
+				got = append(got, m.Version)
+			}
+			slices.Sort(got)
+			if tc.versions != nil && !slices.Equal(got, tc.versions) {
+				t.Fatalf("Matches = %v, want %v", got, tc.versions)
+			}
+		})
+	}
+}
+
+// An installed copy or a subtree the reader cannot open may hold another version, so Matches
+// cannot be complete.
+func TestResolveVersions_MatchesCompleteUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads mode-0 files")
+	}
+	const (
+		pkg    = `{"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}}`
+		lockV3 = `{"name":"app","lockfileVersion":3,"packages":{
+  "": {"name":"app","dependencies":{"left-pad":"^1.3.0","wrapper":"^2.0.0"}},
+  "node_modules/left-pad": {"version":"1.3.0"},
+  "node_modules/wrapper": {"version":"2.0.0"}}}`
+	)
+	for _, tc := range []struct{ name, target string }{
+		{"nested installed copy", "node_modules/wrapper/node_modules/left-pad/package.json"},
+		{"subproject directory", "web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeLockTree(t, map[string]string{
+				"package.json": pkg, "package-lock.json": lockV3,
+				"node_modules/left-pad/package.json":                      `{"name":"left-pad","version":"1.3.0"}`,
+				"node_modules/wrapper/node_modules/left-pad/package.json": `{"name":"left-pad","version":"1.2.0"}`,
+				"web/package.json": `{"name":"web"}`,
+			})
+			p := filepath.Join(dir, tc.target)
+			if err := os.Chmod(p, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if r := resolveJS(t, dir, "left-pad"); r.MatchesComplete {
+				t.Fatalf("an unreadable %s must leave MatchesComplete false; got %+v", tc.target, r.Matches)
+			}
+		})
+	}
+}

@@ -22,7 +22,7 @@ const (
 // directories and doesn't follow symlinks, so the inventory is incomplete when:
 //   - a skipped directory has a build or settings script directly in it;
 //   - a directory a root settings script names (an include, a projectDir = file(...), an
-//     includeBuild, an includeFlat) has a script and wasn't walked, or lies outside root;
+//     includeBuild, an includeFlat) has a script and wasn't walked, as when it lies outside root;
 //   - a settings script names projects in a form this reader can't read literally, and any
 //     skipped subtree holds a script;
 //   - a symlink resolves to a directory outside root.
@@ -63,12 +63,6 @@ func unwalkedBuild(root string) string {
 	}
 	dirs, literal := gradleSettingsDirs(root)
 	for _, dir := range dirs {
-		if outside(root, dir) {
-			if !gradleProjectDirAbsent(dir) {
-				return reasonGradleProjectUnwalked
-			}
-			continue
-		}
 		if !walked[dir] && len(gradleScriptsIn(dir))+len(gradleSettingsIn(dir)) > 0 {
 			return reasonGradleProjectUnwalked
 		}

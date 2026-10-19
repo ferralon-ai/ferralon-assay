@@ -41,6 +41,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 		return nil, "", fmt.Errorf("trigger: create assessment: %w", err)
 	}
 
+	// finding() settles a disqualified advisory on the discovery artifact alone, so the symbol and
+	// reach work S4/S5 would do for it is never read; skip it.
+	opts = append(opts[:len(opts):len(opts)], pipeline.WithSkipDisqualifiedAnalysis(true))
 	orch := pipeline.NewOrchestrator(assessments, store, pipeline.AssessStages(opts...))
 	if err := orch.Run(ctx, a.ID); err != nil {
 		return nil, "", fmt.Errorf("trigger: assess %s: %w", req.Vulnerability.ID, err)
@@ -142,7 +145,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// established nothing POSITIVE: no disqualification and no path. Whether the absent
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
-		reason, undetermined := undeterminedReason(store, assessmentID)
+		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
 			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
@@ -741,8 +744,10 @@ func candidatePath(store artifact.Store, assessmentID string) (string, bool) {
 
 // advisoryFromArtifacts reads the normalized-advisory artifact and returns the
 // report.Advisory identity plus the resolved SBOM package the scan evaluated. When
-// the codebase resolved a version it is attached; otherwise the package is nil.
-func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assessment.Request) (report.Advisory, *report.Package) {
+// the codebase resolved a version it is attached; a C/C++ advisory instead carries its
+// inventory observation (cfamilyObservedPackage); otherwise the package is nil. sbom is
+// the scan's report SBOM, read only for the C/C++ observation.
+func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assessment.Request, sbom []report.Package) (report.Advisory, *report.Package) {
 	adv := report.Advisory{ID: req.Vulnerability.ID, Source: req.Vulnerability.Source}
 
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
@@ -759,7 +764,13 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 
 	name, purl := pipeline.AdvisoryPackage(store, assessmentID)
 	inv, ok := inventory(store, assessmentID)
-	if !ok || name == "" || inv.ResolvedVersion == "" {
+	if !ok || name == "" {
+		return adv, nil
+	}
+	if inv.ResolvedVersion == "" {
+		if inv.Language == cfamilyLanguage {
+			return adv, cfamilyObservedPackage(name, purl, inv, sbom)
+		}
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
@@ -774,7 +785,46 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		Name:      name,
 		Version:   inv.ResolvedVersion,
 		PURL:      purl,
+		Root:      pipeline.RootSubject(store, assessmentID),
 	}
+}
+
+const cfamilyLanguage = "cfamily"
+
+// cfamilyObservedPackage names the package a C/C++ advisory was evaluated against. The C/C++
+// lane never resolves a version, so the row would otherwise carry no package at all. The
+// package takes the found-but-unresolved shape the SBOM already uses: Version is the
+// inventory's pin, set only when the SBOM holds exactly one for the name and the assessment
+// declared it source_unpinned, and PartialReason carries that declaration. G1
+// (admittedPackage) rejects the shape, and the version is read from the report SBOM, never
+// from the assessment's resolved_version, so the pin feeds no version axis.
+func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report.Package) *report.Package {
+	ecosystem := ecosystemFor(inv.Language)
+	pkg := &report.Package{Ecosystem: ecosystem, Name: name, PURL: purl}
+	for _, f := range inv.PartialityFlags {
+		if strings.HasPrefix(f, plugin.PartialReasonSourceUnpinned) {
+			pkg.PartialReason = f
+			break
+		}
+	}
+	if pkg.PartialReason == "" {
+		if len(inv.PartialityFlags) > 0 {
+			pkg.PartialReason = inv.PartialityFlags[0]
+		}
+		return pkg
+	}
+	pins := make(map[string]struct{})
+	for _, p := range sbom {
+		if p.Ecosystem == ecosystem && p.Name == name && p.Version != "" {
+			pins[p.Version] = struct{}{}
+		}
+	}
+	if len(pins) == 1 {
+		for v := range pins {
+			pkg.Version = v
+		}
+	}
+	return pkg
 }
 
 type inventoryFacts struct {
@@ -806,7 +856,7 @@ type inventoryFacts struct {
 // Either one firing means the same thing — the empty path set is a fact about the analysis, not
 // about the subject — and `undetermined` is what v2 added to say so out loud instead of
 // withholding the row (which v1 had to do, having no cell for it).
-func undeterminedReason(store artifact.Store, assessmentID string) (string, bool) {
+func undeterminedReason(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if reason, ok := toolchainUndetermined(store, assessmentID); ok {
 		return reason, true
 	}
@@ -820,10 +870,7 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 	// the limits the run declared), never from the language and never from a per-language table.
 	// An analyzer that starts resolving versions and symbols stops declaring those limits, and
 	// unlocks its own refutations here with nothing in this file to edit.
-	if analysisDidNotRun(store, assessmentID) {
-		return report.ReasonAnalysisDidNotRun, true
-	}
-	return "", false
+	return analysisDidNotRun(store, assessmentID, pkg)
 }
 
 // analysisDidNotRun reports whether a step this refutation would have to rest on did not happen on
@@ -845,24 +892,93 @@ func undeterminedReason(store artifact.Store, assessmentID string) (string, bool
 //     searched, however incompletely. This is the arm that catches an analyzer which reads a
 //     manifest and resolves a version but never opens the dependency's code, so every axis it did
 //     run can report itself complete while nothing was ever searched for the symbol.
-func analysisDidNotRun(store artifact.Store, assessmentID string) bool {
+//
+// A scoped limit (plugin.ScopedReason) joins the run-wide reasons only when it counts for this
+// advisory's package (scopedLimitCounts).
+//
+// The reason is analysis_did_not_run, except when the only did-not-run limit is the analyzer
+// declaring it does not know the advisory: that is the more precise statement of the same fact.
+func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Package) (string, bool) {
 	if cg, ok := callGraphResult(store, assessmentID); ok && len(cg.Edges) == 0 && !cg.Partiality.Complete {
-		return true
+		return report.ReasonAnalysisDidNotRun, true
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
 	if len(reasons) == 0 {
-		inv, ok := inventory(store, assessmentID)
-		if !ok {
-			return false
+		if inv, ok := inventory(store, assessmentID); ok {
+			reasons = inv.PartialityFlags
 		}
-		reasons = inv.PartialityFlags
 	}
+	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
+		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
+		for _, r := range scoped {
+			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
+				reasons = append(reasons, r.Reason)
+			}
+		}
+	}
+	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
+			didNotRun = true
+			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer
+		}
+	}
+	switch {
+	case !didNotRun:
+		return "", false
+	case unknownOnly:
+		return report.ReasonAdvisoryUnknownToAnalyzer, true
+	}
+	return report.ReasonAnalysisDidNotRun, true
+}
+
+// scopedLimitCounts reports whether a scoped limit counts against an advisory admitted on the given
+// package: it does unless its Targets are bounded and neither its Package nor any Target could be that
+// package. An unbounded limit (no Targets, nil or empty, since JSON drops an empty list), or an
+// advisory whose package did not resolve, always counts.
+//
+// Every entry fails wide:
+//
+//   - An entry that is not a package URL counts, so a producer's malformed scope cannot narrow it.
+//     The one non-PURL value allowed is "", the first-party code.
+//   - Go names match when either path is the other or under it, so a package path inside the
+//     admitted module counts, and so does a module path holding an admitted package path.
+//   - Against the Go standard library (a toolchain subject), every Go entry and the first-party code
+//     count: code the analysis did not see can call into the standard library from anywhere in the
+//     build.
+//
+// Otherwise the first-party entry matches only when the advisory's package is the scanned project
+// itself.
+func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved, root bool) bool {
+	if len(r.Targets) == 0 || !resolved {
+		return true
+	}
+	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
+	for _, p := range append([]string{r.Package}, r.Targets...) {
+		if p == "" {
+			if stdlib || root {
+				return true
+			}
+			continue
+		}
+		key, ok := purlKey(p)
+		switch {
+		case !ok, key == admitted:
 			return true
+		case key.typ == "golang" && admitted.typ == "golang":
+			if stdlib || goPathWithin(key.name, admitted.name) || goPathWithin(admitted.name, key.name) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// goPathWithin reports whether the Go import path p is root or lies under it, ignoring case so that
+// two spellings of one module path fail wide.
+func goPathWithin(p, root string) bool {
+	p, root = strings.ToLower(p), strings.ToLower(root)
+	return p == root || strings.HasPrefix(p, root+"/")
 }
 
 // toolchainUndetermined is the Go toolchain/stdlib arm of undeterminedReason. Two clauses:
@@ -927,7 +1043,7 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // owes one. Keeping it beside the row's construction is what stops the two from drifting: every
 // run mode adds the finding and then asks this, so a surface can never show a row with no limit
 // or a limit with no row.
-// An analysis_did_not_run row owes NO note of its own. That row stands on limits partialityNotes
+// An analysis_did_not_run or advisory_unknown_to_analyzer row owes NO note of its own. That row stands on limits partialityNotes
 // already publishes at scan scope, each named precisely (unsupported_phase1, no_manifest, …) and
 // each scoped to the ecosystem the run actually detected. Synthesizing a second note here would
 // disclose one fact twice and scope the copy to Go.
@@ -935,7 +1051,10 @@ func toolchainLimitNote(reason string) report.PartialityNote {
 // The positive-grounds reasons (notExploitableGrounds) are scoped to the finding's own package
 // ecosystem: they are about that package's admission and symbols, not the Go toolchain.
 func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
-	if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason == report.ReasonAnalysisDidNotRun {
+	switch {
+	case f.Verdict != report.VerdictUndetermined,
+		f.UndeterminedReason == report.ReasonAnalysisDidNotRun,
+		f.UndeterminedReason == report.ReasonAdvisoryUnknownToAnalyzer:
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
@@ -975,28 +1094,36 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 		return nil
 	}
 	reasons := footprintPartialityFlags(store, assessmentID)
+	scoped := footprintScoped(store, assessmentID)
 	inv, haveInv := inventory(store, assessmentID)
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && haveInv {
 		// No footprint artifact (a run that failed before S4, or a stage set that omits
 		// the footprint) — fall back to the inventory's own flags so the S2 axis is never
 		// lost when the union is unavailable.
-		if !haveInv {
-			return nil
-		}
 		reasons = inv.PartialityFlags
 	}
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return nil
 	}
 	ecosystem := ""
 	if haveInv {
 		ecosystem = ecosystemFor(inv.Language)
 	}
-	notes := make([]report.PartialityNote, 0, len(reasons))
+	notes := make([]report.PartialityNote, 0, len(reasons)+len(scoped))
 	for _, reason := range reasons {
 		notes = append(notes, report.PartialityNote{
 			Reason:    reason,
 			Ecosystem: ecosystem,
+		})
+	}
+	// A scoped limit is disclosed whether or not it counted against any advisory: it is still a
+	// part of the program the analysis could not see.
+	for _, r := range scoped {
+		notes = append(notes, report.PartialityNote{
+			Reason:    r.Reason,
+			Ecosystem: ecosystem,
+			Package:   r.Package,
+			Path:      r.Path,
 		})
 	}
 	return notes
@@ -1006,15 +1133,26 @@ func partialityNotes(store artifact.Store, assessmentID string) []report.Partial
 // assessment's exposure-footprint artifact. Absent artifact or unreadable payload
 // yields no reasons; the caller falls back to the inventory artifact.
 func footprintPartialityFlags(store artifact.Store, assessmentID string) []string {
+	fp, _ := exposureFootprint(store, assessmentID)
+	return fp.PartialityFlags
+}
+
+// footprintScoped reads the unioned scoped limits off the exposure-footprint artifact.
+func footprintScoped(store artifact.Store, assessmentID string) []artifact.ScopedPartialityFlag {
+	fp, _ := exposureFootprint(store, assessmentID)
+	return fp.ScopedPartiality
+}
+
+func exposureFootprint(store artifact.Store, assessmentID string) (artifact.ExposureFootprintPayload, bool) {
+	var fp artifact.ExposureFootprintPayload
 	arts, err := store.Query(assessmentID, artifact.TypeExposureFootprint)
 	if err != nil || len(arts) == 0 {
-		return nil
+		return fp, false
 	}
-	var fp artifact.ExposureFootprintPayload
 	if err := json.Unmarshal(arts[0].Payload, &fp); err != nil {
-		return nil
+		return artifact.ExposureFootprintPayload{}, false
 	}
-	return fp.PartialityFlags
+	return fp, true
 }
 
 // assessFailureNote turns a failed assessment into a scan-level disclosure. One

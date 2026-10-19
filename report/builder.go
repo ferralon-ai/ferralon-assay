@@ -323,11 +323,11 @@ func dedupPartiality(notes []PartialityNote) []PartialityNote {
 	if len(notes) == 0 {
 		return nil
 	}
-	type key struct{ reason, ecosystem, detail string }
+	type key struct{ reason, ecosystem, detail, pkg, path string }
 	index := make(map[key]int, len(notes))
 	out := make([]PartialityNote, 0, len(notes))
 	for _, n := range notes {
-		k := key{n.Reason, n.Ecosystem, n.Detail}
+		k := key{n.Reason, n.Ecosystem, n.Detail, n.Package, n.Path}
 		i, ok := index[k]
 		if !ok {
 			index[k] = len(out)
@@ -348,7 +348,13 @@ func dedupPartiality(notes []PartialityNote) []PartialityNote {
 		if out[i].Ecosystem != out[j].Ecosystem {
 			return out[i].Ecosystem < out[j].Ecosystem
 		}
-		return out[i].Detail < out[j].Detail
+		if out[i].Detail != out[j].Detail {
+			return out[i].Detail < out[j].Detail
+		}
+		if out[i].Package != out[j].Package {
+			return out[i].Package < out[j].Package
+		}
+		return out[i].Path < out[j].Path
 	})
 	return out
 }

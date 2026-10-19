@@ -73,7 +73,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			props["reachable_path"] = f.Evidence.ReachablePath
 		}
 		if f.Package != nil {
-			props["package"] = fmt.Sprintf("%s:%s@%s", f.Package.Ecosystem, f.Package.Name, f.Package.Version)
+			props["package"] = f.Package.Ecosystem + ":" + f.Package.Label()
 		}
 		if f.Advisory.Source != "" {
 			props["source"] = f.Advisory.Source
@@ -298,6 +298,12 @@ func reportSARIFPartialityResults(r report.Report) []SARIFResult {
 		}
 		if n.Detail != "" {
 			props["detail"] = n.Detail
+		}
+		if n.Package != "" {
+			props["package"] = n.Package
+		}
+		if n.Path != "" {
+			props["path"] = n.Path
 		}
 		// withheld_advisories names the specific advisory ids this limit suppressed a verdict
 		// for. Only a stored v1 document carries them; this analyzer emits an advisory it could

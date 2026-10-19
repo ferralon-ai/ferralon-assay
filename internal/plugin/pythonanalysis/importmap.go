@@ -168,6 +168,19 @@ func (m DistImportMap) Reverse(importPkg string) []string {
 	return sortedDedup(dists)
 }
 
+// Owners returns the distributions contributing exactly importPkg, sorted and deduped: the
+// ones whose files sit at that package path, without the packages nested under it that
+// Reverse also counts.
+func (m DistImportMap) Owners(importPkg string) []string {
+	var dists []string
+	for _, c := range m.Contributions {
+		if c.ImportPackage != "" && c.ImportPackage == importPkg {
+			dists = append(dists, c.Distribution)
+		}
+	}
+	return sortedDedup(dists)
+}
+
 // sortedDedup returns a sorted, duplicate-free copy. A nil/empty input yields a nil slice,
 // so Forward on an unknown-only distribution returns EMPTY, never the distribution name.
 func sortedDedup(in []string) []string {

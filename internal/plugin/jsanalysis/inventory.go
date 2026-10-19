@@ -85,18 +85,22 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 		return plugin.DependencyInventory{}, fmt.Errorf("jsanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	roots := discoverProjectRoots(req.BuildDir)
-	if len(roots) == 0 {
-		// No lockfile and no package.json anywhere: honest absence, never an
-		// empty-but-Complete inventory that would read downstream as "no dependencies".
-		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoManifest)}, nil
-	}
-
+	roots, rootsRead := discoverProjectRoots(req.BuildDir)
 	var (
 		allNodes  []plugin.DependencyNode
 		allEdges  []plugin.DependencyEdge
 		graphPart = plugin.Complete()
 	)
+	if !rootsRead {
+		graphPart = plugin.Partial(plugin.PartialReasonToolFailure)
+	}
+	if len(roots) == 0 {
+		// No lockfile and no package.json found: declared absence (with tool_failure when part
+		// of the tree went unread), never an empty-but-Complete inventory that would read
+		// downstream as "no dependencies".
+		return plugin.DependencyInventory{Partiality: mergePartiality(plugin.Partial(plugin.PartialReasonNoManifest), graphPart)}, nil
+	}
+
 	for _, root := range roots {
 		sel, selPart := selectLockfile(root)
 		if !selPart.Complete {
@@ -111,7 +115,11 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 			graphPart = mergePartiality(graphPart, plugin.Partial(plugin.PartialReasonToolFailure))
 			continue
 		}
-		n, e, p := ad.Parse(sel, manifestsUnder(root))
+		manifests, read := manifestsUnder(root)
+		if !read {
+			graphPart = mergePartiality(graphPart, plugin.Partial(plugin.PartialReasonToolFailure))
+		}
+		n, e, p := ad.Parse(sel, manifests)
 		allNodes = append(allNodes, n...)
 		allEdges = append(allEdges, e...)
 		graphPart = mergePartiality(graphPart, p)
@@ -133,13 +141,16 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 // — the authoritative install roots. Vendored/build/VCS trees are skipped so a nested
 // install never shadows the project's own lockfiles. When no lockfile exists anywhere but the
 // build dir is itself a package (has a package.json), the build dir is returned so
-// selectLockfile can declare no_manifest rather than silently emitting an empty graph.
-func discoverProjectRoots(buildDir string) []string {
+// selectLockfile can declare no_manifest rather than silently emitting an empty graph. read
+// is false when a directory or the build dir's package.json is there but cannot be read: a
+// root may be missing.
+func discoverProjectRoots(buildDir string) (roots []string, read bool) {
 	seen := make(map[string]struct{})
-	var roots []string
+	read = true
 	_ = filepath.WalkDir(buildDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no roots; keep walking.
+			read = read && absent(err)
+			return nil //nolint:nilerr // keep walking: the other roots are still read.
 		}
 		if d.IsDir() {
 			if path != buildDir && skipDir(d.Name()) {
@@ -158,12 +169,16 @@ func discoverProjectRoots(buildDir string) []string {
 		return nil
 	})
 	if len(roots) == 0 {
-		if fi, err := os.Stat(filepath.Join(buildDir, "package.json")); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(filepath.Join(buildDir, "package.json"))
+		switch {
+		case err == nil && !fi.IsDir():
 			roots = append(roots, buildDir)
+		case err != nil && !absent(err):
+			read = false
 		}
 	}
 	sort.Strings(roots)
-	return roots
+	return roots, read
 }
 
 // selectLockfile selects the ONE authoritative lockfile for a root (D3). corepack's
@@ -175,7 +190,14 @@ func selectLockfile(root string) (selectedLock, plugin.Partiality) {
 	var locks []lockCand
 	for _, name := range recognizedLockNames {
 		p := filepath.Join(root, name)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+		fi, err := os.Stat(p)
+		switch {
+		case absent(err) || (err == nil && fi.IsDir()):
+		case err != nil || !fi.Mode().IsRegular():
+			// A lock that cannot be read (a pipe, socket or device) may be the authoritative
+			// one, so no other lock is selected in its place.
+			return selectedLock{}, plugin.Partial(plugin.PartialReasonToolFailure)
+		default:
 			locks = append(locks, lockCand{path: p, dialect: dialectForLock(name)})
 		}
 	}
@@ -183,7 +205,12 @@ func selectLockfile(root string) (selectedLock, plugin.Partiality) {
 		return selectedLock{}, plugin.Partial(plugin.PartialReasonNoManifest)
 	}
 
-	if pm := packageManagerDialect(root); pm != "" {
+	pm, ok := packageManagerDialect(root)
+	if !ok {
+		// An unread package.json may name a package manager that overrides the pick.
+		return selectedLock{}, plugin.Partial(plugin.PartialReasonToolFailure)
+	}
+	if pm != "" {
 		for _, l := range locks {
 			if l.dialect == pm {
 				return selectedLock{dialect: pm, path: l.path, root: root}, plugin.Complete()
@@ -218,18 +245,21 @@ func dialectForLock(name string) string {
 }
 
 // packageManagerDialect reads the corepack "packageManager" field (e.g. "pnpm@9.0.0") from
-// the root package.json and returns the dialect, or "" when absent/unreadable. Metadata read
-// only — corepack is never invoked.
-func packageManagerDialect(root string) string {
-	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+// the root package.json and returns the dialect, or "" when absent or unparseable. ok is false
+// when a package.json exists but cannot be read. Metadata read only — corepack is never invoked.
+func packageManagerDialect(root string) (dialect string, ok bool) {
+	data, err := readRegular(filepath.Join(root, "package.json"))
+	if absent(err) {
+		return "", true
+	}
 	if err != nil {
-		return ""
+		return "", false
 	}
 	var m struct {
 		PackageManager string `json:"packageManager"`
 	}
 	if json.Unmarshal(data, &m) != nil || m.PackageManager == "" {
-		return ""
+		return "", true
 	}
 	pm := m.PackageManager
 	if i := strings.IndexByte(pm, '@'); i >= 0 {
@@ -237,9 +267,9 @@ func packageManagerDialect(root string) string {
 	}
 	switch pm {
 	case "npm", "yarn", "pnpm":
-		return pm
+		return pm, true
 	}
-	return ""
+	return "", true
 }
 
 // adapterFor returns the adapter for a dialect. The yarn adapter carries both Classic and
@@ -257,12 +287,14 @@ func adapterFor(dialect string) inventoryAdapter {
 }
 
 // manifestsUnder reads every package.json under root (same skip rules as the walkers), parsed
-// into the invManifest subset for the membership/direct join.
-func manifestsUnder(root string) []manifestFile {
-	var out []manifestFile
+// into the invManifest subset for the membership/direct join. complete is false when a
+// package.json or a directory is there but cannot be read.
+func manifestsUnder(root string) (out []manifestFile, complete bool) {
+	complete = true
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree contributes no manifests.
+			complete = complete && absent(err)
+			return nil //nolint:nilerr // keep walking: the other manifests are still read.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -273,8 +305,9 @@ func manifestsUnder(root string) []manifestFile {
 		if d.Name() != "package.json" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := readRegular(path)
 		if rerr != nil {
+			complete = complete && absent(rerr)
 			return nil
 		}
 		var pkg invManifest
@@ -284,7 +317,7 @@ func manifestsUnder(root string) []manifestFile {
 		out = append(out, manifestFile{path: path, dir: filepath.Dir(path), pkg: pkg})
 		return nil
 	})
-	return out
+	return out, complete
 }
 
 // --- shared assembly: dedup + sort ------------------------------------------

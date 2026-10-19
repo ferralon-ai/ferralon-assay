@@ -145,11 +145,18 @@ func NewCHA(asms ...*Assembly) *CHA {
 	return c
 }
 
-// lookup resolves a TypeRef to an in-set node, or nil if the type is out-of-set
-// (a different, unloaded assembly) or a TypeSpec (generic instantiation — CHA runs
-// over the open type, so a raw spec at a call owner is a boundary here).
+// lookup resolves a TypeRef to an in-set node, or nil if the type is out-of-set (a
+// different, unloaded assembly). A generic instantiation resolves to its generic type:
+// CHA runs over open types, so a subclass of B<Foo> derives from B and a call on
+// B<Foo>::M binds within B. Any other TypeSpec (array, pointer, generic parameter) is nil.
 func (c *CHA) lookup(tr TypeRef) *typeNode {
-	if tr.Token.IsNull() || tr.IsSpec {
+	if tr.IsSpec {
+		if tr.Def == nil {
+			return nil
+		}
+		tr = *tr.Def
+	}
+	if tr.Token.IsNull() {
 		return nil
 	}
 	nodes := c.byKey[typeKey(tr.Namespace, tr.Name)]
@@ -183,12 +190,12 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 		if !ok {
 			return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "ldftn: unresolvable target token"}
 		}
-		tgt := c.exactTarget(owner, asm, e.Token, name, sig, disp, nil)
-		if tgt.Method == nil {
+		tgts := c.exactTargets(owner, asm, e.Token, name, sig, disp, nil)
+		if tgts[0].Method == nil {
 			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
 				Reason: "ldftn target " + disp + " outside loaded assembly set; delegate Invoke wiring deferred to barrier-2"}
 		}
-		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: []Target{tgt},
+		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: tgts,
 			Reason: "delegate target capture; Invoke wiring deferred to barrier-2"}
 	}
 
@@ -209,17 +216,24 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 	switch e.Kind {
 	case EdgeNewobj, EdgeCall:
 		// newobj binds an EXACT constructor (never virtual); call is a direct bind.
-		// Both are resolved-single — one named target, even if its body is out-of-set.
-		tgt := c.exactTarget(owner, asm, token, name, sig, disp, inst)
-		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: []Target{tgt}}
+		// Both are resolved-single — one named target, even if its body is out-of-set — except
+		// that a MemberRef whose signature cannot be told apart from several overloads binds
+		// to each of them.
+		tgts := c.exactTargets(owner, asm, token, name, sig, disp, inst)
+		return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: tgts}
 
 	case EdgeCallvirt:
 		// Caveat 3: constrained. on a value type flips callvirt to a STATIC resolution.
 		if !e.Constrained.IsNull() {
 			if cn := c.lookup(asm.TypeRefFor(e.Constrained)); cn != nil && cn.isValue {
-				m := c.matchMethod(cn, name, sig)
-				tgt := Target{Asm: cn.asm, Type: cn.def, Method: m, OwnerDisplay: cn.key, Name: name, Instantiation: inst}
-				return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: []Target{tgt},
+				var tgts []Target
+				for _, m := range c.matchMethod(cn, name, asm, sig) {
+					tgts = append(tgts, Target{Asm: cn.asm, Type: cn.def, Method: m, OwnerDisplay: cn.key, Name: name, Instantiation: inst})
+				}
+				if len(tgts) == 0 {
+					tgts = []Target{{Asm: cn.asm, Type: cn.def, OwnerDisplay: cn.key, Name: name, Instantiation: inst}}
+				}
+				return DispatchResult{State: DispatchResolved, Kind: e.Kind, Targets: tgts,
 					Reason: "constrained. value-type static dispatch"}
 			}
 		}
@@ -228,7 +242,7 @@ func (c *CHA) ResolveDispatch(asm *Assembly, e Edge) DispatchResult {
 			return DispatchResult{State: DispatchBoundary, Kind: e.Kind,
 				Reason: "callvirt owner " + disp + " outside loaded assembly set (open-world receiver)"}
 		}
-		targets := c.candidateSet(owner, name, sig, inst)
+		targets := c.candidateSet(owner, name, asm, sig, inst)
 		return DispatchResult{State: DispatchConservative, Kind: e.Kind, Targets: targets, Conservative: true}
 	}
 	return DispatchResult{State: DispatchBoundary, Kind: e.Kind, Reason: "unhandled edge kind"}
@@ -265,33 +279,38 @@ func (c *CHA) methodRef(asm *Assembly, t Token) (owner *typeNode, name string, s
 	return nil, "", nil, "", false
 }
 
-// exactTarget builds the single resolved target for a call/newobj/ldftn. A MethodDef
-// token resolves to the local method directly; a MemberRef resolves within its owner
-// if in-set, else stays a named-only target (Method nil) — a resolved-single boundary
-// the caller (or barrier-2) treats as an out-of-set hazard.
-func (c *CHA) exactTarget(owner *typeNode, asm *Assembly, t Token, name string, sig []byte, disp string, inst []byte) Target {
+// exactTargets builds the resolved target(s) for a call/newobj/ldftn. A MethodDef token
+// resolves to the local method directly; a MemberRef resolves within its owner if in-set
+// (to every declared overload its signature is compatible with), else stays a single
+// named-only target (Method nil) — a resolved boundary the caller treats as an out-of-set
+// hazard. The result is never empty.
+func (c *CHA) exactTargets(owner *typeNode, asm *Assembly, t Token, name string, sig []byte, disp string, inst []byte) []Target {
 	if t.Table() == tMethodDef {
 		m := asm.MethodByRID(t.RID())
 		var td *TypeDef
 		if owner != nil {
 			td = owner.def
 		}
-		return Target{Asm: asm, Type: td, Method: m, OwnerDisplay: disp, Name: name, Instantiation: inst}
+		return []Target{{Asm: asm, Type: td, Method: m, OwnerDisplay: disp, Name: name, Instantiation: inst}}
 	}
 	// MemberRef: bind within the owner type if it is in-set.
 	if owner != nil {
-		if m := c.declaredMethod(owner, name, sig); m != nil {
-			return Target{Asm: owner.asm, Type: owner.def, Method: m, OwnerDisplay: disp, Name: name, Instantiation: inst}
+		var out []Target
+		for _, m := range c.declaredMethod(owner, name, asm, sig) {
+			out = append(out, Target{Asm: owner.asm, Type: owner.def, Method: m, OwnerDisplay: disp, Name: name, Instantiation: inst})
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
-	return Target{Asm: asm, Type: nil, Method: nil, OwnerDisplay: disp, Name: name, Instantiation: inst}
+	return []Target{{Asm: asm, Type: nil, Method: nil, OwnerDisplay: disp, Name: name, Instantiation: inst}}
 }
 
 // candidateSet is the conservative virtual/interface candidate set: every in-set
 // type that derives from / implements the declared owner AND has a runnable matching
 // override. Interface members are resolved through MethodImpl (explicit impl) as well
 // as by implicit name+sig — the caveat-1 correctness point.
-func (c *CHA) candidateSet(owner *typeNode, name string, sig []byte, inst []byte) []Target {
+func (c *CHA) candidateSet(owner *typeNode, name string, sigAsm *Assembly, sig []byte, inst []byte) []Target {
 	ownerIsIface := owner.isInterface()
 	var targets []Target
 	seen := map[*MethodDef]bool{}
@@ -312,16 +331,10 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sig []byte, inst []byte
 		// override joins the conservative set, never fabricating a target.
 		var ms []*MethodDef
 		if ownerIsIface {
-			if m := c.interfaceTarget(t, owner, name, sig); m != nil {
-				ms = append(ms, m)
-			}
+			ms = c.interfaceTarget(t, owner, name, sigAsm, sig)
 		} else {
-			if m := c.matchMethod(t, name, sig); m != nil {
-				ms = append(ms, m)
-			}
-			if m := c.explicitImpl(t, name, sig, func(o *typeNode) bool { return c.extendsRelated(o, owner) }); m != nil {
-				ms = append(ms, m)
-			}
+			ms = append(c.matchMethod(t, name, sigAsm, sig),
+				c.explicitImpl(t, name, sigAsm, sig, func(o *typeNode) bool { return c.extendsRelated(o, owner) })...)
 		}
 		for _, m := range ms {
 			if !seen[m] {
@@ -342,11 +355,11 @@ func (c *CHA) candidateSet(owner *typeNode, name string, sig []byte, inst []byte
 // interfaceTarget resolves how type t satisfies interface member iface.name/sig:
 // an EXPLICIT MethodImpl slot first (a privately-named body a name-only resolver
 // misses — caveat 1), else an IMPLICIT public name+sig method.
-func (c *CHA) interfaceTarget(t, iface *typeNode, name string, sig []byte) *MethodDef {
-	if m := c.explicitImpl(t, name, sig, func(o *typeNode) bool { return o == iface }); m != nil {
-		return m
+func (c *CHA) interfaceTarget(t, iface *typeNode, name string, sigAsm *Assembly, sig []byte) []*MethodDef {
+	if ms := c.explicitImpl(t, name, sigAsm, sig, func(o *typeNode) bool { return o == iface }); len(ms) > 0 {
+		return ms
 	}
-	return c.matchMethod(t, name, sig)
+	return c.matchMethod(t, name, sigAsm, sig)
 }
 
 // explicitImpl looks up t's MethodImpl rows for a slot whose Declaration matches the
@@ -357,13 +370,14 @@ func (c *CHA) interfaceTarget(t, iface *typeNode, name string, sig []byte) *Meth
 // so an override declared against any ancestor slot is caught. An out-of-set (nil)
 // declaration owner is accepted on name+sig alone, matching the interface path.
 // Returns the implementing Body method.
-func (c *CHA) explicitImpl(t *typeNode, name string, sig []byte, ownerOK func(*typeNode) bool) *MethodDef {
+func (c *CHA) explicitImpl(t *typeNode, name string, sigAsm *Assembly, sig []byte, ownerOK func(*typeNode) bool) []*MethodDef {
+	var out []*MethodDef
 	for _, mi := range t.asm.MethodImpls {
 		if mi.Class.Table() != tTypeDef || mi.Class.RID() != t.def.RID {
 			continue
 		}
 		dOwner, dName, dSig, _, ok := c.methodRef(t.asm, mi.Declaration)
-		if !ok || dName != name || !bytesEqual(dSig, sig) {
+		if !ok || dName != name || !sigCompatible(sigAsm, sig, t.asm, dSig) {
 			continue
 		}
 		if dOwner != nil && !ownerOK(dOwner) {
@@ -371,11 +385,11 @@ func (c *CHA) explicitImpl(t *typeNode, name string, sig []byte, ownerOK func(*t
 		}
 		if mi.Body.Table() == tMethodDef {
 			if m := t.asm.MethodByRID(mi.Body.RID()); m != nil && m.RVA != 0 {
-				return m
+				out = append(out, m)
 			}
 		}
 	}
-	return nil
+	return out
 }
 
 // extendsRelated reports whether a and b lie on the same class Extends lineage (a is b,
@@ -399,27 +413,30 @@ func (c *CHA) extendsRelated(a, b *typeNode) bool {
 	return false
 }
 
-// matchMethod returns t's own runnable method matching name+sig (a concrete override),
-// or nil. Abstract/no-body methods are not candidates — a candidate must be a body
-// that could actually run.
-func (c *CHA) matchMethod(t *typeNode, name string, sig []byte) *MethodDef {
+// matchMethod returns t's own runnable methods named name whose signature sig (read in
+// sigAsm) can name (concrete overrides). Abstract/no-body methods are not candidates — a
+// candidate must be a body that could actually run.
+func (c *CHA) matchMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte) []*MethodDef {
+	var out []*MethodDef
 	for _, m := range t.def.Methods {
-		if m.Name == name && bytesEqual(m.SigBlob, sig) && m.Flags&0x400 == 0 && m.RVA != 0 {
-			return m
+		if m.Name == name && m.Flags&0x400 == 0 && m.RVA != 0 && sigCompatible(sigAsm, sig, t.asm, m.SigBlob) {
+			out = append(out, m)
 		}
 	}
-	return nil
+	return out
 }
 
-// declaredMethod returns t's method matching name+sig regardless of abstractness
-// (used for an exact direct-call bind, where an abstract target is still the name).
-func (c *CHA) declaredMethod(t *typeNode, name string, sig []byte) *MethodDef {
+// declaredMethod returns t's methods named name whose signature sig names, return type
+// included, regardless of abstractness (used for an exact direct-call bind, where an
+// abstract target is still the name).
+func (c *CHA) declaredMethod(t *typeNode, name string, sigAsm *Assembly, sig []byte) []*MethodDef {
+	var out []*MethodDef
 	for _, m := range t.def.Methods {
-		if m.Name == name && bytesEqual(m.SigBlob, sig) {
-			return m
+		if m.Name == name && sigExact(sigAsm, sig, t.asm, m.SigBlob) {
+			out = append(out, m)
 		}
 	}
-	return nil
+	return out
 }
 
 func bytesEqual(a, b []byte) bool {

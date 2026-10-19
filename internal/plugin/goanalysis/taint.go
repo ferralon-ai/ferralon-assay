@@ -56,6 +56,10 @@ func ComputeTaint(ctx context.Context, req plugin.ComputeTaintRequest) (plugin.T
 	for _, r := range res.Partiality.Reasons {
 		reasons[r] = true
 	}
+	// Taint results carry no scoped limits; a bounded one counts run-wide here.
+	for _, r := range res.Partiality.Scoped {
+		reasons[r.Reason] = true
+	}
 	// Fold in the triggers found on the tainted flow paths.
 	for r := range pathReasons {
 		reasons[r] = true

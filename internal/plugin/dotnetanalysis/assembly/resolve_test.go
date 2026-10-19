@@ -59,7 +59,7 @@ func assetsJSON(folders []string, libKey, libPath, target, compileDll string) []
 // characters needing escape beyond the quotes).
 func jsonStr(s string) string { return `"` + s + `"` }
 
-func TestLocateDll_AssetsHappyPath(t *testing.T) {
+func TestLocateDlls_AssetsHappyPath(t *testing.T) {
 	cache := t.TempDir()
 	// The authoritative compose is packageFolder / library.path / compile-key.
 	// A wrong compose — dropping the packageFolder root, or joining the compile key
@@ -79,16 +79,16 @@ func TestLocateDll_AssetsHappyPath(t *testing.T) {
 		t.Fatal("ParseAssetsLocator: ok=false on valid assets")
 	}
 	roots := NugetPackageRoots(t.TempDir(), a)
-	got, ok := a.LocateDll(roots, "net8.0", "Microsoft.Extensions.Primitives/8.0.0")
+	got, ok := a.LocateDlls(roots, "net8.0", "Microsoft.Extensions.Primitives/8.0.0")
 	if !ok {
-		t.Fatalf("LocateDll: ok=false, want the composed path %q", want)
+		t.Fatalf("LocateDlls: ok=false, want the composed path %q", want)
 	}
-	if got != want {
-		t.Fatalf("LocateDll composed %q, want %q", got, want)
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("LocateDlls composed %q, want [%q]", got, want)
 	}
 }
 
-func TestLocateDll_MutationControls(t *testing.T) {
+func TestLocateDlls_MutationControls(t *testing.T) {
 	cache := t.TempDir()
 	writeDll(t, cache, "foo", "1.0.0", "lib", "net8.0", "Foo.dll")
 
@@ -112,15 +112,15 @@ func TestLocateDll_MutationControls(t *testing.T) {
 			if !ok {
 				t.Fatal("ParseAssetsLocator ok=false")
 			}
-			_, ok = a.LocateDll(NugetPackageRoots(t.TempDir(), a), "net8.0", "Foo/1.0.0")
+			_, ok = a.LocateDlls(NugetPackageRoots(t.TempDir(), a), "net8.0", "Foo/1.0.0")
 			if ok != tt.wantOK {
-				t.Fatalf("LocateDll ok=%v, want %v", ok, tt.wantOK)
+				t.Fatalf("LocateDlls ok=%v, want %v", ok, tt.wantOK)
 			}
 		})
 	}
 }
 
-func TestLocateDll_PackageFolderPriority(t *testing.T) {
+func TestLocateDlls_PackageFolderPriority(t *testing.T) {
 	first := t.TempDir()
 	second := t.TempDir()
 	// Present only in the SECOND packageFolder.
@@ -139,16 +139,16 @@ func TestLocateDll_PackageFolderPriority(t *testing.T) {
 		t.Fatalf("packageFolders order = %v, want [%q %q]", a.packageFolders, first, second)
 	}
 	roots := NugetPackageRoots(t.TempDir(), a)
-	got, ok := a.LocateDll(roots, "net8.0", "Bar/2.0.0")
-	if !ok || got != want {
-		t.Fatalf("LocateDll = %q,%v; want %q,true", got, ok, want)
+	got, ok := a.LocateDlls(roots, "net8.0", "Bar/2.0.0")
+	if !ok || len(got) != 1 || got[0] != want {
+		t.Fatalf("LocateDlls = %q,%v; want [%q],true", got, ok, want)
 	}
 
 	// Present in NEITHER -> declared miss.
 	dataMiss := assetsJSON([]string{first, second}, "Baz/3.0.0", "baz/3.0.0", "net8.0", "lib/net8.0/Baz.dll")
 	am, _ := ParseAssetsLocator(dataMiss)
-	if _, ok := am.LocateDll(NugetPackageRoots(t.TempDir(), am), "net8.0", "Baz/3.0.0"); ok {
-		t.Fatal("LocateDll ok=true for a dll absent from every packageFolder")
+	if _, ok := am.LocateDlls(NugetPackageRoots(t.TempDir(), am), "net8.0", "Baz/3.0.0"); ok {
+		t.Fatal("LocateDlls ok=true for a dll absent from every packageFolder")
 	}
 }
 
@@ -269,5 +269,118 @@ func TestReadAssembly(t *testing.T) {
 	}
 	if _, ok := ReadAssembly(trunc); ok {
 		t.Fatal("ReadAssembly over a truncated PE returned ok=true")
+	}
+}
+
+// TestFrameworkSupplied: a runtime block of only "_._" over a compile dll is the framework
+// supplying the package at run time: no dll resolves (not the compile asset, not the cache
+// convention path), and the package is not codeless either.
+func TestFrameworkSupplied(t *testing.T) {
+	cache := t.TempDir()
+	writeDll(t, cache, "system.buffers", "4.5.1", "ref", "net8.0", "System.Buffers.dll")
+	writeDll(t, cache, "system.buffers", "4.5.1", "lib", "net8.0", "System.Buffers.dll")
+	data := []byte(`{"version":3,"targets":{"net8.0":{` +
+		`"System.Buffers/4.5.1":{"type":"package","compile":{"ref/net8.0/System.Buffers.dll":{}},"runtime":{"lib/net8.0/_._":{}}},` +
+		`"Meta/1.0.0":{"type":"package","compile":{"lib/net8.0/_._":{}},"runtime":{"lib/net8.0/_._":{}}},` +
+		`"RefOnly/1.0.0":{"type":"package","compile":{"ref/net8.0/RefOnly.dll":{}}}}},` +
+		`"libraries":{"System.Buffers/4.5.1":{"type":"package","path":"system.buffers/4.5.1"},` +
+		`"Meta/1.0.0":{"type":"package","path":"meta/1.0.0"},"RefOnly/1.0.0":{"type":"package","path":"refonly/1.0.0"}},` +
+		`"packageFolders":{` + jsonStr(cache) + `:{}}}`)
+	a, ok := ParseAssetsLocator(data)
+	if !ok {
+		t.Fatal("ParseAssetsLocator ok=false")
+	}
+	t.Setenv("NUGET_PACKAGES", cache)
+	cases := []struct {
+		pkg                     string
+		framework, noAssemblies bool
+		compileDlls             int
+	}{
+		{"System.Buffers/4.5.1", true, false, 0},
+		{"Meta/1.0.0", false, true, 0},
+		{"RefOnly/1.0.0", false, false, 1}, // no runtime block: compile is the implementation
+	}
+	for _, c := range cases {
+		if got := a.FrameworkSupplied("net8.0", c.pkg); got != c.framework {
+			t.Errorf("%s: FrameworkSupplied = %v, want %v", c.pkg, got, c.framework)
+		}
+		if got := a.HasNoAssemblies("net8.0", c.pkg); got != c.noAssemblies {
+			t.Errorf("%s: HasNoAssemblies = %v, want %v", c.pkg, got, c.noAssemblies)
+		}
+		if got := len(a.dlls["net8.0"][c.pkg]); got != c.compileDlls {
+			t.Errorf("%s: %d dlls recorded, want %d", c.pkg, got, c.compileDlls)
+		}
+	}
+	if paths, ok := ResolveDependencyDlls(t.TempDir(), "net8.0", "System.Buffers/4.5.1", a); ok {
+		t.Fatalf("ResolveDependencyDlls = %v for a framework-supplied package, want a miss", paths)
+	}
+	if _, why := ReadDependency(t.TempDir(), DepRef{Target: "net8.0", PkgKey: "System.Buffers/4.5.1"}, a); why != MissFrameworkSupplied {
+		t.Fatalf("ReadDependency miss = %q, want %q", why, MissFrameworkSupplied)
+	}
+}
+
+// TestDependencyDlls_RuntimeSpecificAssets: a package that ships its implementation under
+// runtimes/<rid>/lib/ beside a lib/ dll (often a PlatformNotSupported stub) is read from the
+// target restore resolved for the build's runtime, and only from there. With the runtime
+// unknown, ambiguous, or not restored, the package is a named miss; the lib/ dll, which both
+// the assets runtime block and the cache convention path name, is never read in its place.
+func TestDependencyDlls_RuntimeSpecificAssets(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("NUGET_PACKAGES", cache)
+	stub := writeDll(t, cache, "rid", "1.0.0", "lib", "net8.0", "Rid.dll")
+	win := writeDll(t, cache, "rid", "1.0.0", "runtimes", "win", "lib", "net8.0", "Rid.dll")
+	plain := writeDll(t, cache, "plain", "1.0.0", "lib", "net8.0", "Plain.dll")
+	writeDll(t, cache, "gone", "1.0.0", "lib", "net8.0", "Gone.dll")
+	ridRow := func(runtimeDll string) string {
+		return `"Rid/1.0.0":{"type":"package","compile":{"lib/net8.0/Rid.dll":{}},"runtime":{"` + runtimeDll + `":{}},` +
+			`"runtimeTargets":{"runtimes/win/lib/net8.0/Rid.dll":{"assetType":"runtime","rid":"win"}}}`
+	}
+	data := []byte(`{"version":3,"targets":{` +
+		`"net8.0":{` + ridRow("lib/net8.0/Rid.dll") + `,` +
+		`"Plain/1.0.0":{"type":"package","runtime":{"lib/net8.0/Plain.dll":{}},` +
+		`"runtimeTargets":{"runtimes/linux-x64/native/libplain.so":{"assetType":"native","rid":"linux-x64"}}},` +
+		`"Gone/1.0.0":{"type":"package","runtime":{"lib/net8.0/Gone.dll":{}},` +
+		`"runtimeTargets":{"runtimes/win/lib/net8.0/Gone.dll":{"assetType":"runtime","rid":"win"}}}},` +
+		`"net8.0/win-x64":{"Rid/1.0.0":{"type":"package","runtime":{"runtimes/win/lib/net8.0/Rid.dll":{}}},` +
+		`"Gone/1.0.0":{"type":"package","runtime":{"runtimes/win/lib/net8.0/Gone.dll":{}}}},` +
+		`"net8.0/linux-x64":{"Rid/1.0.0":{"type":"package","runtime":{"lib/net8.0/Rid.dll":{}}}}},` +
+		`"libraries":{"Rid/1.0.0":{"type":"package","path":"rid/1.0.0"},"Plain/1.0.0":{"type":"package","path":"plain/1.0.0"},` +
+		`"Gone/1.0.0":{"type":"package","path":"gone/1.0.0"}},` +
+		`"packageFolders":{` + jsonStr(cache) + `:{}}}`)
+	a, ok := ParseAssetsLocator(data)
+	if !ok {
+		t.Fatal("ParseAssetsLocator ok=false")
+	}
+	cases := []struct {
+		name     string
+		pkg      string
+		runtime  Runtime
+		want     string // located path; "" when a miss
+		wantMiss string
+	}{
+		{"RID resolved: the runtime's implementation", "Rid/1.0.0", Runtime{RID: "win-x64"}, win, ""},
+		{"RID resolved to lib/ by restore", "Rid/1.0.0", Runtime{RID: "linux-x64"}, stub, ""},
+		{"RID unknown (portable build)", "Rid/1.0.0", Runtime{}, "", MissRIDUnknown},
+		{"RID ambiguous", "Rid/1.0.0", Runtime{Ambiguous: true}, "", MissRIDAmbiguous},
+		{"RID the restore did not resolve", "Rid/1.0.0", Runtime{RID: "osx-arm64"}, "", MissRIDUnknown},
+		{"RID resolved, its asset missing: no fallback to lib/", "Gone/1.0.0", Runtime{RID: "win-x64"}, "", MissNotLocated},
+		{"native-only runtimeTargets do not make a package runtime-specific", "Plain/1.0.0", Runtime{}, plain, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			paths, miss := dependencyDlls(t.TempDir(), DepRef{Target: "net8.0", PkgKey: c.pkg, Runtime: c.runtime}, a)
+			if miss != c.wantMiss {
+				t.Fatalf("miss = %q, want %q (paths %v)", miss, c.wantMiss, paths)
+			}
+			if c.want == "" {
+				if len(paths) != 0 {
+					t.Fatalf("paths = %v, want none", paths)
+				}
+				return
+			}
+			if len(paths) != 1 || paths[0] != c.want {
+				t.Fatalf("paths = %v, want [%s]", paths, c.want)
+			}
+		})
 	}
 }

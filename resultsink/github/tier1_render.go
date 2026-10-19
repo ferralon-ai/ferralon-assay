@@ -62,7 +62,7 @@ func renderTier1Body(r report.Report) string {
 		for _, f := range cands {
 			pkg := "—"
 			if f.Package != nil {
-				pkg = fmt.Sprintf("`%s@%s`", f.Package.Name, f.Package.Version)
+				pkg = fmt.Sprintf("`%s`", f.Package.Label())
 			}
 			path := f.Evidence.ReachablePath
 			if path == "" {

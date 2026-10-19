@@ -157,9 +157,7 @@ func gradleSettingsDirs(root string) (dirs []string, literal, absolute bool) {
 		named, abs := settingsNamedDirs(root, src)
 		dirs = append(dirs, named...)
 		absolute = absolute || abs
-		named, ok = settingsLiteralDirs(root, src)
-		dirs = append(dirs, named...)
-		literal = literal && ok
+		literal = literal && settingsLiteral(src)
 	}
 	return dirs, literal, absolute
 }
@@ -173,7 +171,10 @@ func settingsNamedDirs(root, src string) (dirs []string, absolute bool) {
 		dirs = append(dirs, named...)
 	}
 	for _, m := range settingsAnyPath.FindAllStringSubmatch(src, -1) {
-		absolute = absolute || settingsAbsolute(settingsUnquote(m[1]))
+		if settingsAbsolute(filepath.FromSlash(settingsUnquote(m[1]))) {
+			absolute = true
+			continue
+		}
 		dirs = append(dirs, settingsLitDir(root, m[1]))
 	}
 	return dirs, absolute
@@ -202,13 +203,12 @@ func settingsIncludeDirs(root, list string, flat bool) (dirs []string, ok bool) 
 	return dirs, ok
 }
 
-// settingsLiteralDirs reads src line by line against the settings allow-list, returning the
-// directories it names and whether every line is allowed.
-func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
+// settingsLiteral reads src line by line against the settings allow-list, and reports whether every
+// line is allowed.
+func settingsLiteral(src string) bool {
 	var (
 		stack []string // the blocks open around the current line
 		cont  string   // "(" or "," while an include's arguments continue on the next line
-		flat  bool     // the continuing include is an includeFlat
 	)
 	in := func() string {
 		if len(stack) == 0 {
@@ -216,9 +216,8 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		}
 		return stack[len(stack)-1]
 	}
-	include := func(list string, isFlat bool) bool {
-		named, ok := settingsIncludeDirs(root, list, isFlat)
-		dirs = append(dirs, named...)
+	include := func(list string) bool {
+		_, ok := settingsIncludeDirs("", list, false)
 		return ok
 	}
 	for _, line := range strings.Split(src, "\n") {
@@ -228,14 +227,14 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		}
 		if cont != "" {
 			m := settingsIncludeMore.FindStringSubmatch(line)
-			if m == nil || !include(m[1], flat) {
-				return dirs, false
+			if m == nil || !include(m[1]) {
+				return false
 			}
 			switch {
 			case cont == "(" && m[3] == ")":
 				cont = ""
 			case cont == "," && m[3] == ")":
-				return dirs, false
+				return false
 			case cont == "," && m[2] == "":
 				cont = ""
 			}
@@ -243,7 +242,7 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		}
 		if line == "}" {
 			if len(stack) == 0 {
-				return dirs, false
+				return false
 			}
 			stack = stack[:len(stack)-1]
 			continue
@@ -251,7 +250,7 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		if m := settingsBlock.FindStringSubmatch(line); m != nil {
 			next, allowed := settingsBlocks[in()][m[1]]
 			if !allowed {
-				return dirs, false
+				return false
 			}
 			stack = append(stack, next)
 			continue
@@ -259,23 +258,22 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		switch in() {
 		case "":
 			if m := settingsIncludeLine.FindStringSubmatch(line); m != nil {
-				if !include(m[3], m[1] == "includeFlat") {
-					return dirs, false
+				if !include(m[3]) {
+					return false
 				}
 				switch {
 				case m[2] == "(" && m[5] == "":
-					cont, flat = "(", m[1] == "includeFlat"
+					cont = "("
 				case m[2] == "" && m[5] == ")":
-					return dirs, false
+					return false
 				case m[2] == "" && m[4] == ",":
-					cont, flat = ",", m[1] == "includeFlat"
+					cont = ","
 				case m[3] == "":
-					return dirs, false
+					return false
 				}
 				continue
 			}
-			if m := settingsProjectDir.FindStringSubmatch(line); m != nil {
-				dirs = append(dirs, settingsLitDir(root, m[1]))
+			if settingsProjectDir.MatchString(line) {
 				continue
 			}
 			if settingsRootLine.MatchString(line) || settingsFeature.MatchString(line) {
@@ -284,7 +282,6 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 			fallthrough
 		case "pluginManagement":
 			if m := settingsIncludeBuild.FindStringSubmatch(line); m != nil {
-				dirs = append(dirs, settingsLitDir(root, m[1]+m[2]))
 				if m[3] == "{" {
 					stack = append(stack, "includedBuild")
 				}
@@ -319,9 +316,9 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 				continue
 			}
 		}
-		return dirs, false
+		return false
 	}
-	return dirs, cont == "" && len(stack) == 0
+	return cont == "" && len(stack) == 0
 }
 
 // settingsUnquote strips the quotes from a settings string literal, or returns "" for no literal.
@@ -332,14 +329,9 @@ func settingsUnquote(lit string) string {
 	return lit[1 : len(lit)-1]
 }
 
-// settingsLitDir is the directory a quoted settings path names: relative to root, or as written
-// when absolute.
+// settingsLitDir is the directory a quoted relative settings path names under root.
 func settingsLitDir(root, lit string) string {
-	path := filepath.FromSlash(settingsUnquote(lit))
-	if settingsAbsolute(path) {
-		return filepath.Clean(path)
-	}
-	return filepath.Join(root, path)
+	return filepath.Join(root, filepath.FromSlash(settingsUnquote(lit)))
 }
 
 // settingsAbsolute reports whether a settings path is absolute on any platform Gradle runs on.

@@ -169,10 +169,10 @@ func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency
 		case base == "packages.lock.json" || base == "packages.config":
 		case configured && packagesConfigGoverns(m):
 			// A packages.config project restores from packages.config, unless a Directory file
-			// or an imported file gives it a PackageReference, which would make NuGet ignore
-			// packages.config.
+			// or a file its imports or properties bring in gives it a PackageReference, which
+			// would make NuGet ignore packages.config.
 			governed[dir] = true
-			opaque = opaque || implicitImport(m, imports) || !stockImportsOnly(m)
+			opaque = opaque || implicitImport(m, imports) || !legacyTemplateOnly(m)
 		default:
 			p := readProject(m, want, imports)
 			if lr, ok := locks[dir]; ok && projects[dir] == 1 && lockCurrent(lr, p) {
@@ -232,11 +232,14 @@ var stockLegacyImports = map[string]bool{
 	`$(msbuildbinpath)\microsoft.visualbasic.targets`:                        true,
 }
 
-// stockImportsOnly reports whether every <Import> in the project at path is one MSBuild ships
-// (stockLegacyImports). Any other import, or an ImportGroup, could add a PackageReference this
-// reader doesn't see, and then NuGet ignores packages.config. A project that can't be read
-// doesn't count.
-func stockImportsOnly(path string) bool {
+// legacyTemplateOnly reports whether the project at path is built only from what the classic
+// project template writes: every <Import> is one MSBuild ships (stockLegacyImports), every property
+// it sets is one those imports read without importing anything (legacyInertProperty), and its other
+// top-level elements are ItemGroup and ProjectExtensions. The stock imports pull in any file a
+// property such as CustomAfterMicrosoftCommonTargets names, and a redefined MSBuildExtensionsPath
+// swaps the stock files for others; any such file could add a PackageReference, and then NuGet
+// ignores packages.config. A project that can't be read doesn't count.
+func legacyTemplateOnly(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -248,16 +251,39 @@ func stockImportsOnly(path string) bool {
 		return false
 	}
 	for _, c := range proj.Children {
-		switch {
-		case strings.EqualFold(c.XMLName.Local, "ImportGroup"):
-			return false
-		case strings.EqualFold(c.XMLName.Local, "Import"):
+		switch strings.ToLower(c.XMLName.Local) {
+		case "import":
 			if !stockLegacyImports[strings.ToLower(strings.ReplaceAll(strings.TrimSpace(c.Project), "/", `\`))] {
 				return false
 			}
+		case "propertygroup":
+			for _, prop := range c.Elems {
+				if !legacyInertProperty[strings.ToLower(prop.XMLName.Local)] {
+					return false
+				}
+			}
+		case "itemgroup", "projectextensions":
+		default:
+			return false
 		}
 	}
 	return true
+}
+
+// legacyInertProperty lists, lowercased, the properties the classic project template sets. The
+// stock imports read each of them, but none names a file to import or a path to import from.
+var legacyInertProperty = map[string]bool{
+	"configuration": true, "platform": true, "projectguid": true, "projecttypeguids": true,
+	"outputtype": true, "appdesignerfolder": true, "rootnamespace": true, "assemblyname": true,
+	"targetframeworkversion": true, "targetframeworkprofile": true,
+	"filealignment": true, "deterministic": true, "debugsymbols": true, "debugtype": true,
+	"optimize": true, "outputpath": true, "defineconstants": true, "errorreport": true,
+	"warninglevel": true, "prefer32bit": true, "platformtarget": true, "autogeneratebindingredirects": true,
+	"productversion": true, "schemaversion": true, "startupobject": true, "applicationicon": true,
+	"langversion": true, "treatwarningsaserrors": true, "nowarn": true, "documentationfile": true,
+	"signassembly": true, "assemblyoriginatorkeyfile": true, "allowunsafeblocks": true,
+	"nugetpackageimportstamp": true, "mytype": true, "optionexplicit": true, "optioncompare": true,
+	"optionstrict": true, "optioninfer": true,
 }
 
 // lockRead is a packages.lock.json read for matchCoordinate: every entry for want, one per target

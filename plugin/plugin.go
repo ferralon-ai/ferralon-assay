@@ -354,10 +354,15 @@ type ResolvedDependency struct {
 // Resolved indicating whether its version is known); Found is false when no declaration of
 // that coordinate exists in the build files at all.
 type DependencyVersionResult struct {
-	Partiality Partiality           `json:"partiality"`
-	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
-	Match      ResolvedDependency   `json:"match"`
-	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	Partiality Partiality         `json:"partiality"`
+	Found      bool               `json:"found"` // a declaration of the request coordinate exists
+	Match      ResolvedDependency `json:"match"`
+	// Presence is the first resolved declaration of the request coordinate in All, with no
+	// requirement that other copies agree. It answers only "is some copy declared at this exact
+	// version", which is what a malicious-package advisory asks, and it must never feed a
+	// not-affected verdict. Nil means Match answers it too.
+	Presence *ResolvedDependency  `json:"presence,omitempty"`
+	All      []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
 	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
 	// from All is provably not a dependency. Build-isolation environments are not runtime

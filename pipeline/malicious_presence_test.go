@@ -268,3 +268,64 @@ func queryMaliciousPresence(t *testing.T, store *artifact.MemStore, caseID strin
 	}
 	return res, true
 }
+
+// A copy of a malicious package at a listed version is present whether or not the other copies
+// agree with it. The resolver withholds Match when copies disagree, which empties resolved_version;
+// the affirmative must still fire off the first resolved copy, as it does for a single copy.
+func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
+	const javaCoord, nugetID = "com.example.lib:widget", "Newtonsoft.Json"
+	reactor := `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules><module>a</module><module>b</module></modules></project>`
+	module := func(v string) string {
+		return `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version>` +
+			`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + v + `</version></dependency></dependencies></project>`
+	}
+	project := func(v string) string {
+		return `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>` +
+			`<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="` + v + `" /></ItemGroup></Project>`
+	}
+	cases := []struct {
+		name, lang, coord, purl, listed string
+		files                           map[string]string
+		wantResolved                    string
+	}{
+		{"maven modules disagree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2")}, ""},
+		{"maven modules agree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.1")}, "1.0.1"},
+		{"nuget projects disagree", "dotnet", nugetID, "pkg:nuget/Newtonsoft.Json", "13.0.1",
+			map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTreeFixture(t, tc.files)
+			src := selectionStubSource{facts: AdvisoryFacts{
+				Coordinate:       tc.coord,
+				PURL:             tc.purl,
+				MaliciousPackage: MaliciousPackageFacts{Declared: true, AffectedVersions: []string{tc.listed}},
+				Provenance:       Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+			}}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "mal-" + tc.lang, Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "MAL-2024-1", Source: "corpus"},
+				Codebase:      assessment.CodebaseRef{Repo: "example.com/target", Revision: "v1", Acquisition: assessment.Acquisition{Mode: "git"}},
+			}}
+			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("advisory_intake: %v", err)
+			}
+			inv := codebaseInventory{checkout: dirCheckout{dir: dir, lang: tc.lang}, plugin: realResolverPlugin{lang: tc.lang}, src: src}
+			if err := inv.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory: %v", err)
+			}
+			if got, _ := extractResolvedVersion(store, c.ID); got != tc.wantResolved {
+				t.Fatalf("resolved_version = %q, want %q", got, tc.wantResolved)
+			}
+			if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("malicious_presence: %v", err)
+			}
+			res, ok := queryMaliciousPresence(t, store, c.ID)
+			if !ok || res.MatchedVersion != tc.listed {
+				t.Fatalf("affirmative = %+v (emitted %v), want a match at %s", res, ok, tc.listed)
+			}
+		})
+	}
+}

@@ -85,6 +85,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
 	if want := normalizeNuGetCoordinate(req.Coordinate); want != "" {
 		res.Match, res.Found = matchCoordinate(manifests, want)
+		// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
+		// is affected by any copy at a listed version.
+		for _, d := range all {
+			if d.Resolved && normalizeNuGetCoordinate(d.Coordinate) == want {
+				res.Presence = &d
+				break
+			}
+		}
 		if parseFailed {
 			// A manifest that doesn't parse could declare want at any version.
 			if !res.Found {

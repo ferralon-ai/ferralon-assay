@@ -48,6 +48,7 @@ func TestWorkSetReasons_ClassifyLoud(t *testing.T) {
 		{"policy advisories unresolvable", reasonPolicyAdvisoryUnresolvable, report.PartialityDidNotRun},
 		{"policy not enumerable", reasonWorkSetPolicyNotEnumerable, report.PartialityDidNotRun},
 		{"dependency with no resolved version not queried", reasonWorkSetDependencyUnresolved, report.PartialityDidNotRun},
+		{"dependency whose version could not be read not queried", reasonWorkSetDependencyUnreadable, report.PartialityDidNotRun},
 		{"policy advisories name no package (corpus data limit)", reasonPolicyAdvisoryNoCoordinates, report.PartialityInherentLimit},
 		{"no manifest (borrowed from plugin)", plugin.PartialReasonNoManifest, report.PartialityDidNotRun},
 		{"control: reflection is methodology", plugin.PartialReasonReflection, report.PartialityInherentLimit},

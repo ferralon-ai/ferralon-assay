@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,9 +26,13 @@ type inventoryAnalyzer struct {
 	unsearchingAnalyzer
 	deps  []plugin.ResolvedDependency
 	match map[string]plugin.ResolvedDependency
+	fail  map[string]bool // coordinates whose per-coordinate read fails
 }
 
 func (a inventoryAnalyzer) ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	if a.fail[req.Coordinate] {
+		return plugin.DependencyVersionResult{}, errors.New("reader failed")
+	}
 	res := plugin.DependencyVersionResult{Partiality: plugin.Complete(), All: a.deps}
 	if m, ok := a.match[req.Coordinate]; ok {
 		res.Found, res.Match = true, m
@@ -198,6 +203,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		wantIDs     []string
 		wantQueried []string          // name@version, in query order
 		wantSkipped map[string]string // skipped coordinate -> the note's Package
+		wantFailed  []string          // the Package of each work_set_dependency_unreadable note
 		wantSource  string
 	}{
 		{
@@ -247,6 +253,27 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioResolved, minioPatched)) },
 			wantQueried: []string{minio + "@8.5.11", minio + "@8.5.4"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "osv: a coordinate whose read fails is its own state, not an unresolved version",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{widgetResolved, minioResolved}, fail: map[string]bool{minio: true}})
+			},
+			wantQueried: []string{widget + "@1.0.0"},
+			wantFailed:  []string{"pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "policy: a coordinate whose read fails is still admitted by name",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{widgetResolved, minioResolved}, fail: map[string]bool{minio: true}})
+			},
+			policy:     true,
+			wantIDs:    []string{minioID, widgetID},
+			wantFailed: []string{"pkg:maven/io.minio/minio"},
+			wantSource: workSetSourceBuiltinUnionPolicy,
 		},
 		{
 			name: "osv: a coordinate whose Match withholds is named and none of its pins is queried",
@@ -336,6 +363,14 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			}
 			if strings.Join(queried, ",") != strings.Join(tt.wantQueried, ",") {
 				t.Errorf("OSV queried %v, want %v", queried, tt.wantQueried)
+			}
+
+			var failed []string
+			for _, n := range notesFor(ws.partiality, reasonWorkSetDependencyUnreadable) {
+				failed = append(failed, n.Package)
+			}
+			if strings.Join(failed, ",") != strings.Join(tt.wantFailed, ",") {
+				t.Errorf("%s notes for %v, want %v", reasonWorkSetDependencyUnreadable, failed, tt.wantFailed)
 			}
 
 			skipped := notesFor(ws.partiality, reasonWorkSetDependencyUnresolved)

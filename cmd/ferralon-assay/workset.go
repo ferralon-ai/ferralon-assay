@@ -96,6 +96,12 @@ const (
 	// was not asked about it and the advisories against it were NOT assessed. One note per
 	// dependency, scoped by Package. Unclassified, so the report puts it in the loud arm.
 	reasonWorkSetDependencyUnresolved = "work_set_dependency_unresolved"
+	// reasonWorkSetDependencyUnreadable: the reader failed when asked for one declared
+	// dependency's version, so the inventory is incomplete for it. Distinct from
+	// reasonWorkSetDependencyUnresolved, where the reader answered and withheld. The dependency
+	// is still admitted by name; OSV.dev was not asked about it. One note per dependency, scoped
+	// by Package, and unclassified like reasonWorkSetNoInventory, so it lands in the loud arm.
+	reasonWorkSetDependencyUnreadable = "work_set_dependency_unreadable"
 )
 
 // workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
@@ -350,7 +356,16 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	for _, p := range pkgs {
 		pinned[p.Name] = append(pinned[p.Name], p.Version)
 	}
+	unreadable := make(map[string]bool)
+	for _, n := range notes {
+		if n.Reason == reasonWorkSetDependencyUnreadable {
+			unreadable[n.Package] = true
+		}
+	}
 	for _, u := range unversioned {
+		if unreadable[versionlessPURL(purlType, u.Name)] {
+			continue
+		}
 		detail := u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed"
 		if vs := pinned[u.Name]; len(vs) > 0 {
 			detail = u.Name + " has no single resolved version, so OSV.dev was asked only about its pinned copies (" +
@@ -573,7 +588,7 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 		}
 	}
 
-	resolved, unresolved = confirmByMatch(ctx, acq, eco, resolved, unresolved)
+	resolved, unresolved, notes = confirmByMatch(ctx, acq, eco, resolved, unresolved)
 
 	if len(resolved) == 0 && len(unresolved) == 0 {
 		notes = append(notes, report.PartialityNote{Reason: reasonWorkSetNoInventory, Ecosystem: eco})
@@ -583,9 +598,11 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 	return resolved, unresolved, notes
 }
 
-// confirmByMatch asks the reader for the Match of every coordinate that has a pinned copy. A failed
-// call withholds the coordinate rather than trusting All.
-func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package) {
+// confirmByMatch asks the reader for the Match of every coordinate that has a pinned copy. A
+// withheld Match moves the coordinate to unresolved. A failed call does too, so it is still
+// admitted by name, but it is an incomplete inventory rather than an unresolved version, so it
+// gets its own reasonWorkSetDependencyUnreadable note and no reasonWorkSetDependencyUnresolved one.
+func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package, []report.PartialityNote) {
 	named := make(map[string]bool, len(unresolved))
 	for _, u := range unresolved {
 		named[u.Name] = true
@@ -602,8 +619,17 @@ func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, un
 		}
 	}
 	var extra []report.Package
+	var notes []report.PartialityNote
 	for _, name := range names {
 		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name})
+		if err != nil && !named[name] {
+			notes = append(notes, report.PartialityNote{
+				Reason:    reasonWorkSetDependencyUnreadable,
+				Ecosystem: eco,
+				Package:   versionlessPURL(purlTypeForEcosystem(eco), name),
+				Detail:    name + "'s version could not be read (" + err.Error() + "), so the dependency inventory is incomplete for it; OSV.dev was not asked about it and advisories against it were NOT assessed",
+			})
+		}
 		if err != nil || !vr.Found || !vr.Match.Resolved || vr.Match.Version == "" {
 			withheld[name] = true
 			if !named[name] {
@@ -623,7 +649,7 @@ func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, un
 			kept = append(kept, r)
 		}
 	}
-	return append(kept, extra...), unresolved
+	return append(kept, extra...), unresolved, notes
 }
 
 // versionlessPURL renders a dependency coordinate as the versionless PURL a PartialityNote's Package

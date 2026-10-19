@@ -169,7 +169,8 @@ func TestParseClass_ExtractsInvokeEdges(t *testing.T) {
 }
 
 // TestParseClass_CollectsInitTriggers proves the parser surfaces the classes whose
-// static initializer this method triggers — new / getstatic / invokestatic — so the
+// static initializer this method triggers — new / invokestatic, and the field a
+// getstatic names — so the
 // caller can walk into <clinit>. Without these a sink reachable only through a
 // static initializer is invisible (the C8 HOLE-A regression).
 func TestParseClass_CollectsInitTriggers(t *testing.T) {
@@ -194,10 +195,19 @@ func TestParseClass_CollectsInitTriggers(t *testing.T) {
 	for _, o := range cls.Methods[0].InitTriggers {
 		got[o] = true
 	}
-	for _, want := range []string{"com/example/Holder", "com/example/Config", "com/example/Util"} {
+	for _, want := range []string{"com/example/Holder", "com/example/Util"} {
 		if !got[want] {
 			t.Errorf("missing init trigger %q; got %v", want, cls.Methods[0].InitTriggers)
 		}
+	}
+	// The declarer of a static field is resolved by the caller, so getstatic records
+	// the field reference rather than the class the code names.
+	if got["com/example/Config"] {
+		t.Errorf("getstatic must record a field reference, not an init trigger; got %v", cls.Methods[0].InitTriggers)
+	}
+	wantField := FieldRef{Owner: "com/example/Config", Name: "FLAG", Descriptor: "Z"}
+	if fr := cls.Methods[0].StaticFieldRefs; len(fr) != 1 || fr[0] != wantField {
+		t.Errorf("StaticFieldRefs = %v, want [%v]", fr, wantField)
 	}
 	if got["com/example/Obj"] {
 		t.Errorf("invokevirtual receiver must not be an init trigger; got %v", cls.Methods[0].InitTriggers)

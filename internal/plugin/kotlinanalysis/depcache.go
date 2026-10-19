@@ -1,6 +1,7 @@
 package kotlinanalysis
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,48 +35,53 @@ func splitCoordinate(coordinate string) (group, artifact string, ok bool) {
 	return group, artifact, true
 }
 
-// LocateDependencyJar searches the build's local caches — Gradle first (the Kotlin common
-// case), then Maven `.m2` — for the artifact's JAR, returning the first existing path. ok
-// is false when the JAR is absent from every cache (the caller declares a hazard, it does
-// not fetch) or when the coordinate/version is malformed.
+// LocateDependencyJar searches the build's local caches — Gradle (the Kotlin common case) and
+// Maven `.m2` — for the artifact's JAR at exactly this version. ok is false when the JAR is
+// absent from every cache (the caller declares a hazard, it does not fetch), when the
+// coordinate/version is malformed, or when the caches hold copies of it whose bytes differ, in
+// one cache or across both: the bytes the build used are then unknown, and analysing either
+// copy could trace code that never ran.
 func LocateDependencyJar(buildDir, coordinate, version string) (string, bool) {
 	group, artifact, ok := splitCoordinate(coordinate)
 	if !ok || version == "" {
 		return "", false
 	}
-	if path, ok := locateGradleJar(gradleCacheRoots(buildDir), group, artifact, version); ok {
-		return path, true
+	hits := locateGradleJars(gradleCacheRoots(buildDir), group, artifact, version)
+	hits = append(hits, locateMavenJars(mavenRepoRoots(buildDir), group, artifact, version)...)
+	if len(hits) == 0 {
+		return "", false
 	}
-	return locateMavenJar(mavenRepoRoots(buildDir), group, artifact, version)
+	return hits[0], sameBytes(hits)
 }
 
-// locateMavenJar resolves the Maven local-repository layout:
+// locateMavenJars resolves the Maven local-repository layout in every root:
 //
 //	<group as path>/<artifact>/<version>/<artifact>-<version>.jar
-func locateMavenJar(roots []string, group, artifact, version string) (string, bool) {
+func locateMavenJars(roots []string, group, artifact, version string) []string {
 	rel := filepath.Join(strings.ReplaceAll(group, ".", "/"), artifact, version, artifact+"-"+version+".jar")
+	var out []string
 	for _, root := range roots {
 		if root == "" {
 			continue
 		}
-		candidate := filepath.Join(root, rel)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
+		if candidate := filepath.Join(root, rel); fileExists(candidate) {
+			out = append(out, candidate)
 		}
 	}
-	return "", false
+	return out
 }
 
-// locateGradleJar resolves the Gradle module cache layout:
+// locateGradleJars resolves the Gradle module cache layout in every root:
 //
 //	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.jar
 //
 // Gradle keeps the group DOTTED (not slash-pathed) and interposes a content-hash
 // directory whose name is unpredictable, so the version directory is scanned for the hash
-// subdir carrying the expected JAR. The scan is bounded (one version dir, its immediate
+// subdirs carrying the expected JAR. The scan is bounded (one version dir, its immediate
 // hash children) and reads only local metadata.
-func locateGradleJar(roots []string, group, artifact, version string) (string, bool) {
+func locateGradleJars(roots []string, group, artifact, version string) []string {
 	jar := artifact + "-" + version + ".jar"
+	var out []string
 	for _, root := range roots {
 		if root == "" {
 			continue
@@ -89,13 +95,12 @@ func locateGradleJar(roots []string, group, artifact, version string) (string, b
 			if !hd.IsDir() {
 				continue
 			}
-			candidate := filepath.Join(versionDir, hd.Name(), jar)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				return candidate, true
+			if candidate := filepath.Join(versionDir, hd.Name(), jar); fileExists(candidate) {
+				out = append(out, candidate)
 			}
 		}
 	}
-	return "", false
+	return out
 }
 
 // mavenRepoRoots returns the local Maven repository roots to search, in priority order: a
@@ -123,4 +128,27 @@ func gradleCacheRoots(buildDir string) []string {
 		roots = append(roots, filepath.Join(home, ".gradle", filepath.FromSlash(moduleSub)))
 	}
 	return roots
+}
+
+// sameBytes reports whether every file in paths has identical content. A coordinate cached
+// twice with different bytes (two content-hash directories, or two repository roots) leaves
+// which copy the build used unknown.
+func sameBytes(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	var first [sha256.Size]byte
+	for i, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return false
+		}
+		sum := sha256.Sum256(data)
+		if i == 0 {
+			first = sum
+		} else if sum != first {
+			return false
+		}
+	}
+	return true
 }

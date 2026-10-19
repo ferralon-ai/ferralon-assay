@@ -520,7 +520,10 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 	}
 	// mgmtSrc and depSrc list declarations in precedence order, highest first: self before its
 	// ancestors, and within a POM its active profiles (last-declared first) before its body.
+	// importOrder lists BOM imports in the order Maven applies them: self before its ancestors,
+	// and within a POM the body's, then each active profile's in declaration order.
 	var mgmtSrc []mvnDep
+	var importOrder []mvnDep
 	var depSrc []mvnDep
 	var profileList []mvnProfile
 	var profileOwner []*mvnPOM
@@ -529,7 +532,7 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		for k, v := range anc.Properties {
 			em.props[k] = v
 		}
-		var mgmt, deps []mvnDep
+		var mgmt, deps, imports []mvnDep
 		states := evalProfiles(anc.Profiles, env)
 		for i, pr := range anc.Profiles {
 			profileList = append(profileList, pr)
@@ -541,6 +544,7 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 				}
 				mgmt = append(append([]mvnDep{}, pr.DepMgmt...), mgmt...)
 				deps = append(append([]mvnDep{}, pr.Deps...), deps...)
+				imports = append(imports, pr.DepMgmt...)
 			case triUnknown:
 				undecided = append(undecided, len(profileList)-1)
 			}
@@ -549,6 +553,7 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		deps = append(deps, anc.Deps...)
 		mgmtSrc = append(mgmt, mgmtSrc...)
 		depSrc = append(deps, depSrc...)
+		importOrder = append(append(append([]mvnDep{}, anc.DepMgmt...), imports...), importOrder...)
 	}
 	// Implicit project.* properties (literal only).
 	if isLiteralVersion(pom.Version) {
@@ -566,9 +571,11 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 	interpProps(em.props)
 
 	// Pass 3: dependencyManagement + imported BOMs → managed-version map (first declaration
-	// wins per GA, Maven precedence). A declared entry beats any import; imports then fill in
-	// order. BOMs are fetched from the cache recursively. A winning entry whose version doesn't
-	// interpolate is kept as "" (managed, version unknown), so no lower-precedence entry fills it.
+	// wins per GA, Maven precedence). A declared entry beats any import; imports then fill
+	// what's left in importOrder, the first import wins. A BOM imported more than once is imported
+	// once, at its highest-precedence version, in its first position. BOMs are fetched from the
+	// cache recursively. A winning entry whose version doesn't interpolate is kept as ""
+	// (managed, version unknown), so no lower-precedence entry fills it.
 	for _, m := range mgmtSrc {
 		if isImportBOM(m) {
 			continue
@@ -580,9 +587,17 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		ver, _ := interp(m.Version, em.props)
 		em.managed[key] = ver
 	}
+	importWinner := map[string]mvnDep{}
 	for _, m := range mgmtSrc {
-		if isImportBOM(m) {
-			importBOM(m, &em, reactor, cache, targetEnv, depth)
+		if k := importKey(m, em.props); isImportBOM(m) && importWinner[k].ArtifactID == "" {
+			importWinner[k] = m
+		}
+	}
+	importDone := map[string]bool{}
+	for _, m := range importOrder {
+		if k := importKey(m, em.props); isImportBOM(m) && !importDone[k] {
+			importDone[k] = true
+			importBOM(importWinner[k], &em, reactor, cache, targetEnv, depth)
 		}
 	}
 
@@ -717,6 +732,19 @@ func parentChain(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, dep
 	}
 	_ = depth
 	return chainResult{poms: chain, parentMissing: missing}
+}
+
+// importKey is an import's management key (groupId:artifactId:type:classifier), interpolated
+// where it can be.
+func importKey(m mvnDep, props map[string]string) string {
+	k := make([]string, 0, 4)
+	for _, f := range []string{m.GroupID, m.ArtifactID, defaultType(m.Type), m.Classifier} {
+		if v, ok := interp(f, props); ok {
+			f = v
+		}
+		k = append(k, f)
+	}
+	return strings.Join(k, ":")
 }
 
 // importBOM folds an imported BOM's effective dependencyManagement into em.managed (existing keys

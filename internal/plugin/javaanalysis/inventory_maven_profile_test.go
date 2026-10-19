@@ -1050,11 +1050,23 @@ func TestMavenProfile_MergePrecedence(t *testing.T) {
 	parentRef := `<parent><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version></parent>`
 	bomParentRef := `<parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>`
 	importBOMOnly := `<dependencyManagement><dependencies>` + bomDep + `</dependencies></dependencyManagement>` + useX
+	// imp imports org.bom:<a>:<v>. BOM a manages x at 2.0 and b at 1.0; c:1.0 manages it at 1.0
+	// and c:2.0 not at all, so only c:2.0 leaves t's own 2.0.
+	imp := func(a, v string) string {
+		return `<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>` + a + `</artifactId><version>` + v + `</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>`
+	}
+	useT := `<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></dependency></dependencies>`
 	for _, tt := range []struct {
 		name               string
 		app                string // the reactor module's elements after its coordinates
 		parent, bom, bomPa string // cached POM bodies after their coordinates
 	}{
+		{name: "profile property over its POM's body property", app: `<properties><x.version>1.0</x.version></properties>` + deps("${x.version}") + profile(`<properties><x.version>2.0</x.version></properties>`)},
+		{name: "body import before an active profile's import", app: imp("a", "1.0") + useX + profile(imp("b", "1.0"))},
+		{name: "earlier active profile's import before a later one's", app: useX + `<profiles><profile>` + active + imp("a", "1.0") + `</profile><profile><id>q</id><activation><jdk>21</jdk></activation>` + imp("b", "1.0") + `</profile></profiles>`},
+		{name: "cached parent's body import before its active profile's import", app: useX, parent: imp("a", "1.0") + profile(imp("b", "1.0"))},
+		{name: "re-imported BOM imports only the child's version", app: imp("c", "2.0") + useT, parent: imp("c", "1.0")},
+		{name: "re-imported BOM imports only the active profile's version", app: imp("c", "1.0") + useT + profile(imp("c", "2.0"))},
 		{name: "active profile manages over its POM's body", app: dm("1.0") + useX + profile(dm("2.0"))},
 		{name: "active profile declares over its POM's body", app: deps("1.0") + profile(deps("2.0"))},
 		{name: "later active profile manages over an earlier one", app: useX + `<profiles><profile>` + active + dm("1.0") + `</profile><profile><id>q</id><activation><jdk>21</jdk></activation>` + dm("2.0") + `</profile></profiles>`},
@@ -1083,6 +1095,10 @@ func TestMavenProfile_MergePrecedence(t *testing.T) {
 			for _, v := range []string{"1.0", "2.0"} {
 				writeCachePOM(t, m2, "org.x", "x", v, `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>`+v+`</version></project>`)
 			}
+			for _, b := range [][3]string{{"a", "1.0", dm("2.0")}, {"b", "1.0", dm("1.0")}, {"c", "1.0", dm("1.0")}, {"c", "2.0", ""}} {
+				writeCachePOM(t, m2, "org.bom", b[0], b[1], `<project><groupId>org.bom</groupId><artifactId>`+b[0]+`</artifactId><version>`+b[1]+`</version><packaging>pom</packaging>`+b[2]+`</project>`)
+			}
+			writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version>`+deps("2.0")+`</project>`)
 			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "21"))
 			if !raw.Partiality.Complete {
 				t.Errorf("partiality = %+v, want complete", raw.Partiality)

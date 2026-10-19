@@ -501,24 +501,13 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		managed:  map[string]string{},
 	}
 
-	// Pass 1: parent-chain inheritance (properties, depMgmt, deps merged child-wins from the
-	// root ancestor down). Build the chain root-first so a child overrides an ancestor.
+	// Pass 1: parent-chain inheritance (properties, depMgmt, deps merged child-wins). Each POM's
+	// active profiles are injected into it before inheritance, so a profile overrides its own
+	// POM's body and a child overrides both of an ancestor's.
 	chain := parentChain(pom, reactor, cache, depth)
 	if chain.parentMissing {
 		em.residue = append(em.residue, reasonParentUncached)
 	}
-	for _, anc := range chain.poms { // root ... self
-		for k, v := range anc.Properties {
-			em.props[k] = v
-		}
-	}
-	// Implicit project.* properties (literal only).
-	if isLiteralVersion(pom.Version) {
-		em.props["project.version"] = pom.Version
-		em.props["pom.version"] = pom.Version
-	}
-	em.props["project.groupId"] = pom.GroupID
-	em.props["project.artifactId"] = pom.ArtifactID
 
 	// Pass 4 (folded in before interpolation so profile props/deps participate): profile eval
 	// (inventory_maven_profile.go). Active profiles contribute properties/depMgmt/deps; an
@@ -529,14 +518,18 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 	if pom.path != "" {
 		env.selection = selectionOf(targetEnv)
 	}
+	// mgmtSrc and depSrc list declarations in precedence order, highest first: self before its
+	// ancestors, and within a POM its active profiles (last-declared first) before its body.
 	var mgmtSrc []mvnDep
 	var depSrc []mvnDep
 	var profileList []mvnProfile
 	var profileOwner []*mvnPOM
 	var undecided []int
-	for _, anc := range chain.poms {
-		mgmtSrc = append(mgmtSrc, anc.DepMgmt...)
-		depSrc = append(depSrc, anc.Deps...)
+	for _, anc := range chain.poms { // root ... self
+		for k, v := range anc.Properties {
+			em.props[k] = v
+		}
+		var mgmt, deps []mvnDep
 		states := evalProfiles(anc.Profiles, env)
 		for i, pr := range anc.Profiles {
 			profileList = append(profileList, pr)
@@ -546,13 +539,24 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 				for k, v := range pr.Properties {
 					em.props[k] = v
 				}
-				mgmtSrc = append(mgmtSrc, pr.DepMgmt...)
-				depSrc = append(depSrc, pr.Deps...)
+				mgmt = append(append([]mvnDep{}, pr.DepMgmt...), mgmt...)
+				deps = append(append([]mvnDep{}, pr.Deps...), deps...)
 			case triUnknown:
 				undecided = append(undecided, len(profileList)-1)
 			}
 		}
+		mgmt = append(mgmt, anc.DepMgmt...)
+		deps = append(deps, anc.Deps...)
+		mgmtSrc = append(mgmt, mgmtSrc...)
+		depSrc = append(deps, depSrc...)
 	}
+	// Implicit project.* properties (literal only).
+	if isLiteralVersion(pom.Version) {
+		em.props["project.version"] = pom.Version
+		em.props["pom.version"] = pom.Version
+	}
+	em.props["project.groupId"] = pom.GroupID
+	em.props["project.artifactId"] = pom.ArtifactID
 	rawProps := make(map[string]string, len(em.props))
 	for k, v := range em.props {
 		rawProps[k] = v
@@ -562,10 +566,10 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 	interpProps(em.props)
 
 	// Pass 3: dependencyManagement + imported BOMs → managed-version map (first declaration
-	// wins per GA, Maven precedence). BOMs are fetched from the cache recursively.
+	// wins per GA, Maven precedence). A declared entry beats any import; imports then fill in
+	// order. BOMs are fetched from the cache recursively.
 	for _, m := range mgmtSrc {
 		if isImportBOM(m) {
-			importBOM(m, &em, reactor, cache, targetEnv, depth)
 			continue
 		}
 		key := m.ga()
@@ -574,6 +578,11 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		}
 		if ver, ok := interp(m.Version, em.props); ok {
 			em.managed[key] = ver
+		}
+	}
+	for _, m := range mgmtSrc {
+		if isImportBOM(m) {
+			importBOM(m, &em, reactor, cache, targetEnv, depth)
 		}
 	}
 

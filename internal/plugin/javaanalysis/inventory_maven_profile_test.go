@@ -1029,3 +1029,66 @@ func TestMavenProfile_ImportedBOMProfileManagedVersionWithholds(t *testing.T) {
 		})
 	}
 }
+
+// Maven's merge precedence: a child overrides its ancestors, an active profile overrides its own
+// POM's body (a later active profile overriding an earlier one), and a declared managed version
+// overrides an imported one, in a reactor module and in an imported BOM alike.
+func TestMavenProfile_MergePrecedence(t *testing.T) {
+	const (
+		active = `<id>p</id><activation><jdk>21</jdk></activation>`
+		x      = `<groupId>org.x</groupId><artifactId>x</artifactId>`
+		bomDep = `<dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>`
+		useX   = `<dependencies><dependency>` + x + `</dependency></dependencies>`
+	)
+	dm := func(v string) string {
+		return `<dependencyManagement><dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies></dependencyManagement>`
+	}
+	deps := func(v string) string { return `<dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies>` }
+	profile := func(body string) string { return `<profiles><profile>` + active + body + `</profile></profiles>` }
+	parentRef := `<parent><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version></parent>`
+	bomParentRef := `<parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>`
+	importBOMOnly := `<dependencyManagement><dependencies>` + bomDep + `</dependencies></dependencyManagement>` + useX
+	for _, tt := range []struct {
+		name               string
+		app                string // the reactor module's elements after its coordinates
+		parent, bom, bomPa string // cached POM bodies after their coordinates
+	}{
+		{name: "active profile manages over its POM's body", app: dm("1.0") + useX + profile(dm("2.0"))},
+		{name: "active profile declares over its POM's body", app: deps("1.0") + profile(deps("2.0"))},
+		{name: "later active profile manages over an earlier one", app: useX + `<profiles><profile>` + active + dm("1.0") + `</profile><profile><id>q</id><activation><jdk>21</jdk></activation>` + dm("2.0") + `</profile></profiles>`},
+		{name: "child manages over cached parent", app: dm("2.0") + useX, parent: dm("1.0")},
+		{name: "child declares over cached parent", app: deps("2.0"), parent: deps("1.0")},
+		{name: "child manages over cached parent's active profile", app: dm("2.0") + useX, parent: profile(dm("1.0"))},
+		{name: "child property over cached parent's active-profile property", app: `<properties><x.version>2.0</x.version></properties>` + deps("${x.version}"), parent: profile(`<properties><x.version>1.0</x.version></properties>`)},
+		{name: "declared management over an earlier import", app: `<dependencyManagement><dependencies>` + bomDep + `<dependency>` + x + `<version>2.0</version></dependency></dependencies></dependencyManagement>` + useX, bom: dm("1.0")},
+		{name: "BOM active profile over BOM body", app: importBOMOnly, bom: dm("1.0") + profile(dm("2.0"))},
+		{name: "BOM body over BOM parent", app: importBOMOnly, bom: bomParentRef + dm("2.0"), bomPa: dm("1.0")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			app := tt.app
+			if tt.parent != "" {
+				app = parentRef + app
+				writeCachePOM(t, m2, "org.p", "parent", "1.0", `<project><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.parent+`</project>`)
+			}
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>`+app+`</project>`)
+			if tt.bom != "" {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.bom+`</project>`)
+			}
+			if tt.bomPa != "" {
+				writeCachePOM(t, m2, "org.bom", "bom-parent", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.bomPa+`</project>`)
+			}
+			for _, v := range []string{"1.0", "2.0"} {
+				writeCachePOM(t, m2, "org.x", "x", v, `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>`+v+`</version></project>`)
+			}
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "21"))
+			if !raw.Partiality.Complete {
+				t.Errorf("partiality = %+v, want complete", raw.Partiality)
+			}
+			inv := toJSON(t, raw)
+			if findNode(t, inv, "pkg:maven/org.x/x@2.0") == nil || findNode(t, inv, "pkg:maven/org.x/x@1.0") != nil {
+				t.Errorf("want org.x:x@2.0 only: %+v", inv.Nodes)
+			}
+		})
+	}
+}

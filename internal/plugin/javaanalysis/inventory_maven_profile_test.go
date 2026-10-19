@@ -1065,6 +1065,7 @@ func TestMavenProfile_MergePrecedence(t *testing.T) {
 		{name: "body import before an active profile's import", app: imp("a", "1.0") + useX + profile(imp("b", "1.0"))},
 		{name: "earlier active profile's import before a later one's", app: useX + `<profiles><profile>` + active + imp("a", "1.0") + `</profile><profile><id>q</id><activation><jdk>21</jdk></activation>` + imp("b", "1.0") + `</profile></profiles>`},
 		{name: "cached parent's body import before its active profile's import", app: useX, parent: imp("a", "1.0") + profile(imp("b", "1.0"))},
+		{name: "child's import before cached parent's import", app: imp("a", "1.0") + useX, parent: imp("b", "1.0")},
 		{name: "re-imported BOM imports only the child's version", app: imp("c", "2.0") + useT, parent: imp("c", "1.0")},
 		{name: "re-imported BOM imports only the active profile's version", app: imp("c", "1.0") + useT + profile(imp("c", "2.0"))},
 		{name: "active profile manages over its POM's body", app: dm("1.0") + useX + profile(dm("2.0"))},

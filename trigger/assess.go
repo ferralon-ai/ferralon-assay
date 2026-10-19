@@ -57,7 +57,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 // applying the deterministic verdict rule (inv. 5):
 //
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
-//   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate.
+//   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
+//     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
+//     carries no affected range the version axis can bound for the admitted package.
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
@@ -140,6 +142,21 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				// (honest-absent, inv.5): the candidate is reported exactly as today.
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
+		}
+		// An advisory with no affected range for the admitted package is admitted at every version,
+		// so the path says nothing about whether this version carries the flaw. The path stays as
+		// evidence; the candidate-only annotations go with the verdict.
+		if pipeline.AdvisoryRangeAbsent(store, assessmentID) {
+			f.Verdict = report.VerdictUndetermined
+			f.UndeterminedReason = report.ReasonAdvisoryRangeAbsent
+			f.Evidence = report.EvidenceSummary{
+				Detail:           report.UndeterminedDetail(report.ReasonAdvisoryRangeAbsent),
+				ReachablePath:    path,
+				EntryPoint:       entry,
+				CallPath:         frames,
+				MitigatingGuards: guards,
+				AdvisoryBounds:   advisoryBounds(store, assessmentID),
+			}
 		}
 	default:
 		// This arm is the only one that can rest on an absence, so it is the one that can
@@ -1066,7 +1083,8 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved:
+	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+		report.ReasonAdvisoryRangeAbsent:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem
@@ -1278,4 +1296,13 @@ func ecosystemFor(language string) string {
 	default:
 		return language
 	}
+}
+
+// advisoryBounds carries the partial bounds of a range-absent advisory onto its finding.
+func advisoryBounds(store artifact.Store, caseID string) []report.AdvisoryBound {
+	var out []report.AdvisoryBound
+	for _, b := range pipeline.AdvisoryRecordedBounds(store, caseID) {
+		out = append(out, report.AdvisoryBound{Introduced: b.Introduced, LastAffected: b.LastAffected})
+	}
+	return out
 }

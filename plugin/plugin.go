@@ -132,6 +132,10 @@ const (
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
 
+	// PartialReasonAdvisorySymbolUnresolved: the package's code was read in full, but an advisory
+	// symbol named nothing in it.
+	PartialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
+
 	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
 	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
 	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason
@@ -461,6 +465,22 @@ type SymbolResolutionResult struct {
 	// advisory symbol accounted for, and only the lane's own matcher knows which resolved symbol
 	// answered which advisory symbol.
 	Matched map[string][]string `json:"matched,omitempty"`
+	// ModuleSearch is a search of the source of every module in the build for the request's
+	// advisory symbols, for an advisory whose package no module in the build holds. Nil when no
+	// such search ran.
+	ModuleSearch *ModuleSearch `json:"module_search,omitempty"`
+}
+
+// ModuleSearch reports which of the build's modules the lane read in full and which of those
+// declare a function, method or variable named like one of the request's advisory symbols. A
+// module whose source the lane could not obtain or parse is left out of Searched, so a reader
+// that needs every module searched sees the gap.
+type ModuleSearch struct {
+	// Searched holds each searched module's path, and beside it the path of the module a
+	// replace directive substitutes for it.
+	Searched []string `json:"searched"`
+	// Declaring holds the paths of the searched modules that declare such a name.
+	Declaring []string `json:"declaring,omitempty"`
 }
 
 // CallEdge is one directed call-graph edge between canonical symbols.

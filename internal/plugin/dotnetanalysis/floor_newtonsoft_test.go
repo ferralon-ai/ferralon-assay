@@ -63,24 +63,90 @@ func TestFloorNewtonsoft_SymbolSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var onDisk struct{ Symbols []string }
+	var onDisk struct{ Symbols, TargetConditionalSymbols []string }
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		t.Fatal(err)
 	}
-	want := slices.Sorted(slices.Values(floorNewtonsoftSymbols))
+	table := pipeline.AdvisoryTable[floorNewtonsoftCVE]
 	for _, tt := range []struct {
-		source string
-		got    []string
+		source           string
+		got, conditional []string
 	}{
-		{"pipeline.AdvisoryTable", pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols},
-		{"corpus/testdata/advisories", onDisk.Symbols},
+		{"pipeline.AdvisoryTable", table.Symbols, table.TargetConditionalSymbols},
+		{"corpus/testdata/advisories", onDisk.Symbols, onDisk.TargetConditionalSymbols},
 	} {
 		t.Run(tt.source, func(t *testing.T) {
-			got := slices.Sorted(slices.Values(tt.got))
-			if !slices.Equal(got, want) {
-				t.Fatalf("%s %s symbols = %v\nwant %v", tt.source, floorNewtonsoftCVE, got, want)
+			for _, c := range []struct {
+				name      string
+				got, want []string
+			}{
+				{"symbols", tt.got, floorNewtonsoftSymbols},
+				{"target-conditional symbols", tt.conditional, floorNewtonsoftConditional},
+			} {
+				if got, want := slices.Sorted(slices.Values(c.got)), slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
+					t.Errorf("%s %s %s = %v\nwant %v", tt.source, floorNewtonsoftCVE, c.name, got, want)
+				}
 			}
 		})
+	}
+}
+
+// floorNewtonsoftConditional are the floor symbols some Newtonsoft.Json target does not compile:
+// read from the 12.0.1, 12.0.3 and 13.0.3 packages, net20 to net40 have no async entry, net20 no
+// DeserializeXNode, and netstandard1.0 no DeserializeXmlNode. Push and every other entry are on
+// every target, so they stay required.
+var floorNewtonsoftConditional = []string{
+	"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+	"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+	"Newtonsoft.Json.JsonTextReader.ReadAsync",
+	"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+	"Newtonsoft.Json.Linq.JToken.LoadAsync",
+	"Newtonsoft.Json.Linq.JObject.LoadAsync",
+	"Newtonsoft.Json.Linq.JArray.LoadAsync",
+	"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+	"Newtonsoft.Json.Linq.JProperty.LoadAsync",
+}
+
+// TestFloorNewtonsoft_TargetWithoutConditionalSymbols resolves the floor against a target that
+// compiles none of the conditional symbols. The result must be what the not_exploitable gate
+// accepts for a target-conditional absence: every other symbol matched and searched, exactly
+// the conditional ones unmatched, and advisory_symbol_unresolved as the only limit.
+func TestFloorNewtonsoft_TargetWithoutConditionalSymbols(t *testing.T) {
+	symbols := pipeline.AdvisoryTable[floorNewtonsoftCVE].Symbols
+	defined := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(floorNewtonsoftConditional, s) })
+	f := newDepFixture(t,
+		`"Newtonsoft.Json/12.0.3":{"type":"package","runtime":{"lib/net20/Newtonsoft.Json.dll":{}}}`,
+		newtonsoftLib)
+	f.writePkgFile(t, "newtonsoft.json/12.0.3/lib/net20/Newtonsoft.Json.dll", floorNewtonsoft(t, defined))
+	if err := os.MkdirAll(filepath.Join(f.buildDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.buildDir, "bin", "App.dll"), floorApp(nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := resolveNewtonsoft(t, f, symbols...)
+	if want := []string{plugin.PartialReasonAdvisorySymbolUnresolved}; !slices.Equal(res.Partiality.Reasons, want) || len(res.Partiality.Scoped) != 0 {
+		t.Fatalf("partiality = %+v, want reasons %v and nothing scoped", res.Partiality, want)
+	}
+	var unmatched, sinks []string
+	for _, s := range symbols {
+		if len(res.Matched[s]) == 0 {
+			unmatched = append(unmatched, s)
+		}
+		sinks = append(sinks, res.Matched[s]...)
+	}
+	if got, want := slices.Sorted(slices.Values(unmatched)), slices.Sorted(slices.Values(floorNewtonsoftConditional)); !slices.Equal(got, want) {
+		t.Fatalf("unmatched = %v\nwant %v", got, want)
+	}
+	reach, err := Reachability(nil, plugin.ReachabilityRequest{BuildDir: f.buildDir, Symbols: sinks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range sinks {
+		if !slices.Contains(reach.Searched, s) {
+			t.Errorf("%s not searched", s)
+		}
 	}
 }
 
@@ -102,8 +168,9 @@ const (
 
 // floorNewtonsoft synthesizes Newtonsoft.Json with the reader shapes the advisory turns on
 // (JsonReader -> SetToken -> private Push, JsonTextReader, Bson.BsonReader) and an empty
-// static stub for every other symbol the floor names, so every floor symbol resolves and an
-// app that reaches none of them is fully searched.
+// static stub for every other symbol in symbols, so every one resolves and an app that
+// reaches none of them is fully searched. JsonTextReader.ReadAsync is defined only when
+// symbols names it, as a target without async does not.
 func floorNewtonsoft(t *testing.T, symbols []string) []byte {
 	t.Helper()
 	b := scaffold()
@@ -118,11 +185,14 @@ func floorNewtonsoft(t *testing.T, symbols []string) []byte {
 		{name: "Skip", flags: 0x0086, sig: sigInstVoid, il: body(ilCallvirt(mtok(xMethodDef, ridReaderRead)))},
 	})
 	readerBase := cTypeDefOrRef(xTypeDef, reader)
-	b.addType(0x1, "JsonTextReader", floorReaderNamespace, readerBase, []mspec{
+	textReader := []mspec{
 		{name: "Read", flags: 0x00C6, sig: sigInstBool, il: body(call(ridReaderSetToken))},
 		{name: "ReadAsString", flags: 0x01C6, sig: sigInstGetString, il: body(call(ridReaderSetToken))},
-		{name: "ReadAsync", flags: 0x00C6, sig: sigInstGetObject, il: body()},
-	})
+	}
+	if slices.Contains(symbols, floorReaderNamespace+".JsonTextReader.ReadAsync") {
+		textReader = append(textReader, mspec{name: "ReadAsync", flags: 0x00C6, sig: sigInstGetObject, il: body()})
+	}
+	b.addType(0x1, "JsonTextReader", floorReaderNamespace, readerBase, textReader)
 	b.addType(0x1, "BsonReader", floorBsonNamespace, readerBase, []mspec{
 		{name: ".ctor", flags: 0x1886, sig: sigInstVoid, il: body()},
 		{name: "Read", flags: 0x00C6, sig: sigInstBool, il: body(call(ridReaderSetToken))},

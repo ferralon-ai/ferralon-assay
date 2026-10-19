@@ -270,6 +270,11 @@ type AdvisoryFacts struct {
 	// noise, and the round-trip guard (TestAdvisoryCorpus_Valid) legitimately does not apply to a tag
 	// the floor never populates. When the published feed carries it, a non-empty value round-trips.
 	SymbolProvenance string `json:",omitempty"`
+	// TargetConditionalSymbols are the Symbols that some build target of the package does not
+	// compile (an async entry on a framework target without async, an XmlNode entry on one without
+	// System.Xml). Absence of any other symbol never refutes. One of these may be absent only from a
+	// package the lane read in full; every other symbol must still resolve and be searched.
+	TargetConditionalSymbols []string `json:",omitempty"`
 	// GuardSymbols are advisory-declared mitigation functions (e.g. a path/symlink
 	// validator) whose PRESENCE on the resolved ingress→sink path is reported as
 	// candidate-tier evidence. Membership-based and explicit (mirrors the sanitizer
@@ -1311,6 +1316,19 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 			"Newtonsoft.Json.Linq.JProperty.Load",
 			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
 		},
+		// net20 through net40 compile no async entries, net20 no XNode entry, and netstandard1.0
+		// no XmlNode entry.
+		TargetConditionalSymbols: []string{
+			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+			"Newtonsoft.Json.JsonTextReader.ReadAsync",
+			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+			"Newtonsoft.Json.Linq.JToken.LoadAsync",
+			"Newtonsoft.Json.Linq.JObject.LoadAsync",
+			"Newtonsoft.Json.Linq.JArray.LoadAsync",
+			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
+		},
 		CWEs:    []string{"CWE-400"},
 		Summary: "uncontrolled resource consumption: Newtonsoft.Json parses arbitrarily deeply nested JSON with no default MaxDepth, enabling a StackOverflow/CPU denial of service",
 	},
@@ -1420,6 +1438,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion     string                    `json:"fixed_version,omitempty"`
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
+		Conditional      []string                  `json:"target_conditional_symbols,omitempty"`
 		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag, read as a candidate-only STRENGTH signal (never admission/refute)
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
@@ -1442,6 +1461,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		FixedVersion:     facts.FixedVersion,
 		PURL:             facts.PURL,
 		AdvisorySymbols:  facts.Symbols,
+		Conditional:      facts.TargetConditionalSymbols,
 		SymbolProvenance: facts.SymbolProvenance,
 		AdvisoryGuards:   facts.GuardSymbols,
 		CWEs:             facts.CWEs,
@@ -3419,6 +3439,22 @@ func VulnerableSymbols(store artifact.Store, caseID string) (plugin.SymbolResolu
 func AdvisorySymbols(store artifact.Store, caseID string) []string {
 	_, symbols := advisoryPURLAndSymbols(store, caseID)
 	return symbols
+}
+
+// AdvisoryTargetConditionalSymbols returns the advisory symbols that some build target of the
+// package does not compile (AdvisoryFacts.TargetConditionalSymbols).
+func AdvisoryTargetConditionalSymbols(store artifact.Store, caseID string) []string {
+	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return nil
+	}
+	var adv struct {
+		Conditional []string `json:"target_conditional_symbols"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return nil
+	}
+	return adv.Conditional
 }
 
 // AdvisoryPackage returns the name and package URL of the package the advisory was assessed

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestResolveVersions_UnwalkedGradleProjectWithholds pins tracker#254's skip-dir half: a Gradle
+// TestResolveVersions_UnwalkedGradleProjectWithholds pins tracker#254's skip-dir half and tracker#273: a Gradle
 // build buildFiles doesn't walk must leave the inventory incomplete and the Match unresolved, or a
 // root POM's copy resolves alone while Gradle ships another version.
 func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
@@ -19,7 +19,9 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 		name     string
 		files    map[string]string
 		link     string // a symlink at this path, relative to the tree, to a fresh dir outside it holding gradle
+		sub      string // the build dir within the tree, when the tree holds more than the build
 		withhold bool
+		reason   string // the reason withheld rows carry; reasonGradleProjectUnwalked when empty
 	}{
 		{name: "project included from out", files: map[string]string{"settings.gradle": "include 'out'\n", "out/build.gradle": gradle}, withhold: true},
 		{name: "project included from bin", files: map[string]string{"settings.gradle": "include 'bin'\n", "bin/build.gradle": gradle}, withhold: true},
@@ -28,14 +30,22 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 		{name: "project included from a dot dir", files: map[string]string{"settings.gradle": "include '.x'\n", ".x/build.gradle": gradle}, withhold: true},
 		{name: "project nested in a skipped dir", files: map[string]string{"settings.gradle": "include 'build:app'\n", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "standalone build in a skipped dir", files: map[string]string{"out/settings.gradle": "", "out/build.gradle": gradle}, withhold: true},
-		{name: "project included through a symlink out of the root", files: map[string]string{"settings.gradle": "include 'lib'\n"}, link: "lib", withhold: true},
-		{name: "symlink out of the root, not included", files: map[string]string{}, link: "vendor", withhold: true},
+		{name: "project included through a symlink out of the root", files: map[string]string{"settings.gradle": "include 'lib'\n"}, link: "lib", withhold: true, reason: reasonSymlinkOutOfBuildDir},
+		{name: "symlink out of the root, not included", files: map[string]string{}, link: "vendor", withhold: true, reason: reasonSymlinkOutOfBuildDir},
+		{name: "pluginManagement settings including a project in a skipped dir", files: map[string]string{"settings.gradle": "pluginManagement {\n    repositories { gradlePluginPortal() }\n}\ninclude 'build:app'\n", "build/app/build.gradle": gradle}, withhold: true},
+		{name: "projectDir moved into a skipped dir", files: map[string]string{"settings.gradle": "pluginManagement { repositories { gradlePluginPortal() } }\ninclude 'app'\nproject(':app').projectDir = file('out/app')\n", "out/app/build.gradle": gradle}, withhold: true},
+		{name: "included build in a skipped dir", files: map[string]string{"settings.gradle.kts": "pluginManagement { repositories { gradlePluginPortal() } }\nincludeBuild(\"out/plugin\")\n", "out/plugin/build.gradle.kts": gradle}, withhold: true},
+		{name: "non-literal include with a script deep in a skipped dir", files: map[string]string{"settings.gradle": "def names = ['app']\ninclude(*names)\n", "build/x/app/build.gradle": gradle}, withhold: true},
+		{name: "projectDir moved out of the root", sub: "repo", files: map[string]string{"repo/settings.gradle": "include 'app'\nproject(':app').projectDir = file('../shared/app')\n", "shared/app/build.gradle": gradle}, withhold: true},
+		{name: "flat project beside the root", sub: "repo", files: map[string]string{"repo/settings.gradle": "includeFlat 'shared'\n", "shared/build.gradle": gradle}, withhold: true},
+		{name: "control: literal settings, Android build under node_modules", files: map[string]string{"settings.gradle": "pluginManagement { repositories { gradlePluginPortal() } }\ninclude 'app'\n", "app/build.gradle": "", "node_modules/rn-lib/android/build.gradle": gradle}},
+		{name: "control: non-literal include, skipped dirs hold no script", files: map[string]string{"settings.gradle": "def names = ['app']\ninclude(*names)\n", "app/build.gradle": "", "target/classes/App.class": "x"}},
 		{name: "control: target holds only build output", files: map[string]string{"target/classes/App.class": "x"}},
 		{name: "control: dot dir with no script", files: map[string]string{".idea/misc.xml": "<project/>"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.files["pom.xml"] = pom
+			tt.files[filepath.Join(tt.sub, "pom.xml")] = pom
 			dir := writeTree(t, tt.files)
 			if tt.link != "" {
 				outside := t.TempDir()
@@ -46,7 +56,7 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			res := resolve(t, dir, "com.evil:netkit")
+			res := resolve(t, filepath.Join(dir, tt.sub), "com.evil:netkit")
 			if !tt.withhold {
 				if !res.Partiality.Complete || !res.Match.Resolved || res.Match.Version != "1.0.0" {
 					t.Errorf("control withheld: Match %+v, Partiality %+v", res.Match, res.Partiality)
@@ -56,8 +66,12 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
 				t.Errorf("Match = %+v (Found %v); want Found and unresolved", res.Match, res.Found)
 			}
-			if res.Partiality.Complete || !slices.Contains(res.Partiality.Reasons, reasonGradleProjectUnwalked) {
-				t.Errorf("Partiality = %+v; want incomplete with %s", res.Partiality, reasonGradleProjectUnwalked)
+			want := tt.reason
+			if want == "" {
+				want = reasonGradleProjectUnwalked
+			}
+			if res.Partiality.Complete || !slices.Contains(res.Partiality.Reasons, want) {
+				t.Errorf("Partiality = %+v; want incomplete with %s", res.Partiality, want)
 			}
 		})
 	}

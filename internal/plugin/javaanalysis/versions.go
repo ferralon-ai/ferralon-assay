@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +49,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	poms, gradles := buildFiles(req.BuildDir)
-	unwalked := gradleUnwalked(req.BuildDir)
+	unwalkedReason := unwalkedBuild(req.BuildDir)
+	unwalked := unwalkedReason != ""
 
 	var (
 		all         []plugin.ResolvedDependency
@@ -79,7 +79,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	part := plugin.Complete()
 	switch {
 	case unwalked:
-		part = plugin.Partial(reasonGradleProjectUnwalked)
+		part = plugin.Partial(unwalkedReason)
 	case len(poms) == 0 && len(gradles) == 0:
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
 	case parseFailed:
@@ -115,74 +115,6 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		}
 	}
 	return res, nil
-}
-
-// reasonGradleProjectUnwalked marks an inventory gradleUnwalked found incomplete.
-const reasonGradleProjectUnwalked = plugin.PartialReasonToolFailure + ":gradle_project_unwalked"
-
-// gradleUnwalked reports whether a Gradle build sits where buildFiles doesn't look: a skipped
-// directory holding a build or settings script, a project the root settings script creates that the
-// walk never entered (one nested in a skipped directory, or behind a symlink), or a symlinked
-// directory that leaves root. A skipped directory with no script directly in it stays skipped, so
-// a Maven target/ doesn't make every inventory incomplete.
-func gradleUnwalked(root string) bool {
-	root = filepath.Clean(root)
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return true
-	}
-	walked := map[string]bool{}
-	found := false
-	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil //nolint:nilerr // a listing error is buildFiles's to report.
-		}
-		switch {
-		case d.IsDir() && path != root && skipDir(d.Name()):
-			if len(gradleScriptsIn(path))+len(gradleSettingsIn(path)) > 0 {
-				found = true
-				return filepath.SkipAll
-			}
-			return filepath.SkipDir
-		case d.IsDir():
-			walked[path] = true
-		case d.Type()&fs.ModeSymlink != 0 && symlinkLeaves(realRoot, path):
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if found {
-		return true
-	}
-	projects, ok := gradleProjects(root)
-	if !ok {
-		return false
-	}
-	for dir := range projects {
-		if !walked[dir] && len(gradleScriptsIn(dir)) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// symlinkLeaves reports whether the link at path resolves to a directory outside realRoot, or
-// can't be resolved for a reason other than its target being absent.
-func symlinkLeaves(realRoot, path string) bool {
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return !missing(err)
-	}
-	info, err := os.Stat(target)
-	if err != nil {
-		return !missing(err)
-	}
-	if !info.IsDir() {
-		return false
-	}
-	rel, err := filepath.Rel(realRoot, target)
-	return err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // buildFiles returns the pom.xml and build.gradle (incl. build.gradle.kts) files under root,

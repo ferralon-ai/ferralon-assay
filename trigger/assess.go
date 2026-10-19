@@ -941,8 +941,16 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 			}
 		}
 	}
+	// A symbol the build's target of the package does not define was searched for and is not there.
+	absent := false
+	if res, err := pipeline.VulnerableSymbols(store, assessmentID); err == nil {
+		absent = len(targetConditionalAbsent(pipeline.AdvisorySymbols(store, assessmentID), pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)) > 0
+	}
 	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
+		if absent && reason == plugin.PartialReasonAdvisorySymbolUnresolved {
+			continue
+		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
 			didNotRun = true
 			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer

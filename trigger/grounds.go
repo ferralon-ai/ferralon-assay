@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -45,9 +46,15 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
-		if err == nil && searchedInPackage(symbols, res, reach.Searched, admitted, root) {
-			return fmt.Sprintf("no path from any entry point reaches %s in %s",
-				strings.Join(symbols, ", "), label), "", true
+		absent := targetConditionalAbsent(symbols, pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)
+		if err == nil && searchedInPackage(symbols, absent, res, reach.Searched, admitted, root) {
+			if len(absent) == 0 {
+				return fmt.Sprintf("no path from any entry point reaches %s in %s",
+					strings.Join(symbols, ", "), label), "", true
+			}
+			present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
+			return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
+				strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
@@ -198,13 +205,18 @@ var stdlibRoots = map[string]bool{
 
 // searchedInPackage is arm A: every advisory symbol has at least one resolved symbol whose origin
 // is the admitted package, and every such in-package symbol was searched. First-party code is the
-// admitted package only when that package is the root.
-func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey, root bool) bool {
+// admitted package only when that package is the root. A symbol in absent, which
+// targetConditionalAbsent established the build's target of the package does not define, is
+// not required.
+func searchedInPackage(symbols, absent []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey, root bool) bool {
 	done := make(map[string]bool, len(searched))
 	for _, s := range searched {
 		done[s] = true
 	}
 	for _, sym := range symbols {
+		if slices.Contains(absent, sym) {
+			continue
+		}
 		inPackage := 0
 		for _, scip := range res.Matched[sym] {
 			if !inAdmitted(res.Origins[scip], admitted, root) {
@@ -220,6 +232,37 @@ func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, sear
 		}
 	}
 	return true
+}
+
+// targetConditionalAbsent returns the advisory symbols the build's target of the package does not
+// define: each is one the advisory declares some target may not compile, and it matched nothing in
+// a package the lane read in full. It returns nil unless every symbol that matched nothing is such
+// a symbol, at least one symbol matched, and the resolution's only limit is
+// advisory_symbol_unresolved: any other limit, ambiguity included, means the symbol may be in code
+// the lane did not read or could not tell apart.
+func targetConditionalAbsent(symbols, conditional []string, res plugin.SymbolResolutionResult) []string {
+	if res.Partiality.Complete || len(res.Partiality.Scoped) > 0 {
+		return nil
+	}
+	for _, r := range res.Partiality.Reasons {
+		if r != plugin.PartialReasonAdvisorySymbolUnresolved {
+			return nil
+		}
+	}
+	var absent []string
+	for _, sym := range symbols {
+		if len(res.Matched[sym]) > 0 {
+			continue
+		}
+		if !slices.Contains(conditional, sym) {
+			return nil
+		}
+		absent = append(absent, sym)
+	}
+	if len(absent) == len(symbols) {
+		return nil
+	}
+	return absent
 }
 
 // admittedPackage returns the key of the package the advisory was admitted on and a name@version

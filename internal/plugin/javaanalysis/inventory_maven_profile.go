@@ -990,10 +990,13 @@ type profileScope struct {
 	defs map[string][]string
 	// forDependency is true for a POM read from the cache.
 	forDependency bool
+	// forImport is true for a BOM a consumer imports, whose managed versions are all it
+	// contributes.
+	forImport bool
 }
 
-func newProfileScope(chain []*mvnPOM, profileList []mvnProfile, forDependency bool) profileScope {
-	ps := profileScope{defs: map[string][]string{}, forDependency: forDependency}
+func newProfileScope(chain []*mvnPOM, profileList []mvnProfile, forDependency, forImport bool) profileScope {
+	ps := profileScope{defs: map[string][]string{}, forDependency: forDependency, forImport: forImport}
 	idx := 0
 	for _, anc := range chain {
 		for _, d := range anc.Deps {
@@ -1086,7 +1089,7 @@ func profileUnlisted(pr mvnProfile, cached bool) bool {
 }
 
 // consequential reports which entries can change the resolved graph. In a reactor module's
-// lineage every one can. In a dependency's POM every one can unless it is on this allow-list:
+// lineage every one can, and so can every managed version in an imported BOM's. In a dependency's POM every one can unless it is on this allow-list:
 //   - a dependency Maven's resolver drops before mediation (droppedBelow) whose literal
 //     groupId:artifactId every other entry of the chain declares only that way too: whichever of
 //     them Maven merges, the result is still dropped, so it adds a coordinate the consumer never
@@ -1108,7 +1111,7 @@ func (ps profileScope) consequential() []bool {
 	for i, e := range ps.entries {
 		literal := e.dep.GroupID != "" && e.dep.ArtifactID != "" && !strings.Contains(e.dep.ga(), "${")
 		switch {
-		case !ps.forDependency || !literal:
+		case !ps.forDependency || !literal || e.mgmt && ps.forImport:
 			out[i] = true
 		case e.mgmt:
 			out[i] = isImportBOM(e.dep) || declared[e.dep.ga()]

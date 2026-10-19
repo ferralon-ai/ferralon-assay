@@ -937,6 +937,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	}
 
 	pkgFilter := packageFromPURL(req.PURL)
+	var search *plugin.ModuleSearch
 	wanted := make(map[string]bool, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
 		wanted[s] = true
@@ -959,6 +960,10 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 			}
 		}
 		if !present {
+			// No loaded package is the advisory's: if no module in the build holds it either,
+			// search every module's source for the symbols, which is what can show the
+			// advisory's code is not in the build under another path.
+			search = searchBuildModules(ctx, req.BuildDir, pkgFilter, req.AdvisorySymbols)
 			pkgFilter = ""
 		}
 	}
@@ -974,7 +979,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		resolved = append(resolved, sym)
 	}
 
-	return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: resolved}, nil
+	return plugin.SymbolResolutionResult{Partiality: index.Partiality, Resolved: resolved, ModuleSearch: search}, nil
 }
 
 // packageFromPURL extracts the import path from a Go PURL of the form

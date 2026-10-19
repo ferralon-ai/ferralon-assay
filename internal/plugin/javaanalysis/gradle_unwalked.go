@@ -78,7 +78,9 @@ func unwalkedBuild(root string) string {
 }
 
 var (
-	settingsStringLit = `(?:"[^"$\n]*"|'[^'\n]*')`
+	// settingsStringLit is a quoted string with no escape and no interpolation; a backslash or a $
+	// leaves the string to the broad fallback, since its end or its value isn't read here.
+	settingsStringLit = `(?:"[^"$\\\n]*"|'[^'\\\n]*')`
 	// settingsIncludeLit is an include or includeFlat whose arguments start with string literals, in
 	// parentheses or not; settingsCallEnds decides whether the literals are the whole call.
 	settingsIncludeLit = regexp.MustCompile(`\b(include|includeFlat)(\s*\()?\s*(` + settingsStringLit + `(?:\s*,\s*` + settingsStringLit + `)*)(\s*\))?`)

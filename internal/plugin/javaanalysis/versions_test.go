@@ -384,3 +384,14 @@ func TestResolveVersions_UnlistableSubtreeLeavesMatchUnresolved(t *testing.T) {
 		t.Fatalf("match = %+v, want found and unresolved", res.Match)
 	}
 }
+
+// A module that points outside the analyzed tree is a copy this run does not read, even when the
+// file is there and agrees.
+func TestResolveVersions_ModuleOutsideTheBuildDirectory(t *testing.T) {
+	dir := writeTree(t, map[string]string{"build/pom.xml": reactorOf("a", "../elsewhere"), "build/a/pom.xml": widgetPOM("1.4.0", ""),
+		"elsewhere/pom.xml": widgetPOM("1.4.0", "")})
+	res := resolve(t, filepath.Join(dir, "build"), "com.example.lib:widget")
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+}

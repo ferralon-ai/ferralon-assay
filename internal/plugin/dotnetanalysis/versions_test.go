@@ -371,3 +371,11 @@ func TestVersions_UnlistableSubtree_Partial(t *testing.T) {
 		t.Fatalf("match = %+v, want found and unresolved", res.Match)
 	}
 }
+
+// NuGet restores an item whatever the case of its name, so a malicious-package match must see it.
+func TestVersions_ItemNameInAnotherCase_Presence(t *testing.T) {
+	dir := writeTree(t, map[string]string{"App.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><packagereference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`})
+	if res := versionsOf(t, dir, "Newtonsoft.Json"); res.Presence == nil || res.Presence.Version != "13.0.1" {
+		t.Fatalf("presence = %+v, want 13.0.1", res.Presence)
+	}
+}

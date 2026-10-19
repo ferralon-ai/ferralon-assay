@@ -338,10 +338,6 @@ func reactorModules(root string, poms []string) (_ []string, unread bool) {
 				unread = true
 				continue
 			}
-			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				unread = true
-				continue
-			}
 			poms = append(poms, path)
 		}
 	}

@@ -109,7 +109,8 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 // matchCoordinate selects the Match for the normalized package id want across every copy of it
 // in manifests. A packages.config version and every packages.lock.json entry for want, in each
 // target framework, count as written. A lock stands for the one project file beside it only while
-// it is current (lockCurrent); a packages.config stands for the project beside it. Any other
+// it is current (lockCurrent); a packages.config stands for the legacy project beside it
+// (packagesConfigGoverns), and counts only when one is there or no project is. Any other
 // project file contributes through readProject. The Match is resolved only when every copy is
 // resolved, every manifest in scope parses, every project file not stood for is one this reader
 // models, and all the copies name the same version: a build with one patched project and one
@@ -140,16 +141,13 @@ func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency
 		}
 		versions[d.Version] = struct{}{}
 	}
-	projects, configured, locks := map[string]int{}, map[string]bool{}, map[string]lockRead{}
+	projects, configs, locks := map[string]int{}, map[string][]plugin.ResolvedDependency{}, map[string]lockRead{}
 	for _, m := range manifests {
 		switch dir := filepath.Dir(m); filepath.Base(m) {
 		case "packages.config":
 			deps, ok := parseManifest(m)
 			opaque = opaque || !ok
-			configured[dir] = true
-			for _, d := range deps {
-				add(d)
-			}
+			configs[dir] = deps
 		case "packages.lock.json":
 			lr, ok := readLock(m, want)
 			opaque = opaque || !ok
@@ -161,14 +159,16 @@ func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency
 			projects[dir]++
 		}
 	}
-	imports := map[string]bool{}
+	imports, governed := map[string]bool{}, map[string]bool{}
 	for _, m := range manifests {
 		dir := filepath.Dir(m)
+		_, configured := configs[dir]
 		switch base := filepath.Base(m); {
 		case base == "packages.lock.json" || base == "packages.config":
-		case configured[dir]:
+		case configured && packagesConfigGoverns(m):
 			// A packages.config project restores from packages.config, unless a Directory file
 			// gives it a PackageReference, which would make NuGet ignore packages.config.
+			governed[dir] = true
 			opaque = opaque || implicitImport(m, imports)
 		default:
 			p := readProject(m, want, imports)
@@ -181,11 +181,42 @@ func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency
 			opaque = opaque || !p.modeled || (len(p.copies) == 0 && len(p.specs) > 0)
 		}
 	}
+	for _, m := range manifests {
+		if dir := filepath.Dir(m); filepath.Base(m) == "packages.config" && (governed[dir] || projects[dir] == 0) {
+			for _, d := range configs[dir] {
+				add(d)
+			}
+		}
+	}
 	if found && (unknown || opaque || len(versions) != 1) {
 		match.Version = ""
 		match.Resolved = false
 	}
 	return match, found
+}
+
+// packagesConfigGoverns reports whether the project at path restores from the packages.config
+// beside it: a legacy project, with no SDK and no PackageReference anywhere in the file. NuGet
+// ignores packages.config for an SDK-style project or one that uses PackageReference, so such a
+// project is read as any other. A project that can't be read counts as one that doesn't, so it is
+// read as any other too, and readProject leaves it unmodeled.
+func packagesConfigGoverns(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || bytes.Contains(bytes.ToLower(data), []byte("packagereference")) {
+		return false
+	}
+	var proj msbuildProject
+	d := xml.NewDecoder(bytes.NewReader(data))
+	d.CharsetReader = charset.NewReaderLabel
+	if err := d.Decode(&proj); err != nil || proj.SDK != "" {
+		return false
+	}
+	for _, c := range proj.Children {
+		if c.SDK != "" || strings.EqualFold(c.XMLName.Local, "Sdk") {
+			return false
+		}
+	}
+	return true
 }
 
 // lockRead is a packages.lock.json read for matchCoordinate: every entry for want, one per target
@@ -377,6 +408,7 @@ type msbuildProject struct {
 	Children []struct {
 		XMLName    xml.Name
 		Condition  string `xml:"Condition,attr"`
+		SDK        string `xml:"Sdk,attr"`
 		Properties []struct {
 			XMLName xml.Name
 			Value   string `xml:",chardata"`

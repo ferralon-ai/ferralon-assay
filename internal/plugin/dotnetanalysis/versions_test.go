@@ -242,6 +242,9 @@ func TestVersions_AllowList(t *testing.T) {
 		{"packages.config and project disagree", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project><Import Project=\"x.targets\" /></Project>",
 			"B/B.csproj": newtonsoftProject("[12.0.3]", "")}, ""},
 		{"packages.config covers its legacy project", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project><Import Project=\"x.targets\" /></Project>"}, "13.0.1"},
+		{"SDK project beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": newtonsoftProject("[12.0.3]", "")}, "12.0.3"},
+		{"PackageReference project beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+			"A/A.csproj": `<Project><Import Project="x.targets" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[12.0.3]" /></ItemGroup></Project>`}, ""},
 		{"packages.config under a Directory file", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project/>", "Directory.Build.props": "<Project/>"}, ""},
 		{"unmodeled project without the reference", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""), "B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><Import Project="x.targets" /></Project>`}, ""},
 		{"lock covers its project", map[string]string{"App.csproj": newtonsoftProject("13.0.1", ""),
@@ -310,6 +313,27 @@ func TestVersions_AllowList(t *testing.T) {
 			}
 			if res.Match.Resolved != (tc.wantVer != "") || res.Match.Version != tc.wantVer {
 				t.Fatalf("match = %+v, want version %q resolved %v", res.Match, tc.wantVer, tc.wantVer != "")
+			}
+		})
+	}
+}
+
+// NuGet ignores packages.config for a project that is SDK-style or uses PackageReference, so its
+// copy is no copy at all: a project like that which doesn't reference the package doesn't carry it.
+func TestVersions_UngovernedPackagesConfig(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"SDK project without the package beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+			"A/A.csproj": `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>`}},
+		{"Sdk element beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": `<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>`}},
+		{"Sdk import beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": `<Project><Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" /></Project>`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if res := versionsOf(t, writeTree(t, tc.files), "Newtonsoft.Json"); res.Found {
+				t.Fatalf("Newtonsoft.Json must not be Found; got %+v", res)
 			}
 		})
 	}

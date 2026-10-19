@@ -3,6 +3,7 @@ package trigger
 import (
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -58,6 +59,15 @@ func TestFinding_OutsideBuildGrounds(t *testing.T) {
 		{"an advisory package that does not parse", func(fx *groundsFixture) { fx.dropped = []string{"gogs.io/gogs"} }, false},
 		{"a standard library advisory", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:golang/stdlib" }, false},
 		{"another ecosystem", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:npm/gogs" }, false},
+		{"the run loads Go code the build never compiled", func(fx *groundsFixture) {
+			fx.footprint = []string{plugin.PartialReasonPluginLoad}
+		}, false},
+		{"another step did not run", func(fx *groundsFixture) {
+			fx.footprint = []string{plugin.PartialReasonToolFailure}
+		}, false},
+		{"a scoped limit on the build", func(fx *groundsFixture) {
+			fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonPluginLoad, Package: "pkg:golang/example.com/a"}}
+		}, false},
 		{"a package was resolved for the advisory", func(fx *groundsFixture) {
 			fx.pkg = &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0", PURL: "pkg:golang/golang.org/x/net@v0.15.0"}
 		}, false},

@@ -21,11 +21,16 @@ import (
 //     its compiled method, can yield a candidate path or block Searched, but never licenses
 //     it: a framework host runs code no main reaches.
 //
+// The engine starts each search where the JVM does: the root's class initialization closure
+// (its <clinit>, its superclasses', and each superinterface's that declares a default method),
+// and an instance root's no-arg constructor.
+//
 // A sink is Searched only when the class output covers the sources, there is at least one
 // main, every mapped root's search is empty and hazard-free, every ingress mapped to
-// compiled code, and the sink has a concrete body in loaded code. Otherwise a sink with no
-// path carries no_known_ingress + reachability_undetermined, plus no_whole_program_root when
-// there is no main.
+// compiled code, the closure declares no run-wide reason (reachClosure.Reasons: an inventory
+// graph reason, an unmodeled launch option, an unmodeled Gradle dependency form), and the sink
+// has a concrete body in loaded code. Otherwise a sink with no path carries no_known_ingress +
+// reachability_undetermined, plus no_whole_program_root when there is no main.
 //
 // Every scoped reason is also listed run-wide in Reasons until the gate reads Scoped.
 
@@ -59,6 +64,9 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		return nil, nil, nil, nil, err
 	}
 	scoped = append(scoped, rc.Scoped...)
+	for _, r := range rc.Reasons {
+		reasons[r] = true
+	}
 	if !fp.complete() {
 		scoped = append(scoped, fp.scoped()...)
 	}
@@ -96,7 +104,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 				reasons[plugin.PartialReasonNoIngress] = true // reached from a main, not an attacker-facing ingress
 			}
 			paths = append(paths, *found)
-		case clean && len(mains) > 0 && fp.complete() && !unmapped && rc.concrete(sink):
+		case clean && len(mains) > 0 && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink):
 			searched = append(searched, id)
 		default:
 			reasons[plugin.PartialReasonNoIngress] = true

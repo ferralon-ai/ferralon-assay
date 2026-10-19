@@ -103,8 +103,9 @@ type appFixture struct {
 	build string
 }
 
-// newApp writes a pom declaring netkit (plus extra dependency XML) and netkit's JAR in the
-// build-local cache. abstractSink makes UrlFetcher.fetch abstract.
+// newApp writes a pom declaring netkit (plus extra dependency XML), and netkit's JAR and a
+// dependency-free POM for it in the build-local cache, so netkit's own subtree is closed.
+// abstractSink makes UrlFetcher.fetch abstract.
 func newApp(t *testing.T, extraDeps string, abstractSink bool) *appFixture {
 	t.Helper()
 	build := t.TempDir()
@@ -125,6 +126,8 @@ func newApp(t *testing.T, extraDeps string, abstractSink bool) *appFixture {
 	}
 	jar := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", flags, []xmethod{fetch})
 	writeJar(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"), "com/evil/netkit/UrlFetcher.class", jar)
+	writeFileT(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version></project>`)
 	return &appFixture{t: t, build: build}
 }
 

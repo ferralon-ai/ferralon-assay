@@ -57,6 +57,12 @@ type reachClosure struct {
 	methods map[string]classfile.Method
 	// Loaded maps "group:artifact:version" to the JAR that was opened, for evidence.
 	Loaded map[string]string
+	// Reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
+	// no empty search is Searched: the inventory's graph reasons (InventoryGraphReasons), a
+	// launch option the lanes do not model (LaunchOptionReasons), or a Gradle dependency form
+	// the inventory does not model (UnmodeledGradleDependencies). The Kotlin closure declares
+	// the same set.
+	Reasons []string
 }
 
 // gav is one distinct (coordinate, version) from the inventory.
@@ -86,6 +92,11 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
 	if err != nil {
 		return nil, err
+	}
+	reasons := InventoryGraphReasons(inv)
+	reasons = append(reasons, LaunchOptionReasons(buildDir)...)
+	if UnmodeledGradleDependencies(buildDir) != nil {
+		reasons = append(reasons, PartialReasonUnmodeledDependency)
 	}
 	ix := indexInventory(inv)
 	cache := newMavenCache(buildDir)
@@ -145,6 +156,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	if ok && hit.key == fingerprint {
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)
+		out.Reasons = reasons
 		return &out, nil
 	}
 
@@ -195,6 +207,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
+	out.Reasons = reasons
 	return &out, nil
 }
 

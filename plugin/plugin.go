@@ -132,6 +132,10 @@ const (
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
 
+	// PartialReasonAdvisorySymbolUnresolved: the package's code was read in full, but an advisory
+	// symbol named nothing in it.
+	PartialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
+
 	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
 	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
 	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason

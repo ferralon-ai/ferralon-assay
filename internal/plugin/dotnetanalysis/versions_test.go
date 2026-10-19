@@ -945,6 +945,12 @@ func TestVersions_AllowList(t *testing.T) {
 		{"project referencing a project with a minimum", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""),
 			"B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../C/C.csproj" /></ItemGroup></Project>`,
 			"C/C.csproj": newtonsoftProject("13.0.1", "")}, ""},
+		// C's lock records what C restores; B resolves C's other packages' graph on its own.
+		{"project referencing a locked project with another package", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""),
+			"B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../C/C.csproj" /></ItemGroup></Project>`,
+			"C/C.csproj": `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Other" Version="[1.0.0]" /></ItemGroup></Project>`,
+			"C/packages.lock.json": lockDoc(lockDocSection("net8.0", lockEntry("Other", "Direct", "[1.0.0]", "1.0.0"),
+				lockEntry("Newtonsoft.Json", "Transitive", "", "13.0.1")))}, ""},
 		// C's lock is current, but B restores C's minimum on its own and may land elsewhere.
 		{"project referencing a locked project with a minimum", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.3]", ""),
 			"B/B.csproj":           `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../C/C.csproj" /></ItemGroup></Project>`,

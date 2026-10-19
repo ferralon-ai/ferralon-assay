@@ -221,6 +221,40 @@ func TestResolveVersions_NoBuildFilesDegradesToPartial(t *testing.T) {
 	}
 }
 
+// An unparseable build file vetoes every coordinate: it could declare any version of
+// anything, so the copies that did parse don't decide.
+func TestResolveVersions_UnparseableBuildFileVetoes(t *testing.T) {
+	const gradle = "dependencies {\n    implementation 'org.yaml:snakeyaml:2.0'\n}\n"
+	const truncated = `<project><dependencies><dependency><groupId>org.yaml</groupId><artifactId>snakeyaml</artifactId><version>1.33`
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{
+			name:  "a truncated pom beside a Gradle literal",
+			files: map[string]string{"a/build.gradle": gradle, "b/pom.xml": truncated},
+		},
+		{
+			name:  "a truncated pom alone",
+			files: map[string]string{"pom.xml": truncated},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolve(t, writeTree(t, tc.files), "org.yaml:snakeyaml")
+			if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+				t.Errorf("Reasons = %v, want %q", res.Partiality.Reasons, plugin.PartialReasonToolFailure)
+			}
+			if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+				t.Errorf("want Found and UNRESOLVED; got found=%v %+v", res.Found, res.Match)
+			}
+		})
+	}
+	if res := resolve(t, writeTree(t, map[string]string{"pom.xml": truncated}), ""); res.Found {
+		t.Errorf("an empty coordinate must not be Found; got %+v", res.Match)
+	}
+}
+
 func TestResolveVersions_MissingBuildDirIsHardError(t *testing.T) {
 	_, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: filepath.Join(t.TempDir(), "nope"), Coordinate: "x:y"})
 	if err == nil {

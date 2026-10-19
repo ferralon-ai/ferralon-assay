@@ -41,8 +41,9 @@ import (
 //     legitimately empty. Soundness rests entirely on the declared partiality: the result is
 //     Complete=false, so a consumer must not read the empty All as proof the dependency is
 //     absent and fabricate a not-affected.
-//   - An unparseable build file degrades Partiality to declared-partial (tool_failure); any
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable build file degrades Partiality to declared-partial (tool_failure), and
+//     every requested coordinate becomes Found and UNRESOLVED: the broken file could declare
+//     any artifact at any version.
 func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {

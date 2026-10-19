@@ -4,17 +4,24 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // writeTree writes a map of relative-path → content under a fresh temp dir and returns the
-// dir. Parent directories are created as needed.
+// dir. Parent directories are created as needed, and {{ROOT}} in a file's content becomes the
+// dir's real path.
 func writeTree(t *testing.T, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for rel, content := range files {
+		content = strings.ReplaceAll(content, "{{ROOT}}", real)
 		p := filepath.Join(root, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)

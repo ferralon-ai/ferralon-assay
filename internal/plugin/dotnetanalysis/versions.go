@@ -1,20 +1,14 @@
 package dotnetanalysis
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-
-	"golang.org/x/net/html/charset"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -33,8 +27,8 @@ import (
 // exact-bracket "Version" such as "[1.2.3]") yields Resolved=true; a plain .csproj "Version" is a
 // minimum, not a pin; a range, a float, or an unreadable entry is an
 // UNRESOLVED marker (Resolved=false) the predicate fails OPEN on, never fabricating a
-// not-affected. Transitive resolution without a lockfile is OUT of MVP (scope §3, risk R3):
-// unresolved transitives stay UNRESOLVED, never assumed not-affected.
+// not-affected. A project that could pull the package in transitively, with neither restore
+// output nor a current lockfile to say which version, contributes an UNRESOLVED copy.
 //
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
@@ -45,50 +39,120 @@ import (
 //     to seed — All is legitimately empty. Soundness rests entirely on the declared
 //     partiality: the result is Complete=false, so a consumer must not read the empty All as
 //     proof the dependency is absent and fabricate a not-affected.
-//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure); the
-//     coordinate it would have carried becomes UNRESOLVED, not absent.
+//   - An unparseable manifest degrades Partiality to declared-partial (tool_failure), and
+//     every requested coordinate becomes Found and UNRESOLVED: the broken file could declare
+//     any package at any version.
 //
 // "plugin resolves, pipeline ranges" symmetry: this op resolves only the concrete installed
 // literal version. Advisory RANGE matching (NuGet interval ordering) is applied by the
 // pipeline disqualification predicate (pipeline/nuget_version.go), never here.
+//
+// Several copies of one package (two projects, two target frameworks, a lockfile beside a
+// project file): installedCopies decides which copies each project actually installs. See
+// its doc comment for the rules.
 func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	res, copies, parseFailed, err := installedSet(req)
+	if err != nil {
+		return plugin.DependencyVersionResult{}, err
+	}
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	if want == "" {
+		return res, nil
+	}
+	res.Match, res.Found = agreeNuGet(copies, want)
+	// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
+	// is affected by any copy at a listed version.
+	for _, d := range res.All {
+		if d.Resolved && normalizeNuGetCoordinate(d.Coordinate) == want {
+			res.Presence = &d
+			break
+		}
+	}
+	if parseFailed {
+		// A manifest that doesn't parse could declare want at any version.
+		if !res.Found {
+			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
+		}
+		res.Found = true
+		res.Match.Version = ""
+		res.Match.Resolved = false
+	}
+	return res, nil
+}
+
+// installedSet reads every manifest under req.BuildDir and returns the result without a
+// Match (Partiality, All and Matches), the copies of the requested package installedCopies kept, and
+// whether a manifest or restore output failed to parse.
+func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, []nugetCopy, bool, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
-		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: stat build dir %q: %w", req.BuildDir, err)
+		return plugin.DependencyVersionResult{}, nil, false, fmt.Errorf("dotnetanalysis: stat build dir %q: %w", req.BuildDir, err)
 	}
 	if !info.IsDir() {
-		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
+		return plugin.DependencyVersionResult{}, nil, false, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
 	manifests, walkFailed := manifestFiles(req.BuildDir)
+	rootReal := realRoot(req.BuildDir)
 	want := normalizeNuGetCoordinate(req.Coordinate)
 	locked := make(map[string]bool)
 	for _, m := range manifests {
-		if filepath.Base(m) == "packages.lock.json" {
+		if manifestKind(filepath.Base(m)) == kindLock {
 			locked[filepath.Dir(m)] = true
 		}
 	}
 
 	var (
-		all     []plugin.ResolvedDependency
-		matches []plugin.ResolvedDependency
+		all         []plugin.ResolvedDependency
+		matches     []plugin.ResolvedDependency
+		copies      []nugetCopy
+		locks       = make(map[string]*lockFile)
+		projectList []string
+		projects    = make(map[string]*projectDir)
+		configs     = make(map[string]bool)
 		// A subtree the walk couldn't list could hold a manifest declaring any package at any
 		// version, as a manifest that doesn't parse could.
 		parseFailed = walkFailed
 	)
 	for _, m := range manifests {
-		deps, ok := parseManifest(m)
+		entries, lock, ok := parseManifest(rootReal, m)
 		if !ok {
 			parseFailed = true
 		}
-		all = append(all, deps...)
-		if isProjectFile(filepath.Base(m)) && locked[filepath.Dir(m)] {
-			continue // the packages.lock.json beside it pins what this references
-		}
-		for _, d := range deps {
-			if want != "" && normalizeNuGetCoordinate(d.Coordinate) == want {
-				matches = append(matches, d)
+		dir := filepath.Dir(m)
+		kind := manifestKind(filepath.Base(m))
+		switch kind {
+		case kindLock:
+			if ok {
+				locks[dir] = lock
 			}
+		case kindConfig:
+			configs[dir] = true
+		case kindProject:
+			if projects[dir] == nil {
+				projects[dir] = &projectDir{}
+			}
+			projects[dir].files = append(projects[dir].files, m)
+			projectList = append(projectList, m)
+		}
+		for _, e := range entries {
+			all = append(all, e.dep)
+			copies = append(copies, nugetCopy{dep: e.dep, dir: dir, kind: kind})
+			// Matches is the evidence as declared: every manifest's copy of want, except a
+			// project file's beside the packages.lock.json that pins what it references.
+			if want != "" && normalizeNuGetCoordinate(e.dep.Coordinate) == want && (kind != kindProject || !locked[dir]) {
+				matches = append(matches, e.dep)
+			}
+		}
+	}
+
+	var reasons []string
+	if want != "" && !parseFailed {
+		var ok bool
+		ev := newEvaluator(req.BuildDir, projectList)
+		copies, reasons, ok = installedCopies(ev, copies, locks, projects, configs, want, strings.TrimSpace(req.Coordinate))
+		if !ok {
+			parseFailed = true
 		}
 	}
 
@@ -98,522 +162,74 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonNoManifest)
 	case parseFailed:
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
+	case len(reasons) > 0:
+		part = plugin.Partial(reasons...)
 	}
 
 	// MatchesComplete stays false. MSBuild can add or re-version a PackageReference from inputs
-	// this reader does not model (a Choose block, an SDK's props and targets, an import, a
-	// Directory.Build file), so no set of declarations it reads is known to be the whole build.
-	res := plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}
-	if want != "" {
-		res.Match, res.Found = matchCoordinate(manifests, want)
-		// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
-		// is affected by any copy at a listed version.
-		for _, d := range all {
-			if d.Resolved && normalizeNuGetCoordinate(d.Coordinate) == want {
-				res.Presence = &d
-				break
-			}
-		}
-		if parseFailed {
-			// A manifest that doesn't parse could declare want at any version.
-			if !res.Found {
-				res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
-			}
-			res.Found = true
-			res.Match.Version = ""
-			res.Match.Resolved = false
-		}
-	}
-	return res, nil
+	// this reader does not model (an SDK's props and targets, a build-time property), so no set
+	// of copies it reads is known to be the whole build.
+	return plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}, copies, parseFailed, nil
 }
 
-// matchCoordinate selects the Match for the normalized package id want across every copy of it
-// in manifests. A packages.config version and every packages.lock.json entry for want, in each
-// target framework, count as written. A lock stands for the one project file beside it only while
-// it is current (lockCurrent); a packages.config stands for the legacy project beside it
-// (packagesConfigGoverns), and counts only when one is there or no project is. Any other
-// project file contributes through readProject. The Match is resolved only when every copy is
-// resolved, every manifest in scope parses, every project file not stood for is one this reader
-// models, and all the copies name the same version: a build with one patched project and one
-// affected one must not be ruled not-affected on the copy that happens to sit outside the range.
-// A modeled project that references packages but not want directly could restore want
-// transitively at any version, so it leaves the Match unresolved too.
-func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency, bool) {
+// nugetCopy is one manifest entry together with where it came from, which installedCopies
+// needs to tell a project file's own lockfile from another project's.
+type nugetCopy struct {
+	dep  plugin.ResolvedDependency
+	dir  string
+	kind string
+}
+
+const (
+	kindLock    = "lock"
+	kindProject = "project"
+	kindConfig  = "config"
+)
+
+func manifestKind(base string) string {
+	switch base {
+	case "packages.lock.json":
+		return kindLock
+	case "packages.config":
+		return kindConfig
+	default:
+		return kindProject
+	}
+}
+
+// agreeNuGet selects the Match for the normalized coordinate want from the copies
+// installedCopies kept, the unknown copies included. The Match is resolved only when every copy
+// is resolved and all name the same version: a build with one patched project and one affected
+// one must not be ruled not-affected on the copy that happens to sit outside the range.
+func agreeNuGet(copies []nugetCopy, want string) (plugin.ResolvedDependency, bool) {
 	var (
 		match    plugin.ResolvedDependency
 		found    bool
 		unknown  bool
-		opaque   bool
 		versions = map[string]struct{}{}
 	)
-	add := func(d plugin.ResolvedDependency) {
+	for _, c := range copies {
+		d := c.dep
 		if normalizeNuGetCoordinate(d.Coordinate) != want {
-			return
+			continue
 		}
 		if !found {
 			match, found = d, true
 		}
 		if !d.Resolved {
 			unknown = true
-			return
+			continue
 		}
 		if len(versions) == 0 {
 			match = d
 		}
 		versions[d.Version] = struct{}{}
 	}
-	projects, configs, locks := map[string]int{}, map[string][]plugin.ResolvedDependency{}, map[string]lockRead{}
-	for _, m := range manifests {
-		switch dir := filepath.Dir(m); filepath.Base(m) {
-		case "packages.config":
-			deps, ok := parseManifest(m)
-			opaque = opaque || !ok
-			configs[dir] = deps
-		case "packages.lock.json":
-			lr, ok := readLock(m, want)
-			opaque = opaque || !ok
-			for _, d := range lr.copies {
-				add(d)
-			}
-			locks[dir] = lr
-		default:
-			projects[dir]++
-		}
-	}
-	imports, governed := map[string]bool{}, map[string]bool{}
-	for _, m := range manifests {
-		dir := filepath.Dir(m)
-		_, configured := configs[dir]
-		switch base := filepath.Base(m); {
-		case base == "packages.lock.json" || base == "packages.config":
-		case configured && packagesConfigGoverns(m):
-			// A packages.config project restores from packages.config, unless a Directory file
-			// or a file its imports or properties bring in gives it a PackageReference, which
-			// would make NuGet ignore packages.config.
-			governed[dir] = true
-			opaque = opaque || implicitImport(m, imports) || !legacyTemplateOnly(m)
-		default:
-			p := readProject(m, want, imports)
-			if lr, ok := locks[dir]; ok && projects[dir] == 1 && lockCurrent(lr, p) {
-				continue
-			}
-			for _, d := range p.copies {
-				add(d)
-			}
-			opaque = opaque || !p.modeled || (len(p.copies) == 0 && len(p.specs) > 0)
-		}
-	}
-	for _, m := range manifests {
-		if dir := filepath.Dir(m); filepath.Base(m) == "packages.config" && (governed[dir] || projects[dir] == 0) {
-			for _, d := range configs[dir] {
-				add(d)
-			}
-		}
-	}
-	if found && (unknown || opaque || len(versions) != 1) {
+	if found && (unknown || len(versions) != 1) {
 		match.Version = ""
 		match.Resolved = false
 	}
 	return match, found
-}
-
-// packagesConfigGoverns reports whether the project at path restores from the packages.config
-// beside it: a legacy project, with no SDK and no PackageReference anywhere in the file. NuGet
-// ignores packages.config for an SDK-style project or one that uses PackageReference, so such a
-// project is read as any other. A project that can't be read counts as one that doesn't, so it is
-// read as any other too, and readProject leaves it unmodeled.
-func packagesConfigGoverns(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil || bytes.Contains(bytes.ToLower(data), []byte("packagereference")) {
-		return false
-	}
-	var proj msbuildProject
-	d := xml.NewDecoder(bytes.NewReader(data))
-	d.CharsetReader = charset.NewReaderLabel
-	if err := d.Decode(&proj); err != nil || proj.SDK != "" {
-		return false
-	}
-	for _, c := range proj.Children {
-		if c.SDK != "" || strings.EqualFold(c.XMLName.Local, "Sdk") {
-			return false
-		}
-	}
-	return true
-}
-
-// stockLegacyImports lists the imports a legacy project template carries, lowercased with
-// backslash separators. Each is a file MSBuild ships, which adds no PackageReference.
-var stockLegacyImports = map[string]bool{
-	`$(msbuildextensionspath)\$(msbuildtoolsversion)\microsoft.common.props`: true,
-	`$(msbuildtoolspath)\microsoft.csharp.targets`:                           true,
-	`$(msbuildbinpath)\microsoft.csharp.targets`:                             true,
-	`$(msbuildtoolspath)\microsoft.visualbasic.targets`:                      true,
-	`$(msbuildbinpath)\microsoft.visualbasic.targets`:                        true,
-}
-
-// legacyTemplateOnly reports whether the project at path is built only from what the classic
-// project template writes: every <Import> is one MSBuild ships (stockLegacyImports), every property
-// it sets is one those imports read without importing anything (legacyInertProperty), and its other
-// top-level elements are ItemGroup and ProjectExtensions. The stock imports pull in any file a
-// property such as CustomAfterMicrosoftCommonTargets names, and a redefined MSBuildExtensionsPath
-// swaps the stock files for others; any such file could add a PackageReference, and then NuGet
-// ignores packages.config. A project that can't be read doesn't count.
-func legacyTemplateOnly(path string) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	var proj msbuildProject
-	d := xml.NewDecoder(bytes.NewReader(data))
-	d.CharsetReader = charset.NewReaderLabel
-	if err := d.Decode(&proj); err != nil {
-		return false
-	}
-	for _, c := range proj.Children {
-		switch strings.ToLower(c.XMLName.Local) {
-		case "import":
-			if !stockLegacyImports[strings.ToLower(strings.ReplaceAll(strings.TrimSpace(c.Project), "/", `\`))] {
-				return false
-			}
-		case "propertygroup":
-			for _, prop := range c.Elems {
-				if !legacyInertProperty[strings.ToLower(prop.XMLName.Local)] {
-					return false
-				}
-			}
-		case "itemgroup", "projectextensions":
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// legacyInertProperty lists, lowercased, the properties the classic project template sets. The
-// stock imports read each of them, but none names a file to import or a path to import from.
-var legacyInertProperty = map[string]bool{
-	"configuration": true, "platform": true, "projectguid": true, "projecttypeguids": true,
-	"outputtype": true, "appdesignerfolder": true, "rootnamespace": true, "assemblyname": true,
-	"targetframeworkversion": true, "targetframeworkprofile": true,
-	"filealignment": true, "deterministic": true, "debugsymbols": true, "debugtype": true,
-	"optimize": true, "outputpath": true, "defineconstants": true, "errorreport": true,
-	"warninglevel": true, "prefer32bit": true, "platformtarget": true, "autogeneratebindingredirects": true,
-	"productversion": true, "schemaversion": true, "startupobject": true, "applicationicon": true,
-	"langversion": true, "treatwarningsaserrors": true, "nowarn": true, "documentationfile": true,
-	"signassembly": true, "assemblyoriginatorkeyfile": true, "allowunsafeblocks": true,
-	"nugetpackageimportstamp": true, "mytype": true, "optionexplicit": true, "optioncompare": true,
-	"optionstrict": true, "optioninfer": true,
-}
-
-// lockRead is a packages.lock.json read for matchCoordinate: every entry for want, one per target
-// framework, and what the lock records as requested.
-type lockRead struct {
-	copies []plugin.ResolvedDependency
-	// frameworks holds each target framework section, keyed lowercased, with its Direct ids mapped
-	// to their "requested" range; a runtime-specific section ("net8.0/win-x64") is keyed whole.
-	frameworks map[string]map[string]string
-	// central is set when the lock records a CentralTransitive entry or another kind this reader
-	// doesn't compare against the project.
-	central bool
-}
-
-func readLock(path, want string) (lockRead, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return lockRead{}, false
-	}
-	var pl packagesLock
-	if err := json.Unmarshal(data, &pl); err != nil {
-		return lockRead{}, false
-	}
-	lr := lockRead{frameworks: map[string]map[string]string{}}
-	for _, tfm := range slices.Sorted(maps.Keys(pl.Dependencies)) {
-		direct := map[string]string{}
-		for _, name := range slices.Sorted(maps.Keys(pl.Dependencies[tfm])) {
-			e := pl.Dependencies[tfm][name]
-			switch {
-			case strings.EqualFold(e.Type, "Project"):
-				continue
-			case strings.EqualFold(e.Type, "Direct"):
-				direct[normalizeNuGetCoordinate(name)] = e.Requested
-			case !strings.EqualFold(e.Type, "Transitive"):
-				lr.central = true
-			}
-			if normalizeNuGetCoordinate(name) == want {
-				lr.copies = append(lr.copies, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))
-			}
-		}
-		lr.frameworks[strings.ToLower(strings.TrimSpace(tfm))] = direct
-	}
-	return lr, true
-}
-
-// lockCurrent reports whether lr is what restore would write for the project p today, so that its
-// entries are the project's installed set. NuGet re-locks a project whose lock no longer matches
-// it, so lr is current only when: p is modeled with an exact declared set and no ProjectReference;
-// the lock's framework sections are exactly p's target frameworks; each section's Direct ids are
-// exactly p's PackageReference ids, and a runtime-specific section's are among them; and every
-// Direct "requested" equals the declaration of its id (nugetRange).
-func lockCurrent(lr lockRead, p projectRead) bool {
-	if !p.modeled || !p.exact || p.projectRefs || lr.central || len(p.frameworks) == 0 {
-		return false
-	}
-	sections := 0
-	for tfm, direct := range lr.frameworks {
-		base, _, rid := strings.Cut(tfm, "/")
-		if !slices.Contains(p.frameworks, base) {
-			return false
-		}
-		if !rid {
-			sections++
-			if len(direct) != len(p.specs) {
-				return false
-			}
-		}
-		for id, requested := range direct {
-			got, ok := nugetRange(requested)
-			if !ok {
-				return false
-			}
-			specs := p.specs[id]
-			if len(specs) == 0 {
-				return false
-			}
-			for _, spec := range specs {
-				if declared, ok := nugetRange(spec); !ok || declared != got {
-					return false
-				}
-			}
-		}
-	}
-	return sections == len(p.frameworks)
-}
-
-// projectRead is a project file read for matchCoordinate.
-type projectRead struct {
-	// copies holds each PackageReference to want, resolved when its version is an exact-bracket pin
-	// and the project is modeled.
-	copies []plugin.ResolvedDependency
-	// modeled is set when this reader models the project whole: it parses, it uses a stock SDK, its
-	// top level is only unconditional PropertyGroup and ItemGroup elements whose properties steer no
-	// import (inertProperty), every PackageReference names its packages literally and none updates
-	// or removes one, no reference to want carries a Condition or VersionOverride, and MSBuild
-	// imports nothing beside it (implicitImport). A project that isn't modeled could add to or
-	// rewrite a reference where this reader doesn't look.
-	modeled bool
-	// specs maps every package id the project references to each version it declares for it, and
-	// exact is set when those are all the project declares: no reference carries a Condition, a
-	// VersionOverride or a version this reader doesn't read whole.
-	specs map[string][]string
-	exact bool
-	// frameworks lists the project's target frameworks, lowercased.
-	frameworks  []string
-	projectRefs bool
-}
-
-func readProject(path, want string, imports map[string]bool) projectRead {
-	p := projectRead{specs: map[string][]string{}, exact: true}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return p
-	}
-	var proj msbuildProject
-	d := xml.NewDecoder(bytes.NewReader(data))
-	d.CharsetReader = charset.NewReaderLabel
-	if err := d.Decode(&proj); err != nil {
-		return p
-	}
-	p.modeled = stockSDK.MatchString(proj.SDK) && !implicitImport(path, imports)
-	var tf, tfs string
-	for _, g := range proj.Children {
-		if g.Condition != "" {
-			p.modeled = false
-		}
-		switch g.XMLName.Local {
-		case "PropertyGroup":
-			for _, prop := range g.Elems {
-				p.modeled = p.modeled && inertProperty[prop.XMLName.Local]
-				switch prop.XMLName.Local {
-				case "TargetFramework":
-					tf = prop.Value
-				case "TargetFrameworks":
-					tfs = prop.Value
-				}
-			}
-		case "ItemGroup":
-			for _, r := range g.Elems {
-				if strings.EqualFold(r.XMLName.Local, "ProjectReference") {
-					p.projectRefs = true
-				}
-				if !strings.EqualFold(r.XMLName.Local, "PackageReference") {
-					continue
-				}
-				names, literal := packageNames(r.Include)
-				if !literal || r.Update != "" || r.Remove != "" {
-					p.modeled = false
-				}
-				raw := strings.TrimSpace(r.VersionAttr)
-				plain := len(r.VersionElems) == 0 || raw == "" && len(r.VersionElems) == 1 && r.VersionElems[0].Condition == ""
-				if len(r.VersionElems) > 0 {
-					raw = strings.TrimSpace(r.VersionElems[0].Value)
-				}
-				if !plain || r.Condition != "" || r.VersionOverride != "" {
-					p.exact = false
-				}
-				for n := range names {
-					p.specs[n] = append(p.specs[n], raw)
-				}
-				if !names[want] {
-					continue
-				}
-				if !plain || r.Condition != "" || r.VersionOverride != "" {
-					p.modeled = false
-				}
-				ver, resolved := packageReferencePin(raw)
-				p.copies = append(p.copies, nugetResolved(want, ver, resolved, "csproj"))
-			}
-		default:
-			p.modeled = false
-		}
-	}
-	if tfs == "" {
-		tfs = tf
-	}
-	for _, f := range strings.Split(tfs, ";") {
-		if f = strings.ToLower(strings.TrimSpace(f)); f != "" {
-			p.frameworks = append(p.frameworks, f)
-		}
-	}
-	if !p.modeled {
-		for i := range p.copies {
-			p.copies[i] = nugetResolved(p.copies[i].Coordinate, "", false, p.copies[i].Source)
-		}
-	}
-	return p
-}
-
-// msbuildProject is a project file read for readProject: the SDK and every top-level element, with
-// the properties, PackageReference and ProjectReference items of each group.
-type msbuildProject struct {
-	SDK      string `xml:"Sdk,attr"`
-	Children []struct {
-		XMLName   xml.Name
-		Condition string `xml:"Condition,attr"`
-		SDK       string `xml:"Sdk,attr"`
-		Project   string `xml:"Project,attr"`
-		// Elems holds a PropertyGroup's properties or an ItemGroup's items. MSBuild matches item
-		// types without regard to case, so items are told apart with strings.EqualFold.
-		Elems []struct {
-			XMLName         xml.Name
-			Value           string `xml:",chardata"`
-			Include         string `xml:"Include,attr"`
-			Update          string `xml:"Update,attr"`
-			Remove          string `xml:"Remove,attr"`
-			Condition       string `xml:"Condition,attr"`
-			VersionAttr     string `xml:"Version,attr"`
-			VersionOverride string `xml:"VersionOverride,attr"`
-			VersionElems    []struct {
-				Condition string `xml:"Condition,attr"`
-				Value     string `xml:",chardata"`
-			} `xml:"Version"`
-		} `xml:",any"`
-	} `xml:",any"`
-}
-
-// stockSDK matches the SDKs the .NET SDK ships (Microsoft.NET.Sdk, Microsoft.NET.Sdk.Web, ...). A
-// project with no Sdk attribute is a legacy project, which needs an <Import> this reader rejects.
-var stockSDK = regexp.MustCompile(`^Microsoft\.NET\.Sdk(\.[A-Za-z]+)*$`)
-
-// inertProperty lists the project properties readProject accepts: each sets build or
-// package metadata and names no file MSBuild imports. Any other property could point an import
-// such as CustomAfterMicrosoftCommonTargets at a file that rewrites a PackageReference.
-var inertProperty = map[string]bool{
-	"TargetFramework": true, "TargetFrameworks": true, "OutputType": true, "Nullable": true,
-	"ImplicitUsings": true, "RootNamespace": true, "AssemblyName": true, "LangVersion": true,
-	"IsPackable": true, "IsTestProject": true, "IsPublishable": true, "Version": true,
-	"VersionPrefix": true, "VersionSuffix": true, "AssemblyVersion": true, "FileVersion": true,
-	"InformationalVersion": true, "PackageId": true, "Authors": true, "Company": true,
-	"Product": true, "Description": true, "Copyright": true, "PackageLicenseExpression": true,
-	"PackageProjectUrl": true, "RepositoryUrl": true, "RepositoryType": true, "PackageTags": true,
-	"GenerateDocumentationFile": true, "TreatWarningsAsErrors": true, "WarningsAsErrors": true,
-	"NoWarn": true, "WarningLevel": true, "Deterministic": true, "Optimize": true,
-	"DebugType": true, "DebugSymbols": true, "PlatformTarget": true, "Platforms": true,
-	"RuntimeIdentifier": true, "RuntimeIdentifiers": true, "SelfContained": true,
-	"PublishSingleFile": true, "PublishTrimmed": true, "InvariantGlobalization": true,
-	"AllowUnsafeBlocks": true, "CheckForOverflowUnderflow": true, "AnalysisLevel": true,
-	"EnforceCodeStyleInBuild": true, "UserSecretsId": true, "ServerGarbageCollection": true,
-	"ConcurrentGarbageCollection": true, "TieredPGO": true, "RollForward": true,
-	"EnablePreviewFeatures": true, "UseWPF": true, "UseWindowsForms": true, "ProjectGuid": true,
-}
-
-// packageNames splits an item attribute into the normalized package ids it names. literal is
-// false when the attribute could name an id this reader can't see: a property, item or metadata
-// reference, or a wildcard.
-func packageNames(attr string) (names map[string]bool, literal bool) {
-	if strings.ContainsAny(attr, "$@%*?") {
-		return nil, false
-	}
-	names = map[string]bool{}
-	for _, n := range strings.Split(attr, ";") {
-		if n = normalizeNuGetCoordinate(n); n != "" {
-			names[n] = true
-		}
-	}
-	return names, true
-}
-
-// implicitImport reports whether MSBuild imports, or reads arguments from, a file this reader
-// doesn't model when it evaluates the project at path: a Directory.Build.props/.targets/.rsp or
-// Directory.Packages.props in the project's directory or any ancestor, the project's .user file,
-// or a <project>.*.props/.targets under its obj directory. imports caches the per-directory answer
-// for the Directory files; a directory that can't be listed counts as one that holds them.
-func implicitImport(path string, imports map[string]bool) bool {
-	base := filepath.Base(path)
-	if _, err := os.Lstat(path + ".user"); err == nil || !os.IsNotExist(err) {
-		return true
-	}
-	entries, err := os.ReadDir(filepath.Join(filepath.Dir(path), "obj"))
-	if err != nil && !os.IsNotExist(err) {
-		return true
-	}
-	for _, e := range entries {
-		n := strings.ToLower(e.Name())
-		if strings.HasPrefix(n, strings.ToLower(base)+".") && (strings.HasSuffix(n, ".props") || strings.HasSuffix(n, ".targets")) {
-			return true
-		}
-	}
-	for dir := filepath.Dir(path); ; {
-		held, ok := imports[dir]
-		if !ok {
-			held = directoryImports(dir)
-			imports[dir] = held
-		}
-		if held {
-			return true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
-	}
-}
-
-// directoryImports reports whether dir holds a file MSBuild picks up from every project at or
-// below it, matched without regard to case, or can't be listed.
-func directoryImports(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return !os.IsNotExist(err)
-	}
-	for _, e := range entries {
-		for _, name := range []string{"Directory.Build.props", "Directory.Build.targets", "Directory.Build.rsp", "Directory.Packages.props"} {
-			if strings.EqualFold(e.Name(), name) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // manifestFiles returns every recognized .NET manifest under root, skipping build-output /
@@ -652,107 +268,90 @@ func isProjectFile(name string) bool {
 	return ext == ".csproj" || ext == ".fsproj" || ext == ".vbproj"
 }
 
-// parseManifest dispatches on the manifest's name to the format-specific parser. The bool is
-// false when the file cannot be read or is structurally unparseable (the caller degrades
-// partiality).
-func parseManifest(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
+// manifestEntry is one parsed manifest entry and, for a project file, its declared version.
+type manifestEntry struct {
+	dep  plugin.ResolvedDependency
+	spec string
+}
+
+// parseManifest dispatches on the manifest's name to the format-specific parser. The lock is
+// set only for packages.lock.json. The bool is false when the file cannot be read (readInput:
+// a regular file inside the build tree) or is structurally unparseable (the caller degrades
+// partiality and vetoes).
+func parseManifest(rootReal, path string) ([]manifestEntry, *lockFile, bool) {
+	data, _, st := readInput(rootReal, path)
+	if st != inputRead {
+		return nil, nil, false
 	}
 	base := filepath.Base(path)
 	switch {
 	case base == "packages.lock.json":
-		return parsePackagesLock(data)
+		deps, lock, ok := parsePackagesLock(data)
+		return entriesOf(deps), lock, ok
 	case base == "packages.config":
-		return parsePackagesConfig(data)
+		deps, ok := parsePackagesConfig(data)
+		return entriesOf(deps), nil, ok
 	default: // *.csproj / *.fsproj / *.vbproj
-		return parseProjectFile(data)
+		entries, ok := parseProjectFile(data)
+		return entries, nil, ok
 	}
 }
 
-// --- packages.lock.json (JSON) -----------------------------------------------
-
-// packagesLock is the subset of packages.lock.json we read: a per-framework map of package
-// name → entry with the exact "resolved" version (present for both Direct and Transitive).
-type packagesLock struct {
-	Dependencies map[string]map[string]packagesLockEntry `json:"dependencies"`
-}
-
-type packagesLockEntry struct {
-	Type      string `json:"type"`
-	Requested string `json:"requested"`
-	Resolved  string `json:"resolved"`
-}
-
-// parsePackagesLock parses packages.lock.json. Every entry (Direct or Transitive) carries an
-// exact "resolved" version, so a present resolved field resolves; a missing one is
-// UNRESOLVED. A "Project" reference (a sibling project, not a NuGet package) has no resolved
-// version and is skipped.
-func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
-	var pl packagesLock
-	if err := json.Unmarshal(data, &pl); err != nil {
-		return nil, false
+func entriesOf(deps []plugin.ResolvedDependency) []manifestEntry {
+	out := make([]manifestEntry, 0, len(deps))
+	for _, d := range deps {
+		out = append(out, manifestEntry{dep: d})
 	}
-	seen := make(map[string]bool)
-	var out []plugin.ResolvedDependency
-	for _, pkgs := range pl.Dependencies {
-		for name, e := range pkgs {
-			if strings.EqualFold(e.Type, "Project") {
-				continue
-			}
-			// The same package across target frameworks needs one entry per distinct version:
-			// each framework can restore its own.
-			key := normalizeNuGetCoordinate(name) + "@" + e.Resolved
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))
-		}
-	}
-	return out, true
+	return out
 }
 
 // --- .csproj / .fsproj / .vbproj (XML) ---------------------------------------
 
-// csprojProject is the subset of an SDK-style project file we read: the items under any
-// ItemGroup, each with an Include (the package id) and a Version given either as an attribute or
-// a child element. Only PackageReference items, matched without regard to case, are read.
-type csprojProject struct {
+// specUnread is the declared version of a reference this reader can't pin down. It never
+// normalizes, so no lockfile covers it.
+const specUnread = "unread"
+
+// csprojRefs is every PackageReference Include and Version of a project file, read without
+// judging anything else in it.
+type csprojRefs struct {
 	ItemGroups []struct {
-		Items []struct {
-			XMLName     xml.Name
+		Refs []struct {
 			Include     string `xml:"Include,attr"`
 			VersionAttr string `xml:"Version,attr"`
 			VersionElem string `xml:"Version"`
-		} `xml:",any"`
+		} `xml:"PackageReference"`
 	} `xml:"ItemGroup"`
 }
 
-// parseProjectFile parses a .csproj/.fsproj/.vbproj for PackageReference pins. Only the
-// exact-bracket Version "[1.2.3]" resolves. A plain Version "1.2.3" is a minimum (NuGet restores
-// the lowest available version at or above it, NU1603), so it is UNRESOLVED like a range, a
-// floating version, an empty Version (Central Package Management — the version lives in
-// Directory.Packages.props, out of MVP), or a "Project"/framework reference.
-func parseProjectFile(data []byte) ([]plugin.ResolvedDependency, bool) {
-	var proj csprojProject
+// parseProjectFile parses a .csproj/.fsproj/.vbproj with parseMSBuild. Only the exact-bracket
+// Version "[1.2.3]" resolves. A plain Version "1.2.3" is a minimum (NuGet restores the lowest
+// available version at or above it, NU1603), so it is UNRESOLVED unless a current lock covers
+// it, like a range, a floating version, an empty Version (Central Package Management — the version lives in
+// Directory.Packages.props) or a reference parseMSBuild reads as specUnread is UNRESOLVED.
+// Each entry carries the declared version (Version, else VersionOverride) for the lock
+// staleness check. A file parseMSBuild can't model still lists its PackageReferences, each with
+// its pin as written for evidence (Matches) and its declared version specUnread; installedCopies
+// never keeps a project file's copy, and reports why for the requested package. The bool is false only
+// when the XML doesn't parse.
+func parseProjectFile(data []byte) ([]manifestEntry, bool) {
+	if mf, ok := parseMSBuild(data, roleProject, "csproj"); ok {
+		return slices.Concat(mf.refs, mf.globals), true
+	}
+	var proj csprojRefs
 	if err := xml.Unmarshal(data, &proj); err != nil {
 		return nil, false
 	}
-	var out []plugin.ResolvedDependency
+	var out []manifestEntry
 	for _, ig := range proj.ItemGroups {
-		for _, pr := range ig.Items {
-			name := strings.TrimSpace(pr.Include)
-			if name == "" || !strings.EqualFold(pr.XMLName.Local, "PackageReference") {
-				continue
+		for _, r := range ig.Refs {
+			if name := strings.TrimSpace(r.Include); name != "" && !strings.ContainsAny(name, ";*?$@%") {
+				raw := strings.TrimSpace(r.VersionAttr)
+				if raw == "" {
+					raw = strings.TrimSpace(r.VersionElem)
+				}
+				ver, resolved := packageReferencePin(raw)
+				out = append(out, manifestEntry{dep: nugetResolved(name, ver, resolved, "csproj"), spec: specUnread})
 			}
-			raw := strings.TrimSpace(pr.VersionAttr)
-			if raw == "" {
-				raw = strings.TrimSpace(pr.VersionElem)
-			}
-			ver, resolved := packageReferencePin(raw)
-			out = append(out, nugetResolved(name, ver, resolved, "csproj"))
 		}
 	}
 	return out, true
@@ -786,6 +385,11 @@ func parsePackagesConfig(data []byte) ([]plugin.ResolvedDependency, bool) {
 		out = append(out, nugetResolved(name, ver, resolved, "packages.config"))
 	}
 	return out, true
+}
+
+func withinDir(root, dir string) bool {
+	rel, err := filepath.Rel(root, dir)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // --- shared helpers ----------------------------------------------------------

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html/charset"
@@ -328,7 +329,7 @@ const maxRepositoryParents = 64
 // bytes (a miss: the build fetched it from a remote this reader never sees), doesn't parse, isn't
 // one pomModeled models whole, or is named without a groupId, an artifactId and a version that is
 // a literal release pin (a range or an interpolation names no one directory in the cache, and
-// Maven re-fetches a -SNAPSHOT from its remote, so a cached copy is not the one it binds). ok is false too
+// Maven re-fetches a snapshot from its remote, so a cached copy is not the one it binds). ok is false too
 // when no ancestor declares want but one declares another dependency, which could bring want in
 // at a version Maven picks from the graph. An ancestor's parent always comes from a repository: Maven
 // ignores relativePath on a POM it read from one.
@@ -338,7 +339,7 @@ func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (
 	seen := map[string]bool{}
 	for {
 		g, a, v := strings.TrimSpace(ref.GroupID), strings.TrimSpace(ref.ArtifactID), strings.TrimSpace(ref.Version)
-		if g == "" || a == "" || !pinnedVersion(v) || strings.HasSuffix(strings.ToUpper(v), "-SNAPSHOT") {
+		if g == "" || a == "" || !pinnedVersion(v) || mavenSnapshot(v) {
 			return nil, false
 		}
 		key := g + ":" + a + ":" + v
@@ -373,6 +374,15 @@ func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (
 		return all, true
 	}
 	return decls, true
+}
+
+// timestampedSnapshot is a deployed snapshot's version, as Maven's ArtifactUtils.isSnapshot matches it.
+var timestampedSnapshot = regexp.MustCompile(`^.*-\d{8}\.\d{6}-\d+$`)
+
+// mavenSnapshot reports whether Maven treats v as a snapshot: any version ending in SNAPSHOT, in
+// any case and with or without a hyphen, or a timestamped snapshot.
+func mavenSnapshot(v string) bool {
+	return strings.HasSuffix(strings.ToUpper(v), "SNAPSHOT") || timestampedSnapshot.MatchString(v)
 }
 
 // declaresVariant reports whether proj declares want with a type other than jar or with a

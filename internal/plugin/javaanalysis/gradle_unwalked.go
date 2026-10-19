@@ -79,10 +79,11 @@ func unwalkedBuild(root string) string {
 
 var (
 	settingsStringLit = `(?:"[^"$\n]*"|'[^'\n]*')`
-	// settingsIncludeLit is an include or includeFlat of string literals, in parentheses or not.
-	settingsIncludeLit = regexp.MustCompile(`\b(include|includeFlat)\s*\(?\s*(` + settingsStringLit + `(?:\s*,\s*` + settingsStringLit + `)*)\s*\)?`)
-	// settingsIncludeBuildLit is an includeBuild of one string literal.
-	settingsIncludeBuildLit = regexp.MustCompile(`\bincludeBuild\s*\(?\s*(` + settingsStringLit + `)`)
+	// settingsIncludeLit is an include or includeFlat whose arguments start with string literals, in
+	// parentheses or not; settingsCallEnds decides whether the literals are the whole call.
+	settingsIncludeLit = regexp.MustCompile(`\b(include|includeFlat)(\s*\()?\s*(` + settingsStringLit + `(?:\s*,\s*` + settingsStringLit + `)*)(\s*\))?`)
+	// settingsIncludeBuildLit is an includeBuild whose argument starts with a string literal.
+	settingsIncludeBuildLit = regexp.MustCompile(`\bincludeBuild(\s*\()?\s*(` + settingsStringLit + `)(\s*\))?`)
 	// settingsProjectDirLit is a projectDir set to file() of one string literal.
 	settingsProjectDirLit = regexp.MustCompile(`\bprojectDir\s*=\s*file\s*\(\s*(` + settingsStringLit + `)\s*\)`)
 	// settingsProjectForm is every keyword that can add a project or move one; each must be one of
@@ -107,15 +108,19 @@ func gradleSettingsDirs(root string) (dirs []string, literal bool) {
 			return dirs, false
 		}
 		matched := 0
-		for _, m := range settingsIncludeLit.FindAllStringSubmatch(src, -1) {
+		for _, ix := range settingsIncludeLit.FindAllStringSubmatchIndex(src, -1) {
 			matched++
-			for _, a := range settingsLitArg.FindAllString(m[2], -1) {
+			if !settingsCallEnds(src, ix, false) {
+				literal = false
+				continue
+			}
+			for _, a := range settingsLitArg.FindAllString(src[ix[6]:ix[7]], -1) {
 				name := strings.TrimPrefix(a[1:len(a)-1], ":")
 				if name == "" || strings.ContainsAny(name, "/\\") || strings.Contains(name, "..") {
 					literal = false
 					continue
 				}
-				if m[1] == "includeFlat" {
+				if src[ix[2]:ix[3]] == "includeFlat" {
 					dirs = append(dirs, filepath.Join(filepath.Dir(root), name))
 					continue
 				}
@@ -126,17 +131,49 @@ func gradleSettingsDirs(root string) (dirs []string, literal bool) {
 				}
 			}
 		}
-		for _, re := range []*regexp.Regexp{settingsIncludeBuildLit, settingsProjectDirLit} {
-			for _, m := range re.FindAllStringSubmatch(src, -1) {
-				matched++
-				dirs = append(dirs, filepath.Join(root, filepath.FromSlash(m[1][1:len(m[1])-1])))
+		for _, ix := range settingsIncludeBuildLit.FindAllStringSubmatchIndex(src, -1) {
+			matched++
+			if !settingsCallEnds(src, ix, true) {
+				literal = false
+				continue
 			}
+			dirs = append(dirs, settingsLitDir(root, src[ix[4]:ix[5]]))
+		}
+		for _, ix := range settingsProjectDirLit.FindAllStringSubmatchIndex(src, -1) {
+			matched++
+			if !settingsStatementEnds(src[ix[1]:], false) {
+				literal = false
+				continue
+			}
+			dirs = append(dirs, settingsLitDir(root, src[ix[2]:ix[3]]))
 		}
 		if len(settingsProjectForm.FindAllString(src, -1)) != matched {
 			literal = false
 		}
 	}
 	return dirs, literal
+}
+
+// settingsCallEnds reports whether the call matched at ix (its open-paren group third from last,
+// its close-paren group last) is its literals alone: parentheses balanced, then the end of
+// the statement. Anything else after the literals (another argument, a +, a method call) means the
+// call names more than the literals say. block admits a configuration block after an includeBuild.
+func settingsCallEnds(src string, ix []int, block bool) bool {
+	n := len(ix)
+	open, closed := ix[n-6] >= 0, ix[n-2] >= 0
+	return open == closed && settingsStatementEnds(src[ix[1]:], block && closed)
+}
+
+// settingsStatementEnds reports whether rest starts at the end of a statement: a newline, a
+// semicolon or the end of the script, or a block opening when block is set.
+func settingsStatementEnds(rest string, block bool) bool {
+	rest = strings.TrimLeft(rest, " \t\r")
+	return rest == "" || rest[0] == '\n' || rest[0] == ';' || block && rest[0] == '{'
+}
+
+// settingsLitDir is the directory a quoted settings path names, relative to root.
+func settingsLitDir(root, lit string) string {
+	return filepath.Join(root, filepath.FromSlash(lit[1:len(lit)-1]))
 }
 
 // holdsGradleScript reports whether a build or settings script sits anywhere under dir, or dir

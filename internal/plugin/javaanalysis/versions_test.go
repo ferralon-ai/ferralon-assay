@@ -313,6 +313,9 @@ func TestResolveVersions_MatchesComplete(t *testing.T) {
 			"pom.xml": `<project><dependencies>` + dep("1.4.0") + `</dependencies><build><extensions><extension><groupId>org.acme</groupId><artifactId>acme-ext</artifactId><version>1.0</version></extension></extensions></build></project>`,
 		}, false, nil},
 		{"plugin loaded as a build extension", map[string]string{"pom.xml": plugin(`<extensions>true</extensions>`)}, false, nil},
+		{"build extension in a profile", map[string]string{
+			"pom.xml": `<project><dependencies>` + dep("1.4.0") + `</dependencies><profiles><profile><id>ext</id><build><extensions><extension><groupId>org.acme</groupId><artifactId>acme-ext</artifactId><version>1.0</version></extension></extensions></build></profile></profiles></project>`,
+		}, false, nil},
 		{"plugin not loaded as an extension", map[string]string{"pom.xml": plugin(`<extensions>false</extensions>`)}, true, []string{"1.4.0"}},
 		{"module named by a POM file the scan does not read", map[string]string{
 			"pom.xml":   reactor(`<modules><module>a</module><module>tools/tools.xml</module></modules>`),

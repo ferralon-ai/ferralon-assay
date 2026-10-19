@@ -18,7 +18,7 @@ var globalBase = []string{"globalThis", "global", "window", "self"}
 
 // globalNames returns globalBase plus every name a const/let/var declaration
 // initialises from an expression that can yield the global: one of these names in value
-// position, `this` where thisIsGlobal reports it, or a call of the Function constructor
+// position, `this` where thisIsGlobal reports it (top level only), or a call of the Function constructor
 // (`Function('return this')()`). Aliases of aliases are followed to a fixpoint.
 func globalNames(clean []rune, thisIsGlobal func(int) bool) map[string]bool {
 	g := map[string]bool{}
@@ -132,8 +132,11 @@ func yieldsGlobal(clean []rune, start, end int, g map[string]bool, thisIsGlobal 
 
 // globalUse records a use of the global-valued name or global `this` at [i, next): a
 // computed key on it, `.eval` or `.Function` read from it, or the object handed on as a
-// value. A literal key is judged by keyedUse.
-func (mb *moduleBindings) globalUse(clean []rune, i, next int) {
+// value. A literal key is judged by keyedUse. For a function's own `this` (callOnly), which
+// is the global only when the function is called plainly, just a computed key that is
+// called and `.eval`/`.Function` count: handing that `this` on (`fn.apply(this, args)`)
+// and indexing it without a call are how methods written as functions use their receiver.
+func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool) {
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
 	if b >= 0 && clean[b] == '.' {
@@ -153,13 +156,19 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int) {
 				return // a literal key; keyedUse judges it
 			}
 		}
-		mb.evaluated = true
+		if !callOnly {
+			mb.evaluated = true
+		} else if e := closeBracket(clean, p); e < n {
+			if q := skipSpace(clean, e+1); q < n && clean[q] == '(' || optionalCall(clean, q) {
+				mb.evaluated = true
+			}
+		}
 	case p < n && clean[p] == '.':
 		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); w {
 		case "eval", "Function":
 			mb.evaluated = true
 		}
-	case escapesAsValue(clean, b, p):
+	case !callOnly && escapesAsValue(clean, b, p):
 		mb.evaluated = true
 	}
 }
@@ -170,6 +179,7 @@ type thisFrames struct {
 	opens  []int  // positions of '{', ascending
 	closes []int  // matching '}' position for each open, or len(clean) when unclosed
 	parent []int  // index of the enclosing block, or -1
+	fn     []bool // the block is a function body (not an arrow body, which keeps this)
 	global []bool // this inside the block (not in a nested function) is the global
 }
 
@@ -204,6 +214,7 @@ func newThisFrames(clean []rune) *thisFrames {
 				outer = stack[len(stack)-1].global
 			}
 			g := outer
+			fn := false
 			b := skipSpaceBack(clean, i-1)
 			switch {
 			case b >= 1 && clean[b] == '>' && clean[b-1] == '=': // arrow body
@@ -214,7 +225,7 @@ func newThisFrames(clean []rune) *thisFrames {
 					switch w {
 					case "if", "for", "while", "switch", "catch", "with":
 					case "function":
-						g = true
+						g, fn = true, true
 					case "":
 						if q >= 0 && clean[q] == '*' { // function* (...) or *method(...)
 							if w2, _ := wordBefore(clean, skipSpaceBack(clean, q-1)); w2 == "function" {
@@ -222,6 +233,7 @@ func newThisFrames(clean []rune) *thisFrames {
 							} else {
 								g = false
 							}
+							fn = true
 						}
 					default:
 						if w2, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); w2 == "function" {
@@ -229,11 +241,12 @@ func newThisFrames(clean []rune) *thisFrames {
 						} else {
 							g = false // a method, getter or setter
 						}
+						fn = true
 					}
 				}
 			default:
 				if classBody(clean, b) {
-					g = false
+					g, fn = false, true
 				}
 			}
 			parent := -1
@@ -244,6 +257,7 @@ func newThisFrames(clean []rune) *thisFrames {
 			tf.opens = append(tf.opens, i)
 			tf.closes = append(tf.closes, n)
 			tf.parent = append(tf.parent, parent)
+			tf.fn = append(tf.fn, fn)
 			tf.global = append(tf.global, g)
 		case '}':
 			if len(stack) > 0 {
@@ -272,6 +286,38 @@ func classBody(clean []rune, b int) bool {
 		}
 	}
 	return false
+}
+
+// closeBracket returns the index of the ']' that closes the '[' at p, or len(clean).
+func closeBracket(clean []rune, p int) int {
+	depth := 0
+	for ; p < len(clean); p++ {
+		switch clean[p] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return p
+			}
+		}
+	}
+	return p
+}
+
+// topLevel reports whether position i is outside every function body, where this is the
+// global object itself rather than a function's receiver.
+func (tf *thisFrames) topLevel(i int) bool {
+	k := sort.SearchInts(tf.opens, i) - 1
+	for k >= 0 && tf.closes[k] < i {
+		k = tf.parent[k]
+	}
+	for ; k >= 0; k = tf.parent[k] {
+		if tf.fn[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // globalAt reports whether this at position i is the global object.

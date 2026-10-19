@@ -70,6 +70,24 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 			mustNot: []string{"no fix"},
 		},
 		{
+			// A GIT range's bounds are commits; its fix is named, never "no fix".
+			name: "commit ranges",
+			finding: rangeAbsentFinding("GHSA-gggg", requests, "app.views.fetch",
+				report.AdvisoryBound{Type: "GIT", Introduced: "9f3e2a1b", Fixed: "abc1234"}, report.AdvisoryBound{Type: "GIT", LastAffected: "c0ffee12"}),
+			want:    []string{"; it records: by commit, introduced `9f3e2a1b`, fixed in `abc1234`; by commit, last affected `c0ffee12`. Confirm"},
+			mustNot: []string{"no fix"},
+		},
+		{
+			name:    "an unrecognized range type, unfixed",
+			finding: rangeAbsentFinding("GHSA-hhhh", requests, "app.views.fetch", report.AdvisoryBound{Type: "FOO<b>", Introduced: "r1"}),
+			want:    []string{"; it records: by `FOO<b>`, introduced `r1`, no fix. Confirm"},
+		},
+		{
+			name:    "a type alone records nothing",
+			finding: rangeAbsentFinding("GHSA-iiii", requests, "app.views.fetch", report.AdvisoryBound{Type: "GIT"}),
+			mustNot: []string{"it records:", "by commit"},
+		},
+		{
 			name:    "version not determined",
 			finding: rangeAbsentFinding("GHSA-cccc", &report.Package{Ecosystem: "Maven", Name: "com.example:widget"}, "com.example.Api.handle"),
 			want: []string{

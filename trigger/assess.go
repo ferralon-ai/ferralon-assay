@@ -1324,7 +1324,7 @@ func ecosystemFor(language string) string {
 func advisoryBounds(store artifact.Store, caseID string) []report.AdvisoryBound {
 	var out []report.AdvisoryBound
 	for _, b := range pipeline.AdvisoryRecordedBounds(store, caseID) {
-		out = append(out, report.AdvisoryBound{Introduced: b.Introduced, LastAffected: b.LastAffected})
+		out = append(out, report.AdvisoryBound{Type: b.Type, Introduced: b.Introduced, Fixed: b.Fixed, LastAffected: b.LastAffected})
 	}
 	return out
 }

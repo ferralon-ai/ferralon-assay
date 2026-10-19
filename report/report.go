@@ -421,9 +421,11 @@ type EntryPoint struct {
 }
 
 // AdvisoryBound is one affected range of an advisory that records no version the version axis can
-// compare against. Either field may be empty.
+// compare against. Type is the OSV range type ("GIT" bounds are commits); any field may be empty.
 type AdvisoryBound struct {
+	Type         string `json:"type,omitempty"`
 	Introduced   string `json:"introduced,omitempty"`
+	Fixed        string `json:"fixed,omitempty"`
 	LastAffected string `json:"last_affected,omitempty"`
 }
 
@@ -466,8 +468,8 @@ type EvidenceSummary struct {
 	// Empty when the advisory declares no guards or none were found on the path.
 	MitigatingGuards []string `json:"mitigating_guards,omitempty"`
 	// AdvisoryBounds is what the advisory's affected ranges record when none of them is a range
-	// the version axis can check (undetermined_reason advisory_range_absent): an introduced
-	// version above zero, a last_affected version, or both, per range. Disclosure only; nothing
+	// the version axis can check (undetermined_reason advisory_range_absent): each range's type and
+	// its introduced, fixed and last_affected events. Disclosure only; nothing
 	// reads it to decide a verdict. Set only on an advisory_range_absent finding.
 	AdvisoryBounds []AdvisoryBound `json:"advisory_bounds,omitempty"`
 	// SymbolConfidence qualifies a reachable_candidate by the confidence in how the

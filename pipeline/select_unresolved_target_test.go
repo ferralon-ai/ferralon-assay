@@ -2,10 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // A target that declares an affected package without a resolvable version must stop the
@@ -76,6 +78,57 @@ func TestSelectByTarget_FoundUnresolvedPackageStopsTheWalk(t *testing.T) {
 			res := runDisqual(t, store, c.ID)
 			if refuted := res.Disqualified && res.Reason == ReasonVersionNotInRange; refuted != tc.wantRefuted {
 				t.Fatalf("disqualification = %+v, want refuted %v", res, tc.wantRefuted)
+			}
+		})
+	}
+}
+
+// erroringCoordinatePlugin reports every coordinate found and unresolved, except one, which fails.
+type erroringCoordinatePlugin struct {
+	plugin.StubPlugin
+	failing string
+}
+
+func (erroringCoordinatePlugin) Language() string { return "java" }
+
+func (s erroringCoordinatePlugin) ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	if req.Coordinate == s.failing {
+		return plugin.DependencyVersionResult{}, errors.New("resolver failed")
+	}
+	return plugin.DependencyVersionResult{Partiality: plugin.Complete(), Found: true, Match: plugin.ResolvedDependency{Coordinate: req.Coordinate}}, nil
+}
+
+// Once a package is selected, looking up the advisory's own package only feeds the malicious-package
+// presence scan, so a resolver error there must not fail the inventory. Before a package is
+// selected, the same error still does.
+func TestSelectByTarget_PresenceFallbackErrorAfterSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pkgs    []AffectedPackage
+		wantErr bool
+	}{
+		{"package selected", []AffectedPackage{{Coordinate: "org.example:aaa", PURL: "pkg:maven/org.example/aaa"}}, false},
+		{"nothing selected", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := selectionStubSource{facts: AdvisoryFacts{
+				Coordinate:       "org.example:zzz",
+				PURL:             "pkg:maven/org.example/zzz",
+				AffectedPackages: tc.pkgs,
+				Provenance:       Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+			}}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "select-fallback-error", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "GHSA-test-0002", Source: "corpus"},
+				Codebase:      assessment.CodebaseRef{Repo: "example.com/target", Revision: "v1", Acquisition: assessment.Acquisition{Mode: "git"}},
+			}}
+			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("advisory_intake: %v", err)
+			}
+			dir := writeTreeFixture(t, map[string]string{"pom.xml": "<project/>"})
+			inv := codebaseInventory{checkout: dirCheckout{dir: dir, lang: "java"}, plugin: erroringCoordinatePlugin{failing: "org.example:zzz"}, src: src}
+			if err := inv.Run(context.Background(), c, store); (err != nil) != tc.wantErr {
+				t.Fatalf("codebase_inventory error = %v, want error %v", err, tc.wantErr)
 			}
 		})
 	}

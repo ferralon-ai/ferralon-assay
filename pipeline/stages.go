@@ -1760,9 +1760,11 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
 		// The presence scan falls back the same way when no array element had a resolved copy.
+		// That presence-only lookup is best effort: an error there leaves presence empty rather
+		// than failing a stage that has already selected its package.
 		if !selected || !presenceSelected {
 			v, p, _, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
-			if err != nil {
+			if err != nil && !selected {
 				return err
 			}
 			if !selected {

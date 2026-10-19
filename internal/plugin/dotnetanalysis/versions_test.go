@@ -3,6 +3,7 @@ package dotnetanalysis
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -341,5 +342,32 @@ func TestVersions_UngovernedPackagesConfig(t *testing.T) {
 				t.Fatalf("Newtonsoft.Json must not be Found; got %+v", res)
 			}
 		})
+	}
+}
+
+// A subtree the walk can't list could hold a copy at any version: the run is partial and the
+// Match unresolved, not complete on the copies the walk did reach.
+func TestVersions_UnlistableSubtree_Partial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists any directory")
+	}
+	dir := writeTree(t, map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""), "B/B.csproj": newtonsoftProject("[13.0.1]", "")})
+	if res := versionsOf(t, dir, "Newtonsoft.Json"); !res.Match.Resolved || res.Match.Version != "13.0.1" {
+		t.Fatalf("control: match = %+v, want 13.0.1", res.Match)
+	}
+	locked := filepath.Join(dir, "B")
+	if _, err := os.Stat(filepath.Join(dir, "b")); err == nil {
+		locked = filepath.Join(dir, "b")
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	res := versionsOf(t, dir, "Newtonsoft.Json")
+	if res.Partiality.Complete {
+		t.Errorf("partiality = %+v, want partial", res.Partiality)
+	}
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
 	}
 }

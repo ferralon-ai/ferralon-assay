@@ -355,3 +355,31 @@ func TestResolveVersions_MavenAllowList(t *testing.T) {
 		})
 	}
 }
+
+// A subtree the walk can't list could hold a copy at any version: the run is partial and the
+// Match unresolved, not complete on the copies the walk did reach.
+func TestResolveVersions_UnlistableSubtreeLeavesMatchUnresolved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists any directory")
+	}
+	// No reactor names b, so only the walk can reach it.
+	dir := writeTree(t, map[string]string{"a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "")})
+	if res := resolve(t, dir, "com.example.lib:widget"); !res.Match.Resolved || res.Match.Version != "1.4.0" {
+		t.Fatalf("control: match = %+v, want 1.4.0", res.Match)
+	}
+	locked := filepath.Join(dir, "B")
+	if _, err := os.Stat(filepath.Join(dir, "b")); err == nil {
+		locked = filepath.Join(dir, "b")
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	res := resolve(t, dir, "com.example.lib:widget")
+	if res.Partiality.Complete {
+		t.Errorf("partiality = %+v, want partial", res.Partiality)
+	}
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+}

@@ -60,11 +60,13 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
+	manifests, walkFailed := manifestFiles(req.BuildDir)
 
 	var (
-		all         []plugin.ResolvedDependency
-		parseFailed bool
+		all []plugin.ResolvedDependency
+		// A subtree the walk couldn't list could hold a manifest declaring any package at any
+		// version, as a manifest that doesn't parse could.
+		parseFailed = walkFailed
 	)
 	for _, m := range manifests {
 		deps, ok := parseManifest(m)
@@ -530,12 +532,15 @@ func directoryImports(dir string) bool {
 }
 
 // manifestFiles returns every recognized .NET manifest under root, skipping build-output /
-// package / VCS trees so a restored copy does not shadow the project's own manifest.
-func manifestFiles(root string) []string {
-	var out []string
+// package / VCS trees so a restored copy does not shadow the project's own manifest. failed is
+// set when some part of the tree couldn't be listed or examined.
+func manifestFiles(root string) (out []string, failed bool) {
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
+			if !os.IsNotExist(err) {
+				failed = true
+			}
+			return nil //nolint:nilerr // keep walking; the caller reports the subtree as unread.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -548,7 +553,7 @@ func manifestFiles(root string) []string {
 		}
 		return nil
 	})
-	return out
+	return out, failed
 }
 
 // isManifest reports whether name is a recognized .NET dependency manifest.

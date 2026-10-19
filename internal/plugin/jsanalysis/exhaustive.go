@@ -280,7 +280,8 @@ func installedPackages(nm, realRoot string, into, visited map[string]bool) bool 
 				if s.Name() != "node_modules" {
 					inner = filepath.Join(inner, "node_modules")
 				}
-				if isDir(inner) && !installedPackages(inner, realRoot, into, visited) {
+				dir, ok := isDir(inner)
+				if !ok || dir && !installedPackages(inner, realRoot, into, visited) {
 					return false
 				}
 			}
@@ -306,7 +307,9 @@ func installedPackages(nm, realRoot string, into, visited map[string]bool) bool 
 }
 
 func installedPackage(dir, installName, realRoot string, into, visited map[string]bool) bool {
-	if !isDir(dir) {
+	if d, ok := isDir(dir); !ok {
+		return false
+	} else if !d {
 		return true
 	}
 	if !buildtree.Inside(realRoot, dir) {
@@ -321,10 +324,13 @@ func installedPackage(dir, installName, realRoot string, into, visited map[strin
 		if json.Unmarshal(data, &m) == nil && m.Name != "" {
 			into[normalizeNPMCoordinate(m.Name)] = true
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !absent(err) {
 		return false
 	}
-	if nested := filepath.Join(dir, "node_modules"); isDir(nested) {
+	nested := filepath.Join(dir, "node_modules")
+	if d, ok := isDir(nested); !ok {
+		return false
+	} else if d {
 		return installedPackages(nested, realRoot, into, visited)
 	}
 	return true
@@ -340,7 +346,12 @@ func yarnCacheHolds(path, coord string) bool {
 	return strings.HasPrefix(strings.ToLower(filepath.Base(path)), strings.ReplaceAll(coord, "/", "-")+"-")
 }
 
-func isDir(path string) bool {
+// isDir reports whether path, followed through symlinks, is a directory. ok is false when it
+// cannot tell: the path is there but could not be read.
+func isDir(path string) (dir, ok bool) {
 	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
+	if err != nil {
+		return false, absent(err)
+	}
+	return info.IsDir(), true
 }

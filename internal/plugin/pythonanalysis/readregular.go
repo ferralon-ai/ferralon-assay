@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"syscall"
 )
@@ -15,8 +16,8 @@ var errNotRegular = errors.New("not a regular file")
 // readRegular reads the file at path, following symlinks, only when it is a regular file. A
 // non-regular target is refused without being opened, since opening a pipe with no writer
 // blocks. The open itself does not block, and the opened descriptor must be the same regular
-// file. A path that does not exist returns an error os.IsNotExist reports; every other refusal
-// is an ordinary error, which callers treat as a file they could not read.
+// file. A path that is not there returns an error absent reports; every other refusal is an
+// ordinary error, which callers treat as a file they could not read.
 func readRegular(path string) ([]byte, error) {
 	want, err := os.Stat(path)
 	if err != nil {
@@ -38,4 +39,12 @@ func readRegular(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: changed while it was opened", path)
 	}
 	return io.ReadAll(f)
+}
+
+// absent reports whether err from a filesystem call means the path is not there: it does not
+// exist, or a component of it is not a directory. Every other error (a permission denial, a
+// symlink loop, a name too long, an I/O error, a refused non-regular file) means the path was
+// not read, and a caller must not treat it as absent.
+func absent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }

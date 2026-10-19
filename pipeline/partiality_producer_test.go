@@ -18,13 +18,13 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	const gomod = "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.6\n"
 
 	t.Run("no go.mod discloses no_manifest", func(t *testing.T) {
-		v, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
 			context.Background(), t.TempDir(), "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 1 || flags[0] != plugin.PartialReasonNoManifest {
 			t.Fatalf("flags = %v, want [%s]", flags, plugin.PartialReasonNoManifest)
@@ -33,7 +33,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 
 	t.Run("unparseable go.mod discloses no_manifest", func(t *testing.T) {
 		dir := writeGoMod(t, "this is not a go.mod {{{\n")
-		_, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+		_, flags, err := codebaseInventory{}.resolveDependencyVersion(
 			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
@@ -48,13 +48,13 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 	// would qualify every true not_exploitable and make the disclosure meaningless.
 	t.Run("readable go.mod without the module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
-		v, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
 			context.Background(), dir, "go", "github.com/not/required", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("an honest absence must disclose nothing, got %v", flags)
@@ -63,13 +63,13 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 
 	t.Run("resolved module discloses nothing", func(t *testing.T) {
 		dir := writeGoMod(t, gomod)
-		v, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+		v, flags, err := codebaseInventory{}.resolveDependencyVersion(
 			context.Background(), dir, "go", "golang.org/x/text", "", "", ToolchainFact{})
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "v0.3.6" {
-			t.Errorf("version = %q, want v0.3.6", v)
+		if v.Version != "v0.3.6" {
+			t.Errorf("version = %q, want v0.3.6", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("a resolved version must disclose nothing, got %v", flags)
@@ -81,7 +81,7 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 // plugin binary is absent) resolved to a bare empty version, which reads downstream as
 // "not installed" and disqualifies the advisory on a comparison that never ran.
 func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
-	_, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
 		context.Background(), t.TempDir(), "java", "", "com.example:widget", "", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)
@@ -95,7 +95,7 @@ func TestResolveDependencyVersion_NoAnalyzerDisclosesAbsence(t *testing.T) {
 // plugin resolver, so an unresolved fact must stay silent rather than disclose a version-resolution
 // limit that was never attempted.
 func TestResolveDependencyVersion_GoToolchainStaysSilent(t *testing.T) {
-	_, _, _, flags, err := codebaseInventory{}.resolveDependencyVersion(
+	_, flags, err := codebaseInventory{}.resolveDependencyVersion(
 		context.Background(), t.TempDir(), "go", "", "stdlib", "go-toolchain", ToolchainFact{})
 	if err != nil {
 		t.Fatalf("resolveDependencyVersion: %v", err)

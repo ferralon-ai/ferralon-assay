@@ -788,6 +788,11 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		if inv.Language == cfamilyLanguage {
 			return adv, cfamilyObservedPackage(name, purl, inv, sbom)
 		}
+		// Copies at more than one version: the row names the package but no single version, so
+		// an inventory limit of its ecosystem still reaches it (withInventoryLimits).
+		if len(inv.ResolvedVersions) > 0 && !pipeline.ToolchainSubject(store, assessmentID) {
+			return adv, &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: pipeline.RootSubject(store, assessmentID)}
+		}
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
@@ -845,9 +850,10 @@ func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report
 }
 
 type inventoryFacts struct {
-	Language        string   `json:"language"`
-	ResolvedVersion string   `json:"resolved_version"`
-	PartialityFlags []string `json:"partiality_flags"`
+	Language         string   `json:"language"`
+	ResolvedVersion  string   `json:"resolved_version"`
+	ResolvedVersions []string `json:"resolved_versions"`
+	PartialityFlags  []string `json:"partiality_flags"`
 }
 
 // undeterminedReason decides whether this assessment established NOTHING about the advisory —

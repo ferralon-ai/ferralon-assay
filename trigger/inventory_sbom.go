@@ -30,6 +30,7 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 			Version:   n.Version,
 			PURL:      n.PURL,
 			Direct:    n.Direct,
+			Replace:   n.Replace,
 		}
 		if !n.Partiality.Complete && len(n.Partiality.Reasons) > 0 {
 			// A node-level limit (e.g. a version that could not be pinned, a digest not acquired)
@@ -89,7 +90,11 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 	if len(rels) == 0 {
 		rels = nil
 	}
-	return report.SBOM{Packages: pkgs, Relationships: rels}, notes
+	sbom := report.SBOM{Packages: pkgs, Relationships: rels}
+	if ecosystem == "Go" {
+		sbom.GoBuildList, sbom.GoMainModule = inv.BuildList, inv.MainModule
+	}
+	return sbom, notes
 }
 
 // inventoryLimitDetail marks a note as the whole-graph inventory's own limit. CVE-watch reads the

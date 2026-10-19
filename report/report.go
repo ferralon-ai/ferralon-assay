@@ -164,6 +164,10 @@ type Package struct {
 	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
 	// scan-level PartialityNote, not this field.
 	PartialReason string `json:"partial_reason,omitempty"`
+	// Replace is the module path a replace directive substitutes for this package (Go), so the
+	// build compiles that module's code under Name. Empty when not replaced or replaced by a
+	// directory.
+	Replace string `json:"replace,omitempty"`
 }
 
 // Label is the package as a finding row names it: name@version for a resolved package. A
@@ -217,6 +221,12 @@ type SBOM struct {
 	// whose resolver expresses no edges (or none yet) omits the field rather than emitting
 	// an empty array — absent edges are declared by a scan-level PartialityNote, not by [].
 	Relationships []Relationship `json:"relationships,omitempty"`
+	// GoBuildList names the resolver output the Go packages were taken from when they are the
+	// build's whole module list with replace targets recorded (plugin.DependencyInventory.BuildList).
+	// Empty for an SBOM resolved any other way, or written before replace targets were recorded.
+	GoBuildList string `json:"go_build_list,omitempty"`
+	// GoMainModule is the path of the module GoBuildList was resolved for; set with it.
+	GoMainModule string `json:"go_main_module,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are

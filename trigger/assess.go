@@ -147,6 +147,17 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// established nothing POSITIVE: no disqualification and no path. Whether the absent
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
+		// An advisory whose package no module of the build holds rests on neither the call graph
+		// nor a symbol search inside a package, so the limits undeterminedReason reads do not bear
+		// on it; outsideBuildGrounds names what it does rest on.
+		if detail, ok := outsideBuildGrounds(store, assessmentID, pkg, mods); ok {
+			f = report.AdvisoryFinding{
+				Advisory: adv,
+				Verdict:  report.VerdictNotExploitable,
+				Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
+			}
+			break
+		}
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {

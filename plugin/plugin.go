@@ -461,6 +461,22 @@ type SymbolResolutionResult struct {
 	// advisory symbol accounted for, and only the lane's own matcher knows which resolved symbol
 	// answered which advisory symbol.
 	Matched map[string][]string `json:"matched,omitempty"`
+	// ModuleSearch is a search of the source of every module in the build for the request's
+	// advisory symbols, for an advisory whose package no module in the build holds. Nil when no
+	// such search ran.
+	ModuleSearch *ModuleSearch `json:"module_search,omitempty"`
+}
+
+// ModuleSearch reports which of the build's modules the lane read in full and which of those
+// declare a function, method or variable named like one of the request's advisory symbols. A
+// module whose source the lane could not obtain or parse is left out of Searched, so a reader
+// that needs every module searched sees the gap.
+type ModuleSearch struct {
+	// Searched holds each searched module's path, and beside it the path of the module a
+	// replace directive substitutes for it.
+	Searched []string `json:"searched"`
+	// Declaring holds the paths of the searched modules that declare such a name.
+	Declaring []string `json:"declaring,omitempty"`
 }
 
 // CallEdge is one directed call-graph edge between canonical symbols.

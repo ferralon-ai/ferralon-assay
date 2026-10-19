@@ -67,6 +67,45 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	return "", report.ReasonVulnerableSymbolUnresolved, false
 }
 
+// outsideBuildGrounds grounds an advisory on a Go package that no module of the build holds, when
+// it resolved no package to assess. The advisory's code is absent from the build only if no module
+// carries it under another path, as a renamed fork would, so it grounds only when the lane read the
+// source of every module in the build's complete module list and found no declaration of an
+// advisory symbol. It returns the NE detail, or false when any of that is not shown: no module
+// list, no symbols, an advisory naming more than one package, a module the lane could not read, or
+// a module that declares a symbol.
+func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (string, bool) {
+	symbols := pipeline.AdvisorySymbols(store, assessmentID)
+	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
+	if pkg != nil || mods == nil || len(symbols) == 0 || len(purls) == 0 {
+		return "", false
+	}
+	key, ok := purlKey(purls[0])
+	if !ok || !outsideBuild(key, mods) {
+		return "", false
+	}
+	for _, p := range purls[1:] {
+		if k, ok := purlKey(p); !ok || k != key {
+			return "", false
+		}
+	}
+	res, err := pipeline.VulnerableSymbols(store, assessmentID)
+	if err != nil || res.ModuleSearch == nil || len(res.ModuleSearch.Declaring) > 0 {
+		return "", false
+	}
+	searched := make(map[string]bool, len(res.ModuleSearch.Searched))
+	for _, m := range res.ModuleSearch.Searched {
+		searched[m] = true
+	}
+	for m := range mods {
+		if !searched[m] {
+			return "", false
+		}
+	}
+	return fmt.Sprintf("no module in the build holds %s, and none of the build's %d modules declares %s",
+		key.name, len(mods), strings.Join(symbols, ", ")), true
+}
+
 // namesOtherPackage reports whether the advisory names a package other than the admitted one that
 // may be in the build. A package URL that does not parse cannot be shown to be the admitted
 // package, so it counts as other.

@@ -86,16 +86,15 @@ func runFailingCVEWatch(t *testing.T, store *memStore) *report.Report {
 }
 
 // TestAssessFailure_EveryRunMode: an advisory whose assessment fails gets exactly one row in every
-// run mode, and that row is undetermined / analysis_did_not_run unless the run would have kept an
-// inherited verdict anyway.
+// run mode, and that row is undetermined / analysis_did_not_run, replacing any verdict the baseline
+// held for it.
 func TestAssessFailure_EveryRunMode(t *testing.T) {
 	changedHead := []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.5"}}
 	cases := []struct {
 		name string
-		want report.Verdict
 		run  func(t *testing.T) *report.Report
 	}{
-		{"baseline", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"baseline", func(t *testing.T) *report.Report {
 			rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 				Subject:       Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
 				Codebase:      assessment.CodebaseRef{Repo: "r", Revision: "main"},
@@ -107,29 +106,36 @@ func TestAssessFailure_EveryRunMode(t *testing.T) {
 			}
 			return rep
 		}},
-		{"PR re-analysis, package changed, replaces the baseline's not_exploitable", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"PR re-analysis, package changed, replaces the baseline's not_exploitable", func(t *testing.T) *report.Report {
 			store, _ := groundedBaseline()
 			return runFailingPR(t, store, changedHead)
 		}},
-		{"PR re-analysis, no baseline row", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"PR re-analysis, no baseline row", func(t *testing.T) *report.Report {
 			return runFailingPR(t, emptyBaseline(), changedHead)
 		}},
-		{"PR re-analysis, replaces a migrated v1 row", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"PR re-analysis, replaces a migrated v1 row", func(t *testing.T) *report.Report {
 			return runFailingPR(t, migratedBaseline(), changedHead)
 		}},
-		{"PR re-analysis, package unchanged, keeps the baseline's not_exploitable", report.VerdictNotExploitable, func(t *testing.T) *report.Report {
+		{"PR re-analysis, package unchanged, replaces the baseline's not_exploitable", func(t *testing.T) *report.Report {
 			store, baseline := groundedBaseline()
 			head := append([]report.Package{{Ecosystem: "Go", Name: "example.org/other", Version: "v1.0.0"}}, baseline.SBOM.Packages...)
 			return runFailingPR(t, store, head)
 		}},
-		{"CVE-watch, replaces the prior reachable_candidate", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		// The advisory affects golang.org/x/net and golang.org/x/text; the baseline grounded it on
+		// x/text, and the PR adds x/net, which a successful re-run could select instead.
+		{"PR re-analysis, the PR adds another affected package, replaces the baseline's not_exploitable", func(t *testing.T) *report.Report {
+			store, baseline := groundedBaseline()
+			head := append([]report.Package{{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.17.0"}}, baseline.SBOM.Packages...)
+			return runFailingPR(t, store, head)
+		}},
+		{"CVE-watch, replaces the prior reachable_candidate", func(t *testing.T) *report.Report {
 			store, _ := seedBaseline(t)
 			return runFailingCVEWatch(t, store)
 		}},
-		{"CVE-watch, no prior row", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"CVE-watch, no prior row", func(t *testing.T) *report.Report {
 			return runFailingCVEWatch(t, emptyBaseline())
 		}},
-		{"CVE-watch, replaces a migrated v1 row", report.VerdictUndetermined, func(t *testing.T) *report.Report {
+		{"CVE-watch, replaces a migrated v1 row", func(t *testing.T) *report.Report {
 			return runFailingCVEWatch(t, migratedBaseline())
 		}},
 	}
@@ -146,11 +152,8 @@ func TestAssessFailure_EveryRunMode(t *testing.T) {
 				t.Fatalf("%d rows for %s, want exactly one: %+v", len(rows), wiringAdvisory.ID, rows)
 			}
 			f := rows[0]
-			if f.Verdict != tc.want {
-				t.Fatalf("verdict = %q, want %q", f.Verdict, tc.want)
-			}
-			if tc.want != report.VerdictUndetermined {
-				return
+			if f.Verdict != report.VerdictUndetermined {
+				t.Fatalf("verdict = %q, want %q", f.Verdict, report.VerdictUndetermined)
 			}
 			if f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
 				t.Errorf("undetermined_reason = %q, want %q", f.UndeterminedReason, report.ReasonAnalysisDidNotRun)
@@ -183,6 +186,16 @@ func TestAssessErrorText(t *testing.T) {
 		{"control characters fold to one line", "a\r\nb\tc\x00d", "a b c d"},
 		{"URL credentials are redacted", "GET https://x-access-token:ghs_abc@github.com/o/r: 403", "GET https://REDACTED@github.com/o/r: 403"},
 		{"a URL without credentials is kept", "GET https://github.com/o/r@v1: 404", "GET https://github.com/o/r@v1: 404"},
+		{"a password holding '@' is redacted whole", "fetch https://user:p@ss@host/x failed", "fetch https://REDACTED@host/x failed"},
+		{"a URL token without a password is redacted", "clone https://ghp_abc@github.com/o/r failed", "clone https://REDACTED@github.com/o/r failed"},
+		{"scheme-relative URL credentials are redacted", "fetch //u:pw@h/x failed", "fetch //REDACTED@h/x failed"},
+		{"a scheme-relative URL token is redacted", "fetch //ghp_abc@h/x failed", "fetch //REDACTED@h/x failed"},
+		{"scheme-less proxy credentials are redacted", "proxyconnect tcp: dial u:p@w@proxy:3128: refused", "proxyconnect tcp: dial REDACTED@proxy:3128: refused"},
+		{"query-string values are redacted", "GET https://h/x?access_token=abc&ref=main 401", "GET https://h/x?access_token=REDACTED&ref=REDACTED 401"},
+		{"an Authorization header is redacted", "sent Authorization: Bearer abc.def, got 401", "sent Authorization: REDACTED, got 401"},
+		{"a bearer token is redacted", "token Bearer abc.def rejected", "token Bearer REDACTED rejected"},
+		{"a module version is kept", "go: golang.org/x/text@v0.3.6: missing go.sum entry", "go: golang.org/x/text@v0.3.6: missing go.sum entry"},
+		{"an ssh user without a password is kept", "git@github.com: Permission denied", "git@github.com: Permission denied"},
 		{"bounded in runes", long, strings.Repeat("é", assessErrorLimit-1) + "…"},
 		{"at the bound is kept", long[:2*assessErrorLimit], long[:2*assessErrorLimit]},
 	}

@@ -1212,12 +1212,24 @@ func stageCause(err error) error {
 // assessErrorLimit bounds the error text a failed-assessment row carries, in runes.
 const assessErrorLimit = 200
 
-// userinfoRE matches the credentials in a URL's authority, which a tool error can echo
-// (a clone or proxy URL with a token in it).
-var userinfoRE = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@`)
+// secretREs match the credentials a tool error can echo, each with what replaces them: the
+// userinfo of a URL (with or without a scheme, up to the authority's last '@', since a password
+// may hold one), a user:password@host without one (a proxy setting), query-string values, an
+// Authorization header and a bearer token. A Go module@version has no ':' before its '@', so it
+// is kept.
+var secretREs = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/\s]*@`), "${1}REDACTED@"},
+	{regexp.MustCompile(`[^\s/:@]+:[^\s/]*@`), "REDACTED@"},
+	{regexp.MustCompile(`([?&][^\s?&#=]+=)[^\s&#]*`), "${1}REDACTED"},
+	{regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+`), "${1}: REDACTED"},
+	{regexp.MustCompile(`(?i)\b(bearer)\s+[^\s,;]+`), "${1} REDACTED"},
+}
 
-// assessErrorText renders err for a report row: one line, URL credentials redacted,
-// at most assessErrorLimit runes.
+// assessErrorText renders err for a report row: one line, credentials redacted, at most
+// assessErrorLimit runes.
 func assessErrorText(err error) string {
 	s := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -1225,7 +1237,10 @@ func assessErrorText(err error) string {
 		}
 		return r
 	}, err.Error())
-	s = userinfoRE.ReplaceAllString(strings.Join(strings.Fields(s), " "), "${1}REDACTED@")
+	s = strings.Join(strings.Fields(s), " ")
+	for _, r := range secretREs {
+		s = r.re.ReplaceAllString(s, r.repl)
+	}
 	if r := []rune(s); len(r) > assessErrorLimit {
 		s = string(r[:assessErrorLimit-1]) + "…"
 	}

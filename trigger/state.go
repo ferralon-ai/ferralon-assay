@@ -201,15 +201,16 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 
 	// Re-run only the advisories whose evaluated package is in the changed set.
 	reFindings := make(map[string]report.AdvisoryFinding)
-	failed := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
 	for _, adv := range req.Advisories {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
+			// A failed re-run replaces the baseline's row whatever package that row is on: the
+			// head may select a different package, and the failure resolved none.
 			notes = append(notes, assessFailureNote(adv, err))
-			failed[adv.ID+"\x00"+adv.Source] = assessFailureFinding(adv, err)
+			reFindings[adv.ID+"\x00"+adv.Source] = assessFailureFinding(adv, err)
 			freshIDs[adv.ID] = struct{}{}
 			continue
 		}
@@ -233,7 +234,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		if pkg == nil {
 			continue
 		}
-		if !inChanged(changedSet, pkg) {
+		if _, ok := changedSet[pkg.Ecosystem+"\x00"+pkg.Name]; !ok {
 			continue
 		}
 		reFindings[advisory.ID+"\x00"+advisory.Source] = f
@@ -261,22 +262,10 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 			delete(reFindings, key)
 			continue
 		}
-		// A failed re-run replaces the baseline's row unless the row's package is one this
-		// PR left unchanged, which a successful re-run would not have replaced either.
-		if fr, ok := failed[key]; ok {
-			delete(failed, key)
-			if f.Package == nil || inChanged(changedSet, f.Package) {
-				b.AddFinding(fr)
-				continue
-			}
-		}
 		b.AddFinding(withInventoryLimits(f, req.DiffLimits))
 	}
 	for _, re := range reFindings {
 		b.AddFinding(re)
-	}
-	for _, fr := range failed {
-		b.AddFinding(fr)
 	}
 	// Baseline limits apply to the findings inherited verbatim; the fresh notes apply
 	// to the re-analyzed slice. Build de-duplicates the union.
@@ -392,11 +381,6 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		return nil, err
 	}
 	return &rep, nil
-}
-
-func inChanged(changedSet map[string]struct{}, pkg *report.Package) bool {
-	_, ok := changedSet[pkg.Ecosystem+"\x00"+pkg.Name]
-	return ok
 }
 
 // supersededByFresh reports whether an inherited finding must yield to this pass's fresh

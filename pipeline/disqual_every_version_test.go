@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -46,6 +47,20 @@ func pomDeclaring(version string) string {
     <dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + version + `</version></dependency>
   </dependencies>
 </project>`
+}
+
+func aggregatorOf(modules ...string) string {
+	var b strings.Builder
+	b.WriteString(`<project><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules>`)
+	for _, m := range modules {
+		b.WriteString("<module>" + m + "</module>")
+	}
+	b.WriteString(`</modules></project>`)
+	return b.String()
+}
+
+func moduleWithParent(g, a, v string) string {
+	return `<project><parent><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + v + `</version></parent><artifactId>b</artifactId></project>`
 }
 
 func csprojReferencing(version string) string {
@@ -95,6 +110,14 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 		{"maven: every declaration patched, a Gradle build beside them", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
 			"pom.xml": pomDeclaring("1.4.0"), "svc/build.gradle": "dependencies {\n  implementation 'com.example.lib:widget:1.5.0'\n}\n",
 		}, false},
+		// The parent POM supplies dependencies to a module that declares none; one outside the tree
+		// can supply widget at any version.
+		{"maven: module inheriting a parent outside the tree", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
+			"pom.xml": aggregatorOf("a", "b"), "a/pom.xml": pomDeclaring("1.4.0"), "b/pom.xml": moduleWithParent("com.corp", "corp-parent", "7"),
+		}, false},
+		{"maven: module inheriting the tree's root", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
+			"pom.xml": aggregatorOf("a", "b"), "a/pom.xml": pomDeclaring("1.4.0"), "b/pom.xml": moduleWithParent("com.example", "root", "1.0.0"),
+		}, true},
 		{"npm: top-level patched, nested install affected", "FERRALON-JS-DEP-0001", "js", map[string]string{
 			"package-lock.json": lockWithLeftPads("1.4.0", "1.3.0"),
 		}, false},

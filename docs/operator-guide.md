@@ -245,7 +245,7 @@ don't configure anything beyond the job's `permissions:` block and the surface t
 | Job summary + `::warning::` annotations on reachable candidates | — | nothing | always | every Actions run, forked PRs included |
 | SARIF file for code scanning | `code-scanning` | a write-capable token | on | push and PR runs |
 | Sticky PR comment, updated in place | `pr-comment` | `pull-requests: write` | on | `pull_request` / `pull_request_target` runs only |
-| Pinned dashboard Issue, one issue rewritten each run | `issue` | `issues: write` | on | any write-capable run |
+| Pinned dashboard Issue, one issue rewritten each run | `issue` | `issues: write` | on | non-PR runs on the default branch, scheduled runs included |
 
 The Action writes `report.sarif.json`; getting it into code scanning is a separate
 `github/codeql-action/upload-sarif` step, as in the README Quickstart. That step needs

@@ -102,7 +102,7 @@ func TestReachability_DependencyMissIsScoped(t *testing.T) {
 		`"Gone/2.0.0":{"type":"package","dependencies":{"Dep":"1.0.0"},"runtime":{"lib/net8.0/Gone.dll":{}}}}},` +
 		`"libraries":{"Dep/1.0.0":{"type":"package","path":"dep/1.0.0"},"Gone/2.0.0":{"type":"package","path":"gone/2.0.0"}}}`
 	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj":              []byte("<Project></Project>"),
+		"App.csproj":              restoredProject,
 		"bin/App.dll":             appCalling(nil, false, true),
 		"bin/Dep.dll":             depWithBoomOverloads(false),
 		"obj/project.assets.json": []byte(assets),

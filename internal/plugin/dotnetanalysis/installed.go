@@ -3,12 +3,8 @@ package dotnetanalysis
 import (
 	"bytes"
 	"encoding/xml"
-	"errors"
 	"io"
-	"io/fs"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -22,10 +18,9 @@ const (
 	// declares, so restore re-locks it and the lock's pins are not what ships.
 	reasonLockfileStale = "lockfile_stale"
 
-	// reasonPackageReferenceUnmodeled: a file that declares the project's package references
-	// (the project file, a file it imports, a Directory.Build.props/.targets or
-	// Directory.Packages.props) holds something readMSBuild doesn't model, so the declared set
-	// is not fully known.
+	// reasonPackageReferenceUnmodeled: an MSBuild file read for the project (the project file,
+	// a file it imports, a Directory.Build.props/.targets or Directory.Packages.props) holds
+	// something parseMSBuild doesn't model, so the declared set is not fully known.
 	reasonPackageReferenceUnmodeled = "package_reference_unmodeled"
 )
 
@@ -37,30 +32,27 @@ type projectDir struct {
 // installedCopies replaces each project's declared copies of want with what restore installs
 // for that project, where the tree records it, and adds an unknown copy for every project
 // whose installed copy can't be read. A version the tree doesn't fully determine never
-// reaches matchNuGet as a resolved copy. Per project directory:
+// reaches the Match as a resolved copy. Each project is evaluated first (evaluator.evaluate);
+// any input it doesn't model adds an unknown copy. Then, per project directory:
 //
-//   - obj/project.assets.json, when present, is restore's output: its packages are the
-//     installed set, and the directory's project and lockfile copies are dropped. An
-//     unreadable assets file returns ok=false (the caller vetoes).
-//   - Otherwise a packages.lock.json is the installed set only while it is current: its
-//     Direct ids are exactly the ids the project declares (its own PackageReferences plus
-//     those injected through Directory.Build.props/.targets, followed imports and
-//     GlobalPackageReference), and every Direct entry's "requested" equals the declared
-//     range. A version-less reference declares the nearest Directory.Packages.props
-//     PackageVersion, and every CentralTransitive entry's "requested" must equal the
-//     PackageVersion that pins it. Restore re-locks a project that no longer matches, so a stale lock's
-//     copies are dropped.
-//   - Otherwise only a direct declaration of want decides (NuGet's direct-dependency-wins); a
-//     project that declares other packages but not want, or declares want only under a
-//     Condition, may pull any version of it transitively, so it adds an unknown copy.
-//   - A project whose declarations can't all be read adds an unknown copy.
+//   - obj/project.assets.json is restore's output. When checkAssets trusts it, its packages
+//     are the installed set, and the directory's project and lockfile copies are dropped.
+//     When it doesn't match the project as it stands, the project adds an unknown copy. An
+//     assets file that can't be parsed returns ok=false (the caller vetoes). Restore-generated
+//     imports in obj/ without an assets file add an unknown copy.
+//   - Otherwise a packages.lock.json is the installed set only while lockCurrent holds.
+//     Restore re-locks a project that no longer matches, so a stale lock's copies are dropped.
+//   - Otherwise only a direct, unconditioned declaration of want decides (NuGet's
+//     direct-dependency-wins). A project that declares other packages or references other
+//     projects but not want, or declares want only under a Condition, may pull any version of
+//     it transitively, so it adds an unknown copy.
 //   - A packages.config project (no PackageReference) keeps its packages.config, the complete
-//     legacy set. A lockfile or packages.config with no project file beside it counts as is.
+//     legacy set; its project references don't flow packages. A lockfile or packages.config
+//     with no project file beside it counts as is.
 //
 // Two project files in one directory share obj/ and the lock, so neither is attributed.
 // The reasons name every unknown copy added.
-func installedCopies(root string, copies []nugetCopy, locks map[string]lockRequests, projects map[string]*projectDir, configs map[string]bool, want, coordinate string) ([]nugetCopy, []string, bool) {
-	central := centralVersions(root)
+func installedCopies(ev *evaluator, copies []nugetCopy, locks map[string]*lockFile, projects map[string]*projectDir, configs map[string]bool, want, coordinate string) ([]nugetCopy, []string, bool) {
 	var (
 		extra   []nugetCopy
 		reasons []string
@@ -72,40 +64,54 @@ func installedCopies(root string, copies []nugetCopy, locks map[string]lockReque
 			reasons = append(reasons, reason)
 		}
 	}
+dirs:
 	for _, dir := range slices.Sorted(maps.Keys(projects)) {
-		p := projects[dir]
-		single := len(p.files) == 1
-		if single {
-			deps, present, ok := assetsCopies(dir, want)
-			if !ok {
-				return nil, nil, false
+		var evals []*projectEval
+		for _, f := range projects[dir].files {
+			pe := ev.evalPath(f)
+			if pe.reason != "" {
+				unknown(dir, pe.reason)
+				continue dirs
 			}
-			if present {
-				for _, d := range deps {
+			evals = append(evals, pe)
+		}
+		single := len(evals) == 1
+		if single {
+			ac := ev.checkAssets(evals[0])
+			switch ac.status {
+			case assetsUnparsable:
+				return nil, nil, false
+			case assetsTrusted:
+				for _, d := range assetsCopiesOf(ac.graph, want) {
 					extra = append(extra, nugetCopy{dep: d, dir: dir, kind: kindAssets})
 				}
 				continue
-			}
-		}
-		decl, tractable := declaredRefs(root, dir, p.files, configs[dir])
-		if !tractable {
-			unknown(dir, reasonPackageReferenceUnmodeled)
-			continue
-		}
-		for _, e := range slices.Concat(decl.own, decl.injected) {
-			if normalizeNuGetCoordinate(e.dep.Coordinate) == want {
-				extra = append(extra, nugetCopy{dep: e.dep, dir: dir, kind: kindProject})
-			}
-		}
-		lr, hasLock := locks[dir]
-		if hasLock && single {
-			versions, _ := central(dir)
-			if lockCurrent(lr, decl.specs, versions) {
-				current[dir] = true
+			case assetsUntrusted:
+				unknown(dir, ac.reason)
 				continue
 			}
 		}
-		if decl.unconditional[want] || len(decl.specs) == 0 {
+		var unconditional, declares, refs bool
+		for _, pe := range evals {
+			if pe.generated {
+				unknown(dir, reasonRestoreOutputStale)
+				continue dirs
+			}
+			for _, e := range slices.Concat(pe.decl.own, pe.decl.injected) {
+				if normalizeNuGetCoordinate(e.dep.Coordinate) == want {
+					extra = append(extra, nugetCopy{dep: e.dep, dir: dir, kind: kindProject})
+				}
+			}
+			unconditional = unconditional || pe.decl.unconditional[want]
+			declares = declares || len(pe.decl.specs) > 0
+			refs = refs || len(pe.refs) > 0
+		}
+		lf, hasLock := locks[dir]
+		if hasLock && single && ev.lockCurrent(lf, evals[0]) {
+			current[dir] = true
+			continue
+		}
+		if unconditional || !declares && (!refs || configs[dir]) {
 			continue
 		}
 		if hasLock {
@@ -137,21 +143,10 @@ func installedCopies(root string, copies []nugetCopy, locks map[string]lockReque
 // kindAssets marks a copy read from a project's obj/project.assets.json.
 const kindAssets = "assets"
 
-// assetsCopies reads dir/obj/project.assets.json and returns every package copy of want it
-// records, one per distinct version across targets. present is false when there is no such
-// file; ok is false when it exists but can't be read or has no targets.
-func assetsCopies(dir, want string) (deps []plugin.ResolvedDependency, present, ok bool) {
-	data, err := os.ReadFile(filepath.Join(dir, "obj", "project.assets.json"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, true
-	}
-	if err != nil {
-		return nil, true, false
-	}
-	g := parseAssetsGraph(data)
-	if g == nil || g.targets == nil {
-		return nil, true, false
-	}
+// assetsCopiesOf returns every package copy of want a restore output graph records, one per
+// distinct version across targets.
+func assetsCopiesOf(g *assetsGraph, want string) []plugin.ResolvedDependency {
+	var deps []plugin.ResolvedDependency
 	seen := make(map[string]bool)
 	for _, target := range slices.Sorted(maps.Keys(g.targets)) {
 		libs := g.targets[target]
@@ -167,48 +162,7 @@ func assetsCopies(dir, want string) (deps []plugin.ResolvedDependency, present, 
 			deps = append(deps, nugetResolved(id, ver, ver != "", "project.assets.json"))
 		}
 	}
-	return deps, true, true
-}
-
-// lockCurrent reports whether a project's lockfile still matches what the project declares:
-// the Direct ids are exactly the declared ids, every Direct "requested" equals each
-// declaration of its id, and every CentralTransitive "requested" equals the central
-// PackageVersion of its id. A version-less declaration reads central (the nearest
-// Directory.Packages.props; nil when there is none or it can't be read, which matches nothing).
-func lockCurrent(lr lockRequests, specs map[string][]string, central map[string]string) bool {
-	if len(lr.direct) != len(specs) {
-		return false
-	}
-	for id, reqs := range lr.transitive {
-		if !sameRanges(central[id], reqs) {
-			return false
-		}
-	}
-	for id, declared := range specs {
-		for _, spec := range declared {
-			if spec == "" {
-				spec = central[id]
-			}
-			if !sameRanges(spec, lr.direct[id]) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// sameRanges reports whether reqs is non-empty and every range in it equals spec.
-func sameRanges(spec string, reqs []string) bool {
-	want, ok := normalizeNuGetRange(spec)
-	if !ok || len(reqs) == 0 {
-		return false
-	}
-	for _, r := range reqs {
-		if got, ok := normalizeNuGetRange(r); !ok || got != want {
-			return false
-		}
-	}
-	return true
+	return deps
 }
 
 // declaration is everything a project declares: the declared version spec of each id
@@ -221,168 +175,80 @@ type declaration struct {
 	injected      []manifestEntry
 }
 
-// declaredRefs gathers what the project files in dir declare, the way MSBuild assembles it:
-// each project file, the files it imports, the nearest Directory.Build.props and
-// Directory.Build.targets (and the parents they chain to), and the nearest
-// Directory.Packages.props, reading PackageReference and GlobalPackageReference items from
-// each. tractable is false when any part of that can't be read completely, or a file other
-// than Directory.Packages.props declares a PackageVersion (which can move a central version
-// this read doesn't follow); the declared set is then unknown. A reference under a Condition, or in a file imported
-// under one, is declared but not unconditional. A packages.config project's own imports are
-// not followed: they are the legacy toolset and package build targets, and its packages
-// come from packages.config.
-func declaredRefs(root, dir string, files []string, legacy bool) (declaration, bool) {
-	decl := declaration{specs: make(map[string][]string), unconditional: make(map[string]bool)}
-	add := func(mf msbuildFile, injected, conditioned bool) {
-		for _, e := range slices.Concat(mf.refs, mf.globals) {
-			if conditioned {
-				e = manifestEntry{dep: nugetResolved(e.dep.Coordinate, "", false, e.dep.Source), spec: specUnread}
-			}
-			id := normalizeNuGetCoordinate(e.dep.Coordinate)
-			decl.specs[id] = append(decl.specs[id], e.spec)
-			if e.spec != specUnread {
-				decl.unconditional[id] = true
-			}
-			if injected {
-				decl.injected = append(decl.injected, e)
-			} else {
-				decl.own = append(decl.own, e)
-			}
-		}
-	}
-	for _, f := range files {
-		mf, ok := readMSBuild(f, roleProject)
-		if !ok {
-			return decl, false
-		}
-		add(mf, false, false)
-		if legacy && len(mf.refs) == 0 && len(mf.globals) == 0 {
-			continue
-		}
-		for _, imp := range mf.imports {
-			if toolsetImport(imp.project) {
-				continue
-			}
-			path := filepath.Join(dir, filepath.FromSlash(strings.ReplaceAll(imp.project, `\`, "/")))
-			if !withinDir(root, path) {
-				return decl, false
-			}
-			in, ok := readMSBuild(path, roleProject)
-			if !ok || len(in.imports) > 0 {
-				return decl, false
-			}
-			add(in, true, imp.conditioned)
-		}
-	}
-	for _, name := range []string{"Directory.Build.props", "Directory.Build.targets"} {
-		conditioned := false
-		for from := dir; ; {
-			path, found := nearestAbove(root, from, name)
-			if !found {
-				break
-			}
-			mf, ok := readMSBuild(path, roleProject)
-			if !ok {
-				return decl, false
-			}
-			add(mf, true, conditioned)
-			chains := false
-			for _, imp := range mf.imports {
-				if !chainsToParent(imp.project, name) {
-					return decl, false
-				}
-				chains = true
-				conditioned = conditioned || imp.conditioned
-			}
-			if !chains {
-				break
-			}
-			parent := filepath.Dir(filepath.Dir(path))
-			if parent == filepath.Dir(path) || !withinDir(root, parent) {
-				break
-			}
-			from = parent
-		}
-	}
-	if path, found := nearestAbove(root, dir, "Directory.Packages.props"); found {
-		mf, ok := readMSBuild(path, roleCentral)
-		if !ok || len(mf.imports) > 0 {
-			return decl, false
-		}
-		add(mf, true, false)
-	}
-	return decl, true
+func newDeclaration() declaration {
+	return declaration{specs: make(map[string][]string), unconditional: make(map[string]bool)}
 }
 
-// nearestAbove returns the nearest file called name at or above dir, bounded by root.
-func nearestAbove(root, dir, name string) (string, bool) {
-	root = filepath.Clean(root)
-	for dir = filepath.Clean(dir); ; {
-		p := filepath.Join(dir, name)
-		if _, err := os.Stat(p); err == nil {
-			return p, true
+// add records entries declared by one file. A conditioned entry (under a Condition, or in a
+// file imported under one) is declared but unread: its spec is specUnread and it is not
+// unconditional.
+func (d *declaration) add(entries []manifestEntry, injected, conditioned bool) {
+	for _, e := range entries {
+		if conditioned {
+			e = manifestEntry{dep: nugetResolved(e.dep.Coordinate, "", false, e.dep.Source), spec: specUnread}
 		}
-		if dir == root {
-			return "", false
+		id := normalizeNuGetCoordinate(e.dep.Coordinate)
+		d.specs[id] = append(d.specs[id], e.spec)
+		if e.spec != specUnread {
+			d.unconditional[id] = true
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir || !withinDir(root, parent) {
-			return "", false
+		if injected {
+			d.injected = append(d.injected, e)
+		} else {
+			d.own = append(d.own, e)
 		}
-		dir = parent
 	}
 }
 
-// toolsetImport reports whether an Import names a file of the MSBuild/SDK installation,
-// which declares no package references of the project's own.
-func toolsetImport(project string) bool {
-	for _, prefix := range []string{"$(MSBuildExtensionsPath", "$(MSBuildToolsPath", "$(MSBuildBinPath", "$(MSBuildSDKsPath", "$(VSToolsPath"} {
-		if strings.HasPrefix(project, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-// chainsToParent reports whether a Directory.Build.* Import is the documented way of
-// importing the same-named file above it.
-func chainsToParent(project, name string) bool {
-	p := strings.ReplaceAll(project, " ", "")
-	return strings.Contains(p, "GetPathOfFileAbove('"+name+"'") || strings.Contains(p, "GetPathOfFileAbove(\""+name+"\"")
-}
-
-// msbuildFile is what readMSBuild reads from one MSBuild file.
+// msbuildFile is what parseMSBuild reads from one MSBuild file.
 type msbuildFile struct {
-	refs    []manifestEntry
-	globals []manifestEntry
-	imports []msbuildImport
+	refs        []manifestEntry
+	globals     []manifestEntry
+	imports     []msbuildImport
+	props       []msbuildProp
+	projectRefs []msbuildProjectRef
+	versions    map[string]string // PackageVersion by normalized id (roleCentral only)
 }
 
 type msbuildImport struct {
-	project     string
+	project          string
+	condition        string
+	groupConditioned bool
+}
+
+type msbuildProp struct {
+	name        string // lowercased
+	value       string // trimmed
 	conditioned bool
 }
 
-// msbuildRole is which kind of file readMSBuild reads, which decides what it may declare.
+type msbuildProjectRef struct {
+	include     string
+	conditioned bool
+}
+
+// msbuildRole is which kind of file parseMSBuild reads, which decides what it may declare.
 type msbuildRole int
 
 const (
 	// roleProject is a project file, a Directory.Build.props/.targets, or a file one of them
 	// imports. None of them may declare a PackageVersion.
 	roleProject msbuildRole = iota
-	// roleCentral is Directory.Packages.props. Its PackageVersion items are skipped here;
-	// readCentralVersions reads them.
+	// roleCentral is Directory.Packages.props or a file it imports. Its PackageVersion items
+	// are read into versions.
 	roleCentral
 )
 
-// restoreProperties are the properties (lowercased prefixes) that move where restore looks
-// for versions, which central file or Directory.Build.* applies, or where its outputs live.
+// restoreProperties are the properties (lowercased prefixes, matched with any leading
+// underscore removed) that move where restore looks for versions, which central file,
+// Directory.Build.* or extension imports apply, where restore's inputs and outputs live, or
+// how the project is restored.
 var restoreProperties = []string{
 	"managepackageversionscentrally", "centralpackage", "importdirectory",
-	"directorypackagesprops", "directorybuild", "custombeforedirectory", "customafterdirectory",
-	"importprojectextension", "msbuildprojectextensionspath", "baseintermediateoutputpath",
-	"projectassetsfile", "restoreoutputpath", "nugetlockfilepath",
-	"restorepackageswithlockfile", "restorelockedmode",
+	"directorypackagesprops", "directorybuild", "custombefore", "customafter",
+	"importprojectextension", "importbywildcard", "importuserlocations",
+	"msbuildprojectextensionspath", "msbuilduserextensionspath", "msbuildextensionspath",
+	"baseintermediateoutputpath", "projectassetsfile", "nugetlockfilepath", "restore",
 }
 
 // restoreToggles are the restore properties a file may set to a literal true or false without
@@ -392,43 +258,53 @@ var restoreToggles = []string{
 	"restorepackageswithlockfile", "restorelockedmode",
 }
 
-// readMSBuild reads the package references of one MSBuild file. It models only what it
-// knows: a Project of PropertyGroups, ItemGroups, Imports and ImportGroups, with
-// PackageReference and GlobalPackageReference items declared by Include (one literal
-// package id) with Version and VersionOverride as attributes or metadata elements. Other item
+// packageRefMetadata is the metadata a PackageReference or GlobalPackageReference may carry,
+// as an attribute or an element. Anything else could change what restore does with it.
+var packageRefMetadata = []string{
+	"version", "versionoverride", "privateassets", "includeassets", "excludeassets",
+	"generatepathproperty", "aliases", "nowarn",
+}
+
+// projectRefMetadata is the metadata a ProjectReference may carry.
+var projectRefMetadata = []string{
+	"privateassets", "includeassets", "excludeassets", "referenceoutputassembly", "private",
+	"name", "project", "aliases",
+}
+
+// restoreItems are the item types that decide what restore installs.
+var restoreItems = []string{"PackageReference", "GlobalPackageReference", "PackageVersion", "ProjectReference"}
+
+// parseMSBuild reads the declarations of one MSBuild file. It models only what it knows: a
+// Project of PropertyGroups, ItemGroups, Imports and ImportGroups, with PackageReference,
+// GlobalPackageReference and ProjectReference items declared by Include and carrying only the
+// metadata listed above, and in Directory.Packages.props PackageVersion items. Other item
 // types, and Targets, UsingTasks, ItemDefinitionGroups and ProjectExtensions, are skipped,
-// but only while nothing inside them names a package item. ok is false, and the file's
-// declarations are unknown, for anything else that can change a reference:
+// but only while nothing inside them names one of restoreItems. ok is false, and the file's
+// declarations are unknown, for anything else:
 //
 //   - a Choose, or any element outside the shapes above;
-//   - an Update, Remove or Exclude on a package item, or an Include that is empty, lists
-//     several ids, or holds a wildcard or a $(property), @(item) or %(metadata) reference;
-//   - a PackageVersion outside Directory.Packages.props;
-//   - an SDK other than Microsoft.NET.Sdk*, which can bring references of its own;
+//   - an Update, Remove or Exclude on one of those items, any other metadata, or a package
+//     Include that is empty, lists several ids, or holds a wildcard or a $(property), @(item)
+//     or %(metadata) reference;
+//   - a PackageVersion outside Directory.Packages.props, or one under a Condition;
+//   - an SDK outside bundledSDKs, or any SDK version;
 //   - a restore property (restoreProperties), unless it is set without a Condition to a
 //     literal true for ManagePackageVersionsCentrally or true/false for a restoreToggles one;
 //   - a DOCTYPE, or text or attributes where none belong.
 //
 // Item types are matched without case, as MSBuild does. A reference under a Condition (on
-// the item, its ItemGroup, or its Version or VersionOverride element) applies only sometimes,
-// and one with more than one Version or VersionOverride is decided by evaluation order; both
-// are read as unresolved with the declared version specUnread. A Condition on a property or
-// on an item of another type can't move a package version, since a version or Include that
-// refers to a property is never read as a literal.
-func readMSBuild(path string, role msbuildRole) (msbuildFile, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return msbuildFile{}, false
-	}
-	return parseMSBuild(data, role, "msbuild")
-}
-
+// the item, its ItemGroup, or a metadata element) applies only sometimes, and one with more
+// than one Version or VersionOverride is decided by evaluation order; both are read as
+// unresolved with the declared version specUnread. Every property is recorded, with whether
+// a Condition applies, for the evaluator.
 func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bool) {
 	var (
 		mf        msbuildFile
 		stack     []string
 		groupCond bool
 		item      *msbuildPkgItem
+		pref      *msbuildProjectRef
+		pver      *msbuildPkgVersion
 		prop      string
 		meta      string
 		propCond  bool
@@ -436,7 +312,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 		text      strings.Builder
 		skip      int
 	)
-	d := xml.NewDecoder(bytes.NewReader(data))
+	d := xml.NewDecoder(bytes.NewReader(stripBOM(data)))
 	for {
 		tok, err := d.Token()
 		if err == io.EOF {
@@ -453,13 +329,15 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 				if skip == 0 {
 					skip = depth
 				}
-				if packageItem(name) && !(role == roleCentral && depth == 3 && strings.EqualFold(name, "PackageVersion")) {
+				if restoreItem(name) {
 					return msbuildFile{}, false
 				}
 				for _, a := range t.Attr {
 					v := strings.ToLower(a.Value)
-					if strings.Contains(v, "packagereference") || strings.Contains(v, "packageversion") {
-						return msbuildFile{}, false
+					for _, it := range restoreItems {
+						if strings.Contains(v, strings.ToLower(it)) {
+							return msbuildFile{}, false
+						}
 					}
 				}
 				continue
@@ -486,11 +364,11 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 				}
 				_, groupCond = attrs["condition"]
 			case depth == 2 && name == "Sdk":
-				if !onlyAttrs(attrs, "name", "version", "minimumversion") || !knownSDK(attrs["name"]) {
+				if !onlyAttrs(attrs, "name") || !knownSDK(attrs["name"]) {
 					return msbuildFile{}, false
 				}
 			case name == "Import" && (depth == 2 || depth == 3 && parent == "ImportGroup"):
-				if !onlyAttrs(attrs, "project", "condition", "sdk", "label", "version", "minimumversion") {
+				if !onlyAttrs(attrs, "project", "condition", "sdk", "label") {
 					return msbuildFile{}, false
 				}
 				if sdk, set := attrs["sdk"]; set {
@@ -503,8 +381,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 				if project == "" {
 					return msbuildFile{}, false
 				}
-				_, cond := attrs["condition"]
-				mf.imports = append(mf.imports, msbuildImport{project: project, conditioned: cond || depth == 3 && groupCond})
+				mf.imports = append(mf.imports, msbuildImport{project: project, condition: attrs["condition"], groupConditioned: depth == 3 && groupCond})
 			case depth == 3 && parent == "PropertyGroup":
 				if !onlyAttrs(attrs, "condition") {
 					return msbuildFile{}, false
@@ -515,25 +392,51 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 			case depth == 3 && parent == "ItemGroup" && (strings.EqualFold(name, "PackageReference") || strings.EqualFold(name, "GlobalPackageReference")):
 				item = &msbuildPkgItem{global: strings.EqualFold(name, "GlobalPackageReference"), conditioned: groupCond}
 				for k, v := range attrs {
-					switch k {
-					case "update", "remove", "exclude":
-						return msbuildFile{}, false
-					case "include":
+					switch {
+					case k == "include":
 						item.include = v
-					case "version":
-						item.versions = append(item.versions, strings.TrimSpace(v))
-					case "versionoverride":
-						item.overrides = append(item.overrides, strings.TrimSpace(v))
-					case "condition":
+					case k == "condition":
 						item.conditioned = true
+					case k == "version":
+						item.versions = append(item.versions, strings.TrimSpace(v))
+					case k == "versionoverride":
+						item.overrides = append(item.overrides, strings.TrimSpace(v))
+					case !slices.Contains(packageRefMetadata, k):
+						return msbuildFile{}, false
 					}
 				}
-			case depth == 4 && item != nil:
+			case depth == 3 && parent == "ItemGroup" && strings.EqualFold(name, "ProjectReference"):
+				pref = &msbuildProjectRef{conditioned: groupCond}
+				for k, v := range attrs {
+					switch {
+					case k == "include":
+						pref.include = strings.TrimSpace(v)
+					case k == "condition":
+						pref.conditioned = true
+					case !slices.Contains(projectRefMetadata, k):
+						return msbuildFile{}, false
+					}
+				}
+			case depth == 3 && parent == "ItemGroup" && strings.EqualFold(name, "PackageVersion"):
+				if role != roleCentral || groupCond || !onlyAttrs(attrs, "include", "version") {
+					return msbuildFile{}, false
+				}
+				pver = &msbuildPkgVersion{include: attrs["include"]}
+				if v, set := attrs["version"]; set {
+					pver.versions = append(pver.versions, strings.TrimSpace(v))
+				}
+			case depth == 4 && (item != nil || pref != nil || pver != nil):
 				if !onlyAttrs(attrs, "condition") {
 					return msbuildFile{}, false
 				}
 				_, metaCond = attrs["condition"]
 				meta = strings.ToLower(name)
+				switch {
+				case item != nil && !slices.Contains(packageRefMetadata, meta),
+					pref != nil && !slices.Contains(projectRefMetadata, meta),
+					pver != nil && (meta != "version" || metaCond):
+					return msbuildFile{}, false
+				}
 				text.Reset()
 			default:
 				return msbuildFile{}, false
@@ -541,7 +444,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 		case xml.CharData:
 			switch {
 			case skip > 0:
-			case len(stack) == 3 && prop != "", len(stack) == 4 && item != nil:
+			case len(stack) == 3 && prop != "", len(stack) == 4 && (item != nil || pref != nil || pver != nil):
 				text.Write(t)
 			case strings.TrimSpace(string(t)) != "":
 				return msbuildFile{}, false
@@ -567,10 +470,18 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 				if metaCond {
 					item.conditioned = true
 				}
+			case depth == 4 && pref != nil:
+				if metaCond {
+					pref.conditioned = true
+				}
+			case depth == 4 && pver != nil:
+				pver.versions = append(pver.versions, strings.TrimSpace(text.String()))
 			case depth == 3 && prop != "":
-				if !restoreSafe(prop, propCond, strings.ToLower(strings.TrimSpace(text.String()))) {
+				value := strings.TrimSpace(text.String())
+				if !restoreSafe(prop, propCond, strings.ToLower(value)) {
 					return msbuildFile{}, false
 				}
+				mf.props = append(mf.props, msbuildProp{name: prop, value: value, conditioned: propCond})
 				prop = ""
 			case depth == 3 && item != nil:
 				e, ok := item.entry(source)
@@ -583,6 +494,26 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 					mf.refs = append(mf.refs, e)
 				}
 				item = nil
+			case depth == 3 && pref != nil:
+				if pref.include == "" {
+					return msbuildFile{}, false
+				}
+				mf.projectRefs = append(mf.projectRefs, *pref)
+				pref = nil
+			case depth == 3 && pver != nil:
+				id := strings.TrimSpace(pver.include)
+				if id == "" || strings.ContainsAny(id, ";*?$@%") || len(pver.versions) != 1 {
+					return msbuildFile{}, false
+				}
+				if mf.versions == nil {
+					mf.versions = make(map[string]string)
+				}
+				key, v := normalizeNuGetCoordinate(id), pver.versions[0]
+				if prev, seen := mf.versions[key]; seen && prev != v {
+					v = ""
+				}
+				mf.versions[key] = v
+				pver = nil
 			case depth == 2:
 				groupCond = false
 			}
@@ -599,6 +530,12 @@ type msbuildPkgItem struct {
 	include             string
 	versions, overrides []string
 	conditioned         bool
+}
+
+// msbuildPkgVersion is one PackageVersion item as written.
+type msbuildPkgVersion struct {
+	include  string
+	versions []string
 }
 
 // entry is the manifest entry the item declares; ok is false when its Include isn't one
@@ -627,22 +564,22 @@ func (it *msbuildPkgItem) entry(source string) (manifestEntry, bool) {
 }
 
 // inertSubtree reports whether the element at the top of stack starts a subtree that can't
-// declare a package reference unless it names a package item: an item of another type, or a
-// Target, UsingTask, ItemDefinitionGroup or ProjectExtensions.
+// declare what restore installs unless it names one of restoreItems: an item of another
+// type, or a Target, UsingTask, ItemDefinitionGroup or ProjectExtensions.
 func inertSubtree(depth int, stack []string) bool {
 	name := stack[depth-1]
 	switch {
 	case depth == 2:
 		return name == "Target" || name == "UsingTask" || name == "ItemDefinitionGroup" || name == "ProjectExtensions"
 	case depth == 3 && stack[1] == "ItemGroup":
-		return !strings.EqualFold(name, "PackageReference") && !strings.EqualFold(name, "GlobalPackageReference")
+		return !restoreItem(name)
 	}
 	return false
 }
 
-// packageItem reports whether an element name is a package item type.
-func packageItem(name string) bool {
-	for _, t := range []string{"PackageReference", "GlobalPackageReference", "PackageVersion"} {
+// restoreItem reports whether an element name is one of restoreItems, without case.
+func restoreItem(name string) bool {
+	for _, t := range restoreItems {
 		if strings.EqualFold(name, t) {
 			return true
 		}
@@ -677,12 +614,11 @@ func onlyAttrs(attrs map[string]string, allowed ...string) bool {
 	return true
 }
 
-// knownSDK reports whether every SDK an Sdk value names is a Microsoft.NET.Sdk flavor, which
-// adds no package references of its own beyond the implicit ones restore records.
+// knownSDK reports whether every SDK an Sdk value names is one of bundledSDKs, with no
+// version.
 func knownSDK(sdk string) bool {
 	for part := range strings.SplitSeq(sdk, ";") {
-		name, _, _ := strings.Cut(strings.TrimSpace(part), "/")
-		if !strings.HasPrefix(strings.ToLower(name), "microsoft.net.sdk") {
+		if !slices.Contains(bundledSDKs, strings.ToLower(strings.TrimSpace(part))) {
 			return false
 		}
 	}
@@ -692,6 +628,7 @@ func knownSDK(sdk string) bool {
 // restoreSafe reports whether setting the lowercased property name to value (lowercased,
 // trimmed) leaves every version this reader reads in place.
 func restoreSafe(name string, conditioned bool, value string) bool {
+	name = strings.TrimLeft(name, "_")
 	restore := false
 	for _, prefix := range restoreProperties {
 		if strings.HasPrefix(name, prefix) {

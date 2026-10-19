@@ -2,11 +2,8 @@ package dotnetanalysis
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,17 +81,19 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 	}
 
 	manifests := manifestFiles(req.BuildDir)
+	rootReal := realRoot(req.BuildDir)
 
 	var (
 		all         []plugin.ResolvedDependency
 		copies      []nugetCopy
-		locks       = make(map[string]lockRequests)
+		locks       = make(map[string]*lockFile)
+		projectList []string
 		projects    = make(map[string]*projectDir)
 		configs     = make(map[string]bool)
 		parseFailed bool
 	)
 	for _, m := range manifests {
-		entries, requested, ok := parseManifest(m)
+		entries, lock, ok := parseManifest(rootReal, m)
 		if !ok {
 			parseFailed = true
 		}
@@ -103,7 +102,7 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 		switch kind {
 		case kindLock:
 			if ok {
-				locks[dir] = requested
+				locks[dir] = lock
 			}
 		case kindConfig:
 			configs[dir] = true
@@ -112,6 +111,7 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 				projects[dir] = &projectDir{}
 			}
 			projects[dir].files = append(projects[dir].files, m)
+			projectList = append(projectList, m)
 		}
 		for _, e := range entries {
 			all = append(all, e.dep)
@@ -123,7 +123,8 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 	var reasons []string
 	if want != "" && !parseFailed {
 		var ok bool
-		copies, reasons, ok = installedCopies(req.BuildDir, copies, locks, projects, configs, want, strings.TrimSpace(req.Coordinate))
+		ev := newEvaluator(req.BuildDir, projectList)
+		copies, reasons, ok = installedCopies(ev, copies, locks, projects, configs, want, strings.TrimSpace(req.Coordinate))
 		if !ok {
 			parseFailed = true
 		}
@@ -148,14 +149,6 @@ type nugetCopy struct {
 	dep  plugin.ResolvedDependency
 	dir  string
 	kind string
-}
-
-// lockRequests maps a normalized package id to the "requested" range of each Direct entry for
-// it in one packages.lock.json, one per target, and likewise for each CentralTransitive entry
-// (a transitive package pinned by a central PackageVersion); "" records an entry with no
-// requested.
-type lockRequests struct {
-	direct, transitive map[string][]string
 }
 
 const (
@@ -238,25 +231,26 @@ type manifestEntry struct {
 	spec string
 }
 
-// parseManifest dispatches on the manifest's name to the format-specific parser. The lock
-// requests are set only for packages.lock.json. The bool is false when the file cannot be
-// read or is structurally unparseable (the caller degrades partiality and vetoes).
-func parseManifest(path string) ([]manifestEntry, lockRequests, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, lockRequests{}, false
+// parseManifest dispatches on the manifest's name to the format-specific parser. The lock is
+// set only for packages.lock.json. The bool is false when the file cannot be read (readInput:
+// a regular file inside the build tree) or is structurally unparseable (the caller degrades
+// partiality and vetoes).
+func parseManifest(rootReal, path string) ([]manifestEntry, *lockFile, bool) {
+	data, _, st := readInput(rootReal, path)
+	if st != inputRead {
+		return nil, nil, false
 	}
 	base := filepath.Base(path)
 	switch {
 	case base == "packages.lock.json":
-		deps, requested, ok := parsePackagesLock(data)
-		return entriesOf(deps), requested, ok
+		deps, lock, ok := parsePackagesLock(data)
+		return entriesOf(deps), lock, ok
 	case base == "packages.config":
 		deps, ok := parsePackagesConfig(data)
-		return entriesOf(deps), lockRequests{}, ok
+		return entriesOf(deps), nil, ok
 	default: // *.csproj / *.fsproj / *.vbproj
 		entries, ok := parseProjectFile(data)
-		return entries, lockRequests{}, ok
+		return entries, nil, ok
 	}
 }
 
@@ -266,65 +260,6 @@ func entriesOf(deps []plugin.ResolvedDependency) []manifestEntry {
 		out = append(out, manifestEntry{dep: d})
 	}
 	return out
-}
-
-// --- packages.lock.json (JSON) -----------------------------------------------
-
-// packagesLock is the subset of packages.lock.json we read: a per-framework map of package
-// name → entry with the exact "resolved" version (present for both Direct and Transitive).
-type packagesLock struct {
-	Dependencies map[string]map[string]packagesLockEntry `json:"dependencies"`
-}
-
-type packagesLockEntry struct {
-	Type      string `json:"type"`
-	Requested string `json:"requested"`
-	Resolved  string `json:"resolved"`
-}
-
-// parsePackagesLock parses packages.lock.json. Every entry (Direct or Transitive) carries an
-// exact "resolved" version, so a present resolved field resolves; a missing one is
-// UNRESOLVED. A "Project" reference (a sibling project, not a NuGet package) has no resolved
-// version and is skipped.
-//
-// Each target framework (and each <tfm>/<rid> target) is its own resolution, and they can
-// disagree (net6.0 → 13.0.1, net8.0 → 13.0.3). Every distinct (id, version) across them is
-// kept so the split reaches the Match; only exact repeats collapse. Frameworks and ids are
-// walked in sorted order so All is identical across runs. The "requested" range of every
-// Direct entry is returned per id, one per target, for installedCopies' staleness check.
-func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, lockRequests, bool) {
-	var pl packagesLock
-	if err := json.Unmarshal(data, &pl); err != nil {
-		return nil, lockRequests{}, false
-	}
-	type idVersion struct{ id, version string }
-	seen := make(map[idVersion]bool)
-	requested := lockRequests{direct: make(map[string][]string), transitive: make(map[string][]string)}
-	var out []plugin.ResolvedDependency
-	for _, tfm := range slices.Sorted(maps.Keys(pl.Dependencies)) {
-		pkgs := pl.Dependencies[tfm]
-		for _, name := range slices.Sorted(maps.Keys(pkgs)) {
-			e := pkgs[name]
-			if strings.EqualFold(e.Type, "Project") {
-				continue
-			}
-			id := normalizeNuGetCoordinate(name)
-			switch {
-			case strings.EqualFold(e.Type, "Direct"):
-				requested.direct[id] = append(requested.direct[id], strings.TrimSpace(e.Requested))
-			case strings.EqualFold(e.Type, "CentralTransitive"):
-				requested.transitive[id] = append(requested.transitive[id], strings.TrimSpace(e.Requested))
-			}
-			d := nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json")
-			k := idVersion{id, d.Version}
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			out = append(out, d)
-		}
-	}
-	return out, requested, true
 }
 
 // --- .csproj / .fsproj / .vbproj (XML) ---------------------------------------
@@ -397,124 +332,6 @@ func parsePackagesConfig(data []byte) ([]plugin.ResolvedDependency, bool) {
 		}
 		ver, resolved := exactNuGetPin(strings.TrimSpace(p.Version))
 		out = append(out, nugetResolved(name, ver, resolved, "packages.config"))
-	}
-	return out, true
-}
-
-// centralVersions returns a lookup of the Central Package Management versions that apply to
-// a project directory: the PackageVersion entries of the nearest Directory.Packages.props at
-// or above it, bounded by root. MSBuild imports only that nearest file. The bool is false when
-// there is no such file or readCentralVersions can't read all of it. An id given conflicting versions in the
-// file maps to "" so it covers nothing.
-func centralVersions(root string) func(dir string) (map[string]string, bool) {
-	root = filepath.Clean(root)
-	return func(dir string) (map[string]string, bool) {
-		for dir = filepath.Clean(dir); ; {
-			p := filepath.Join(dir, "Directory.Packages.props")
-			if _, err := os.Stat(p); err == nil {
-				return readCentralVersions(p)
-			}
-			if dir == root {
-				return nil, false
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir || !withinDir(root, parent) {
-				return nil, false
-			}
-			dir = parent
-		}
-	}
-}
-
-// readCentralVersions reads the PackageVersion entries of one Directory.Packages.props. It
-// models only a plain file: a Project holding ItemGroups of PackageVersion Include/Version
-// items and PropertyGroups of literal properties. GlobalPackageReference Include/Version
-// items are allowed and skipped; declaredRefs reads them as references every project gets.
-// Anything else can change which version ships without this reader seeing it: an Update or Remove item, an Import, a Condition, an
-// SDK, an Include that expands to several items, another item type, or an explicit
-// ManagePackageVersionsCentrally of false. Any of those, or any element or attribute not
-// listed here, makes the whole file unreadable, so it covers nothing. A property-valued
-// version is kept as written; it never equals the range restore records, so it covers nothing
-// either.
-func readCentralVersions(path string) (map[string]string, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	out := make(map[string]string)
-	d := xml.NewDecoder(strings.NewReader(string(data)))
-	var stack []string
-	var item string
-	var version, text strings.Builder
-	for {
-		tok, err := d.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, false
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			stack = append(stack, t.Name.Local)
-			allowed := map[string]bool{"Label": true}
-			switch path := strings.Join(stack, "/"); {
-			case path == "Project":
-				allowed = map[string]bool{"xmlns": true, "ToolsVersion": true}
-			case path == "Project/ItemGroup", path == "Project/PropertyGroup":
-			case path == "Project/ItemGroup/PackageVersion":
-				allowed["Include"], allowed["Version"] = true, true
-				item = ""
-				version.Reset()
-			case path == "Project/ItemGroup/PackageVersion/Version":
-			case path == "Project/ItemGroup/GlobalPackageReference":
-				allowed["Include"], allowed["Version"] = true, true
-			case len(stack) == 3 && stack[1] == "PropertyGroup":
-				text.Reset()
-			default:
-				return nil, false
-			}
-			for _, a := range t.Attr {
-				if a.Name.Space != "xmlns" && (a.Name.Space != "" || !allowed[a.Name.Local]) {
-					return nil, false
-				}
-				switch {
-				case len(stack) == 3 && a.Name.Local == "Include":
-					item = a.Value
-				case len(stack) == 3 && a.Name.Local == "Version":
-					version.WriteString(a.Value)
-				}
-			}
-		case xml.CharData:
-			switch {
-			case len(stack) == 4:
-				version.Write(t)
-			case len(stack) == 3 && stack[1] == "PropertyGroup":
-				text.Write(t)
-			case strings.TrimSpace(string(t)) != "":
-				return nil, false
-			}
-		case xml.EndElement:
-			switch {
-			case len(stack) == 3 && stack[2] == "PackageVersion":
-				if strings.ContainsAny(item, ";*?$@%") {
-					return nil, false
-				}
-				id := normalizeNuGetCoordinate(item)
-				v := strings.TrimSpace(version.String())
-				if prev, seen := out[id]; seen && prev != v {
-					v = ""
-				}
-				out[id] = v
-			case len(stack) == 3 && stack[2] == "ManagePackageVersionsCentrally":
-				if strings.EqualFold(strings.TrimSpace(text.String()), "false") {
-					return nil, false
-				}
-			}
-			stack = stack[:len(stack)-1]
-		case xml.Directive:
-			return nil, false
-		}
 	}
 	return out, true
 }

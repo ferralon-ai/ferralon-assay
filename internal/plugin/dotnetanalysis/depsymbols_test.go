@@ -95,7 +95,7 @@ func newDepFixture(t *testing.T, targetsJSON, librariesJSON string) depFixture {
 	assets := `{"version":3,"targets":{"net8.0":{` + targetsJSON + `}},"libraries":{` + librariesJSON + `},` +
 		`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj": []byte("<Project></Project>"),
+		"App.csproj": restoredProject,
 		"Decoy.cs": []byte(`namespace Newtonsoft.Json { public static class JsonConvert {
 	public static object DeserializeObject(string s) { return null; } } }
 namespace App { public static class Json { public static object DeserializeObject(string s) { return null; } } }
@@ -382,7 +382,7 @@ func TestLoadSpanningSet_RefAssemblyIsAMiss(t *testing.T) {
 		`"Newtonsoft.Json/12.0.3":{"type":"package","compile":{"ref/net8.0/Newtonsoft.Json.dll":{}}}`,
 		newtonsoftLib)
 	f.writePkgFile(t, "newtonsoft.json/12.0.3/ref/net8.0/Newtonsoft.Json.dll", newtonsoftLike(true))
-	data, ok := readAssetsFile(f.buildDir)
+	_, data, ok := readAssetsFile(f.buildDir)
 	if !ok {
 		t.Fatal("no assets file")
 	}
@@ -475,7 +475,7 @@ func TestResolveDependencySymbols_VersionOfTheBuiltTarget(t *testing.T) {
 				`"libraries":{` + newtonsoftLib + `,"Newtonsoft.Json/13.0.1":{"type":"package","path":"newtonsoft.json/13.0.1"}},` +
 				`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 			f := depFixture{buildDir: composeILBuildDir(t, map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 			}), pkgRoot: pkgRoot}
 			f.writePkgFile(t, "newtonsoft.json/13.0.1/lib/net8.0/Newtonsoft.Json.dll", newtonsoftLike(false))
@@ -546,7 +546,7 @@ func TestResolveDependencySymbols_TwoVersionRestoreGraph(t *testing.T) {
 				`"libraries":{` + newtonsoftLib + `,"Newtonsoft.Json/13.0.1":{"type":"package","path":"newtonsoft.json/13.0.1"}},` +
 				`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 			f := depFixture{buildDir: composeILBuildDir(t, map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 			}), pkgRoot: pkgRoot}
 			f.writePkgFile(t, "newtonsoft.json/13.0.1/lib/net8.0/Newtonsoft.Json.dll", jsonConvertOnly())

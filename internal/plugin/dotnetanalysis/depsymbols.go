@@ -372,16 +372,16 @@ func isFirstPartyProject(buildDir, id string) bool {
 
 // readAssetsFile reads the build's project.assets.json — the same file the IL tier loads its
 // spanning set from, so resolution and reachability see one restore.
-func readAssetsFile(buildDir string) ([]byte, bool) {
+func readAssetsFile(buildDir string) (string, []byte, bool) {
 	path, ok := findFile(buildDir, "project.assets.json", true)
 	if !ok {
-		return nil, false
+		return "", nil, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return "", nil, false
 	}
-	return data, true
+	return path, data, true
 }
 
 // assetsGraph is project.assets.json's resolved package graph: per target, each library

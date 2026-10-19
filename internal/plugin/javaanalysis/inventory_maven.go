@@ -483,6 +483,16 @@ type effectiveModel struct {
 // the cache. `reactor` maps "g:a" -> reactor POM so a reactor-local parent is found without the
 // cache. Recursion is depth-bounded to guard against a malformed cyclic parent chain.
 func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) effectiveModel {
+	return buildModel(pom, reactor, cache, targetEnv, depth, false)
+}
+
+// buildImportedModel is buildEffectiveModel for a BOM a consumer imports: the BOM's whole
+// managed set is what the import contributes, so every managed version in its lineage counts.
+func buildImportedModel(bom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int) effectiveModel {
+	return buildModel(bom, reactor, cache, targetEnv, depth, true)
+}
+
+func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string, depth int, imported bool) effectiveModel {
 	em := effectiveModel{
 		group:    pom.GroupID,
 		artifact: pom.ArtifactID,
@@ -591,7 +601,7 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	}
 
 	if len(undecided) > 0 {
-		ps := newProfileScope(chain.poms, profileList, pom.path == "")
+		ps := newProfileScope(chain.poms, profileList, pom.path == "", imported)
 		for _, idx := range undecided {
 			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps, reactor, cache, targetEnv, depth)
 			// What an unbounded profile re-versions is unknown, so every dependency it could
@@ -615,6 +625,10 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 				anyVersion: anyVersion,
 			})
 		}
+	}
+	// An imported BOM's undecided profiles arrive in em.undecided too, and can re-version what
+	// this POM's dependencies take from its management.
+	if len(em.undecided) > 0 {
 		unresolveReversioned(&em, pom.path == "")
 	}
 	return em
@@ -714,7 +728,7 @@ func importBOM(m mvnDep, em *effectiveModel, reactor map[string]*mvnPOM, cache *
 	if depth > 10 {
 		return
 	}
-	sub := buildEffectiveModel(bom, reactor, cache, targetEnv, depth+1)
+	sub := buildImportedModel(bom, reactor, cache, targetEnv, depth+1)
 	for k, v := range sub.managed {
 		if _, seen := em.managed[k]; !seen {
 			em.managed[k] = v

@@ -345,7 +345,7 @@ func readProject(path, want string, imports map[string]bool) projectRead {
 		}
 		switch g.XMLName.Local {
 		case "PropertyGroup":
-			for _, prop := range g.Properties {
+			for _, prop := range g.Elems {
 				p.modeled = p.modeled && inertProperty[prop.XMLName.Local]
 				switch prop.XMLName.Local {
 				case "TargetFramework":
@@ -355,8 +355,13 @@ func readProject(path, want string, imports map[string]bool) projectRead {
 				}
 			}
 		case "ItemGroup":
-			p.projectRefs = p.projectRefs || len(g.ProjectRefs) > 0
-			for _, r := range g.PackageRefs {
+			for _, r := range g.Elems {
+				if strings.EqualFold(r.XMLName.Local, "ProjectReference") {
+					p.projectRefs = true
+				}
+				if !strings.EqualFold(r.XMLName.Local, "PackageReference") {
+					continue
+				}
 				names, literal := packageNames(r.Include)
 				if !literal || r.Update != "" || r.Remove != "" {
 					p.modeled = false
@@ -406,14 +411,14 @@ func readProject(path, want string, imports map[string]bool) projectRead {
 type msbuildProject struct {
 	SDK      string `xml:"Sdk,attr"`
 	Children []struct {
-		XMLName    xml.Name
-		Condition  string `xml:"Condition,attr"`
-		SDK        string `xml:"Sdk,attr"`
-		Properties []struct {
-			XMLName xml.Name
-			Value   string `xml:",chardata"`
-		} `xml:",any"`
-		PackageRefs []struct {
+		XMLName   xml.Name
+		Condition string `xml:"Condition,attr"`
+		SDK       string `xml:"Sdk,attr"`
+		// Elems holds a PropertyGroup's properties or an ItemGroup's items. MSBuild matches item
+		// types without regard to case, so items are told apart with strings.EqualFold.
+		Elems []struct {
+			XMLName         xml.Name
+			Value           string `xml:",chardata"`
 			Include         string `xml:"Include,attr"`
 			Update          string `xml:"Update,attr"`
 			Remove          string `xml:"Remove,attr"`
@@ -424,8 +429,7 @@ type msbuildProject struct {
 				Condition string `xml:"Condition,attr"`
 				Value     string `xml:",chardata"`
 			} `xml:"Version"`
-		} `xml:"PackageReference"`
-		ProjectRefs []struct{} `xml:"ProjectReference"`
+		} `xml:",any"`
 	} `xml:",any"`
 }
 
@@ -618,16 +622,17 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 
 // --- .csproj / .fsproj / .vbproj (XML) ---------------------------------------
 
-// csprojProject is the subset of an SDK-style project file we read: PackageReference items
-// under any ItemGroup, each with an Include (the package id) and a Version given either as an
-// attribute or a child element.
+// csprojProject is the subset of an SDK-style project file we read: the items under any
+// ItemGroup, each with an Include (the package id) and a Version given either as an attribute or
+// a child element. Only PackageReference items, matched without regard to case, are read.
 type csprojProject struct {
 	ItemGroups []struct {
-		PackageRefs []struct {
+		Items []struct {
+			XMLName     xml.Name
 			Include     string `xml:"Include,attr"`
 			VersionAttr string `xml:"Version,attr"`
 			VersionElem string `xml:"Version"`
-		} `xml:"PackageReference"`
+		} `xml:",any"`
 	} `xml:"ItemGroup"`
 }
 
@@ -643,9 +648,9 @@ func parseProjectFile(data []byte) ([]plugin.ResolvedDependency, bool) {
 	}
 	var out []plugin.ResolvedDependency
 	for _, ig := range proj.ItemGroups {
-		for _, pr := range ig.PackageRefs {
+		for _, pr := range ig.Items {
 			name := strings.TrimSpace(pr.Include)
-			if name == "" {
+			if name == "" || !strings.EqualFold(pr.XMLName.Local, "PackageReference") {
 				continue
 			}
 			raw := strings.TrimSpace(pr.VersionAttr)

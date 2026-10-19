@@ -247,6 +247,11 @@ func TestVersions_AllowList(t *testing.T) {
 			"A/A.csproj": `<Project><Import Project="x.targets" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[12.0.3]" /></ItemGroup></Project>`}, ""},
 		{"packages.config under a Directory file", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project/>", "Directory.Build.props": "<Project/>"}, ""},
 		{"unmodeled project without the reference", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""), "B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><Import Project="x.targets" /></Project>`}, ""},
+		{"item name in another case", map[string]string{"App.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><packageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`}, "13.0.1"},
+		{"item name in another case disagrees", map[string]string{"A/A.csproj": newtonsoftProject("[13.0.1]", ""),
+			"B/B.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><packagereference Include="Newtonsoft.Json" Version="[12.0.3]" /></ItemGroup></Project>`}, ""},
+		{"project reference in another case", map[string]string{"App.csproj": newtonsoftProject("13.0.1", `<ItemGroup><projectreference Include="Lib/Lib.csproj" /></ItemGroup>`),
+			"packages.lock.json": lockFile(lockSection("net8.0", lockEntry("Newtonsoft.Json", "Direct", "[13.0.1, )", "13.0.1")))}, ""},
 		{"lock covers its project", map[string]string{"App.csproj": newtonsoftProject("13.0.1", ""),
 			"packages.lock.json": lockFile(lockSection("net8.0", lockEntry("Newtonsoft.Json", "Direct", "[13.0.1, )", "13.0.1")))}, "13.0.1"},
 		{"lock covers each framework", map[string]string{"App.csproj": `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFrameworks>net6.0;net8.0</TargetFrameworks></PropertyGroup>` +

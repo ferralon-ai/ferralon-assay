@@ -41,19 +41,11 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		return plugin.BuildManifestResult{}, fmt.Errorf("pythonanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	meta := readPyprojectMeta(req.BuildDir)
-
-	// Interpreter version: declared requires-python, falling back to a lockfile-declared
-	// python constraint (uv.lock / pdm.lock), then a .python-version pin. Never probed by
-	// launching an interpreter (§3.3); undetermined stays "" and is NOT guessed.
-	pin := readPythonVersionPin(req.BuildDir)
-	version := meta.requiresPython
-	if version == "" {
-		version = lockfileRequiresPython(req.BuildDir)
-	}
-	if version == "" {
-		version = pin
-	}
+	meta, _ := readPyprojectMeta(req.BuildDir)
+	pin, _ := readPythonVersionPin(req.BuildDir)
+	version, read := declaredPython(req.BuildDir)
+	constraints, constraintsRead := constraintFiles(req.BuildDir)
+	resolver, resolverRead := detectResolver(req.BuildDir)
 
 	// Toolchain: the stronger, exact pin when the manifest declares one — a .python-version
 	// file, or an exact "==X.Y.Z" requires-python. A range/minimum requires-python is NOT a
@@ -71,15 +63,15 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 			Target:    meta.target,
 			Source:    plugin.RuntimeSourceDeclared,
 		}},
-		Configuration: buildConfiguration(meta.extras, constraintFiles(req.BuildDir)),
+		Configuration: buildConfiguration(meta.extras, constraints),
 		// The WorkspacePlan project root the pipeline resolves and passes in as BuildDir
 		// (checkout.WorkspacePlan.Primary().Root); the inventory path likewise carries it as
 		// DependencyMembership.Project. Multi-root enumeration is PLAN-400.
 		ProjectRoot: req.BuildDir,
 	}
-	if r := detectResolver(req.BuildDir); r.Name != "" {
-		r.Source = plugin.RuntimeSourceDeclared
-		res.Resolvers = []plugin.ResolverSpec{r}
+	if resolver.Name != "" {
+		resolver.Source = plugin.RuntimeSourceDeclared
+		res.Resolvers = []plugin.ResolverSpec{resolver}
 	}
 
 	// PartialReasonEnvConditionUnresolved is the closest existing shared code (the runtime
@@ -90,12 +82,40 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	// TODO(PLAN-371): PLAN-371 owns the Python partiality vocabulary. If it mints a
 	// manifest-specific runtime-undeclared reason code, adopt it here in place of the
 	// env_condition_unresolved:requires_python ride.
+	var reasons []string
 	if version == "" {
-		res.Partiality = plugin.Partial(plugin.PartialReasonEnvConditionUnresolved + ":requires_python")
-	} else {
+		reasons = append(reasons, plugin.PartialReasonEnvConditionUnresolved+":requires_python")
+	}
+	// A declared source that exists but could not be read may name a different interpreter,
+	// a constraints file or a lockfile, and an unread directory may hold one.
+	if !read || !constraintsRead || !resolverRead {
+		reasons = append(reasons, plugin.PartialReasonToolFailure)
+	}
+	if len(reasons) == 0 {
 		res.Partiality = plugin.Complete()
+	} else {
+		res.Partiality = plugin.Partial(reasons...)
 	}
 	return res, nil
+}
+
+// declaredPython returns the interpreter the build at dir declares: requires-python, falling
+// back to a lockfile-declared python constraint (uv.lock / pdm.lock), then a .python-version
+// pin. Never probed by launching an interpreter (§3.3); undetermined stays "" and is NOT
+// guessed. read is false when a declared source that exists cannot be read: it may name a
+// different interpreter.
+func declaredPython(dir string) (version string, read bool) {
+	meta, metaRead := readPyprojectMeta(dir)
+	pin, pinRead := readPythonVersionPin(dir)
+	version, read = meta.requiresPython, metaRead && pinRead
+	if version == "" {
+		v, lockRead := lockfileRequiresPython(dir)
+		version, read = v, read && lockRead
+	}
+	if version == "" {
+		version = pin
+	}
+	return version, read
 }
 
 // pyprojectMeta is the declared build-context read from a project's pyproject.toml.
@@ -108,11 +128,11 @@ type pyprojectMeta struct {
 // readPyprojectMeta reads the build-context metadata pyproject.toml declares. It reuses the
 // codebase's pure-Go BurntSushi/toml decoder (no shell-out — C5-clean); an absent or
 // unparseable file yields the zero value (every field undetermined), degraded downstream to
-// partiality rather than fabricated.
-func readPyprojectMeta(dir string) pyprojectMeta {
-	data, err := os.ReadFile(filepath.Join(dir, "pyproject.toml"))
+// partiality rather than fabricated. read is false when the file exists but cannot be read.
+func readPyprojectMeta(dir string) (meta pyprojectMeta, read bool) {
+	data, err := readRegular(filepath.Join(dir, "pyproject.toml"))
 	if err != nil {
-		return pyprojectMeta{}
+		return pyprojectMeta{}, absent(err)
 	}
 	var doc struct {
 		Project struct {
@@ -127,7 +147,7 @@ func readPyprojectMeta(dir string) pyprojectMeta {
 		} `toml:"tool"`
 	}
 	if err := toml.Unmarshal(data, &doc); err != nil {
-		return pyprojectMeta{}
+		return pyprojectMeta{}, true
 	}
 	m := pyprojectMeta{requiresPython: strings.TrimSpace(doc.Project.RequiresPython)}
 	for group := range doc.Project.OptionalDependencies {
@@ -136,7 +156,7 @@ func readPyprojectMeta(dir string) pyprojectMeta {
 	sort.Strings(m.extras) // group names come from a map; sort for determinism (C7)
 	markers := append(toStrings(doc.Tool.UV.Environments), toStrings(doc.Tool.UV.RequiredEnvironments)...)
 	m.target = declaredTarget(markers)
-	return m
+	return m, true
 }
 
 // declaredTarget composes the declared target platform from PEP 508 environment markers
@@ -194,19 +214,23 @@ func markerEquality(marker, key string) string {
 // lockfileRequiresPython reads a declared python constraint from a lockfile when
 // pyproject.toml declared none: uv.lock's top-level `requires-python`, then pdm.lock's
 // `[metadata] requires_python`. This is the "lockfile environment metadata" fallback whose
-// joint absence with requires-python triggers the partial manifest (C2 outcome b).
-func lockfileRequiresPython(dir string) string {
-	if data, err := os.ReadFile(filepath.Join(dir, "uv.lock")); err == nil {
+// joint absence with requires-python triggers the partial manifest (C2 outcome b). read is
+// false when a lockfile consulted exists but cannot be read.
+func lockfileRequiresPython(dir string) (version string, read bool) {
+	read = true
+	if data, err := readRegular(filepath.Join(dir, "uv.lock")); err == nil {
 		var doc struct {
 			RequiresPython string `toml:"requires-python"`
 		}
 		if toml.Unmarshal(data, &doc) == nil {
 			if v := strings.TrimSpace(doc.RequiresPython); v != "" {
-				return v
+				return v, true
 			}
 		}
+	} else if !absent(err) {
+		read = false
 	}
-	if data, err := os.ReadFile(filepath.Join(dir, "pdm.lock")); err == nil {
+	if data, err := readRegular(filepath.Join(dir, "pdm.lock")); err == nil {
 		var doc struct {
 			Metadata struct {
 				RequiresPython string `toml:"requires_python"`
@@ -214,26 +238,29 @@ func lockfileRequiresPython(dir string) string {
 		}
 		if toml.Unmarshal(data, &doc) == nil {
 			if v := strings.TrimSpace(doc.Metadata.RequiresPython); v != "" {
-				return v
+				return v, read
 			}
 		}
+	} else if !absent(err) {
+		read = false
 	}
-	return ""
+	return "", read
 }
 
 // readPythonVersionPin reads an exact interpreter pin from a .python-version file (pyenv /
-// uv toolchain pin), returning the first non-empty line, or "" when absent.
-func readPythonVersionPin(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, ".python-version"))
+// uv toolchain pin), returning the first non-empty line, or "" when absent. read is false
+// when the file exists but cannot be read.
+func readPythonVersionPin(dir string) (pin string, read bool) {
+	data, err := readRegular(filepath.Join(dir, ".python-version"))
 	if err != nil {
-		return ""
+		return "", absent(err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if s := strings.TrimSpace(line); s != "" {
-			return s
+			return s, true
 		}
 	}
-	return ""
+	return "", true
 }
 
 // exactPin returns the pinned version from an exact "==X.Y.Z" requires-python, or "" for a
@@ -247,11 +274,11 @@ func exactPin(requiresPython string) string {
 }
 
 // constraintFiles lists the top-level constraints*.txt files (pip constraint files) in the
-// build dir, sorted for determinism.
-func constraintFiles(dir string) []string {
+// build dir, sorted for determinism. read is false when the directory cannot be listed.
+func constraintFiles(dir string) (names []string, read bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, absent(err)
 	}
 	var out []string
 	for _, e := range entries {
@@ -264,7 +291,7 @@ func constraintFiles(dir string) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, true
 }
 
 // buildConfiguration renders the declared extras selection and any constraint files in
@@ -284,23 +311,28 @@ func buildConfiguration(extras, constraints []string) string {
 // reusing PLAN-170's format detection (manifestFiles). A lockfile beats a bare manifest
 // (a lock pins what a manifest only ranges); the priority matches nodeProvenance's
 // lockfile→resolver mapping (inventory.go). Command is a NEUTRAL declared invocation, never
-// executed (§3.3).
-func detectResolver(dir string) plugin.ResolverSpec {
+// executed (§3.3). read is false, with no resolver, when part of the tree could not be read:
+// a lockfile there would outrank the one found.
+func detectResolver(dir string) (spec plugin.ResolverSpec, read bool) {
+	paths, read := manifestFiles(dir)
+	if !read {
+		return plugin.ResolverSpec{}, false
+	}
 	present := map[string]bool{}
-	for _, m := range manifestFiles(dir) {
+	for _, m := range paths {
 		present[filepath.Base(m)] = true
 	}
 	switch {
 	case present["pdm.lock"]:
-		return plugin.ResolverSpec{Name: "pdm", Command: "pdm lock"}
+		return plugin.ResolverSpec{Name: "pdm", Command: "pdm lock"}, true
 	case present["uv.lock"]:
-		return plugin.ResolverSpec{Name: "uv", Command: "uv lock"}
+		return plugin.ResolverSpec{Name: "uv", Command: "uv lock"}, true
 	case present["poetry.lock"]:
-		return plugin.ResolverSpec{Name: "poetry", Command: "poetry lock"}
+		return plugin.ResolverSpec{Name: "poetry", Command: "poetry lock"}, true
 	case present["Pipfile.lock"]:
-		return plugin.ResolverSpec{Name: "pipenv", Command: "pipenv lock"}
+		return plugin.ResolverSpec{Name: "pipenv", Command: "pipenv lock"}, true
 	case present["pyproject.toml"]:
-		return plugin.ResolverSpec{Name: "pip", Command: "pip install ."}
+		return plugin.ResolverSpec{Name: "pip", Command: "pip install ."}, true
 	default:
 		var reqs []string
 		for base := range present {
@@ -310,9 +342,9 @@ func detectResolver(dir string) plugin.ResolverSpec {
 		}
 		sort.Strings(reqs)
 		if len(reqs) > 0 {
-			return plugin.ResolverSpec{Name: "pip", Command: "pip install -r " + reqs[0]}
+			return plugin.ResolverSpec{Name: "pip", Command: "pip install -r " + reqs[0]}, true
 		}
-		return plugin.ResolverSpec{}
+		return plugin.ResolverSpec{}, true
 	}
 }
 

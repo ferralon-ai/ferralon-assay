@@ -1,12 +1,17 @@
 package javaanalysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"golang.org/x/net/html/charset"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -21,6 +26,11 @@ import (
 // <version>, a property indirection (${...}) that does not resolve to a literal in the same
 // POM, or a gradle declaration with no literal version — is returned with Resolved=false (an
 // UNRESOLVED marker). The pipeline fails OPEN on UNRESOLVED, never fabricating a not-affected.
+//
+// All lists every declaration as read. Match is narrower (matchCoordinate): it resolves only to a
+// literal POM version that every declaration agrees on, in a build whose POMs this reader models
+// whole. A ${prop} version is unresolved there, since -Dprop on the command line or in
+// .mvn/maven.config overrides the POM. Gradle declarations join the agreement as All states them.
 //
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
@@ -42,11 +52,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("javaanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	poms, gradles := buildFiles(req.BuildDir)
+	poms, gradles, settings, walkFailed := buildFiles(req.BuildDir)
+	poms, unread := reactorModules(req.BuildDir, poms)
 
 	var (
-		all         []plugin.ResolvedDependency
-		parseFailed bool
+		all []plugin.ResolvedDependency
+		// A subtree the walk couldn't list, or a reactor module it couldn't read, could declare
+		// any coordinate at any version, as a manifest that doesn't parse could.
+		parseFailed = walkFailed || unread
 	)
 	for _, p := range poms {
 		deps, ok := parsePOM(p)
@@ -74,26 +87,413 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	res := plugin.DependencyVersionResult{Partiality: part, All: all}
 	want := normalizeCoordinate(req.Coordinate)
 	if want != "" {
+		res.Match, res.Found = matchCoordinate(req.BuildDir, poms, all, want)
 		for _, d := range all {
 			if normalizeCoordinate(d.Coordinate) == want {
-				res.Found = true
-				res.Match = d
-				// A resolved match wins over an UNRESOLVED one for the same coordinate.
-				if d.Resolved {
-					break
-				}
+				res.Matches = append(res.Matches, d)
 			}
 		}
+		// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
+		// is affected by any copy at a listed version.
+		for _, d := range all {
+			if d.Resolved && normalizeCoordinate(d.Coordinate) == want {
+				res.Presence = &d
+				break
+			}
+		}
+		if parseFailed {
+			// A manifest that doesn't parse could declare want at any version.
+			if !res.Found {
+				res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
+			}
+			res.Found = true
+			res.Match.Version = ""
+			res.Match.Resolved = false
+		}
 	}
+	// Gradle selects the highest version requested anywhere in the graph, which a declaration
+	// scan cannot see; only a POM-only build can rule other versions out.
+	res.MatchesComplete = len(res.Matches) > 0 && !settings && !parseFailed && len(gradles) == 0 &&
+		pomsCovered(req.BuildDir, poms, want)
 	return res, nil
 }
 
+// matchCoordinate selects the Match for the normalized coordinate want across every declaration
+// of it: each POM's, read again by pomDeclarations, and each Gradle entry of all as it stands. The
+// Match is resolved only when every declaration is resolved (a POM one only at a literal pin,
+// pinnedVersion), every POM in scope is one this reader models, and all of them name the same
+// version. A declaration this reader can't vouch for, a POM that could
+// declare the coordinate where this reader doesn't look, or two versions leave it unresolved: a
+// build with one patched module and one affected one must not be ruled not-affected on the copy
+// that happens to sit outside the range. A modeled module with dependencies but no declaration of
+// want could still ship it transitively, at a version Maven picks from the graph, so it leaves the
+// Match unresolved too. A module that doesn't declare want inherits its parent's dependencies as
+// its own: a parent in poms is read as one of them, and one Maven takes from a repository is read
+// from the build's local caches (repositoryParentDeclarations), its declarations of want joining
+// the agreement. A parent the caches don't hold, or one taken from anywhere else
+// (pomParentSource), leaves the Match unresolved.
+func matchCoordinate(buildDir string, poms []string, all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
+	var (
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		opaque   bool
+		versions = map[string]struct{}{}
+	)
+	add := func(d plugin.ResolvedDependency) {
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			unknown = true
+			return
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	inSet := make(map[string]bool, len(poms))
+	for _, p := range poms {
+		inSet[filepath.Clean(p)] = true
+	}
+	for _, p := range poms {
+		decls, modeled, others := pomDeclarations(p, want)
+		for _, d := range decls {
+			add(d)
+		}
+		if !modeled || others && len(decls) == 0 {
+			opaque = true
+		}
+		if !modeled || len(decls) > 0 || others {
+			continue
+		}
+		switch src, ref := pomParentSource(p, inSet); src {
+		case parentRepository:
+			inherited, ok := repositoryParentDeclarations(buildDir, ref, want)
+			opaque = opaque || !ok
+			for _, d := range inherited {
+				add(d)
+			}
+		case parentUnknown:
+			opaque = true
+		}
+	}
+	for _, d := range all {
+		if d.Source == "gradle" && normalizeCoordinate(d.Coordinate) == want {
+			add(d)
+		}
+	}
+	if found && (unknown || opaque || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
+	}
+	return match, found
+}
+
+// pomDeclarations returns each <dependencies> declaration of want in the POM at path, resolved
+// when its <version> is a literal pin, and whether this reader models the POM whole: it parses,
+// every top-level element is one pomModeled knows, and no core extension loads for its build. A
+// POM that isn't modeled could declare want where this reader doesn't look, so its declarations
+// come back unresolved. others reports whether the POM declares a dependency other than want.
+func pomDeclarations(path, want string) (decls []plugin.ResolvedDependency, modeled, others bool) {
+	data, err := readRegular(path)
+	if err != nil {
+		return nil, false, false
+	}
+	var proj pomProject
+	if err := unmarshalPOM(data, &proj); err != nil {
+		return nil, false, false
+	}
+	modeled = pomModeled(data) && !mavenCoreExtensions(filepath.Dir(path))
+	decls, others = projectDeclarations(proj, want, modeled)
+	return decls, modeled, others
+}
+
+// projectDeclarations returns each <dependencies> declaration of want in proj, resolved when
+// pinned is set and its <version> is a literal pin, and whether proj declares any other
+// dependency.
+func projectDeclarations(proj pomProject, want string, pinned bool) (decls []plugin.ResolvedDependency, others bool) {
+	for _, dep := range proj.Deps {
+		coord := strings.TrimSpace(dep.GroupID) + ":" + strings.TrimSpace(dep.ArtifactID)
+		if normalizeCoordinate(coord) != want {
+			others = true
+			continue
+		}
+		d := plugin.ResolvedDependency{Coordinate: coord, Source: "pom"}
+		if v := strings.TrimSpace(dep.Version); pinned && pinnedVersion(v) {
+			d.Version, d.Resolved = v, true
+		}
+		decls = append(decls, d)
+	}
+	return decls, others
+}
+
+// parentSource is where Maven takes a POM's <parent> from.
+type parentSource int
+
+const (
+	parentNone       parentSource = iota // the POM names no <parent>
+	parentInTree                         // the POM at its relativePath, which is in the set
+	parentRepository                     // a repository, at the coordinates the <parent> names
+	parentUnknown                        // a file outside the set, or a source this reader can't tell
+)
+
+// pomParentSource reports where Maven takes the <parent> of the POM at path from, and the
+// <parent> itself. Maven reads the parent from the file at its relativePath (../pom.xml by
+// default, with pom.xml appended to a directory) only when that file's groupId, artifactId and
+// version are the parent's; otherwise, or with an empty <relativePath/>, it reads the parent from
+// a repository. A parent that omits any coordinate (Maven 4 infers it) is in the tree only when
+// the file at its relativePath is in the set. A file at the relativePath that can't be read, or
+// one outside the set that carries the parent's coordinates, is a source this reader doesn't
+// model, and so is a repository parent that doesn't name all three coordinates.
+func pomParentSource(path string, inSet map[string]bool) (parentSource, pomParent) {
+	data, err := readRegular(path)
+	if err != nil {
+		return parentUnknown, pomParent{}
+	}
+	var proj pomProject
+	if err := unmarshalPOM(data, &proj); err != nil {
+		return parentUnknown, pomParent{}
+	}
+	ref := proj.Parent
+	if ref.XMLName.Local == "" {
+		return parentNone, ref
+	}
+	g, a, v := strings.TrimSpace(ref.GroupID), strings.TrimSpace(ref.ArtifactID), strings.TrimSpace(ref.Version)
+	named := g != "" && a != "" && v != ""
+	repository := func() (parentSource, pomParent) {
+		if !named {
+			return parentUnknown, ref
+		}
+		return parentRepository, ref
+	}
+	rel := "../pom.xml"
+	if ref.RelativePath != nil {
+		rel = strings.TrimSpace(*ref.RelativePath)
+	}
+	if rel == "" {
+		return repository()
+	}
+	parent := filepath.Join(filepath.Dir(path), filepath.FromSlash(rel))
+	if !strings.HasSuffix(strings.ToLower(rel), ".xml") {
+		parent = filepath.Join(parent, "pom.xml")
+	}
+	parent = filepath.Clean(parent)
+	in := inSet[parent]
+	data, err = readRegular(parent)
+	if err != nil {
+		if !in && missing(err) {
+			return repository()
+		}
+		return parentUnknown, ref
+	}
+	var local pomProject
+	if err := unmarshalPOM(data, &local); err != nil {
+		return parentUnknown, ref
+	}
+	if !named {
+		// Maven 4 infers a parent that omits coordinates from the POM at its relativePath.
+		if in {
+			return parentInTree, ref
+		}
+		return parentUnknown, ref
+	}
+	lg, la, lv := strings.TrimSpace(local.GroupID), strings.TrimSpace(local.ArtifactID), strings.TrimSpace(local.VersionElem)
+	if lg == "" {
+		lg = strings.TrimSpace(local.Parent.GroupID)
+	}
+	if lv == "" {
+		lv = strings.TrimSpace(local.Parent.Version)
+	}
+	if la != "" && lg == g && la == a && lv == v {
+		if in {
+			return parentInTree, ref
+		}
+		return parentUnknown, ref
+	}
+	return repository()
+}
+
+// maxRepositoryParents bounds the parent chain read from the local caches; a longer one is a
+// cycle or a crafted chain, and leaves the parent unread.
+const maxRepositoryParents = 64
+
+// repositoryParentDeclarations reads the parent chain Maven takes from a repository, from ref up,
+// out of the build's local caches (locateArtifactPOM), and returns the nearest ancestor's
+// declarations of want: Maven merges inherited dependencies by groupId, artifactId, type and
+// classifier, the child's winning. Only the default type (jar) with no classifier is shadowed
+// that way; when any declaration of want in the chain names another type or a classifier, every
+// ancestor's declarations join.
+// ok is false, and the inheritance unread, when any ancestor isn't in the caches as one set of
+// bytes (a miss: the build fetched it from a remote this reader never sees), doesn't parse, isn't
+// one pomModeled models whole, or is named without a groupId, an artifactId and a version that is
+// a literal release pin (a range or an interpolation names no one directory in the cache, and
+// Maven re-fetches a snapshot from its remote, so a cached copy is not the one it binds). ok is false too
+// when no ancestor declares want but one declares another dependency, which could bring want in
+// at a version Maven picks from the graph. An ancestor's parent always comes from a repository: Maven
+// ignores relativePath on a POM it read from one.
+func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (decls []plugin.ResolvedDependency, ok bool) {
+	others, variant := false, false
+	var all []plugin.ResolvedDependency
+	seen := map[string]bool{}
+	for {
+		g, a, v := strings.TrimSpace(ref.GroupID), strings.TrimSpace(ref.ArtifactID), strings.TrimSpace(ref.Version)
+		if g == "" || a == "" || !pinnedVersion(v) || mavenSnapshot(v) {
+			return nil, false
+		}
+		key := g + ":" + a + ":" + v
+		if seen[key] || len(seen) >= maxRepositoryParents {
+			return nil, false
+		}
+		seen[key] = true
+		pom, found := locateArtifactPOM(buildDir, g+":"+a, v)
+		if found != jarFound {
+			return nil, false
+		}
+		var proj pomProject
+		if err := unmarshalPOM(pom.data, &proj); err != nil || !pomModeled(pom.data) {
+			return nil, false
+		}
+		d, o := projectDeclarations(proj, want, true)
+		if decls == nil {
+			decls = d
+		}
+		all = append(all, d...)
+		others = others || o
+		variant = variant || declaresVariant(proj, want)
+		if proj.Parent.XMLName.Local == "" {
+			break
+		}
+		ref = proj.Parent
+	}
+	if len(decls) == 0 && others {
+		return nil, false
+	}
+	if variant {
+		return all, true
+	}
+	return decls, true
+}
+
+// timestampedSnapshot is a deployed snapshot's version, as Maven's ArtifactUtils.isSnapshot matches it.
+var timestampedSnapshot = regexp.MustCompile(`^.*-\d{8}\.\d{6}-\d+$`)
+
+// mavenSnapshot reports whether Maven treats v as a snapshot: any version ending in SNAPSHOT, in
+// any case and with or without a hyphen, or a timestamped snapshot.
+func mavenSnapshot(v string) bool {
+	return strings.HasSuffix(strings.ToUpper(v), "SNAPSHOT") || timestampedSnapshot.MatchString(v)
+}
+
+// declaresVariant reports whether proj declares want with a type other than jar or with a
+// classifier: an artifact Maven's inheritance merge keys apart from the plain jar.
+func declaresVariant(proj pomProject, want string) bool {
+	for _, dep := range proj.Deps {
+		if normalizeCoordinate(strings.TrimSpace(dep.GroupID)+":"+strings.TrimSpace(dep.ArtifactID)) != want {
+			continue
+		}
+		if t := strings.TrimSpace(dep.Type); (t != "" && t != "jar") || strings.TrimSpace(dep.Classifier) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedVersion reports whether v is a plain release version: a digit first, then only letters,
+// digits, '.', '-' and '_'. Anything else (a dynamic "5.+", "latest.release", RELEASE, LATEST, a
+// range, a bracketed pin, an interpolation) does not name one version and is not a pin.
+func pinnedVersion(v string) bool {
+	if v == "" || v[0] < '0' || v[0] > '9' {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '.' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// pomInert names the top-level POM elements that can't change which version of a dependency
+// the POM's own <dependencies> declares. Any other element (profiles among them) is one this
+// reader doesn't model, and so is a build extension anywhere in the POM.
+var pomInert = map[string]bool{
+	"modelVersion": true, "parent": true, "groupId": true, "artifactId": true, "version": true,
+	"packaging": true, "name": true, "description": true, "url": true, "inceptionYear": true,
+	"organization": true, "licenses": true, "developers": true, "contributors": true,
+	"mailingLists": true, "prerequisites": true, "modules": true, "scm": true,
+	"issueManagement": true, "ciManagement": true, "distributionManagement": true,
+	"properties": true, "dependencyManagement": true, "dependencies": true, "repositories": true,
+	"pluginRepositories": true, "build": true, "reporting": true,
+}
+
+// pomModeled reports whether every top-level element of the POM is in pomInert and no element
+// anywhere is <extensions>.
+func pomModeled(data []byte) bool {
+	d := xml.NewDecoder(bytes.NewReader(data))
+	d.CharsetReader = charset.NewReaderLabel
+	depth := 0
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			return depth == 0
+		}
+		if err != nil {
+			return false
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 2 && !pomInert[t.Name.Local] || t.Name.Local == "extensions" {
+				return false
+			}
+		case xml.EndElement:
+			depth--
+		}
+	}
+}
+
+// mavenCoreExtensions reports whether the .mvn directory Maven uses for a build in dir (the first
+// at or above it) can load a core extension, which may rewrite the model, or can't be read.
+func mavenCoreExtensions(dir string) bool {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return true
+	}
+	for {
+		mvn := filepath.Join(dir, ".mvn")
+		if _, err := os.Lstat(mvn); err == nil || !os.IsNotExist(err) {
+			if _, err := os.Lstat(filepath.Join(mvn, "extensions.xml")); err == nil || !os.IsNotExist(err) {
+				return true
+			}
+			for _, name := range []string{"maven.config", "jvm.config"} {
+				data, err := readRegular(filepath.Join(mvn, name))
+				if err != nil && !os.IsNotExist(err) || bytes.Contains(data, []byte("maven.ext.class.path")) {
+					return true
+				}
+			}
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
 // buildFiles returns the pom.xml and build.gradle (incl. build.gradle.kts) files under root,
-// skipping build-output/VCS trees, mirroring javaanalysis.javaFiles's source notion.
-func buildFiles(root string) (poms, gradles []string) {
+// skipping build-output/VCS trees, mirroring javaanalysis.javaFiles's source notion. settings is
+// set when a Gradle settings file sits in the tree, and failed when some part of it couldn't be
+// listed or examined.
+func buildFiles(root string) (poms, gradles []string, settings, failed bool) {
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no build files; keep walking.
+			if !os.IsNotExist(err) {
+				failed = true
+			}
+			return nil //nolint:nilerr // keep walking; the caller reports the subtree as unread.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -106,10 +506,117 @@ func buildFiles(root string) (poms, gradles []string) {
 			poms = append(poms, path)
 		case "build.gradle", "build.gradle.kts":
 			gradles = append(gradles, path)
+		case "settings.gradle", "settings.gradle.kts":
+			settings = true
 		}
 		return nil
 	})
-	return poms, gradles
+	return poms, gradles, settings, failed
+}
+
+// reactorModules adds to poms every module POM the reactor names that the walk didn't return: a
+// module in a directory the walk skips (build, out, ...) or a module file not named pom.xml. A
+// module is read from the module list of every POM in the set, its profiles' included, until no
+// new one turns up. unread is set when a named module POM is outside root or can't be read.
+func reactorModules(root string, poms []string) (_ []string, unread bool) {
+	seen := map[string]bool{}
+	for _, p := range poms {
+		seen[filepath.Clean(p)] = true
+	}
+	for i := 0; i < len(poms); i++ {
+		data, err := readRegular(poms[i])
+		if err != nil {
+			continue
+		}
+		var proj pomModules
+		if err := unmarshalPOM(data, &proj); err != nil {
+			continue
+		}
+		modules := proj.Modules
+		for _, prof := range proj.Profiles {
+			modules = append(modules, prof.Modules...)
+		}
+		for _, m := range modules {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			path := pomPathAt(filepath.Dir(poms[i]), m)
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			if rel, err := filepath.Rel(root, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				unread = true
+				continue
+			}
+			poms = append(poms, path)
+		}
+	}
+	return poms, unread
+}
+
+// pomModules is the reactor module list of a POM, its profiles' included.
+type pomModules struct {
+	Modules  []string `xml:"modules>module"`
+	Profiles []struct {
+		Modules []string `xml:"modules>module"`
+	} `xml:"profiles>profile"`
+}
+
+// pomsCovered reports whether every POM fixes the coordinate's version for its module, so
+// Matches can hold every version the build installs. It reads each POM as matchCoordinate does
+// (pomDeclarations): a POM this reader doesn't model whole, or a declaration that isn't a literal
+// pin, leaves the build uncovered. A POM that doesn't declare the coordinate is covered only when
+// it pulls nothing in: no dependencies of its own, and a parent (whose dependencies it inherits)
+// that is in the set and checked here, or one read from the local caches whose chain declares no
+// dependency (repositoryParentDeclarations). An inherited declaration of the coordinate isn't in
+// Matches, so it leaves the build uncovered. poms is the reactor's closure (reactorModules), so
+// every module the build names is among them.
+func pomsCovered(buildDir string, poms []string, want string) bool {
+	if want == "" {
+		return false
+	}
+	inScope := make(map[string]bool, len(poms))
+	for _, p := range poms {
+		inScope[filepath.Clean(p)] = true
+	}
+	for _, p := range poms {
+		decls, modeled, others := pomDeclarations(p, want)
+		if !modeled {
+			return false
+		}
+		for _, d := range decls {
+			if !d.Resolved {
+				return false
+			}
+		}
+		if len(decls) > 0 {
+			continue
+		}
+		if others {
+			return false
+		}
+		switch src, ref := pomParentSource(p, inScope); src {
+		case parentRepository:
+			if inherited, ok := repositoryParentDeclarations(buildDir, ref, want); !ok || len(inherited) > 0 {
+				return false
+			}
+		case parentUnknown:
+			return false
+		}
+	}
+	return true
+}
+
+// pomPathAt resolves a POM reference (a <module>, or a parent's relativePath) against dir; a path
+// naming a directory means the pom.xml inside it.
+func pomPathAt(dir, rel string) string {
+	p := filepath.Join(dir, filepath.FromSlash(strings.TrimSpace(rel)))
+	if !strings.HasSuffix(strings.ToLower(p), ".xml") {
+		p = filepath.Join(p, "pom.xml")
+	}
+	return filepath.Clean(p)
 }
 
 // --- pom.xml -----------------------------------------------------------------
@@ -128,14 +635,19 @@ type pomProject struct {
 }
 
 type pomParent struct {
-	GroupID string `xml:"groupId"`
-	Version string `xml:"version"`
+	XMLName      xml.Name
+	GroupID      string  `xml:"groupId"`
+	ArtifactID   string  `xml:"artifactId"`
+	Version      string  `xml:"version"`
+	RelativePath *string `xml:"relativePath"`
 }
 
 type pomDep struct {
 	GroupID    string `xml:"groupId"`
 	ArtifactID string `xml:"artifactId"`
 	Version    string `xml:"version"`
+	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
 }
 
 // pomProperties captures the arbitrary child elements of <properties> as name→value pairs
@@ -170,7 +682,7 @@ func (p *pomProperties) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 //   - a ${prop} that resolves to a literal property (incl. project.version) → Resolved
 //   - missing, empty, or an unresolved ${prop} → UNRESOLVED (Resolved=false). NEVER guessed.
 func parsePOM(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -210,20 +722,33 @@ func parsePOM(path string) ([]plugin.ResolvedDependency, bool) {
 // resolvePOMVersion resolves a raw <version> value to a literal. A bare literal passes
 // through; a single ${name} reference is looked up in props (one level, no recursion into
 // another ${...}); anything else (empty, partial interpolation, unresolved property) is
-// UNRESOLVED → ("", false). No guessing.
+// UNRESOLVED → ("", false). A version range is UNRESOLVED too; the hard-requirement form
+// "[1.2.3]" resolves to 1.2.3. No guessing.
 func resolvePOMVersion(raw string, props map[string]string) (string, bool) {
 	if raw == "" {
 		return "", false
 	}
 	if isLiteralVersion(raw) {
-		return raw, true
+		return mavenPin(raw)
 	}
 	if name, ok := singlePropertyRef(raw); ok {
 		if v, present := props[name]; present && isLiteralVersion(v) {
-			return v, true
+			return mavenPin(v)
 		}
 	}
 	return "", false
+}
+
+// mavenPin returns the single version a literal Maven version requirement names: "1.2.3" and
+// "[1.2.3]" name 1.2.3; a range ("[1.0,2.0)", "(,1.0]") names none.
+func mavenPin(v string) (string, bool) {
+	if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+		v = strings.TrimSpace(v[1 : len(v)-1])
+	}
+	if v == "" || strings.ContainsAny(v, "[](),") {
+		return "", false
+	}
+	return v, true
 }
 
 // singlePropertyRef reports whether raw is exactly one "${name}" reference and returns name.
@@ -258,7 +783,7 @@ func isLiteralVersion(v string) bool {
 // interpolation ("$ver" / "${ver}") is UNRESOLVED (Resolved=false), NEVER guessed. Map-notation
 // without a version: key is likewise UNRESOLVED.
 func parseGradle(path string) ([]plugin.ResolvedDependency, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

@@ -21,19 +21,25 @@ import (
 // — the reader never reads os.UserHomeDir at resolution time. Parsed POMs are memoized; a GAV
 // whose POM is absent is a recorded cache-miss (nil), never assumed edgeless.
 type mavenCache struct {
-	roots []string
-	memo  map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
-	miss  map[string]bool
+	roots   []string
+	memo    map[string]*mvnPOM // "g:a:v" -> parsed POM (nil sentinel via miss set)
+	miss    map[string]bool
+	escaped bool // the build's own repository links out of the checkout: every lookup misses
 }
 
 // newMavenCache builds the default reader for a build dir (project-local .m2 first, then the
-// user ~/.m2). A blank home is harmless — that root simply resolves nothing.
+// user ~/.m2). A blank home is harmless — that root simply resolves nothing. A project-local
+// repository that resolves outside the build is an escape in the first root, so nothing is read
+// past it.
 func newMavenCache(buildDir string) *mavenCache {
-	roots := []string{filepath.Join(buildDir, ".m2", "repository")}
+	local := filepath.Join(buildDir, ".m2", "repository")
+	roots := []string{local}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		roots = append(roots, filepath.Join(home, ".m2", "repository"))
 	}
-	return newMavenCacheAt(roots...)
+	c := newMavenCacheAt(roots...)
+	c.escaped = rootLeavesCheckout(buildDir, local)
+	return c
 }
 
 // newMavenCacheAt builds a reader over explicit repository roots (the S4/test injection point).
@@ -50,9 +56,10 @@ func pomRelPath(g, a, v string) string {
 }
 
 // get returns the cached POM for a GAV, or (nil, false) on a cache-miss. Roots are searched in
-// order; the first hit wins.
+// order; the first hit wins. A GAV that cannot name a cache path, or whose POM resolves outside
+// its root, is a miss in every root: what sits there is not the cached POM.
 func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
-	if g == "" || a == "" || v == "" {
+	if c.escaped || !validGAV(g, a, v) {
 		return nil, false
 	}
 	key := gavKey(g, a, v)
@@ -64,10 +71,15 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 	}
 	rel := pomRelPath(g, a, v)
 	for _, root := range c.roots {
-		if root == "" {
+		path, st := inCache(root, rel)
+		if st == cacheEscape {
+			break
+		}
+		if st != cacheHit {
 			continue
 		}
-		if p, ok := parseMavenPOM(filepath.Join(root, rel)); ok {
+		if p, ok := parseMavenPOM(path); ok {
+			p.path = "" // a cached POM has no project directory
 			c.memo[key] = p
 			return p, true
 		}
@@ -79,13 +91,20 @@ func (c *mavenCache) get(g, a, v string) (*mvnPOM, bool) {
 // digestFor reads the on-disk .sha1 sidecar of a cached artifact (jar preferred, else pom) as a
 // declared digest — no fetch, no compute (verified digest is PLAN-200). "" when absent.
 func (c *mavenCache) digestFor(g, a, v string) string {
+	if c.escaped || !validGAV(g, a, v) {
+		return ""
+	}
 	for _, ext := range []string{".jar.sha1", ".pom.sha1"} {
 		rel := filepath.Join(strings.ReplaceAll(g, ".", "/"), a, v, a+"-"+v+ext)
 		for _, root := range c.roots {
-			if root == "" {
+			path, st := inCache(root, rel)
+			if st == cacheEscape {
+				return ""
+			}
+			if st != cacheHit {
 				continue
 			}
-			if data, err := os.ReadFile(filepath.Join(root, rel)); err == nil {
+			if data, err := readRegular(path); err == nil {
 				if h := strings.TrimSpace(string(data)); h != "" {
 					return "sha1:" + strings.Fields(h)[0]
 				}
@@ -118,20 +137,65 @@ type mvnGA struct{ GroupID, ArtifactID string }
 type mvnDep struct {
 	GroupID, ArtifactID, Version string
 	Scope, Type, Optional        string
+	Classifier                   string
 	Exclusions                   []mvnGA
+	// unresolvedBy, when set, makes the graph emit this dependency with no version, for that
+	// reason. Version keeps the value without the profile, for closures that walk every candidate.
+	unresolvedBy string
+	// variantSibling is set when the same POM also declares another file of this GA (a
+	// classifier or non-jar type) that GA dedup dropped.
+	variantSibling bool
+}
+
+// variant reports whether the declaration selects an artifact file other than the GA's main
+// JAR: a classifier (sources, tests, jdk15, linux-x86_64, ...) or a non-jar type.
+func (d mvnDep) variant() bool {
+	if d.Classifier != "" || d.variantSibling {
+		return true
+	}
+	switch defaultType(d.Type) {
+	case "jar", "bundle":
+		return false
+	}
+	return true
 }
 
 func (d mvnDep) ga() string { return d.GroupID + ":" + d.ArtifactID }
 
 type mvnProfile struct {
-	ID              string
-	ActiveByDefault bool
-	NeedsLiveState  bool // activation gated on JDK/OS/file/exec — unevaluable on-disk
-	PropName        string
-	PropValue       string
-	Properties      map[string]string
-	DepMgmt         []mvnDep
-	Deps            []mvnDep
+	ID         string
+	Activation mvnActivation
+	Properties map[string]string
+	DepMgmt    []mvnDep
+	Deps       []mvnDep
+	// Build is set when the profile has a <build> section with anything in it.
+	Build bool
+	// Modules are the profile's <module> entries, as written.
+	Modules []string
+	// Repositories is set when the profile declares a repository or plugin repository.
+	Repositories bool
+	// Elements are the local names of the profile's child elements, in document order. An
+	// undecided profile is bounded only when each is on profileElements' allow-list.
+	Elements []string
+}
+
+// mvnActivation is a profile's <activation> block. Every condition present must hold (Maven
+// 3.2.2+); activeByDefault is not a condition but a fallback (see evalProfiles).
+type mvnActivation struct {
+	ActiveByDefault     bool
+	JDK                 string
+	OS                  bool // any <os> element, an empty one included: never evaluated, the runner's OS is not the subject's
+	PropName, PropValue string
+	File                bool // any <file> element, an empty one included: the tree Maven saw isn't the one read here
+	// Other is a present condition no modelled rule decides: an element this reader does not know
+	// (Maven 4 <packaging>, <condition>, ...), a child of <property> it does not know, or an empty
+	// or padded <jdk>. It is undecided and ANDed with the rest.
+	Other bool
+	// Undecidable is an activation whose meaning depends on which of several elements Maven reads,
+	// or on its version: a second <activation>, a repeated child, a <property> without exactly one
+	// non-empty name or with more than one value, or a <jdk> or <property> value holding an
+	// interpolation expression. No condition beside it decides the profile.
+	Undecidable bool
 }
 
 // --- XML binding -------------------------------------------------------------
@@ -162,6 +226,7 @@ type xmlDep struct {
 	Version    string `xml:"version"`
 	Scope      string `xml:"scope"`
 	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
 	Optional   string `xml:"optional"`
 	Exclusions []struct {
 		GroupID    string `xml:"groupId"`
@@ -170,25 +235,50 @@ type xmlDep struct {
 }
 
 type xmlProfile struct {
-	ID         string `xml:"id"`
-	Activation struct {
-		ActiveByDefault string `xml:"activeByDefault"`
-		JDK             string `xml:"jdk"`
-		OS              struct {
-			Name string `xml:"name"`
-		} `xml:"os"`
-		Property struct {
-			Name  string `xml:"name"`
-			Value string `xml:"value"`
-		} `xml:"property"`
-		File struct {
-			Exists  string `xml:"exists"`
-			Missing string `xml:"missing"`
-		} `xml:"file"`
-	} `xml:"activation"`
-	Properties invProps `xml:"properties"`
-	DepMgmt    []xmlDep `xml:"dependencyManagement>dependencies>dependency"`
-	Deps       []xmlDep `xml:"dependencies>dependency"`
+	ID         string          `xml:"id"`
+	Activation []xmlActivation `xml:"activation"`
+	Properties invProps        `xml:"properties"`
+	DepMgmt    []xmlDep        `xml:"dependencyManagement>dependencies>dependency"`
+	Deps       []xmlDep        `xml:"dependencies>dependency"`
+	Build      struct {
+		Children []struct {
+			XMLName xml.Name
+		} `xml:",any"`
+	} `xml:"build"`
+	Modules            []string   `xml:"modules>module"`
+	Repositories       []struct{} `xml:"repositories>repository"`
+	PluginRepositories []struct{} `xml:"pluginRepositories>pluginRepository"`
+}
+
+// xmlActivation binds every child as a slice, so an element that is present but empty, or
+// repeated, is seen rather than read as absent.
+type xmlActivation struct {
+	ActiveByDefault []string     `xml:"activeByDefault"`
+	JDK             []string     `xml:"jdk"`
+	OS              []struct{}   `xml:"os"`
+	Property        []xmlActProp `xml:"property"`
+	File            []struct{}   `xml:"file"`
+	Other           []struct {
+		XMLName xml.Name
+	} `xml:",any"`
+}
+
+type xmlActProp struct {
+	Name  []string `xml:"name"`
+	Value []string `xml:"value"`
+	Other []struct {
+		XMLName xml.Name
+	} `xml:",any"`
+}
+
+// xmlProfileElements reads the local name of every child of each <profile>, in the same order
+// xmlPOM binds the profiles.
+type xmlProfileElements struct {
+	Profiles []struct {
+		Children []struct {
+			XMLName xml.Name
+		} `xml:",any"`
+	} `xml:"profiles>profile"`
 }
 
 // invProps captures the arbitrary child elements of a <properties> block as name→value pairs.
@@ -207,26 +297,34 @@ func (p *invProps) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 			if err := d.DecodeElement(&val, &t); err != nil {
 				return err
 			}
-			p.Entries[t.Name.Local] = strings.TrimSpace(val)
+			p.Entries[t.Name.Local] = javaTrim(val)
 		case xml.EndElement:
 			return nil
 		}
 	}
 }
 
+// javaTrim trims s as Java's String.trim does, which is how Maven's model reader trims element
+// text: only characters at or below U+0020 go, so a no-break or other Unicode space stays part of
+// the value Maven compares.
+func javaTrim(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
+}
+
 func convDeps(in []xmlDep) []mvnDep {
 	var out []mvnDep
 	for _, d := range in {
 		md := mvnDep{
-			GroupID:    strings.TrimSpace(d.GroupID),
-			ArtifactID: strings.TrimSpace(d.ArtifactID),
-			Version:    strings.TrimSpace(d.Version),
-			Scope:      strings.TrimSpace(d.Scope),
-			Type:       strings.TrimSpace(d.Type),
-			Optional:   strings.TrimSpace(d.Optional),
+			GroupID:    javaTrim(d.GroupID),
+			ArtifactID: javaTrim(d.ArtifactID),
+			Version:    javaTrim(d.Version),
+			Scope:      javaTrim(d.Scope),
+			Type:       javaTrim(d.Type),
+			Classifier: javaTrim(d.Classifier),
+			Optional:   javaTrim(d.Optional),
 		}
 		for _, e := range d.Exclusions {
-			md.Exclusions = append(md.Exclusions, mvnGA{strings.TrimSpace(e.GroupID), strings.TrimSpace(e.ArtifactID)})
+			md.Exclusions = append(md.Exclusions, mvnGA{javaTrim(e.GroupID), javaTrim(e.ArtifactID)})
 		}
 		out = append(out, md)
 	}
@@ -236,7 +334,7 @@ func convDeps(in []xmlDep) []mvnDep {
 // parseMavenPOM reads and binds one pom.xml. ok is false only when the file is unreadable or the
 // XML is structurally unparseable (the caller records a cache-miss/residue, never a guess).
 func parseMavenPOM(path string) (*mvnPOM, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -246,15 +344,15 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	}
 	p := &mvnPOM{
 		path:       path,
-		GroupID:    strings.TrimSpace(xp.GroupID),
-		ArtifactID: strings.TrimSpace(xp.ArtifactID),
-		Version:    strings.TrimSpace(xp.Version),
-		Packaging:  strings.TrimSpace(xp.Packaging),
+		GroupID:    javaTrim(xp.GroupID),
+		ArtifactID: javaTrim(xp.ArtifactID),
+		Version:    javaTrim(xp.Version),
+		Packaging:  javaTrim(xp.Packaging),
 		Parent: mvnParent{
-			GroupID:      strings.TrimSpace(xp.Parent.GroupID),
-			ArtifactID:   strings.TrimSpace(xp.Parent.ArtifactID),
-			Version:      strings.TrimSpace(xp.Parent.Version),
-			RelativePath: strings.TrimSpace(xp.Parent.RelativePath),
+			GroupID:      javaTrim(xp.Parent.GroupID),
+			ArtifactID:   javaTrim(xp.Parent.ArtifactID),
+			Version:      javaTrim(xp.Parent.Version),
+			RelativePath: javaTrim(xp.Parent.RelativePath),
 		},
 		Properties: xp.Properties.Entries,
 		DepMgmt:    convDeps(xp.DepMgmt),
@@ -264,7 +362,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		p.Properties = map[string]string{}
 	}
 	for _, m := range xp.Modules {
-		if m = strings.TrimSpace(m); m != "" {
+		if m = javaTrim(m); m != "" {
 			p.Modules = append(p.Modules, m)
 		}
 	}
@@ -275,18 +373,29 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	if p.Version == "" {
 		p.Version = p.Parent.Version
 	}
-	for _, pr := range xp.Profiles {
-		mp := mvnProfile{
-			ID:              strings.TrimSpace(pr.ID),
-			ActiveByDefault: strings.EqualFold(strings.TrimSpace(pr.Activation.ActiveByDefault), "true"),
-			PropName:        strings.TrimSpace(pr.Activation.Property.Name),
-			PropValue:       strings.TrimSpace(pr.Activation.Property.Value),
-			Properties:      pr.Properties.Entries,
-			DepMgmt:         convDeps(pr.DepMgmt),
-			Deps:            convDeps(pr.Deps),
+	var elems xmlProfileElements
+	if len(xp.Profiles) > 0 {
+		if err := unmarshalPOM(data, &elems); err != nil || len(elems.Profiles) != len(xp.Profiles) {
+			return nil, false
 		}
-		if pr.Activation.JDK != "" || pr.Activation.OS.Name != "" || pr.Activation.File.Exists != "" || pr.Activation.File.Missing != "" {
-			mp.NeedsLiveState = true
+	}
+	for i, pr := range xp.Profiles {
+		mp := mvnProfile{
+			ID:           javaTrim(pr.ID),
+			Activation:   convActivation(pr.Activation),
+			Properties:   pr.Properties.Entries,
+			DepMgmt:      convDeps(pr.DepMgmt),
+			Deps:         convDeps(pr.Deps),
+			Build:        len(pr.Build.Children) > 0,
+			Repositories: len(pr.Repositories)+len(pr.PluginRepositories) > 0,
+		}
+		for _, c := range elems.Profiles[i].Children {
+			mp.Elements = append(mp.Elements, c.XMLName.Local)
+		}
+		for _, m := range pr.Modules {
+			if m = javaTrim(m); m != "" {
+				mp.Modules = append(mp.Modules, m)
+			}
 		}
 		if mp.Properties == nil {
 			mp.Properties = map[string]string{}
@@ -294,6 +403,66 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		p.Profiles = append(p.Profiles, mp)
 	}
 	return p, true
+}
+
+// convActivation reads a profile's <activation> elements. Maven counts a condition whenever its
+// element is present, so an empty one is still a condition; a shape this reader can't map onto
+// one Maven reading is undecided.
+func convActivation(acts []xmlActivation) mvnActivation {
+	var m mvnActivation
+	if len(acts) == 0 {
+		return m
+	}
+	if len(acts) > 1 {
+		m.Undecidable = true
+	}
+	a := acts[0]
+	once := func(n int) bool {
+		if n > 1 {
+			m.Undecidable = true
+		}
+		return n > 0
+	}
+	if once(len(a.ActiveByDefault)) {
+		m.ActiveByDefault = strings.EqualFold(javaTrim(a.ActiveByDefault[0]), "true")
+	}
+	if once(len(a.JDK)) {
+		m.JDK = javaTrim(a.JDK[0])
+		if m.JDK == "" || m.JDK != a.JDK[0] {
+			// Empty, or padded: padding can only be known not to make the condition true.
+			m.Other = true
+		}
+		if strings.Contains(m.JDK, "${") {
+			m.Undecidable = true // whether activation values are interpolated depends on the Maven version
+		}
+	}
+	m.OS = once(len(a.OS))
+	m.File = once(len(a.File))
+	if once(len(a.Property)) {
+		p := a.Property[0]
+		if len(p.Name) != 1 || len(p.Value) > 1 {
+			m.Undecidable = true
+		}
+		if len(p.Name) > 0 {
+			m.PropName = javaTrim(p.Name[0])
+		}
+		if len(p.Value) > 0 {
+			m.PropValue = javaTrim(p.Value[0])
+		}
+		if strings.TrimPrefix(m.PropName, "!") == "" {
+			m.Undecidable = true
+		}
+		if len(p.Other) > 0 {
+			m.Other = true
+		}
+		if strings.Contains(m.PropName+m.PropValue, "${") {
+			m.Undecidable = true
+		}
+	}
+	if len(a.Other) > 0 {
+		m.Other = true
+	}
+	return m
 }
 
 // --- effective model ---------------------------------------------------------
@@ -307,6 +476,7 @@ type effectiveModel struct {
 	managed                  map[string]string // "g:a" -> version
 	deps                     []mvnDep
 	residue                  []string
+	undecided                []undecidedProfile // each also listed in residue as reasonProfileActivation
 }
 
 // buildEffectiveModel runs passes 1-4 over `pom`, resolving parents from the reactor (by GA) or
@@ -340,26 +510,42 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	em.props["project.groupId"] = pom.GroupID
 	em.props["project.artifactId"] = pom.ArtifactID
 
-	// Pass 4 (folded in before interpolation so profile props/deps participate): profile eval.
-	// Active profiles contribute properties/depMgmt/deps; unevaluable activation is residue.
+	// Pass 4 (folded in before interpolation so profile props/deps participate): profile eval
+	// (inventory_maven_profile.go). Active profiles contribute properties/depMgmt/deps; an
+	// undecided one is never applied, and is residue unless it provably changes nothing. The
+	// invocation's explicit selection reaches a reactor module's whole lineage, never a
+	// dependency's POM.
+	env := activationEnv{targetEnv: targetEnv}
+	if pom.path != "" {
+		env.selection = selectionOf(targetEnv)
+	}
 	var mgmtSrc []mvnDep
 	var depSrc []mvnDep
+	var profileList []mvnProfile
+	var profileOwner []*mvnPOM
+	var undecided []int
 	for _, anc := range chain.poms {
 		mgmtSrc = append(mgmtSrc, anc.DepMgmt...)
 		depSrc = append(depSrc, anc.Deps...)
-		for _, pr := range anc.Profiles {
-			if pr.NeedsLiveState {
-				em.residue = append(em.residue, reasonProfileActivation)
-				continue // NOT assumed active.
-			}
-			if profileActive(pr, targetEnv) {
+		states := evalProfiles(anc.Profiles, env)
+		for i, pr := range anc.Profiles {
+			profileList = append(profileList, pr)
+			profileOwner = append(profileOwner, anc)
+			switch states[i] {
+			case triTrue:
 				for k, v := range pr.Properties {
 					em.props[k] = v
 				}
 				mgmtSrc = append(mgmtSrc, pr.DepMgmt...)
 				depSrc = append(depSrc, pr.Deps...)
+			case triUnknown:
+				undecided = append(undecided, len(profileList)-1)
 			}
 		}
+	}
+	rawProps := make(map[string]string, len(em.props))
+	for k, v := range em.props {
+		rawProps[k] = v
 	}
 
 	// Pass 2: property fixpoint interpolation.
@@ -368,7 +554,7 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	// Pass 3: dependencyManagement + imported BOMs → managed-version map (first declaration
 	// wins per GA, Maven precedence). BOMs are fetched from the cache recursively.
 	for _, m := range mgmtSrc {
-		if strings.EqualFold(m.Scope, "import") && strings.EqualFold(defaultType(m.Type), "pom") {
+		if isImportBOM(m) {
 			importBOM(m, &em, reactor, cache, targetEnv, depth)
 			continue
 		}
@@ -382,13 +568,17 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	}
 
 	// Effective direct deps: interpolate versions, fall back to the managed map, dedup by GA
-	// (first declaration wins).
-	seen := map[string]bool{}
+	// (first declaration wins). A dropped declaration that names another file of the GA marks
+	// the kept one, since both files can reach the classpath.
+	seen := map[string]int{}
 	for _, d := range depSrc {
-		if seen[d.ga()] {
+		if i, dup := seen[d.ga()]; dup {
+			if d.variant() {
+				em.deps[i].variantSibling = true
+			}
 			continue
 		}
-		seen[d.ga()] = true
+		seen[d.ga()] = len(em.deps)
 		ed := d
 		if v, ok := interp(d.Version, em.props); ok {
 			ed.Version = v
@@ -399,7 +589,77 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 		}
 		em.deps = append(em.deps, ed)
 	}
+
+	if len(undecided) > 0 {
+		ps := newProfileScope(chain.poms, profileList, pom.path == "")
+		for _, idx := range undecided {
+			touched, bounded := profileTouches(ps, idx, profileList[idx], &em, rawProps, reactor, cache, targetEnv, depth)
+			// What an unbounded profile re-versions is unknown, so every dependency it could
+			// reach is: each transitive of a reactor module, each dependency of a cached POM.
+			anyVersion := !bounded || chain.parentMissing || profileUnlisted(profileList[idx], pom.path == "")
+			if anyVersion || profileExtras(profileList[idx], profileOwner[idx], pom, reactor) {
+				bounded = false // what it changes can't be read, or reaches past the dependency graph
+			}
+			if len(profileList[idx].Properties) > 0 {
+				bounded = false // a property can reach plugin configuration or a repository, which this reader doesn't follow
+			}
+			if bounded && len(touched) == 0 {
+				continue // cannot change the graph either way
+			}
+			owner := profileOwner[idx]
+			em.residue = append(em.residue, reasonProfileActivation)
+			em.undecided = append(em.undecided, undecidedProfile{
+				path:       gavKey(owner.GroupID, owner.ArtifactID, owner.Version) + " profile " + profileList[idx].ID,
+				touched:    touched,
+				bounded:    bounded,
+				anyVersion: anyVersion,
+			})
+		}
+		unresolveReversioned(&em, pom.path == "")
+	}
 	return em
+}
+
+// unresolveReversioned marks every dependency an undecided profile could re-version as
+// unresolved. The build may run either version, so the one without the profile isn't taken. A
+// cached POM's dependencies are transitives of the build, so a profile whose versions are
+// unknown unresolves all of them.
+func unresolveReversioned(em *effectiveModel, cached bool) {
+	alt := reversions(*em)
+	for i, d := range em.deps {
+		if d.Version != "" && (alt.reversioned(d.ga(), d.Version) || cached && alt.anyVersion) {
+			em.deps[i].unresolvedBy = reasonProfileActivation
+		}
+	}
+}
+
+// profileVersions maps each "g:a" an undecided profile can add or re-version to every version it
+// can resolve to under the profile.
+// anyVersion is set when some undecided profile's versions are unknown.
+type profileVersions struct {
+	versions   map[string][]string
+	anyVersion bool
+}
+
+func reversions(em effectiveModel) profileVersions {
+	alt := profileVersions{versions: map[string][]string{}}
+	for _, u := range em.undecided {
+		alt.anyVersion = alt.anyVersion || u.anyVersion
+		for _, d := range u.touched {
+			alt.versions[d.ga()] = append(alt.versions[d.ga()], d.Version)
+		}
+	}
+	return alt
+}
+
+// reversioned reports whether some undecided profile can put ga at a version other than version.
+func (alt profileVersions) reversioned(ga, version string) bool {
+	for _, v := range alt.versions[ga] {
+		if v != version {
+			return true
+		}
+	}
+	return false
 }
 
 type chainResult struct {
@@ -461,6 +721,7 @@ func importBOM(m mvnDep, em *effectiveModel, reactor map[string]*mvnPOM, cache *
 		}
 	}
 	em.residue = append(em.residue, sub.residue...)
+	em.undecided = append(em.undecided, sub.undecided...)
 }
 
 func defaultType(t string) string {
@@ -468,25 +729,6 @@ func defaultType(t string) string {
 		return "jar"
 	}
 	return t
-}
-
-// profileActive evaluates the on-disk-decidable subset of profile activation: activeByDefault, or
-// a <property> activation matched against TargetEnv (name present, optionally value-equal).
-func profileActive(pr mvnProfile, targetEnv map[string]string) bool {
-	if pr.ActiveByDefault {
-		return true
-	}
-	if pr.PropName != "" {
-		v, present := targetEnv[pr.PropName]
-		if !present {
-			return false
-		}
-		if pr.PropValue == "" {
-			return true
-		}
-		return v == pr.PropValue
-	}
-	return false
 }
 
 // --- property interpolation (pass 2) -----------------------------------------
@@ -516,7 +758,7 @@ func interpProps(props map[string]string) {
 // nested supported). ok is false when raw is empty or ANY ${...} remains unresolvable
 // (env.*/settings.*/unknown) — never a guess (extends versions.go:213 conservatism).
 func interp(raw string, props map[string]string) (string, bool) {
-	s := strings.TrimSpace(raw)
+	s := javaTrim(raw)
 	if s == "" {
 		return "", false
 	}

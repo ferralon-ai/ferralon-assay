@@ -41,8 +41,10 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -148,6 +150,9 @@ type Package struct {
 	// written before this field decodes to false and is regenerated as direct/transitive
 	// on its next baseline run.
 	Direct bool `json:"direct"`
+	// Root marks the scanned project itself: an advisory against the repository's own package
+	// (grafana's advisory in the grafana repository), whose vulnerable code is first-party.
+	Root bool `json:"root,omitempty"`
 	// PartialReason discloses a limit on THIS package's own resolution using the open
 	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
 	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
@@ -163,6 +168,27 @@ type Package struct {
 	// build compiles that module's code under Name. Empty when not replaced or replaced by a
 	// directory.
 	Replace string `json:"replace,omitempty"`
+}
+
+// Label is the package as a finding row names it: name@version for a resolved package. A
+// version the inventory observed without resolving it (PartialReason source_unpinned) is
+// shown as an observation, never as name@version, and a package with no version is its name.
+func (p Package) Label() string {
+	switch {
+	case p.Version == "":
+		return p.Name
+	case p.PinUnresolved():
+		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
+	default:
+		return p.Name + "@" + p.Version
+	}
+}
+
+// PinUnresolved reports whether Version is an inventory observation rather than a resolved
+// version (PartialReason source_unpinned). Such a version must never be presented as
+// name@version, in a label or in an identifier.
+func (p Package) PinUnresolved() bool {
+	return p.Version != "" && strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned)
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the
@@ -394,6 +420,13 @@ type EntryPoint struct {
 	AttackerControllable bool `json:"attacker_controllable"`
 }
 
+// AdvisoryBound is one affected range of an advisory that records no version the version axis can
+// compare against. Either field may be empty.
+type AdvisoryBound struct {
+	Introduced   string `json:"introduced,omitempty"`
+	LastAffected string `json:"last_affected,omitempty"`
+}
+
 // EvidenceSummary is a compact, neutral grounds statement for one advisory's
 // verdict — what made it disqualified / not-reachable / a candidate. It carries
 // the structured basis plus a short human-readable line; it does NOT embed full
@@ -432,6 +465,11 @@ type EvidenceSummary struct {
 	// guard actually closes the hole is a runtime question only the Prove tier settles.
 	// Empty when the advisory declares no guards or none were found on the path.
 	MitigatingGuards []string `json:"mitigating_guards,omitempty"`
+	// AdvisoryBounds is what the advisory's affected ranges record when none of them is a range
+	// the version axis can check (undetermined_reason advisory_range_absent): an introduced
+	// version above zero, a last_affected version, or both, per range. Disclosure only; nothing
+	// reads it to decide a verdict. Set only on an advisory_range_absent finding.
+	AdvisoryBounds []AdvisoryBound `json:"advisory_bounds,omitempty"`
 	// SymbolConfidence qualifies a reachable_candidate by the confidence in how the
 	// vulnerable-symbol set was DERIVED (corpus symbol_provenance). STRENGTH signal only,
 	// never a verdict (inv.5, RFC §4.1): it is read only AFTER a candidate forms, so it can
@@ -669,6 +707,11 @@ type PartialityNote struct {
 	// It is part of the note's identity for de-duplication: two failures of different
 	// steps are two disclosures, not one.
 	Detail string `json:"detail,omitempty"`
+	// Package and Path locate a limit the analyzer bounded to one package: the package whose code
+	// holds the blind spot (a PURL without a version; empty for first-party code or a scan-wide
+	// limit) and the location inside it. Disclosure only, and part of the note's identity.
+	Package string `json:"package,omitempty"`
+	Path    string `json:"path,omitempty"`
 	// Class sorts the limit into the quiet methodology arm (inherent_limit) or the loud
 	// arm the headline qualifier fires on (did_not_run). Builder.AddPartiality stamps it
 	// from Reason when a producer leaves it unset, so every note in a built Report
@@ -760,9 +803,14 @@ const (
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
-	// reported nothing about the advisory at all, so its silence is not a search that came back
-	// empty.
+	// reported nothing about the advisory at all. It may not know the advisory, or may never have
+	// analyzed the affected module. Its silence is not a search that came back empty.
 	ReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// ReasonAdvisoryRangeAbsent: a path reaches the advisory's vulnerable code, but the advisory
+	// records no affected version range the version axis can bound, so it was admitted at every installed
+	// version and nothing establishes that this version is affected. The path stays on the finding
+	// as evidence.
+	ReasonAdvisoryRangeAbsent = "advisory_range_absent"
 	// ReasonBuildContextNotCompared: the PR-inherit diff compared the dependency set but NOT the
 	// build context (detected project/language/target/runtime/project root). §8 checkbox 12's
 	// build-context clause is unimplemented — PLAN-004's WorkspacePlan exists at checkout time but
@@ -870,6 +918,10 @@ func (r Report) Validate() error {
 		if f.Verdict == VerdictUndetermined && f.UndeterminedReason == "" {
 			return fmt.Errorf("report: advisory %q is undetermined but carries no undetermined_reason (an unexplained non-verdict is silent suppression)",
 				f.Advisory.ID)
+		}
+		if len(f.Evidence.AdvisoryBounds) > 0 && f.UndeterminedReason != ReasonAdvisoryRangeAbsent {
+			return fmt.Errorf("report: advisory %q carries advisory_bounds but its undetermined_reason is %q (only a range-absent finding records partial bounds)",
+				f.Advisory.ID, f.UndeterminedReason)
 		}
 		if f.UndeterminedReason != "" && f.Verdict != VerdictUndetermined {
 			return fmt.Errorf("report: advisory %q carries undetermined_reason %q but verdict is %q (a reason explains only an absent verdict)",

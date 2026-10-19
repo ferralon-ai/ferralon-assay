@@ -16,7 +16,7 @@ import (
 
 func TestVersionOutsideRange_Introduced(t *testing.T) {
 	npm := func(intro, fixed string) affectedRange {
-		return affectedRange{Introduced: intro, UpperExclusive: fixed, Scheme: "npm"}
+		return affectedRange{LowerInclusive: intro, UpperExclusive: fixed, Scheme: "npm"}
 	}
 	tests := []struct {
 		name        string
@@ -39,30 +39,30 @@ func TestVersionOutsideRange_Introduced(t *testing.T) {
 		{"unparseable introduced admits unplaced", "1.4.2", npm("garbage", "2.2.0"), false, false},
 
 		// Range type: only SEMVER and ECOSYSTEM order their bounds as versions.
-		{"GIT range proves nothing", "1.4.2", affectedRange{Introduced: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "GIT"}, false, false},
-		{"unknown range type proves nothing", "1.4.2", affectedRange{Introduced: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "FOO"}, false, false},
-		{"ECOSYSTEM range orders", "1.4.2", affectedRange{Introduced: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "ECOSYSTEM"}, true, true},
-		{"SEMVER range orders", "1.4.2", affectedRange{Introduced: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "SEMVER"}, true, true},
+		{"GIT range proves nothing", "1.4.2", affectedRange{LowerInclusive: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "GIT"}, false, false},
+		{"unknown range type proves nothing", "1.4.2", affectedRange{LowerInclusive: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "FOO"}, false, false},
+		{"ECOSYSTEM range orders", "1.4.2", affectedRange{LowerInclusive: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "ECOSYSTEM"}, true, true},
+		{"SEMVER range orders", "1.4.2", affectedRange{LowerInclusive: "2.0.0", UpperExclusive: "2.2.0", Scheme: "npm", Type: "SEMVER"}, true, true},
 
 		// An introduced with no upper bound affects every version from introduced on.
-		{"introduced-only excludes below", "1.4.2", affectedRange{Introduced: "2.0.0", Scheme: "npm"}, true, true},
-		{"introduced-only admits far above", "5.0.0", affectedRange{Introduced: "2.0.0", Scheme: "npm"}, false, true},
-		{"gomod introduced-only admits far above", "v5.0.0", affectedRange{Introduced: "v2.0.0", Scheme: "gomod"}, false, true},
+		{"introduced-only excludes below", "1.4.2", affectedRange{LowerInclusive: "2.0.0", Scheme: "npm"}, true, true},
+		{"introduced-only admits far above", "5.0.0", affectedRange{LowerInclusive: "2.0.0", Scheme: "npm"}, false, true},
+		{"gomod introduced-only admits far above", "v5.0.0", affectedRange{LowerInclusive: "v2.0.0", Scheme: "gomod"}, false, true},
 
 		// last_affected is inclusive.
-		{"last_affected itself is inside", "1.4.2", affectedRange{Introduced: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, false, true},
-		{"past last_affected is outside", "1.4.3", affectedRange{Introduced: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, true, true},
+		{"last_affected itself is inside", "1.4.2", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, false, true},
+		{"past last_affected is outside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, true, true},
 
 		// One row per comparator.
-		{"pypi beta below an rc introduced is outside", "2.0.0b1", affectedRange{Introduced: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, true, true},
-		{"pypi rc introduced itself is inside", "2.0.0rc1", affectedRange{Introduced: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, false, true},
-		{"maven orders 1.10 above 1.9", "1.10", affectedRange{Introduced: "1.9", UpperExclusive: "2.0", Scheme: "maven"}, false, true},
-		{"maven below introduced is outside", "1.8", affectedRange{Introduced: "1.9", UpperExclusive: "2.0", Scheme: "maven"}, true, true},
-		{"nuget release below a prerelease introduced is outside", "1.9.9", affectedRange{Introduced: "2.0.0-beta", UpperExclusive: "3.0.0", Scheme: "nuget"}, true, true},
-		{"nuget floating version is unplaced", "1.*", affectedRange{Introduced: "2.0.0-beta", UpperExclusive: "3.0.0", Scheme: "nuget"}, false, false},
-		{"go toolchain below introduced is outside", "go1.20.14", affectedRange{Introduced: "1.21.0", UpperExclusive: "1.21.3", Scheme: "go-toolchain"}, true, true},
-		{"gomod below introduced is outside", "v1.4.2", affectedRange{Introduced: "v2.0.0", UpperExclusive: "v2.2.0", Scheme: "gomod"}, true, true},
-		{"scheme with no comparator is unplaced", "v1.4.2", affectedRange{Introduced: "v2.0.0", UpperExclusive: "v2.2.0", Scheme: "cargo"}, false, false},
+		{"pypi beta below an rc introduced is outside", "2.0.0b1", affectedRange{LowerInclusive: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, true, true},
+		{"pypi rc introduced itself is inside", "2.0.0rc1", affectedRange{LowerInclusive: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, false, true},
+		{"maven orders 1.10 above 1.9", "1.10", affectedRange{LowerInclusive: "1.9", UpperExclusive: "2.0", Scheme: "maven"}, false, true},
+		{"maven below introduced is outside", "1.8", affectedRange{LowerInclusive: "1.9", UpperExclusive: "2.0", Scheme: "maven"}, true, true},
+		{"nuget release below a prerelease introduced is outside", "1.9.9", affectedRange{LowerInclusive: "2.0.0-beta", UpperExclusive: "3.0.0", Scheme: "nuget"}, true, true},
+		{"nuget floating version is unplaced", "1.*", affectedRange{LowerInclusive: "2.0.0-beta", UpperExclusive: "3.0.0", Scheme: "nuget"}, false, false},
+		{"go toolchain below introduced is outside", "go1.20.14", affectedRange{LowerInclusive: "1.21.0", UpperExclusive: "1.21.3", Scheme: "go-toolchain"}, true, true},
+		{"gomod below introduced is outside", "v1.4.2", affectedRange{LowerInclusive: "v2.0.0", UpperExclusive: "v2.2.0", Scheme: "gomod"}, true, true},
+		{"scheme with no comparator is unplaced", "v1.4.2", affectedRange{LowerInclusive: "v2.0.0", UpperExclusive: "v2.2.0", Scheme: "cargo"}, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,9 +83,9 @@ func TestVersionOutsideRange_GoPseudoVersionUnchanged(t *testing.T) {
 		ver  string
 		rng  affectedRange
 	}{
-		{"pseudo version below a release introduced", pseudo, affectedRange{Introduced: "v1.0.0", UpperExclusive: "v1.5.0"}},
-		{"pseudo version against a pseudo introduced", pseudo, affectedRange{Introduced: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
-		{"release past the upper of a pseudo introduced", "v1.6.0", affectedRange{Introduced: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
+		{"pseudo version below a release introduced", pseudo, affectedRange{LowerInclusive: "v1.0.0", UpperExclusive: "v1.5.0"}},
+		{"pseudo version against a pseudo introduced", pseudo, affectedRange{LowerInclusive: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
+		{"release past the upper of a pseudo introduced", "v1.6.0", affectedRange{LowerInclusive: "v0.0.0-20220101000000-abcdef123456", UpperExclusive: "v1.5.0"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,8 +102,8 @@ func TestVersionOutsideRange_GoPseudoVersionUnchanged(t *testing.T) {
 // [3.0.0-alpha.1, 3.0.0-alpha.2), with a gap between them.
 func multerRanges() []map[string]string {
 	return []map[string]string{
-		{"introduced": "2.0.0-alpha.1", "upper_exclusive": "2.2.0", "scheme": "npm"},
-		{"introduced": "3.0.0-alpha.1", "upper_exclusive": "3.0.0-alpha.2", "scheme": "npm"},
+		{"lower_inclusive": "2.0.0-alpha.1", "upper_exclusive": "2.2.0", "scheme": "npm"},
+		{"lower_inclusive": "3.0.0-alpha.1", "upper_exclusive": "3.0.0-alpha.2", "scheme": "npm"},
 	}
 }
 
@@ -119,10 +119,10 @@ func TestDisqual_IntroducedBound(t *testing.T) {
 		{"in the gap between ranges disqualifies", multerRanges(), "2.5.0", true, ReasonVersionNotInRange},
 		{"inside the first range is admitted", multerRanges(), "2.1.0", false, ""},
 		{"inside the second range is admitted", multerRanges(), "3.0.0-alpha.1", false, ""},
-		{"unparseable introduced is admitted", []map[string]string{{"introduced": "garbage", "upper_exclusive": "2.2.0", "scheme": "npm"}}, "1.4.2", false, ""},
-		{"introduced-only range disqualifies below", []map[string]string{{"introduced": "2.0.0", "scheme": "npm"}}, "1.4.2", true, ReasonVersionNotInRange},
+		{"unparseable introduced is admitted", []map[string]string{{"lower_inclusive": "garbage", "upper_exclusive": "2.2.0", "scheme": "npm"}}, "1.4.2", false, ""},
+		{"introduced-only range disqualifies below", []map[string]string{{"lower_inclusive": "2.0.0", "scheme": "npm"}}, "1.4.2", true, ReasonVersionNotInRange},
 		{"last_affected-only range disqualifies above", []map[string]string{{"last_affected": "1.4.2", "scheme": "npm"}}, "1.5.0", true, ReasonVersionNotInRange},
-		{"GIT range is admitted", []map[string]string{{"introduced": "2.0.0", "upper_exclusive": "2.2.0", "scheme": "npm", "type": "GIT"}}, "1.4.2", false, ""},
+		{"GIT range is admitted", []map[string]string{{"lower_inclusive": "2.0.0", "upper_exclusive": "2.2.0", "scheme": "npm", "type": "GIT"}}, "1.4.2", false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -225,6 +225,8 @@ func runLegacyUnionDisqual(t *testing.T, src AdvisorySource, coordinate, ver str
 	}
 	putJSON(t, store, c.ID, artifact.TypeInventory, map[string]any{
 		"resolved_version":    ver,
+		"resolved_versions":   []string{ver},
+		"versions_complete":   true,
 		"selected_coordinate": coordinate,
 	})
 	return runDisqual(t, store, c.ID)

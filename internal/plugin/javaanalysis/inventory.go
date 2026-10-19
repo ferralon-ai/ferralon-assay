@@ -32,14 +32,18 @@ const (
 	reasonParentUncached       = plugin.PartialReasonSourceUnpinned + ":parent_uncached"                 // a <parent> POM is absent from the cache; that inheritance level is unresolved
 	reasonPropertyUnresolved   = plugin.PartialReasonSourceUnpinned + ":property_unresolved"             // a ${...} in a version resolves to env.*/settings.*/an unknown property
 	reasonBOMUncached          = plugin.PartialReasonSourceUnpinned + ":bom_uncached"                    // an imported <scope>import</scope> BOM POM is absent from the cache
-	reasonProfileActivation    = plugin.PartialReasonEnvConditionUnresolved + ":profile_activation"      // profile activation needs live JDK/OS/file/exec state; profile NOT assumed active
+	reasonProfileActivation    = plugin.PartialReasonEnvConditionUnresolved + ":profile_activation"      // an undecided profile that could change the graph (see inventory_maven_profile.go); never applied
 	reasonMavenUncachedSubtree = plugin.PartialReasonRelationshipUnexpressed + ":maven_uncached_subtree" // a transitive child POM is absent from the cache; its subtree is undetermined
+	reasonMavenArtifactVariant = plugin.PartialReasonRelationshipUnexpressed + ":maven_artifact_variant" // a declaration of this GA names a classifier or non-jar type; the node cannot say which file the build uses
+	reasonMavenUnmodelledScope = plugin.PartialReasonRelationshipUnexpressed + ":maven_unmodelled_scope" // a dependency's scope is none Maven's scope table names (a no-break-space-padded "test" included); its subtree is undetermined
 
 	// Gradle residue.
-	reasonGradleTransitive   = plugin.PartialReasonRelationshipUnexpressed + ":gradle_transitive"   // no lockfile for a project: declared-direct only, transitive edges undetermined (irreducible Gradle boundary)
-	reasonGradleUncached     = plugin.PartialReasonRelationshipUnexpressed + ":gradle_uncached"     // a locked coordinate's cached POM is absent; its out-edges undetermined
-	reasonGradleSubstitution = plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution" // a dependencySubstitution swapped identity; cached-POM edges may not match the locked entry
-	reasonGradleVariant      = plugin.PartialReasonSourceUnpinned + ":gradle_variant"               // Gradle Module Metadata (.module) variant selection not recoverable from the POM alone
+	reasonGradleTransitive      = plugin.PartialReasonRelationshipUnexpressed + ":gradle_transitive"   // no lockfile for a project: declared-direct only, transitive edges undetermined (irreducible Gradle boundary)
+	reasonGradleUncached        = plugin.PartialReasonRelationshipUnexpressed + ":gradle_uncached"     // a locked coordinate's cached POM is absent; its out-edges undetermined
+	reasonGradleSubstitution    = plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution" // a dependencySubstitution swapped identity; cached-POM edges may not match the locked entry
+	reasonGradleVariant         = plugin.PartialReasonSourceUnpinned + ":gradle_variant"               // Gradle Module Metadata (.module) variant selection not recoverable from the POM alone
+	reasonGradleLockUnparsed    = plugin.PartialReasonToolFailure + ":gradle_lockfile_unparsed"        // a lockfile line or file could not be read as a coordinate; the locked node set is not known in full
+	reasonGradleLockUnconfirmed = plugin.PartialReasonSourceUnpinned + ":gradle_lockfile_unconfirmed"  // the build scripts declare this GA at a version the lock does not hold, at no literal version, or the lock lacks it: the lock may not be what the build resolved
 )
 
 // ResolveInventory resolves the whole dependency graph for the module rooted at req.BuildDir.

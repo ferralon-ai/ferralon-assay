@@ -208,6 +208,23 @@ func TestMaliciousPresence_EmptySet_EmitsNothing(t *testing.T) {
 	}
 }
 
+// A listed version anywhere in the tree is present, even when the representative resolved_version
+// is a clean one: a nested install of the malicious release is the same compromise.
+func TestMaliciousPresence_AnyResolvedVersionMatches(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "a1"}
+	adv, _ := json.Marshal(map[string]any{"vuln_id": "MAL-2024-1", "malicious_package": map[string]any{"affected_versions": []string{"1.0.1"}}})
+	putRaw(t, store, c.ID, artifact.TypeNormalizedAdvisory, string(adv))
+	putRaw(t, store, c.ID, artifact.TypeInventory, `{"resolved_version":"1.0.0","resolved_versions":["1.0.0","1.0.1"]}`)
+	if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("malicious_presence: %v", err)
+	}
+	res, ok := queryMaliciousPresence(t, store, c.ID)
+	if !ok || !res.Present || res.MatchedVersion != "1.0.1" {
+		t.Fatalf("presence = %+v (emitted=%v), want present at 1.0.1", res, ok)
+	}
+}
+
 // --- helpers --------------------------------------------------------------------------------
 
 // fakeMaliciousSource is a minimal AdvisorySource returning a MAL-declared fact when versions is
@@ -267,4 +284,89 @@ func queryMaliciousPresence(t *testing.T, store *artifact.MemStore, caseID strin
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	return res, true
+}
+
+// firstAndWidgetPOM declares com.example.lib:first at a property version and widget at 1.0.1.
+var firstAndWidgetPOM = map[string]string{"pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version><dependencies>` +
+	`<dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency>` +
+	`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.1</version></dependency></dependencies></project>`}
+
+// A copy of a malicious package at a listed version is present whether or not the other copies
+// agree with it. The resolver withholds Match when copies disagree, which empties resolved_version;
+// the affirmative must still fire off the first resolved copy, as it does for a single copy.
+func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
+	const javaCoord, nugetID = "com.example.lib:widget", "Newtonsoft.Json"
+	reactor := `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules><module>a</module><module>b</module></modules></project>`
+	module := func(v string) string {
+		return `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version>` +
+			`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + v + `</version></dependency></dependencies></project>`
+	}
+	project := func(v string) string {
+		return `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>` +
+			`<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="` + v + `" /></ItemGroup></Project>`
+	}
+	cases := []struct {
+		name, lang, coord, purl, listed string
+		files                           map[string]string
+		wantResolved                    string
+		pkgs                            []AffectedPackage
+	}{
+		{"maven modules disagree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2")}, "", nil},
+		{"maven modules agree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.1")}, "1.0.1", nil},
+		{"nuget projects disagree", "dotnet", nugetID, "pkg:nuget/Newtonsoft.Json", "13.0.1",
+			map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}, "", nil},
+		// The first package is declared at a property version, so it is selected unresolved; the
+		// presence scan still reaches the second package's copy.
+		{"first package unresolved", "java", "com.example.lib:first", "pkg:maven/com.example.lib/first", "1.0.1", firstAndWidgetPOM, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
+		// The first package is selected unresolved, and the second package's copies disagree, so it
+		// has no agreed version; the presence scan still takes its first resolved copy.
+		{"second package's copies disagree", "java", "com.example.lib:first", "pkg:maven/com.example.lib/first", "1.0.1",
+			map[string]string{
+				"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2"),
+				"c/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>c</artifactId><version>1.0.0</version>` +
+					`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency></dependencies></project>`,
+			}, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
+		// No package in the array has a resolved copy, so the presence scan falls back to the
+		// advisory's own package.
+		{"no package has a resolved copy", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1", firstAndWidgetPOM, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTreeFixture(t, tc.files)
+			src := selectionStubSource{facts: AdvisoryFacts{
+				Coordinate:       tc.coord,
+				PURL:             tc.purl,
+				MaliciousPackage: MaliciousPackageFacts{Declared: true, AffectedVersions: []string{tc.listed}},
+				AffectedPackages: tc.pkgs,
+				Provenance:       Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+			}}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "mal-" + tc.lang, Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "MAL-2024-1", Source: "corpus"},
+				Codebase:      assessment.CodebaseRef{Repo: "example.com/target", Revision: "v1", Acquisition: assessment.Acquisition{Mode: "git"}},
+			}}
+			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("advisory_intake: %v", err)
+			}
+			inv := codebaseInventory{checkout: dirCheckout{dir: dir, lang: tc.lang}, plugin: realResolverPlugin{lang: tc.lang}, src: src}
+			if err := inv.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory: %v", err)
+			}
+			if got, _ := extractResolvedVersion(store, c.ID); got != tc.wantResolved {
+				t.Fatalf("resolved_version = %q, want %q", got, tc.wantResolved)
+			}
+			if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("malicious_presence: %v", err)
+			}
+			res, ok := queryMaliciousPresence(t, store, c.ID)
+			if !ok || res.MatchedVersion != tc.listed {
+				t.Fatalf("affirmative = %+v (emitted %v), want a match at %s", res, ok, tc.listed)
+			}
+		})
+	}
 }

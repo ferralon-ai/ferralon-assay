@@ -68,6 +68,13 @@ func (dg *dependencyGraph) callEdges() []plugin.CallEdge {
 	return edges
 }
 
+// jarGap words a dependency JAR that was not opened, by why.
+var jarGap = map[jarLookup]string{
+	jarMissing:      "JAR not in local cache",
+	jarCopiesDiffer: "cached JAR copies differ",
+	jarUnreadable:   "cached JAR unreadable, outside its cache, or not nameable as a cache path",
+}
+
 // buildDependencyGraph resolves the build's declared dependencies and assembles a
 // CHA engine over every dependency JAR it can open from the local cache. A missing
 // manifest or unparseable build file (from ResolveDependencyVersions) and any
@@ -83,28 +90,38 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 	dg := &dependencyGraph{Complete: true}
 	// A partial dependency-resolution result (no manifest, unparseable build file)
 	// means the declared set itself is untrustworthy — the whole closure is a gap.
+	var cp depreach.Classpath
 	if !res.Partiality.Complete {
 		dg.Complete = false
+		cp.Unlisted = true
 		for _, r := range res.Partiality.Reasons {
 			dg.Gaps = append(dg.Gaps, "dependency resolution partial: "+r)
 		}
 	}
 
-	roots := mavenRepoRoots(buildDir)
 	var classes []classfile.Class
 	for _, d := range res.All {
 		if !d.Resolved {
 			dg.Complete = false
+			cp.Unlisted = true
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: version unresolved", d.Coordinate))
 			continue
 		}
-		jarPath, ok := LocateDependencyJar(roots, d.Coordinate, d.Version)
-		if !ok {
+		jar, found := locateArtifactJar(buildDir, d.Coordinate, d.Version)
+		if found != jarFound {
 			dg.Complete = false
-			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR not in local cache", d.Coordinate, d.Version))
+			cp.Unlisted = true
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: %s", d.Coordinate, d.Version, jarGap[found]))
 			continue
 		}
-		jr, err := classfile.LoadJar(jarPath)
+		pkgs, listed, closed := classfile.JarBytesPackages(jar.data)
+		cp.Add(pkgs, listed && closed)
+		if !listed {
+			dg.Complete = false
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: JAR cannot be listed", d.Coordinate, d.Version))
+			continue
+		}
+		jr, err := classfile.LoadJarBytes(jar.data)
 		if err != nil {
 			dg.Complete = false
 			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: %v", d.Coordinate, d.Version, err))
@@ -120,6 +137,6 @@ func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGrap
 	}
 
 	dg.Classes = classes
-	dg.Engine = depreach.NewEngine(classes)
+	dg.Engine = depreach.NewEngineOn(classes, cp)
 	return dg, nil
 }

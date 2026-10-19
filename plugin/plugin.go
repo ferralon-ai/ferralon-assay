@@ -85,7 +85,9 @@ type Partiality struct {
 	Reasons  []string `json:"reasons,omitempty"` // canonical reason codes; see PartialReason*
 	// Scoped carries limits the lane can bound to the packages the hidden code could reach. Reasons
 	// stay run-wide; a scoped reason counts against an advisory exactly as a run-wide one unless its
-	// Targets exclude the advisory's package (trigger/assess.go).
+	// Targets exclude the advisory's package (trigger/assess.go). Only the ingress, reachability
+	// and vulnerable-symbol results' Scoped limits reach the verdict; set on any other result, they
+	// are dropped.
 	Scoped []ScopedReason `json:"scoped,omitempty"`
 }
 
@@ -96,8 +98,8 @@ type ScopedReason struct {
 	Package string `json:"package,omitempty"` // package whose code holds the blind spot
 	Path    string `json:"path,omitempty"`    // location inside Package (import path, class, module file); disclosure only
 	// Targets over-approximates every package an edge hidden by this limit could reach, including
-	// callbacks and the hidden code's transitive dependencies. nil = unbounded, which counts against
-	// every advisory.
+	// callbacks and the hidden code's transitive dependencies. Empty (nil or []) = unbounded, which
+	// counts against every advisory; a bounded limit names at least one target.
 	Targets []string `json:"targets,omitempty"`
 }
 
@@ -240,9 +242,32 @@ const (
 	// method true on every run.
 	PartialReasonAdvisorySymbolAbsent = "advisory_symbol_absent"
 	// PartialReasonAdvisoryUnknownToAnalyzer (loud): the analyzer that would search for the
-	// advisory's symbols emitted no evidence about the advisory at all, so its silence is not a
-	// search that came back empty.
+	// advisory's symbols emitted no evidence about the advisory at all. It may not know the
+	// advisory, or may never have analyzed the affected module (a test-only or tool dependency
+	// outside the graph it loads). Either way its silence is not a search that came back empty.
 	PartialReasonAdvisoryUnknownToAnalyzer = "advisory_unknown_to_analyzer"
+	// PartialReasonExcludedFiles (loud): files the build left out (another GOOS or GOARCH, a build
+	// tag) may call into the module an analyzer found no path to, and the analyzer never traced
+	// them, so its refutation does not cover the builds that compile them.
+	PartialReasonExcludedFiles = "excluded_files"
+	// PartialReasonUnsearchedMethods (loud): exported methods a caller can invoke that the analyzer's
+	// search never started from (Go: a method of a generic type, or one promoted by embedding from a
+	// type outside the search) may call into the module it found no path to, so its refutation does
+	// not cover them.
+	PartialReasonUnsearchedMethods = "unsearched_methods"
+	// PartialReasonLibraryEscape (loud): a package code outside the build can import reaches the
+	// module an analyzer found no path to. A value the package hands its importer (a function, an
+	// interface value, a struct carrying either) can run the module's code from the importer,
+	// outside the analyzer's search, so its refutation does not cover the package's importers.
+	PartialReasonLibraryEscape = "library_escape"
+	// PartialReasonReflectiveCall: the program reaches a call to code picked at run time by a value
+	// or a name (Go's reflect.Value.Call or Method, or a template's Execute), which the call graph
+	// cannot follow. Unlike reflection, which the classifier treats as an inherent limit, this
+	// says the program does it, so it is loud.
+	PartialReasonReflectiveCall = PartialReasonReflection + ":call"
+	// PartialReasonPluginLoad: the program reaches a load of Go code the build never compiled
+	// (plugin.Open), so none of that code's calls were read.
+	PartialReasonPluginLoad = "plugin_load"
 	// PartialReasonIfdefConfigVariance (new base, run-specific/loud): a preprocessor
 	// conditional (#ifdef/#if) gates code the analysis cannot resolve without the build's
 	// actual macro definitions, so the compiled configuration is undetermined. Every
@@ -318,6 +343,10 @@ type ResolvedDependency struct {
 	Version    string `json:"version,omitempty"` // declared version; empty when Resolved=false
 	Resolved   bool   `json:"resolved"`          // true ONLY when a concrete version was determined
 	Source     string `json:"source,omitempty"`  // "pom" | "gradle" (provenance, informational)
+	// Constraint is the declared version specifier (e.g. ">=2.0,<3") when the manifest states a
+	// range rather than an exact pin. It is evidence only: a range never becomes Version, and a
+	// consumer must not derive a resolved version from it. Empty for exact pins and bare names.
+	Constraint string `json:"constraint,omitempty"`
 }
 
 // DependencyVersionResult reports the resolved declared version for the requested
@@ -325,10 +354,32 @@ type ResolvedDependency struct {
 // Resolved indicating whether its version is known); Found is false when no declaration of
 // that coordinate exists in the build files at all.
 type DependencyVersionResult struct {
-	Partiality Partiality           `json:"partiality"`
-	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
-	Match      ResolvedDependency   `json:"match"`
-	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	Partiality Partiality         `json:"partiality"`
+	Found      bool               `json:"found"` // a declaration of the request coordinate exists
+	Match      ResolvedDependency `json:"match"`
+	// Presence is the first resolved declaration of the request coordinate in All, with no
+	// requirement that other copies agree. It answers only "is some copy declared at this exact
+	// version", which is what a malicious-package advisory asks, and it must never feed a
+	// not-affected verdict. Nil means Match answers it too.
+	Presence *ResolvedDependency  `json:"presence,omitempty"`
+	All      []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Matches is every copy of the request coordinate the plugin read, Match among them: a
+	// package declared or installed at several versions (one per module, a nested install) lists
+	// each. It is evidence; on its own it does not claim no other version exists.
+	Matches []ResolvedDependency `json:"matches,omitempty"`
+	// MatchesComplete asserts that Matches holds every version of the request coordinate the
+	// build can install: every version source in scope is a form the plugin recognises and read
+	// in full, and every project that could carry the coordinate transitively is covered by a
+	// lockfile or pins it directly. False (the default) means other versions cannot be ruled out.
+	MatchesComplete bool `json:"matches_complete,omitempty"`
+	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
+	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
+	// from All is provably not a dependency. Build-isolation environments are not runtime
+	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
+	// declaration in All, but what the build backend pulls in transitively is not enumerated.
+	// False (the default, and every plugin that does not set it) means absence from All proves
+	// nothing and a consumer must fail open.
+	Exhaustive bool `json:"exhaustive,omitempty"`
 }
 
 // ReachabilityRequest carries the resolved sinks to trace toward.
@@ -345,6 +396,21 @@ type ReachabilityRequest struct {
 	// here. A plugin that cannot honor the request must fall back and say so via
 	// ReachabilityResult.ScanToolchain rather than failing the scan.
 	GoToolchain string `json:"go_toolchain,omitempty"`
+	// Package is the PURL of the package the advisory was admitted on, pinned to the version the
+	// inventory resolved ("pkg:npm/lodash@4.17.20"). A lane that can prove that package's code never
+	// loads answers with a RefutationPackageNotLoaded ReachabilityResult.Refutation. Package is
+	// empty when either the PURL or the resolved version is unknown, and a lane MUST NOT emit a
+	// package_not_loaded Refutation then: with no admitted version there is nothing to refute, so
+	// the advisory stays undetermined, never not_exploitable.
+	//
+	// Package carries the name as the advisory spells it (pkg:pypi/pyjwt while the lockfile pins
+	// PyJWT). A lane compares it with installed and loaded names only after canonicalizing both
+	// sides: PyPI by PEP 503 (lowercase, every run of "-", "_" and "." becomes "-"), NuGet by
+	// lowercasing, every other ecosystem exactly (npm `name` or `@scope/name`, Maven
+	// `group:artifact`, Go module path). The gate matches a Refutation's Package on type and name,
+	// never on version, so a lane refutes only when no installed copy of that canonical name loads,
+	// at any version, and refutes nothing when it cannot enumerate the copies.
+	Package string `json:"package,omitempty"`
 }
 
 // --- result payloads ---

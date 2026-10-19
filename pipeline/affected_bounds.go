@@ -11,14 +11,14 @@ import (
 )
 
 // versionOutsideRange reports whether ver is provably outside one affected range: below its
-// inclusive Introduced bound, at or past its UpperExclusive bound, or past its inclusive
+// inclusive LowerInclusive bound, at or past its UpperExclusive bound, or past its inclusive
 // LastAffected bound. It is the single in-range test the version axis applies per range.
 //
 // Not being outside admits the advisory, so every uncertainty resolves toward admission. A bound
 // the scheme cannot order contributes no proof; a range type other than SEMVER or ECOSYSTEM (GIT,
 // or anything unrecognized) proves nothing at all. ok is true only when ver is placed against every
 // bound the range carries, or when one bound alone already places it outside: a version below an
-// orderable Introduced is outside whatever the upper bound says.
+// orderable LowerInclusive is outside whatever the upper bound says.
 func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) {
 	if !rangeTypeOrderable(rng.Type) {
 		return false, false
@@ -46,12 +46,12 @@ func rangeTypeOrderable(rangeType string) bool {
 }
 
 // versionBelowIntroduced reports whether ver orders strictly below rng's inclusive lower bound. An
-// absent Introduced, or OSV's "0", is unbounded below.
+// absent LowerInclusive, or OSV's "0", is unbounded below.
 func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool) {
-	if rng.Introduced == "" || rng.Introduced == "0" {
+	if rng.LowerInclusive == "" || rng.LowerInclusive == "0" {
 		return false, true
 	}
-	cmp, ok := compareVersions(ver, rng.Introduced, rng.Scheme)
+	cmp, ok := compareVersions(ver, rng.LowerInclusive, rng.Scheme)
 	if !ok {
 		return false, false
 	}
@@ -59,7 +59,7 @@ func versionBelowIntroduced(ver string, rng affectedRange) (below bool, ok bool)
 }
 
 // versionAboveRangeTop reports whether ver orders past rng's upper end. UpperExclusive wins when
-// present; LastAffected is inclusive; a range floored by Introduced with neither is open-ended
+// present; LastAffected is inclusive; a range floored by LowerInclusive with neither is open-ended
 // above. A range with no bound at all keeps the upper-exclusive reading of an empty bound.
 func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 	switch {
@@ -71,14 +71,14 @@ func versionAboveRangeTop(ver string, rng affectedRange) (above bool, ok bool) {
 			return false, false
 		}
 		return cmp > 0, true
-	case rng.Introduced != "":
+	case rng.LowerInclusive != "":
 		return false, true
 	default:
 		return versionOutsideUpper(ver, rng)
 	}
 }
 
-// rangesForFloorVersion drops the Introduced bounds when the resolved version is only a floor on the
+// rangesForFloorVersion drops the LowerInclusive bounds when the resolved version is only a floor on the
 // true one: a toolchain subject whose ToolchainFact is a minimum. Being past an upper bound carries
 // from a floor to every version above it; being below a lower bound does not, so a floor can be
 // excluded only by its upper bounds.
@@ -89,7 +89,7 @@ func rangesForFloorVersion(store artifact.Store, caseID string, rngs []affectedR
 	}
 	out := make([]affectedRange, len(rngs))
 	for i, r := range rngs {
-		r.Introduced = ""
+		r.LowerInclusive = ""
 		out[i] = r
 	}
 	return out

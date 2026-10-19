@@ -87,6 +87,17 @@ func TestPartiality_DistinctDetailStaysDistinctDisclosures(t *testing.T) {
 	}
 }
 
+// Two limits that differ only in the package they are bounded to name two blind spots, not one.
+func TestPartiality_DistinctPackageStaysDistinctDisclosures(t *testing.T) {
+	r := partialityBuilder().
+		AddPartiality(report.PartialityNote{Reason: "cgo", Ecosystem: "Go", Detail: "d", Package: "pkg:golang/example.com/a"}).
+		AddPartiality(report.PartialityNote{Reason: "cgo", Ecosystem: "Go", Detail: "d", Package: "pkg:golang/example.com/b"}).
+		Build()
+	if len(r.Partiality) != 2 {
+		t.Fatalf("got %d cgo disclosures, want 2 (one per package): %+v", len(r.Partiality), r.Partiality)
+	}
+}
+
 // An unnamed limit renders as nothing, which is worse than silence — drop it.
 func TestPartiality_EmptyReasonDropped(t *testing.T) {
 	r := partialityBuilder().AddPartiality(report.PartialityNote{Ecosystem: "npm"}).Build()

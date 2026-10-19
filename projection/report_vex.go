@@ -180,14 +180,15 @@ func reportVEXStatus(f report.AdvisoryFinding) (status, justification, impact, a
 }
 
 // reportProductID derives the OpenVEX product identifier for a finding. It prefers
-// the package PURL, then falls back to ecosystem coordinates, then to the subject.
+// the package PURL, then falls back to ecosystem coordinates, then to the subject. An
+// unresolved pin is left out of the coordinates: the product ID would otherwise assert it.
 func reportProductID(pkg *report.Package, subj report.Subject) string {
 	if pkg != nil {
 		if pkg.PURL != "" {
 			return pkg.PURL
 		}
 		if pkg.Name != "" {
-			if pkg.Version != "" {
+			if pkg.Version != "" && !pkg.PinUnresolved() {
 				return fmt.Sprintf("%s@%s", pkg.Name, pkg.Version)
 			}
 			return pkg.Name

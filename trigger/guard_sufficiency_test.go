@@ -110,7 +110,7 @@ func TestAdvisoryGuardSufficiency(t *testing.T) {
 
 // seedGuardCandidate seeds the artifacts finding() reads to take the reachable_candidate arm with the given
 // on-path frame and a call graph in which that frame calls each guard in callees. The normalized
-// advisory declares advisoryGuardsJSON + guardSufficiencyJSON.
+// advisory declares advisoryGuardsJSON + guardSufficiencyJSON, and an affected range (see ranged).
 func seedGuardCandidate(t *testing.T, store artifact.Store, assessmentID, frameSym string, guardSCIPs []string, advJSON string) {
 	t.Helper()
 	put := func(typ artifact.Type, payload string) {
@@ -129,7 +129,7 @@ func seedGuardCandidate(t *testing.T, store artifact.Store, assessmentID, frameS
 		edges += `{"caller":{"scip":"` + frameSym + `"},"callee":{"scip":"` + g + `"}}`
 	}
 	put(artifact.TypeReachability, `{"reachability":{"paths":[{"trace":[{"scip":"`+frameSym+`"}]}]},"call_graph":{"edges":[`+edges+`]}}`)
-	put(artifact.TypeNormalizedAdvisory, advJSON)
+	put(artifact.TypeNormalizedAdvisory, ranged(t, advJSON))
 }
 
 // TestFinding_CandidateArm_SetsGuardSufficiency drives the real finding() over a seeded store: the gogs

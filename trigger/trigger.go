@@ -132,18 +132,17 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
-			// One advisory's analysis failing used to abort the entire scan, so a single
-			// broken tool produced no Report at all — and a run with no Report renders
-			// downstream as a run with no findings. Disclose the failure and keep going:
-			// the advisories that DID resolve keep their verdicts, and the one that did not
-			// is named rather than silently missing.
+			// One advisory's analysis failing must not abort the scan: a run with no Report
+			// renders downstream as a run with no findings. The advisories that resolved keep
+			// their verdicts, and the one that did not gets an undetermined row.
+			b.AddFinding(assessFailureFinding(adv, err))
 			b.AddPartiality(assessFailureNote(adv, err))
 			continue
 		}
 		// Coordinate-specific advisory resolution, RETAINED unchanged (§4.1 / C5): advisoryFromArtifacts
 		// still resolves the advisory's own package for the finding, but it no longer DEFINES the SBOM —
 		// the whole-graph inventory above does.
-		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq)
+		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, sbom.Packages)
 		// A toolchain advisory the scan could not adjudicate is a first-class `undetermined`
 		// row in tegron.report.v2, plus the scan-level limit that explains it.
 		// v1 had to withhold the row entirely, having no cell for "the advisory applies and

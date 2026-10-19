@@ -66,9 +66,12 @@ type reportHTMLView struct {
 func (v reportHTMLView) NotAssessedCount() int { return v.UndeterminedCount + v.WithheldCount }
 
 type reportHTMLLimit struct {
-	Reason     string
-	Label      string
-	Ecosystem  string
+	Reason    string
+	Label     string
+	Ecosystem string
+	// Package and Path locate a limit bounded to one package (report.PartialityNote).
+	Package    string
+	Path       string
 	Advisories []string
 	// Withheld is true when this limit suppressed verdicts (Advisories is non-empty), which is a
 	// materially different disclosure from a limit that merely narrowed coverage.
@@ -190,6 +193,8 @@ func ProjectReportHTML(r report.Report) ([]byte, error) {
 			Reason:     n.Reason,
 			Label:      reportHTMLLimitLabel(n.Reason),
 			Ecosystem:  n.Ecosystem,
+			Package:    n.Package,
+			Path:       n.Path,
 			Advisories: withheld,
 			Withheld:   len(withheld) > 0,
 		})
@@ -212,7 +217,7 @@ func MarshalReportHTML(r report.Report) ([]byte, error) {
 func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 	var pkg string
 	if f.Package != nil {
-		pkg = fmt.Sprintf("%s:%s@%s", f.Package.Ecosystem, f.Package.Name, f.Package.Version)
+		pkg = f.Package.Ecosystem + ":" + f.Package.Label()
 	}
 	var aliases string
 	if len(f.Advisory.Aliases) > 0 {
@@ -303,6 +308,9 @@ func reportHTMLLimitLabel(reason string) string {
 			"searched, so no verdict is reported for them."
 	case report.ReasonAdvisoryUnknownToAnalyzer:
 		return "The call-tracing analyzer reported nothing about some advisories, so no verdict is reported for them."
+	case report.ReasonAdvisoryRangeAbsent:
+		return "Some advisories record no affected version range that can be checked against the installed " +
+			"version, so a path to their code is reported as evidence without a verdict."
 	default:
 		return reason
 	}

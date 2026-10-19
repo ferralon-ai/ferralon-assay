@@ -110,7 +110,7 @@ load(process.argv[2]);
 			if edges == 0 {
 				t.Fatalf("program must have call edges")
 			}
-			if reason, ok := undeterminedReason(store, "a1"); !ok || reason != report.ReasonAnalysisDidNotRun {
+			if reason, ok := undeterminedReason(store, "a1", json5Package); !ok || reason != report.ReasonAnalysisDidNotRun {
 				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
 			}
 		})
@@ -125,14 +125,17 @@ function parse(s) { return s.trim(); }
 function load(s) { return parse(s); }
 load(process.argv[2]);
 `, nil)
-	if reason, ok := undeterminedReason(store, "a1"); ok {
+	if reason, ok := undeterminedReason(store, "a1", json5Package); ok {
 		t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
 	}
 }
 
+// json5Package is the package the gate assesses: the dependency every program loads or could.
+var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"}
+
 // gateStoreFromJS writes src as index.js over a default tree (with files added or replacing
 // entries), runs the JS producer over it, and stores the call graph and reachability
-// partiality as the reachability and exposure-footprint artifacts.
+// partiality, run-wide and scoped, as the reachability and exposure-footprint artifacts.
 func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, int) {
 	t.Helper()
 	dir := t.TempDir()
@@ -173,6 +176,20 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 	if _, err := store.Put(&artifact.Artifact{AssessmentID: "a1", Type: artifact.TypeReachability, ProducedBy: "test", Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
-	seedFootprint(t, store, "a1", reach.Partiality.Reasons)
+	fp := artifact.ExposureFootprintPayload{
+		SchemaVersion:   artifact.ExposureFootprintSchemaVersion,
+		AssessmentID:    "a1",
+		PartialityFlags: reach.Partiality.Reasons,
+	}
+	for _, r := range reach.Partiality.Scoped {
+		fp.ScopedPartiality = append(fp.ScopedPartiality, artifact.ScopedPartialityFlag{Reason: r.Reason, Package: r.Package, Path: r.Path, Targets: r.Targets})
+	}
+	fpPayload, err := json.Marshal(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(&artifact.Artifact{AssessmentID: "a1", Type: artifact.TypeExposureFootprint, ProducedBy: "test", Payload: fpPayload}); err != nil {
+		t.Fatal(err)
+	}
 	return store, len(cg.Edges)
 }

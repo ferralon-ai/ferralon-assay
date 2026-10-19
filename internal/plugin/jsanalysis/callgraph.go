@@ -110,7 +110,7 @@ func loadProgram(buildDir string) (*program, error) {
 		moduleSet: map[string]bool{},
 	}
 	for _, f := range files {
-		data, err := os.ReadFile(f)
+		data, err := readRegular(f)
 		if err != nil {
 			prog.readFailed = true
 			continue
@@ -215,6 +215,7 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 		return plugin.CallGraphResult{}, nil, err
 	}
 	rs := prog.resolver()
+	br := newBoundaryResolver(prog, rs)
 
 	seen := map[plugin.CallEdge]bool{}
 	var edges []plugin.CallEdge
@@ -272,6 +273,17 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 					provByEdge[e] = r.Prov
 				}
 				continue
+			}
+			if target, prov, ok := br.callee(f.module, cs); ok {
+				// An edge into a package-boundary node names the dependency member the call
+				// enters; it is not an inspection of the package, which stays uninspectable.
+				e := plugin.CallEdge{Caller: caller, Callee: sym(target)}
+				if !seen[e] {
+					seen[e] = true
+					edges = append(edges, e)
+					provByEdge[e] = prov
+				}
+				flags.uninspectable = true
 			}
 			switch r.Kind {
 			case resolvePackage:

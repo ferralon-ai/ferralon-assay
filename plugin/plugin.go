@@ -327,6 +327,10 @@ type ResolveSymbolsRequest struct {
 	PURL            string   `json:"purl"`             // e.g. pkg:golang/github.com/x/y@v1.2.3
 	AdvisorySymbols []string `json:"advisory_symbols"` // vulnerable symbols from the advisory
 	VulnID          string   `json:"vuln_id"`          // e.g. GO-2021-0001 (for govulncheck)
+	// TargetEnv is the run's stated target-environment conditions, as on ReachabilityRequest:
+	// a lane that resolves the inventory to choose which dependency versions to read resolves it
+	// under these. Nil means none were stated.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
 }
 
 // ResolveVersionsRequest carries the advisory's dependency coordinate whose declared
@@ -415,6 +419,12 @@ type ReachabilityRequest struct {
 	// never on version, so a lane refutes only when no installed copy of that canonical name loads,
 	// at any version, and refutes nothing when it cannot enumerate the copies.
 	Package string `json:"package,omitempty"`
+	// TargetEnv carries the run's stated target-environment conditions, with the same keys and
+	// meaning as ResolveInventoryRequest.TargetEnv, so a lane that resolves the inventory to build
+	// its search space resolves it under the conditions the inventory stage used. Like there, it is
+	// configuration handed to the plugin, never read from the tree: nil means none were stated, and
+	// whatever they would have decided stays unresolved and is disclosed, not assumed.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
 }
 
 // --- result payloads ---

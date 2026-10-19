@@ -178,7 +178,13 @@ func (a *appFixture) classI(outDir, owner, super string, ifaces []string, flags 
 
 func (a *appFixture) reach(symbols ...string) plugin.ReachabilityResult {
 	a.t.Helper()
-	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: symbols})
+	return a.reachUnder(nil, symbols...)
+}
+
+// reachUnder runs Reachability with the run's stated target-environment conditions.
+func (a *appFixture) reachUnder(env map[string]string, symbols ...string) plugin.ReachabilityResult {
+	a.t.Helper()
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: symbols, TargetEnv: env})
 	if err != nil {
 		a.t.Fatalf("Reachability: %v", err)
 	}
@@ -1057,8 +1063,8 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			a.verticle()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("app.main", "io.vertx.core.Launcher"))
 		}, reasonLaunchEntryProfileProperty},
-		// Reachability is never handed the profile selection, so a profile that sets any property
-		// is undecided and withholds whether or not the launch main reads it.
+		// With no profile selection stated, a profile that sets any property is undecided and
+		// withholds whether or not the launch main reads it.
 		{"profile sets an unrelated property: profile_activation", func(a *appFixture) {
 			a.propertyMain()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
@@ -1136,6 +1142,61 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			}
 			if !hasReason(res.Partiality, tt.reason) {
 				t.Errorf("missing run-wide %s: %+v", tt.reason, res.Partiality)
+			}
+		})
+	}
+}
+
+// The profile selection and Java version are run conditions handed in on the request: stated,
+// they decide the profiles the inventory would otherwise leave undecided; absent, those profiles
+// stay undecided and withhold Searched.
+func TestBytecodeReach_ProfileRunConditions(t *testing.T) {
+	// nativeProfile is shaped like spring-boot-starter-parent's: no activation, a <build> section.
+	nativeProfile := `<profiles><profile><id>native</id><build><plugins><plugin><groupId>org.graalvm.buildtools</groupId>` +
+		`<artifactId>native-maven-plugin</artifactId></plugin></plugins></build></profile></profiles>`
+	jdkProfile := `<profiles><profile><id>modern</id><activation><jdk>[17,)</jdk></activation>` +
+		`<properties><deploy.env>prod</deploy.env></properties></profile></profiles>`
+	none := map[string]string{"maven.profiles": ","}
+	tests := []struct {
+		name     string
+		setup    func(a *appFixture)
+		env      map[string]string
+		withheld bool
+	}{
+		{"parent native profile, no selection stated", func(a *appFixture) { a.cachedParent(nativeProfile) }, nil, true},
+		{"parent native profile, no profiles selected", func(a *appFixture) { a.cachedParent(nativeProfile) }, none, false},
+		{"parent native profile, another profile selected", func(a *appFixture) { a.cachedParent(nativeProfile) }, map[string]string{"maven.profiles": "release"}, false},
+		{"own profile setting a property, no selection stated", func(a *appFixture) {
+			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
+		}, nil, true},
+		{"own profile setting a property, no profiles selected", func(a *appFixture) {
+			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
+		}, none, false},
+		{"jdk-activated profile, selection stated but not the Java version", func(a *appFixture) {
+			a.editPOM(`</dependencies>`, `</dependencies>`+jdkProfile)
+		}, none, true},
+		{"jdk-activated profile, selection and Java version stated", func(a *appFixture) {
+			a.editPOM(`</dependencies>`, `</dependencies>`+jdkProfile)
+		}, map[string]string{"maven.profiles": ",", "java.version": "21"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			tt.setup(a)
+			res := a.reachUnder(tt.env, netkitSinkID)
+			if !tt.withheld {
+				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
+					t.Fatalf("Searched = %v, partiality %+v", res.Searched, res.Partiality)
+				}
+				return
+			}
+			if len(res.Searched) != 0 {
+				t.Fatalf("Searched with the profile undecided: %v", res.Searched)
+			}
+			if !hasReason(res.Partiality, reasonProfileActivation) {
+				t.Errorf("missing run-wide %s: %+v", reasonProfileActivation, res.Partiality)
 			}
 		})
 	}

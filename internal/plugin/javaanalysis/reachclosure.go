@@ -95,12 +95,12 @@ type closureEntry struct {
 	rc  *reachClosure
 }
 
-// loadReachClosure resolves the inventory for buildDir and loads every node's JAR it can
+// loadReachClosure resolves the inventory for buildDir under the run's stated targetEnv and loads every node's JAR it can
 // locate. firstParty is the build's compiled output: it goes into the engine, and a
 // dependency class with the same binary name is skipped, since the build output is what
 // the build packaged.
-func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfile.Class) (*reachClosure, error) {
-	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+func loadReachClosure(ctx context.Context, buildDir string, targetEnv map[string]string, firstParty []classfile.Class) (*reachClosure, error) {
+	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir, TargetEnv: targetEnv})
 	if err != nil {
 		return nil, err
 	}

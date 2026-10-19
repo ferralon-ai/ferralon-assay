@@ -80,21 +80,27 @@ func ResolveCodebaseInventory(ctx context.Context, codebase assessment.CodebaseR
 		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoPlugin)}, language, buildDir, nil
 	}
 
-	req := plugin.ResolveInventoryRequest{BuildDir: buildDir}
-	if cfg.SubjectJavaVersion != "" || cfg.SubjectMavenProfiles != "" {
-		req.TargetEnv = map[string]string{}
-		if cfg.SubjectJavaVersion != "" {
-			req.TargetEnv[targetEnvJavaVersion] = cfg.SubjectJavaVersion
-		}
-		if cfg.SubjectMavenProfiles != "" {
-			req.TargetEnv[targetEnvMavenProfiles] = cfg.SubjectMavenProfiles
-		}
-	}
-	inv, err := cfg.Plugin.ResolveInventory(ctx, req)
+	inv, err := cfg.Plugin.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir, TargetEnv: cfg.targetEnv()})
 	if err != nil {
 		return plugin.DependencyInventory{}, language, buildDir, err
 	}
 	return inv, language, buildDir, nil
+}
+
+// targetEnv is the TargetEnv the run's stated subject conditions make, shared by every request
+// that resolves the inventory; nil when none were stated.
+func (cfg *AssessConfig) targetEnv() map[string]string {
+	if cfg.SubjectJavaVersion == "" && cfg.SubjectMavenProfiles == "" {
+		return nil
+	}
+	env := map[string]string{}
+	if cfg.SubjectJavaVersion != "" {
+		env[targetEnvJavaVersion] = cfg.SubjectJavaVersion
+	}
+	if cfg.SubjectMavenProfiles != "" {
+		env[targetEnvMavenProfiles] = cfg.SubjectMavenProfiles
+	}
+	return env
 }
 
 // resolveCodebasePlan resolves a CodebaseRef to its WorkspacePlan the same way codebase_inventory

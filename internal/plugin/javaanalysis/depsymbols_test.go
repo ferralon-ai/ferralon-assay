@@ -667,3 +667,43 @@ func writeJarEntries(t *testing.T, path string, entries map[string][]byte) {
 		t.Fatal(err)
 	}
 }
+
+// The versions searched are the ones the inventory resolves under the run's stated profile
+// selection: a selected profile that moves the dependency's version moves the JAR read.
+func TestResolveDependencySymbols_ProfileSelectionPicksVersion(t *testing.T) {
+	build := buildNetkitFixture(t, false)
+	writeNetkitOwnPom(t, build)
+	pom := strings.Replace(netkitPom, `<version>1.0.0</version>
+    </dependency>`, `<version>${netkit.version}</version>
+    </dependency>`, 1)
+	pom = strings.Replace(pom, `<dependencies>`, `<properties><netkit.version>1.0.0</netkit.version></properties>
+  <profiles><profile><id>legacy</id><properties><netkit.version>0.9.0</netkit.version></properties></profile></profiles>
+  <dependencies>`, 1)
+	if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte(pom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		profiles string
+		resolved bool
+	}{
+		{",", true},
+		{"legacy", false}, // netkit 0.9.0 is not in the cache
+	}
+	for _, tt := range tests {
+		t.Run(tt.profiles, func(t *testing.T) {
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir: build, PURL: netkitPURL, AdvisorySymbols: []string{"com.evil.netkit.UrlFetcher.fetch"},
+				TargetEnv: map[string]string{"maven.profiles": tt.profiles},
+			})
+			if err != nil {
+				t.Fatalf("ResolveDependencySymbols: %v", err)
+			}
+			if got := len(res.Resolved) > 0; got != tt.resolved {
+				t.Fatalf("resolved %v, want resolved %v; partiality %+v", scips(res.Resolved), tt.resolved, res.Partiality)
+			}
+			if !tt.resolved && !hasReason(res.Partiality, reasonNoDependencyArtifact) {
+				t.Errorf("missing %s: %+v", reasonNoDependencyArtifact, res.Partiality)
+			}
+		})
+	}
+}

@@ -60,14 +60,14 @@ func isRootCoordinate(buildDir, coordinate string) bool {
 
 // resolveDependencyJarSymbols resolves wanted inside the JAR(s) of coordinate. purlVersion,
 // when the request PURL pins one, is the only version searched; otherwise every version the
-// inventory resolved for the coordinate is.
-func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purlVersion string, wanted []string) (depSymbolResolution, error) {
+// inventory resolved for the coordinate, under the run's stated targetEnv, is.
+func resolveDependencyJarSymbols(ctx context.Context, buildDir string, targetEnv map[string]string, coordinate, purlVersion string, wanted []string) (depSymbolResolution, error) {
 	out := depSymbolResolution{origins: map[string]string{}, matched: map[string][]string{}, part: plugin.Complete()}
 	if len(wanted) == 0 {
 		return out, nil
 	}
 
-	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir, TargetEnv: targetEnv})
 	if err != nil {
 		return out, err
 	}

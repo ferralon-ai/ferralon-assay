@@ -62,7 +62,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	for _, c := range prog.classes {
 		firstParty[c.Name] = true
 	}
-	deps, err := loadDependencyClosure(ctx, req.BuildDir, firstParty)
+	deps, err := loadDependencyClosure(ctx, req.BuildDir, req.TargetEnv, firstParty)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

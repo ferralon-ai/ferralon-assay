@@ -287,13 +287,21 @@ func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
 		name, lang, coord, purl, listed string
 		files                           map[string]string
 		wantResolved                    string
+		pkgs                            []AffectedPackage
 	}{
 		{"maven modules disagree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
-			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2")}, ""},
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2")}, "", nil},
 		{"maven modules agree", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
-			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.1")}, "1.0.1"},
+			map[string]string{"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.1")}, "1.0.1", nil},
 		{"nuget projects disagree", "dotnet", nugetID, "pkg:nuget/Newtonsoft.Json", "13.0.1",
-			map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}, ""},
+			map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}, "", nil},
+		// The first package is declared at a property version, so it is selected unresolved; the
+		// presence scan still reaches the second package's copy.
+		{"first package unresolved", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
+			map[string]string{"pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version><dependencies>` +
+				`<dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency>` +
+				`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.1</version></dependency></dependencies></project>`}, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,6 +310,7 @@ func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
 				Coordinate:       tc.coord,
 				PURL:             tc.purl,
 				MaliciousPackage: MaliciousPackageFacts{Declared: true, AffectedVersions: []string{tc.listed}},
+				AffectedPackages: tc.pkgs,
 				Provenance:       Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
 			}}
 			store := artifact.NewMemStore()

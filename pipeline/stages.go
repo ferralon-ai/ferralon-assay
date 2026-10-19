@@ -1729,12 +1729,15 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			v, p, found, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
 			return v, p, found, flags, false, err
 		}
-		presenceSelected := false
+		presenceSelected, selected := false, false
 		// v3 select-by-target: iterate the advisory's full affected set (producer-sorted,
 		// deterministic) and pick the FIRST package the assessed codebase actually depends on. This
 		// is the whole point of the multi-package block — a target on a SECONDARY package resolves
 		// into real version/symbol analysis instead of falling OPEN against an unmatched primary.
 		for _, pkg := range facts.AffectedPackages {
+			if selected && presenceSelected {
+				break
+			}
 			v, p, found, flags, rootPkg, err := resolve(pkg.Module, pkg.Coordinate, pkg.PURL, pkg.VersionScheme)
 			if err != nil {
 				return err
@@ -1742,25 +1745,29 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			if !presenceSelected && (p != "" || rootPkg) {
 				presenceVersion, presenceSelected = p, true
 			}
-			// A package the target declares stops the walk even when its version is unresolved:
+			// A package the target declares ends the selection even when its version is unresolved:
 			// moving on would adjudicate the advisory on another package's ranges while this one
 			// may sit inside its own. It is selected with no version, so the version axis stays open.
-			if v != "" || found || rootPkg {
+			// The presence scan goes on past it to the first package with a resolved copy.
+			if !selected && (v != "" || found || rootPkg) {
 				resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
-				break
+				selected = true
 			}
 		}
 		// Fail-open (inv.5, load-bearing): no array element matched THIS target (or the advisory is
 		// v2/single-package: AffectedPackages is empty) → fall back to the scalar primary. This is
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
-		if selectedModule == "" && selectedCoordinate == "" {
+		// The presence scan falls back the same way when no array element had a resolved copy.
+		if !selected || !presenceSelected {
 			v, p, _, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
 			if err != nil {
 				return err
 			}
-			resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
+			if !selected {
+				resolvedVersion, partialityFlags, isRoot = v, flags, rootPkg
+			}
 			if !presenceSelected {
 				presenceVersion = p
 			}

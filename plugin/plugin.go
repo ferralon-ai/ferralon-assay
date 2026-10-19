@@ -554,18 +554,30 @@ type DependencyInventory struct {
 	Partiality Partiality       `json:"partiality"` // graph-level declared partiality for unresolved conditions (§4.1 "declared partiality")
 	Nodes      []DependencyNode `json:"nodes"`      // one per resolved package instance; sorted by Node.ID
 	Edges      []DependencyEdge `json:"edges"`      // parent→child relationships; sorted by (Parent, Child)
+	// BuildList names the resolver output Nodes were taken from when they are the build's whole
+	// module list, replace targets included ("go mod graph"); empty otherwise. Partiality still
+	// says whether that resolution completed.
+	BuildList string `json:"build_list,omitempty"`
+	// MainModule is the path of the module the build list was resolved for (Go), which is part of
+	// the build but not one of Nodes; set with BuildList.
+	MainModule string `json:"main_module,omitempty"`
 }
+
+// BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected
+// module build list, which a vendored module resolves to the same list.
+const BuildListGoModGraph = "go mod graph"
 
 // DependencyNode is one resolved package instance in the dependency graph.
 type DependencyNode struct {
-	ID         string               `json:"id"`         // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
-	PURL       string               `json:"purl"`       // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
-	Version    string               `json:"version"`    // §4.1 exact resolved version
-	Direct     bool                 `json:"direct"`     // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
-	Membership DependencyMembership `json:"membership"` // §4.1 project/workspace/target membership
-	Artifact   DependencyArtifact   `json:"artifact"`   // §4.1 selected artifact identity + integrity digest
-	Provenance DependencyProvenance `json:"provenance"` // §4.1 manifest/lockfile/resolver/runtime-target provenance
-	Partiality Partiality           `json:"partiality"` // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	ID         string               `json:"id"`                // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
+	PURL       string               `json:"purl"`              // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
+	Version    string               `json:"version"`           // §4.1 exact resolved version
+	Direct     bool                 `json:"direct"`            // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
+	Membership DependencyMembership `json:"membership"`        // §4.1 project/workspace/target membership
+	Artifact   DependencyArtifact   `json:"artifact"`          // §4.1 selected artifact identity + integrity digest
+	Provenance DependencyProvenance `json:"provenance"`        // §4.1 manifest/lockfile/resolver/runtime-target provenance
+	Partiality Partiality           `json:"partiality"`        // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	Replace    string               `json:"replace,omitempty"` // module path a replace directive substitutes for this one (Go); empty when not replaced or replaced by a directory
 }
 
 // DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the

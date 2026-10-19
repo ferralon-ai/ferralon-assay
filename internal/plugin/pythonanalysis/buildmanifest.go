@@ -44,6 +44,8 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	meta, _ := readPyprojectMeta(req.BuildDir)
 	pin, _ := readPythonVersionPin(req.BuildDir)
 	version, read := declaredPython(req.BuildDir)
+	constraints, constraintsRead := constraintFiles(req.BuildDir)
+	resolver, resolverRead := detectResolver(req.BuildDir)
 
 	// Toolchain: the stronger, exact pin when the manifest declares one — a .python-version
 	// file, or an exact "==X.Y.Z" requires-python. A range/minimum requires-python is NOT a
@@ -61,15 +63,15 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 			Target:    meta.target,
 			Source:    plugin.RuntimeSourceDeclared,
 		}},
-		Configuration: buildConfiguration(meta.extras, constraintFiles(req.BuildDir)),
+		Configuration: buildConfiguration(meta.extras, constraints),
 		// The WorkspacePlan project root the pipeline resolves and passes in as BuildDir
 		// (checkout.WorkspacePlan.Primary().Root); the inventory path likewise carries it as
 		// DependencyMembership.Project. Multi-root enumeration is PLAN-400.
 		ProjectRoot: req.BuildDir,
 	}
-	if r := detectResolver(req.BuildDir); r.Name != "" {
-		r.Source = plugin.RuntimeSourceDeclared
-		res.Resolvers = []plugin.ResolverSpec{r}
+	if resolver.Name != "" {
+		resolver.Source = plugin.RuntimeSourceDeclared
+		res.Resolvers = []plugin.ResolverSpec{resolver}
 	}
 
 	// PartialReasonEnvConditionUnresolved is the closest existing shared code (the runtime
@@ -84,8 +86,9 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	if version == "" {
 		reasons = append(reasons, plugin.PartialReasonEnvConditionUnresolved+":requires_python")
 	}
-	// A declared source that exists but could not be read may name a different interpreter.
-	if !read {
+	// A declared source that exists but could not be read may name a different interpreter,
+	// a constraints file or a lockfile, and an unread directory may hold one.
+	if !read || !constraintsRead || !resolverRead {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if len(reasons) == 0 {
@@ -129,7 +132,7 @@ type pyprojectMeta struct {
 func readPyprojectMeta(dir string) (meta pyprojectMeta, read bool) {
 	data, err := readRegular(filepath.Join(dir, "pyproject.toml"))
 	if err != nil {
-		return pyprojectMeta{}, os.IsNotExist(err)
+		return pyprojectMeta{}, absent(err)
 	}
 	var doc struct {
 		Project struct {
@@ -224,7 +227,7 @@ func lockfileRequiresPython(dir string) (version string, read bool) {
 				return v, true
 			}
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !absent(err) {
 		read = false
 	}
 	if data, err := readRegular(filepath.Join(dir, "pdm.lock")); err == nil {
@@ -238,7 +241,7 @@ func lockfileRequiresPython(dir string) (version string, read bool) {
 				return v, read
 			}
 		}
-	} else if !os.IsNotExist(err) {
+	} else if !absent(err) {
 		read = false
 	}
 	return "", read
@@ -250,7 +253,7 @@ func lockfileRequiresPython(dir string) (version string, read bool) {
 func readPythonVersionPin(dir string) (pin string, read bool) {
 	data, err := readRegular(filepath.Join(dir, ".python-version"))
 	if err != nil {
-		return "", os.IsNotExist(err)
+		return "", absent(err)
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if s := strings.TrimSpace(line); s != "" {
@@ -271,11 +274,11 @@ func exactPin(requiresPython string) string {
 }
 
 // constraintFiles lists the top-level constraints*.txt files (pip constraint files) in the
-// build dir, sorted for determinism.
-func constraintFiles(dir string) []string {
+// build dir, sorted for determinism. read is false when the directory cannot be listed.
+func constraintFiles(dir string) (names []string, read bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, absent(err)
 	}
 	var out []string
 	for _, e := range entries {
@@ -288,7 +291,7 @@ func constraintFiles(dir string) []string {
 		}
 	}
 	sort.Strings(out)
-	return out
+	return out, true
 }
 
 // buildConfiguration renders the declared extras selection and any constraint files in
@@ -308,23 +311,28 @@ func buildConfiguration(extras, constraints []string) string {
 // reusing PLAN-170's format detection (manifestFiles). A lockfile beats a bare manifest
 // (a lock pins what a manifest only ranges); the priority matches nodeProvenance's
 // lockfile→resolver mapping (inventory.go). Command is a NEUTRAL declared invocation, never
-// executed (§3.3).
-func detectResolver(dir string) plugin.ResolverSpec {
+// executed (§3.3). read is false, with no resolver, when part of the tree could not be read:
+// a lockfile there would outrank the one found.
+func detectResolver(dir string) (spec plugin.ResolverSpec, read bool) {
+	paths, read := manifestFiles(dir)
+	if !read {
+		return plugin.ResolverSpec{}, false
+	}
 	present := map[string]bool{}
-	for _, m := range manifestFiles(dir) {
+	for _, m := range paths {
 		present[filepath.Base(m)] = true
 	}
 	switch {
 	case present["pdm.lock"]:
-		return plugin.ResolverSpec{Name: "pdm", Command: "pdm lock"}
+		return plugin.ResolverSpec{Name: "pdm", Command: "pdm lock"}, true
 	case present["uv.lock"]:
-		return plugin.ResolverSpec{Name: "uv", Command: "uv lock"}
+		return plugin.ResolverSpec{Name: "uv", Command: "uv lock"}, true
 	case present["poetry.lock"]:
-		return plugin.ResolverSpec{Name: "poetry", Command: "poetry lock"}
+		return plugin.ResolverSpec{Name: "poetry", Command: "poetry lock"}, true
 	case present["Pipfile.lock"]:
-		return plugin.ResolverSpec{Name: "pipenv", Command: "pipenv lock"}
+		return plugin.ResolverSpec{Name: "pipenv", Command: "pipenv lock"}, true
 	case present["pyproject.toml"]:
-		return plugin.ResolverSpec{Name: "pip", Command: "pip install ."}
+		return plugin.ResolverSpec{Name: "pip", Command: "pip install ."}, true
 	default:
 		var reqs []string
 		for base := range present {
@@ -334,9 +342,9 @@ func detectResolver(dir string) plugin.ResolverSpec {
 		}
 		sort.Strings(reqs)
 		if len(reqs) > 0 {
-			return plugin.ResolverSpec{Name: "pip", Command: "pip install -r " + reqs[0]}
+			return plugin.ResolverSpec{Name: "pip", Command: "pip install -r " + reqs[0]}, true
 		}
-		return plugin.ResolverSpec{}
+		return plugin.ResolverSpec{}, true
 	}
 }
 

@@ -66,8 +66,8 @@ func (toolchainCandidatePlugin) Reachability(context.Context, plugin.Reachabilit
 // arm proves the fixture really is eligible (otherwise the candidate arm would pass for the wrong
 // reason), and the candidate arm proves eligibility does not override a positive finding.
 func TestGoToolchainArmOrder_CandidateOutranksUndetermined(t *testing.T) {
-	// go 1.20 ⇒ floor go1.20.0, and GO-2021-0264 declares no affected range at all, so the version
-	// axis can never disqualify it.
+	// go 1.20 ⇒ floor go1.20.0, and GO-2021-0264 is served without a range, so the version
+	// axis can never disqualify it. Reachability alone decides the disposition.
 	const goFloorMod = "module example.com/target\n\ngo 1.20\n"
 
 	t.Run("no path found: undetermined", func(t *testing.T) {

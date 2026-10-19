@@ -740,9 +740,15 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		CWEs:    []string{"CWE-94", "CWE-78"},
 		Summary: "code injection / OS command execution: the SQL Expressions feature reaches runDuckQuery, which executes attacker-controlled SQL through the DuckDB engine binary (DuckDB file functions enable LFI/RCE); the upstream fix removes the go-duck dependency and the exec sink outright",
 	},
+	// Fixed go1.16.10 on the 1.16.x branch and go1.17.3 on mainline (OSV GO-2021-0264).
 	"GO-2021-0264": {
-		Aliases: []string{"CVE-2021-41772"},
-		PURL:    "pkg:golang/stdlib",
+		Aliases:       []string{"CVE-2021-41772"},
+		VersionScheme: "go-toolchain",
+		PURL:          "pkg:golang/stdlib",
+		AffectedRanges: []Range{
+			{Fixed: "go1.16.10", FixedVersion: "go1.16.10"},
+			{Introduced: "go1.17.0", Fixed: "go1.17.3", FixedVersion: "go1.17.3"},
+		},
 		Symbols: []string{"archive/zip.(*Reader).Open"},
 	},
 	// --- Go stdlib/toolchain (go-toolchain scheme, U7) -----------------------------------------

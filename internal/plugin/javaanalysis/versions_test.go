@@ -399,6 +399,80 @@ func TestResolveVersions_ModuleOutsideTheBuildDirectory(t *testing.T) {
 	}
 }
 
+// TestResolveVersions_ParentOutsideTheTree: a module inherits every dependency of its parent that it
+// doesn't declare itself. A parent Maven reads from a repository is one this reader never sees, so a
+// module that doesn't declare the coordinate and inherits from one withholds the Match. Maven takes
+// the parent from the tree only when the POM at its relativePath carries the parent's coordinates.
+func TestResolveVersions_ParentOutsideTheTree(t *testing.T) {
+	parent := func(g, a, v, extra string) string {
+		return `<parent><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + v + `</version>` + extra + `</parent>`
+	}
+	corp := parent("com.corp", "corp-parent", "7", "")
+	root := parent("com.example", "root", "1.0.0", "")
+	module := func(parent, deps string) string {
+		return `<project><modelVersion>4.0.0</modelVersion>` + parent + `<artifactId>b</artifactId><dependencies>` + deps + `</dependencies></project>`
+	}
+	widget := func(v string) string {
+		return `<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + v + `</version></dependency>`
+	}
+	other := `<dependency><groupId>org.other</groupId><artifactId>thing</artifactId><version>2.1.3</version></dependency>`
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+		// complete is MatchesComplete: every copy the build can install was read.
+		complete bool
+	}{
+		{"remote parent, no dependencies", map[string]string{"b/pom.xml": module(corp, "")}, "", false},
+		{"remote parent, other dependencies only", map[string]string{"b/pom.xml": module(corp, other)}, "", false},
+		{"remote parent, module declares the same version", map[string]string{"b/pom.xml": module(corp, widget("1.4.0"))}, "1.4.0", true},
+		{"remote parent, module declares another version", map[string]string{"b/pom.xml": module(corp, widget("1.3.0"))}, "", true},
+		{"parent in the tree", map[string]string{"b/pom.xml": module(root, "")}, "1.4.0", true},
+		{"parent in the tree named by relativePath", map[string]string{
+			"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath>..</relativePath>`), ""),
+		}, "1.4.0", true},
+		{"empty relativePath", map[string]string{"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath/>`), "")}, "", false},
+		{"parent version differs from the tree's", map[string]string{"b/pom.xml": module(parent("com.example", "root", "0.9.0", ""), "")}, "", false},
+		{"relativePath outside the root", map[string]string{
+			"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath>../../outside/pom.xml</relativePath>`), ""),
+		}, "", false},
+		{"parent in the tree inherits from a remote parent", map[string]string{
+			"b/pom.xml":   module(parent("com.example", "mid", "1.0.0", `<relativePath>../mid</relativePath>`), ""),
+			"mid/pom.xml": `<project><modelVersion>4.0.0</modelVersion>` + corp + `<groupId>com.example</groupId><artifactId>mid</artifactId><version>1.0.0</version><packaging>pom</packaging></project>`,
+		}, "", false},
+		// Maven 4 infers a parent with no coordinates from its relativePath.
+		{"parent with no coordinates, relativePath outside the root", map[string]string{
+			"b/pom.xml": module(`<parent><relativePath>../../outside/pom.xml</relativePath></parent>`, ""),
+		}, "", false},
+		{"parent with no coordinates, empty relativePath", map[string]string{"b/pom.xml": module(`<parent><relativePath/></parent>`, "")}, "", false},
+		{"parent with no coordinates, in the tree", map[string]string{"b/pom.xml": module(`<parent/>`, "")}, "1.4.0", true},
+		{"parent with no version, in the tree", map[string]string{
+			"b/pom.xml": module(`<parent><groupId>com.example</groupId><artifactId>root</artifactId></parent>`, ""),
+		}, "1.4.0", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"pom.xml": reactorOf("a", "b"), "a/pom.xml": widgetPOM("1.4.0", root)}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			// The build is checked out under build/, so a relativePath can reach a POM beside it.
+			tree := map[string]string{"outside/pom.xml": reactorOf()}
+			for k, v := range files {
+				tree["build/"+k] = v
+			}
+			dir := writeTree(t, tree)
+			res := resolve(t, filepath.Join(dir, "build"), "com.example.lib:widget")
+			if !res.Found || res.Match.Version != tc.want || res.Match.Resolved != (tc.want != "") {
+				t.Fatalf("match = %+v, want version %q", res.Match, tc.want)
+			}
+			if res.MatchesComplete != tc.complete {
+				t.Fatalf("MatchesComplete = %v, want %v (Matches %+v)", res.MatchesComplete, tc.complete, res.Matches)
+			}
+		})
+	}
+}
+
 // MatchesComplete holds only for a POM-only build in which every module declares the coordinate
 // at a literal version or pulls in nothing; anything that can bring in another version leaves it
 // false.

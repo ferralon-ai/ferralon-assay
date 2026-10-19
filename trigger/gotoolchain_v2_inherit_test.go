@@ -120,9 +120,11 @@ func TestReanalyze_FreshUndeterminedReplacesAStaleInheritedVerdict(t *testing.T)
 		Subject:  Subject{Repo: "r", ResolvedCommit: "pr-sha"},
 		Codebase: assessment.CodebaseRef{Repo: "r", Revision: "main"},
 		// A changed dependency set forces the re-analyze path.
-		PRSBOM:        report.SBOM{Packages: []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.9.9"}}},
-		Advisories:    []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}},
-		AssessOptions: goAssessOptions(buildDir),
+		PRSBOM:     report.SBOM{Packages: []report.Package{{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.9.9"}}},
+		Advisories: []assessment.VulnRef{{ID: "GO-2021-0264", Source: "corpus"}},
+		// Served without its range, GO-2021-0264 cannot be settled on any floor, so the pass establishes
+		// nothing.
+		AssessOptions: append(goAssessOptions(buildDir), pipeline.WithAdvisorySource(stdlibNoRangeSource{})),
 	})
 	if err != nil {
 		t.Fatalf("RunPRInherit: %v", err)

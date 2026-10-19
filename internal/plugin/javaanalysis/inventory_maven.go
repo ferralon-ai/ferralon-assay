@@ -473,7 +473,7 @@ func convActivation(acts []xmlActivation) mvnActivation {
 type effectiveModel struct {
 	group, artifact, version string
 	props                    map[string]string
-	managed                  map[string]string // "g:a" -> version
+	managed                  map[string]string // "g:a" -> version, "" when it doesn't interpolate
 	deps                     []mvnDep
 	residue                  []string
 	undecided                []undecidedProfile // each also listed in residue as reasonProfileActivation
@@ -567,7 +567,8 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 
 	// Pass 3: dependencyManagement + imported BOMs → managed-version map (first declaration
 	// wins per GA, Maven precedence). A declared entry beats any import; imports then fill in
-	// order. BOMs are fetched from the cache recursively.
+	// order. BOMs are fetched from the cache recursively. A winning entry whose version doesn't
+	// interpolate is kept as "" (managed, version unknown), so no lower-precedence entry fills it.
 	for _, m := range mgmtSrc {
 		if isImportBOM(m) {
 			continue
@@ -576,9 +577,8 @@ func buildModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCache, targ
 		if _, seen := em.managed[key]; seen {
 			continue
 		}
-		if ver, ok := interp(m.Version, em.props); ok {
-			em.managed[key] = ver
-		}
+		ver, _ := interp(m.Version, em.props)
+		em.managed[key] = ver
 	}
 	for _, m := range mgmtSrc {
 		if isImportBOM(m) {

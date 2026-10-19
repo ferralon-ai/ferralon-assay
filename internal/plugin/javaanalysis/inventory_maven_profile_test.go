@@ -1092,3 +1092,73 @@ func TestMavenProfile_MergePrecedence(t *testing.T) {
 		})
 	}
 }
+
+// A winning managed version that doesn't interpolate (a CI-friendly ${revision}, or a property
+// from settings.xml or -D) leaves the version unknown: no lower-precedence declaration fills it,
+// and it still overrides what a transitive POM declares.
+func TestMavenProfile_UnreadableManagedVersionWithholds(t *testing.T) {
+	const (
+		x      = `<groupId>org.x</groupId><artifactId>x</artifactId>`
+		bomDep = `<dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>`
+		useX   = `<dependencies><dependency>` + x + `</dependency></dependencies>`
+		useT   = `<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></dependency></dependencies>`
+	)
+	dm := func(v string) string {
+		return `<dependencyManagement><dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies></dependencyManagement>`
+	}
+	parentRef := `<parent><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version></parent>`
+	bomParentRef := `<parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>`
+	for _, tt := range []struct {
+		name               string
+		app                string
+		parent, bom, bomPa string
+	}{
+		{name: "over a cached parent's managed version", app: parentRef + dm("${revision}") + useX, parent: dm("1.0")},
+		{name: "over an earlier import", app: `<dependencyManagement><dependencies>` + bomDep + `<dependency>` + x + `<version>${revision}</version></dependency></dependencies></dependencyManagement>` + useX, bom: dm("1.0")},
+		{name: "over a transitive's declared version", app: dm("${revision}") + useT},
+		{name: "in a BOM over its parent", app: `<dependencyManagement><dependencies>` + bomDep + `</dependencies></dependencyManagement>` + useX, bom: bomParentRef + dm("${revision}"), bomPa: dm("1.0")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>`+tt.app+`</project>`)
+			if tt.parent != "" {
+				writeCachePOM(t, m2, "org.p", "parent", "1.0", `<project><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.parent+`</project>`)
+			}
+			if tt.bom != "" {
+				writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.bom+`</project>`)
+			}
+			if tt.bomPa != "" {
+				writeCachePOM(t, m2, "org.bom", "bom-parent", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version><packaging>pom</packaging>`+tt.bomPa+`</project>`)
+			}
+			writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><dependencies><dependency>`+x+`<version>1.0</version></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.x", "x", "1.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></project>`)
+			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "21"))
+			if raw.Partiality.Complete {
+				t.Errorf("partiality complete, want withheld")
+			}
+			inv := toJSON(t, raw)
+			if findNode(t, inv, "pkg:maven/org.x/x@1.0") != nil || findNode(t, inv, "pkg:maven/org.x/x@") == nil {
+				t.Errorf("want org.x:x unresolved, not 1.0: %+v", inv.Nodes)
+			}
+		})
+	}
+}
+
+// An undecided profile that imports a BOM managing a version that doesn't interpolate can
+// re-version a transitive to an unknown version.
+func TestMavenProfile_UndecidedProfileBOMWithUnreadableVersionWithholds(t *testing.T) {
+	dir, m2 := t.TempDir(), t.TempDir()
+	writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></dependency></dependencies>
+<profiles><profile><id>p</id><activation><jdk>11</jdk></activation>
+<dependencyManagement><dependencies><dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
+</profile></profiles></project>`)
+	writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>${revision}</version></dependency></dependencies></dependencyManagement></project>`)
+	writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency></dependencies></project>`)
+	writeCachePOM(t, m2, "org.x", "x", "1.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></project>`)
+	raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", ""))
+	if !hasReason(raw.Partiality, reasonProfileActivation) {
+		t.Errorf("want profile_activation: %+v", raw.Partiality)
+	}
+}

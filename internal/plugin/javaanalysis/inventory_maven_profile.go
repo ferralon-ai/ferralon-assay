@@ -1279,6 +1279,9 @@ func profileBOMManaged(bom mvnDep, propSets []map[string]string, reactor map[str
 			return nil, false
 		}
 		for ga, mv := range sub.managed {
+			if mv == "" {
+				return nil, false // a managed version that doesn't interpolate
+			}
 			mg, ma, _ := strings.Cut(ga, ":")
 			if k := gavKey(mg, ma, mv); !seen[k] && isLiteralVersion(mv) {
 				seen[k] = true

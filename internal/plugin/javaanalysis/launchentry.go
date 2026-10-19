@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -213,7 +214,7 @@ func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
 	}
 	strict := bootCandidates(fp.classes, isBootMain)
 	broad := bootCandidates(fp.classes, declaresMain)
-	if len(strict) != 1 || len(broad) != 1 || strict[0] != broad[0] {
+	if len(broad) != 1 || !slices.Equal(strict, broad) {
 		return "", false
 	}
 	var all []string

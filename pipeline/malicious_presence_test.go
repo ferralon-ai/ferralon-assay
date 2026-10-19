@@ -269,6 +269,11 @@ func queryMaliciousPresence(t *testing.T, store *artifact.MemStore, caseID strin
 	return res, true
 }
 
+// firstAndWidgetPOM declares com.example.lib:first at a property version and widget at 1.0.1.
+var firstAndWidgetPOM = map[string]string{"pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version><dependencies>` +
+	`<dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency>` +
+	`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.1</version></dependency></dependencies></project>`}
+
 // A copy of a malicious package at a listed version is present whether or not the other copies
 // agree with it. The resolver withholds Match when copies disagree, which empties resolved_version;
 // the affirmative must still fire off the first resolved copy, as it does for a single copy.
@@ -297,11 +302,12 @@ func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
 			map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}, "", nil},
 		// The first package is declared at a property version, so it is selected unresolved; the
 		// presence scan still reaches the second package's copy.
-		{"first package unresolved", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1",
-			map[string]string{"pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version><dependencies>` +
-				`<dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency>` +
-				`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.1</version></dependency></dependencies></project>`}, "",
+		{"first package unresolved", "java", "com.example.lib:first", "pkg:maven/com.example.lib/first", "1.0.1", firstAndWidgetPOM, "",
 			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
+		// No package in the array has a resolved copy, so the presence scan falls back to the
+		// advisory's own package.
+		{"no package has a resolved copy", "java", javaCoord, "pkg:maven/com.example.lib/widget", "1.0.1", firstAndWidgetPOM, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

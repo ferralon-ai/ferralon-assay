@@ -91,10 +91,12 @@ func TestReachability_LaunchEntryLicence(t *testing.T) {
 		{"jakarta ServletContextListener", true, func(t *testing.T, dir string) {
 			writeClassFixture(t, dir, "com/example/Boot", callbackClass("com/example/Boot", "java/lang/Object", []string{"jakarta/servlet/ServletContextListener"}, ""))
 		}, false, reasonContainerCallback},
-		{"Filter inherited through a first-party base", true, func(t *testing.T, dir string) {
-			withJacksonEntries(t, dir, map[string][]byte{"javax/servlet/Filter.class": interfaceStub("javax/servlet/Filter")})
-			writeClassFixture(t, dir, "com/example/BaseFilter", newKClassBuilder().buildWithInterfaces("com/example/BaseFilter", "java/lang/Object", "javax/servlet/Filter"))
-			writeClassFixture(t, dir, "com/example/AuditFilter", callbackClass("com/example/AuditFilter", "com/example/BaseFilter", nil, ""))
+		{"Filter inherited through a dependency base", true, func(t *testing.T, dir string) {
+			withJacksonEntries(t, dir, map[string][]byte{
+				"javax/servlet/Filter.class": interfaceStub("javax/servlet/Filter"),
+				"org/lib/BaseFilter.class":   newKClassBuilder().buildWithInterfaces("org/lib/BaseFilter", "java/lang/Object", "javax/servlet/Filter"),
+			})
+			writeClassFixture(t, dir, "com/example/AuditFilter", callbackClass("com/example/AuditFilter", "org/lib/BaseFilter", nil, ""))
 		}, false, reasonContainerCallback},
 		{"@WebServlet on a plain class", true, func(t *testing.T, dir string) {
 			writeClassFixture(t, dir, "com/example/Hook", callbackClass("com/example/Hook", "java/lang/Object", nil, "Ljakarta/servlet/annotation/WebServlet;"))

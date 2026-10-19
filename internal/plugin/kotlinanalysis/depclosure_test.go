@@ -961,27 +961,6 @@ func TestLocateDependencyJar_CopiesAcrossCaches(t *testing.T) {
 	}
 }
 
-// TestInventoryReasons: the graph reasons the op adopts from the inventory, including a
-// resolver tool that failed partway, which leaves the node set short of what the build runs.
-func TestInventoryReasons(t *testing.T) {
-	for _, tt := range []struct {
-		reason string
-		want   bool
-	}{
-		{plugin.PartialReasonSourceUnpinned + ":no_lockfile", true},
-		{plugin.PartialReasonEnvConditionUnresolved + ":maven_profile", true},
-		{plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution", true},
-		{plugin.PartialReasonToolFailure, true},
-		{plugin.PartialReasonToolFailure + ":gradle", true},
-		{"reflection", false},
-	} {
-		inv := plugin.DependencyInventory{Partiality: plugin.Partiality{Reasons: []string{tt.reason}}}
-		if got := len(inventoryReasons(inv)) == 1; got != tt.want {
-			t.Errorf("inventoryReasons(%q) adopted = %v, want %v", tt.reason, got, tt.want)
-		}
-	}
-}
-
 // TestReachability_InventoryGraphReasonsWithholdSearched: the op itself withholds Searched under
 // every graph reason the inventory declares, so a library consumer that never applies the
 // gate's inventory limits still cannot read an empty search as complete. Each row's main never

@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -185,4 +186,23 @@ func graphPartiality(reasons []string, nodeCount int) plugin.Partiality {
 	sorted := append([]string{}, reasons...)
 	sort.Strings(sorted)
 	return plugin.Partial(sorted...)
+}
+
+// InventoryGraphReasons returns the inventory's run-wide graph reasons: every reason under which its
+// node set or a node's version may fall short of what the build runs (no lockfile, an uncached
+// subtree or POM, a substitution, an uncached BOM or parent, an unresolved property, an
+// unevaluable profile, a resolver tool that failed). The JVM Reachability ops withhold Searched
+// under any of them themselves rather than leaning on a caller's inventory limits, because the
+// ops are consumed as a library.
+func InventoryGraphReasons(inv plugin.DependencyInventory) []string {
+	var out []string
+	for _, r := range inv.Partiality.Reasons {
+		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) ||
+			strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) ||
+			strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed) ||
+			strings.HasPrefix(r, plugin.PartialReasonToolFailure) {
+			out = append(out, r)
+		}
+	}
+	return out
 }

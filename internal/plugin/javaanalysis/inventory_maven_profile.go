@@ -1022,8 +1022,9 @@ func newProfileScope(chain []*mvnPOM, profileList []mvnProfile, forDependency bo
 	return ps
 }
 
+// isImportBOM matches DefaultModelBuilder's exact test: type "pom" and scope "import".
 func isImportBOM(d mvnDep) bool {
-	return strings.EqualFold(d.Scope, "import") && strings.EqualFold(defaultType(d.Type), "pom")
+	return d.Scope == "import" && defaultType(d.Type) == "pom"
 }
 
 // propagatesToConsumer reports whether a dependency declared in a cached POM lands on a

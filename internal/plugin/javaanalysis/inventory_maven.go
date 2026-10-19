@@ -153,7 +153,7 @@ func (d mvnDep) variant() bool {
 	if d.Classifier != "" || d.variantSibling {
 		return true
 	}
-	switch strings.ToLower(defaultType(d.Type)) {
+	switch defaultType(d.Type) {
 	case "jar", "bundle":
 		return false
 	}
@@ -554,7 +554,7 @@ func buildEffectiveModel(pom *mvnPOM, reactor map[string]*mvnPOM, cache *mavenCa
 	// Pass 3: dependencyManagement + imported BOMs → managed-version map (first declaration
 	// wins per GA, Maven precedence). BOMs are fetched from the cache recursively.
 	for _, m := range mgmtSrc {
-		if strings.EqualFold(m.Scope, "import") && strings.EqualFold(defaultType(m.Type), "pom") {
+		if isImportBOM(m) {
 			importBOM(m, &em, reactor, cache, targetEnv, depth)
 			continue
 		}

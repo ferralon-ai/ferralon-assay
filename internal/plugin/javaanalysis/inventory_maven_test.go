@@ -266,6 +266,7 @@ func TestMaven_ArtifactVariantIsMarked(t *testing.T) {
 		{"plain jar", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></dependency>`, false},
 		{"classifier", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><classifier>linux-x86_64</classifier></dependency>`, true},
 		{"test-jar type", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><type>test-jar</type></dependency>`, true},
+		{"JAR type, which Maven does not read as jar", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><type>JAR</type></dependency>`, true},
 		{"losing classifier declaration", `<dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version></dependency>
 <dependency><groupId>io.netty</groupId><artifactId>netty-transport</artifactId><version>4.1.0</version><classifier>linux-x86_64</classifier></dependency>`, true},
 	} {
@@ -343,6 +344,67 @@ func TestMaven_UnmodelledScopeResidue(t *testing.T) {
 			}
 			if got := hasStr(inv.Partiality.Reasons, reasonMavenUnmodelledScope); got == tt.complete {
 				t.Errorf("maven_unmodelled_scope listed = %v; got %+v", got, inv.Partiality)
+			}
+		})
+	}
+}
+
+// Maven compares scope names exactly (ScopeDependencySelector, DefaultModelBuilder's import
+// test), so a transitive "Test" or "Provided" stays on the graph and an "Import" BOM is not
+// imported. The reader must not fold case and call the inventory complete.
+func TestMaven_ScopeIsCaseSensitive(t *testing.T) {
+	for _, tc := range []struct {
+		name, scope string
+		kept        bool // org.t:t is on the graph
+		complete    bool
+	}{
+		{"transitive Test", "Test", true, false},
+		{"transitive Provided", "Provided", true, false},
+		{"control, transitive test", "test", false, true},
+		{"control, transitive provided", "provided", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1</version></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.x", "x", "1", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1</version>
+<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><scope>`+tc.scope+`</scope></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.t", "t", "1.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version></project>`)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), map[string]string{}))
+			n := findNode(t, inv, "pkg:maven/org.t/t@1.0")
+			if (n != nil) != tc.kept {
+				t.Fatalf("org.t:t on graph = %v, want %v; got %+v", n != nil, tc.kept, inv.Nodes)
+			}
+			if inv.Partiality.Complete != tc.complete {
+				t.Errorf("complete = %v, want %v; got %+v", inv.Partiality.Complete, tc.complete, inv.Partiality)
+			}
+			if tc.kept && !hasStr(n.Partiality.Reasons, reasonMavenUnmodelledScope) {
+				t.Errorf("org.t:t lacks %s; got %+v", reasonMavenUnmodelledScope, n.Partiality)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name, scope string
+		imported    bool
+	}{
+		{"Import BOM", "Import", false},
+		{"control, import BOM", "import", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project><groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencyManagement><dependencies><dependency><groupId>org.b</groupId><artifactId>bom</artifactId><version>1</version><type>pom</type><scope>`+tc.scope+`</scope></dependency></dependencies></dependencyManagement>
+<dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.b", "bom", "1", `<project><groupId>org.b</groupId><artifactId>bom</artifactId><version>1</version><packaging>pom</packaging>
+<dependencyManagement><dependencies><dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>2.0</version></dependency></dependencies></dependencyManagement></project>`)
+			writeCachePOM(t, m2, "org.t", "t", "2.0", `<project><groupId>org.t</groupId><artifactId>t</artifactId><version>2.0</version></project>`)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), map[string]string{}))
+			if got := findNode(t, inv, "pkg:maven/org.t/t@2.0") != nil; got != tc.imported {
+				t.Errorf("org.t:t@2.0 from the BOM = %v, want %v; got %+v", got, tc.imported, inv.Nodes)
+			}
+			if inv.Partiality.Complete != tc.imported {
+				t.Errorf("complete = %v, want %v; got %+v", inv.Partiality.Complete, tc.imported, inv.Partiality)
 			}
 		})
 	}

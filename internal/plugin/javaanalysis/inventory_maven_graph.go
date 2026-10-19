@@ -249,11 +249,13 @@ func unionExclusions(base map[string]bool, add []mvnGA) map[string]bool {
 	return out
 }
 
+// defaultScope keeps the declared spelling: Maven compares scope names exactly, so "Test" is not
+// "test" and stays an unmodelled scope.
 func defaultScope(s string) string {
 	if s == "" {
 		return "compile"
 	}
-	return strings.ToLower(s)
+	return s
 }
 
 // scopePropagates reports whether a node in the given (already-narrowed) scope has its own

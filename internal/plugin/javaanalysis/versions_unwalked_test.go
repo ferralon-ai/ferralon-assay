@@ -46,6 +46,7 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 		{name: "includeBuild of a concatenation", files: map[string]string{"settings.gradle.kts": "val name = \"plugin\"\nincludeBuild(\"out/\" + name)\n", "out/plugin/build.gradle.kts": gradle}, withhold: true},
 		{name: "includeBuild of a string with an escaped quote", files: map[string]string{"settings.gradle": "def n = 'out/plugin'\nincludeBuild 'x\\';' + n\n", "out/plugin/build.gradle": gradle}, withhold: true},
 		{name: "projectDir of a string with an escaped quote", files: map[string]string{"settings.gradle": "def n = 'out/app'\ninclude 'app'\nproject(':app').projectDir = file('x\\');' + n)\n", "out/app/build.gradle": gradle}, withhold: true},
+		{name: "include of an interpolated string alone", files: map[string]string{"settings.gradle": "include \"${System.getenv('MOD') ?: 'build:app'}\"\n", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "include inside pluginManagement", files: map[string]string{"settings.gradle": "pluginManagement {\n    include 'build:app'\n}\n", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "settings plugin outside the allow-list", files: map[string]string{"settings.gradle": "plugins {\n    id 'com.example.projects'\n}\ninclude 'app'\n", "app/build.gradle": "", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "unlisted block in settings", files: map[string]string{"settings.gradle.kts": "gradle.beforeProject {\n}\ninclude(\"app\")\n", "app/build.gradle.kts": "", "out/app/build.gradle.kts": gradle}, withhold: true},

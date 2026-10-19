@@ -124,7 +124,7 @@ func TestSelectSinks(t *testing.T) {
 	tests := []struct {
 		name      string
 		env       github.Env
-		canonical bool // the run analyzed the repository's canonical ref
+		onDefault bool // the run was triggered on the default branch
 		want      []string
 	}{
 		{
@@ -174,7 +174,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			canonical: true,
+			onDefault: true,
 			want:      []string{"local", "tier0", "pr-comment", "issue"},
 		},
 		{
@@ -189,7 +189,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    false,
 				IssueEnabled:        true,
 			},
-			canonical: true,
+			onDefault: true,
 			want:      []string{"local", "tier0", "sarif", "issue"},
 		},
 		{
@@ -204,7 +204,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        false,
 			},
-			canonical: true,
+			onDefault: true,
 			want:      []string{"local", "tier0", "sarif", "pr-comment"},
 		},
 		{
@@ -218,11 +218,11 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			canonical: true,
+			onDefault: true,
 			want:      []string{"local", "tier0", "sarif", "issue"},
 		},
 		{
-			name: "push to a branch that is not the canonical ref omits the issue sink",
+			name: "push to a branch other than the default omits the issue sink",
 			env: github.Env{
 				InActions:           true,
 				StepSummaryPath:     summary,
@@ -246,7 +246,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			canonical: true,
+			onDefault: true,
 			want:      []string{"local", "tier0", "sarif", "issue", "pages"},
 		},
 		{
@@ -269,7 +269,7 @@ func TestSelectSinks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sinkKinds(selectSinks(tc.env, "out-dir", tc.canonical, nil))
+			got := sinkKinds(selectSinks(tc.env, "out-dir", tc.onDefault, nil))
 			if len(got) != len(tc.want) {
 				t.Fatalf("sink composition = %v, want %v", got, tc.want)
 			}
@@ -277,6 +277,28 @@ func TestSelectSinks(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("sink[%d] = %q, want %q (full: %v vs %v)", i, got[i], tc.want[i], got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// TestTriggeredOnDefaultBranch covers the dashboard Issue's gate. It reads only the triggering
+// ref, never analyze.ref, so a branch whose own ferralon.yml names a ref cannot open the Issue.
+func TestTriggeredOnDefaultBranch(t *testing.T) {
+	tests := []struct {
+		name, refName, defaultBranch string
+		want                         bool
+	}{
+		{"push to the default branch", "main", "main", true},
+		{"push to a setup branch, whatever its analyze.ref", "ferralon/setup", "main", false},
+		{"pull request merge ref", "12/merge", "main", false},
+		{"default branch unknown", "main", "", false},
+		{"triggering ref unknown", "", "main", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := triggeredOnDefaultBranch(tc.refName, tc.defaultBranch); got != tc.want {
+				t.Fatalf("triggeredOnDefaultBranch(%q, %q) = %v, want %v", tc.refName, tc.defaultBranch, got, tc.want)
 			}
 		})
 	}

@@ -69,7 +69,7 @@ const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 //     and therefore survives forked PRs.
 //   - Tier 1 is gated per-surface on the detected capabilities: SARIF when
 //     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue and
-//     the run was triggered on the default branch (onDefault; see triggeredOnDefaultBranch).
+//     the run may write it (onDefault; see issueRun): a non-PR run on the default branch.
 //     The dashboard Issue is repository-wide, so a branch or PR run never opens or rewrites
 //     it: a setup branch's first push would otherwise open it before anyone merged anything.
 //     Each of these three surfaces is now individually toggle-gated (default-on,
@@ -147,6 +147,8 @@ func selectSinks(env github.Env, outDir string, onDefault bool, runSnapshot resu
 // (a writer who can change that file can already change what is scanned), and narrowing it would
 // mean reading the default branch's copy of the config, which is a change to what is READ, not to
 // delivery selection. Out of scope here; recorded so it is a decision and not an oversight.
+// That boundary covers the run snapshot only. The dashboard Issue does not follow it: issueRun
+// ignores analyze.ref and requires a non-PR run on the default branch.
 func canonicalDeliveryRefs(analyzeRef, refName, defaultBranch string) (analyzed, canonical string) {
 	if analyzeRef != "" {
 		return analyzeRef, analyzeRef
@@ -188,13 +190,43 @@ func onCanonicalRef(analyzedRef, canonicalRef string) bool {
 	return analyzedRef != "" && canonicalRef != "" && analyzedRef == canonicalRef
 }
 
-// triggeredOnDefaultBranch reports whether this run was triggered on the repository's default
-// branch, the only run allowed to open or rewrite the dashboard Issue. It deliberately ignores
-// analyze.ref: that is read from the checked-out ferralon.yml, so on any branch it makes the run
-// canonical, and a setup branch carrying one would open the Issue before its PR merged. A
-// default-branch run of an analyze.ref repository still analyzed the designated ref.
-func triggeredOnDefaultBranch(refName, defaultBranch string) bool {
+// issueRun reports whether this run may open or rewrite the dashboard Issue: a run that is not a
+// pull request, triggered on the repository's default branch, both refs known.
+//
+// It deliberately ignores analyze.ref, so the Issue does NOT follow the run snapshot's
+// self-designation trust boundary (canonicalDeliveryRefs). analyze.ref is read from the
+// checked-out ferralon.yml, so on any branch it makes the run canonical, and a setup branch
+// carrying one would open the Issue before its PR merged. A default-branch run of an analyze.ref
+// repository still analyzed the designated ref.
+//
+// Pull-request events are excluded by name: a pull_request_target run's ref is the base branch.
+// A schedule run's payload carries no repository, so the default branch arrives empty; GitHub
+// runs schedules on the default branch (GITHUB_REF), so the triggering ref stands in for it.
+func issueRun(eventName, refName, defaultBranch string) bool {
+	switch eventName {
+	case "pull_request", "pull_request_target":
+		return false
+	case "schedule":
+		if defaultBranch == "" {
+			defaultBranch = refName
+		}
+	}
 	return refName != "" && defaultBranch != "" && refName == defaultBranch
+}
+
+// deliveryRefs is what the delivery gates read about this run: the triggering ref
+// (GITHUB_REF_NAME), the repository default (FERRALON_DEFAULT_BRANCH) and the resolved analyze.ref.
+type deliveryRefs struct {
+	refName, defaultBranch, analyzeRef string
+}
+
+// composeSinks resolves both delivery gates and composes the sinks. The run snapshot follows the
+// canonical ref (selectRunSnapshotSink); the dashboard Issue follows issueRun. It reads no live
+// environment, so the two gates are testable together.
+func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, token ferralon.TokenSource) []resultsink.ResultSink {
+	analyzedRef, canonicalRef := canonicalDeliveryRefs(refs.analyzeRef, refs.refName, refs.defaultBranch)
+	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, token)
+	return selectSinks(env, outDir, issueRun(env.EventName, refs.refName, refs.defaultBranch), runSnapshot)
 }
 
 // publishResult renders the projections once and publishes the Result to every sink
@@ -217,10 +249,9 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 		return err
 	}
 	runsURL := resolveEndpoint(linkedToConsole(), os.Getenv(envRunsURL), bakedRunsURL)
-	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
-	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
+	refs := deliveryRefs{refName: os.Getenv(envRefName), defaultBranch: os.Getenv(envDefaultBranch), analyzeRef: analyzeRef}
 	env := github.DetectEnv(surfaceToggles())
-	return publishAll(ctx, selectSinks(env, outDir, triggeredOnDefaultBranch(os.Getenv(envRefName), os.Getenv(envDefaultBranch)), runSnapshot), res, env.StepSummaryPath, os.Stderr)
+	return publishAll(ctx, composeSinks(env, outDir, runsURL, refs, resolveOIDCToken), res, env.StepSummaryPath, os.Stderr)
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in

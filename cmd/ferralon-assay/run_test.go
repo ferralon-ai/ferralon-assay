@@ -282,23 +282,72 @@ func TestSelectSinks(t *testing.T) {
 	}
 }
 
-// TestTriggeredOnDefaultBranch covers the dashboard Issue's gate. It reads only the triggering
-// ref, never analyze.ref, so a branch whose own ferralon.yml names a ref cannot open the Issue.
-func TestTriggeredOnDefaultBranch(t *testing.T) {
+// TestIssueRun covers the dashboard Issue's gate. It reads the event and the triggering ref,
+// never analyze.ref, so a branch whose own ferralon.yml names a ref cannot open the Issue.
+func TestIssueRun(t *testing.T) {
 	tests := []struct {
-		name, refName, defaultBranch string
-		want                         bool
+		name, event, refName, defaultBranch string
+		want                                bool
 	}{
-		{"push to the default branch", "main", "main", true},
-		{"push to a setup branch, whatever its analyze.ref", "ferralon/setup", "main", false},
-		{"pull request merge ref", "12/merge", "main", false},
-		{"default branch unknown", "main", "", false},
-		{"triggering ref unknown", "", "main", false},
+		{"push to the default branch", "push", "main", "main", true},
+		{"push to a setup branch", "push", "ferralon/setup", "main", false},
+		{"pull request merge ref", "pull_request", "12/merge", "main", false},
+		{"pull_request_target, whose ref is the base branch", "pull_request_target", "main", "main", false},
+		{"schedule, which carries no default branch", "schedule", "main", "", true},
+		{"schedule with the default branch known", "schedule", "main", "main", true},
+		{"schedule with no triggering ref", "schedule", "", "", false},
+		{"workflow_dispatch on the default branch", "workflow_dispatch", "main", "main", true},
+		{"push with the default branch unknown", "push", "main", "", false},
+		{"push with the triggering ref unknown", "push", "", "main", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := triggeredOnDefaultBranch(tc.refName, tc.defaultBranch); got != tc.want {
-				t.Fatalf("triggeredOnDefaultBranch(%q, %q) = %v, want %v", tc.refName, tc.defaultBranch, got, tc.want)
+			if got := issueRun(tc.event, tc.refName, tc.defaultBranch); got != tc.want {
+				t.Fatalf("issueRun(%q, %q, %q) = %v, want %v", tc.event, tc.refName, tc.defaultBranch, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComposeSinksAnalyzeRef composes both delivery gates with analyze.ref set and unset. The run
+// snapshot follows the canonical ref, which analyze.ref designates on any branch; the Issue
+// follows only a non-PR default-branch run.
+func TestComposeSinksAnalyzeRef(t *testing.T) {
+	tok := func(context.Context) string { return "tok" }
+	env := func(event string, pr int) github.Env {
+		return github.Env{
+			InActions:       true,
+			StepSummaryPath: t.TempDir() + "/summary",
+			Token:           "write-tok",
+			EventName:       event,
+			PRNumber:        pr,
+			IssueEnabled:    true,
+		}
+	}
+	tests := []struct {
+		name string
+		env  github.Env
+		refs deliveryRefs
+		want []string
+	}{
+		{"analyze.ref set, pull request", env("pull_request", 7),
+			deliveryRefs{refName: "7/merge", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "run-snapshot"}},
+		{"analyze.ref set, push to another branch", env("push", 0),
+			deliveryRefs{refName: "ferralon/setup", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "run-snapshot"}},
+		{"analyze.ref set, push to the default branch", env("push", 0),
+			deliveryRefs{refName: "main", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "issue", "run-snapshot"}},
+		{"analyze.ref naming the branch itself, push to that branch", env("push", 0),
+			deliveryRefs{refName: "ferralon/setup", defaultBranch: "main", analyzeRef: "ferralon/setup"}, []string{"local", "tier0", "run-snapshot"}},
+		{"no analyze.ref, push to the default branch", env("push", 0),
+			deliveryRefs{refName: "main", defaultBranch: "main"}, []string{"local", "tier0", "issue", "run-snapshot"}},
+		{"no analyze.ref, push to another branch", env("push", 0),
+			deliveryRefs{refName: "feature", defaultBranch: "main"}, []string{"local", "tier0"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sinkKinds(composeSinks(tc.env, "out-dir", "https://api.example.com/runs", tc.refs, tok))
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("sinks = %v, want %v", got, tc.want)
 			}
 		})
 	}

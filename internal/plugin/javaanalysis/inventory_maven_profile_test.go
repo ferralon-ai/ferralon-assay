@@ -1043,7 +1043,9 @@ func TestMavenProfile_MergePrecedence(t *testing.T) {
 	dm := func(v string) string {
 		return `<dependencyManagement><dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies></dependencyManagement>`
 	}
-	deps := func(v string) string { return `<dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies>` }
+	deps := func(v string) string {
+		return `<dependencies><dependency>` + x + `<version>` + v + `</version></dependency></dependencies>`
+	}
 	profile := func(body string) string { return `<profiles><profile>` + active + body + `</profile></profiles>` }
 	parentRef := `<parent><groupId>org.p</groupId><artifactId>parent</artifactId><version>1.0</version></parent>`
 	bomParentRef := `<parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>`

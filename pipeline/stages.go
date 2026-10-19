@@ -1264,9 +1264,37 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 		FixedVersion:   "13.0.1",
 		VersionScheme:  "nuget",
 		PURL:           "pkg:nuget/Newtonsoft.Json",
+		// The unbounded depth is private JsonReader.Push, which every reader reaches through
+		// SetToken; naming it covers readers and calls no public entry below names (BsonReader,
+		// custom JsonReader subclasses, ReadAs*, a base-typed Read or Skip). The public entries
+		// keep the common routes visible in a path. Fixed by defaulting MaxDepth in upstream
+		// 7e77bbe1beccceac4fc7b174b53abfefac278b66 and b6dc05be5a0f4808f06ec430f3bb59b24d3fbc3e.
 		Symbols: []string{
+			"Newtonsoft.Json.JsonReader.Push",
 			"Newtonsoft.Json.JsonConvert.DeserializeObject",
-			"Newtonsoft.Json.JsonConvert.SerializeObject",
+			"Newtonsoft.Json.JsonConvert.DeserializeAnonymousType",
+			"Newtonsoft.Json.JsonConvert.PopulateObject",
+			"Newtonsoft.Json.JsonConvert.DeserializeXmlNode",
+			"Newtonsoft.Json.JsonConvert.DeserializeXNode",
+			"Newtonsoft.Json.JsonSerializer.Deserialize",
+			"Newtonsoft.Json.JsonSerializer.Populate",
+			"Newtonsoft.Json.JsonTextReader.Read",
+			"Newtonsoft.Json.JsonTextReader.ReadAsync",
+			"Newtonsoft.Json.Linq.JToken.Parse",
+			"Newtonsoft.Json.Linq.JToken.ReadFrom",
+			"Newtonsoft.Json.Linq.JToken.ReadFromAsync",
+			"Newtonsoft.Json.Linq.JToken.Load",
+			"Newtonsoft.Json.Linq.JToken.LoadAsync",
+			"Newtonsoft.Json.Linq.JObject.Parse",
+			"Newtonsoft.Json.Linq.JObject.Load",
+			"Newtonsoft.Json.Linq.JObject.LoadAsync",
+			"Newtonsoft.Json.Linq.JArray.Parse",
+			"Newtonsoft.Json.Linq.JArray.Load",
+			"Newtonsoft.Json.Linq.JArray.LoadAsync",
+			"Newtonsoft.Json.Linq.JConstructor.Load",
+			"Newtonsoft.Json.Linq.JConstructor.LoadAsync",
+			"Newtonsoft.Json.Linq.JProperty.Load",
+			"Newtonsoft.Json.Linq.JProperty.LoadAsync",
 		},
 		CWEs:    []string{"CWE-400"},
 		Summary: "uncontrolled resource consumption: Newtonsoft.Json parses arbitrarily deeply nested JSON with no default MaxDepth, enabling a StackOverflow/CPU denial of service",
@@ -1554,6 +1582,9 @@ type depVersions struct {
 	Complete bool
 	// Found reports that the codebase declares the dependency at all, resolved or not.
 	Found bool
+	// Presence is the first resolved copy, which maliciousPresence matches against. It stands
+	// without agreement, so it is never read by the not-affected path.
+	Presence string
 }
 
 // singleVersion is a dependency whose source can carry one version only (a go.mod require, the
@@ -1562,7 +1593,7 @@ func singleVersion(v string) depVersions {
 	if v == "" {
 		return depVersions{}
 	}
-	return depVersions{Version: v, Versions: []string{v}, Complete: true, Found: true}
+	return depVersions{Version: v, Versions: []string{v}, Complete: true, Found: true, Presence: v}
 }
 
 // depVersionsOf reads a plugin resolution. The set is complete only when the plugin asserts
@@ -1573,6 +1604,10 @@ func depVersionsOf(vr plugin.DependencyVersionResult) depVersions {
 	if vr.Found && vr.Match.Resolved {
 		dep.Version = vr.Match.Version
 		dep.Versions = []string{dep.Version}
+	}
+	dep.Presence = dep.Version
+	if vr.Presence != nil && vr.Presence.Resolved {
+		dep.Presence = vr.Presence.Version
 	}
 	dep.Complete = vr.MatchesComplete && vr.Partiality.Complete && len(vr.Matches) > 0
 	for _, m := range vr.Matches {
@@ -1759,6 +1794,10 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		alsoPresent     []presentPackage
 		partialityFlags []string
 	)
+	// presenceVersion is the version maliciousPresence matches against: the package selection
+	// below run over each package's first resolved copy rather than its agreed Match. It is
+	// never read by the not-affected path.
+	presenceVersion := ""
 	// selectedModule/selectedCoordinate name the v3 affected_packages[] element the target actually
 	// depends on (the select-by-target pick). They are the join key the downstream extractors use to
 	// read the SELECTED element's ranges/symbols/identity off the normalized-advisory artifact. Both
@@ -1779,6 +1818,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 			dep, flags, err := s.resolveDependencyVersion(ctx, buildDir, language, module, coordinate, scheme, toolchain)
 			return dep, flags, false, err
 		}
+		presenceSelected := false
 		// v3 select-by-target: iterate the advisory's full affected set (producer-sorted,
 		// deterministic) and pick the FIRST package the assessed codebase actually depends on. This
 		// is the whole point of the multi-package block — a target on a SECONDARY package resolves
@@ -1796,8 +1836,15 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 				alsoPresent = append(alsoPresent, presentPackage{Module: pkg.Module, Coordinate: pkg.Coordinate})
 				continue
 			}
+			if !presenceSelected && (dep.Presence != "" || rootPkg) {
+				presenceVersion, presenceSelected = dep.Presence, true
+			}
+			// A package the target declares ends the selection even when its version is unresolved:
+			// moving on would adjudicate the advisory on another package's ranges while this one
+			// may sit inside its own. It is selected with no version, so the version axis stays open.
+			// The presence scan goes on past it to the first package with a resolved copy.
 			switch {
-			case !selected && (dep.Version != "" || rootPkg):
+			case !selected && (dep.Version != "" || dep.Found || rootPkg):
 				resolved, partialityFlags, isRoot = dep, flags, rootPkg
 				selectedModule, selectedCoordinate = pkg.Module, pkg.Coordinate
 				selected = true
@@ -1811,12 +1858,20 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		// v2/single-package: AffectedPackages is empty) → fall back to the scalar primary. This is
 		// byte-identical to the pre-v3 resolution, so a v2 advisory and a v3-no-match target both get
 		// today's exact behavior (typically OPEN). Selection NEVER fabricates a not-affected.
-		if selectedModule == "" && selectedCoordinate == "" {
+		// The presence scan falls back the same way when no array element had a resolved copy.
+		// That presence-only lookup is best effort: an error there leaves presence empty rather
+		// than failing a stage that has already selected its package.
+		if !selected || !presenceSelected {
 			dep, flags, rootPkg, err := resolve(facts.Module, facts.Coordinate, facts.PURL, facts.VersionScheme)
-			if err != nil {
+			if err != nil && !selected {
 				return err
 			}
-			resolved, partialityFlags, isRoot = dep, flags, rootPkg
+			if !selected {
+				resolved, partialityFlags, isRoot = dep, flags, rootPkg
+			}
+			if !presenceSelected {
+				presenceVersion = dep.Presence
+			}
 		}
 	}
 	// Non-Go no-manifest-entry oracle (manifest_membership.go): only consulted when nothing
@@ -1849,10 +1904,13 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		ResolvedVersions []string         `json:"resolved_versions,omitempty"`
 		VersionsComplete bool             `json:"versions_complete,omitempty"`
 		AlsoPresent      []presentPackage `json:"also_present,omitempty"`
-		Module           string           `json:"module,omitempty"`
-		GoVersion        string           `json:"go_version,omitempty"`
-		BuildCommand     string           `json:"build_command,omitempty"`
-		PartialityFlags  []string         `json:"partiality_flags,omitempty"`
+		// PresenceVersion is the version maliciousPresence matches against (presenceVersion
+		// above). Read back by extractPresenceVersion only.
+		PresenceVersion string   `json:"presence_version,omitempty"`
+		Module          string   `json:"module,omitempty"`
+		GoVersion       string   `json:"go_version,omitempty"`
+		BuildCommand    string   `json:"build_command,omitempty"`
+		PartialityFlags []string `json:"partiality_flags,omitempty"`
 		// Toolchain is the subject's Go toolchain resolved to one bounded fact. Always
 		// emitted, including as {"bound":"none","source":"unresolved"} — an explicit "we looked and
 		// established nothing" is a disclosure, and a silently absent field is how the version axis
@@ -1882,6 +1940,7 @@ func (s codebaseInventory) Run(ctx context.Context, c *assessment.Assessment, st
 		ResolvedVersions:   resolved.Versions,
 		VersionsComplete:   resolved.Complete,
 		AlsoPresent:        alsoPresent,
+		PresenceVersion:    presenceVersion,
 		Module:             module,
 		GoVersion:          goVersion,
 		BuildCommand:       buildCommand,
@@ -1967,17 +2026,17 @@ func InventoryCheckoutRoot(store artifact.Store, caseID string) (string, error) 
 // maliciousPresence is the decisive OSS "affected" stage. It fires ONLY on an affirmative match: a
 // malicious-package (MAL) advisory whose enumerated affected set contains the version the codebase
 // resolved. It reads two already-produced artifacts — the normalized-advisory malicious_package
-// marker and the codebase-inventory resolved_version — and NEVER re-Lookups.
+// marker and the codebase-inventory presence_version — and NEVER re-Lookups.
 //
-// It is inserted after codebase_inventory (it needs resolved_version) and before
+// It is inserted after codebase_inventory (it needs presence_version) and before
 // disqualification_discovery. It emits the affirmative TypeMaliciousPresence artifact or NOTHING;
 // it can never mint a not-affected. Every non-match case (not malicious, unresolvable version,
 // version-not-listed) falls through to the existing reconcile path unchanged (inv.5 fail-open):
 //
 //   - not declared malicious ⇒ no-op ⇒ every existing stage runs as today.
-//   - declared + resolved_version == "" (unresolvable/absent) ⇒ no match ⇒ OPEN, never clear.
-//   - declared + resolved_version NOT in the enumerated set ⇒ no affirmative ⇒ existing fail-open.
-//   - declared + resolved_version IN the set (EXACT string equality, no comparator) ⇒ affirmative.
+//   - declared + presence_version == "" (unresolvable/absent) ⇒ no match ⇒ OPEN, never clear.
+//   - declared + presence_version NOT in the enumerated set ⇒ no affirmative ⇒ existing fail-open.
+//   - declared + presence_version IN the set (EXACT string equality, no comparator) ⇒ affirmative.
 //
 // Exact string equality is deliberate: MAL versions are enumerated, not ranged, and any spelling
 // drift between the resolved-version and corpus-version fails toward NO match ⇒ OPEN (safe), never a
@@ -2001,13 +2060,18 @@ func (s maliciousPresence) Run(_ context.Context, c *assessment.Assessment, stor
 	if !declared {
 		return nil // not a malicious-package advisory → no presence path (inv.5)
 	}
-	axis, ok := extractVersionAxis(store, c.ID)
-	if !ok {
-		return nil // resolved_version == "" (unresolvable/absent) → no match → OPEN
+	presence, ok := extractPresenceVersion(store, c.ID)
+	axis, axisOK := extractVersionAxis(store, c.ID)
+	if !ok && !axisOK {
+		return nil // no resolved copy (unresolvable/absent) → no match → OPEN
 	}
 	// Any version the codebase carries at a listed version is present; the set need not be complete
-	// to affirm one.
-	for _, resolved := range axis.Versions {
+	// to affirm one. The first resolved copy leads, then every agreed-on or listed copy.
+	candidates := axis.Versions
+	if ok {
+		candidates = append([]string{presence}, candidates...)
+	}
+	for _, resolved := range candidates {
 		if slices.Contains(versions, resolved) { // exact string membership — no semver comparator
 			res := MaliciousPresenceResult{Present: true, MatchedVersion: resolved}
 			_, err := PutArtifact(store, c, s.Name(), artifact.TypeMaliciousPresence, "malicious package present at listed version", res)
@@ -2778,6 +2842,26 @@ func extractResolvedVersion(store artifact.Store, caseID string) (string, bool) 
 		return "", false
 	}
 	return inv.ResolvedVersion, true
+}
+
+// extractPresenceVersion returns the inventory's presence_version, falling back to
+// resolved_version for a record that carries none. ok is false when both are empty.
+func extractPresenceVersion(store artifact.Store, caseID string) (string, bool) {
+	arts, err := store.Query(caseID, artifact.TypeInventory)
+	if err != nil || len(arts) == 0 {
+		return "", false
+	}
+	var inv struct {
+		ResolvedVersion string `json:"resolved_version"`
+		PresenceVersion string `json:"presence_version"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &inv); err != nil {
+		return "", false
+	}
+	if inv.PresenceVersion != "" {
+		return inv.PresenceVersion, true
+	}
+	return inv.ResolvedVersion, inv.ResolvedVersion != ""
 }
 
 func extractSymbolSignal(store artifact.Store, caseID string) (string, bool) {

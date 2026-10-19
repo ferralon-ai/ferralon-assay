@@ -299,8 +299,8 @@ Three run modes, all built on the same S1–S6 pipeline:
 that stored state.
 
 Run inside GitHub Actions, the CLI also publishes to the standard GitHub surfaces it has permission
-for: a job summary (always), and — with a write token — SARIF code scanning, a sticky PR comment, and
-a pinned dashboard Issue.
+for: a job summary (always), and — with a write token — SARIF code scanning, a sticky PR comment, and,
+on default-branch runs only, a pinned dashboard Issue.
 
 The [operator guide](docs/operator-guide.md#state-and-run-modes) covers the StateStore, each run
 mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under which permissions.

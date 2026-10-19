@@ -122,9 +122,10 @@ func TestSelectSinks(t *testing.T) {
 	const summary = "/tmp/step-summary"
 
 	tests := []struct {
-		name string
-		env  github.Env
-		want []string
+		name      string
+		env       github.Env
+		onDefault bool // the run was triggered on the default branch
+		want      []string
 	}{
 		{
 			name: "local-only when not in GitHub Actions",
@@ -147,7 +148,7 @@ func TestSelectSinks(t *testing.T) {
 			want: []string{"local", "tier0"},
 		},
 		{
-			name: "same-repo PR with write token (all surfaces default-on) → tier0 + sarif + pr-comment + issue + local",
+			name: "same-repo PR with write token (all surfaces default-on) → tier0 + sarif + pr-comment + local, no issue",
 			env: github.Env{
 				InActions:           true,
 				StepSummaryPath:     summary,
@@ -159,7 +160,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "pr-comment", "issue"},
+			want: []string{"local", "tier0", "sarif", "pr-comment"},
 		},
 		{
 			name: "code-scanning toggled off omits the sarif sink",
@@ -173,7 +174,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "pr-comment", "issue"},
+			onDefault: true,
+			want:      []string{"local", "tier0", "pr-comment", "issue"},
 		},
 		{
 			name: "pr-comment toggled off omits the pr-comment sink",
@@ -187,7 +189,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    false,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue"},
+			onDefault: true,
+			want:      []string{"local", "tier0", "sarif", "issue"},
 		},
 		{
 			name: "issue toggled off omits the issue sink",
@@ -201,7 +204,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        false,
 			},
-			want: []string{"local", "tier0", "sarif", "pr-comment"},
+			onDefault: true,
+			want:      []string{"local", "tier0", "sarif", "pr-comment"},
 		},
 		{
 			name: "push build with write token (all surfaces default-on) → tier0 + sarif + issue (no pr-comment)",
@@ -214,7 +218,21 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue"},
+			onDefault: true,
+			want:      []string{"local", "tier0", "sarif", "issue"},
+		},
+		{
+			name: "push to a branch other than the default omits the issue sink",
+			env: github.Env{
+				InActions:           true,
+				StepSummaryPath:     summary,
+				Token:               "write-tok",
+				EventName:           "push",
+				CodeScanningEnabled: true,
+				PRCommentEnabled:    true,
+				IssueEnabled:        true,
+			},
+			want: []string{"local", "tier0", "sarif"},
 		},
 		{
 			name: "pages opt-in on push → adds tier2 pages",
@@ -228,7 +246,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue", "pages"},
+			onDefault: true,
+			want:      []string{"local", "tier0", "sarif", "issue", "pages"},
 		},
 		{
 			name: "pages opt-in on forked PR does NOT activate tier2 (no write token)",
@@ -250,7 +269,7 @@ func TestSelectSinks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sinkKinds(selectSinks(tc.env, "out-dir", nil))
+			got := sinkKinds(selectSinks(tc.env, "out-dir", tc.onDefault, nil))
 			if len(got) != len(tc.want) {
 				t.Fatalf("sink composition = %v, want %v", got, tc.want)
 			}
@@ -258,6 +277,77 @@ func TestSelectSinks(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("sink[%d] = %q, want %q (full: %v vs %v)", i, got[i], tc.want[i], got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// TestIssueRun covers the dashboard Issue's gate. It reads the event and the triggering ref,
+// never analyze.ref, so a branch whose own ferralon.yml names a ref cannot open the Issue.
+func TestIssueRun(t *testing.T) {
+	tests := []struct {
+		name, event, refName, defaultBranch string
+		want                                bool
+	}{
+		{"push to the default branch", "push", "main", "main", true},
+		{"push to a setup branch", "push", "ferralon/setup", "main", false},
+		{"pull request merge ref", "pull_request", "12/merge", "main", false},
+		{"pull_request_target, whose ref is the base branch", "pull_request_target", "main", "main", false},
+		{"schedule, which carries no default branch", "schedule", "main", "", true},
+		{"schedule with the default branch known", "schedule", "main", "main", true},
+		{"schedule with no triggering ref", "schedule", "", "", false},
+		{"workflow_dispatch on the default branch", "workflow_dispatch", "main", "main", true},
+		{"push with the default branch unknown", "push", "main", "", false},
+		{"push with the triggering ref unknown", "push", "", "main", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := issueRun(tc.event, tc.refName, tc.defaultBranch); got != tc.want {
+				t.Fatalf("issueRun(%q, %q, %q) = %v, want %v", tc.event, tc.refName, tc.defaultBranch, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComposeSinksAnalyzeRef composes both delivery gates with analyze.ref set and unset. The run
+// snapshot follows the canonical ref, which analyze.ref designates on any branch; the Issue
+// follows only a non-PR default-branch run.
+func TestComposeSinksAnalyzeRef(t *testing.T) {
+	tok := func(context.Context) string { return "tok" }
+	env := func(event string, pr int) github.Env {
+		return github.Env{
+			InActions:       true,
+			StepSummaryPath: t.TempDir() + "/summary",
+			Token:           "write-tok",
+			EventName:       event,
+			PRNumber:        pr,
+			IssueEnabled:    true,
+		}
+	}
+	tests := []struct {
+		name string
+		env  github.Env
+		refs deliveryRefs
+		want []string
+	}{
+		{"analyze.ref set, pull request", env("pull_request", 7),
+			deliveryRefs{refName: "7/merge", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "run-snapshot"}},
+		{"analyze.ref set, push to another branch", env("push", 0),
+			deliveryRefs{refName: "ferralon/setup", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "run-snapshot"}},
+		{"analyze.ref set, push to the default branch", env("push", 0),
+			deliveryRefs{refName: "main", defaultBranch: "main", analyzeRef: "release"}, []string{"local", "tier0", "issue", "run-snapshot"}},
+		{"analyze.ref naming the branch itself, push to that branch", env("push", 0),
+			deliveryRefs{refName: "ferralon/setup", defaultBranch: "main", analyzeRef: "ferralon/setup"}, []string{"local", "tier0", "run-snapshot"}},
+		{"no analyze.ref, push to the default branch", env("push", 0),
+			deliveryRefs{refName: "main", defaultBranch: "main"}, []string{"local", "tier0", "issue", "run-snapshot"}},
+		{"no analyze.ref, push to another branch", env("push", 0),
+			deliveryRefs{refName: "feature", defaultBranch: "main"}, []string{"local", "tier0"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sinkKinds(composeSinks(tc.env, "out-dir", "https://api.example.com/runs", tc.refs, tok))
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("sinks = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -306,12 +396,12 @@ func TestSelectRunSnapshotSink(t *testing.T) {
 func TestSelectSinksAppendsRunSnapshot(t *testing.T) {
 	rs := ferralon.NewRunSnapshot("https://api.example.com/runs", func(context.Context) string { return "tok" })
 
-	inActions := sinkKinds(selectSinks(github.Env{InActions: true, StepSummaryPath: t.TempDir() + "/summary"}, "out-dir", rs))
+	inActions := sinkKinds(selectSinks(github.Env{InActions: true, StepSummaryPath: t.TempDir() + "/summary"}, "out-dir", true, rs))
 	if last := inActions[len(inActions)-1]; last != "run-snapshot" {
 		t.Fatalf("expected run-snapshot appended last in Actions, got %v", inActions)
 	}
 
-	local := sinkKinds(selectSinks(github.Env{InActions: false}, "out-dir", rs))
+	local := sinkKinds(selectSinks(github.Env{InActions: false}, "out-dir", true, rs))
 	for _, k := range local {
 		if k == "run-snapshot" {
 			t.Fatalf("run-snapshot must not appear on a local (non-Actions) run, got %v", local)

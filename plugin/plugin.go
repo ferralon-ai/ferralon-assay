@@ -354,10 +354,15 @@ type ResolvedDependency struct {
 // Resolved indicating whether its version is known); Found is false when no declaration of
 // that coordinate exists in the build files at all.
 type DependencyVersionResult struct {
-	Partiality Partiality           `json:"partiality"`
-	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
-	Match      ResolvedDependency   `json:"match"`
-	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	Partiality Partiality         `json:"partiality"`
+	Found      bool               `json:"found"` // a declaration of the request coordinate exists
+	Match      ResolvedDependency `json:"match"`
+	// Presence is the first resolved declaration of the request coordinate in All, with no
+	// requirement that other copies agree. It answers only "is some copy declared at this exact
+	// version", which is what a malicious-package advisory asks, and it must never feed a
+	// not-affected verdict. Nil means Match answers it too.
+	Presence *ResolvedDependency  `json:"presence,omitempty"`
+	All      []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
 	// Matches is every copy of the request coordinate the plugin read, Match among them: a
 	// package declared or installed at several versions (one per module, a nested install) lists
 	// each. It is evidence; on its own it does not claim no other version exists.

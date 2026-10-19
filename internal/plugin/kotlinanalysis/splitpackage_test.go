@@ -145,7 +145,7 @@ func TestReachability_SplitPackages(t *testing.T) {
 			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
 			writeRawJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{
 				"com/acme/Boot.class":  plainClass("com/acme/Boot"),
-				"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nMain-Class: com.acme.Boot\n\n"),
+				"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\n\n"),
 			})
 			return dir
 		}, true, nil},

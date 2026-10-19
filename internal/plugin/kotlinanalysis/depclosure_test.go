@@ -154,6 +154,15 @@ func writeMain(t *testing.T, dir string, emit func(b *kclassBuilder) []byte) {
 	code := append(emit(b), opReturn)
 	b.addMethod("main", mainStringsDesc, code)
 	writeClassFixture(t, dir, "com/example/MainKt", b.build("com/example/MainKt", "java/lang/Object"))
+	nameLaunchEntry(t, dir, "com.example.MainKt")
+}
+
+// nameLaunchEntry ships a manifest naming main as the launch entry, the form that licenses an
+// empty search.
+func nameLaunchEntry(t *testing.T, dir, main string) {
+	t.Helper()
+	writeFileAt(t, filepath.Join(dir, "src", "main", "resources", "META-INF"), "MANIFEST.MF",
+		"Manifest-Version: 1.0\nMain-Class: "+main+"\n")
 }
 
 func reach(t *testing.T, dir string, sinks ...string) plugin.ReachabilityResult {
@@ -490,6 +499,7 @@ func TestReachability_MissingJarScopedTargets(t *testing.T) {
 			if err := os.WriteFile(path, mb.build("com/example/Main", "java/lang/Object"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			nameLaunchEntry(t, dir, "com.example.Main")
 
 			res := reach(t, dir, "org/b/B.sink()V")
 			if !reflect.DeepEqual(res.Partiality.Scoped, tt.want) {
@@ -998,6 +1008,7 @@ func TestReachability_InventoryGraphReasonsWithholdSearched(t *testing.T) {
 		mb := newKClassBuilder()
 		mb.addMethod("main", mainStringsDesc, []byte{opReturn})
 		writeFileAt(t, filepath.Join(dir, "target", "classes", "com", "example"), "Main.class", string(mb.build("com/example/Main", "java/lang/Object")))
+		nameLaunchEntry(t, dir, "com.example.Main")
 		return dir
 	}
 	gradle := func(locked bool) func(t *testing.T) (string, string) {

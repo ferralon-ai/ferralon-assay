@@ -75,6 +75,9 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	all := make([]classfile.Class, 0, len(prog.classes)+len(deps.classes))
 	all = append(all, prog.classes...)
 	all = append(all, deps.classes...)
+	// What the build says starts the program licenses an empty search; it says nothing about a
+	// path the search found.
+	entryReasons := launchEntryReasons(req.BuildDir, prog, deps, all)
 	cp := prog.cp
 	cp.Merge(deps.cp)
 	engine := depreach.NewEngineOn(all, cp)
@@ -118,6 +121,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
+		case len(entryReasons) > 0:
+			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			for _, r := range entryReasons {
+				prog.reasons[r] = true
+			}
 		default:
 			searched = append(searched, s)
 		}

@@ -24,6 +24,7 @@ func TestReachability_LaunchClassInitialization(t *testing.T) {
 			b := newKClassBuilder()
 			emptyMain(b)
 			writeClassFixture(t, dir, "com/example/MainKt", b.build("com/example/MainKt", "java/lang/Object"))
+			nameLaunchEntry(t, dir, "com.example.MainKt")
 		}, true},
 		{"top-level property initializer in the MainKt facade's <clinit>", func(t *testing.T, dir string) {
 			b := newKClassBuilder()
@@ -62,6 +63,7 @@ func TestReachability_LaunchClassInitialization(t *testing.T) {
 			c := newKClassBuilder()
 			sinkIn(c, "<init>")
 			writeClassFixture(t, dir, "com/example/Other$Companion", c.build("com/example/Other$Companion", "java/lang/Object"))
+			nameLaunchEntry(t, dir, "com.example.App")
 		}, true},
 	}
 	for _, tt := range tests {

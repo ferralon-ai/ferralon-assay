@@ -169,9 +169,10 @@ func matchCoordinate(manifests []string, want string) (plugin.ResolvedDependency
 		case base == "packages.lock.json" || base == "packages.config":
 		case configured && packagesConfigGoverns(m):
 			// A packages.config project restores from packages.config, unless a Directory file
-			// gives it a PackageReference, which would make NuGet ignore packages.config.
+			// or an imported file gives it a PackageReference, which would make NuGet ignore
+			// packages.config.
 			governed[dir] = true
-			opaque = opaque || implicitImport(m, imports)
+			opaque = opaque || implicitImport(m, imports) || !stockImportsOnly(m)
 		default:
 			p := readProject(m, want, imports)
 			if lr, ok := locks[dir]; ok && projects[dir] == 1 && lockCurrent(lr, p) {
@@ -216,6 +217,44 @@ func packagesConfigGoverns(path string) bool {
 	for _, c := range proj.Children {
 		if c.SDK != "" || strings.EqualFold(c.XMLName.Local, "Sdk") {
 			return false
+		}
+	}
+	return true
+}
+
+// stockLegacyImports lists the imports a legacy project template carries, lowercased with
+// backslash separators. Each is a file MSBuild ships, which adds no PackageReference.
+var stockLegacyImports = map[string]bool{
+	`$(msbuildextensionspath)\$(msbuildtoolsversion)\microsoft.common.props`: true,
+	`$(msbuildtoolspath)\microsoft.csharp.targets`:                           true,
+	`$(msbuildbinpath)\microsoft.csharp.targets`:                             true,
+	`$(msbuildtoolspath)\microsoft.visualbasic.targets`:                      true,
+	`$(msbuildbinpath)\microsoft.visualbasic.targets`:                        true,
+}
+
+// stockImportsOnly reports whether every <Import> in the project at path is one MSBuild ships
+// (stockLegacyImports). Any other import, or an ImportGroup, could add a PackageReference this
+// reader doesn't see, and then NuGet ignores packages.config. A project that can't be read
+// doesn't count.
+func stockImportsOnly(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var proj msbuildProject
+	d := xml.NewDecoder(bytes.NewReader(data))
+	d.CharsetReader = charset.NewReaderLabel
+	if err := d.Decode(&proj); err != nil {
+		return false
+	}
+	for _, c := range proj.Children {
+		switch {
+		case strings.EqualFold(c.XMLName.Local, "ImportGroup"):
+			return false
+		case strings.EqualFold(c.XMLName.Local, "Import"):
+			if !stockLegacyImports[strings.ToLower(strings.ReplaceAll(strings.TrimSpace(c.Project), "/", `\`))] {
+				return false
+			}
 		}
 	}
 	return true
@@ -416,6 +455,7 @@ type msbuildProject struct {
 		XMLName   xml.Name
 		Condition string `xml:"Condition,attr"`
 		SDK       string `xml:"Sdk,attr"`
+		Project   string `xml:"Project,attr"`
 		// Elems holds a PropertyGroup's properties or an ItemGroup's items. MSBuild matches item
 		// types without regard to case, so items are told apart with strings.EqualFold.
 		Elems []struct {

@@ -11,6 +11,11 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// legacyProject is a non-SDK project as Visual Studio's classic template writes it: it imports
+// only files MSBuild ships.
+const legacyProject = `<Project ToolsVersion="15.0"><Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" />` +
+	`<PropertyGroup><OutputType>Library</OutputType></PropertyGroup><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /></Project>`
+
 func versionsOf(t *testing.T, dir, coordinate string) plugin.DependencyVersionResult {
 	t.Helper()
 	res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{
@@ -240,9 +245,16 @@ func TestVersions_AllowList(t *testing.T) {
 		{"Directory.Build.rsp", map[string]string{"App.csproj": newtonsoftProject("[13.0.1]", ""), "Directory.Build.rsp": "-p:X=1"}, ""},
 		{"user file", map[string]string{"App.csproj": newtonsoftProject("[13.0.1]", ""), "App.csproj.user": "<Project/>"}, ""},
 		{"obj import", map[string]string{"App.csproj": newtonsoftProject("[13.0.1]", ""), "obj/App.csproj.custom.targets": "<Project/>"}, ""},
-		{"packages.config and project disagree", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project><Import Project=\"x.targets\" /></Project>",
+		{"packages.config and project disagree", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": legacyProject,
 			"B/B.csproj": newtonsoftProject("[12.0.3]", "")}, ""},
-		{"packages.config covers its legacy project", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": "<Project><Import Project=\"x.targets\" /></Project>"}, "13.0.1"},
+		{"packages.config covers its legacy project", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": legacyProject}, "13.0.1"},
+		{"legacy project imports a stock file in another spelling", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+			"A/A.csproj": `<Project><Import Project=" $(MSBuildBinPath)/microsoft.csharp.TARGETS" /></Project>`}, "13.0.1"},
+		{"legacy project imports a .targets that adds a PackageReference", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+			"A/A.csproj":  `<Project><Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" /><Import Project="x.targets" /></Project>`,
+			"A/x.targets": `<Project><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[12.0.3]" /></ItemGroup></Project>`}, ""},
+		{"legacy project with an ImportGroup", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+			"A/A.csproj": `<Project><ImportGroup><Import Project="x.targets" /></ImportGroup></Project>`}, ""},
 		{"SDK project beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`, "A/A.csproj": newtonsoftProject("[12.0.3]", "")}, "12.0.3"},
 		{"PackageReference project beside packages.config", map[string]string{"A/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
 			"A/A.csproj": `<Project><Import Project="x.targets" /><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[12.0.3]" /></ItemGroup></Project>`}, ""},

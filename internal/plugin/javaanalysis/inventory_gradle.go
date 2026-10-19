@@ -1044,7 +1044,7 @@ func quotedStrings(src string) []string {
 // declared dep; a non-literal / version-less declaration stays UNRESOLVED (never guessed).
 func gradleDeclaredDirect(root string) map[string]plugin.ResolvedDependency {
 	out := map[string]plugin.ResolvedDependency{}
-	_, gradles := buildFiles(root)
+	_, gradles, _ := buildFiles(root)
 	for _, gp := range gradles {
 		deps, _ := parseGradle(gp)
 		for _, rd := range deps {

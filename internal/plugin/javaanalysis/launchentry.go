@@ -263,15 +263,15 @@ func (r *entryReader) maven(path string) {
 	}
 	// A profile can be switched on from outside the POM (-P, settings.xml), so a profile that
 	// sets a property or names a launch class counts whatever its activation says.
-	chain, complete := r.pomChain(pom)
+	chain, files, complete := r.pomChain(pom, path)
 	profileProps := map[string]bool{}
-	for _, p := range chain {
+	for i, p := range chain {
 		for _, pr := range p.Profiles {
 			for k := range pr.Properties {
 				profileProps[k] = true
 			}
 		}
-		if profileNamesLaunch(p.path) {
+		if profileNamesLaunch(files[i]) {
 			r.reasons[reasonLaunchEntryProfilePlugin] = true
 		}
 	}
@@ -297,27 +297,47 @@ func (r *entryReader) maven(path string) {
 	}
 }
 
-// pomChain returns pom and the parents it inherits from, nearest first, read from the Maven
-// cache. complete is false when a parent is not there: its profiles are unknown, not absent. A
-// parent inside the checkout is a second project, which multiple_projects_unsupported withholds
-// already.
-func (r *entryReader) pomChain(pom *mvnPOM) ([]*mvnPOM, bool) {
-	chain := []*mvnPOM{pom}
-	seen := map[string]bool{pom.path: true}
+// pomChain returns pom (read from path) and the parents it inherits from, nearest first, read
+// from the Maven cache, with the file each was read from. complete is false when a parent is not
+// there: its profiles are unknown, not absent. A parent inside the checkout is a second project,
+// which multiple_projects_unsupported withholds already.
+func (r *entryReader) pomChain(pom *mvnPOM, path string) ([]*mvnPOM, []string, bool) {
+	chain, files := []*mvnPOM{pom}, []string{path}
+	seen := map[string]bool{}
 	for cur := pom; len(chain) <= 20; {
 		p := cur.Parent
 		if p.ArtifactID == "" {
-			return chain, true
+			return chain, files, true
 		}
+		key := gavKey(p.GroupID, p.ArtifactID, p.Version)
 		next, ok := r.cache.get(p.GroupID, p.ArtifactID, p.Version)
-		if !ok || seen[next.path] {
-			return chain, false
+		if !ok || seen[key] {
+			return chain, files, false
 		}
-		seen[next.path] = true
-		chain = append(chain, next)
+		seen[key] = true
+		chain, files = append(chain, next), append(files, r.cache.pomFile(p.GroupID, p.ArtifactID, p.Version))
 		cur = next
 	}
-	return chain, false
+	return chain, files, false
+}
+
+// pomFile returns the cache file mavenCache.get reads g:a:v's POM from, or "" when there is none;
+// a cached POM's own path is blank.
+func (c *mavenCache) pomFile(g, a, v string) string {
+	if c.escaped || !validGAV(g, a, v) {
+		return ""
+	}
+	rel := pomRelPath(g, a, v)
+	for _, root := range c.roots {
+		path, st := inCache(root, rel)
+		if st == cacheEscape {
+			break
+		}
+		if st == cacheHit {
+			return path
+		}
+	}
+	return ""
 }
 
 // profileNamesLaunch reports whether any <profile> in the POM at path carries a launch-naming

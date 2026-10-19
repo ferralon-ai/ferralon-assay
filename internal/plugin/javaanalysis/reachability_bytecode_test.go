@@ -1057,18 +1057,24 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			a.verticle()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("app.main", "io.vertx.core.Launcher"))
 		}, reasonLaunchEntryProfileProperty},
-		{"profile sets an unrelated property: searched", func(a *appFixture) {
+		// Reachability is never handed the profile selection, so a profile that sets any property
+		// is undecided and withholds whether or not the launch main reads it.
+		{"profile sets an unrelated property: profile_activation", func(a *appFixture) {
 			a.propertyMain()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
-		}, ""},
+		}, reasonProfileActivation},
 		{"parent profile sets the mainClass property: launch_entry_profile_property", func(a *appFixture) {
 			a.propertyMain()
 			a.verticle()
 			a.cachedParent(profileSetting("app.main", "io.vertx.core.Launcher"))
 		}, reasonLaunchEntryProfileProperty},
-		{"read parent whose profile sets an unrelated property: searched", func(a *appFixture) {
+		{"read parent whose profile sets an unrelated property: profile_activation", func(a *appFixture) {
 			a.propertyMain()
 			a.cachedParent(profileSetting("deploy.env", "prod"))
+		}, reasonProfileActivation},
+		{"property mainClass under a read parent with no profiles: searched", func(a *appFixture) {
+			a.propertyMain()
+			a.cachedParent("")
 		}, ""},
 		{"unread parent under a property mainClass: launch_entry_profile_property", func(a *appFixture) {
 			a.propertyMain()
@@ -1100,8 +1106,8 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 				t.Skip("file permissions do not stop this user reading")
 			}
 		}, reasonLaunchEntryCLIProperty},
-		{"literal mainClass under a read parent with no launch profile: searched", func(a *appFixture) {
-			a.cachedParent(profileSetting("deploy.env", "prod"))
+		{"literal mainClass under a read parent with no profiles: searched", func(a *appFixture) {
+			a.cachedParent("")
 		}, ""},
 		{"profile configures a plugin's mainClass: launch_entry_profile_plugin", func(a *appFixture) {
 			a.verticle()

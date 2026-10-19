@@ -192,7 +192,7 @@ func selectionOf(targetEnv map[string]string) *profileSelection {
 // profileToken parses one element of a -P list: "id" or "+id" selects, "!id" or "-id" deselects,
 // and Maven 4's "?" (optional) prefix is dropped.
 func profileToken(tok string) (id string, off, ok bool) {
-	tok = strings.TrimSpace(tok)
+	tok = javaTrim(tok)
 	tok = strings.TrimPrefix(tok, "?")
 	switch {
 	case strings.HasPrefix(tok, "!"), strings.HasPrefix(tok, "-"):
@@ -297,8 +297,8 @@ func readMvnDir(buildDir string) mvnFacts {
 	defines, unknown := readJVMConfig(filepath.Join(mvn, "jvm.config"))
 	f.defines = append(f.defines, defines...)
 	f.unknown = f.unknown || unknown
-	// Seam: sound's resolver allow-list (fix/resolver-version-allowlist) adds mavenCoreExtensions,
-	// which also reads maven.ext.class.path; fold this check into it once that lands on main.
+	// Seam: #138 adds mavenCoreExtensions, which also reads maven.ext.class.path; fold this
+	// check into it once that lands on main.
 	if !ruledAbsent(filepath.Join(mvn, "extensions.xml")) {
 		f.unknown = true // a core extension can rewrite the model, activation included
 	}
@@ -459,7 +459,7 @@ func defineOption(toks []string) (key string, isDefine bool) {
 // propertyKey returns the name a k=v or k definition sets, or "" when it isn't a literal name.
 func propertyKey(v string) string {
 	k, _, _ := strings.Cut(v, "=")
-	k = strings.TrimSpace(k)
+	k = javaTrim(k)
 	if k == "" || strings.ContainsAny(k, "\"'${}\\ \t") || k == "maven.ext.class.path" {
 		return ""
 	}
@@ -519,19 +519,60 @@ func readJVMConfig(path string) (defines []string, unknown bool) {
 // jvmModuleOptions take the next token as their value.
 var jvmModuleOptions = map[string]bool{"--add-opens": true, "--add-exports": true, "--add-reads": true, "--add-modules": true}
 
-// inertJVMOption reports whether a jvm.config token is a JVM option that sets memory, stack,
-// a -XX: flag, module access, or assertions: nothing that loads code into Maven or sets a property.
+// inertJVMOption reports whether a jvm.config token is a JVM option that sets memory, stack, a
+// listed -XX: flag, module access, or assertions: nothing that loads code into Maven or sets a
+// property.
 func inertJVMOption(t string) bool {
 	switch t {
 	case "-ea", "-da", "-enableassertions", "-disableassertions", "-server", "-client":
 		return true
 	}
-	for _, p := range []string{"-Xmx", "-Xms", "-Xss", "-XX:", "--add-opens=", "--add-exports=", "--add-reads=", "--add-modules="} {
+	for _, p := range []string{"-Xmx", "-Xms", "-Xss", "--add-opens=", "--add-exports=", "--add-reads=", "--add-modules="} {
 		if strings.HasPrefix(t, p) && len(t) > len(p) {
 			return true
 		}
 	}
+	if flag, ok := strings.CutPrefix(t, "-XX:"); ok {
+		return inertXXFlag(flag)
+	}
 	return false
+}
+
+// inertXXBool and inertXXValue are the -XX: flags jvm.config may carry: garbage collector choice,
+// heap, metaspace and code-cache sizing, and JIT tiering. Each only tunes the JVM; none reads a
+// file or takes a class or agent. Any other -XX: flag is unknown, VMOptionsFile and Flags among
+// them, since both read further JVM options (a -D included) from a file.
+var (
+	inertXXBool = map[string]bool{
+		"UseG1GC": true, "UseParallelGC": true, "UseSerialGC": true, "UseZGC": true,
+		"TieredCompilation": true, "UseStringDeduplication": true, "UseCompressedOops": true,
+	}
+	inertXXValue = map[string]bool{
+		"MaxMetaspaceSize": true, "MetaspaceSize": true, "ReservedCodeCacheSize": true,
+		"MaxRAMPercentage": true, "InitialRAMPercentage": true, "MinRAMPercentage": true,
+		"TieredStopAtLevel": true, "ParallelGCThreads": true, "ConcGCThreads": true,
+	}
+)
+
+// inertXXFlag reads what follows -XX: as "+Name", "-Name" for a listed boolean flag or
+// "Name=value" for a listed valued flag, the value being a plain size, count or percentage.
+func inertXXFlag(f string) bool {
+	if name, ok := strings.CutPrefix(f, "+"); ok {
+		return inertXXBool[name]
+	}
+	if name, ok := strings.CutPrefix(f, "-"); ok {
+		return inertXXBool[name]
+	}
+	name, value, ok := strings.Cut(f, "=")
+	if !ok || !inertXXValue[name] || value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r == '.' || strings.ContainsRune("kKmMgGtT", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 // profileLine reads one maven.config line. selects is false when no token on it is, or could be,
@@ -988,7 +1029,7 @@ func isImportBOM(d mvnDep) bool {
 // propagatesToConsumer reports whether a dependency declared in a cached POM lands on a
 // consumer's graph. An unresolved scope or optional flag counts as propagating.
 func propagatesToConsumer(d mvnDep) bool {
-	if strings.EqualFold(strings.TrimSpace(d.Optional), "true") {
+	if strings.EqualFold(d.Optional, "true") {
 		return false
 	}
 	switch defaultScope(d.Scope) {
@@ -1179,7 +1220,7 @@ func profileTouches(ps profileScope, idx int, pr mvnProfile, em *effectiveModel,
 			var versions []string
 			if v, ok := interp(e.dep.Version, props); ok {
 				versions = append(versions, v)
-			} else if strings.TrimSpace(e.dep.Version) == "" {
+			} else if javaTrim(e.dep.Version) == "" {
 				if v, ok := em.managed[g+":"+a]; ok {
 					versions = append(versions, v)
 				}
@@ -1372,7 +1413,7 @@ func withFirstPartyBound(scoped []plugin.ScopedReason, em effectiveModel, reacto
 func firstPartyClosure(em effectiveModel, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]string, bool) {
 	var roots []mvnDep
 	for _, d := range em.deps {
-		if !strings.EqualFold(strings.TrimSpace(d.Scope), "test") {
+		if d.Scope != "test" {
 			roots = append(roots, d)
 		}
 	}

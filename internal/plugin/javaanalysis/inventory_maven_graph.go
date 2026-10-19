@@ -145,7 +145,7 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 			continue
 		}
 
-		version := strings.TrimSpace(it.dep.Version)
+		version := javaTrim(it.dep.Version)
 		if it.depth > 0 && it.dep.unresolvedBy == "" && (alt.anyVersion || alt.reversioned(ga, version)) {
 			it.dep.unresolvedBy = reasonProfileActivation
 		}
@@ -200,6 +200,10 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 		// test/provided dep's own subtree is also on the module's (test/provided) classpath and is
 		// expanded, its transitives narrowed to test/provided (Maven scope table). An unresolved
 		// version can't be fetched → subtree undetermined.
+		if version != "" && !scopePropagates(it.scope) && it.scope != "system" && it.scope != "import" {
+			nodeReasons = append(nodeReasons, reasonMavenUnmodelledScope)
+			reasons = mergeReasons(reasons, reasonMavenUnmodelledScope)
+		}
 		if version != "" && scopePropagates(it.scope) {
 			child, ok := cache.get(it.dep.GroupID, it.dep.ArtifactID, version)
 			if !ok {

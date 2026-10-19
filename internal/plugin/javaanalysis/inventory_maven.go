@@ -297,27 +297,34 @@ func (p *invProps) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 			if err := d.DecodeElement(&val, &t); err != nil {
 				return err
 			}
-			p.Entries[t.Name.Local] = strings.TrimSpace(val)
+			p.Entries[t.Name.Local] = javaTrim(val)
 		case xml.EndElement:
 			return nil
 		}
 	}
 }
 
+// javaTrim trims s as Java's String.trim does, which is how Maven's model reader trims element
+// text: only characters at or below U+0020 go, so a no-break or other Unicode space stays part of
+// the value Maven compares.
+func javaTrim(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool { return r <= ' ' })
+}
+
 func convDeps(in []xmlDep) []mvnDep {
 	var out []mvnDep
 	for _, d := range in {
 		md := mvnDep{
-			GroupID:    strings.TrimSpace(d.GroupID),
-			ArtifactID: strings.TrimSpace(d.ArtifactID),
-			Version:    strings.TrimSpace(d.Version),
-			Scope:      strings.TrimSpace(d.Scope),
-			Type:       strings.TrimSpace(d.Type),
-			Classifier: strings.TrimSpace(d.Classifier),
-			Optional:   strings.TrimSpace(d.Optional),
+			GroupID:    javaTrim(d.GroupID),
+			ArtifactID: javaTrim(d.ArtifactID),
+			Version:    javaTrim(d.Version),
+			Scope:      javaTrim(d.Scope),
+			Type:       javaTrim(d.Type),
+			Classifier: javaTrim(d.Classifier),
+			Optional:   javaTrim(d.Optional),
 		}
 		for _, e := range d.Exclusions {
-			md.Exclusions = append(md.Exclusions, mvnGA{strings.TrimSpace(e.GroupID), strings.TrimSpace(e.ArtifactID)})
+			md.Exclusions = append(md.Exclusions, mvnGA{javaTrim(e.GroupID), javaTrim(e.ArtifactID)})
 		}
 		out = append(out, md)
 	}
@@ -337,15 +344,15 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	}
 	p := &mvnPOM{
 		path:       path,
-		GroupID:    strings.TrimSpace(xp.GroupID),
-		ArtifactID: strings.TrimSpace(xp.ArtifactID),
-		Version:    strings.TrimSpace(xp.Version),
-		Packaging:  strings.TrimSpace(xp.Packaging),
+		GroupID:    javaTrim(xp.GroupID),
+		ArtifactID: javaTrim(xp.ArtifactID),
+		Version:    javaTrim(xp.Version),
+		Packaging:  javaTrim(xp.Packaging),
 		Parent: mvnParent{
-			GroupID:      strings.TrimSpace(xp.Parent.GroupID),
-			ArtifactID:   strings.TrimSpace(xp.Parent.ArtifactID),
-			Version:      strings.TrimSpace(xp.Parent.Version),
-			RelativePath: strings.TrimSpace(xp.Parent.RelativePath),
+			GroupID:      javaTrim(xp.Parent.GroupID),
+			ArtifactID:   javaTrim(xp.Parent.ArtifactID),
+			Version:      javaTrim(xp.Parent.Version),
+			RelativePath: javaTrim(xp.Parent.RelativePath),
 		},
 		Properties: xp.Properties.Entries,
 		DepMgmt:    convDeps(xp.DepMgmt),
@@ -355,7 +362,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 		p.Properties = map[string]string{}
 	}
 	for _, m := range xp.Modules {
-		if m = strings.TrimSpace(m); m != "" {
+		if m = javaTrim(m); m != "" {
 			p.Modules = append(p.Modules, m)
 		}
 	}
@@ -374,7 +381,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 	}
 	for i, pr := range xp.Profiles {
 		mp := mvnProfile{
-			ID:           strings.TrimSpace(pr.ID),
+			ID:           javaTrim(pr.ID),
 			Activation:   convActivation(pr.Activation),
 			Properties:   pr.Properties.Entries,
 			DepMgmt:      convDeps(pr.DepMgmt),
@@ -386,7 +393,7 @@ func parseMavenPOM(path string) (*mvnPOM, bool) {
 			mp.Elements = append(mp.Elements, c.XMLName.Local)
 		}
 		for _, m := range pr.Modules {
-			if m = strings.TrimSpace(m); m != "" {
+			if m = javaTrim(m); m != "" {
 				mp.Modules = append(mp.Modules, m)
 			}
 		}
@@ -417,13 +424,12 @@ func convActivation(acts []xmlActivation) mvnActivation {
 		return n > 0
 	}
 	if once(len(a.ActiveByDefault)) {
-		m.ActiveByDefault = strings.EqualFold(strings.TrimSpace(a.ActiveByDefault[0]), "true")
+		m.ActiveByDefault = strings.EqualFold(javaTrim(a.ActiveByDefault[0]), "true")
 	}
 	if once(len(a.JDK)) {
-		m.JDK = strings.TrimSpace(a.JDK[0])
+		m.JDK = javaTrim(a.JDK[0])
 		if m.JDK == "" || m.JDK != a.JDK[0] {
-			// Empty, or padded: Maven's reader trims as Java's String.trim does, which differs from
-			// Go's on Unicode spaces, so padding can only be known not to make the condition true.
+			// Empty, or padded: padding can only be known not to make the condition true.
 			m.Other = true
 		}
 		if strings.Contains(m.JDK, "${") {
@@ -438,10 +444,10 @@ func convActivation(acts []xmlActivation) mvnActivation {
 			m.Undecidable = true
 		}
 		if len(p.Name) > 0 {
-			m.PropName = strings.TrimSpace(p.Name[0])
+			m.PropName = javaTrim(p.Name[0])
 		}
 		if len(p.Value) > 0 {
-			m.PropValue = strings.TrimSpace(p.Value[0])
+			m.PropValue = javaTrim(p.Value[0])
 		}
 		if strings.TrimPrefix(m.PropName, "!") == "" {
 			m.Undecidable = true
@@ -752,7 +758,7 @@ func interpProps(props map[string]string) {
 // nested supported). ok is false when raw is empty or ANY ${...} remains unresolvable
 // (env.*/settings.*/unknown) — never a guess (extends versions.go:213 conservatism).
 func interp(raw string, props map[string]string) (string, bool) {
-	s := strings.TrimSpace(raw)
+	s := javaTrim(raw)
 	if s == "" {
 		return "", false
 	}

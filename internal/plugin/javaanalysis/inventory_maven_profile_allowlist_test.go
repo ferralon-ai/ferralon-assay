@@ -49,6 +49,10 @@ func TestMavenProfile_MvnDirAllowList(t *testing.T) {
 		{"jvm.config defines maven.ext.class.path", "jvm.config", "-Dmaven.ext.class.path=ext.jar\n", "", true},
 		{"a JVM module option without its value on the line", "jvm.config", "--add-opens\n", "", true},
 		{"a JVM option prefix without a value", "jvm.config", "-Xmx\n", "", true},
+		{"a JVM options file", "jvm.config", "-XX:VMOptionsFile=.mvn/vm.options\n", "", true},
+		{"a HotSpot flags file", "jvm.config", "-XX:Flags=.hotspotrc\n", "", true},
+		{"a -XX: flag on no list", "jvm.config", "-XX:+UseG1GC -XX:CompileCommandFile=cc.txt\n", "", true},
+		{"a listed -XX: flag with a value that isn't a size", "jvm.config", "-XX:MaxMetaspaceSize=a.txt\n", "", true},
 		{"a core extension", "extensions.xml", "<extensions/>\n", "", true},
 		{"unknown leaves property conditions undecided", "maven.config", "--some-future-option\n", `<property><name>release</name></property>`, true},
 		// Controls: options on the lists decide nothing away.
@@ -58,6 +62,7 @@ func TestMavenProfile_MvnDirAllowList(t *testing.T) {
 		{"defines no condition reads", "maven.config", "-DskipTests\n-Dfoo=bar\n-D other=1\n--define=x=y\n", "", false},
 		{"a comment", "maven.config", "# faster builds\n\n", "", false},
 		{"inert JVM options", "jvm.config", "-Xmx2g -Xss4m -XX:+UseG1GC\n--add-opens java.base/java.lang=ALL-UNNAMED\n-Dfile.encoding=UTF-8\n# memory\n", "", false},
+		{"listed -XX: flags", "jvm.config", "-XX:-TieredCompilation -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=512m -XX:MaxRAMPercentage=75.0\n", "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			activation := tt.activation

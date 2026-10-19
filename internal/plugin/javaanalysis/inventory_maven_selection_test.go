@@ -3,6 +3,7 @@ package javaanalysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -69,6 +70,8 @@ func TestMavenProfile_StatedSelectionDecidesFirst(t *testing.T) {
 		{"optional deselection", `<jdk>11</jdk>`, "!?p", "11.0.2", false},
 		{"selection with spaces", ``, "other, p", "", true},
 		{"another id leaves conditions to decide", `<jdk>11</jdk>`, "other", "11.0.2", true},
+		{"activeByDefault padded with a no-break space is false", `<activeByDefault>` + nbsp + `true</activeByDefault>`, ",", "", false},
+		{"control, activeByDefault padded with ASCII space", `<activeByDefault> true </activeByDefault>`, ",", "", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, m2 := profileFixture(t, tt.activation, false)
@@ -78,6 +81,32 @@ func TestMavenProfile_StatedSelectionDecidesFirst(t *testing.T) {
 			}
 			if !inv.Partiality.Complete {
 				t.Errorf("an explicitly decided profile costs no reason; got %+v", inv.Partiality)
+			}
+		})
+	}
+
+	// Maven's reader keeps a no-break space in a profile id, so -P p doesn't select it.
+	for _, tt := range []struct {
+		name, id string
+		applied  bool
+	}{
+		{"an id padded with a no-break space isn't selected", nbsp + "p", false},
+		{"control, an id padded with ASCII space is", " p ", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := profileFixture(t, ``, false)
+			pom := filepath.Join(dir, "pom.xml")
+			raw, err := os.ReadFile(pom)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, pom, strings.Replace(string(raw), "<id>p</id>", "<id>"+tt.id+"</id>", 1))
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated("p", "")))
+			if got := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil; got != tt.applied {
+				t.Errorf("profile applied = %v, want %v", got, tt.applied)
+			}
+			if !inv.Partiality.Complete {
+				t.Errorf("want complete; got %+v", inv.Partiality)
 			}
 		})
 	}

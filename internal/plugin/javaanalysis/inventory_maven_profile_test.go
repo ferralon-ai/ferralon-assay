@@ -336,20 +336,26 @@ func TestMavenProfile_OSFamilyIsUndecided(t *testing.T) {
 	}
 }
 
+// Maven compares a property condition's name and value as its reader trimmed them, with Java's
+// String.trim, so a no-break space at either end stays part of what is compared.
 func TestMavenProfile_PropertyActivationNeedsAStatedValue(t *testing.T) {
+	const negated = `<property><name>!skipP</name></property>`
 	tests := []struct {
-		name      string
-		env       map[string]string
-		applied   bool
-		disclosed bool
+		name, activation string
+		env              map[string]string
+		applied          bool
+		disclosed        bool
 	}{
-		{"not stated", stated(",", "11"), false, true},
-		{"stated set", map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, false, false},
-		{"stated empty", map[string]string{targetEnvMavenProfiles: ",", "skipP": ""}, true, false},
+		{"not stated", negated, stated(",", "11"), false, true},
+		{"stated set", negated, map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, false, false},
+		{"stated empty", negated, map[string]string{targetEnvMavenProfiles: ",", "skipP": ""}, true, false},
+		{"a name padded with a no-break space is another property", `<property><name>` + nbsp + `skipP</name></property>`, map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, false, true},
+		{"a value padded with a no-break space differs", `<property><name>skipP</name><value>true` + nbsp + `</value></property>`, map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, false, false},
+		{"control, a value padded with ASCII space", `<property><name>skipP</name><value> true </value></property>`, map[string]string{targetEnvMavenProfiles: ",", "skipP": "true"}, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir, m2 := profileFixture(t, `<property><name>!skipP</name></property>`, false)
+			dir, m2 := profileFixture(t, tt.activation, false)
 			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), tt.env))
 			if got := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil; got != tt.applied {
 				t.Errorf("profile applied = %v, want %v", got, tt.applied)
@@ -494,6 +500,9 @@ func TestMavenProfile_DependencyPOMProfileDependencyAllowList(t *testing.T) {
 		{"new optional, any case", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>True</optional></dependency>`, true},
 		{"new test", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>test</scope></dependency>`, true},
 		{"new provided", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>provided</scope></dependency>`, true},
+		{"new optional padded with a no-break space", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><optional>` + nbsp + `true</optional></dependency>`, false},
+		{"new test padded with a no-break space", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>` + nbsp + `test</scope></dependency>`, false},
+		{"new provided padded with a no-break space", "", `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>provided` + nbsp + `</scope></dependency>`, false},
 		{"new optional system", "", `<dependency><groupId>com.sun</groupId><artifactId>tools</artifactId><version>1.8</version><scope>system</scope><systemPath>${java.home}/../lib/tools.jar</systemPath><optional>true</optional></dependency>`, true},
 		{"new system", "", `<dependency><groupId>com.sun</groupId><artifactId>tools</artifactId><version>1.8</version><scope>system</scope><systemPath>${java.home}/../lib/tools.jar</systemPath></dependency>`, false},
 		{"re-declared as test", bodyX, `<dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>3.0</version><scope>test</scope></dependency>`, false},
@@ -800,6 +809,7 @@ func TestMavenProfile_FirstPartyClosureBound(t *testing.T) {
 		deps     string // the module's own <dependencies>
 		profiles string // extra profiles beside p, which adds org.p:p:1.0
 		cacheDep bool   // whether org.base:base:1.0 is cached
+		baseDeps string // org.base:base:1.0's own <dependencies>
 		want     []string
 	}{
 		{
@@ -812,6 +822,27 @@ func TestMavenProfile_FirstPartyClosureBound(t *testing.T) {
 			name: "test-scoped dependency is not first-party reach",
 			deps: `<dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>` +
 				`<dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><scope>test</scope></dependency>`,
+			cacheDep: true,
+			want:     []string{"", "pkg:maven/org.base/base", "pkg:maven/org.p/p"},
+		},
+		{
+			name: "a test scope padded with a no-break space is first-party reach",
+			deps: `<dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>` +
+				`<dependency><groupId>org.t</groupId><artifactId>t</artifactId><version>1.0</version><scope>` + nbsp + `test</scope></dependency>`,
+			cacheDep: true,
+			want:     nil, // org.t isn't cached, so the closure is no bound
+		},
+		{
+			name:     "an optional flag padded with a no-break space propagates",
+			deps:     `<dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>`,
+			baseDeps: `<dependency><groupId>org.o</groupId><artifactId>o</artifactId><version>1.0</version><optional>true` + nbsp + `</optional></dependency>`,
+			cacheDep: true,
+			want:     nil, // org.o isn't cached, so the closure is no bound
+		},
+		{
+			name:     "control, an optional transitive does not propagate",
+			deps:     `<dependency><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></dependency>`,
+			baseDeps: `<dependency><groupId>org.o</groupId><artifactId>o</artifactId><version>1.0</version><optional>true</optional></dependency>`,
 			cacheDep: true,
 			want:     []string{"", "pkg:maven/org.base/base", "pkg:maven/org.p/p"},
 		},
@@ -839,7 +870,7 @@ func TestMavenProfile_FirstPartyClosureBound(t *testing.T) {
 </profile>`+tt.profiles+`</profiles></project>`)
 			writeCachePOM(t, m2, "org.p", "p", "1.0", `<project><groupId>org.p</groupId><artifactId>p</artifactId><version>1.0</version></project>`)
 			if tt.cacheDep {
-				writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version></project>`)
+				writeCachePOM(t, m2, "org.base", "base", "1.0", `<project><groupId>org.base</groupId><artifactId>base</artifactId><version>1.0</version><dependencies>`+tt.baseDeps+`</dependencies></project>`)
 			}
 			raw := resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil)
 			var mine *plugin.ScopedReason

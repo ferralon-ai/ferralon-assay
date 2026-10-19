@@ -25,6 +25,9 @@ func writeCachePOM(t *testing.T, root, g, a, v, content string) {
 	writeFile(t, filepath.Join(root, pomRelPath(g, a, v)), content)
 }
 
+// nbsp is U+00A0, which Go's strings.TrimSpace strips and Java's String.trim keeps.
+const nbsp = "\u00a0"
+
 func findNode(t *testing.T, inv jsonInv, purl string) *invNode {
 	t.Helper()
 	for i := range inv.Nodes {
@@ -308,5 +311,39 @@ func TestMaven_LosingTransitiveVariantMarksWinner(t *testing.T) {
 	// not_exploitable of the ecosystem for what is a byte-binding concern.
 	if slices.Contains(inv.Partiality.Reasons, reasonMavenArtifactVariant) {
 		t.Errorf("variant raised to a graph limit: %v", inv.Partiality.Reasons)
+	}
+}
+
+// A dependency whose scope is none in Maven's scope table, a "test" padded with a no-break space
+// among them, is on the graph but its subtree isn't modelled, so the inventory isn't Complete.
+func TestMaven_UnmodelledScopeResidue(t *testing.T) {
+	for _, tt := range []struct {
+		name, scope string
+		complete    bool
+	}{
+		{"test padded with a no-break space", nbsp + "test", false},
+		{"a scope Maven doesn't name", "bogus", false},
+		{"control, test", "test", true},
+		{"control, runtime", "runtime", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version><scope>`+tt.scope+`</scope></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.x", "x", "1.0", `<project><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version>
+<dependencies><dependency><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version></dependency></dependencies></project>`)
+			writeCachePOM(t, m2, "org.y", "y", "1.0", `<project><groupId>org.y</groupId><artifactId>y</artifactId><version>1.0</version></project>`)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
+			if findNode(t, inv, "pkg:maven/org.x/x@1.0") == nil {
+				t.Fatalf("org.x must be on the graph; got %+v", inv.Nodes)
+			}
+			if inv.Partiality.Complete != tt.complete {
+				t.Errorf("complete = %v, want %v; got %+v", inv.Partiality.Complete, tt.complete, inv.Partiality)
+			}
+			if got := hasStr(inv.Partiality.Reasons, reasonMavenUnmodelledScope); got == tt.complete {
+				t.Errorf("maven_unmodelled_scope listed = %v; got %+v", got, inv.Partiality)
+			}
+		})
 	}
 }

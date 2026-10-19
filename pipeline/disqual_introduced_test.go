@@ -54,6 +54,7 @@ func TestVersionOutsideRange_Introduced(t *testing.T) {
 		{"past last_affected is inside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, false, true},
 		{"below introduced with last_affected is outside", "0.9.0", affectedRange{LowerInclusive: "1.0.0", LastAffected: "1.4.2", Scheme: "npm"}, true, true},
 		{"past an unparseable last_affected is inside", "1.4.3", affectedRange{LowerInclusive: "1.0.0", LastAffected: "garbage", Scheme: "npm"}, false, true},
+		{"past a last_affected-only bound is placed inside", "v1.5.0", affectedRange{LastAffected: "v1.4.2", Scheme: "gomod"}, false, true},
 
 		// One row per comparator.
 		{"pypi beta below an rc introduced is outside", "2.0.0b1", affectedRange{LowerInclusive: "2.0.0rc1", UpperExclusive: "2.1", Scheme: "pypi"}, true, true},

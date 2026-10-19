@@ -102,6 +102,13 @@ const (
 	// is still admitted by name; OSV.dev was not asked about it. One note per dependency, scoped
 	// by Package, and unclassified like reasonWorkSetNoInventory, so it lands in the loud arm.
 	reasonWorkSetDependencyUnreadable = "work_set_dependency_unreadable"
+	// reasonWorkSetDependencyNotFound: the manifest pins a dependency the reader's per-coordinate
+	// read doesn't find, so the inventory and the reader disagree about it. Distinct from
+	// reasonWorkSetDependencyUnresolved (found, version withheld) and from
+	// reasonWorkSetDependencyUnreadable (the read failed). The dependency is still admitted by
+	// name; OSV.dev was not asked about it. One note per dependency, scoped by Package, and
+	// unclassified, so it lands in the loud arm.
+	reasonWorkSetDependencyNotFound = "work_set_dependency_not_found"
 )
 
 // workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
@@ -356,14 +363,15 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	for _, p := range pkgs {
 		pinned[p.Name] = append(pinned[p.Name], p.Version)
 	}
-	unreadable := make(map[string]bool)
+	// A coordinate whose read failed, or that the reader didn't find, already carries its own note.
+	named := make(map[string]bool)
 	for _, n := range notes {
-		if n.Reason == reasonWorkSetDependencyUnreadable {
-			unreadable[n.Package] = true
+		if n.Reason == reasonWorkSetDependencyUnreadable || n.Reason == reasonWorkSetDependencyNotFound {
+			named[n.Package] = true
 		}
 	}
 	for _, u := range unversioned {
-		if unreadable[versionlessPURL(purlType, u.Name)] {
+		if named[versionlessPURL(purlType, u.Name)] {
 			continue
 		}
 		detail := u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed"
@@ -599,9 +607,11 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 }
 
 // confirmByMatch asks the reader for the Match of every coordinate that has a pinned copy. A
-// withheld Match moves the coordinate to unresolved. A failed call does too, so it is still
-// admitted by name, but it is an incomplete inventory rather than an unresolved version, so it
-// gets its own reasonWorkSetDependencyUnreadable note and no reasonWorkSetDependencyUnresolved one.
+// withheld Match moves the coordinate to unresolved. So do a failed call and a coordinate the
+// reader doesn't find, so both are still admitted by name; but a failed call is an incomplete
+// inventory and a coordinate not found is a disagreement between the pins and the reader, not an
+// unresolved version, so each gets its own note (reasonWorkSetDependencyUnreadable,
+// reasonWorkSetDependencyNotFound) and no reasonWorkSetDependencyUnresolved one.
 func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package, []report.PartialityNote) {
 	named := make(map[string]bool, len(unresolved))
 	for _, u := range unresolved {
@@ -628,6 +638,14 @@ func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, un
 				Ecosystem: eco,
 				Package:   versionlessPURL(purlTypeForEcosystem(eco), name),
 				Detail:    name + "'s version could not be read (" + err.Error() + "), so the dependency inventory is incomplete for it; OSV.dev was not asked about it and advisories against it were NOT assessed",
+			})
+		}
+		if err == nil && !vr.Found && !named[name] {
+			notes = append(notes, report.PartialityNote{
+				Reason:    reasonWorkSetDependencyNotFound,
+				Ecosystem: eco,
+				Package:   versionlessPURL(purlTypeForEcosystem(eco), name),
+				Detail:    name + " is pinned in the manifest but the dependency reader does not find it, so its version is not settled; OSV.dev was not asked about it and advisories against it were NOT assessed",
 			})
 		}
 		if err != nil || !vr.Found || !vr.Match.Resolved || vr.Match.Version == "" {

@@ -27,6 +27,7 @@ type inventoryAnalyzer struct {
 	deps  []plugin.ResolvedDependency
 	match map[string]plugin.ResolvedDependency
 	fail  map[string]bool // coordinates whose per-coordinate read fails
+	miss  map[string]bool // coordinates the per-coordinate read doesn't find
 }
 
 func (a inventoryAnalyzer) ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
@@ -34,6 +35,9 @@ func (a inventoryAnalyzer) ResolveDependencyVersions(_ context.Context, req plug
 		return plugin.DependencyVersionResult{}, errors.New("reader failed")
 	}
 	res := plugin.DependencyVersionResult{Partiality: plugin.Complete(), All: a.deps}
+	if a.miss[req.Coordinate] {
+		return res, nil
+	}
 	if m, ok := a.match[req.Coordinate]; ok {
 		res.Found, res.Match = true, m
 		return res, nil
@@ -204,6 +208,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		wantQueried []string          // name@version, in query order
 		wantSkipped map[string]string // skipped coordinate -> the note's Package
 		wantFailed  []string          // the Package of each work_set_dependency_unreadable note
+		wantMissing []string          // the Package of each work_set_dependency_not_found note
 		wantSource  string
 	}{
 		{
@@ -274,6 +279,27 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantIDs:    []string{minioID, widgetID},
 			wantFailed: []string{"pkg:maven/io.minio/minio"},
 			wantSource: workSetSourceBuiltinUnionPolicy,
+		},
+		{
+			name: "osv: a pinned coordinate the reader doesn't find is its own state",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{widgetResolved, minioResolved}, miss: map[string]bool{minio: true}})
+			},
+			wantQueried: []string{widget + "@1.0.0"},
+			wantMissing: []string{"pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "policy: a pinned coordinate the reader doesn't find is still admitted by name",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{widgetResolved, minioResolved}, miss: map[string]bool{minio: true}})
+			},
+			policy:      true,
+			wantIDs:     []string{minioID, widgetID},
+			wantMissing: []string{"pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionPolicy,
 		},
 		{
 			name: "osv: a coordinate whose Match withholds is named and none of its pins is queried",
@@ -371,6 +397,14 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			}
 			if strings.Join(failed, ",") != strings.Join(tt.wantFailed, ",") {
 				t.Errorf("%s notes for %v, want %v", reasonWorkSetDependencyUnreadable, failed, tt.wantFailed)
+			}
+
+			var missing []string
+			for _, n := range notesFor(ws.partiality, reasonWorkSetDependencyNotFound) {
+				missing = append(missing, n.Package)
+			}
+			if strings.Join(missing, ",") != strings.Join(tt.wantMissing, ",") {
+				t.Errorf("%s notes for %v, want %v", reasonWorkSetDependencyNotFound, missing, tt.wantMissing)
 			}
 
 			skipped := notesFor(ws.partiality, reasonWorkSetDependencyUnresolved)

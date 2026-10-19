@@ -73,10 +73,10 @@ func TestInterpreterRangeShips(t *testing.T) {
 	}
 }
 
-// TestUndeclaredTop_CuratedNameExcludedOnlyWithOneShipper: a curated name exactly one
-// distribution provides is attributed on its own; a name several provide falls through to the
-// declared names.
-func TestUndeclaredTop_CuratedNameExcludedOnlyWithOneShipper(t *testing.T) {
+// TestUndeclaredImport_CuratedNameExcludedOnlyWithOneShipper: a curated name exactly one
+// distribution provides is attributed on its own; a name several provide needs one of them,
+// or a distribution of its own name, declared.
+func TestUndeclaredImport_CuratedNameExcludedOnlyWithOneShipper(t *testing.T) {
 	curated := func(dists ...string) DistImportMap {
 		var cs []Contribution
 		for _, d := range dists {
@@ -103,8 +103,8 @@ func TestUndeclaredTop_CuratedNameExcludedOnlyWithOneShipper(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			d := distResolver{curated: curated(c.dists...), declared: c.declared, python: assumedInterpreter}
-			if got := d.undeclaredTop("sharedpkg"); got != c.undeclared {
-				t.Errorf("undeclaredTop = %v, want %v", got, c.undeclared)
+			if got := d.undeclaredImport("sharedpkg"); got != c.undeclared {
+				t.Errorf("undeclaredImport = %v, want %v", got, c.undeclared)
 			}
 		})
 	}

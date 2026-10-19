@@ -22,6 +22,7 @@ type groundsFixture struct {
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
+	mods            goModules // the build's Go modules
 	scoped          []artifact.ScopedPartialityFlag
 }
 
@@ -47,7 +48,7 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 			PartialityFlags: fx.footprint, ScopedPartiality: fx.scoped,
 		})
 	}
-	return finding(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg)
+	return findingInBuild(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg, fx.mods)
 }
 
 const (

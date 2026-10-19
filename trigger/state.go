@@ -215,7 +215,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(finding(st, assessmentID, advisory, pkg), req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -315,7 +315,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		pkg := a.Package
-		f := withInventoryLimits(finding(st, assessmentID, advisory, &pkg), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather

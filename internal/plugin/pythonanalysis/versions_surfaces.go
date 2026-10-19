@@ -26,7 +26,8 @@ import (
 // versionSurfaces returns the manifests version resolution parses, and whether any other
 // install surface under root goes unread.
 func versionSurfaces(root string) (manifests []string, unread bool) {
-	manifests = manifestFiles(root)
+	manifests, walked := manifestFiles(root)
+	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
 	for _, m := range manifests {
 		discovered[m] = true
@@ -45,6 +46,9 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 	}
 	read := func(path string) bool {
+		if wideMarked(path) {
+			return false
+		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
 	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
@@ -55,9 +59,22 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 	return manifests, unread
 }
 
-// pyInstallSurface reports whether the file at path, with up to buildtree.HeadSize bytes of
-// content head (nil when binary or empty), names or holds a Python install surface, and the
-// rule that matched. Every file ManifestCandidates classifies (pyCandidate) is one too.
+// wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.
+// pip decodes such a file, but the readers here take its bytes as UTF-8, so what they find in
+// it is not what it declares.
+func wideMarked(path string) bool {
+	data, err := readRegular(path)
+	if err != nil {
+		return false
+	}
+	return bytes.HasPrefix(data, []byte{0xFF, 0xFE}) || bytes.HasPrefix(data, []byte{0xFE, 0xFF}) ||
+		bytes.HasPrefix(data, []byte{0, 0, 0xFE, 0xFF})
+}
+
+// pyInstallSurface reports whether the file at path, with its buildtree.Head (nil when binary,
+// empty or not a regular file, and then judged through buildtree.NULHeadMatch), names or holds
+// a Python install surface, and the rule that matched. Every file ManifestCandidates classifies
+// (pyCandidate) is one too.
 func pyInstallSurface(path string, head []byte) (string, bool) {
 	if why, ok := pySurfaceName(path); ok {
 		return why, true
@@ -131,7 +148,7 @@ var pySurfaceLockMarkers = []string{"requires-python", "requires_python", "pytho
 
 func pySurfaceContent(path string, head []byte) (string, bool) {
 	if head == nil {
-		return "", false
+		return buildtree.NULHeadMatch(path, pySurfaceContent)
 	}
 	src := string(head)
 	ext := strings.ToLower(filepath.Ext(path))
@@ -249,15 +266,40 @@ func toxDeclares(src string) bool {
 
 // installedCopies reads the distributions installed in every site-packages directory under
 // root, which the shared walk does not enter: each *.dist-info or *.egg-info names one by its
-// metadata's Name and Version. A copy whose metadata cannot be read, or that is a symlink
-// leaving root, makes ok false. A site-packages directory that is a symlink is not read; one
-// leaving root is already an unread surface (buildtree.Candidates), and one inside it is read
-// at its target.
+// metadata's Name and Version. A symlink, whether the site-packages directory itself or an entry
+// in it, is followed when it resolves inside root, whatever its target is named, and makes ok
+// false when it leaves root or does not resolve. Each site-packages directory is read once at
+// its real path, and so is each metadata file: a link can make one directory both a
+// site-packages and a metadata entry, and each role reads it. A copy whose metadata cannot be
+// read makes ok false.
 func installedCopies(root string) (copies []plugin.ResolvedDependency, origins []manifestOrigin, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
+	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
+	// once reports whether path's real path is seen for the first time in the role whose set
+	// is seen. A path that does not resolve makes ok false.
+	dirSeen, metaSeen := map[string]bool{}, map[string]bool{}
+	once := func(seen map[string]bool, path string) bool {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			ok = false
+			return false
+		}
+		if seen[real] {
+			return false
+		}
+		seen[real] = true
+		return true
+	}
 	_ = buildtree.Walk(root, func(e buildtree.Entry, err error) error {
-		if err != nil || !e.Skipped || e.Symlink || e.D.Name() != "site-packages" {
+		if err != nil || e.D.Name() != "site-packages" || !e.Skipped && !e.Symlink {
+			return nil
+		}
+		if e.Symlink && e.Escapes {
+			ok = false
+			return nil
+		}
+		if !once(dirSeen, e.Path) {
 			return nil
 		}
 		ents, rerr := os.ReadDir(e.Path)
@@ -267,20 +309,32 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, origins [
 		}
 		for _, d := range ents {
 			name := d.Name()
+			p := filepath.Join(e.Path, name)
+			isDir := d.IsDir()
+			if d.Type()&fs.ModeSymlink != 0 {
+				if escapes(p) {
+					ok = false
+					continue
+				}
+				fi, serr := os.Stat(p)
+				if serr != nil {
+					ok = false
+					continue
+				}
+				isDir = fi.IsDir()
+			}
 			var meta string
 			switch {
-			case d.Type()&fs.ModeSymlink != 0:
-				if rootErr != nil || !buildtree.Inside(realRoot, filepath.Join(e.Path, name)) {
-					ok = false
-				}
-				continue
-			case strings.HasSuffix(name, ".dist-info") && d.IsDir():
-				meta = filepath.Join(e.Path, name, "METADATA")
-			case strings.HasSuffix(name, ".egg-info") && d.IsDir():
-				meta = filepath.Join(e.Path, name, "PKG-INFO")
+			case strings.HasSuffix(name, ".dist-info") && isDir:
+				meta = filepath.Join(p, "METADATA")
+			case strings.HasSuffix(name, ".egg-info") && isDir:
+				meta = filepath.Join(p, "PKG-INFO")
 			case strings.HasSuffix(name, ".egg-info"):
-				meta = filepath.Join(e.Path, name)
+				meta = p
 			default:
+				continue
+			}
+			if !once(metaSeen, meta) {
 				continue
 			}
 			dist, version, mok := readDistMetadata(meta)

@@ -41,7 +41,9 @@ func newPySurface(root string) *pySurface {
 		memo:       map[string]bool{},
 		visiting:   map[string]bool{},
 	}
-	for _, m := range manifestFiles(root) {
+	// A directory the walk cannot read is an unreadable candidate of its own (buildtree.Candidates).
+	paths, _ := manifestFiles(root)
+	for _, m := range paths {
 		m = filepath.Clean(m)
 		s.manifests = append(s.manifests, m)
 		s.discovered[m] = true
@@ -142,7 +144,8 @@ var docExts = map[string]bool{
 
 // pyCandidate is the Python classifier: it reports whether the file at path, with up to
 // buildtree.HeadSize bytes of content head (nil when binary or empty), names or holds a Python
-// install surface, and the rule that matched.
+// install surface, and the rule that matched. A nil head is re-read and judged with its NULs
+// removed or turned into newlines (buildtree.NULHeadMatch).
 func pyCandidate(path string, head []byte) (string, bool) {
 	if why, ok := pyCandidateName(path); ok {
 		return why, true
@@ -224,7 +227,7 @@ var pyLockMarkers = []string{"requires-python", "requires_python", "python-versi
 
 func pyCandidateContent(path string, head []byte) (string, bool) {
 	if head == nil {
-		return "", false
+		return buildtree.NULHeadMatch(path, pyCandidateContent)
 	}
 	src := string(head)
 	ext := strings.ToLower(filepath.Ext(path))

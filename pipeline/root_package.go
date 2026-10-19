@@ -20,6 +20,7 @@ import (
 	"golang.org/x/mod/semver"
 
 	"github.com/ferralon-ai/ferralon-assay/checkout"
+	"github.com/ferralon-ai/ferralon-assay/internal/gradlewrapper"
 )
 
 // RootPackage is the identity the scanned project itself publishes under: the package an advisory
@@ -605,8 +606,10 @@ func mavenCoreExtensions(buildDir string) bool {
 // stockMavenWrappers reports whether every .mvn/wrapper/maven-wrapper.properties at or above
 // buildDir fetches a stock distribution, and the wrapper JAR, if it names one, from Maven Central.
 // Every one is checked, not only the first, since mvnw reads the properties beside wherever it
-// sits. The file must hold nothing but plain key=value lines with known keys: the mvnw script and
-// the wrapper JAR parse it differently, and only that form reads the same to both.
+// sits. The file must hold nothing but plain key=value lines with known keys, each printable ASCII
+// ending in \n or \r\n and none ending in a backslash: the mvnw script and the wrapper JAR parse it
+// differently (java.util.Properties also breaks a line at a lone \r, continues one at a trailing
+// backslash, and reads \f as whitespace), and only that form reads the same to both.
 func stockMavenWrappers(buildDir string) bool {
 	dir, err := filepath.Abs(buildDir)
 	if err != nil {
@@ -631,7 +634,14 @@ func stockMavenWrappers(buildDir string) bool {
 
 func stockMavenWrapper(data []byte) bool {
 	seen := map[string]bool{}
-	for line := range strings.Lines(string(data)) {
+	for raw := range strings.Lines(string(data)) {
+		line, ended := strings.CutSuffix(raw, "\n")
+		if ended {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		if !printableASCII(line) || strings.HasSuffix(line, "\\") {
+			return false
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || trimmed[0] == '#' || trimmed[0] == '!' {
 			continue
@@ -656,6 +666,16 @@ func stockMavenWrapper(data []byte) bool {
 	return seen["distributionUrl"]
 }
 
+// printableASCII reports whether every byte of s is a printable ASCII character, space included.
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
 // gradleRootPackage reads group and version from the root build script and the project name from
 // settings. A project with no literal top-level group, or no top-level rootProject.name literal,
 // publishes no coordinate the scan can name. The version is read only where every statement that
@@ -674,7 +694,7 @@ func gradleRootPackage(buildDir string) (RootPackage, bool) {
 		return RootPackage{}, false
 	}
 	version := script.version
-	if !settingsPlain || bothExist(buildDir, "build.gradle.kts", "build.gradle") || bothExist(buildDir, "settings.gradle.kts", "settings.gradle") || !absent(filepath.Join(buildDir, "buildSrc")) || !stockGradleWrapper(buildDir) {
+	if !settingsPlain || bothExist(buildDir, "build.gradle.kts", "build.gradle") || bothExist(buildDir, "settings.gradle.kts", "settings.gradle") || !absent(filepath.Join(buildDir, "buildSrc")) || !gradlewrapper.StockGradleWrapper(buildDir) {
 		version = ""
 	}
 	return RootPackage{PURLType: "maven", Name: script.group + ":" + name, Version: establishedVersion("maven", version)}, true
@@ -697,8 +717,6 @@ var (
 	gradleRootNameStmt  = regexp.MustCompile(`^rootProject\.name\b`)
 	gradleDependency    = regexp.MustCompile(`^(api|implementation|compileOnly|runtimeOnly|annotationProcessor|testImplementation|testCompileOnly|testRuntimeOnly|testAnnotationProcessor)\s*(\(\s*['"]\s*['"]\s*\)|['"]\s*['"])$`)
 	gradleRepository    = regexp.MustCompile(`^(mavenCentral|google|gradlePluginPortal|mavenLocal)\s*\(\s*\)$`)
-	gradleStockDist     = regexp.MustCompile(`^https://services\.gradle\.org/distributions/gradle-[0-9][0-9A-Za-z.-]*-(bin|all)\.zip$`)
-	gradleDistURL       = regexp.MustCompile(`(?m)^[ \t\f]*distributionUrl[ \t\f]*[=:][ \t\f]*(.*?)[ \t\f\r]*$`)
 	mavenWrapperKey     = regexp.MustCompile(`^(distributionUrl|distributionSha256Sum|distributionType|wrapperUrl|wrapperSha256Sum|wrapperVersion)$`)
 	mavenStockDist      = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/apache-maven/[0-9][0-9A-Za-z.-]*/apache-maven-[0-9][0-9A-Za-z.-]*-bin\.(zip|tar\.gz)$`)
 	mavenStockWrapper   = regexp.MustCompile(`^https://repo\.maven\.apache\.org/maven2/org/apache/maven/wrapper/maven-wrapper/[0-9][0-9A-Za-z.-]*/maven-wrapper-[0-9][0-9A-Za-z.-]*\.jar$`)
@@ -823,21 +841,6 @@ func gradlePlainBlock(src, code string, depth []int, st [2]int, word string) boo
 		}
 	}
 	return true
-}
-
-// stockGradleWrapper reports whether the wrapper, when there is one, fetches a distribution from
-// services.gradle.org; a custom distribution can carry init scripts that set the version.
-func stockGradleWrapper(buildDir string) bool {
-	path := filepath.Join(buildDir, "gradle", "wrapper", "gradle-wrapper.properties")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return absent(path)
-	}
-	urls := gradleDistURL.FindAllStringSubmatch(string(data), -1)
-	if len(urls) != 1 {
-		return false
-	}
-	return gradleStockDist.MatchString(strings.NewReplacer(`\:`, ":", `\=`, "=").Replace(urls[0][1]))
 }
 
 // absent reports whether nothing exists at path; an error other than not-exist counts as present.

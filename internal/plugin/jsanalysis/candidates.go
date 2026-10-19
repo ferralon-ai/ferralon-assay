@@ -144,7 +144,8 @@ var docExts = map[string]bool{
 
 // jsCandidate is the JavaScript classifier: it reports whether the file at path, with up to
 // buildtree.HeadSize bytes of content head (nil when binary or empty), names or holds a
-// JavaScript install surface, and the rule that matched.
+// JavaScript install surface, and the rule that matched. A nil head is re-read and judged with
+// its NULs removed or turned into newlines (buildtree.NULHeadMatch).
 //
 // Every file whose name holds "pnpmfile" is a candidate (an install hook can add any package),
 // and so is a pnpm-workspace.yaml, .yarnrc* or .npmrc that mentions any of rewriteConfigWords
@@ -217,8 +218,11 @@ var (
 )
 
 func jsCandidateContent(path string, head []byte) (string, bool) {
-	if head == nil || docExts[strings.ToLower(filepath.Ext(path))] {
+	if docExts[strings.ToLower(filepath.Ext(path))] {
 		return "", false
+	}
+	if head == nil {
+		return buildtree.NULHeadMatch(path, jsCandidateContent)
 	}
 	trimmed := bytes.TrimLeft(bytes.TrimPrefix(head, []byte("\xef\xbb\xbf")), " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '{' {

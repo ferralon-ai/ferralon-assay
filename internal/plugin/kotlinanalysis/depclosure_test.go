@@ -167,7 +167,13 @@ func nameLaunchEntry(t *testing.T, dir, main string) {
 
 func reach(t *testing.T, dir string, sinks ...string) plugin.ReachabilityResult {
 	t.Helper()
-	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: sinks})
+	return reachUnder(t, dir, nil, sinks...)
+}
+
+// reachUnder runs Reachability with the run's stated target-environment conditions.
+func reachUnder(t *testing.T, dir string, env map[string]string, sinks ...string) plugin.ReachabilityResult {
+	t.Helper()
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: dir, Symbols: sinks, TargetEnv: env})
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -1006,21 +1012,36 @@ func TestReachability_InventoryGraphReasonsWithholdSearched(t *testing.T) {
 	maven := func(childPOM bool) func(t *testing.T) (string, string) {
 		return func(t *testing.T) (string, string) { return mavenBuild(t, childPOM), "org/a/A.sink()V" }
 	}
+	// mavenProfile adds a profile that sets a property, undecided until the selection is stated.
+	mavenProfile := func(t *testing.T) (string, string) {
+		dir, sink := maven(true)(t)
+		pom := filepath.Join(dir, "pom.xml")
+		body, err := os.ReadFile(pom)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeBuildFile(t, dir, "pom.xml", strings.Replace(string(body), "</project>",
+			"<profiles><profile><id>prod</id><properties><deploy.env>prod</deploy.env></properties></profile></profiles></project>", 1))
+		return dir, sink
+	}
 	tests := []struct {
 		name     string
 		build    func(t *testing.T) (string, string)
+		env      map[string]string
 		reason   string // the graph reason the row declares, "" for none
 		searched bool
 	}{
-		{"gradle, locked: searched", gradle(true), "", true},
-		{"gradle, no lockfile: gradle_transitive withholds Searched", gradle(false), "relationship_unexpressed:gradle_transitive", false},
-		{"maven, child POM cached: searched", maven(true), "", true},
-		{"maven, child POM uncached: maven_uncached_subtree withholds Searched", maven(false), "relationship_unexpressed:maven_uncached_subtree", false},
+		{"gradle, locked: searched", gradle(true), nil, "", true},
+		{"gradle, no lockfile: gradle_transitive withholds Searched", gradle(false), nil, "relationship_unexpressed:gradle_transitive", false},
+		{"maven, child POM cached: searched", maven(true), nil, "", true},
+		{"maven, child POM uncached: maven_uncached_subtree withholds Searched", maven(false), nil, "relationship_unexpressed:maven_uncached_subtree", false},
+		{"maven, profile with no selection stated: profile_activation withholds Searched", mavenProfile, nil, "env_condition_unresolved:profile_activation", false},
+		{"maven, profile with no profiles selected: searched", mavenProfile, map[string]string{"maven.profiles": ","}, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, sink := tt.build(t)
-			res := reach(t, dir, sink)
+			res := reachUnder(t, dir, tt.env, sink)
 			if got := len(res.Searched) > 0; got != tt.searched {
 				t.Errorf("Searched = %v, want searched %v (%+v)", res.Searched, tt.searched, res.Partiality)
 			}

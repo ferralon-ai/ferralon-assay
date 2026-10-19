@@ -151,8 +151,8 @@ func AssessStages(opts ...AssessOption) []Stage {
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
 		exposureFootprintStage{},
 	}
 }
@@ -3005,6 +3005,8 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 type symbolMapping struct {
 	plugin           plugin.LanguagePlugin
 	skipDisqualified bool
+	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
+	targetEnv map[string]string
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
@@ -3026,6 +3028,7 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
+			TargetEnv:       s.targetEnv,
 		})
 		if err != nil {
 			return err
@@ -3104,6 +3107,8 @@ type reachabilityIngress struct {
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
+	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
+	targetEnv map[string]string
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3210,6 +3215,7 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
 		Package:     admittedPackagePURL(store, c.ID),
+		TargetEnv:   s.targetEnv,
 	})
 	if err != nil {
 		return err

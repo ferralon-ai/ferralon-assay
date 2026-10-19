@@ -120,7 +120,7 @@ func ingressPartiality(prog *program) plugin.Partiality {
 // matched against the first-party source.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
 	if coordinate, version, ok := coordinateOfPURL(req.PURL); ok && !isRootCoordinate(req.BuildDir, coordinate) {
-		dep, err := resolveDependencyJarSymbols(ctx, req.BuildDir, coordinate, version, req.AdvisorySymbols)
+		dep, err := resolveDependencyJarSymbols(ctx, req.BuildDir, req.TargetEnv, coordinate, version, req.AdvisorySymbols)
 		if err != nil {
 			return plugin.SymbolResolutionResult{}, err
 		}

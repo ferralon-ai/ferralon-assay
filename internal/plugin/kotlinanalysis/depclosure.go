@@ -94,11 +94,11 @@ func (n depNode) coordinate() string { return n.group + ":" + n.artifact }
 func (n depNode) packageURL() string { return "pkg:maven/" + n.group + "/" + n.artifact }
 func (n depNode) gav() string        { return n.coordinate() + ":" + n.version }
 
-// loadDependencyClosure resolves the inventory for buildDir and loads every node's JAR it can
+// loadDependencyClosure resolves the inventory for buildDir under the run's stated targetEnv and loads every node's JAR it can
 // locate. firstParty names classes already loaded from the build output; a dependency class
 // with the same binary name is skipped (the build output is what the build packaged).
-func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[string]bool) (*depClosure, error) {
-	dc, err := loadClasspath(ctx, buildDir, firstParty)
+func loadDependencyClosure(ctx context.Context, buildDir string, targetEnv map[string]string, firstParty map[string]bool) (*depClosure, error) {
+	dc, err := loadClasspath(ctx, buildDir, targetEnv, firstParty)
 	if err != nil {
 		return nil, err
 	}
@@ -111,11 +111,11 @@ func loadDependencyClosure(ctx context.Context, buildDir string, firstParty map[
 
 // loadClasspath loads the start-script classpath when a start script parses, and the
 // inventory's otherwise.
-func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]bool) (*depClosure, error) {
+func loadClasspath(ctx context.Context, buildDir string, targetEnv map[string]string, firstParty map[string]bool) (*depClosure, error) {
 	if rc, ok := findRuntimeClasspath(buildDir); ok {
 		return loadRuntimeClasspath(buildDir, rc, firstParty), nil
 	}
-	inv, err := javaanalysis.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+	inv, err := javaanalysis.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir, TargetEnv: targetEnv})
 	if err != nil {
 		return nil, err
 	}

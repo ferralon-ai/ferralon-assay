@@ -338,6 +338,9 @@ func (e *Engine) platform(name string) bool {
 	return isPlatformClass(name)
 }
 
+// IsPlatformClass is isPlatformClass for callers outside the engine.
+func IsPlatformClass(name string) bool { return isPlatformClass(name) }
+
 // isPlatformClass reports whether an internal class name belongs to the Java
 // platform (the JDK's own modules), whose bodies the engine treats as leaves under
 // the re-entry rule rather than as unseen dependency code. Misfiling a dependency

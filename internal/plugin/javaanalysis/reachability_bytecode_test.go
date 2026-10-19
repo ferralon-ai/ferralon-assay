@@ -127,6 +127,9 @@ func newApp(t *testing.T, extraDeps string, abstractSink bool) *appFixture {
     <dependency><groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version></dependency>
     ` + extraDeps + `
   </dependencies>
+  <build><plugins><plugin><artifactId>maven-jar-plugin</artifactId>
+    <configuration><archive><manifest><mainClass>com.acme.App</mainClass></manifest></archive></configuration>
+  </plugin></plugins></build>
 </project>`
 	writeFileT(t, filepath.Join(build, "pom.xml"), pom)
 	b := &cpb{}
@@ -788,8 +791,8 @@ func gradleApp(t *testing.T, extraDeps, extraLocks string) *appFixture {
 	t.Setenv("HOME", t.TempDir())
 	build := t.TempDir()
 	writeFileT(t, filepath.Join(build, "settings.gradle"), "rootProject.name = 'app'\n")
-	writeFileT(t, filepath.Join(build, "build.gradle"), "plugins { id 'java' }\ndependencies {\n    implementation 'com.evil:netkit:1.0.0'\n"+extraDeps+"}\n"+
-		"dependencyLocking { lockAllConfigurations() }\n")
+	writeFileT(t, filepath.Join(build, "build.gradle"), "plugins {\n    id 'java'\n    id 'application'\n}\ndependencies {\n    implementation 'com.evil:netkit:1.0.0'\n"+extraDeps+"}\n"+
+		"dependencyLocking { lockAllConfigurations() }\napplication { mainClass = 'com.acme.App' }\n")
 	writeFileT(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath,runtimeClasspath\n"+extraLocks+"empty=\n")
 	b := &cpb{}
 	jar := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}})
@@ -958,5 +961,228 @@ func TestBytecodeReach_RuntimeArtifactsWithholdSearched(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// editPOM rewrites the fixture pom.xml, failing when old is absent.
+func (a *appFixture) editPOM(old, new string) {
+	a.t.Helper()
+	p := filepath.Join(a.build, "pom.xml")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	if !strings.Contains(string(data), old) {
+		a.t.Fatalf("pom.xml has no %q", old)
+	}
+	writeFileT(a.t, p, strings.Replace(string(data), old, new, 1))
+}
+
+const pomMainClass = `<mainClass>com.acme.App</mainClass>`
+
+// callback writes a first-party class with the given ancestry and a no-op method, the shape
+// of a class only a container calls.
+func (a *appFixture) callback(owner, super string, ifaces ...string) {
+	a.t.Helper()
+	simple := owner[strings.LastIndex(owner, "/")+1:]
+	a.source("src/main/java/"+owner+".java", "package com.acme;\npublic class "+simple+" { public void handle() {} }\n")
+	a.classI("target/classes", owner, super, ifaces, 0x0021, func(b *cpb) []xmethod {
+		return []xmethod{{"handle", "()V", accPublic, ret}}
+	})
+}
+
+// A main licenses Searched only when the build names it as the launch entry and no other
+// entry shape is present: an empty search from a trivial main says nothing about a filter,
+// listener or war the container starts, or a dependency launcher that never calls main.
+func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(a *appFixture)
+		reason string // "" for a control, which stays Searched
+	}{
+		{"build-named Main-Class: searched", func(*appFixture) {}, ""},
+		{"Main-Class from a POM property: searched", func(a *appFixture) {
+			a.editPOM(pomMainClass, `<mainClass>${app.main}</mainClass>`)
+			a.editPOM(`<dependencies>`, `<properties><app.main>com.acme.App</app.main></properties><dependencies>`)
+		}, ""},
+		{"Spring Boot launcher with Start-Class: searched", func(a *appFixture) {
+			a.editPOM(pomMainClass, "")
+			writeFileT(t, filepath.Join(a.build, "src/main/resources/META-INF/MANIFEST.MF"),
+				"Manifest-Version: 1.0\nMain-Class: org.springframework.boot.loader.launch.JarLauncher\nStart-Class: com.acme.App\n")
+		}, ""},
+		{"no named entry: launch_entry_unnamed", func(a *appFixture) {
+			a.editPOM(pomMainClass, "")
+		}, reasonLaunchEntryUnnamed},
+		{"javax Filter: container_callback", func(a *appFixture) {
+			a.callback("com/acme/Gate", "java/lang/Object", "javax/servlet/Filter")
+		}, reasonContainerCallback},
+		{"javax ServletContextListener: container_callback", func(a *appFixture) {
+			a.callback("com/acme/Boot", "java/lang/Object", "javax/servlet/ServletContextListener")
+		}, reasonContainerCallback},
+		{"jakarta Filter: container_callback", func(a *appFixture) {
+			a.callback("com/acme/Gate", "java/lang/Object", "jakarta/servlet/Filter")
+		}, reasonContainerCallback},
+		{"jakarta session listener through a first-party base: container_callback", func(a *appFixture) {
+			a.callback("com/acme/BaseListener", "java/lang/Object", "jakarta/servlet/http/HttpSessionListener")
+			a.callback("com/acme/Sessions", "com/acme/BaseListener")
+		}, reasonContainerCallback},
+		{"JMS MessageListener: container_callback", func(a *appFixture) {
+			a.callback("com/acme/Inbox", "java/lang/Object", "javax/jms/MessageListener")
+		}, reasonContainerCallback},
+		{"unreadable ancestor: container_callback", func(a *appFixture) {
+			a.callback("com/acme/Hook", "com/other/Base")
+		}, reasonContainerCallback},
+		{"war packaging: war_packaging", func(a *appFixture) {
+			a.editPOM(`<version>1.0.0</version>`, `<version>1.0.0</version><packaging>war</packaging>`)
+		}, reasonWarPackaging},
+		{"built .war: war_packaging", func(a *appFixture) {
+			writeFileT(t, filepath.Join(a.build, "target", "app-1.0.0.war"), "")
+		}, reasonWarPackaging},
+		{"Vert.x Launcher with Main-Verticle: launch_entry_unmapped", func(a *appFixture) {
+			a.editPOM(pomMainClass, `<manifestEntries><Main-Class>io.vertx.core.Launcher</Main-Class><Main-Verticle>com.acme.App</Main-Verticle></manifestEntries>`)
+		}, reasonLaunchEntryUnmapped},
+		{"shipped manifest naming a dependency launcher: launch_entry_unmapped", func(a *appFixture) {
+			writeFileT(t, filepath.Join(a.build, "src/main/resources/META-INF/MANIFEST.MF"), "Manifest-Version: 1.0\nMain-Class: io.vertx.core.Launcher\n")
+		}, reasonLaunchEntryUnmapped},
+		{"Spring Boot launcher without Start-Class: launch_entry_unmapped", func(a *appFixture) {
+			a.editPOM(pomMainClass, "")
+			writeFileT(t, filepath.Join(a.build, "src/main/resources/META-INF/MANIFEST.MF"),
+				"Manifest-Version: 1.0\nMain-Class: org.springframework.boot.loader.JarLauncher\n")
+		}, reasonLaunchEntryUnmapped},
+		{"unresolved property: launch_entry_unmapped", func(a *appFixture) {
+			a.editPOM(pomMainClass, `<mainClass>${start.class}</mainClass>`)
+		}, reasonLaunchEntryUnmapped},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			tt.setup(a)
+			res := a.reach(netkitSinkID)
+			if tt.reason == "" {
+				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
+					t.Fatalf("control: Searched = %v, partiality %+v", res.Searched, res.Partiality)
+				}
+				return
+			}
+			if len(res.Searched) != 0 {
+				t.Fatalf("Searched despite %s: %v", tt.reason, res.Searched)
+			}
+			if !hasReason(res.Partiality, tt.reason) {
+				t.Errorf("missing run-wide %s: %+v", tt.reason, res.Partiality)
+			}
+		})
+	}
+}
+
+// callStatic is invokestatic owner.name()V; return.
+func callStatic(owner, name string) func(b *cpb) []byte {
+	return func(b *cpb) []byte {
+		idx := b.mref(owner, name, "()V")
+		return append([]byte{0xB8}, append(be2(idx), 0xB1)...)
+	}
+}
+
+// netkitRelease rewrites the netkit JAR with UrlFetcher, a base Util whose static run() is a
+// no-op, and the extra entries given (multi-release overrides among them).
+func (a *appFixture) netkitRelease(extra map[string][]byte) {
+	a.t.Helper()
+	b := &cpb{}
+	entries := map[string][]byte{
+		"com/evil/netkit/UrlFetcher.class": emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}}),
+		"META-INF/MANIFEST.MF":             []byte("Manifest-Version: 1.0\nMulti-Release: true\n"),
+	}
+	b = &cpb{}
+	entries["com/evil/netkit/Util.class"] = emitClassX(b, "com/evil/netkit/Util", "java/lang/Object", 0x0021, []xmethod{{"run", "()V", accPublicStatic, ret}})
+	for k, v := range extra {
+		entries[k] = v
+	}
+	writeJarEntries(a.t, filepath.Join(a.build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"), entries)
+}
+
+// utilOverride is a META-INF/versions/11 Util with the given super class and run body.
+func utilOverride(super string, run func(b *cpb) []byte, more ...xmethod) map[string][]byte {
+	b := &cpb{}
+	methods := append([]xmethod{{"run", "()V", accPublicStatic, run(b)}}, more...)
+	return map[string][]byte{"META-INF/versions/11/com/evil/netkit/Util.class": emitClassX(b, "com/evil/netkit/Util", super, 0x0021, methods)}
+}
+
+// A JDK at release 11 or later runs a multi-release JAR's versions/11 body in place of the
+// base class. The override is read and merged into the base, so a call only the override
+// makes is a path; an override that cannot be merged soundly withholds Searched.
+func TestBytecodeReach_MultiReleaseOverrides(t *testing.T) {
+	tests := []struct {
+		name   string
+		extra  func() map[string][]byte
+		call   string // the netkit class main calls run() on
+		path   bool   // the sink is reached
+		reason string // run-wide reason when withheld; "" with !path for a Searched control
+	}{
+		{"override reaching the sink: path", func() map[string][]byte {
+			return utilOverride("java/lang/Object", callFetch)
+		}, "com/evil/netkit/Util", true, ""},
+		{"override not reaching the sink: searched", func() map[string][]byte {
+			return utilOverride("java/lang/Object", justReturn, xmethod{"helper", "()V", 0x000A, ret})
+		}, "com/evil/netkit/Util", false, ""},
+		{"class only an override defines: path", func() map[string][]byte {
+			b := &cpb{}
+			return map[string][]byte{"META-INF/versions/9/com/evil/netkit/Extra.class": emitClassX(b, "com/evil/netkit/Extra", "java/lang/Object", 0x0021,
+				[]xmethod{{"run", "()V", accPublicStatic, callFetch(b)}})}
+		}, "com/evil/netkit/Extra", true, ""},
+		{"override with another super class: multi_release_unmerged", func() map[string][]byte {
+			return utilOverride("com/evil/netkit/UrlFetcher", justReturn)
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		{"one-sided method an ancestor declares: multi_release_unmerged", func() map[string][]byte {
+			return utilOverride("java/lang/Object", justReturn, xmethod{"toString", "()Ljava/lang/String;", accPublic, []byte{0x01, 0xB0}})
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.netkitRelease(tt.extra())
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(callStatic(tt.call, "run")))
+			res := a.reach(netkitSinkID)
+			switch {
+			case tt.path:
+				if len(res.Paths) != 1 || len(res.Searched) != 0 {
+					t.Fatalf("want one path, got paths %+v searched %v (partiality %+v)", res.Paths, res.Searched, res.Partiality)
+				}
+			case tt.reason == "":
+				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
+					t.Fatalf("control: Searched = %v, partiality %+v", res.Searched, res.Partiality)
+				}
+			default:
+				if len(res.Searched) != 0 {
+					t.Fatalf("Searched despite %s: %v", tt.reason, res.Searched)
+				}
+				if !hasReason(res.Partiality, tt.reason) || !hasScoped(res.Partiality, tt.reason, netkitPURL) {
+					t.Errorf("missing run-wide and scoped %s: %+v", tt.reason, res.Partiality)
+				}
+			}
+		})
+	}
+}
+
+// A multi-release override in the first-party class output is not merged: it is a gap in the
+// output, which withholds Searched.
+func TestBytecodeReach_FirstPartyReleaseOverrideIsAGap(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+	a.class("target/classes/META-INF/versions/11", "com/acme/App", mainCalling(callFetch))
+	res := a.reach(netkitSinkID)
+	if len(res.Searched) != 0 {
+		t.Fatalf("Searched with an unread first-party override: %v", res.Searched)
+	}
+	found := false
+	for _, s := range res.Partiality.Scoped {
+		if s.Reason == reasonFirstPartyBytecodeAbsent && strings.Contains(s.Path, "multi-release override not read") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing first_party_bytecode_absent for the override: %+v", res.Partiality.Scoped)
 	}
 }

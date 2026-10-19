@@ -16,7 +16,9 @@ import (
 //
 // Roots are traced in two roles:
 //   - a main method (public static void main(String[])) is a whole-program root: when every
-//     main's search comes back empty with no hazard, the sink is listed in Searched;
+//     main's search comes back empty with no hazard, and the build names a main as its launch
+//     entry with no other entry shape present (launchentry.go), the sink is listed in
+//     Searched;
 //   - an ingress the lexical recognisers found (a Spring route, a servlet method), mapped to
 //     its compiled method, can yield a candidate path or block Searched, but never licenses
 //     it: a framework host runs code no main reaches.
@@ -25,8 +27,8 @@ import (
 // (its <clinit>, its superclasses', and each superinterface's that declares a default method),
 // and an instance root's no-arg constructor.
 //
-// A sink is Searched only when the class output covers the sources, there is at least one
-// main, every mapped root's search is empty and hazard-free, every ingress mapped to
+// A sink is Searched only when the class output covers the sources, the launch entry
+// licenses it (a build-named first-party main, no unmapped entry shape), every mapped root's search is empty and hazard-free, every ingress mapped to
 // compiled code, the closure declares no run-wide reason (reachClosure.Reasons: an inventory
 // graph reason, an unmodeled launch option, an unmodeled Gradle dependency form), and the sink
 // has a concrete body in loaded code. Otherwise a sink with no path carries no_known_ingress +
@@ -71,6 +73,10 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		scoped = append(scoped, fp.scoped()...)
 	}
 
+	entry := findLaunchEntry(fp, rc.class)
+	for _, r := range entry.reasons {
+		reasons[r] = true
+	}
 	mains := mainRoots(fp.classes)
 	ingresses, unmapped := ingressRoots(prog, fp.classes)
 	if len(mains) == 0 {
@@ -104,7 +110,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 				reasons[plugin.PartialReasonNoIngress] = true // reached from a main, not an attacker-facing ingress
 			}
 			paths = append(paths, *found)
-		case clean && len(mains) > 0 && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink):
+		case clean && entry.licenses() && fp.complete() && !unmapped && len(rc.Reasons) == 0 && rc.concrete(sink):
 			searched = append(searched, id)
 		default:
 			reasons[plugin.PartialReasonNoIngress] = true

@@ -573,6 +573,7 @@ type Range struct {
 	Fixed        string // exclusive upper bound: the release fixing THIS range
 	LastAffected string // inclusive upper bound; set instead of Fixed when no fix release exists
 	FixedVersion string // per-range fix source for the branch-aware two-trace PoNE predecessor
+	Type         string `json:",omitempty"` // OSV range type (SEMVER | ECOSYSTEM | GIT); "" when the source states none
 }
 
 // TrustTier gates refute eligibility for a fact. Only first_party facts may drive a
@@ -1384,7 +1385,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 			Module:         p.Module,
 			Coordinate:     p.Coordinate,
 			PURL:           p.PURL,
-			AffectedRanges: buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme),
+			AffectedRanges: withDisagreeingLegacyRanges(buildAffectedRanges(p.AffectedRanges, p.UpperExclusive, pkgScheme), p, facts, scheme),
 			Symbols:        p.Symbols,
 		})
 	}
@@ -2167,16 +2168,16 @@ const (
 )
 
 // affectedRange is the single, unambiguous structured constraint this stage understands: an
-// upper-exclusive semver bound (the "affects < X" form).
-//
-// LowerInclusive and LastAffected carry the bounds that form cannot express, so a reader can tell
-// "every version from here on" (no fix, no lower bound above zero) from a range the version axis
-// cannot bound. The version axis itself reads only UpperExclusive.
+// upper-exclusive semver bound (the "affects < X" form), floored by an inclusive LowerInclusive
+// bound when the range was introduced above zero. LastAffected is the inclusive upper bound a range
+// carries when it has no upper-exclusive one. versionOutsideRange is the one reading of all of
+// them.
 type affectedRange struct {
 	UpperExclusive string `json:"upper_exclusive"`
 	Scheme         string `json:"scheme,omitempty"`
 	LowerInclusive string `json:"lower_inclusive,omitempty"` // an introduced bound above zero
 	LastAffected   string `json:"last_affected,omitempty"`
+	Type           string `json:"type,omitempty"`
 }
 
 // advisoryAffectedPackage is one element of the normalized-advisory artifact's affected_packages[]
@@ -2224,7 +2225,7 @@ func buildAffectedRanges(ranges []Range, upperExclusive, scheme string) []affect
 	if len(ranges) > 0 {
 		out := make([]affectedRange, 0, len(ranges))
 		for _, r := range ranges {
-			ar := affectedRange{UpperExclusive: r.Fixed, Scheme: scheme, LastAffected: r.LastAffected}
+			ar := affectedRange{UpperExclusive: r.Fixed, Scheme: scheme, LastAffected: r.LastAffected, Type: r.Type}
 			// OSV writes an unbounded start as "0"; some feeds spell it "0.0.0".
 			if r.Introduced != "0" && r.Introduced != "0.0.0" {
 				ar.LowerInclusive = r.Introduced
@@ -2507,8 +2508,9 @@ func versionOutsideRanges(ver string, rngs []affectedRange) (outside bool, ok bo
 	return true, true // provably outside every range
 }
 
-// versionOutsideRange reports whether ver is provably outside the affected set affects<upper.
-func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) {
+// versionOutsideUpper reports whether ver is provably at or past rng's upper-exclusive bound
+// (affects<upper). It reads only UpperExclusive and Scheme; versionOutsideRange adds the other bounds.
+func versionOutsideUpper(ver string, rng affectedRange) (outside bool, ok bool) {
 	if rng.Scheme == "maven" {
 		return mavenVersionOutsideRange(ver, rng.UpperExclusive)
 	}
@@ -2541,7 +2543,7 @@ func versionOutsideRange(ver string, rng affectedRange) (outside bool, ok bool) 
 
 // extractAffectedRange reads the advisory's full affected set (one or more disjoint ranges) from
 // the normalized-advisory artifact. rangeKnown is false — the version axis then fails OPEN (inv.5) —
-// when there is no artifact, no range, or ANY range lacks a usable upper-exclusive bound: a set with
+// when there is no artifact, no range, or ANY range carries no bound at all: a set with
 // one unexpressable range cannot soundly prove outside-EVERY-range, so the whole set is withheld
 // rather than disqualifying on the expressable subset (which would risk a fabricated not-affected).
 // extractSelectedPackage joins the codebase_inventory selection back to the normalized-advisory
@@ -2641,16 +2643,16 @@ func extractAffectedRange(store artifact.Store, caseID string) ([]affectedRange,
 }
 
 // validAffectedRanges returns the range set only when it is wholly usable: non-empty and every entry
-// carries an upper-exclusive bound. A set with one unexpressable range cannot soundly prove
-// outside-EVERY-range, so the whole set is withheld (rangeKnown=false → the version axis fails OPEN,
-// inv.5) rather than disqualifying on the expressable subset (which would risk a fabricated
-// not-affected).
+// carries at least one bound (upper-exclusive, last_affected or introduced). A set with one boundless
+// range cannot soundly prove outside-EVERY-range, so the whole set is withheld (rangeKnown=false → the
+// version axis fails OPEN, inv.5) rather than disqualifying on the expressable subset (which would
+// risk a fabricated not-affected).
 func validAffectedRanges(rngs []affectedRange) ([]affectedRange, bool) {
 	if len(rngs) == 0 {
 		return nil, false
 	}
 	for _, r := range rngs {
-		if r.UpperExclusive == "" {
+		if r.UpperExclusive == "" && r.LastAffected == "" && r.LowerInclusive == "" {
 			return nil, false
 		}
 	}
@@ -2971,6 +2973,7 @@ func (s disqualificationDiscovery) Run(ctx context.Context, c *assessment.Assess
 	}
 
 	rngs, rangeKnown := extractAffectedRange(store, c.ID)
+	rngs = rangesForFloorVersion(store, c.ID, rngs)
 	axis, axisKnown := extractVersionAxis(store, c.ID)
 	symbol, symbolKnown := extractSymbolSignal(store, c.ID)
 	trust, _ := extractAdvisoryTrust(store, c.ID) // miss/unknown ⇒ zero tier ⇒ refute suppressed (inv.5)

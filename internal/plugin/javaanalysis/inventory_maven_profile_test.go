@@ -977,12 +977,14 @@ func TestMavenProfile_UndecidedProfileShiftsMediation(t *testing.T) {
 // left unresolved, whether or not the BOM itself declares the coordinate as a dependency.
 func TestMavenProfile_ImportedBOMProfileManagedVersionWithholds(t *testing.T) {
 	for _, tt := range []struct {
-		name, where string // where: the BOM's own POM or its parent
+		name, where string // where: the BOM's own POM, its parent, or a BOM it imports
 		mgmt        string // the undecided profile's managed version of org.x:x
 		withheld    bool
 	}{
 		{"BOM profile re-manages to another version", "bom", "2.0", true},
 		{"BOM parent profile re-manages to another version", "parent", "2.0", true},
+		{"nested BOM profile re-manages to another version", "inner", "2.0", true},
+		{"nested BOM profile manages to the same version", "inner", "1.0", true},
 		{"BOM profile manages to the same version", "bom", "1.0", true},
 		{"BOM profile manages another coordinate", "bom", "", true},
 	} {
@@ -999,14 +1001,19 @@ func TestMavenProfile_ImportedBOMProfileManagedVersionWithholds(t *testing.T) {
 			profile := `<profiles><profile><id>bp</id><activation><jdk>11</jdk></activation>
 <dependencyManagement><dependencies><dependency>` + managed + `</dependency></dependencies></dependencyManagement>
 </profile></profiles>`
-			bomProfile, parentProfile := profile, ""
-			if tt.where == "parent" {
+			bomProfile, parentProfile, innerImport := profile, "", ""
+			switch tt.where {
+			case "parent":
 				bomProfile, parentProfile = "", profile
+			case "inner":
+				bomProfile = ""
+				innerImport = `<dependency><groupId>org.bom</groupId><artifactId>inner</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>`
+				writeCachePOM(t, m2, "org.bom", "inner", "1.0", `<project><groupId>org.bom</groupId><artifactId>inner</artifactId><version>1.0</version><packaging>pom</packaging>`+profile+`</project>`)
 			}
 			writeCachePOM(t, m2, "org.bom", "bom-parent", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version><packaging>pom</packaging>`+parentProfile+`</project>`)
 			writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><parent><groupId>org.bom</groupId><artifactId>bom-parent</artifactId><version>1.0</version></parent>
 <artifactId>bom</artifactId><packaging>pom</packaging>
-<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency></dependencies></dependencyManagement>`+bomProfile+`</project>`)
+<dependencyManagement><dependencies><dependency><groupId>org.x</groupId><artifactId>x</artifactId><version>1.0</version></dependency>`+innerImport+`</dependencies></dependencyManagement>`+bomProfile+`</project>`)
 			for _, ga := range [][2]string{{"org.x", "x"}, {"org.y", "y"}} {
 				for _, v := range []string{"1.0", "2.0"} {
 					writeCachePOM(t, m2, ga[0], ga[1], v, `<project><groupId>`+ga[0]+`</groupId><artifactId>`+ga[1]+`</artifactId><version>`+v+`</version></project>`)

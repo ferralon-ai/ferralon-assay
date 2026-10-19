@@ -314,6 +314,8 @@ func TestResolveVersions_MavenAllowList(t *testing.T) {
 		{"reactor modules agree", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, "1.4.0"},
 		{"module in a skipped directory agrees", map[string]string{"pom.xml": reactorOf("a", "build"), "a/pom.xml": widgetPOM("1.4.0", ""), "build/pom.xml": widgetPOM("1.4.0", "")}, "1.4.0"},
 		{"module in a skipped directory disagrees", map[string]string{"pom.xml": reactorOf("a", "build"), "a/pom.xml": widgetPOM("1.4.0", ""), "build/pom.xml": widgetPOM("1.3.9", "")}, ""},
+		{"module only a profile lists", map[string]string{"pom.xml": strings.Replace(reactorOf(), "<modules></modules>", "<profiles><profile><id>p</id><modules><module>build</module></modules></profile></profiles>", 1),
+			"build/pom.xml": widgetPOM("1.4.0", "")}, ""},
 		{"module file not named pom.xml", map[string]string{"pom.xml": reactorOf("a", "b/b-pom.xml"), "a/pom.xml": widgetPOM("1.4.0", ""), "b/b-pom.xml": widgetPOM("1.3.9", "")}, ""},
 		{"nested module in a skipped directory", map[string]string{"pom.xml": reactorOf("a", "out"), "a/pom.xml": widgetPOM("1.4.0", ""),
 			"out/pom.xml": reactorOf("build"), "out/build/pom.xml": widgetPOM("1.3.9", "")}, ""},

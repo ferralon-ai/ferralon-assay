@@ -18,20 +18,49 @@ import (
 // Such an advisory is admitted at every installed version, because the version axis has nothing
 // to compare against. A missing or unreadable advisory artifact reports false.
 func AdvisoryRangeAbsent(store artifact.Store, caseID string) bool {
+	ranges, ok := assessedRanges(store, caseID)
+	return ok && !anyBounded(ranges)
+}
+
+// RecordedBound is what one affected range of a range-absent advisory does record: an introduced
+// version above zero, a last_affected version, or both. Neither is a bound the version axis reads.
+type RecordedBound struct {
+	Introduced   string
+	LastAffected string
+}
+
+// AdvisoryRecordedBounds returns the partial bounds of the affected ranges AdvisoryRangeAbsent
+// read, in advisory order. Every such range records at least one of the two. It returns nil when the advisory
+// has a range the version axis can bound, so it never describes an advisory that is not range-absent.
+func AdvisoryRecordedBounds(store artifact.Store, caseID string) []RecordedBound {
+	ranges, ok := assessedRanges(store, caseID)
+	if !ok || anyBounded(ranges) {
+		return nil
+	}
+	var out []RecordedBound
+	for _, r := range ranges {
+		out = append(out, RecordedBound{Introduced: r.LowerInclusive, LastAffected: r.LastAffected})
+	}
+	return out
+}
+
+// assessedRanges returns the affected ranges of the package the advisory was assessed against. ok is
+// false when the advisory artifact is missing or unreadable.
+func assessedRanges(store artifact.Store, caseID string) ([]affectedRange, bool) {
 	if sel, ok := extractSelectedPackage(store, caseID); ok {
-		return !anyBounded(sel.AffectedRanges)
+		return sel.AffectedRanges, true
 	}
 	arts, err := store.Query(caseID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
-		return false
+		return nil, false
 	}
 	var adv struct {
 		AffectedRanges []affectedRange `json:"affected_ranges"`
 	}
 	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
-		return false
+		return nil, false
 	}
-	return !anyBounded(adv.AffectedRanges)
+	return adv.AffectedRanges, true
 }
 
 func anyBounded(ranges []affectedRange) bool {

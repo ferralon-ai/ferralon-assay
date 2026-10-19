@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -14,6 +15,7 @@ func TestAdvisoryRangeAbsent_Projection(t *testing.T) {
 		ranges     []Range
 		upper      string
 		wantAbsent bool
+		wantBounds []RecordedBound
 	}{
 		{name: "no range at all", wantAbsent: true},
 		{name: "fixed", ranges: []Range{{Introduced: "0", Fixed: "2.0.0"}}},
@@ -21,8 +23,14 @@ func TestAdvisoryRangeAbsent_Projection(t *testing.T) {
 		{name: "introduced zero only: every version", ranges: []Range{{Introduced: "0"}}},
 		{name: "introduced 0.0.0 only: every version", ranges: []Range{{Introduced: "0.0.0"}}},
 		{name: "scalar upper bound only", upper: "2.0.0"},
-		{name: "last_affected only", ranges: []Range{{Introduced: "0", LastAffected: "1.4.0"}}, wantAbsent: true},
-		{name: "introduced above zero only", ranges: []Range{{Introduced: "2.0.0"}}, wantAbsent: true},
+		{name: "last_affected only", ranges: []Range{{Introduced: "0", LastAffected: "1.4.0"}}, wantAbsent: true, wantBounds: []RecordedBound{{LastAffected: "1.4.0"}}},
+		{name: "introduced above zero only", ranges: []Range{{Introduced: "2.0.0"}}, wantAbsent: true, wantBounds: []RecordedBound{{Introduced: "2.0.0"}}},
+		{
+			name:       "introduced and last_affected, two ranges",
+			ranges:     []Range{{Introduced: "1.0.0", LastAffected: "1.2.0"}, {Introduced: "2.0.0"}},
+			wantAbsent: true,
+			wantBounds: []RecordedBound{{Introduced: "1.0.0", LastAffected: "1.2.0"}, {Introduced: "2.0.0"}},
+		},
 		{
 			name:   "one bounded range among unbounded ones",
 			ranges: []Range{{Introduced: "2.0.0"}, {Introduced: "0", Fixed: "1.5.0"}},
@@ -36,6 +44,9 @@ func TestAdvisoryRangeAbsent_Projection(t *testing.T) {
 			})
 			if got := AdvisoryRangeAbsent(store, "c"); got != tc.wantAbsent {
 				t.Errorf("AdvisoryRangeAbsent = %v, want %v", got, tc.wantAbsent)
+			}
+			if got := AdvisoryRecordedBounds(store, "c"); !reflect.DeepEqual(got, tc.wantBounds) {
+				t.Errorf("AdvisoryRecordedBounds = %+v, want %+v", got, tc.wantBounds)
 			}
 		})
 	}

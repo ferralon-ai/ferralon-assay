@@ -420,6 +420,13 @@ type EntryPoint struct {
 	AttackerControllable bool `json:"attacker_controllable"`
 }
 
+// AdvisoryBound is one affected range of an advisory that records no version the version axis can
+// compare against. Either field may be empty.
+type AdvisoryBound struct {
+	Introduced   string `json:"introduced,omitempty"`
+	LastAffected string `json:"last_affected,omitempty"`
+}
+
 // EvidenceSummary is a compact, neutral grounds statement for one advisory's
 // verdict — what made it disqualified / not-reachable / a candidate. It carries
 // the structured basis plus a short human-readable line; it does NOT embed full
@@ -458,6 +465,11 @@ type EvidenceSummary struct {
 	// guard actually closes the hole is a runtime question only the Prove tier settles.
 	// Empty when the advisory declares no guards or none were found on the path.
 	MitigatingGuards []string `json:"mitigating_guards,omitempty"`
+	// AdvisoryBounds is what the advisory's affected ranges record when none of them is a range
+	// the version axis can check (undetermined_reason advisory_range_absent): an introduced
+	// version above zero, a last_affected version, or both, per range. Disclosure only; nothing
+	// reads it to decide a verdict. Set only on an advisory_range_absent finding.
+	AdvisoryBounds []AdvisoryBound `json:"advisory_bounds,omitempty"`
 	// SymbolConfidence qualifies a reachable_candidate by the confidence in how the
 	// vulnerable-symbol set was DERIVED (corpus symbol_provenance). STRENGTH signal only,
 	// never a verdict (inv.5, RFC §4.1): it is read only AFTER a candidate forms, so it can
@@ -906,6 +918,10 @@ func (r Report) Validate() error {
 		if f.Verdict == VerdictUndetermined && f.UndeterminedReason == "" {
 			return fmt.Errorf("report: advisory %q is undetermined but carries no undetermined_reason (an unexplained non-verdict is silent suppression)",
 				f.Advisory.ID)
+		}
+		if len(f.Evidence.AdvisoryBounds) > 0 && f.UndeterminedReason != ReasonAdvisoryRangeAbsent {
+			return fmt.Errorf("report: advisory %q carries advisory_bounds but its undetermined_reason is %q (only a range-absent finding records partial bounds)",
+				f.Advisory.ID, f.UndeterminedReason)
 		}
 		if f.UndeterminedReason != "" && f.Verdict != VerdictUndetermined {
 			return fmt.Errorf("report: advisory %q carries undetermined_reason %q but verdict is %q (a reason explains only an absent verdict)",

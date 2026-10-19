@@ -153,6 +153,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 				EntryPoint:       entry,
 				CallPath:         frames,
 				MitigatingGuards: guards,
+				AdvisoryBounds:   advisoryBounds(store, assessmentID),
 			}
 		}
 	default:
@@ -1223,4 +1224,13 @@ func ecosystemFor(language string) string {
 	default:
 		return language
 	}
+}
+
+// advisoryBounds carries the partial bounds of a range-absent advisory onto its finding.
+func advisoryBounds(store artifact.Store, caseID string) []report.AdvisoryBound {
+	var out []report.AdvisoryBound
+	for _, b := range pipeline.AdvisoryRecordedBounds(store, caseID) {
+		out = append(out, report.AdvisoryBound{Introduced: b.Introduced, LastAffected: b.LastAffected})
+	}
+	return out
 }

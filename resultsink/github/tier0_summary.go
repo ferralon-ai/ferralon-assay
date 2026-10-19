@@ -273,6 +273,14 @@ func renderSummary(r report.Report) string {
 		b.WriteString("\n")
 	}
 
+	if absent := rangeAbsent(r); len(absent) > 0 {
+		b.WriteString("### Reachable, with no version range to check\n\n")
+		for _, f := range absent {
+			fmt.Fprintf(&b, "- %s\n", rangeAbsentLine(f))
+		}
+		b.WriteString("\n")
+	}
+
 	// Methodology, last and collapsed: it qualifies nothing above it, so it must not sit
 	// between the reader and the results.
 	b.WriteString(limitsFooter(r))
@@ -541,6 +549,121 @@ func candidates(r report.Report) []report.AdvisoryFinding {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Advisory.ID < out[j].Advisory.ID })
 	return out
+}
+
+// rangeAbsent returns the findings left undetermined because the advisory gives no version range
+// Assay can check, in stable order. Each still carries the path that reached the advisory's code.
+func rangeAbsent(r report.Report) []report.AdvisoryFinding {
+	var out []report.AdvisoryFinding
+	for i := range r.Advisories {
+		f := r.Advisories[i]
+		if f.Verdict == report.VerdictUndetermined && f.UndeterminedReason == report.ReasonAdvisoryRangeAbsent {
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Advisory.ID < out[j].Advisory.ID })
+	return out
+}
+
+// rangeAbsentLine renders one range-absent finding. It states only what the report holds: the
+// installed version when one was resolved, the entry point or path, and whatever partial bounds the
+// advisory records. Every value from the advisory or the codebase is escaped for markdown and HTML.
+func rangeAbsentLine(f report.AdvisoryFinding) string {
+	version, subject := "version not determined", "the installed version"
+	if f.Package != nil && f.Package.Version != "" && !f.Package.PinUnresolved() {
+		version = mdText(f.Package.Version)
+		subject = version
+	}
+	var b strings.Builder
+	if f.Package != nil {
+		fmt.Fprintf(&b, "%s %s", mdCode(f.Package.Name), version)
+		if f.Package.Ecosystem != "" {
+			fmt.Fprintf(&b, " (%s)", mdText(f.Package.Ecosystem))
+		}
+	} else {
+		fmt.Fprintf(&b, "Code named in the advisory, %s,", version)
+	}
+	switch {
+	case f.Evidence.EntryPoint != nil && f.Evidence.EntryPoint.Symbol != "":
+		fmt.Fprintf(&b, " is reachable from %s", mdCode(f.Evidence.EntryPoint.Symbol))
+	case f.Evidence.ReachablePath != "":
+		fmt.Fprintf(&b, " is reachable along %s", mdCode(f.Evidence.ReachablePath))
+	default:
+		b.WriteString(" is reachable")
+	}
+	fmt.Fprintf(&b, " and is named in %s. The advisory does not give a version range Assay can check %s against", mdText(f.Advisory.ID), subject)
+	if bounds := boundsText(f.Evidence.AdvisoryBounds); bounds != "" {
+		fmt.Fprintf(&b, "; it records: %s", bounds)
+	}
+	fmt.Fprintf(&b, ". Confirm with the advisory or the maintainer whether %s is affected.", subject)
+	return b.String()
+}
+
+// boundsText describes the partial bounds of a range-absent advisory, one clause per range.
+func boundsText(bounds []report.AdvisoryBound) string {
+	var parts []string
+	for _, bd := range bounds {
+		var p []string
+		if bd.Introduced != "" {
+			p = append(p, "introduced "+mdText(bd.Introduced))
+		}
+		if bd.LastAffected != "" {
+			p = append(p, "last affected "+mdText(bd.LastAffected))
+		} else if bd.Introduced != "" {
+			p = append(p, "no fix")
+		}
+		if len(p) > 0 {
+			parts = append(parts, strings.Join(p, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// mdText escapes a value for inline GFM text: HTML is entity-encoded, inline markdown punctuation
+// is backslash-escaped, and line breaks are folded so a value cannot start a new block. Block
+// markers (#, -, +, digits) need no escape because a value never starts a line.
+func mdText(s string) string {
+	var b strings.Builder
+	for _, r := range foldLines(s) {
+		switch r {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		case '\\', '`', '*', '_', '[', ']', '|', '~':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// mdCode renders a value as a GFM code span. The fence is one backtick longer than the longest
+// backtick run in the value, so the value cannot close it; HTML inside a code span is literal.
+func mdCode(s string) string {
+	s = foldLines(s)
+	longest, run := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
+}
+
+func foldLines(s string) string {
+	return strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(s)
 }
 
 // mdCell escapes a value for use inside a GFM table cell (pipes break columns).

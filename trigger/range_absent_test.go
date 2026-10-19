@@ -94,6 +94,7 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 		inv           map[string]any
 		pkg           *report.Package
 		wantCandidate bool
+		wantBounds    []report.AdvisoryBound
 	}{
 		{
 			// requests PYSEC-2015-17 against 2.32.3: the corpus strips PyPI ranges today.
@@ -127,13 +128,15 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 		{
 			// last_affected excludes later versions the version axis cannot exclude.
 			name:     "ranged: last_affected only",
-			advisory: with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
-			pkg:      requestsPkg,
+			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
+			pkg:        requestsPkg,
+			wantBounds: []report.AdvisoryBound{{LastAffected: "2.31.0"}},
 		},
 		{
 			name:     "ranged: introduced above zero only",
-			advisory: with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
-			pkg:      requestsPkg,
+			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
+			pkg:        requestsPkg,
+			wantBounds: []report.AdvisoryBound{{Introduced: "3.0.0"}},
 		},
 		{
 			name: "multi-package: admitted package ranged, another absent",
@@ -193,6 +196,7 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 				EntryPoint:       cand.Evidence.EntryPoint,
 				CallPath:         cand.Evidence.CallPath,
 				MitigatingGuards: cand.Evidence.MitigatingGuards,
+				AdvisoryBounds:   tc.wantBounds,
 			}
 			if !reflect.DeepEqual(f.Evidence, want) {
 				t.Errorf("evidence = %+v\nwant       %+v", f.Evidence, want)

@@ -207,7 +207,11 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
+			// A failed re-run replaces the baseline's row whatever package that row is on: the
+			// head may select a different package, and the failure resolved none.
 			notes = append(notes, assessFailureNote(adv, err))
+			reFindings[adv.ID+"\x00"+adv.Source] = assessFailureFinding(adv, err)
+			freshIDs[adv.ID] = struct{}{}
 			continue
 		}
 		// Harvested before the skips below: a limit observed on this head commit is
@@ -310,6 +314,8 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
+			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
+			freshIDs[a.ID] = struct{}{}
 			continue
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)

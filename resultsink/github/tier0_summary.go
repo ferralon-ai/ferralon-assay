@@ -426,12 +426,12 @@ func partialityLine(n report.PartialityNote) string {
 	case plugin.PartialReasonNoPlugin:
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case plugin.PartialReasonToolFailure:
-		// Names the step and the advisory: an advisory whose analysis failed carries no
-		// verdict, so it is absent from the counts and only this line accounts for it.
+		// Names the step and the advisory. The advisory's row is undetermined, so it is
+		// counted as not assessed.
 		if n.Detail != "" {
-			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is **not** counted below.", mdCell(n.Detail))
+			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is counted as not assessed.", mdCell(n.Detail))
 		}
-		return "An analysis step did not complete, so one or more advisories have no verdict and are **not** counted below."
+		return "An analysis step did not complete, so one or more advisories have no verdict and are counted as not assessed."
 	default:
 		if n.Detail != "" {
 			return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`: `%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason), mdCell(n.Detail))

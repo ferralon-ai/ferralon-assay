@@ -86,6 +86,8 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		mb.imports[b.Local] = b
 	}
 	reqNames, crNames := loaderNames(clean)
+	frames := newThisFrames(clean)
+	globals := globalNames(clean, frames.globalAt)
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {
@@ -116,6 +118,9 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			i = next
 		case word == "module":
 			mb.moduleIndexUse(clean, i, next)
+			i = next
+		case globals[word], word == "this" && frames.globalAt(i):
+			mb.globalUse(clean, i, next)
 			i = next
 		case word == "_" && src[i] != '_': // a string literal; see keyedUse
 			mb.keyedUse(clean, src, i)

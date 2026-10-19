@@ -335,6 +335,108 @@ load(process.argv);
 function load(s) { return Function.call.call(Function, null, 'm', 'return require(m)')('json5').parse(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global alias eval", map[string]string{"app.js": `
+const g = globalThis;
+function load(s) { return g.eval(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global computed key", map[string]string{"app.js": `
+function load(k, s) { return globalThis[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global alias concatenated key", map[string]string{"app.js": `
+const g = globalThis;
+function load(s) { return g['ev' + 'al'](s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global alias Function", map[string]string{"app.js": `
+const g = globalThis;
+function load(s) { return g.Function(s)(); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global alias chain", map[string]string{"app.js": `
+var freeGlobal = typeof global == 'object' && global;
+var root = freeGlobal || self;
+function load(k, s) { return root[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global optional computed key", map[string]string{"app.js": `
+function load(k, s) { return window?.[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this then require", map[string]string{"app.js": `
+function load(m) { return Function('return this')().require(m); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this then eval", map[string]string{"app.js": `
+const g = Function('return this')();
+function load(s) { return g.eval(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this then computed key", map[string]string{"app.js": `
+const g = Function('return this')();
+function load(m) { return g['req' + 'uire'](m); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this then Function", map[string]string{"app.js": `
+const g = Function('return this')();
+function load(s) { return g.Function(s)(); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"eval on any receiver", map[string]string{"app.js": `
+function load(o, s) { return o.eval(s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function on any receiver", map[string]string{"app.js": `
+function load(o, s) { return o.Function(s)(); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this in a plain function", map[string]string{"app.js": `
+function load(k, s) { return this[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this in an IIFE", map[string]string{"app.js": `
+function load(k, s) { return (function () { return this[k](s); })(); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this in an arrow inside a plain function", map[string]string{"app.js": `
+function load(k, s) { const f = () => this[k](s); return f(); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this", map[string]string{"app.js": `
+const g = this;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Reflect.get on the global", map[string]string{"app.js": `
+function load(k, s) { return Reflect.get(globalThis, k)(s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Reflect.apply on a global value", map[string]string{"app.js": `
+function load(k, s) { return Reflect.apply(globalThis[k], null, [s]); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global handed on", map[string]string{"app.js": `
+function pick(o, k) { return o[k]; }
+function load(k, s) { return pick(globalThis, k)(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global call target", map[string]string{"app.js": `
+function load(f, s) { return f.call(globalThis, s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -431,6 +533,14 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.bind as a polyfill fallback", "const bind = Function.bind || function bind(that) { return that; };"},
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
+		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"global literal key", "const enc = globalThis['TextEncoder'];"},
+		{"global probed", "const hasWin = typeof window !== 'undefined' && window === self;"},
+		{"this indexed in a method", "const o = { pick(k) { return this[k](); } };"},
+		{"this indexed in a class method", "class Box { pick(k) { return this[k](); } }"},
+		{"this indexed in an arrow inside a method", "class Box { pick(k) { const f = () => this[k](); return f(); } }"},
+		{"this indexed in a getter", "const o = { get v() { return this['_' + 'v']; } };"},
+		{"this indexed in a constructor", "class Box { constructor(k) { this[k](1); } }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

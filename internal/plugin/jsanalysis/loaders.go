@@ -134,8 +134,9 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	case "dlopen":
 		mb.nativeLoad = true
 	case "eval":
-		switch recv, _ := wordBefore(clean, skipSpaceBack(clean, p-1)); recv {
-		case "globalThis", "global", "window", "self":
+		// A call of .eval on any receiver may be the global's eval; a read of .eval is
+		// judged by globalUse when the receiver is the global.
+		if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) {
 			mb.evaluated = true
 		}
 	}
@@ -146,10 +147,14 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 // annotation (`cb: Function`) and `Function.prototype` are not uses.
 func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
+	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
+		// A call of .Function on any receiver may be the global's Function constructor.
+		if p < len(clean) && clean[p] == '(' || optionalCall(clean, p) {
+			mb.evaluated = true
+		}
 		return
 	}
-	p := skipSpace(clean, next)
 	switch {
 	case p < len(clean) && clean[p] == '(':
 	case optionalCall(clean, p):

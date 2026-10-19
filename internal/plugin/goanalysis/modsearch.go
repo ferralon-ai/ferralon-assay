@@ -31,7 +31,6 @@ type listedModule struct {
 	Version string
 	Main    bool
 	Dir     string
-	Error   *struct{ Err string }
 	Replace *struct {
 		Path    string
 		Version string
@@ -69,7 +68,7 @@ func searchBuildModules(ctx context.Context, buildDir, pkgPath string, symbols [
 	res := &plugin.ModuleSearch{Searched: []string{}}
 	for _, m := range mods {
 		dir := sourceDir(m, downloaded)
-		if dir == "" || m.Error != nil {
+		if dir == "" {
 			continue
 		}
 		declares, err := declaresName(ctx, dir, names)

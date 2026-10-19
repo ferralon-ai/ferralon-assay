@@ -51,11 +51,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, fmt.Errorf("javaanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	poms, gradles := buildFiles(req.BuildDir)
+	poms, gradles, walkFailed := buildFiles(req.BuildDir)
+	poms, unread := reactorModules(req.BuildDir, poms)
 
 	var (
-		all         []plugin.ResolvedDependency
-		parseFailed bool
+		all []plugin.ResolvedDependency
+		// A subtree the walk couldn't list, or a reactor module it couldn't read, could declare
+		// any coordinate at any version, as a manifest that doesn't parse could.
+		parseFailed = walkFailed || unread
 	)
 	for _, p := range poms {
 		deps, ok := parsePOM(p)
@@ -269,11 +272,15 @@ func mavenCoreExtensions(dir string) bool {
 }
 
 // buildFiles returns the pom.xml and build.gradle (incl. build.gradle.kts) files under root,
-// skipping build-output/VCS trees, mirroring javaanalysis.javaFiles's source notion.
-func buildFiles(root string) (poms, gradles []string) {
+// skipping build-output/VCS trees, mirroring javaanalysis.javaFiles's source notion. failed is set
+// when some part of the tree couldn't be listed or examined.
+func buildFiles(root string) (poms, gradles []string, failed bool) {
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no build files; keep walking.
+			if !os.IsNotExist(err) {
+				failed = true
+			}
+			return nil //nolint:nilerr // keep walking; the caller reports the subtree as unread.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -289,7 +296,64 @@ func buildFiles(root string) (poms, gradles []string) {
 		}
 		return nil
 	})
-	return poms, gradles
+	return poms, gradles, failed
+}
+
+// reactorModules adds to poms every module POM the reactor names that the walk didn't return: a
+// module in a directory the walk skips (build, out, ...) or a module file not named pom.xml. A
+// module is read from the module list of every POM in the set, its profiles' included, until no
+// new one turns up. unread is set when a named module POM is outside root or can't be read.
+func reactorModules(root string, poms []string) (_ []string, unread bool) {
+	seen := map[string]bool{}
+	for _, p := range poms {
+		seen[filepath.Clean(p)] = true
+	}
+	for i := 0; i < len(poms); i++ {
+		data, err := readRegular(poms[i])
+		if err != nil {
+			continue
+		}
+		var proj pomModules
+		if err := unmarshalPOM(data, &proj); err != nil {
+			continue
+		}
+		modules := proj.Modules
+		for _, prof := range proj.Profiles {
+			modules = append(modules, prof.Modules...)
+		}
+		for _, m := range modules {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			path := filepath.Join(filepath.Dir(poms[i]), filepath.FromSlash(m))
+			if !strings.HasSuffix(strings.ToLower(m), ".xml") {
+				path = filepath.Join(path, "pom.xml")
+			}
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			if rel, err := filepath.Rel(root, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				unread = true
+				continue
+			}
+			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+				unread = true
+				continue
+			}
+			poms = append(poms, path)
+		}
+	}
+	return poms, unread
+}
+
+// pomModules is the reactor module list of a POM, its profiles' included.
+type pomModules struct {
+	Modules  []string `xml:"modules>module"`
+	Profiles []struct {
+		Modules []string `xml:"modules>module"`
+	} `xml:"profiles>profile"`
 }
 
 // --- pom.xml -----------------------------------------------------------------

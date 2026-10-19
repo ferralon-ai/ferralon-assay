@@ -291,6 +291,15 @@ func widgetPOM(version, extra string) string {
 
 const reactorPOM = `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules><module>a</module><module>b</module></modules></project>`
 
+// reactorOf is an aggregator POM whose reactor holds modules.
+func reactorOf(modules ...string) string {
+	body := `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules>`
+	for _, m := range modules {
+		body += `<module>` + m + `</module>`
+	}
+	return body + `</modules></project>`
+}
+
 // TestResolveVersions_MavenAllowList pins which Maven builds the Match resolves in. Every copy of
 // the coordinate must be a literal pin in a POM this reader models whole, and all copies must
 // agree; the reactor and profile rows are builds where a single copy once decided the verdict.
@@ -302,6 +311,13 @@ func TestResolveVersions_MavenAllowList(t *testing.T) {
 		wantVer string
 	}{
 		{"reactor modules agree", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, "1.4.0"},
+		{"module in a skipped directory agrees", map[string]string{"pom.xml": reactorOf("a", "build"), "a/pom.xml": widgetPOM("1.4.0", ""), "build/pom.xml": widgetPOM("1.4.0", "")}, "1.4.0"},
+		{"module in a skipped directory disagrees", map[string]string{"pom.xml": reactorOf("a", "build"), "a/pom.xml": widgetPOM("1.4.0", ""), "build/pom.xml": widgetPOM("1.3.9", "")}, ""},
+		{"module file not named pom.xml", map[string]string{"pom.xml": reactorOf("a", "b/b-pom.xml"), "a/pom.xml": widgetPOM("1.4.0", ""), "b/b-pom.xml": widgetPOM("1.3.9", "")}, ""},
+		{"nested module in a skipped directory", map[string]string{"pom.xml": reactorOf("a", "out"), "a/pom.xml": widgetPOM("1.4.0", ""),
+			"out/pom.xml": reactorOf("build"), "out/build/pom.xml": widgetPOM("1.3.9", "")}, ""},
+		{"module that is not there", map[string]string{"pom.xml": reactorOf("a", "gone"), "a/pom.xml": widgetPOM("1.4.0", "")}, ""},
+		{"module outside the build directory", map[string]string{"pom.xml": reactorOf("a", "../elsewhere"), "a/pom.xml": widgetPOM("1.4.0", "")}, ""},
 		{"reactor patched module first", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.3.9", "")}, ""},
 		{"reactor affected module first", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.3.9", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, ""},
 		{"profile overrides the version", map[string]string{"pom.xml": widgetPOM("1.4.0",

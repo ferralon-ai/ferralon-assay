@@ -79,7 +79,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	rt := plugin.RuntimeSpec{Name: lang, Source: plugin.RuntimeSourceDeclared}
 	var reasons []string
 
-	poms, gradles := buildFiles(buildDir)
+	poms, gradles, _ := buildFiles(buildDir)
 
 	// Target and Configuration are permanently declared-absent for the JVM: portable bytecode
 	// has no platform Target, and no first-class static build profile lives on disk.

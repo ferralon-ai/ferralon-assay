@@ -46,6 +46,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -780,24 +781,46 @@ func mavenJavaVersion(v string) (out string, partial, ok bool) {
 	return v, partial, true
 }
 
-// evalJDK follows Maven's JdkVersionProfileActivator against the provided java.version: a
-// prefix ("11", "1.8"), a negated prefix ("!1.8"), or a range ("[11,)", "(,1.8]") compared on
-// the first three numeric components. A provided version with fewer than three components
+// evalJDK follows Maven's JdkVersionProfileActivator (3.9.11) against the provided java.version,
+// within the selector grammar modelled here; any other selector is undecided, never read as
+// Maven's verdict:
+//   - a prefix ("11", "1.8", "1.8.0_382"): digits, with "." or "_" before each further run;
+//   - a negated prefix ("!1.8"), the same with a leading "!";
+//   - a two-bound range ("[11,)", "(,1.8]", "[1.8,11)"), each bound empty or one to three
+//     dot-separated numbers, compared on the first three numeric components of java.version.
+//
+// Maven parses a range bound by splitting on "." alone and applies no grammar to the spec, so a
+// one-token range ("[17]"), a bound holding "_" ("[1.8.0_382,1.8.0_400)"), a missing bracket or
+// a third bound each mean something accidental there, or throw and leave the profile inactive
+// with a warning. Those stay undecided here. A provided version with fewer than three components
 // ("11") stands for every version it prefixes, so a condition that differs across them is
-// undecided.
+// undecided; a provided version outside jdkVersion's shape is undecided against everything.
 func evalJDK(spec, version string) tri {
 	version, partial, ok := mavenJavaVersion(version)
-	if !ok {
+	if !ok || !jdkVersion.MatchString(version) {
 		return triUnknown // nothing the conditions can be compared against
 	}
 	if neg, ok := strings.CutPrefix(spec, "!"); ok {
+		if !jdkPrefixSpec.MatchString(neg) {
+			return triUnknown
+		}
 		return triNot(jdkPrefix(neg, version, partial))
 	}
-	if strings.HasPrefix(spec, "[") || strings.HasPrefix(spec, "(") {
-		return jdkRange(spec, version, partial)
+	if m := jdkRangeSpec.FindStringSubmatch(spec); m != nil {
+		return jdkRange(m, version, partial)
 	}
-	return jdkPrefix(spec, version, partial)
+	if jdkPrefixSpec.MatchString(spec) {
+		return jdkPrefix(spec, version, partial)
+	}
+	return triUnknown
 }
+
+var (
+	jdkPrefixSpec = regexp.MustCompile(`^[0-9]+(?:[._][0-9]+)*$`)
+	jdkRangeSpec  = regexp.MustCompile(`^([\[(])\s*([0-9]{1,9}(?:\.[0-9]{1,9}){0,2})?\s*,\s*([0-9]{1,9}(?:\.[0-9]{1,9}){0,2})?\s*([\])])$`)
+	// jdkVersion is the shape of a java.version every range compares without Maven failing to parse it.
+	jdkVersion = regexp.MustCompile(`^[0-9]{1,9}(?:\.[0-9]{1,9})*(?:_[0-9]{1,9})?$`)
+)
 
 func jdkPrefix(spec, version string, partial bool) tri {
 	switch {
@@ -814,38 +837,23 @@ type jdkBound struct {
 	closed bool
 }
 
-func jdkRange(spec, version string, partial bool) tri {
-	parts := strings.Split(spec, ",")
-	if len(parts) > 2 {
-		return triUnknown
-	}
-	var bounds []jdkBound
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		closed := strings.HasPrefix(p, "[") || strings.HasSuffix(p, "]")
-		v := strings.Trim(p, "[]()")
-		b := jdkBound{closed: closed}
+// jdkRange evaluates a range jdkRangeSpec matched: m[1] and m[4] are its brackets, m[2] and m[3]
+// its bounds.
+func jdkRange(m []string, version string, partial bool) tri {
+	bound := func(v, bracket string) jdkBound {
+		b := jdkBound{closed: bracket == "[" || bracket == "]"}
 		if v != "" {
-			toks := numericTokens(v)
-			if toks == nil {
-				return triUnknown
-			}
-			b.value = pad3(toks, 0)
+			b.value = pad3(numericTokens(v), 0)
 		}
-		bounds = append(bounds, b)
+		return b
 	}
-	if len(bounds) < 2 {
-		bounds = append(bounds, jdkBound{value: []int{99999999, 0, 0}})
-	}
+	lower, upper := bound(m[2], m[1]), bound(m[3], m[4])
 	toks := numericTokens(version)
-	if toks == nil {
-		return triUnknown
-	}
-	lo := inJDKRange(pad3(toks, 0), bounds[0], bounds[1])
+	lo := inJDKRange(pad3(toks, 0), lower, upper)
 	if !partial {
 		return triOf(lo)
 	}
-	if hi := inJDKRange(pad3(toks, 1<<30), bounds[0], bounds[1]); hi != lo {
+	if hi := inJDKRange(pad3(toks, 1<<30), lower, upper); hi != lo {
 		return triUnknown
 	}
 	return triOf(lo)

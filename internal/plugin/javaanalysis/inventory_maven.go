@@ -189,7 +189,7 @@ type mvnActivation struct {
 	File                bool // any <file> element, an empty one included: the tree Maven saw isn't the one read here
 	// Other is a present condition no modelled rule decides: an element this reader does not know
 	// (Maven 4 <packaging>, <condition>, ...), a child of <property> it does not know, or an empty
-	// <jdk>. It is undecided and ANDed with the rest.
+	// or padded <jdk>. It is undecided and ANDed with the rest.
 	Other bool
 	// Undecidable is an activation whose meaning depends on which of several elements Maven reads,
 	// or on its version: a second <activation>, a repeated child, a <property> without exactly one
@@ -421,7 +421,9 @@ func convActivation(acts []xmlActivation) mvnActivation {
 	}
 	if once(len(a.JDK)) {
 		m.JDK = strings.TrimSpace(a.JDK[0])
-		if m.JDK == "" {
+		if m.JDK == "" || m.JDK != a.JDK[0] {
+			// Empty, or padded: Maven's reader trims as Java's String.trim does, which differs from
+			// Go's on Unicode spaces, so padding can only be known not to make the condition true.
 			m.Other = true
 		}
 		if strings.Contains(m.JDK, "${") {

@@ -40,8 +40,28 @@ func TestEvalJDK(t *testing.T) {
 		{"[11.0.5,12)", "11", triUnknown},
 		{"[17.0.5,)", "17.0", triUnknown},
 		{"[11,12)", "11", triTrue},
-		{"[11", "11.0.2", triTrue},
-		{"[11", "1.8.0", triFalse},
+		// Outside the modelled selector grammar: undecided, whatever Maven happens to make of it.
+		{"[11", "11.0.2", triUnknown},
+		{"[11", "1.8.0", triUnknown},
+		{"[17]", "21.0.1", triUnknown},
+		{"[17]", "17.0.2", triUnknown},
+		{"(17]", "17.0.0", triUnknown},
+		{"[17,21", "21.0.1", triUnknown},
+		{"[1.8.0_382,1.8.0_400)", "1.8.0_450", triUnknown},
+		{"[1.8.0_382,1.8.0_400)", "21.0.1", triUnknown},
+		{"(,1.8.0_400)", "1.8.0_382", triUnknown},
+		{"![17,)", "21.0.1", triUnknown},
+		{"! 1.8", "17.0.2", triUnknown},
+		{"!", "17.0.2", triUnknown},
+		{"1.8+", "1.8.0_382", triUnknown},
+		{"\u00a017", "17.0.2", triUnknown},
+		{"[17,)", "17-ea", triUnknown},
+		// Inside it.
+		{"[17, 21)", "17.0.2", triTrue},
+		{"[21,)", "21.0.12.1", triTrue},
+		{"1.8.0_38", "1.8.0_382", triTrue},
+		{"!1.8.0_382", "1.8.0_382", triFalse},
+		{"1", "17.0.2", triTrue},
 		{"[a,b)", "11", triUnknown},
 		{"[1,2,3]", "1", triUnknown},
 		// JDK 8 and earlier report java.version as 1.N.0_U, so a stated "8" is "1.8".
@@ -199,6 +219,53 @@ func profileFixture(t *testing.T, activation string, dropQ bool) (dir, m2 string
 		writeCachePOM(t, m2, "org.q", "q", "2.0", `<project><groupId>org.q</groupId><artifactId>q</artifactId><version>2.0</version></project>`)
 	}
 	return dir, m2
+}
+
+// A <jdk> selector outside the grammar evalJDK models leaves the profile undecided at the
+// inventory, never applied or dropped as a confident set. maven is Maven 3.9.11's verdict from its
+// JdkVersionProfileActivator for the same selector and java.version ("8" is a JDK 8 build's
+// 1.8.0_x); a selector inside the grammar must reach it with a Complete inventory.
+func TestMavenProfile_JDKSelectorGrammar(t *testing.T) {
+	for _, tt := range []struct {
+		name, spec, version string
+		maven, undecided    bool
+	}{
+		{"exact range, another version", "[17]", "21.0.1", false, true},
+		{"exact range, its own version", "[17]", "17.0.2", false, true},
+		{"underscore bounds, above", "[1.8.0_382,1.8.0_400)", "1.8.0_450", false, true},
+		{"underscore bounds, inside", "[1.8.0_382,1.8.0_400)", "1.8.0_390", false, true},
+		{"underscore upper bound", "(,1.8.0_400)", "1.8.0_382", false, true},
+		{"missing closing bracket", "[17,21", "21.0.1", true, true},
+		{"negated range", "![17,)", "21.0.1", true, true},
+		{"prefix padded with a no-break space", "\u00a017", "17.0.2", false, true},
+		{"negation padded with a no-break space", "\u00a0!1.8", "17.0.2", false, true},
+		{"control, open range, inside", "[17,)", "21.0.1", true, false},
+		{"control, open range, below", "[17,)", "11.0.2", false, false},
+		{"control, Java 8 upper range, inside", "(,1.8]", "1.8.0_382", true, false},
+		{"control, Java 8 upper range, above", "(,1.8]", "11.0.2", false, false},
+		{"control, Java 8 to 11", "[1.8,11)", "1.8.0_382", true, false},
+		{"control, spaced range", "[17, 21)", "17.0.2", true, false},
+		{"control, four-part version", "[21,)", "21.0.12.1", true, false},
+		{"control, Java 8 prefix", "1.8", "1.8.0_382", true, false},
+		{"control, Java 8 prefix, stated as 8", "1.8", "8", true, false},
+		{"control, Java 8 prefix, later JDK", "1.8", "11.0.2", false, false},
+		{"control, Java 8 update prefix", "1.8.0_38", "1.8.0_382", true, false},
+		{"control, prefix, later JDK", "17", "21.0.1", false, false},
+		{"control, negation, Java 8", "!1.8", "1.8.0_382", false, false},
+		{"control, negation, later JDK", "!1.8", "17.0.2", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := profileFixture(t, `<jdk>`+tt.spec+`</jdk>`, false)
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", tt.version)))
+			applied := findNode(t, inv, "pkg:maven/org.p/p@1.0") != nil
+			if inv.Partiality.Complete && applied != tt.maven {
+				t.Fatalf("applied = %v with a complete inventory, Maven's activator says %v; got %+v", applied, tt.maven, inv)
+			}
+			if got := hasStr(inv.Partiality.Reasons, reasonProfileActivation); got != tt.undecided {
+				t.Errorf("profile_activation listed = %v, want %v; got %+v", got, tt.undecided, inv.Partiality)
+			}
+		})
+	}
 }
 
 func TestMavenProfile_JDKWithoutVersionIsScopedAndMirrored(t *testing.T) {

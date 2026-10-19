@@ -217,7 +217,7 @@ func MarshalReportHTML(r report.Report) ([]byte, error) {
 func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 	var pkg string
 	if f.Package != nil {
-		pkg = fmt.Sprintf("%s:%s@%s", f.Package.Ecosystem, f.Package.Name, f.Package.Version)
+		pkg = f.Package.Ecosystem + ":" + f.Package.Label()
 	}
 	var aliases string
 	if len(f.Advisory.Aliases) > 0 {

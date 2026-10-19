@@ -79,7 +79,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	rt := plugin.RuntimeSpec{Name: lang, Source: plugin.RuntimeSourceDeclared}
 	var reasons []string
 
-	poms, gradles := buildFiles(buildDir)
+	poms, gradles, _ := buildFiles(buildDir)
 
 	// Target and Configuration are permanently declared-absent for the JVM: portable bytecode
 	// has no platform Target, and no first-class static build profile lives on disk.
@@ -143,7 +143,7 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 // parsePOMProject decodes a pom.xml into pomProject via the charset-aware POM decoder. The
 // bool is false when the file cannot be read or is undecodable XML.
 func parsePOMProject(path string) (pomProject, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return pomProject{}, false
 	}
@@ -196,7 +196,7 @@ func mavenRuntimeVersion(proj pomProject) string {
 // falls back to the build dir's base name (or "." at the filesystem root).
 func gradleProjectRoot(buildDir string) string {
 	for _, name := range []string{"settings.gradle", "settings.gradle.kts"} {
-		data, err := os.ReadFile(filepath.Join(buildDir, name))
+		data, err := readRegular(filepath.Join(buildDir, name))
 		if err != nil {
 			continue
 		}
@@ -230,7 +230,7 @@ var (
 // kotlinOptions.jvmTarget. Undeterminable stays "" (→ reasonNoRuntimeVersion), never guessed.
 // It reads declared text only — no Gradle is executed (§3.3).
 func parseGradleManifest(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return ""
 	}
@@ -287,7 +287,7 @@ func gradleVersionToken(line string) string {
 // .tool-versions (the token after `java`) or SDKMAN's .sdkmanrc (`java=<version>`). Absent ⇒
 // "" (an honest "no exact pin," disclosed as reasonToolchainUnpinned), never guessed.
 func toolchainPin(buildDir string) string {
-	if data, err := os.ReadFile(filepath.Join(buildDir, ".tool-versions")); err == nil {
+	if data, err := readRegular(filepath.Join(buildDir, ".tool-versions")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			fields := strings.Fields(strings.TrimSpace(line))
 			if len(fields) >= 2 && fields[0] == "java" {
@@ -295,7 +295,7 @@ func toolchainPin(buildDir string) string {
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(buildDir, ".sdkmanrc")); err == nil {
+	if data, err := readRegular(filepath.Join(buildDir, ".sdkmanrc")); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if v, ok := strings.CutPrefix(line, "java="); ok {

@@ -66,6 +66,13 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
+	return findingInBuild(store, assessmentID, adv, pkg, nil)
+}
+
+// findingInBuild is finding with the scan's Go module list, which lets the not_exploitable gate
+// read a Go package path the advisory names as part of the module that holds it (see
+// samePackage). finding passes none, so every such path counts as another package.
+func findingInBuild(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package, mods goModules) report.AdvisoryFinding {
 	var f report.AdvisoryFinding
 	switch {
 	case maliciousPresent(store, assessmentID):
@@ -157,7 +164,7 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
-			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg)
+			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}
@@ -753,8 +760,10 @@ func candidatePath(store artifact.Store, assessmentID string) (string, bool) {
 
 // advisoryFromArtifacts reads the normalized-advisory artifact and returns the
 // report.Advisory identity plus the resolved SBOM package the scan evaluated. When
-// the codebase resolved a version it is attached; otherwise the package is nil.
-func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assessment.Request) (report.Advisory, *report.Package) {
+// the codebase resolved a version it is attached; a C/C++ advisory instead carries its
+// inventory observation (cfamilyObservedPackage); otherwise the package is nil. sbom is
+// the scan's report SBOM, read only for the C/C++ observation.
+func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assessment.Request, sbom []report.Package) (report.Advisory, *report.Package) {
 	adv := report.Advisory{ID: req.Vulnerability.ID, Source: req.Vulnerability.Source}
 
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
@@ -771,7 +780,13 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 
 	name, purl := pipeline.AdvisoryPackage(store, assessmentID)
 	inv, ok := inventory(store, assessmentID)
-	if !ok || name == "" || inv.ResolvedVersion == "" {
+	if !ok || name == "" {
+		return adv, nil
+	}
+	if inv.ResolvedVersion == "" {
+		if inv.Language == cfamilyLanguage {
+			return adv, cfamilyObservedPackage(name, purl, inv, sbom)
+		}
 		return adv, nil
 	}
 	// The Go toolchain is not an SBOM dependency package. When the adjudicated element is the
@@ -786,7 +801,46 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 		Name:      name,
 		Version:   inv.ResolvedVersion,
 		PURL:      purl,
+		Root:      pipeline.RootSubject(store, assessmentID),
 	}
+}
+
+const cfamilyLanguage = "cfamily"
+
+// cfamilyObservedPackage names the package a C/C++ advisory was evaluated against. The C/C++
+// lane never resolves a version, so the row would otherwise carry no package at all. The
+// package takes the found-but-unresolved shape the SBOM already uses: Version is the
+// inventory's pin, set only when the SBOM holds exactly one for the name and the assessment
+// declared it source_unpinned, and PartialReason carries that declaration. G1
+// (admittedPackage) rejects the shape, and the version is read from the report SBOM, never
+// from the assessment's resolved_version, so the pin feeds no version axis.
+func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report.Package) *report.Package {
+	ecosystem := ecosystemFor(inv.Language)
+	pkg := &report.Package{Ecosystem: ecosystem, Name: name, PURL: purl}
+	for _, f := range inv.PartialityFlags {
+		if strings.HasPrefix(f, plugin.PartialReasonSourceUnpinned) {
+			pkg.PartialReason = f
+			break
+		}
+	}
+	if pkg.PartialReason == "" {
+		if len(inv.PartialityFlags) > 0 {
+			pkg.PartialReason = inv.PartialityFlags[0]
+		}
+		return pkg
+	}
+	pins := make(map[string]struct{})
+	for _, p := range sbom {
+		if p.Ecosystem == ecosystem && p.Name == name && p.Version != "" {
+			pins[p.Version] = struct{}{}
+		}
+	}
+	if len(pins) == 1 {
+		for v := range pins {
+			pkg.Version = v
+		}
+	}
+	return pkg
 }
 
 type inventoryFacts struct {
@@ -873,7 +927,7 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 	if scoped := footprintScoped(store, assessmentID); len(scoped) > 0 {
 		admitted, _, resolved := admittedPackage(store, assessmentID, pkg)
 		for _, r := range scoped {
-			if scopedLimitCounts(r, admitted, resolved) {
+			if scopedLimitCounts(r, admitted, resolved, pkg != nil && pkg.Root) {
 				reasons = append(reasons, r.Reason)
 			}
 		}
@@ -909,16 +963,16 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 //     count: code the analysis did not see can call into the standard library from anywhere in the
 //     build.
 //
-// Otherwise the first-party entry matches only a root package, which no advisory is admitted on yet,
-// so it matches nothing here.
-func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved bool) bool {
+// Otherwise the first-party entry matches only when the advisory's package is the scanned project
+// itself.
+func scopedLimitCounts(r artifact.ScopedPartialityFlag, admitted pkgKey, resolved, root bool) bool {
 	if len(r.Targets) == 0 || !resolved {
 		return true
 	}
 	stdlib := admitted == pkgKey{typ: "golang", name: "stdlib"}
 	for _, p := range append([]string{r.Package}, r.Targets...) {
 		if p == "" {
-			if stdlib {
+			if stdlib || root {
 				return true
 			}
 			continue

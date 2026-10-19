@@ -1,6 +1,7 @@
 package pythonanalysis
 
-// pdm.lock and uv.lock resolver parsers (PLAN-170 E4, C3 formats + C4 parent edges).
+// pdm.lock, uv.lock and poetry.lock resolver parsers (PLAN-170 E4, C3 formats + C4 parent
+// edges).
 //
 // Both formats are TOML built around a "[[package]]" array-of-tables carrying a package's
 // name, exact pinned version, dependency edges, and artifact hashes. Unlike poetry.lock —
@@ -297,6 +298,109 @@ func uvHashes(p uvPackage) []string {
 	return out
 }
 
+// --- poetry.lock -------------------------------------------------------------
+
+type poetryLock struct {
+	Package []poetryPackage `toml:"package"`
+}
+
+// poetryPackage is one locked package. Dependencies maps a child name to its constraint, which
+// poetry writes as a version string, an inline table (version / markers / optional / extras /
+// python), or an array of such tables (one per environment-specific constraint).
+type poetryPackage struct {
+	Name         string                 `toml:"name"`
+	Version      string                 `toml:"version"`
+	Dependencies map[string]interface{} `toml:"dependencies"`
+	Files        []pdmFile              `toml:"files"`
+}
+
+// parsePoetryLock parses a poetry.lock into the selected set for the declared environment,
+// reading parent edges from each package's [package.dependencies]. A dependency's markers gate
+// its edge exactly as on pdm/uv (false → inactive, unbound → active). An optional dependency
+// (optional = true, enabled through the parent's [package.extras]) is kept as an edge when the
+// child is locked: poetry records which extras of the parent are requested only in the
+// requesting package's constraint and in pyproject, so the edge is an over-approximation rather
+// than an omission. An edge to a child absent from the lock produces nothing (only locked
+// packages become nodes). Classification follows pdm.lock: poetry.lock does not record the
+// project root, so a package no locked package depends on is a direct dependency of the
+// project's locked closure.
+func parsePoetryLockSelected(data []byte, env map[string]string, selection []string) ([]pyReq, error) {
+	var lock poetryLock
+	if err := toml.Unmarshal(data, &lock); err != nil {
+		return nil, fmt.Errorf("pythonanalysis: parse poetry.lock: %w", err)
+	}
+
+	parents := map[string]map[string]bool{}
+	for _, p := range lock.Package {
+		parent := normalizePyCoordinate(p.Name)
+		if parent == "" {
+			continue
+		}
+		for dep, constraint := range p.Dependencies {
+			child := normalizePyCoordinate(dep)
+			if child == "" || !poetryEdgeActive(constraint, env, selection) {
+				continue
+			}
+			if parents[child] == nil {
+				parents[child] = map[string]bool{}
+			}
+			parents[child][parent] = true
+		}
+	}
+
+	out := make([]pyReq, 0, len(lock.Package))
+	for _, p := range lock.Package {
+		name := normalizePyCoordinate(p.Name)
+		if name == "" {
+			continue
+		}
+		ver := strings.TrimSpace(p.Version)
+		out = append(out, pyReq{
+			Name:         name,
+			Version:      ver,
+			Resolved:     ver != "",
+			Source:       "poetry.lock",
+			Kind:         reqNormal,
+			Parents:      sortedParents(parents[name]),
+			Hashes:       pdmHashes(p.Files),
+			Selected:     true,
+			Relationship: classifyPDM(parents[name]),
+		})
+	}
+	return out, nil
+}
+
+// poetryEdgeActive reports whether a poetry dependency constraint yields an active edge under
+// env. A plain version string is unconditional. A table is active unless its markers evaluate
+// false. An array of tables is active when any element is.
+func poetryEdgeActive(constraint interface{}, env map[string]string, selection []string) bool {
+	switch c := constraint.(type) {
+	case map[string]interface{}:
+		m, _ := c["markers"].(string)
+		if m = strings.TrimSpace(m); m == "" {
+			return true
+		}
+		mr := evaluateMarker(m, env, selection)
+		return mr.unresolved || mr.selected
+	case []interface{}:
+		for _, e := range c {
+			if poetryEdgeActive(e, env, selection) {
+				return true
+			}
+		}
+		return false
+	case []map[string]interface{}:
+		for _, e := range c {
+			if poetryEdgeActive(e, env, selection) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
 // --- shared ------------------------------------------------------------------
 
 // sortedParents returns the parent set as a sorted slice, so a node's Parents field — the one
@@ -318,7 +422,7 @@ func sortedParents(set map[string]bool) []string {
 // parsePDMLockAdvisory / parseUVLockAdvisory adapt the E4 parsers to the environment-blind
 // advisory path (ResolveDependencyVersions), which wants {coordinate, version} pins and ignores
 // edges/markers. isManifest now recognizes pdm.lock/uv.lock, so parseManifest must route them
-// here rather than letting parseRequirementsTxt mis-read TOML.
+// here rather than letting parseRequirementLines mis-read TOML.
 func parsePDMLockAdvisory(data []byte) ([]plugin.ResolvedDependency, bool) {
 	reqs, err := parsePDMLock(data, nil, nil)
 	if err != nil {

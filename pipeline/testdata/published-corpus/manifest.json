@@ -1,0 +1,21 @@
+{
+  "manifest_version": "1.1.0",
+  "schema_version": "ferralon.normalized_advisory.v3",
+  "record_count": 2,
+  "records": [
+    {
+      "identifier": "CVE-2023-39325",
+      "path": "2023/10/CVE-2023-39325.json",
+      "output_digest": "sha256:86a456cfed1a5ccf967e70002d451056e684801ff4e8b245f364ea7452abfe1d"
+    },
+    {
+      "identifier": "CVE-2024-25621",
+      "path": "2025/11/CVE-2024-25621.json",
+      "output_digest": "sha256:3580a2e680e09cb7be15e8b591aec090223d9b74e9dac857082d6fb9d594a831"
+    }
+  ],
+  "provenance": {
+    "policy_query": "two multi-package records copied byte-for-byte from the published corpus",
+    "source_corpus_digest": "sha256:8e113eb109810e62abf7cbcbde64b494a3802d19d6c66588b743149a872d30e9"
+  }
+}

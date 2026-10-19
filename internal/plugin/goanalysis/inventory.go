@@ -81,7 +81,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 	// (correct for the analyzer's own hygiene), so only this single root is resolved;
 	// declare the rest rather than silently omit it. PLAN-004's WorkspacePlan closes
 	// this in a follow-on (A4).
+	workspace := false
 	if fi, statErr := os.Stat(filepath.Join(req.BuildDir, "go.work")); statErr == nil && !fi.IsDir() {
+		workspace = true
 		graphReasons = append(graphReasons, plugin.PartialReasonUnsupported)
 	}
 
@@ -176,9 +178,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		// Apply a replace (versioned key first, then wildcard) — the redirect the
 		// graph does not show. A filesystem replace has no verifiable version.
 		if rep, ok := replaces[path+" "+ver]; ok {
-			applyReplace(&n, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
+			applyReplace(&n, path, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
 		} else if rep, ok := replaces[path]; ok {
-			applyReplace(&n, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
+			applyReplace(&n, path, rep.newPath, rep.newVersion, rep.filesystem, &nodeReasons)
 		}
 
 		n.PURL = goPURL(path, n.Version)
@@ -226,6 +228,9 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 		Nodes:      nodes,
 		Edges:      depEdges,
 	}
+	if !workspace && mainPath != "" {
+		inv.BuildList, inv.MainModule = plugin.BuildListGoModGraph, mainPath
+	}
 	return inv, nil
 }
 
@@ -234,8 +239,8 @@ func ResolveInventory(ctx context.Context, req plugin.ResolveInventoryRequest) (
 // version; a filesystem replace (`=> ../dir`) is not pinned to a verifiable version,
 // so declare it (source_unpinned) rather than present a fabricated or blank version
 // as resolved. The module PATH remains the requiring coordinate (the require still
-// names it); only the resolved version and its pinnedness change.
-func applyReplace(n *plugin.DependencyNode, newPath, newVersion string, filesystem bool, reasons *[]string) {
+// names it); a replace by another module records that module's path beside it.
+func applyReplace(n *plugin.DependencyNode, path, newPath, newVersion string, filesystem bool, reasons *[]string) {
 	if filesystem {
 		n.Version = ""
 		*reasons = append(*reasons, plugin.PartialReasonSourceUnpinned)
@@ -244,7 +249,9 @@ func applyReplace(n *plugin.DependencyNode, newPath, newVersion string, filesyst
 	if newVersion != "" {
 		n.Version = newVersion
 	}
-	_ = newPath // a module→module replace keeps the requiring path as identity
+	if newPath != path {
+		n.Replace = newPath
+	}
 }
 
 // graphNode is one "path@version" (or bare main-module "path") token of a

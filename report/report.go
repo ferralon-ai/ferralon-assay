@@ -41,8 +41,10 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -148,6 +150,9 @@ type Package struct {
 	// written before this field decodes to false and is regenerated as direct/transitive
 	// on its next baseline run.
 	Direct bool `json:"direct"`
+	// Root marks the scanned project itself: an advisory against the repository's own package
+	// (grafana's advisory in the grafana repository), whose vulnerable code is first-party.
+	Root bool `json:"root,omitempty"`
 	// PartialReason discloses a limit on THIS package's own resolution using the open
 	// plugin Partiality reason vocabulary (e.g. an integrity digest that could not be
 	// acquired in a no-acquisition scan, a version range that could not be pinned). It is
@@ -159,6 +164,31 @@ type Package struct {
 	// the inventory node; a graph-level limit (a whole ecosystem unresolved) is a
 	// scan-level PartialityNote, not this field.
 	PartialReason string `json:"partial_reason,omitempty"`
+	// Replace is the module path a replace directive substitutes for this package (Go), so the
+	// build compiles that module's code under Name. Empty when not replaced or replaced by a
+	// directory.
+	Replace string `json:"replace,omitempty"`
+}
+
+// Label is the package as a finding row names it: name@version for a resolved package. A
+// version the inventory observed without resolving it (PartialReason source_unpinned) is
+// shown as an observation, never as name@version, and a package with no version is its name.
+func (p Package) Label() string {
+	switch {
+	case p.Version == "":
+		return p.Name
+	case p.PinUnresolved():
+		return fmt.Sprintf("%s (pinned %s, not resolved)", p.Name, p.Version)
+	default:
+		return p.Name + "@" + p.Version
+	}
+}
+
+// PinUnresolved reports whether Version is an inventory observation rather than a resolved
+// version (PartialReason source_unpinned). Such a version must never be presented as
+// name@version, in a label or in an identifier.
+func (p Package) PinUnresolved() bool {
+	return p.Version != "" && strings.HasPrefix(p.PartialReason, plugin.PartialReasonSourceUnpinned)
 }
 
 // Key is this package's stable identity for Relationship endpoints: its PURL when the
@@ -191,6 +221,12 @@ type SBOM struct {
 	// whose resolver expresses no edges (or none yet) omits the field rather than emitting
 	// an empty array — absent edges are declared by a scan-level PartialityNote, not by [].
 	Relationships []Relationship `json:"relationships,omitempty"`
+	// GoBuildList names the resolver output the Go packages were taken from when they are the
+	// build's whole module list with replace targets recorded (plugin.DependencyInventory.BuildList).
+	// Empty for an SBOM resolved any other way, or written before replace targets were recorded.
+	GoBuildList string `json:"go_build_list,omitempty"`
+	// GoMainModule is the path of the module GoBuildList was resolved for; set with it.
+	GoMainModule string `json:"go_main_module,omitempty"`
 }
 
 // Relationship is one parent→child dependency edge in the SBOM (§4.1.2). Endpoints are

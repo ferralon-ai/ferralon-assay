@@ -28,14 +28,15 @@ import (
 // beside the admitted one.
 //
 // A leaf-name hit in first-party code never counts toward arm A: its origin is not the package.
-func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package) (detail, reason string, ok bool) {
+func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, ok bool) {
 	admitted, label, ok := admittedPackage(store, assessmentID, pkg)
 	if !ok {
 		return "", report.ReasonPackageVersionUnresolved, false
 	}
+	root := pkg != nil && pkg.Root
 	reach, _ := reachabilityResult(store, assessmentID)
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
-	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted) {
+	if namesOtherPackage(pipeline.AdvisoryPackagePURLs(store, assessmentID), admitted, mods) {
 		if len(symbols) == 0 {
 			return "", report.ReasonAdvisorySymbolAbsent, false
 		}
@@ -44,15 +45,16 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
-		if err == nil && searchedInPackage(symbols, res, reach.Searched, admitted) {
+		if err == nil && searchedInPackage(symbols, res, reach.Searched, admitted, root) {
 			return fmt.Sprintf("no path from any entry point reaches %s in %s",
 				strings.Join(symbols, ", "), label), "", true
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
-	// every package it affects.
-	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded || pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
-		if key, ok := purlKey(r.Package); ok && key == admitted {
+	// every package it affects, and never the scanned project, whose own code always loads.
+	if r := reach.Refutation; r != nil && (r.Basis != plugin.RefutationPackageNotLoaded ||
+		!root && pipeline.AdvisoryListsAffectedPackages(store, assessmentID)) {
+		if r.Package != "" && inAdmitted(r.Package, admitted, root) {
 			if r.Detail == "" {
 				return fmt.Sprintf("%s: %s", label, r.Basis), "", true
 			}
@@ -65,20 +67,139 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 	return "", report.ReasonVulnerableSymbolUnresolved, false
 }
 
-// namesOtherPackage reports whether the advisory names a package other than the admitted one. A
-// package URL that does not parse cannot be shown to be the admitted package, so it counts as other.
-func namesOtherPackage(purls []string, admitted pkgKey) bool {
+// namesOtherPackage reports whether the advisory names a package other than the admitted one that
+// may be in the build. A package URL that does not parse cannot be shown to be the admitted
+// package, so it counts as other.
+func namesOtherPackage(purls []string, admitted pkgKey, mods goModules) bool {
 	for _, p := range purls {
-		if key, ok := purlKey(p); !ok || key != admitted {
+		key, ok := purlKey(p)
+		if !ok || !(samePackage(key, admitted, mods) || outsideBuild(key, mods)) {
 			return true
 		}
 	}
 	return false
 }
 
+// samePackage reports whether a package the advisory names is the admitted one. A Go advisory
+// also names packages by import path: golang.org/x/net/http2 beside golang.org/x/net, net/http
+// beside stdlib. A standard library path is stdlib. Any other path is the admitted module only
+// when that is the build's module that holds it, so a path under a nested module the build also
+// selects (github.com/containerd/containerd/v2 under github.com/containerd/containerd) stays
+// another package, and without a module list no path collapses.
+func samePackage(key, admitted pkgKey, mods goModules) bool {
+	if key == admitted {
+		return true
+	}
+	if key.typ != "golang" || admitted.typ != "golang" {
+		return false
+	}
+	if admitted.name == goStdlib {
+		return stdlibPath(key.name)
+	}
+	return mods.holding(key.name) == admitted.name
+}
+
+// outsideBuild reports whether a Go module path the advisory names is held by none of the build's
+// modules, so none of its code is compiled in. Only a module path qualifies: the standard library,
+// the toolchain and other paths without a dotted first element are always counted. Paths are
+// compared ignoring case, so a path an advisory spells in another case than the build's module
+// counts as in the build.
+func outsideBuild(key pkgKey, mods goModules) bool {
+	if key.typ != "golang" || mods == nil {
+		return false
+	}
+	first, _, _ := strings.Cut(key.name, "/")
+	return strings.Contains(first, ".") && !mods.holdsFold(key.name)
+}
+
+const goStdlib = "stdlib"
+
+// goModules is the set of Go module paths a scan's build selects, replace targets included; nil
+// when the list is unknown or incomplete.
+type goModules map[string]bool
+
+// goModulesOf returns the Go modules of a scan's SBOM, or nil unless they are the build's whole
+// module list. Only the module build list `go mod graph` resolves qualifies (a vendored module
+// resolves to the same list); go.mod's require block alone does not, and a go.work workspace is
+// declared unsupported by the inventory, so it carries no build list. The main module counts, and
+// each dependency counts under its own path and under the path of the module a replace directive
+// substitutes for it.
+//
+// The module graph can list more than the build compiles (a module whose packages nothing imports),
+// and that errs only toward "in the build", which keeps an advisory blocking. A narrower source,
+// such as the packages a build actually loads, would err toward collapsing; it qualifies only if
+// it is the build's complete package set.
+func goModulesOf(sbom report.SBOM, limits []report.PartialityNote) goModules {
+	if sbom.GoBuildList != plugin.BuildListGoModGraph || sbom.GoMainModule == "" {
+		return nil
+	}
+	for _, n := range limits {
+		if n.Ecosystem == "" || n.Ecosystem == "Go" {
+			return nil
+		}
+	}
+	mods := goModules{sbom.GoMainModule: true}
+	for _, p := range sbom.Packages {
+		if p.Ecosystem != "Go" {
+			continue
+		}
+		for _, path := range []string{p.Name, p.Replace} {
+			if path != "" {
+				mods[path] = true
+			}
+		}
+	}
+	return mods
+}
+
+// holding returns the module that holds an import path: the longest module path that is the path
+// or a prefix of it at a '/' boundary, or "" when none is.
+func (m goModules) holding(path string) string {
+	for p := path; ; {
+		if m[p] {
+			return p
+		}
+		i := strings.LastIndexByte(p, '/')
+		if i < 0 {
+			return ""
+		}
+		p = p[:i]
+	}
+}
+
+// holdsFold reports whether a module holds an import path, comparing paths ignoring case.
+func (m goModules) holdsFold(path string) bool {
+	for mod := range m {
+		if len(path) >= len(mod) && strings.EqualFold(path[:len(mod)], mod) && (len(path) == len(mod) || path[len(mod)] == '/') {
+			return true
+		}
+	}
+	return false
+}
+
+// stdlibPath reports whether an import path is in the Go standard library: its first element is
+// one of the library's top-level directories. cmd is the toolchain, not the library.
+func stdlibPath(path string) bool {
+	first, _, _ := strings.Cut(path, "/")
+	return stdlibRoots[first]
+}
+
+var stdlibRoots = map[string]bool{
+	"archive": true, "bufio": true, "builtin": true, "bytes": true, "cmp": true, "compress": true,
+	"container": true, "context": true, "crypto": true, "database": true, "debug": true,
+	"embed": true, "encoding": true, "errors": true, "expvar": true, "flag": true, "fmt": true,
+	"go": true, "hash": true, "html": true, "image": true, "index": true, "internal": true,
+	"io": true, "iter": true, "log": true, "maps": true, "math": true, "mime": true, "net": true,
+	"os": true, "path": true, "plugin": true, "reflect": true, "regexp": true, "runtime": true,
+	"slices": true, "sort": true, "strconv": true, "strings": true, "structs": true, "sync": true,
+	"syscall": true, "testing": true, "text": true, "time": true, "unicode": true, "unique": true,
+	"unsafe": true, "weak": true,
+}
+
 // searchedInPackage is arm A: every advisory symbol has at least one resolved symbol whose origin
-// is the admitted package, and every such in-package symbol was searched.
-func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey) bool {
+// is the admitted package, and every such in-package symbol was searched. First-party code is the
+// admitted package only when that package is the root.
+func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, searched []string, admitted pkgKey, root bool) bool {
 	done := make(map[string]bool, len(searched))
 	for _, s := range searched {
 		done[s] = true
@@ -86,11 +207,7 @@ func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, sear
 	for _, sym := range symbols {
 		inPackage := 0
 		for _, scip := range res.Matched[sym] {
-			origin, ok := res.Origins[scip]
-			if !ok {
-				continue // first-party: matches only a root package (not admitted here yet)
-			}
-			if key, ok := purlKey(origin); !ok || key != admitted {
+			if !inAdmitted(res.Origins[scip], admitted, root) {
 				continue
 			}
 			if !done[scip] {
@@ -113,7 +230,7 @@ func searchedInPackage(symbols []string, res plugin.SymbolResolutionResult, sear
 func admittedPackage(store artifact.Store, assessmentID string, pkg *report.Package) (pkgKey, string, bool) {
 	if pipeline.ToolchainSubject(store, assessmentID) {
 		reach, _ := reachabilityResult(store, assessmentID)
-		return pkgKey{typ: "golang", name: "stdlib"}, "stdlib@" + reach.ScanToolchain, true
+		return pkgKey{typ: "golang", name: goStdlib}, "stdlib@" + reach.ScanToolchain, true
 	}
 	if pkg == nil || pkg.Version == "" || strings.HasPrefix(pkg.PartialReason, plugin.PartialReasonSourceUnpinned) {
 		return pkgKey{}, "", false
@@ -127,6 +244,17 @@ func admittedPackage(store artifact.Store, assessmentID string, pkg *report.Pack
 		return pkgKey{typ: typ, name: normalizePackageName(typ, pkg.Name)}, pkg.Name + "@" + pkg.Version, true
 	}
 	return pkgKey{}, "", false
+}
+
+// inAdmitted reports whether a package named the plugin way (a versionless PURL, "" for
+// first-party) is the admitted package. First-party matches only when the admitted package is the
+// scanned project itself.
+func inAdmitted(p string, admitted pkgKey, root bool) bool {
+	if p == "" {
+		return root
+	}
+	key, ok := purlKey(p)
+	return ok && key == admitted
 }
 
 // pkgKey identifies a package across versions: PURL type plus the ecosystem-normalized name.

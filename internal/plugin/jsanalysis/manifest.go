@@ -42,9 +42,9 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 	}
 
 	pkgPath := filepath.Join(req.BuildDir, "package.json")
-	data, err := os.ReadFile(pkgPath)
+	data, err := readRegular(pkgPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if absent(err) {
 			// Not a package: declare the gap, do NOT fabricate a build command.
 			return plugin.BuildManifestResult{
 				Partiality: plugin.Partial(plugin.PartialReasonToolFailure),
@@ -88,7 +88,12 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 		return res, nil
 	}
 
-	command := installCommand(req.BuildDir)
+	command, ok := installCommand(req.BuildDir)
+	if !ok {
+		// A lockfile that is there but unreadable leaves npm ci against npm install open.
+		res.Partiality = plugin.Partial(plugin.PartialReasonToolFailure)
+		return res, nil
+	}
 	if pkg.Scripts["build"] != "" {
 		command += " && npm run build"
 	}
@@ -99,14 +104,23 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest) (plugin.B
 
 // installCommand selects `npm ci` when a lockfile is present (reproducible install)
 // and `npm install` otherwise. It never fabricates a build step — the build script,
-// if any, is appended by the caller.
-func installCommand(dir string) string {
+// if any, is appended by the caller. ok is false when no lockfile is present but one
+// is there and cannot be read.
+func installCommand(dir string) (command string, ok bool) {
+	ok = true
 	for _, name := range lockfiles {
-		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && !fi.IsDir() {
-			return "npm ci"
+		fi, err := os.Stat(filepath.Join(dir, name))
+		switch {
+		case err == nil && !fi.IsDir():
+			return "npm ci", true
+		case err != nil && !absent(err):
+			ok = false
 		}
 	}
-	return "npm install"
+	if !ok {
+		return "", false
+	}
+	return "npm install", true
 }
 
 // platformTarget renders package.json's npm `os`/`cpu` platform-restriction arrays as

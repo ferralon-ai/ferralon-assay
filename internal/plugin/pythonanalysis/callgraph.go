@@ -28,6 +28,10 @@ type program struct {
 	// dynamicImportOpaque records a dynamic import whose module the scanner cannot name
 	// (non-literal argument, entry-point group, package walk): run-wide, fails closed.
 	dynamicImportOpaque bool
+	// importUnattributed records that a manifest could not be read in full and an import
+	// resolves to no distribution, so the name that would attribute it may be in the unread
+	// part and the boundary nodes behind it are missing.
+	importUnattributed bool
 }
 
 // resolveCallee maps a lexical call (leaf name + explicit-argument arity) to the SCIP id
@@ -116,7 +120,7 @@ func loadProgram(buildDir string) (*program, error) {
 
 	prog := &program{funcsByName: map[string][]funcDecl{}}
 	for _, p := range paths {
-		data, readErr := os.ReadFile(p)
+		data, readErr := readRegular(p)
 		if readErr != nil {
 			prog.readFailed = true
 			continue
@@ -152,12 +156,33 @@ func loadProgram(buildDir string) (*program, error) {
 	for _, f := range prog.files {
 		modules = append(modules, f.module)
 	}
+	declared, declaredComplete, read := declaredDistributions(buildDir)
+	if !read {
+		prog.readFailed = true
+	}
 	prog.dists = distResolver{
 		curated:    NewDistImportMap(CuratedContributions()...),
-		declared:   declaredDistributions(buildDir),
+		declared:   declared,
 		firstParty: firstPartyTops(modules),
+		python:     buildInterpreter(buildDir),
 	}
+	prog.importUnattributed = !declaredComplete && prog.hasUndeclaredImport()
 	return prog, nil
+}
+
+// hasUndeclaredImport reports whether any import binding names a module no distribution the
+// manifests read here declare provides.
+func (prog *program) hasUndeclaredImport() bool {
+	for _, f := range prog.files {
+		for _, scope := range f.bindings {
+			for _, b := range scope {
+				if prog.dists.undeclaredImport(b.target) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // callerSCIP is the SCIP id of a call site's caller: its enclosing def, or the module-init
@@ -223,7 +248,8 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 			// A call through an import binding reaches a dependency attribute: emit a
 			// boundary edge to it. The node stands for code the lane does not read, so it is
 			// a candidate target only, never a searched sink.
-			if dist, dotted, ok := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists); ok {
+			provides, dotted := boundaryTarget(cs.calleeChain, cs.scopes, f.bindings, prog.dists)
+			for _, dist := range provides {
 				addEdge(caller, boundarySCIP(dist, dotted))
 			}
 			callee, ok := prog.resolveCallee(cs.calleeName, cs.calleeArity)
@@ -275,11 +301,14 @@ func callGraphOf(prog *program) plugin.CallGraphResult {
 // callGraphPartiality declares the call graph ALWAYS partial for Python: the lexical
 // scanner categorically cannot resolve dynamic dispatch / getattr / decorator-rewriting /
 // monkeypatching, so dynamic_dispatch is a standing reason. Read failures and skipped
-// constructs add their own machine-readable reasons.
+// constructs add their own machine-readable reasons. A manifest read only in part counts as
+// a read failure when some import resolves to no distribution, since the name that would
+// attribute it may be in the part not read; with every import attributed, the unread part
+// changes no boundary node.
 func callGraphPartiality(prog *program) plugin.Partiality {
 	reasons := []string{plugin.PartialReasonDynamicDispatch}
 	reasons = append(reasons, dynamicImportReasons(prog.dynamicImportOpaque)...)
-	if prog.readFailed {
+	if prog.readFailed || prog.importUnattributed {
 		reasons = append(reasons, plugin.PartialReasonToolFailure)
 	}
 	if prog.skipped {

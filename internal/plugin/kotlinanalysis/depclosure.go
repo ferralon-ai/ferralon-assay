@@ -76,7 +76,7 @@ type depClosure struct {
 	// cannot be listed leaves it unlisted.
 	cp depreach.Classpath
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: the inventory's graph reasons (inventoryReasons), a JVM
+	// no empty search is Searched: the inventory's graph reasons (javaanalysis.InventoryGraphReasons), a JVM
 	// launch option the lanes do not model (javaanalysis.LaunchOptionReasons), or a Gradle
 	// dependency declaration the inventory does not model
 	// (javaanalysis.UnmodeledGradleDependencies).
@@ -122,7 +122,7 @@ func loadClasspath(ctx context.Context, buildDir string, firstParty map[string]b
 	g := newInventoryGraph(inv)
 	program := g.programClosure()
 	targets := func(n depNode) []string { return blindSpotTargets(g.targets(n), program) }
-	dc := &depClosure{loaded: map[string]string{}, reasons: inventoryReasons(inv)}
+	dc := &depClosure{loaded: map[string]string{}, reasons: javaanalysis.InventoryGraphReasons(inv)}
 
 	var locks *runtimeLocks
 	if fromLockfile(inv) {
@@ -407,24 +407,6 @@ func (g *inventoryGraph) runtimeSelection(locks *runtimeLocks) (load []depNode, 
 		}
 	}
 	return load, misses
-}
-
-// inventoryReasons returns the inventory's run-wide graph reasons: every reason under which its
-// node set or a node's version may fall short of what the build runs (no lockfile, an uncached
-// subtree or POM, a substitution, an uncached BOM or parent, an unresolved property, an
-// unevaluable profile, a resolver tool that failed). The op withholds Searched under any of them itself rather than leaning
-// on a caller's inventory limits, because the op is consumed as a library.
-func inventoryReasons(inv plugin.DependencyInventory) []string {
-	var out []string
-	for _, r := range inv.Partiality.Reasons {
-		if strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) ||
-			strings.HasPrefix(r, plugin.PartialReasonEnvConditionUnresolved) ||
-			strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed) ||
-			strings.HasPrefix(r, plugin.PartialReasonToolFailure) {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 // fromLockfile reports whether the inventory's node set came from a Gradle lockfile.

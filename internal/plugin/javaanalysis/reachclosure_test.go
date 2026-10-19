@@ -245,3 +245,24 @@ func TestBytecodeReach_EscapingCachedCopyIsNotLoaded(t *testing.T) {
 		t.Errorf("missing scoped tool_failure naming the escaping copy: %+v", res.Partiality.Scoped)
 	}
 }
+
+// TestInventoryGraphReasons: the graph reasons the JVM Reachability ops adopt from the inventory, including a
+// resolver tool that failed partway, which leaves the node set short of what the build runs.
+func TestInventoryGraphReasons(t *testing.T) {
+	for _, tt := range []struct {
+		reason string
+		want   bool
+	}{
+		{plugin.PartialReasonSourceUnpinned + ":no_lockfile", true},
+		{plugin.PartialReasonEnvConditionUnresolved + ":maven_profile", true},
+		{plugin.PartialReasonRelationshipUnexpressed + ":gradle_substitution", true},
+		{plugin.PartialReasonToolFailure, true},
+		{plugin.PartialReasonToolFailure + ":gradle", true},
+		{"reflection", false},
+	} {
+		inv := plugin.DependencyInventory{Partiality: plugin.Partiality{Reasons: []string{tt.reason}}}
+		if got := len(InventoryGraphReasons(inv)) == 1; got != tt.want {
+			t.Errorf("InventoryGraphReasons(%q) adopted = %v, want %v", tt.reason, got, tt.want)
+		}
+	}
+}

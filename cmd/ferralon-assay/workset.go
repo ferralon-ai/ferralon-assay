@@ -346,13 +346,22 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	// unresolved dependency is not queried. It is named instead: skipping it silently would read
 	// as OSV having found nothing.
 	purlType := purlTypeForEcosystem(ws.ecosystem)
+	pinned := make(map[string][]string, len(pkgs))
+	for _, p := range pkgs {
+		pinned[p.Name] = append(pinned[p.Name], p.Version)
+	}
 	for _, u := range unversioned {
+		detail := u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed"
+		if vs := pinned[u.Name]; len(vs) > 0 {
+			detail = u.Name + " has no single resolved version, so OSV.dev was asked only about its pinned copies (" +
+				strings.Join(vs, ", ") + "); advisories against any other copy were NOT assessed"
+		}
 		ws.unversioned = append(ws.unversioned, u.Name)
 		ws.partiality = append(ws.partiality, report.PartialityNote{
 			Reason:    reasonWorkSetDependencyUnresolved,
 			Ecosystem: ws.ecosystem,
 			Package:   versionlessPURL(purlType, u.Name),
-			Detail:    u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed",
+			Detail:    detail,
 		})
 	}
 	// The project's own published package is queried too, so OSV answers for advisories against
@@ -515,6 +524,13 @@ func aliasIndex() map[string]string {
 // guessed). A coordinate can sit in both: its resolved versions are still queried, and the unresolved
 // copy is still disclosed, because the pipeline's version match treats any unresolved copy as
 // unresolved. Both are sorted. The inventory is absent only when neither holds anything.
+//
+// All is evidence; the per-coordinate Match is the reader's decision. A reader can withhold a
+// coordinate whose every declaration in All is pinned (an unread surface may hold another copy, or
+// copies disagree), and a copy it reads outside All (an installed distribution) can settle the
+// version. So each coordinate with no unresolved copy is checked against its Match: a withheld
+// Match puts the coordinate in unresolved too, and a resolved Match's version is queried with the
+// declared ones.
 func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	eco := ecosystemForLanguage(acq.language)
 	if eco == "" {
@@ -557,12 +573,50 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 		}
 	}
 
+	resolved, unresolved = confirmByMatch(ctx, acq, eco, resolved, unresolved)
+
 	if len(resolved) == 0 && len(unresolved) == 0 {
 		notes = append(notes, report.PartialityNote{Reason: reasonWorkSetNoInventory, Ecosystem: eco})
 	}
 	sortPackages(resolved)
 	sortPackages(unresolved)
 	return resolved, unresolved, notes
+}
+
+// confirmByMatch asks the reader for the Match of every coordinate that has resolved copies and no
+// unresolved one. A coordinate already in unresolved is disclosed whatever its Match says, so it
+// costs no call. A failed call withholds the coordinate rather than trusting All.
+func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package) {
+	withheld := make(map[string]bool, len(unresolved))
+	for _, u := range unresolved {
+		withheld[u.Name] = true
+	}
+	have := make(map[report.Package]bool, len(resolved))
+	seen := make(map[string]bool, len(resolved))
+	var names []string
+	for _, r := range resolved {
+		have[r] = true
+		if !seen[r.Name] {
+			seen[r.Name] = true
+			names = append(names, r.Name)
+		}
+	}
+	for _, name := range names {
+		if withheld[name] {
+			continue
+		}
+		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name})
+		if err != nil || !vr.Found || !vr.Match.Resolved || vr.Match.Version == "" {
+			withheld[name] = true
+			unresolved = append(unresolved, report.Package{Ecosystem: eco, Name: name})
+			continue
+		}
+		if p := (report.Package{Ecosystem: eco, Name: name, Version: vr.Match.Version}); !have[p] {
+			have[p] = true
+			resolved = append(resolved, p)
+		}
+	}
+	return resolved, unresolved
 }
 
 // versionlessPURL renders a dependency coordinate as the versionless PURL a PartialityNote's Package

@@ -19,14 +19,20 @@ import (
 )
 
 // inventoryAnalyzer is an unsearchingAnalyzer whose manifest declares deps. Match follows the
-// plugin contract: a resolved declaration of the coordinate wins over an unresolved one.
+// plugin contract: a resolved declaration of the coordinate wins over an unresolved one, unless
+// match decides the coordinate the way a reader does from copies outside All.
 type inventoryAnalyzer struct {
 	unsearchingAnalyzer
-	deps []plugin.ResolvedDependency
+	deps  []plugin.ResolvedDependency
+	match map[string]plugin.ResolvedDependency
 }
 
 func (a inventoryAnalyzer) ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
 	res := plugin.DependencyVersionResult{Partiality: plugin.Complete(), All: a.deps}
+	if m, ok := a.match[req.Coordinate]; ok {
+		res.Found, res.Match = true, m
+		return res, nil
+	}
 	for _, d := range a.deps {
 		if d.Coordinate != req.Coordinate {
 			continue
@@ -141,7 +147,23 @@ func jsTree(t *testing.T) *acquired {
 }
 
 func javaAnalyzer(deps ...plugin.ResolvedDependency) plugin.LanguagePlugin {
-	return inventoryAnalyzer{unsearchingAnalyzer{language: checkout.LangJava}, deps}
+	return inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava}, deps: deps}
+}
+
+// javaDecided is javaAnalyzer whose reader decides minio's Match as m.
+func javaDecided(m plugin.ResolvedDependency, deps ...plugin.ResolvedDependency) plugin.LanguagePlugin {
+	return inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava}, deps: deps,
+		match: map[string]plugin.ResolvedDependency{minio: m}}
+}
+
+// pythonToxTree is pythonTree plus a tox.ini that pins a second copy of a requirement.
+func pythonToxTree(t *testing.T, requirements, tox string) *acquired {
+	t.Helper()
+	acq := pythonTree(t, requirements)
+	if err := os.WriteFile(filepath.Join(acq.buildDir, "tox.ini"), []byte(tox), 0o600); err != nil {
+		t.Fatalf("write tox.ini: %v", err)
+	}
+	return acq
 }
 
 func policyCorpus(t *testing.T) pipeline.AdvisorySource {
@@ -227,6 +249,21 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
+			name: "osv: a coordinate whose Match withholds is queried at its pins and named",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, javaDecided(minioUnresolved, widgetResolved, minioResolved))
+			},
+			wantQueried: []string{widget + "@1.0.0", minio + "@8.5.4"},
+			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name:        "osv: a version only the Match holds is queried too",
+			acq:         func(t *testing.T) *acquired { return javaTree(t, javaDecided(minioPatched, minioResolved)) },
+			wantQueried: []string{minio + "@8.5.11", minio + "@8.5.4"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
 			name:        "osv: all-unresolved build names every skipped dependency",
 			acq:         func(t *testing.T) *acquired { return javaTree(t, javaAnalyzer(minioUnresolved)) },
 			wantSkipped: map[string]string{minio: "pkg:maven/io.minio/minio"},
@@ -250,6 +287,15 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			acq:         func(t *testing.T) *acquired { return pythonTree(t, "requests==2.31.0\nflask>=2.0\n") },
 			wantQueried: []string{"requests@2.31.0"},
 			wantSkipped: map[string]string{"flask": "pkg:pypi/flask"},
+			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "python osv: a pin beside a second copy in tox.ini is named",
+			acq: func(t *testing.T) *acquired {
+				return pythonToxTree(t, "requests==2.31.0\njinja2==3.1.4\n", "[testenv]\ndeps =\n    jinja2==3.1.2\n")
+			},
+			wantQueried: []string{"jinja2@3.1.4", "requests@2.31.0"},
+			wantSkipped: map[string]string{"jinja2": "pkg:pypi/jinja2", "requests": "pkg:pypi/requests"},
 			wantSource:  workSetSourceBuiltinUnionOSV,
 		},
 		{
@@ -306,6 +352,11 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 				}
 				if n.Package != want {
 					t.Errorf("note Package = %q, want %q", n.Package, want)
+				}
+				for _, q := range queried {
+					if strings.HasPrefix(q, coord+"@") && !strings.Contains(n.Detail, "asked only about its pinned copies") {
+						t.Errorf("OSV was asked about %s, but the note says it was not: %q", q, n.Detail)
+					}
 				}
 				if !strings.Contains(ws.describe(), coord) {
 					t.Errorf("terminal summary does not name %s:\n%s", coord, ws.describe())

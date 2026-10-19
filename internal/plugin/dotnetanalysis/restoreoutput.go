@@ -63,7 +63,11 @@ func (e *evaluator) checkAssets(pe *projectEval) assetsCheck {
 // agrees with the project as it stands. This is the one predicate the version resolver and
 // the IL tier share. reason says why not.
 func AssetsTrusted(buildDir, assetsPath string) (bool, string) {
-	files := manifestFiles(buildDir)
+	files, walkFailed := manifestFiles(buildDir)
+	if walkFailed {
+		// A subtree the walk couldn't list could hold another project sharing this obj/.
+		return false, reasonBuildInputUnmodeled
+	}
 	ev := newEvaluator(buildDir, files)
 	assetsReal, err := filepath.EvalSymlinks(assetsPath)
 	if err != nil {
@@ -616,7 +620,7 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, *lockFile, boo
 
 // lockCurrent reports whether pe's lockfile still records a restore of pe as it now stands:
 // its sections are exactly each framework and framework/runtime pair of pe, and in every
-// section the Direct ids are exactly the ids pe declares, each at its declared range (a
+// framework section the Direct ids are exactly the ids pe declares, each at its declared range (a
 // version-less one at pe's PackageVersion), every CentralTransitive range is pe's
 // PackageVersion of that id, and the Project entries are exactly pe's reference closure,
 // each with exactly the packages (at their declared ranges) and projects it declares.
@@ -633,7 +637,12 @@ func (e *evaluator) lockCurrent(lf *lockFile, pe *projectEval) bool {
 			return false
 		}
 	}
-	for _, ls := range lf.sections {
+	for key, ls := range lf.sections {
+		// A <tfm>/<rid> section comes from the same restore as its framework section, which
+		// carries the requests checked here; its entries still count as copies.
+		if strings.Contains(key, "/") {
+			continue
+		}
 		if len(ls.direct) != len(pe.decl.specs) {
 			return false
 		}
@@ -677,14 +686,28 @@ func (e *evaluator) lockCurrent(lf *lockFile, pe *projectEval) bool {
 
 // sameRanges reports whether reqs is non-empty and every range in it equals spec.
 func sameRanges(spec string, reqs []string) bool {
-	want, ok := normalizeNuGetRange(spec)
+	want, ok := lockRange(spec)
 	if !ok || len(reqs) == 0 {
 		return false
 	}
 	for _, r := range reqs {
-		if got, ok := normalizeNuGetRange(r); !ok || got != want {
+		if got, ok := lockRange(r); !ok || got != want {
 			return false
 		}
 	}
 	return true
+}
+
+// lockRange is nugetRange, extended to the floating versions a lock records as requested: a
+// float compares only as written (lowercased, without spaces), a plain float "13.*" as the lock
+// writes it, "[13.*, )". It never equals a range that isn't a float.
+func lockRange(spec string) (string, bool) {
+	s := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(spec), " ", ""))
+	if !strings.Contains(s, "*") {
+		return nugetRange(spec)
+	}
+	if s[0] != '[' && s[0] != '(' {
+		s = "[" + s + ",)"
+	}
+	return "float:" + s, true
 }

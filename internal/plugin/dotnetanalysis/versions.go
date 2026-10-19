@@ -56,8 +56,20 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		return plugin.DependencyVersionResult{}, err
 	}
 	want := normalizeNuGetCoordinate(req.Coordinate)
-	res.Match, res.Found = matchNuGet(copies, want)
-	if parseFailed && want != "" {
+	if want == "" {
+		return res, nil
+	}
+	res.Match, res.Found = agreeNuGet(copies, want)
+	// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
+	// is affected by any copy at a listed version.
+	for _, d := range res.All {
+		if d.Resolved && normalizeNuGetCoordinate(d.Coordinate) == want {
+			res.Presence = &d
+			break
+		}
+	}
+	if parseFailed {
+		// A manifest that doesn't parse could declare want at any version.
 		if !res.Found {
 			res.Match = plugin.ResolvedDependency{Coordinate: strings.TrimSpace(req.Coordinate)}
 		}
@@ -69,7 +81,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 }
 
 // installedSet reads every manifest under req.BuildDir and returns the result without a
-// Match (Partiality and All), the copies of the requested package installedCopies kept, and
+// Match (Partiality, All and Matches), the copies of the requested package installedCopies kept, and
 // whether a manifest or restore output failed to parse.
 func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, []nugetCopy, bool, error) {
 	info, err := os.Stat(req.BuildDir)
@@ -80,17 +92,27 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 		return plugin.DependencyVersionResult{}, nil, false, fmt.Errorf("dotnetanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	manifests := manifestFiles(req.BuildDir)
+	manifests, walkFailed := manifestFiles(req.BuildDir)
 	rootReal := realRoot(req.BuildDir)
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	locked := make(map[string]bool)
+	for _, m := range manifests {
+		if manifestKind(filepath.Base(m)) == kindLock {
+			locked[filepath.Dir(m)] = true
+		}
+	}
 
 	var (
 		all         []plugin.ResolvedDependency
+		matches     []plugin.ResolvedDependency
 		copies      []nugetCopy
 		locks       = make(map[string]*lockFile)
 		projectList []string
 		projects    = make(map[string]*projectDir)
 		configs     = make(map[string]bool)
-		parseFailed bool
+		// A subtree the walk couldn't list could hold a manifest declaring any package at any
+		// version, as a manifest that doesn't parse could.
+		parseFailed = walkFailed
 	)
 	for _, m := range manifests {
 		entries, lock, ok := parseManifest(rootReal, m)
@@ -116,10 +138,14 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 		for _, e := range entries {
 			all = append(all, e.dep)
 			copies = append(copies, nugetCopy{dep: e.dep, dir: dir, kind: kind})
+			// Matches is the evidence as declared: every manifest's copy of want, except a
+			// project file's beside the packages.lock.json that pins what it references.
+			if want != "" && normalizeNuGetCoordinate(e.dep.Coordinate) == want && (kind != kindProject || !locked[dir]) {
+				matches = append(matches, e.dep)
+			}
 		}
 	}
 
-	want := normalizeNuGetCoordinate(req.Coordinate)
 	var reasons []string
 	if want != "" && !parseFailed {
 		var ok bool
@@ -140,7 +166,10 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 		part = plugin.Partial(reasons...)
 	}
 
-	return plugin.DependencyVersionResult{Partiality: part, All: all}, copies, parseFailed, nil
+	// MatchesComplete stays false. MSBuild can add or re-version a PackageReference from inputs
+	// this reader does not model (an SDK's props and targets, a build-time property), so no set
+	// of copies it reads is known to be the whole build.
+	return plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}, copies, parseFailed, nil
 }
 
 // nugetCopy is one manifest entry together with where it came from, which installedCopies
@@ -168,39 +197,51 @@ func manifestKind(base string) string {
 	}
 }
 
-// matchNuGet selects the Match for the normalized coordinate want from the copies
-// installedCopies kept. A resolved copy wins over an unresolved one for the same id.
-//
-// SEAM(agreement): whether several copies of one package agree (distinct versions, or any
-// unresolved copy beside a resolved one) is the shared agreement rule's call, not this
-// lane's. Once that predicate is on main, this selection hands it the copies installedCopies
-// kept, the unknown copies included, instead of picking one here.
-func matchNuGet(copies []nugetCopy, want string) (plugin.ResolvedDependency, bool) {
+// agreeNuGet selects the Match for the normalized coordinate want from the copies
+// installedCopies kept, the unknown copies included. The Match is resolved only when every copy
+// is resolved and all name the same version: a build with one patched project and one affected
+// one must not be ruled not-affected on the copy that happens to sit outside the range.
+func agreeNuGet(copies []nugetCopy, want string) (plugin.ResolvedDependency, bool) {
 	var (
-		match plugin.ResolvedDependency
-		found bool
+		match    plugin.ResolvedDependency
+		found    bool
+		unknown  bool
+		versions = map[string]struct{}{}
 	)
-	if want == "" {
-		return match, found
-	}
 	for _, c := range copies {
-		if normalizeNuGetCoordinate(c.dep.Coordinate) == want {
-			match, found = c.dep, true
-			if c.dep.Resolved {
-				break
-			}
+		d := c.dep
+		if normalizeNuGetCoordinate(d.Coordinate) != want {
+			continue
 		}
+		if !found {
+			match, found = d, true
+		}
+		if !d.Resolved {
+			unknown = true
+			continue
+		}
+		if len(versions) == 0 {
+			match = d
+		}
+		versions[d.Version] = struct{}{}
+	}
+	if found && (unknown || len(versions) != 1) {
+		match.Version = ""
+		match.Resolved = false
 	}
 	return match, found
 }
 
 // manifestFiles returns every recognized .NET manifest under root, skipping build-output /
-// package / VCS trees so a restored copy does not shadow the project's own manifest.
-func manifestFiles(root string) []string {
-	var out []string
+// package / VCS trees so a restored copy does not shadow the project's own manifest. failed is
+// set when some part of the tree couldn't be listed or examined.
+func manifestFiles(root string) (out []string, failed bool) {
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree yields no manifests; keep walking.
+			if !os.IsNotExist(err) {
+				failed = true
+			}
+			return nil //nolint:nilerr // keep walking; the caller reports the subtree as unread.
 		}
 		if d.IsDir() {
 			if path != root && skipDir(d.Name()) {
@@ -213,14 +254,16 @@ func manifestFiles(root string) []string {
 		}
 		return nil
 	})
-	return out
+	return out, failed
 }
 
 // isManifest reports whether name is a recognized .NET dependency manifest.
 func isManifest(name string) bool {
-	if name == "packages.lock.json" || name == "packages.config" {
-		return true
-	}
+	return name == "packages.lock.json" || name == "packages.config" || isProjectFile(name)
+}
+
+// isProjectFile reports whether name is an SDK-style project file.
+func isProjectFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".csproj" || ext == ".fsproj" || ext == ".vbproj"
 }
@@ -268,12 +311,14 @@ func entriesOf(deps []plugin.ResolvedDependency) []manifestEntry {
 // normalizes, so no lockfile covers it.
 const specUnread = "unread"
 
-// csprojRefs is every PackageReference Include of a project file, read without judging
-// anything else in it.
+// csprojRefs is every PackageReference Include and Version of a project file, read without
+// judging anything else in it.
 type csprojRefs struct {
 	ItemGroups []struct {
 		Refs []struct {
-			Include string `xml:"Include,attr"`
+			Include     string `xml:"Include,attr"`
+			VersionAttr string `xml:"Version,attr"`
+			VersionElem string `xml:"Version"`
 		} `xml:"PackageReference"`
 	} `xml:"ItemGroup"`
 }
@@ -284,8 +329,9 @@ type csprojRefs struct {
 // it, like a range, a floating version, an empty Version (Central Package Management — the version lives in
 // Directory.Packages.props) or a reference parseMSBuild reads as specUnread is UNRESOLVED.
 // Each entry carries the declared version (Version, else VersionOverride) for the lock
-// staleness check. A file parseMSBuild can't model still lists its PackageReference ids, all
-// UNRESOLVED; installedCopies reports why for the requested package. The bool is false only
+// staleness check. A file parseMSBuild can't model still lists its PackageReferences, each with
+// its pin as written for evidence (Matches) and its declared version specUnread; installedCopies
+// never keeps a project file's copy, and reports why for the requested package. The bool is false only
 // when the XML doesn't parse.
 func parseProjectFile(data []byte) ([]manifestEntry, bool) {
 	if mf, ok := parseMSBuild(data, roleProject, "csproj"); ok {
@@ -299,7 +345,12 @@ func parseProjectFile(data []byte) ([]manifestEntry, bool) {
 	for _, ig := range proj.ItemGroups {
 		for _, r := range ig.Refs {
 			if name := strings.TrimSpace(r.Include); name != "" && !strings.ContainsAny(name, ";*?$@%") {
-				out = append(out, manifestEntry{dep: nugetResolved(name, "", false, "csproj"), spec: specUnread})
+				raw := strings.TrimSpace(r.VersionAttr)
+				if raw == "" {
+					raw = strings.TrimSpace(r.VersionElem)
+				}
+				ver, resolved := packageReferencePin(raw)
+				out = append(out, manifestEntry{dep: nugetResolved(name, ver, resolved, "csproj"), spec: specUnread})
 			}
 		}
 	}
@@ -341,96 +392,6 @@ func withinDir(root, dir string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// nugetRange is a NuGet version range in comparable form.
-type nugetRange struct {
-	minIncl, maxIncl bool
-	min, max         string
-}
-
-// normalizeNuGetRange parses a NuGet version spec into comparable form, so a project's
-// declaration and a lockfile's "requested" ("13.0.3" vs "[13.0.3, )") compare equal when they
-// mean the same range. A bare version is a minimum, inclusive. Versions are padded to three
-// parts with a zero fourth part dropped; floating versions are kept literally, so they match
-// only the same float. The bool is false for anything else it can't parse, including MSBuild
-// property references.
-func normalizeNuGetRange(spec string) (nugetRange, bool) {
-	spec = strings.TrimSpace(spec)
-	if spec == "" {
-		return nugetRange{}, false
-	}
-	lb, rb := spec[0], spec[len(spec)-1]
-	if lb != '[' && lb != '(' {
-		v, ok := normalizeNuGetVersion(spec)
-		return nugetRange{minIncl: true, min: v}, ok
-	}
-	if len(spec) < 2 || (rb != ']' && rb != ')') {
-		return nugetRange{}, false
-	}
-	inner := spec[1 : len(spec)-1]
-	lo, hi, isRange := strings.Cut(inner, ",")
-	if !isRange {
-		if lb != '[' || rb != ']' {
-			return nugetRange{}, false
-		}
-		v, ok := normalizeNuGetVersion(inner)
-		return nugetRange{minIncl: true, maxIncl: true, min: v, max: v}, ok
-	}
-	r := nugetRange{minIncl: lb == '[', maxIncl: rb == ']'}
-	lo, hi = strings.TrimSpace(lo), strings.TrimSpace(hi)
-	if lo == "" && hi == "" {
-		return nugetRange{}, false
-	}
-	var ok bool
-	if lo != "" {
-		if r.min, ok = normalizeNuGetVersion(lo); !ok {
-			return nugetRange{}, false
-		}
-	}
-	if hi != "" {
-		if r.max, ok = normalizeNuGetVersion(hi); !ok {
-			return nugetRange{}, false
-		}
-	}
-	return r, true
-}
-
-func normalizeNuGetVersion(v string) (string, bool) {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if v == "" {
-		return "", false
-	}
-	if strings.Contains(v, "*") {
-		return v, true
-	}
-	v, _, _ = strings.Cut(v, "+")
-	core, pre, hasPre := strings.Cut(v, "-")
-	parts := strings.Split(core, ".")
-	if len(parts) > 4 {
-		return "", false
-	}
-	for i, p := range parts {
-		n, err := strconv.ParseUint(p, 10, 64)
-		if err != nil {
-			return "", false
-		}
-		parts[i] = strconv.FormatUint(n, 10)
-	}
-	for len(parts) < 3 {
-		parts = append(parts, "0")
-	}
-	if len(parts) == 4 && parts[3] == "0" {
-		parts = parts[:3]
-	}
-	out := strings.Join(parts, ".")
-	if hasPre {
-		if pre == "" {
-			return "", false
-		}
-		out += "-" + pre
-	}
-	return out, true
-}
-
 // --- shared helpers ----------------------------------------------------------
 
 // exactNuGetPin reports whether raw is an EXACT NuGet version pin and returns the concrete
@@ -464,6 +425,86 @@ func packageReferencePin(raw string) (version string, resolved bool) {
 		return "", false
 	}
 	return exactNuGetPin(raw)
+}
+
+// nugetRange puts a PackageReference version, or a lock entry's "requested", in one form so the
+// two compare: a plain version is the minimum "[v, )", an exact pin "[v]" is "[v, v]", and each
+// version is normalized (nugetVersion). ok is false for a spec it can't put in that form, such as
+// a floating version.
+func nugetRange(spec string) (string, bool) {
+	s := strings.ReplaceAll(strings.TrimSpace(spec), " ", "")
+	if s == "" || strings.Contains(s, "*") {
+		return "", false
+	}
+	if s[0] != '[' && s[0] != '(' {
+		v, ok := nugetVersion(s)
+		if !ok {
+			return "", false
+		}
+		return "[" + v + ", )", true
+	}
+	if len(s) < 2 || s[len(s)-1] != ']' && s[len(s)-1] != ')' {
+		return "", false
+	}
+	lower, upper, interval := strings.Cut(s[1:len(s)-1], ",")
+	if !interval {
+		if s[0] != '[' || s[len(s)-1] != ']' {
+			return "", false
+		}
+		v, ok := nugetVersion(lower)
+		if !ok {
+			return "", false
+		}
+		return "[" + v + ", " + v + "]", true
+	}
+	if lower == "" && upper == "" {
+		return "", false
+	}
+	var lo, hi string
+	for _, b := range []struct {
+		raw string
+		out *string
+	}{{lower, &lo}, {upper, &hi}} {
+		if b.raw == "" {
+			continue
+		}
+		v, ok := nugetVersion(b.raw)
+		if !ok {
+			return "", false
+		}
+		*b.out = v
+	}
+	return s[:1] + lo + ", " + hi + s[len(s)-1:], true
+}
+
+// nugetVersion normalizes a NuGet version the way NuGet writes one: at least three numeric parts,
+// a fourth only when it isn't zero, a lowercased release label and no build metadata.
+func nugetVersion(v string) (string, bool) {
+	v, _, _ = strings.Cut(v, "+")
+	core, label, prerelease := strings.Cut(v, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) > 4 || prerelease && label == "" {
+		return "", false
+	}
+	nums := make([]string, 0, 4)
+	for _, part := range parts {
+		n, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return "", false
+		}
+		nums = append(nums, strconv.FormatUint(n, 10))
+	}
+	for len(nums) < 3 {
+		nums = append(nums, "0")
+	}
+	if len(nums) == 4 && nums[3] == "0" {
+		nums = nums[:3]
+	}
+	out := strings.Join(nums, ".")
+	if prerelease {
+		out += "-" + strings.ToLower(label)
+	}
+	return out, true
 }
 
 // nugetResolved builds a ResolvedDependency for a NuGet package. An empty/unresolved version

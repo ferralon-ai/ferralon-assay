@@ -148,8 +148,7 @@ func TestResolveVersions_BuildRequiresAndInstalledCopiesRead(t *testing.T) {
 	}
 }
 
-// A symlinked site-packages is not read through the link, and one that leaves the build dir
-// is an unread surface.
+// A symlinked site-packages that leaves the build dir is an unread surface.
 func TestResolveVersions_SitePackagesLinkOutsideVetoes(t *testing.T) {
 	outside := writeTree(t, map[string]string{
 		"PyJWT-2.10.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: PyJWT\nVersion: 2.10.0\n",
@@ -165,7 +164,7 @@ func TestResolveVersions_SitePackagesLinkOutsideVetoes(t *testing.T) {
 }
 
 // A package link inside site-packages that leaves the build dir is an unread copy; one that
-// stays inside it is read where it lies.
+// stays inside it is read at its target, once.
 func TestResolveVersions_SitePackagesEntryLink(t *testing.T) {
 	const meta = "Metadata-Version: 2.1\nName: PyJWT\nVersion: 2.8.0\n"
 	outside := writeTree(t, map[string]string{"PyJWT-2.10.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: PyJWT\nVersion: 2.10.0\n"})

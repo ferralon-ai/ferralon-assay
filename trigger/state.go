@@ -207,7 +207,11 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
+			// A failed re-run replaces the baseline's row whatever package that row is on: the
+			// head may select a different package, and the failure resolved none.
 			notes = append(notes, assessFailureNote(adv, err))
+			reFindings[adv.ID+"\x00"+adv.Source] = assessFailureFinding(adv, err)
+			freshIDs[adv.ID] = struct{}{}
 			continue
 		}
 		// Harvested before the skips below: a limit observed on this head commit is
@@ -215,7 +219,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		// commonest limit (no manifest) is itself why pkg comes back nil.
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, req.PRSBOM.Packages)
-		f := withInventoryLimits(finding(st, assessmentID, advisory, pkg), req.DiffLimits)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, goModulesOf(req.PRSBOM, req.DiffLimits)), req.DiffLimits)
 		// An undetermined toolchain advisory is keyed in like any other fresh finding, so it
 		// REPLACES the baseline's row below. It has to be harvested ahead of the two skips: a
 		// toolchain advisory carries no SBOM package, so `pkg == nil` would drop it and leave
@@ -310,12 +314,14 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
 			notes = append(notes, assessFailureNote(areq.Vulnerability, err))
+			reFindings[a.ID+"\x00"+areq.Vulnerability.Source] = assessFailureFinding(areq.Vulnerability, err)
+			freshIDs[a.ID] = struct{}{}
 			continue
 		}
 		notes = append(notes, partialityNotes(st, assessmentID)...)
 		advisory, tcPkg := advisoryFromArtifacts(st, assessmentID, areq, prior.SBOM.Packages)
 		pkg := a.Package
-		f := withInventoryLimits(finding(st, assessmentID, advisory, &pkg), inventoryLimits(prior.Partiality))
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, &pkg, goModulesOf(prior.SBOM, inventoryLimits(prior.Partiality))), inventoryLimits(prior.Partiality))
 		if note, ok := limitNoteFor(f); ok {
 			// The toolchain is not an SBOM dependency, so the undetermined row takes the
 			// package advisoryFromArtifacts adjudicated (nil for a toolchain subject) rather

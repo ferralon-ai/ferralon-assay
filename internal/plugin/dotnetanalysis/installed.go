@@ -46,17 +46,25 @@ type projectDir struct {
 //     direct-dependency-wins). A project that declares other packages or references other
 //     projects but not want, or declares want only under a Condition, may pull any version of
 //     it transitively, so it adds an unknown copy.
-//   - A packages.config project (no PackageReference) keeps its packages.config, the complete
-//     legacy set; its project references don't flow packages. A lockfile or packages.config
-//     with no project file beside it counts as is.
+//   - A project that declares no package and references only projects whose own copies
+//     decide want (refsCover) adds nothing: what it restores of want is what they pin.
+//   - A packages.config restores the project beside it only when packagesConfigGoverns holds;
+//     beside any other project NuGet ignores it, and its copies are dropped. A governed
+//     project keeps its packages.config, the complete legacy set; its project references
+//     don't flow packages. A governed project the evaluator doesn't model adds nothing when
+//     it is the classic template alone (legacyTemplateOnly) with no file MSBuild imports
+//     implicitly (implicitImport); otherwise it adds an unknown copy. A lockfile or
+//     packages.config with no project file beside it counts as is.
 //
 // Two project files in one directory share obj/ and the lock, so neither is attributed.
 // The reasons name every unknown copy added.
 func installedCopies(ev *evaluator, copies []nugetCopy, locks map[string]*lockFile, projects map[string]*projectDir, configs map[string]bool, want, coordinate string) ([]nugetCopy, []string, bool) {
 	var (
-		extra   []nugetCopy
-		reasons []string
-		current = make(map[string]bool)
+		extra    []nugetCopy
+		reasons  []string
+		current  = make(map[string]bool)
+		governed = make(map[string]bool)
+		imports  = make(map[string]bool)
 	)
 	unknown := func(dir, reason string) {
 		extra = append(extra, nugetCopy{dep: plugin.ResolvedDependency{Coordinate: coordinate, Source: reason}, dir: dir, kind: kindProject})
@@ -66,16 +74,25 @@ func installedCopies(ev *evaluator, copies []nugetCopy, locks map[string]*lockFi
 	}
 dirs:
 	for _, dir := range slices.Sorted(maps.Keys(projects)) {
+		files := projects[dir].files
+		gov := configs[dir] && packagesConfigGoverns(ev.rootReal, files)
+		governed[dir] = gov
 		var evals []*projectEval
-		for _, f := range projects[dir].files {
+		for _, f := range files {
 			pe := ev.evalPath(f)
 			if pe.reason != "" {
+				if gov && legacyTemplateOnly(ev.rootReal, f) && !implicitImport(f, imports) {
+					continue
+				}
 				unknown(dir, pe.reason)
 				continue dirs
 			}
 			evals = append(evals, pe)
 		}
-		single := len(evals) == 1
+		if len(evals) == 0 {
+			continue
+		}
+		single := len(files) == 1
 		if single {
 			ac := ev.checkAssets(evals[0])
 			switch ac.status {
@@ -111,7 +128,7 @@ dirs:
 			current[dir] = true
 			continue
 		}
-		if unconditional || !declares && (!refs || configs[dir]) {
+		if unconditional || !declares && (!refs || gov || ev.refsCover(evals, want)) {
 			continue
 		}
 		if hasLock {
@@ -128,6 +145,8 @@ dirs:
 			continue
 		case c.kind == kindLock && projects[c.dir] != nil && !current[c.dir]:
 			continue
+		case c.kind == kindConfig && projects[c.dir] != nil && !governed[c.dir]:
+			continue
 		}
 		out = append(out, c)
 	}
@@ -138,6 +157,57 @@ dirs:
 		out = append(out, c)
 	}
 	return out, reasons, true
+}
+
+// refsCover reports whether every ProjectReference of evals leads only to projects whose
+// copies of want decide what a referencing project restores: an unconditioned, exact pin of
+// want (the nearest declaration wins), or no package at all and references that cover in turn.
+// A referenced project that isn't modeled, or declares other packages, could bring any version
+// of want transitively.
+func (ev *evaluator) refsCover(evals []*projectEval, want string) bool {
+	seen := make(map[string]bool)
+	var cover func(refs []projectRef) bool
+	cover = func(refs []projectRef) bool {
+		for _, r := range refs {
+			if r.conditioned {
+				return false
+			}
+			if seen[r.path] {
+				continue
+			}
+			seen[r.path] = true
+			t := ev.eval(r.path)
+			if t.reason != "" || t.generated {
+				return false
+			}
+			if t.decl.unconditional[want] {
+				pinned := false
+				for _, e := range slices.Concat(t.decl.own, t.decl.injected) {
+					if normalizeNuGetCoordinate(e.dep.Coordinate) != want {
+						continue
+					}
+					if !e.dep.Resolved {
+						return false
+					}
+					pinned = true
+				}
+				if pinned {
+					continue
+				}
+				return false
+			}
+			if len(t.decl.specs) > 0 || !cover(t.refs) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, pe := range evals {
+		if !cover(pe.refs) {
+			return false
+		}
+	}
+	return true
 }
 
 // kindAssets marks a copy read from a project's obj/project.assets.json.
@@ -294,7 +364,7 @@ var restoreItems = []string{"PackageReference", "GlobalPackageReference", "Packa
 //
 // Item types are matched without case, as MSBuild does. A reference under a Condition (on
 // the item, its ItemGroup, or a metadata element) applies only sometimes, and one with more
-// than one Version or VersionOverride is decided by evaluation order; both are read as
+// than one Version or VersionOverride, or with both, is decided by evaluation order; both are read as
 // unresolved with the declared version specUnread. Every property is recorded, with whether
 // a Condition applies, for the evaluator.
 func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bool) {
@@ -545,7 +615,9 @@ func (it *msbuildPkgItem) entry(source string) (manifestEntry, bool) {
 	if name == "" || strings.ContainsAny(name, ";*?$@%") {
 		return manifestEntry{}, false
 	}
-	if it.conditioned || len(it.versions) > 1 || len(it.overrides) > 1 {
+	// A Version beside a VersionOverride is NU1008 under central management, and without it
+	// which one restore takes isn't modeled, so neither is read.
+	if it.conditioned || len(it.versions) > 1 || len(it.overrides) > 1 || len(it.versions) > 0 && len(it.overrides) > 0 {
 		return manifestEntry{dep: nugetResolved(name, "", false, source), spec: specUnread}, true
 	}
 	var raw, override string

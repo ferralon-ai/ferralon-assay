@@ -172,6 +172,27 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.5 < go1.21.11 is still affected",
 		},
 		{
+			// GO-2021-0264 is fixed go1.16.10 and go1.17.3; a go 1.21 floor is past both.
+			name:          "a stdlib advisory with toolchain ranges disqualifies on a floor past its fixes",
+			vulnID:        "GO-2021-0264",
+			goMod:         "module example.com/target\n\ngo 1.21\n",
+			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.21.0",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.21.0 is at or past go1.17.3",
+		},
+		{
+			name:          "a stdlib advisory proceeds on a floor inside a branch range",
+			vulnID:        "GO-2021-0264",
+			goMod:         "module example.com/target\n\ngo 1.17\n",
+			wantFact:      ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.17.0",
+			wantDisqual:   false,
+			wantReason:    ReasonInsufficient,
+			wantRationale: "go1.17.0 < go1.17.3 is still affected",
+		},
+		{
 			// No directive, no declaration, no observation: the fact resolves nothing, resolved_version
 			// stays empty, verKnown is false and the version axis fails OPEN. This fail-open is the
 			// correct one — declining to assert safety, rather than failing open INTO a safety claim.
@@ -206,8 +227,8 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 // TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings pins the recognizer the scan-level
 // disclosure keys on. The corpus carries "the subject is the toolchain" two ways and a recognizer
 // that saw only one would silently leave a quarter of the affected advisories emitting an
-// unestablished not_exploitable: CVE-2023-39325 declares the go-toolchain scheme EXPLICITLY, while
-// GO-2021-0264 is a pkg:golang/stdlib advisory whose scheme derives to gomod.
+// unestablished not_exploitable: an explicit go-toolchain version scheme, or a pkg:golang/stdlib PURL
+// whose scheme derives to gomod.
 func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 	tests := []struct {
 		vulnID string
@@ -217,7 +238,7 @@ func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 		{"CVE-2023-39325", true, "explicit go-toolchain version scheme"},
 		{"CVE-2023-45283", true, "explicit go-toolchain version scheme"},
 		{"CVE-2024-24790", true, "explicit go-toolchain version scheme"},
-		{"GO-2021-0264", true, "pkg:golang/stdlib PURL, scheme derives to gomod"},
+		{"GO-2021-0264", true, "explicit go-toolchain version scheme on a pkg:golang/stdlib PURL"},
 		{"GO-2021-0113", false, "a real module dependency (golang.org/x/text)"},
 		{"CVE-2024-55947", false, "a first-party application advisory"},
 		{"FERRALON-JS-DEP-0001", false, "an npm dependency"},
@@ -245,8 +266,8 @@ func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 // A MISS restores the unestablished not_exploitable (ToolchainSubject is what withheldNote keys on)
 // AND stops advisoryFromArtifacts suppressing the SBOM coordinate, so a nonexistent
 // golang.org/x/net@go1.x.y reaches the SBOM and the OpenVEX product id. An OVER-match withholds a
-// genuinely resolved module finding. Today only GO-2021-0264 rests solely on this arm and the in-repo
-// fixtures pin the bare spelling — so nothing would have caught an upstream feed changing it.
+// genuinely resolved module finding. The in-repo fixtures pin the bare spelling, so nothing else would
+// catch an upstream feed changing it.
 func TestIsGoStdlibPURL(t *testing.T) {
 	tests := []struct {
 		purl string

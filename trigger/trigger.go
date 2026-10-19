@@ -126,16 +126,16 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 	b.AddPackages(sbom.Packages...)
 	b.SetRelationships(sbom.Relationships)
 	b.AddPartiality(invNotes...)
+	mods := goModulesOf(sbom, invNotes)
 
 	for _, adv := range admitted.Admitted {
 		areq := assessment.Request{Vulnerability: adv, Codebase: req.Codebase}
 		st, assessmentID, err := assess(ctx, areq, req.AssessOptions...)
 		if err != nil {
-			// One advisory's analysis failing used to abort the entire scan, so a single
-			// broken tool produced no Report at all — and a run with no Report renders
-			// downstream as a run with no findings. Disclose the failure and keep going:
-			// the advisories that DID resolve keep their verdicts, and the one that did not
-			// is named rather than silently missing.
+			// One advisory's analysis failing must not abort the scan: a run with no Report
+			// renders downstream as a run with no findings. The advisories that resolved keep
+			// their verdicts, and the one that did not gets an undetermined row.
+			b.AddFinding(assessFailureFinding(adv, err))
 			b.AddPartiality(assessFailureNote(adv, err))
 			continue
 		}
@@ -147,7 +147,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		// row in tegron.report.v2, plus the scan-level limit that explains it.
 		// v1 had to withhold the row entirely, having no cell for "the advisory applies and
 		// we established nothing"; the row is what makes the omission legible at the count.
-		f := withInventoryLimits(finding(st, assessmentID, advisory, pkg), invNotes)
+		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes)
 		b.AddFinding(f)
 		if note, ok := limitNoteFor(f); ok {
 			b.AddPartiality(note)

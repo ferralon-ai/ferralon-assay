@@ -308,6 +308,9 @@ func reportHTMLLimitLabel(reason string) string {
 			"searched, so no verdict is reported for them."
 	case report.ReasonAdvisoryUnknownToAnalyzer:
 		return "The call-tracing analyzer reported nothing about some advisories, so no verdict is reported for them."
+	case report.ReasonAdvisoryRangeAbsent:
+		return "Some advisories record no affected version range that can be checked against the installed " +
+			"version, so a path to their code is reported as evidence without a verdict."
 	default:
 		return reason
 	}

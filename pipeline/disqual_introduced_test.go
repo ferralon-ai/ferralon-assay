@@ -336,3 +336,51 @@ func TestVersionOutsideRange_ExportedUpperOnlyUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// One package split across two affected[] entries keeps each entry's lower bound: a version inside
+// the lower entry's range is affected though it sits below the upper entry's introduced, whether
+// the package is the selected one or only also present.
+func TestDisqual_SplitEntriesKeepEachLowerBound(t *testing.T) {
+	elem := func(coordinate string, r Range) AffectedPackage {
+		return AffectedPackage{Coordinate: coordinate, PURL: "pkg:npm/" + coordinate, AffectedRanges: []Range{r}}
+	}
+	src := fakeRangesSource{elems: []AffectedPackage{
+		elem("multer", Range{Introduced: "2.0.0", Fixed: "2.2.0"}),
+		elem("busboy", Range{Introduced: "1.0.0", Fixed: "1.1.0"}),
+		elem("multer", Range{Introduced: "1.0.0", Fixed: "1.4.0"}),
+	}}
+	for _, tt := range []struct {
+		version      string
+		disqualified bool
+	}{
+		{"1.2.0", false}, // the second entry only, below the first entry's introduced
+		{"2.1.0", false}, // the first entry only
+		{"1.6.0", true},  // between the two entries
+		{"0.9.0", true},  // below both
+	} {
+		t.Run("selected "+tt.version, func(t *testing.T) {
+			if res := runLegacyUnionDisqual(t, src, "multer", tt.version); res.Disqualified != tt.disqualified {
+				t.Fatalf("disqualified = %v, want %v (%+v)", res.Disqualified, tt.disqualified, res)
+			}
+		})
+		t.Run("also present "+tt.version, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-split-also-present", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "CVE-2026-5038", Source: "corpus"},
+			}}
+			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("intake: %v", err)
+			}
+			putJSON(t, store, c.ID, artifact.TypeInventory, map[string]any{
+				"resolved_version":    "1.5.0",
+				"resolved_versions":   []string{"1.5.0"},
+				"versions_complete":   true,
+				"selected_coordinate": "busboy",
+				"also_present":        []map[string]any{{"coordinate": "multer", "versions": []string{tt.version}, "complete": true}},
+			})
+			if res := runDisqual(t, store, c.ID); res.Disqualified != tt.disqualified {
+				t.Fatalf("disqualified = %v, want %v (%+v)", res.Disqualified, tt.disqualified, res)
+			}
+		})
+	}
+}

@@ -49,11 +49,14 @@ type listedModule struct {
 // read before moduleSearchTimeout, is left out of Searched.
 func searchBuildModules(ctx context.Context, buildDir, pkgPath string, symbols []string) *plugin.ModuleSearch {
 	names := symbolNames(symbols)
-	if pkgPath == "" || len(names) == 0 || modfileFlagSet() {
+	if pkgPath == "" || len(names) == 0 {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, moduleSearchTimeout)
 	defer cancel()
+	if modfileFlagSet(ctx, buildDir) {
+		return nil
+	}
 	mods, err := listModules(ctx, buildDir)
 	if err != nil {
 		return nil
@@ -104,10 +107,18 @@ func symbolNames(symbols []string) map[string]bool {
 	return names
 }
 
-// modfileFlagSet reports whether GOFLAGS names a -modfile, which the download below replaces
-// with its own copy and so would not honor.
-func modfileFlagSet() bool {
-	for _, f := range strings.Fields(os.Getenv("GOFLAGS")) {
+// modfileFlagSet reports whether the GOFLAGS the go command uses in buildDir, from the
+// environment or the go env file, names a -modfile, which the download below replaces with its
+// own copy and so would not honor. GOFLAGS that cannot be read counts as naming one.
+func modfileFlagSet(ctx context.Context, buildDir string) bool {
+	cmd := exec.CommandContext(ctx, "go", "env", "GOFLAGS")
+	cmd.Dir = buildDir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	out, err := cmd.Output()
+	if err != nil {
+		return true
+	}
+	for _, f := range strings.Fields(string(out)) {
 		if strings.HasPrefix(strings.TrimLeft(f, "-"), "modfile") {
 			return true
 		}

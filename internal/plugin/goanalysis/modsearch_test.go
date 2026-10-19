@@ -258,6 +258,18 @@ func TestSearchBuildModules(t *testing.T) {
 			t.Fatalf("searchBuildModules = %+v, want nil", got)
 		}
 	})
+	t.Run("the go env file's GOFLAGS names a modfile", func(t *testing.T) {
+		newSourceProxy(t, []srcModule{modA})
+		app := newApp(t, []string{"example.com/a"}, "", nil)
+		goenv := filepath.Join(t.TempDir(), "env")
+		if err := os.WriteFile(goenv, []byte("GOFLAGS=-modfile="+filepath.Join(app, "go.mod")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("GOENV", goenv)
+		if got := search(t, app, gogsDB, gogsSymbols); got != nil {
+			t.Fatalf("searchBuildModules = %+v, want nil", got)
+		}
+	})
 }
 
 // TestSearchBuildModules_Timeout: a download still running at moduleSearchTimeout leaves its

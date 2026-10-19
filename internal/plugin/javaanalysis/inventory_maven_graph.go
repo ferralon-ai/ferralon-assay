@@ -16,6 +16,7 @@ import (
 // contributes nodes keyed by its own relative path (Membership.Project), so the same PURL in two
 // modules gets distinct IDs (per-instance keying).
 func resolveMaven(buildDir string, pomPaths []string, cache *mavenCache, targetEnv map[string]string) plugin.DependencyInventory {
+	targetEnv = withMavenConfig(targetEnv, buildDir, pomPaths)
 	var reactorList []*mvnPOM
 	reactor := map[string]*mvnPOM{}
 	for _, p := range pomPaths {
@@ -37,19 +38,23 @@ func resolveMaven(buildDir string, pomPaths []string, cache *mavenCache, targetE
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
 	var reasons []string
+	var scoped []plugin.ScopedReason
 	if len(reactorList) != len(pomPaths) {
 		reasons = mergeReasons(reasons, plugin.PartialReasonToolFailure)
 	}
 
 	for _, pom := range reactorList {
 		moduleRel := moduleRelPath(buildDir, pom.path)
-		mn, me, mr := resolveModule(pom, moduleRel, reactor, cache, targetEnv)
+		mn, me, mr, ms := resolveModule(pom, moduleRel, reactor, cache, targetEnv)
 		nodes = append(nodes, mn...)
 		edges = append(edges, me...)
 		reasons = mergeReasons(reasons, mr...)
+		scoped = append(scoped, ms...)
 	}
 
-	return assembleInventory(nodes, edges, graphPartiality(reasons, len(nodes)))
+	part := graphPartiality(reasons, len(nodes))
+	part.Scoped = dedupScoped(scoped)
+	return assembleInventory(nodes, edges, part)
 }
 
 func moduleRelPath(buildDir, pomPath string) string {
@@ -71,16 +76,46 @@ type bfsItem struct {
 
 // resolveModule runs passes 5-8 for a single reactor module: BFS candidate graph, nearest-wins
 // mediation, scope/optional/exclusion pruning, and node emit. One node per GA (mediation is total
-// over the candidate set); losers still receive an edge to the winner.
-func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string) {
+// over the candidate set); losers still receive an edge to the winner. Undecided profiles come
+// back as scoped reasons, each also in the run-wide reasons.
+func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) ([]plugin.DependencyNode, []plugin.DependencyEdge, []string, []plugin.ScopedReason) {
 	em := buildEffectiveModel(pom, reactor, cache, targetEnv, 0)
-	reasons := append([]string{}, em.residue...)
+	// A transitive dependency an undecided profile of the module could manage or declare at
+	// another version resolves to that version whenever the profile is on.
+	alt := reversions(em)
+	// What an undecided profile adds, re-declares, manages or excludes, here or in any POM the
+	// graph reads, moves Maven's nearest-wins mediation everywhere below the module's direct
+	// dependencies: a nearer declaration can win, or an excluded one can hand the GA to another
+	// path. So no transitive version stands, and a graph that meets such a profile only after
+	// emitting nodes is built again with every transitive withheld.
+	alt.anyVersion = alt.anyVersion || mediationShifts(em)
+	nodes, edges, reasons, scoped, shifted := resolveModuleGraph(pom, em, alt, moduleRel, reactor, cache, targetEnv)
+	if shifted && !alt.anyVersion {
+		alt.anyVersion = true
+		nodes, edges, reasons, scoped, _ = resolveModuleGraph(pom, em, alt, moduleRel, reactor, cache, targetEnv)
+	}
+	return nodes, edges, reasons, withFirstPartyBound(scoped, em, reactor, cache, targetEnv)
+}
+
+// mediationShifts reports whether some undecided profile of em touches the dependency graph:
+// it declares, re-declares or manages a dependency (touched), or what it changes is unknown.
+func mediationShifts(em effectiveModel) bool {
+	for _, u := range em.undecided {
+		if u.anyVersion || len(u.touched) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveModuleGraph is one BFS over a module's graph under alt. shifted is true when a cached
+// POM it reads has an undecided profile that touches the graph (mediationShifts).
+func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, moduleRel string, reactor map[string]*mvnPOM, cache *mavenCache, targetEnv map[string]string) (nodes []plugin.DependencyNode, edges []plugin.DependencyEdge, reasons []string, scoped []plugin.ScopedReason, shifted bool) {
+	reasons = append([]string{}, em.residue...)
+	scoped = profileScoped(em, "", em.managed, reactor, cache, targetEnv)
 
 	selected := map[string]string{} // "g:a" -> winning node ID
 	nodeAt := map[string]int{}      // node ID -> index in nodes
-	var nodes []plugin.DependencyNode
-	var edges []plugin.DependencyEdge
-
 	// Seed the queue with the module's direct dependencies, in declaration order.
 	var queue []bfsItem
 	for _, d := range em.deps {
@@ -110,11 +145,17 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 			continue
 		}
 
-		version := strings.TrimSpace(it.dep.Version)
+		version := javaTrim(it.dep.Version)
 		if mv, ok := em.managed[ga]; ok && it.depth > 0 {
 			// The module's dependencyManagement (imported BOMs included) overrides the version a
 			// transitive POM declares; only a direct declaration's own version beats it.
-			version = strings.TrimSpace(mv)
+			version = javaTrim(mv)
+		}
+		if it.depth > 0 && it.dep.unresolvedBy == "" && (alt.anyVersion || alt.reversioned(ga, version)) {
+			it.dep.unresolvedBy = reasonProfileActivation
+		}
+		if it.dep.unresolvedBy != "" {
+			version = ""
 		}
 		purl := mavenPURL(it.dep.GroupID, it.dep.ArtifactID, version)
 		nodeID := moduleRel + "|" + it.scope + "|" + purl
@@ -124,8 +165,12 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		if version == "" || !isLiteralVersion(version) {
 			// Present-but-unresolved: emitted with a declared reason, NEVER dropped, NEVER guessed.
 			version = ""
-			nodeReasons = append(nodeReasons, reasonPropertyUnresolved)
-			reasons = mergeReasons(reasons, reasonPropertyUnresolved)
+			why := reasonPropertyUnresolved
+			if it.dep.unresolvedBy != "" {
+				why = it.dep.unresolvedBy
+			}
+			nodeReasons = append(nodeReasons, why)
+			reasons = mergeReasons(reasons, why)
 		}
 		// Node-level only: the package is still in the inventory, so this is not a graph limit
 		// (which would block every not_exploitable of the ecosystem); it tells whatever binds
@@ -160,6 +205,10 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		// test/provided dep's own subtree is also on the module's (test/provided) classpath and is
 		// expanded, its transitives narrowed to test/provided (Maven scope table). An unresolved
 		// version can't be fetched → subtree undetermined.
+		if version != "" && !scopePropagates(it.scope) && it.scope != "system" && it.scope != "import" {
+			nodeReasons = append(nodeReasons, reasonMavenUnmodelledScope)
+			reasons = mergeReasons(reasons, reasonMavenUnmodelledScope)
+		}
 		if version != "" && scopePropagates(it.scope) {
 			child, ok := cache.get(it.dep.GroupID, it.dep.ArtifactID, version)
 			if !ok {
@@ -167,7 +216,9 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 				reasons = mergeReasons(reasons, reasonMavenUncachedSubtree)
 			} else {
 				childEM := buildEffectiveModel(child, reactor, cache, targetEnv, 1)
+				shifted = shifted || mediationShifts(childEM)
 				reasons = mergeReasons(reasons, childEM.residue...)
+				scoped = append(scoped, profileScoped(childEM, mavenPackage(it.dep.GroupID, it.dep.ArtifactID), em.managed, reactor, cache, targetEnv)...)
 				childExcl := unionExclusions(it.exclusions, it.dep.Exclusions)
 				for _, cd := range childEM.deps {
 					if strings.EqualFold(cd.Optional, "true") {
@@ -189,7 +240,7 @@ func resolveModule(pom *mvnPOM, moduleRel string, reactor map[string]*mvnPOM, ca
 		nodes = append(nodes, node)
 	}
 
-	return nodes, edges, reasons
+	return nodes, edges, reasons, scoped, shifted
 }
 
 func unionExclusions(base map[string]bool, add []mvnGA) map[string]bool {
@@ -203,11 +254,13 @@ func unionExclusions(base map[string]bool, add []mvnGA) map[string]bool {
 	return out
 }
 
+// defaultScope keeps the declared spelling: Maven compares scope names exactly, so "Test" is not
+// "test" and stays an unmodelled scope.
 func defaultScope(s string) string {
 	if s == "" {
 		return "compile"
 	}
-	return strings.ToLower(s)
+	return s
 }
 
 // scopePropagates reports whether a node in the given (already-narrowed) scope has its own

@@ -132,6 +132,10 @@ const (
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
 
+	// PartialReasonAdvisorySymbolUnresolved: the package's code was read in full, but an advisory
+	// symbol named nothing in it.
+	PartialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
+
 	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
 	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
 	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason
@@ -354,10 +358,24 @@ type ResolvedDependency struct {
 // Resolved indicating whether its version is known); Found is false when no declaration of
 // that coordinate exists in the build files at all.
 type DependencyVersionResult struct {
-	Partiality Partiality           `json:"partiality"`
-	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
-	Match      ResolvedDependency   `json:"match"`
-	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	Partiality Partiality         `json:"partiality"`
+	Found      bool               `json:"found"` // a declaration of the request coordinate exists
+	Match      ResolvedDependency `json:"match"`
+	// Presence is the first resolved declaration of the request coordinate in All, with no
+	// requirement that other copies agree. It answers only "is some copy declared at this exact
+	// version", which is what a malicious-package advisory asks, and it must never feed a
+	// not-affected verdict. Nil means Match answers it too.
+	Presence *ResolvedDependency  `json:"presence,omitempty"`
+	All      []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Matches is every copy of the request coordinate the plugin read, Match among them: a
+	// package declared or installed at several versions (one per module, a nested install) lists
+	// each. It is evidence; on its own it does not claim no other version exists.
+	Matches []ResolvedDependency `json:"matches,omitempty"`
+	// MatchesComplete asserts that Matches holds every version of the request coordinate the
+	// build can install: every version source in scope is a form the plugin recognises and read
+	// in full, and every project that could carry the coordinate transitively is covered by a
+	// lockfile or pins it directly. False (the default) means other versions cannot be ruled out.
+	MatchesComplete bool `json:"matches_complete,omitempty"`
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
 	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
 	// from All is provably not a dependency. Build-isolation environments are not runtime
@@ -554,18 +572,30 @@ type DependencyInventory struct {
 	Partiality Partiality       `json:"partiality"` // graph-level declared partiality for unresolved conditions (§4.1 "declared partiality")
 	Nodes      []DependencyNode `json:"nodes"`      // one per resolved package instance; sorted by Node.ID
 	Edges      []DependencyEdge `json:"edges"`      // parent→child relationships; sorted by (Parent, Child)
+	// BuildList names the resolver output Nodes were taken from when they are the build's whole
+	// module list, replace targets included ("go mod graph"); empty otherwise. Partiality still
+	// says whether that resolution completed.
+	BuildList string `json:"build_list,omitempty"`
+	// MainModule is the path of the module the build list was resolved for (Go), which is part of
+	// the build but not one of Nodes; set with BuildList.
+	MainModule string `json:"main_module,omitempty"`
 }
+
+// BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected
+// module build list, which a vendored module resolves to the same list.
+const BuildListGoModGraph = "go mod graph"
 
 // DependencyNode is one resolved package instance in the dependency graph.
 type DependencyNode struct {
-	ID         string               `json:"id"`         // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
-	PURL       string               `json:"purl"`       // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
-	Version    string               `json:"version"`    // §4.1 exact resolved version
-	Direct     bool                 `json:"direct"`     // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
-	Membership DependencyMembership `json:"membership"` // §4.1 project/workspace/target membership
-	Artifact   DependencyArtifact   `json:"artifact"`   // §4.1 selected artifact identity + integrity digest
-	Provenance DependencyProvenance `json:"provenance"` // §4.1 manifest/lockfile/resolver/runtime-target provenance
-	Partiality Partiality           `json:"partiality"` // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	ID         string               `json:"id"`                // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
+	PURL       string               `json:"purl"`              // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
+	Version    string               `json:"version"`           // §4.1 exact resolved version
+	Direct     bool                 `json:"direct"`            // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
+	Membership DependencyMembership `json:"membership"`        // §4.1 project/workspace/target membership
+	Artifact   DependencyArtifact   `json:"artifact"`          // §4.1 selected artifact identity + integrity digest
+	Provenance DependencyProvenance `json:"provenance"`        // §4.1 manifest/lockfile/resolver/runtime-target provenance
+	Partiality Partiality           `json:"partiality"`        // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	Replace    string               `json:"replace,omitempty"` // module path a replace directive substitutes for this one (Go); empty when not replaced or replaced by a directory
 }
 
 // DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the

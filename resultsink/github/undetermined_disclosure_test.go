@@ -142,3 +142,26 @@ func TestSinks_UndeterminedIsNotAnnotated(t *testing.T) {
 		t.Errorf("undetermined findings emitted annotations:\n%s", annotations.String())
 	}
 }
+
+// TestTier0_FailedAssessmentIsCountedAsNotAssessed: an advisory whose assessment failed has an
+// undetermined row and a tool_failure note. The note must not claim the advisory is missing from
+// the counts, because the row puts it there.
+func TestTier0_FailedAssessmentIsCountedAsNotAssessed(t *testing.T) {
+	r := report.NewBuilder(report.Subject{Repo: "github.com/example/widget", ResolvedCommit: "abc123"}).
+		Undetermined(report.Advisory{ID: "GO-2021-0113", Source: "osv"}, nil, report.ReasonAnalysisDidNotRun).
+		AddPartiality(report.PartialityNote{Reason: "tool_failure", Detail: "reachability_ingress (GO-2021-0113)"}).
+		WithProvenance(report.Provenance{CommitSHA: "abc123", AnalyzerVersion: "v0.2.0", Timestamp: time.Unix(0, 0).UTC()}).
+		Build()
+	body := renderedTier0Summary(t, r)
+	for _, want := range []string{
+		"An analysis step did not complete (`reachability_ingress (GO-2021-0113)`). That advisory has no verdict and is counted as not assessed.",
+		"| Not assessed (no verdict established) | 1 |",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Tier-0 summary is missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "**not** counted") {
+		t.Errorf("Tier-0 summary says the failed advisory is not counted, but its row is:\n%s", body)
+	}
+}

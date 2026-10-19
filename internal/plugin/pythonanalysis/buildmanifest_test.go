@@ -237,9 +237,9 @@ func TestBuildManifest_ResolverPriority(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := writeFiles(t, tt.files)
-			got := detectResolver(dir)
-			if got.Name != tt.wantName || got.Command != tt.wantCmd {
-				t.Errorf("detectResolver = {%q,%q}, want {%q,%q}", got.Name, got.Command, tt.wantName, tt.wantCmd)
+			got, read := detectResolver(dir)
+			if !read || got.Name != tt.wantName || got.Command != tt.wantCmd {
+				t.Errorf("detectResolver = {%q,%q}, %v; want {%q,%q}, true", got.Name, got.Command, read, tt.wantName, tt.wantCmd)
 			}
 		})
 	}

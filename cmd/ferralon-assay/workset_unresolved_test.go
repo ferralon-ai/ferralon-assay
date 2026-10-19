@@ -209,6 +209,7 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 		wantSkipped map[string]string // skipped coordinate -> the note's Package
 		wantFailed  []string          // the Package of each work_set_dependency_unreadable note
 		wantMissing []string          // the Package of each work_set_dependency_not_found note
+		wantSummary []string          // substrings the terminal summary must carry
 		wantSource  string
 	}{
 		{
@@ -267,7 +268,18 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			},
 			wantQueried: []string{widget + "@1.0.0"},
 			wantFailed:  []string{"pkg:maven/io.minio/minio"},
+			wantSummary: []string{"could not have their version read", minio},
 			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "osv: a build whose only read fails says OSV.dev was asked nothing and names it",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{minioResolved}, fail: map[string]bool{minio: true}})
+			},
+			wantFailed:  []string{"pkg:maven/io.minio/minio"},
+			wantSummary: []string{"asked nothing", "could not have their version read", minio},
+			wantSource:  report.WorkSetBuiltinLanguageSet,
 		},
 		{
 			name: "policy: a coordinate whose read fails is still admitted by name",
@@ -288,7 +300,18 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			},
 			wantQueried: []string{widget + "@1.0.0"},
 			wantMissing: []string{"pkg:maven/io.minio/minio"},
+			wantSummary: []string{"the dependency reader does not find them", minio},
 			wantSource:  workSetSourceBuiltinUnionOSV,
+		},
+		{
+			name: "osv: a build whose only pin the reader doesn't find says OSV.dev was asked nothing and names it",
+			acq: func(t *testing.T) *acquired {
+				return javaTree(t, inventoryAnalyzer{unsearchingAnalyzer: unsearchingAnalyzer{language: checkout.LangJava},
+					deps: []plugin.ResolvedDependency{minioResolved}, miss: map[string]bool{minio: true}})
+			},
+			wantMissing: []string{"pkg:maven/io.minio/minio"},
+			wantSummary: []string{"asked nothing", "the dependency reader does not find them", minio},
+			wantSource:  report.WorkSetBuiltinLanguageSet,
 		},
 		{
 			name: "policy: a pinned coordinate the reader doesn't find is still admitted by name",
@@ -405,6 +428,12 @@ func TestWorkSet_UnresolvedDependency(t *testing.T) {
 			}
 			if strings.Join(missing, ",") != strings.Join(tt.wantMissing, ",") {
 				t.Errorf("%s notes for %v, want %v", reasonWorkSetDependencyNotFound, missing, tt.wantMissing)
+			}
+
+			for _, want := range tt.wantSummary {
+				if !strings.Contains(ws.describe(), want) {
+					t.Errorf("terminal summary does not carry %q:\n%s", want, ws.describe())
+				}
 			}
 
 			skipped := notesFor(ws.partiality, reasonWorkSetDependencyUnresolved)

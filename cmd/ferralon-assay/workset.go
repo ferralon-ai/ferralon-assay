@@ -153,6 +153,12 @@ type workSet struct {
 	// unversioned is every declared dependency the OSV query skipped for having no resolved version,
 	// sorted. Disclosed through one reasonWorkSetDependencyUnresolved note each and describe().
 	unversioned []string
+	// unreadable is every declared dependency whose version read failed, and notFound every pinned
+	// one the dependency reader does not find, each sorted. Neither is asked of OSV; each is disclosed
+	// through its own note (reasonWorkSetDependencyUnreadable, reasonWorkSetDependencyNotFound) and
+	// describe().
+	unreadable []string
+	notFound   []string
 	// ecosystem is the dependency ecosystem the widening queried, for the CLI summary line.
 	ecosystem string
 }
@@ -364,14 +370,19 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 		pinned[p.Name] = append(pinned[p.Name], p.Version)
 	}
 	// A coordinate whose read failed, or that the reader didn't find, already carries its own note.
-	named := make(map[string]bool)
+	named := make(map[string]string)
 	for _, n := range notes {
 		if n.Reason == reasonWorkSetDependencyUnreadable || n.Reason == reasonWorkSetDependencyNotFound {
-			named[n.Package] = true
+			named[n.Package] = n.Reason
 		}
 	}
 	for _, u := range unversioned {
-		if named[versionlessPURL(purlType, u.Name)] {
+		switch named[versionlessPURL(purlType, u.Name)] {
+		case reasonWorkSetDependencyUnreadable:
+			ws.unreadable = append(ws.unreadable, u.Name)
+			continue
+		case reasonWorkSetDependencyNotFound:
+			ws.notFound = append(ws.notFound, u.Name)
 			continue
 		}
 		detail := u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed"
@@ -611,7 +622,8 @@ func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolv
 // reader doesn't find, so both are still admitted by name; but a failed call is an incomplete
 // inventory and a coordinate not found is a disagreement between the pins and the reader, not an
 // unresolved version, so each gets its own note (reasonWorkSetDependencyUnreadable,
-// reasonWorkSetDependencyNotFound) and no reasonWorkSetDependencyUnresolved one.
+// reasonWorkSetDependencyNotFound) and no reasonWorkSetDependencyUnresolved one. A coordinate that
+// also has an unresolved copy keeps only the unresolved note: it is admitted and named either way.
 func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package, []report.PartialityNote) {
 	named := make(map[string]bool, len(unresolved))
 	for _, u := range unresolved {
@@ -843,6 +855,12 @@ func (w workSet) describeUnassessed() string {
 	if len(w.unversioned) > 0 {
 		out += "\n  " + boundedIDDetail("dependency(ies) have no resolved version, so OSV.dev was not asked about them and advisories against them were NOT assessed", w.unversioned)
 	}
+	if len(w.unreadable) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) could not have their version read, so the inventory is incomplete; OSV.dev was not asked about them and advisories against them were NOT assessed", w.unreadable)
+	}
+	if len(w.notFound) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) are pinned in the manifest but the dependency reader does not find them; OSV.dev was not asked about them and advisories against them were NOT assessed", w.notFound)
+	}
 	return out
 }
 
@@ -852,8 +870,8 @@ func (w workSet) describeSet() string {
 		return fmt.Sprintf("%d advisories (built-in language set only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetNoInventory), hasNote(w.partiality, plugin.PartialReasonNoManifest):
 		return fmt.Sprintf("%d advisories (built-in language set only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
-	case w.source == report.WorkSetBuiltinLanguageSet && len(w.unversioned) > 0:
-		return fmt.Sprintf("%d advisories (built-in language set only — no dependency has a resolved version, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
+	case w.source == report.WorkSetBuiltinLanguageSet && len(w.unversioned)+len(w.unreadable)+len(w.notFound) > 0:
+		return fmt.Sprintf("%d advisories (built-in language set only — no dependency has a version OSV.dev can be asked about, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetPolicyNotEnumerable):
 		return fmt.Sprintf("%d advisories (the advisory corpus cannot list its advisories, so the declared policy did NOT define the work set; this scan is narrower than configured)", len(w.advisories))
 	case w.source == report.WorkSetBuiltinLanguageSet:

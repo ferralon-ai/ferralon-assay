@@ -93,7 +93,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest, opts ...O
 			reasons[r] = true
 		}
 	}
-	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, prog, fp, depSinks, opts...)
+	bp, searched, br, scoped, err := bytecodeReachability(ctx, req.BuildDir, req.TargetEnv, prog, fp, depSinks, opts...)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
 	}

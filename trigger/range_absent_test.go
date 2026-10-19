@@ -126,17 +126,27 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 			wantCandidate: true,
 		},
 		{
-			// last_affected excludes later versions the version axis cannot exclude.
-			name:       "ranged: last_affected only",
-			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
-			pkg:        requestsPkg,
-			wantBounds: []report.AdvisoryBound{{LastAffected: "2.31.0"}},
+			// The version axis reads last_affected, so a version past it is disqualified upstream
+			// where the advisory's trust allows, and a candidate that forms stands.
+			name:          "ranged: last_affected only",
+			advisory:      with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
+			pkg:           requestsPkg,
+			wantCandidate: true,
 		},
 		{
-			name:       "ranged: introduced above zero only",
-			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
+			name:          "ranged: introduced above zero only",
+			advisory:      with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
+			pkg:           requestsPkg,
+			wantCandidate: true,
+		},
+		{
+			// A GIT range orders commits, not versions: the version axis reads none of its bounds.
+			name: "ranged: GIT ranges only",
+			advisory: with(requests, map[string]any{"affected_ranges": []map[string]string{
+				{"upper_exclusive": "abc1234", "lower_inclusive": "9f3e2a1b", "scheme": "pypi", "type": "GIT"},
+			}}),
 			pkg:        requestsPkg,
-			wantBounds: []report.AdvisoryBound{{Introduced: "3.0.0"}},
+			wantBounds: []report.AdvisoryBound{{Introduced: "9f3e2a1b"}},
 		},
 		{
 			name: "multi-package: admitted package ranged, another absent",

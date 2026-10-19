@@ -10,10 +10,11 @@ import (
 // axis can bound for the package it was assessed against: the selected affected_packages[] element
 // when the advisory targets a secondary package, else the advisory's primary.
 //
-// A range is bounded when it records a fix, or when it records neither a lower bound above zero nor
-// a last_affected version: an unfixed range from zero is "every version from here on" and is a
-// declared range. A last_affected-only or introduced-above-zero-only range excludes versions the
-// version axis cannot exclude, so it counts as absent, as does no range at all.
+// A range is bounded when its type orders versions (versionOutsideRange reads every bound such a
+// range carries: introduced, fixed and last_affected), and an unfixed range from zero is "every
+// version from here on", a declared range. A range whose type does not order versions (GIT, or
+// anything unrecognized) bounds nothing the version axis can read, so an advisory with only such
+// ranges counts as absent, as does one with no range at all.
 //
 // Such an advisory is admitted at every installed version, because the version axis has nothing
 // to compare against. A missing or unreadable advisory artifact reports false.
@@ -23,15 +24,16 @@ func AdvisoryRangeAbsent(store artifact.Store, caseID string) bool {
 }
 
 // RecordedBound is what one affected range of a range-absent advisory does record: an introduced
-// version above zero, a last_affected version, or both. Neither is a bound the version axis reads.
+// bound above zero, a last_affected bound, or both, in the range's own ordering, which the version
+// axis does not read.
 type RecordedBound struct {
 	Introduced   string
 	LastAffected string
 }
 
 // AdvisoryRecordedBounds returns the partial bounds of the affected ranges AdvisoryRangeAbsent
-// read, in advisory order. Every such range records at least one of the two. It returns nil when the advisory
-// has a range the version axis can bound, so it never describes an advisory that is not range-absent.
+// read that record at least one of the two, in advisory order. It returns nil when the advisory has
+// a range the version axis can bound, so it never describes an advisory that is not range-absent.
 func AdvisoryRecordedBounds(store artifact.Store, caseID string) []RecordedBound {
 	ranges, ok := assessedRanges(store, caseID)
 	if !ok || anyBounded(ranges) {
@@ -39,7 +41,9 @@ func AdvisoryRecordedBounds(store artifact.Store, caseID string) []RecordedBound
 	}
 	var out []RecordedBound
 	for _, r := range ranges {
-		out = append(out, RecordedBound{Introduced: r.LowerInclusive, LastAffected: r.LastAffected})
+		if r.LowerInclusive != "" || r.LastAffected != "" {
+			out = append(out, RecordedBound{Introduced: r.LowerInclusive, LastAffected: r.LastAffected})
+		}
 	}
 	return out
 }
@@ -65,7 +69,7 @@ func assessedRanges(store artifact.Store, caseID string) ([]affectedRange, bool)
 
 func anyBounded(ranges []affectedRange) bool {
 	for _, r := range ranges {
-		if r.UpperExclusive != "" || (r.LowerInclusive == "" && r.LastAffected == "") {
+		if rangeTypeOrderable(r.Type) {
 			return true
 		}
 	}

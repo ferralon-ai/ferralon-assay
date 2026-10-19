@@ -274,6 +274,12 @@ func TestResolveVersions_MatchesComplete(t *testing.T) {
 	const aggregator = `<project><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0.0</version>
 <packaging>pom</packaging><modules><module>a</module><module>b</module></modules>
 <dependencyManagement><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.0.0</version></dependency></dependencies></dependencyManagement></project>`
+	reactor := func(modules string) string {
+		return `<project><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>` + modules + `</project>`
+	}
+	plugin := func(extensions string) string {
+		return `<project><dependencies>` + dep("1.4.0") + `</dependencies><build><plugins><plugin><groupId>org.acme</groupId><artifactId>acme-maven-plugin</artifactId><version>1.0</version>` + extensions + `</plugin></plugins></build></project>`
+	}
 	tests := []struct {
 		name     string
 		files    map[string]string
@@ -303,6 +309,34 @@ func TestResolveVersions_MatchesComplete(t *testing.T) {
 			"pom.xml": `<project><dependencies>` + dep("1.4.0") + `</dependencies><profiles><profile><id>legacy</id><dependencies>` + dep("1.2.0") + `</dependencies></profile></profiles></project>`,
 		}, false, nil},
 		{"core extensions", map[string]string{"pom.xml": pom(dep("1.4.0")), ".mvn/extensions.xml": `<extensions />`}, false, nil},
+		{"build extension", map[string]string{
+			"pom.xml": `<project><dependencies>` + dep("1.4.0") + `</dependencies><build><extensions><extension><groupId>org.acme</groupId><artifactId>acme-ext</artifactId><version>1.0</version></extension></extensions></build></project>`,
+		}, false, nil},
+		{"plugin loaded as a build extension", map[string]string{"pom.xml": plugin(`<extensions>true</extensions>`)}, false, nil},
+		{"plugin not loaded as an extension", map[string]string{"pom.xml": plugin(`<extensions>false</extensions>`)}, true, []string{"1.4.0"}},
+		{"module named by a POM file the scan does not read", map[string]string{
+			"pom.xml":   reactor(`<modules><module>a</module><module>tools/tools.xml</module></modules>`),
+			"a/pom.xml": module(dep("1.4.0")), "tools/tools.xml": module(dep("1.3.0")), "tools/pom.xml": module(dep("1.3.0")),
+		}, false, nil},
+		{"module under a build-output directory", map[string]string{
+			"pom.xml":   reactor(`<modules><module>a</module><module>build/tools</module></modules>`),
+			"a/pom.xml": module(dep("1.4.0")), "build/tools/pom.xml": module(dep("1.3.0")),
+		}, false, nil},
+		{"module under a dot-directory", map[string]string{
+			"pom.xml":   reactor(`<modules><module>a</module><module>.ci/gen</module></modules>`),
+			"a/pom.xml": module(dep("1.4.0")), ".ci/gen/pom.xml": module(dep("1.3.0")),
+		}, false, nil},
+		{"module outside the build directory", map[string]string{
+			"pom.xml": reactor(`<modules><module>a</module><module>../shared</module></modules>`), "a/pom.xml": module(dep("1.4.0")),
+		}, false, nil},
+		{"module in a profile the scan did not read", map[string]string{
+			"pom.xml":   reactor(`<modules><module>a</module></modules><profiles><profile><id>tools</id><modules><module>build/tools</module></modules></profile></profiles>`),
+			"a/pom.xml": module(dep("1.4.0")), "build/tools/pom.xml": module(dep("1.3.0")),
+		}, false, nil},
+		{"modules all read, profile included", map[string]string{
+			"pom.xml":   reactor(`<modules><module>a</module></modules><profiles><profile><id>more</id><modules><module>b/</module></modules></profile></profiles>`),
+			"a/pom.xml": module(dep("1.4.0")), "b/pom.xml": module(dep("1.5.0")),
+		}, true, []string{"1.4.0", "1.5.0"}},
 		{"Gradle build beside the POM", map[string]string{
 			"pom.xml": pom(dep("1.4.0")), "svc/build.gradle": "dependencies {\n  implementation 'com.example.lib:widget:1.4.0'\n}\n",
 		}, false, nil},

@@ -2,9 +2,12 @@ package trigger
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/jsanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -167,4 +170,71 @@ func runPR(t *testing.T, store *memStore, head report.SBOM, limited bool) *repor
 		t.Fatalf("RunPRInherit: %v", err)
 	}
 	return res.Report
+}
+
+// multiCopyJSPlugin is the real JS version lane, so the version set and its vouching are the
+// lane's own. inventory is the head's inventory partiality.
+type multiCopyJSPlugin struct {
+	plugin.StubPlugin
+	inventory plugin.Partiality
+}
+
+func (multiCopyJSPlugin) Language() string { return "js" }
+
+func (multiCopyJSPlugin) BuildManifest(context.Context, plugin.BuildManifestRequest) (plugin.BuildManifestResult, error) {
+	return plugin.BuildManifestResult{Partiality: plugin.Unsupported()}, nil
+}
+
+func (multiCopyJSPlugin) ResolveDependencyVersions(ctx context.Context, req plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
+	return jsanalysis.ResolveDependencyVersions(ctx, req)
+}
+
+func (p multiCopyJSPlugin) ResolveInventory(context.Context, plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
+	return plugin.DependencyInventory{Partiality: p.inventory}, nil
+}
+
+// TestInventoryLimits_MultiCopyDisqualification runs a whole scan over a lockfile that installs
+// left-pad at 1.4.0 and, nested, at 1.5.0, both outside FERRALON-JS-DEP-0001's range. The copies
+// disagree, so the row is disqualified on the version set with no single version and no Package.
+// Under a did_not_run inventory limit the row still becomes undetermined: the limit cannot be
+// matched to the row's ecosystem, so it applies.
+func TestInventoryLimits_MultiCopyDisqualification(t *testing.T) {
+	dir := t.TempDir()
+	lock := `{"name": "app", "lockfileVersion": 3, "packages": {
+  "": {"name": "app", "version": "1.0.0"},
+  "node_modules/left-pad": {"version": "1.4.0"},
+  "node_modules/wrapper": {"version": "2.0.0"},
+  "node_modules/wrapper/node_modules/left-pad": {"version": "1.5.0"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	advisory := assessment.VulnRef{ID: "FERRALON-JS-DEP-0001", Source: "corpus"}
+	run := func(inv plugin.Partiality) report.AdvisoryFinding {
+		t.Helper()
+		rep, err := buildBaselineReport(context.Background(), BaselineRequest{
+			Subject:    Subject{Repo: "r", Revision: "main", ResolvedCommit: "head-sha"},
+			Codebase:   assessment.CodebaseRef{Repo: "r", Revision: "main"},
+			Advisories: []assessment.VulnRef{advisory},
+			AssessOptions: []pipeline.AssessOption{
+				pipeline.WithCheckout(fixedCheckout{dir: dir, lang: "js"}),
+				pipeline.WithPlugin(multiCopyJSPlugin{inventory: inv}),
+			},
+		})
+		if err != nil {
+			t.Fatalf("buildBaselineReport: %v", err)
+		}
+		for _, f := range rep.Advisories {
+			if f.Advisory.ID == advisory.ID {
+				return f
+			}
+		}
+		t.Fatalf("no %s row in the report", advisory.ID)
+		return report.AdvisoryFinding{}
+	}
+	if f := run(plugin.Complete()); f.Verdict != report.VerdictDisqualified || f.Package != nil {
+		t.Fatalf("control: verdict = %s (%s), package %+v; want disqualified with no package", f.Verdict, f.Evidence.Detail, f.Package)
+	}
+	if f := run(plugin.Partial(plugin.PartialReasonLockfileAmbiguous)); f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
+		t.Fatalf("with a did_not_run inventory limit: verdict = %s/%q, want undetermined/%s", f.Verdict, f.UndeterminedReason, report.ReasonAnalysisDidNotRun)
+	}
 }

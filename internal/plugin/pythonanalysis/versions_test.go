@@ -545,11 +545,11 @@ func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
 // lock does not pin, or a manifest no lock governs, may install a version no reader saw.
 func TestResolveVersions_MatchesComplete(t *testing.T) {
 	const (
-		lock300 = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
-		lock233 = "[[package]]\nname = \"flask\"\nversion = \"2.3.3\"\n"
-		lock232 = "[[package]]\nname = \"flask\"\nversion = \"2.3.2\"\n"
-		uvNoFlask = "version = 1\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
-		metadata200 = "Metadata-Version: 2.1\nName: Flask\nVersion: 2.0.0\n"
+		lock300      = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
+		lock233      = "[[package]]\nname = \"flask\"\nversion = \"2.3.3\"\n"
+		lock232      = "[[package]]\nname = \"flask\"\nversion = \"2.3.2\"\n"
+		uvNoFlask    = "version = 1\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+		metadata200  = "Metadata-Version: 2.1\nName: Flask\nVersion: 2.0.0\n"
 		sitePackages = ".venv/lib/python3.12/site-packages/"
 	)
 	tests := []struct {

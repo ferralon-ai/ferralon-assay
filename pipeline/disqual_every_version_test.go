@@ -116,9 +116,9 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 		{"nuget: one project patched, another affected", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
 			"Api/Api.csproj": csprojReferencing("[13.0.1]"), "Worker/Worker.csproj": csprojReferencing("[13.0.0]"),
 		}, false},
-		{"nuget: every project patched", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
+		{"nuget: every project pinned patched, which the lane does not vouch for", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
 			"Api/Api.csproj": csprojReferencing("[13.0.1]"), "Worker/Worker.csproj": csprojReferencing("[13.0.2]"),
-		}, true},
+		}, false},
 		{"nuget: every minimum patched", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
 			"Api/Api.csproj": csprojReferencing("13.0.1"), "Worker/Worker.csproj": csprojReferencing("13.0.2"),
 		}, false},

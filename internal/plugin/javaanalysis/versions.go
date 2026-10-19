@@ -135,8 +135,10 @@ func scanBuildFiles(root string) (poms, gradles []string, sealed bool) {
 // coordinate at a literal version (no range, no ${...} a profile or -D could override) is
 // covered. A POM that does not declare it is covered only when it pulls nothing in: no
 // dependencies of its own, and a parent (whose dependencies it inherits) that is itself in scope
-// and checked here. Profiles that declare dependencies and Maven core extensions
-// (.mvn/extensions.xml), which can rewrite the model, leave the module uncovered.
+// and checked here. Profiles that declare dependencies, Maven core extensions
+// (.mvn/extensions.xml) and build extensions, which can rewrite the model, leave the module
+// uncovered. So does a <module> this scan did not read: the reactor builds it whatever its path,
+// so it may declare another version.
 func pomsCovered(poms []string, want string) bool {
 	if want == "" {
 		return false
@@ -158,8 +160,18 @@ func pomsCovered(poms []string, want string) bool {
 		if _, err := os.Lstat(filepath.Join(dir, ".mvn", "extensions.xml")); !errors.Is(err, fs.ErrNotExist) {
 			return false
 		}
+		if proj.Build.extends() {
+			return false
+		}
+		modules := proj.Modules
 		for _, prof := range proj.Profiles {
-			if len(prof.Deps) > 0 {
+			if len(prof.Deps) > 0 || prof.Build.extends() {
+				return false
+			}
+			modules = append(modules, prof.Modules...)
+		}
+		for _, m := range modules {
+			if !inScope[pomPathAt(dir, m)] {
 				return false
 			}
 		}
@@ -190,27 +202,65 @@ func pomsCovered(poms []string, want string) bool {
 	return true
 }
 
-// pomModel is the subset of a POM pomsCovered reads beyond pomProject: the parent's location
-// and each profile's dependencies.
+// pomModel is the subset of a POM pomsCovered reads beyond pomProject: the parent's location,
+// the modules, the build extensions, and each profile's dependencies, modules and extensions.
 type pomModel struct {
 	Parent struct {
 		ArtifactID   string `xml:"artifactId"`
 		RelativePath string `xml:"relativePath"`
 	} `xml:"parent"`
 	Deps     []pomDep `xml:"dependencies>dependency"`
+	Modules  []string `xml:"modules>module"`
+	Build    pomBuild `xml:"build"`
 	Profiles []struct {
-		Deps []pomDep `xml:"dependencies>dependency"`
+		Deps    []pomDep `xml:"dependencies>dependency"`
+		Modules []string `xml:"modules>module"`
+		Build   pomBuild `xml:"build"`
 	} `xml:"profiles>profile"`
 }
 
+// pomBuild is the part of a <build> that can load a build extension.
+type pomBuild struct {
+	Extensions []struct{}  `xml:"extensions>extension"`
+	Plugins    []pomPlugin `xml:"plugins>plugin"`
+	Managed    []pomPlugin `xml:"pluginManagement>plugins>plugin"`
+}
+
+type pomPlugin struct {
+	Extensions string `xml:"extensions"`
+}
+
+// extends reports whether b loads a build extension, which can register a lifecycle participant
+// that edits the model after it is read. An <extensions> value other than false, a property
+// included, counts.
+func (b pomBuild) extends() bool {
+	if len(b.Extensions) > 0 {
+		return true
+	}
+	for _, ps := range [][]pomPlugin{b.Plugins, b.Managed} {
+		for _, p := range ps {
+			if v := strings.TrimSpace(p.Extensions); v != "" && v != "false" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // parentPOMPath resolves a <parent>'s relativePath (default ../pom.xml) against the child's
-// directory; a path naming a directory means the pom.xml inside it.
+// directory.
 func parentPOMPath(dir, rel string) string {
 	rel = strings.TrimSpace(rel)
 	if rel == "" {
 		rel = filepath.Join("..", "pom.xml")
 	}
-	p := filepath.Join(dir, filepath.FromSlash(rel))
+	return pomPathAt(dir, rel)
+}
+
+// pomPathAt resolves a POM reference (a <module>, or a parent's relativePath) against dir; a path
+// naming a directory means the pom.xml inside it.
+func pomPathAt(dir, rel string) string {
+	p := filepath.Join(dir, filepath.FromSlash(strings.TrimSpace(rel)))
 	if !strings.HasSuffix(strings.ToLower(p), ".xml") {
 		p = filepath.Join(p, "pom.xml")
 	}

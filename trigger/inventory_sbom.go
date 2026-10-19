@@ -121,12 +121,17 @@ func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 // be present where it never looked. Those rows become undetermined too. A symbol-axis
 // disqualification compares the built artifact and an ecosystem mismatch compares the lane, so
 // neither depends on the inventory and both stand.
+//
+// A disqualification with no Package (the package is absent from the manifest, or its copies
+// disagree so no single version names it) cannot be matched to a limit's ecosystem, so any
+// did-not-run limit demotes it.
 func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
-	if f.Package == nil || !(f.Verdict == report.VerdictNotExploitable || restsOnInventory(f)) {
+	rests := restsOnInventory(f)
+	if !(f.Verdict == report.VerdictNotExploitable || rests) || (f.Package == nil && !rests) {
 		return f
 	}
 	for _, n := range limits {
-		if n.Ecosystem != "" && n.Ecosystem != f.Package.Ecosystem {
+		if n.Ecosystem != "" && f.Package != nil && n.Ecosystem != f.Package.Ecosystem {
 			continue
 		}
 		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun {

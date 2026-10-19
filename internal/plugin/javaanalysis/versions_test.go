@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -71,14 +72,28 @@ const pomProperty = `<project>
   </dependencies>
 </project>`
 
-func TestParsePOM_PropertyInterpolationResolves(t *testing.T) {
+// All reports a ${prop} version as the POM interpolates it, but the Match leaves it unresolved: a
+// -Dprop on the command line or in .mvn/maven.config overrides the POM's value.
+func TestParsePOM_PropertyInterpolation(t *testing.T) {
 	dir := writeTree(t, map[string]string{"pom.xml": pomProperty})
-	if res := resolve(t, dir, "com.example.lib:widget"); !res.Match.Resolved || res.Match.Version != "1.5.0" {
-		t.Fatalf("widget via ${widget.version} = %+v, want 1.5.0", res.Match)
+	for coord, ver := range map[string]string{"com.example.lib:widget": "1.5.0", "com.example.lib:core": "3.2.1"} {
+		res := resolve(t, dir, coord)
+		if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+			t.Fatalf("%s match = %+v, want found and unresolved", coord, res.Match)
+		}
+		if !hasDep(res.All, coord, ver) {
+			t.Fatalf("%s: All = %+v, want it resolved at %s", coord, res.All, ver)
+		}
 	}
-	if res := resolve(t, dir, "com.example.lib:core"); !res.Match.Resolved || res.Match.Version != "3.2.1" {
-		t.Fatalf("core via ${project.version} = %+v, want 3.2.1", res.Match)
+}
+
+func hasDep(all []plugin.ResolvedDependency, coord, ver string) bool {
+	for _, d := range all {
+		if d.Coordinate == coord && d.Resolved && d.Version == ver {
+			return true
+		}
 	}
+	return false
 }
 
 const pomBOMManaged = `<project>
@@ -242,15 +257,85 @@ func TestResolveVersions_CorpusRepros(t *testing.T) {
 	}
 }
 
-// A resolved match for a coordinate that ALSO appears versionless elsewhere must win (the
-// resolver prefers a Resolved match over an UNRESOLVED one for the same coordinate).
-func TestResolveVersions_ResolvedMatchWinsOverUnresolved(t *testing.T) {
-	dir := writeTree(t, map[string]string{"build.gradle": `dependencies {
-    implementation 'com.example.lib:widget'          // UNRESOLVED, appears first
-    implementation 'com.example.lib:widget:1.4.0'    // RESOLVED
-}`})
+// A coordinate that ALSO appears versionless elsewhere leaves the Match unresolved: the build may
+// ship the copy whose version this reader can't see.
+func TestResolveVersions_UnresolvedCopyLeavesMatchUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"a/pom.xml": `<project><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId></dependency></dependencies></project>`,
+		"b/pom.xml": pomLiteral,
+	})
 	res := resolve(t, dir, "com.example.lib:widget")
-	if !res.Match.Resolved || res.Match.Version != "1.4.0" {
-		t.Fatalf("resolved match must win, got %+v", res.Match)
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+}
+
+// A build file that doesn't parse could declare the coordinate at any version, so it leaves the
+// Match unresolved, and Found even where no readable file names the coordinate.
+func TestResolveVersions_UnparseableBuildFileLeavesMatchUnresolved(t *testing.T) {
+	dir := writeTree(t, map[string]string{"a/pom.xml": "<project", "b/pom.xml": pomLiteral})
+	if res := resolve(t, dir, "com.example.lib:widget"); !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+	if res := resolve(t, dir, "com.example:undeclared"); !res.Found || res.Match.Resolved || res.Match.Coordinate != "com.example:undeclared" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+}
+
+// widgetPOM is a module POM declaring com.example.lib:widget at version, with extra spliced in at
+// the top level.
+func widgetPOM(version, extra string) string {
+	return `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>m</artifactId><version>1.0.0</version>` + extra +
+		`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + version + `</version></dependency></dependencies></project>`
+}
+
+const reactorPOM = `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules><module>a</module><module>b</module></modules></project>`
+
+// TestResolveVersions_MavenAllowList pins which Maven builds the Match resolves in. Every copy of
+// the coordinate must be a literal pin in a POM this reader models whole, and all copies must
+// agree; the reactor and profile rows are builds where a single copy once decided the verdict.
+func TestResolveVersions_MavenAllowList(t *testing.T) {
+	const coord = "com.example.lib:widget"
+	cases := []struct {
+		name    string
+		files   map[string]string
+		wantVer string
+	}{
+		{"reactor modules agree", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, "1.4.0"},
+		{"reactor patched module first", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.3.9", "")}, ""},
+		{"reactor affected module first", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.3.9", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, ""},
+		{"profile overrides the version", map[string]string{"pom.xml": widgetPOM("1.4.0",
+			`<profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.9</version></dependency></dependencies></profile></profiles>`)}, ""},
+		{"sibling module ships it transitively", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""),
+			"b/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>b</artifactId><version>1.0.0</version>` +
+				`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget-client</artifactId><version>2.0.0</version></dependency></dependencies></project>`}, ""},
+		{"sibling module without dependencies", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""),
+			"b/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>b</artifactId><version>1.0.0</version></project>`}, "1.4.0"},
+		{"profile elsewhere in the reactor", map[string]string{"pom.xml": reactorPOM, "a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "<profiles/>")}, ""},
+		{"profile in the reactor root", map[string]string{"pom.xml": strings.Replace(reactorPOM, "<modules>",
+			`<profiles><profile><id>p</id><dependencies><dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.9</version></dependency></dependencies></profile></profiles><modules>`, 1),
+			"a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("1.4.0", "")}, ""},
+		{"build extension", map[string]string{"pom.xml": widgetPOM("1.4.0", `<build><extensions><extension><groupId>x</groupId><artifactId>y</artifactId><version>1</version></extension></extensions></build>`)}, ""},
+		{"plain build section", map[string]string{"pom.xml": widgetPOM("1.4.0", `<build><plugins/></build>`)}, "1.4.0"},
+		{"core extensions file", map[string]string{"pom.xml": widgetPOM("1.4.0", ""), ".mvn/extensions.xml": "<extensions/>"}, ""},
+		{"maven.config extension class path", map[string]string{"pom.xml": widgetPOM("1.4.0", ""), ".mvn/maven.config": "-Dmaven.ext.class.path=x.jar\n"}, ""},
+		{"property version", map[string]string{"pom.xml": widgetPOM("${w}", "<properties><w>1.4.0</w></properties>")}, ""},
+		{"reactor literal beside a property version", map[string]string{"pom.xml": strings.Replace(reactorPOM, "<modules>", "<properties><w>1.3.9</w></properties><modules>", 1),
+			"a/pom.xml": widgetPOM("1.4.0", ""), "b/pom.xml": widgetPOM("${w}", "")}, ""},
+		{"RELEASE", map[string]string{"pom.xml": widgetPOM("RELEASE", "")}, ""},
+		{"LATEST", map[string]string{"pom.xml": widgetPOM("LATEST", "")}, ""},
+		{"exact range", map[string]string{"pom.xml": widgetPOM("[1.4.0]", "")}, ""},
+		{"qualified literal", map[string]string{"pom.xml": widgetPOM("1.4.0.Final", "")}, "1.4.0.Final"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolve(t, writeTree(t, tc.files), coord)
+			if !res.Found {
+				t.Fatalf("widget must be Found; got %+v", res)
+			}
+			if res.Match.Resolved != (tc.wantVer != "") || res.Match.Version != tc.wantVer {
+				t.Fatalf("match = %+v, want version %q resolved %v", res.Match, tc.wantVer, tc.wantVer != "")
+			}
+		})
 	}
 }

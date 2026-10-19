@@ -68,14 +68,17 @@ const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 //     (env.InActions). It is zero-permission (job summary + ::warning:: annotations)
 //     and therefore survives forked PRs.
 //   - Tier 1 is gated per-surface on the detected capabilities: SARIF when
-//     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue.
+//     caps.CanSARIF, PR comment when caps.CanComment, pinned Issue when caps.CanIssue and
+//     the run analyzed the repository's canonical ref (canonical; see onCanonicalRef). The
+//     dashboard Issue is repository-wide, so a branch or PR run never opens or rewrites it:
+//     a setup branch's first push would otherwise open it before anyone merged anything.
 //     Each of these three surfaces is now individually toggle-gated (default-on,
 //     opt-out via ASSAY_CODE_SCANNING / ASSAY_PR_COMMENT / ASSAY_ISSUE), while
 //     Pages stays opt-in. Every toggle is AND-ed with write capability inside Detect,
 //     so on a forked PR (read-only token) all three are absent regardless of the
 //     toggles — a forked PR composes only Tier 0 + Local, the forked-PR safety
-//     guarantee. A push build has CanComment=false (no PR), so it gets SARIF + Issue
-//     but no PR comment.
+//     guarantee. A push build has CanComment=false (no PR), so it gets SARIF, plus the
+//     Issue on the canonical ref, but no PR comment.
 //   - Tier 2 (NewTier2Pages) is added only when caps.CanPages (ASSAY_PAGES opt-in
 //     AND a write token).
 //   - The Ferralon run-snapshot sink (runSnapshot, resolved by the caller from
@@ -88,7 +91,7 @@ const envTrustObservedGo = brand.EnvPrefix + "_TRUST_OBSERVED_GO"
 //
 // The selector reads no live environment: every decision flows from the passed Env,
 // so it is pure and unit-testable (construct an Env literal, assert the composition).
-func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSink) []resultsink.ResultSink {
+func selectSinks(env github.Env, outDir string, canonical bool, runSnapshot resultsink.ResultSink) []resultsink.ResultSink {
 	sinks := []resultsink.ResultSink{resultsink.NewLocal(outDir)}
 
 	if !env.InActions {
@@ -105,7 +108,7 @@ func selectSinks(env github.Env, outDir string, runSnapshot resultsink.ResultSin
 	if caps.CanComment {
 		sinks = append(sinks, github.NewTier1PRComment(env, nil))
 	}
-	if caps.CanIssue {
+	if caps.CanIssue && canonical {
 		sinks = append(sinks, github.NewTier1Issue(env, nil))
 	}
 	if caps.CanPages {
@@ -173,10 +176,17 @@ func selectRunSnapshotSink(url, analyzedRef, canonicalRef string, token ferralon
 	if url == "" {
 		return nil
 	}
-	if analyzedRef == "" || canonicalRef == "" || analyzedRef != canonicalRef {
+	if !onCanonicalRef(analyzedRef, canonicalRef) {
 		return nil
 	}
 	return ferralon.NewRunSnapshot(url, token)
+}
+
+// onCanonicalRef reports whether this run analyzed the repository's canonical ref, the pair
+// canonicalDeliveryRefs derives. Both must be known. It gates every surface that carries the
+// repository's standing assessment: the run snapshot and the dashboard Issue.
+func onCanonicalRef(analyzedRef, canonicalRef string) bool {
+	return analyzedRef != "" && canonicalRef != "" && analyzedRef == canonicalRef
 }
 
 // publishResult renders the projections once and publishes the Result to every sink
@@ -202,7 +212,7 @@ func publishResult(ctx context.Context, outDir string, rep *report.Report, intel
 	analyzedRef, canonicalRef := canonicalDeliveryRefs(analyzeRef, os.Getenv(envRefName), os.Getenv(envDefaultBranch))
 	runSnapshot := selectRunSnapshotSink(runsURL, analyzedRef, canonicalRef, resolveOIDCToken)
 	env := github.DetectEnv(surfaceToggles())
-	return publishAll(ctx, selectSinks(env, outDir, runSnapshot), res, env.StepSummaryPath, os.Stderr)
+	return publishAll(ctx, selectSinks(env, outDir, onCanonicalRef(analyzedRef, canonicalRef), runSnapshot), res, env.StepSummaryPath, os.Stderr)
 }
 
 // Env var names for the per-surface GitHub output toggles, mapped from the action's inputs in

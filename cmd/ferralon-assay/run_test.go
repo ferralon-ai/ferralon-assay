@@ -122,9 +122,10 @@ func TestSelectSinks(t *testing.T) {
 	const summary = "/tmp/step-summary"
 
 	tests := []struct {
-		name string
-		env  github.Env
-		want []string
+		name      string
+		env       github.Env
+		canonical bool // the run analyzed the repository's canonical ref
+		want      []string
 	}{
 		{
 			name: "local-only when not in GitHub Actions",
@@ -147,7 +148,7 @@ func TestSelectSinks(t *testing.T) {
 			want: []string{"local", "tier0"},
 		},
 		{
-			name: "same-repo PR with write token (all surfaces default-on) → tier0 + sarif + pr-comment + issue + local",
+			name: "same-repo PR with write token (all surfaces default-on) → tier0 + sarif + pr-comment + local, no issue",
 			env: github.Env{
 				InActions:           true,
 				StepSummaryPath:     summary,
@@ -159,7 +160,7 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "pr-comment", "issue"},
+			want: []string{"local", "tier0", "sarif", "pr-comment"},
 		},
 		{
 			name: "code-scanning toggled off omits the sarif sink",
@@ -173,7 +174,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "pr-comment", "issue"},
+			canonical: true,
+			want:      []string{"local", "tier0", "pr-comment", "issue"},
 		},
 		{
 			name: "pr-comment toggled off omits the pr-comment sink",
@@ -187,7 +189,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    false,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue"},
+			canonical: true,
+			want:      []string{"local", "tier0", "sarif", "issue"},
 		},
 		{
 			name: "issue toggled off omits the issue sink",
@@ -201,7 +204,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        false,
 			},
-			want: []string{"local", "tier0", "sarif", "pr-comment"},
+			canonical: true,
+			want:      []string{"local", "tier0", "sarif", "pr-comment"},
 		},
 		{
 			name: "push build with write token (all surfaces default-on) → tier0 + sarif + issue (no pr-comment)",
@@ -214,7 +218,21 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue"},
+			canonical: true,
+			want:      []string{"local", "tier0", "sarif", "issue"},
+		},
+		{
+			name: "push to a branch that is not the canonical ref omits the issue sink",
+			env: github.Env{
+				InActions:           true,
+				StepSummaryPath:     summary,
+				Token:               "write-tok",
+				EventName:           "push",
+				CodeScanningEnabled: true,
+				PRCommentEnabled:    true,
+				IssueEnabled:        true,
+			},
+			want: []string{"local", "tier0", "sarif"},
 		},
 		{
 			name: "pages opt-in on push → adds tier2 pages",
@@ -228,7 +246,8 @@ func TestSelectSinks(t *testing.T) {
 				PRCommentEnabled:    true,
 				IssueEnabled:        true,
 			},
-			want: []string{"local", "tier0", "sarif", "issue", "pages"},
+			canonical: true,
+			want:      []string{"local", "tier0", "sarif", "issue", "pages"},
 		},
 		{
 			name: "pages opt-in on forked PR does NOT activate tier2 (no write token)",
@@ -250,7 +269,7 @@ func TestSelectSinks(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sinkKinds(selectSinks(tc.env, "out-dir", nil))
+			got := sinkKinds(selectSinks(tc.env, "out-dir", tc.canonical, nil))
 			if len(got) != len(tc.want) {
 				t.Fatalf("sink composition = %v, want %v", got, tc.want)
 			}
@@ -306,12 +325,12 @@ func TestSelectRunSnapshotSink(t *testing.T) {
 func TestSelectSinksAppendsRunSnapshot(t *testing.T) {
 	rs := ferralon.NewRunSnapshot("https://api.example.com/runs", func(context.Context) string { return "tok" })
 
-	inActions := sinkKinds(selectSinks(github.Env{InActions: true, StepSummaryPath: t.TempDir() + "/summary"}, "out-dir", rs))
+	inActions := sinkKinds(selectSinks(github.Env{InActions: true, StepSummaryPath: t.TempDir() + "/summary"}, "out-dir", true, rs))
 	if last := inActions[len(inActions)-1]; last != "run-snapshot" {
 		t.Fatalf("expected run-snapshot appended last in Actions, got %v", inActions)
 	}
 
-	local := sinkKinds(selectSinks(github.Env{InActions: false}, "out-dir", rs))
+	local := sinkKinds(selectSinks(github.Env{InActions: false}, "out-dir", true, rs))
 	for _, k := range local {
 		if k == "run-snapshot" {
 			t.Fatalf("run-snapshot must not appear on a local (non-Actions) run, got %v", local)

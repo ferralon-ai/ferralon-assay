@@ -61,9 +61,17 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	manifests, walkFailed := manifestFiles(req.BuildDir)
+	want := normalizeNuGetCoordinate(req.Coordinate)
+	locked := make(map[string]bool)
+	for _, m := range manifests {
+		if filepath.Base(m) == "packages.lock.json" {
+			locked[filepath.Dir(m)] = true
+		}
+	}
 
 	var (
-		all []plugin.ResolvedDependency
+		all     []plugin.ResolvedDependency
+		matches []plugin.ResolvedDependency
 		// A subtree the walk couldn't list could hold a manifest declaring any package at any
 		// version, as a manifest that doesn't parse could.
 		parseFailed = walkFailed
@@ -74,6 +82,14 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 			parseFailed = true
 		}
 		all = append(all, deps...)
+		if isProjectFile(filepath.Base(m)) && locked[filepath.Dir(m)] {
+			continue // the packages.lock.json beside it pins what this references
+		}
+		for _, d := range deps {
+			if want != "" && normalizeNuGetCoordinate(d.Coordinate) == want {
+				matches = append(matches, d)
+			}
+		}
 	}
 
 	part := plugin.Complete()
@@ -84,8 +100,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
-	res := plugin.DependencyVersionResult{Partiality: part, All: all}
-	if want := normalizeNuGetCoordinate(req.Coordinate); want != "" {
+	// MatchesComplete stays false. MSBuild can add or re-version a PackageReference from inputs
+	// this reader does not model (a Choose block, an SDK's props and targets, an import, a
+	// Directory.Build file), so no set of declarations it reads is known to be the whole build.
+	res := plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}
+	if want != "" {
 		res.Match, res.Found = matchCoordinate(manifests, want)
 		// Presence keeps the first resolved copy, agreement or not: a malicious-package advisory
 		// is affected by any copy at a listed version.
@@ -624,9 +643,11 @@ func manifestFiles(root string) (out []string, failed bool) {
 
 // isManifest reports whether name is a recognized .NET dependency manifest.
 func isManifest(name string) bool {
-	if name == "packages.lock.json" || name == "packages.config" {
-		return true
-	}
+	return name == "packages.lock.json" || name == "packages.config" || isProjectFile(name)
+}
+
+// isProjectFile reports whether name is an SDK-style project file.
+func isProjectFile(name string) bool {
 	ext := strings.ToLower(filepath.Ext(name))
 	return ext == ".csproj" || ext == ".fsproj" || ext == ".vbproj"
 }
@@ -680,9 +701,11 @@ func parsePackagesLock(data []byte) ([]plugin.ResolvedDependency, bool) {
 			if strings.EqualFold(e.Type, "Project") {
 				continue
 			}
-			key := normalizeNuGetCoordinate(name)
+			// The same package across target frameworks needs one entry per distinct version:
+			// each framework can restore its own.
+			key := normalizeNuGetCoordinate(name) + "@" + e.Resolved
 			if seen[key] {
-				continue // the same package across target frameworks — one entry suffices.
+				continue
 			}
 			seen[key] = true
 			out = append(out, nugetResolved(name, e.Resolved, e.Resolved != "", "packages.lock.json"))

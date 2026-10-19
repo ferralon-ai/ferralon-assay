@@ -221,9 +221,11 @@ func TestRun_StructuredOutsideRange_Disqualifies(t *testing.T) {
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"repo":             "r",
-		"revision":         "rev",
-		"resolved_version": "v0.3.7",
+		"repo":              "r",
+		"revision":          "rev",
+		"resolved_version":  "v0.3.7",
+		"resolved_versions": []string{"v0.3.7"},
+		"versions_complete": true,
 	})
 
 	res := runDisqual(t, store, caseID)
@@ -245,9 +247,11 @@ func TestRun_StructuredInsideRange_Proceeds(t *testing.T) {
 		"affected_ranges": []map[string]string{{"upper_exclusive": "v0.3.7"}},
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"repo":             "r",
-		"revision":         "rev",
-		"resolved_version": "v0.3.6",
+		"repo":              "r",
+		"revision":          "rev",
+		"resolved_version":  "v0.3.6",
+		"resolved_versions": []string{"v0.3.6"},
+		"versions_complete": true,
 	})
 
 	res := runDisqual(t, store, caseID)
@@ -267,9 +271,11 @@ func TestRun_AbsentSymbolButAffectedVersion_Proceeds(t *testing.T) {
 		"affected_ranges": []map[string]string{{"upper_exclusive": "v1.11.1"}},
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"repo":             "r",
-		"revision":         "rev",
-		"resolved_version": "v1.11.0",
+		"repo":              "r",
+		"revision":          "rev",
+		"resolved_version":  "v1.11.0",
+		"resolved_versions": []string{"v1.11.0"},
+		"versions_complete": true,
 	})
 
 	res := runDisqual(t, store, caseID)

@@ -540,6 +540,70 @@ func TestResolveVersions_UnreadableIncludeUnresolved(t *testing.T) {
 	}
 }
 
+// Matches lists the lock entries and installed copies of the package, and MatchesComplete holds
+// only when complete lockfiles govern every manifest and every surface was read: a declaration a
+// lock does not pin, or a manifest no lock governs, may install a version no reader saw.
+func TestResolveVersions_MatchesComplete(t *testing.T) {
+	const (
+		lock300      = "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n"
+		lock233      = "[[package]]\nname = \"flask\"\nversion = \"2.3.3\"\n"
+		lock232      = "[[package]]\nname = \"flask\"\nversion = \"2.3.2\"\n"
+		uvNoFlask    = "version = 1\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.4\"\nsource = { registry = \"https://pypi.org/simple\" }\n"
+		metadata200  = "Metadata-Version: 2.1\nName: Flask\nVersion: 2.0.0\n"
+		sitePackages = ".venv/lib/python3.12/site-packages/"
+	)
+	tests := []struct {
+		name     string
+		files    map[string]string
+		versions []string
+		complete bool
+	}{
+		{"one lock per service", map[string]string{"poetry.lock": lock300, "svc/poetry.lock": lock233}, []string{"3.0.0", "2.3.3"}, true},
+		{"a pyproject its lock pins", map[string]string{"poetry.lock": lock300, "pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask>=3\"]\n"}, []string{"3.0.0"}, true},
+		{"an installed copy joins the set", map[string]string{"poetry.lock": lock300, sitePackages + "flask-2.0.0.dist-info/METADATA": metadata200}, []string{"3.0.0", "2.0.0"}, true},
+		{"requirements pins with no lock", map[string]string{"requirements.txt": "flask==2.3.2\n"}, nil, false},
+		{"an unlocked service beside a locked one", map[string]string{"poetry.lock": lock300, "svc/requirements.txt": "requests==2.31.0\n"}, []string{"3.0.0"}, false},
+		{"a pyproject pin its uv.lock omits", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "uv.lock": uvNoFlask}, nil, false},
+		{"a pyproject pin its poetry.lock contradicts", map[string]string{"pyproject.toml": "[project]\nname = \"app\"\ndependencies = [\"flask==2.3.1\"]\n", "poetry.lock": lock232}, []string{"2.3.2"}, false},
+		{"setup.py declarations", map[string]string{"poetry.lock": lock300, "svc/setup.py": "from setuptools import setup\nsetup(name=\"svc\", install_requires=[\"flask==2.0.1\"])\n"}, []string{"3.0.0"}, false},
+		{"a wheel named for the package", map[string]string{"poetry.lock": lock300, "dist/flask-2.0.0-py3-none-any.whl": "PK"}, []string{"3.0.0"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tc.files), "Flask")
+			var got []string
+			for _, m := range r.Matches {
+				got = append(got, m.Version)
+			}
+			if tc.versions != nil && !slices.Equal(got, tc.versions) {
+				t.Errorf("Matches versions = %q, want %q", got, tc.versions)
+			}
+			if r.MatchesComplete != tc.complete {
+				t.Errorf("MatchesComplete = %v, want %v (Matches %+v)", r.MatchesComplete, tc.complete, r.Matches)
+			}
+		})
+	}
+}
+
+// An installed copy whose metadata cannot be read leaves the set incomplete.
+func TestResolveVersions_MatchesCompleteUnreadableCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-0 file")
+	}
+	meta := ".venv/lib/python3.12/site-packages/flask-2.0.0.dist-info/METADATA"
+	dir := writeTree(t, map[string]string{
+		"poetry.lock": "[[package]]\nname = \"flask\"\nversion = \"3.0.0\"\n",
+		meta:          "Metadata-Version: 2.1\nName: Flask\nVersion: 2.0.0\n",
+	})
+	if err := os.Chmod(filepath.Join(dir, meta), 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, meta), 0o644) })
+	if r := resolveVersion(t, dir, "flask"); r.MatchesComplete {
+		t.Fatalf("MatchesComplete with an unreadable installed copy: %+v", r.Matches)
+	}
+}
+
 // Declared-specifier readers: a range is carried in Constraint with Resolved=false and never
 // becomes Version; an exact pin keeps resolving; a non-requirement is not read as one.
 func TestResolveVersions_DeclaredConstraint(t *testing.T) {

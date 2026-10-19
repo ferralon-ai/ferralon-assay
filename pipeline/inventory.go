@@ -8,6 +8,30 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
+// targetEnvJavaVersion is the TargetEnv key the Java plugin evaluates Maven <jdk> profile
+// activation against.
+const targetEnvJavaVersion = "java.version"
+
+// targetEnvMavenProfiles is the TargetEnv key carrying the subject build's explicit Maven profile
+// selection, in -P syntax.
+const targetEnvMavenProfiles = "maven.profiles"
+
+// WithSubjectJavaVersion passes the java.version of the JVM that runs the SUBJECT's Maven build
+// (what `mvn -v` reports; not its compile target or a toolchains JDK) to inventory resolution,
+// where Maven profiles conditioned on <jdk> are decided against it. The value is the caller's
+// statement; Assay never looks it up. Without it those profiles stay undecided and disclosed.
+func WithSubjectJavaVersion(v string) AssessOption {
+	return func(c *AssessConfig) { c.SubjectJavaVersion = v }
+}
+
+// WithSubjectMavenProfiles passes the SUBJECT build's explicit Maven profile selection to
+// inventory resolution, in -P syntax ("a,!b"; "," for none): its -P list together with
+// settings.xml <activeProfiles>. The value is the caller's statement; Assay never looks it up.
+// Without it every profile of the reactor and its parents stays undecided and disclosed.
+func WithSubjectMavenProfiles(v string) AssessOption {
+	return func(c *AssessConfig) { c.SubjectMavenProfiles = v }
+}
+
 // ResolveCodebaseInventory resolves the WHOLE dependency inventory of a codebase ONCE (§4.1),
 // independent of any advisory work set. It is the inventory-keyed replacement for the advisory-keyed
 // per-advisory package loop the SBOM producers ran before PLAN-100: a dependency reaches the SBOM
@@ -56,7 +80,17 @@ func ResolveCodebaseInventory(ctx context.Context, codebase assessment.CodebaseR
 		return plugin.DependencyInventory{Partiality: plugin.Partial(plugin.PartialReasonNoPlugin)}, language, buildDir, nil
 	}
 
-	inv, err := cfg.Plugin.ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
+	req := plugin.ResolveInventoryRequest{BuildDir: buildDir}
+	if cfg.SubjectJavaVersion != "" || cfg.SubjectMavenProfiles != "" {
+		req.TargetEnv = map[string]string{}
+		if cfg.SubjectJavaVersion != "" {
+			req.TargetEnv[targetEnvJavaVersion] = cfg.SubjectJavaVersion
+		}
+		if cfg.SubjectMavenProfiles != "" {
+			req.TargetEnv[targetEnvMavenProfiles] = cfg.SubjectMavenProfiles
+		}
+	}
+	inv, err := cfg.Plugin.ResolveInventory(ctx, req)
 	if err != nil {
 		return plugin.DependencyInventory{}, language, buildDir, err
 	}

@@ -290,11 +290,8 @@ type mavenInventoryPlugin struct {
 }
 
 func (mavenInventoryPlugin) ResolveDependencyVersions(context.Context, plugin.ResolveVersionsRequest) (plugin.DependencyVersionResult, error) {
-	return plugin.DependencyVersionResult{
-		All: []plugin.ResolvedDependency{
-			{Coordinate: "com.example.lib:widget", Version: "1.0.0", Resolved: true},
-		},
-	}, nil
+	widget := plugin.ResolvedDependency{Coordinate: "com.example.lib:widget", Version: "1.0.0", Resolved: true}
+	return plugin.DependencyVersionResult{Found: true, Match: widget, All: []plugin.ResolvedDependency{widget}}, nil
 }
 
 // stubOSV installs an http.DefaultTransport that answers OSV.dev's querybatch with the given

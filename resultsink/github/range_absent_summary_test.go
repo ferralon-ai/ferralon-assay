@@ -51,29 +51,29 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 			finding: rangeAbsentFinding("PYSEC-2015-17", requests, "app.views.fetch"),
 			want: []string{
 				"### Reachable, with no version range to check",
-				"- `requests` 2.32.3 (PyPI) is reachable from `app.views.fetch` and is named in PYSEC-2015-17. " +
-					"The advisory does not give a version range Assay can check 2.32.3 against. " +
-					"Confirm with the advisory or the maintainer whether 2.32.3 is affected.",
+				"- `requests` `2.32.3` (`PyPI`) is reachable from `app.views.fetch` and is named in `PYSEC-2015-17`. " +
+					"The advisory does not give a version range Assay can check `2.32.3` against. " +
+					"Confirm with the advisory or the maintainer whether `2.32.3` is affected.",
 			},
 			mustNot: []string{"it records:", "fixed"},
 		},
 		{
 			name:    "introduced only",
 			finding: rangeAbsentFinding("GHSA-aaaa", requests, "app.views.fetch", report.AdvisoryBound{Introduced: "2.0.0"}),
-			want:    []string{"check 2.32.3 against; it records: introduced 2.0.0, no fix. Confirm"},
+			want:    []string{"check `2.32.3` against; it records: introduced `2.0.0`, no fix. Confirm"},
 		},
 		{
 			name: "last affected, and a second range",
 			finding: rangeAbsentFinding("GHSA-bbbb", requests, "app.views.fetch",
 				report.AdvisoryBound{Introduced: "1.0.0", LastAffected: "1.2.0"}, report.AdvisoryBound{LastAffected: "2.31.0"}),
-			want:    []string{"; it records: introduced 1.0.0, last affected 1.2.0; last affected 2.31.0. Confirm"},
+			want:    []string{"; it records: introduced `1.0.0`, last affected `1.2.0`; last affected `2.31.0`. Confirm"},
 			mustNot: []string{"no fix"},
 		},
 		{
 			name:    "version not determined",
 			finding: rangeAbsentFinding("GHSA-cccc", &report.Package{Ecosystem: "Maven", Name: "com.example:widget"}, "com.example.Api.handle"),
 			want: []string{
-				"- `com.example:widget` version not determined (Maven) is reachable from `com.example.Api.handle`",
+				"- `com.example:widget` version not determined (`Maven`) is reachable from `com.example.Api.handle`",
 				"version range Assay can check the installed version against. Confirm with the advisory or the maintainer whether the installed version is affected.",
 			},
 		},
@@ -81,8 +81,8 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 			name: "pinned but not resolved",
 			finding: rangeAbsentFinding("GHSA-dddd",
 				&report.Package{Ecosystem: "PyPI", Name: "requests", Version: ">=2.0", PartialReason: "source_unpinned"}, "app.views.fetch"),
-			want:    []string{"`requests` version not determined (PyPI)"},
-			mustNot: []string{">=2.0", "&gt;=2"},
+			want:    []string{"`requests` version not determined (`PyPI`)"},
+			mustNot: []string{">=2.0"},
 		},
 		{
 			name:    "no entry point: the path",
@@ -90,21 +90,41 @@ func TestTier0Summary_RangeAbsentSection(t *testing.T) {
 			want:    []string{"is reachable along ` → requests.get` and"},
 		},
 		{
-			name: "advisory data is escaped",
+			// A code span renders its content literally: no HTML, emphasis or link.
+			name: "advisory and codebase values are code spans",
 			finding: rangeAbsentFinding("GHSA-<img src=x>*[x](y)", &report.Package{Ecosystem: "npm", Name: "evil`<b>pkg", Version: "1.0.0\n# Owned"},
 				"main`` x", report.AdvisoryBound{Introduced: "<script>_a_"}),
 			want: []string{
-				"named in GHSA-&lt;img src=x&gt;\\*\\[x\\](y).",
-				"- ``evil`<b>pkg`` 1.0.0 # Owned (npm) is reachable from ```main`` x```",
-				"it records: introduced &lt;script&gt;\\_a\\_, no fix",
+				"named in `GHSA-<img src=x>*[x](y)`.",
+				"- ``evil`<b>pkg`` `1.0.0 # Owned` (`npm`) is reachable from ```main`` x```",
+				"it records: introduced `<script>_a_`, no fix",
 			},
-			mustNot: []string{"<img", "<script", "\n# Owned"},
+			mustNot: []string{"\n# Owned"},
+		},
+		{
+			// Bare text would autolink a URL, mention a user, link an issue and render $…$ as math.
+			name: "links, mentions and math stay literal",
+			finding: rangeAbsentFinding("$\\textcolor{red}{x}$", &report.Package{Ecosystem: "@octocat", Name: "a", Version: "https://evil.example/v"},
+				"main", report.AdvisoryBound{Introduced: "www.evil.example", LastAffected: "#12"}),
+			want: []string{
+				"- `a` `https://evil.example/v` (`@octocat`) is reachable",
+				"named in `$\\textcolor{red}{x}$`.",
+				"check `https://evil.example/v` against; it records: introduced `www.evil.example`, last affected `#12`. Confirm",
+				"whether `https://evil.example/v` is affected.",
+			},
+			mustNot: []string{" https://", " www.", " $", " @", " #12"},
 		},
 		{
 			name:    "a line break in a code span",
 			finding: rangeAbsentFinding("GHSA-ffff", requests, "main\n\n# Owned"),
 			want:    []string{"is reachable from `main  # Owned` and"},
 			mustNot: []string{"\n# Owned"},
+		},
+		{
+			name:    "a carriage return in a code span",
+			finding: rangeAbsentFinding("GHSA-gggg", requests, "main\r# Owned"),
+			want:    []string{"is reachable from `main # Owned` and"},
+			mustNot: []string{"\r"},
 		},
 	}
 	for _, tc := range cases {
@@ -148,7 +168,7 @@ func TestTier0Summary_RangeAbsentSectionOrder(t *testing.T) {
 	r := rangeAbsentReport()
 	r.Advisories = []report.AdvisoryFinding{rangeAbsentFinding("PYSEC-2", pkg, "a"), rangeAbsentFinding("PYSEC-1", pkg, "a")}
 	body := renderedTier0Summary(t, r)
-	if i, j := strings.Index(body, "named in PYSEC-1"), strings.Index(body, "named in PYSEC-2"); i < 0 || j < 0 || i > j {
+	if i, j := strings.Index(body, "named in `PYSEC-1`"), strings.Index(body, "named in `PYSEC-2`"); i < 0 || j < 0 || i > j {
 		t.Errorf("rows out of order\n---\n%s", body)
 	}
 }

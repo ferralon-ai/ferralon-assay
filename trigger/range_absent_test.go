@@ -127,13 +127,13 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 		},
 		{
 			// last_affected excludes later versions the version axis cannot exclude.
-			name:     "ranged: last_affected only",
+			name:       "ranged: last_affected only",
 			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "last_affected": "2.31.0", "scheme": "pypi"}}}),
 			pkg:        requestsPkg,
 			wantBounds: []report.AdvisoryBound{{LastAffected: "2.31.0"}},
 		},
 		{
-			name:     "ranged: introduced above zero only",
+			name:       "ranged: introduced above zero only",
 			advisory:   with(requests, map[string]any{"affected_ranges": []map[string]string{{"upper_exclusive": "", "lower_inclusive": "3.0.0", "scheme": "pypi"}}}),
 			pkg:        requestsPkg,
 			wantBounds: []report.AdvisoryBound{{Introduced: "3.0.0"}},

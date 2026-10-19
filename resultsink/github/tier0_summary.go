@@ -567,18 +567,19 @@ func rangeAbsent(r report.Report) []report.AdvisoryFinding {
 
 // rangeAbsentLine renders one range-absent finding. It states only what the report holds: the
 // installed version when one was resolved, the entry point or path, and whatever partial bounds the
-// advisory records. Every value from the advisory or the codebase is escaped for markdown and HTML.
+// advisory records. Every value from the advisory or the codebase is a code span, so none of it can
+// render as markup, a link, a mention or math.
 func rangeAbsentLine(f report.AdvisoryFinding) string {
 	version, subject := "version not determined", "the installed version"
 	if f.Package != nil && f.Package.Version != "" && !f.Package.PinUnresolved() {
-		version = mdText(f.Package.Version)
+		version = mdCode(f.Package.Version)
 		subject = version
 	}
 	var b strings.Builder
 	if f.Package != nil {
 		fmt.Fprintf(&b, "%s %s", mdCode(f.Package.Name), version)
 		if f.Package.Ecosystem != "" {
-			fmt.Fprintf(&b, " (%s)", mdText(f.Package.Ecosystem))
+			fmt.Fprintf(&b, " (%s)", mdCode(f.Package.Ecosystem))
 		}
 	} else {
 		fmt.Fprintf(&b, "Code named in the advisory, %s,", version)
@@ -591,7 +592,7 @@ func rangeAbsentLine(f report.AdvisoryFinding) string {
 	default:
 		b.WriteString(" is reachable")
 	}
-	fmt.Fprintf(&b, " and is named in %s. The advisory does not give a version range Assay can check %s against", mdText(f.Advisory.ID), subject)
+	fmt.Fprintf(&b, " and is named in %s. The advisory does not give a version range Assay can check %s against", mdCode(f.Advisory.ID), subject)
 	if bounds := boundsText(f.Evidence.AdvisoryBounds); bounds != "" {
 		fmt.Fprintf(&b, "; it records: %s", bounds)
 	}
@@ -605,10 +606,10 @@ func boundsText(bounds []report.AdvisoryBound) string {
 	for _, bd := range bounds {
 		var p []string
 		if bd.Introduced != "" {
-			p = append(p, "introduced "+mdText(bd.Introduced))
+			p = append(p, "introduced "+mdCode(bd.Introduced))
 		}
 		if bd.LastAffected != "" {
-			p = append(p, "last affected "+mdText(bd.LastAffected))
+			p = append(p, "last affected "+mdCode(bd.LastAffected))
 		} else if bd.Introduced != "" {
 			p = append(p, "no fix")
 		}
@@ -617,29 +618,6 @@ func boundsText(bounds []report.AdvisoryBound) string {
 		}
 	}
 	return strings.Join(parts, "; ")
-}
-
-// mdText escapes a value for inline GFM text: HTML is entity-encoded, inline markdown punctuation
-// is backslash-escaped, and line breaks are folded so a value cannot start a new block. Block
-// markers (#, -, +, digits) need no escape because a value never starts a line.
-func mdText(s string) string {
-	var b strings.Builder
-	for _, r := range foldLines(s) {
-		switch r {
-		case '&':
-			b.WriteString("&amp;")
-		case '<':
-			b.WriteString("&lt;")
-		case '>':
-			b.WriteString("&gt;")
-		case '\\', '`', '*', '_', '[', ']', '|', '~':
-			b.WriteByte('\\')
-			b.WriteRune(r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // mdCode renders a value as a GFM code span. The fence is one backtick longer than the longest

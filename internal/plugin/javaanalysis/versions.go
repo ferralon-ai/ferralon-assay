@@ -320,20 +320,25 @@ const maxRepositoryParents = 64
 
 // repositoryParentDeclarations reads the parent chain Maven takes from a repository, from ref up,
 // out of the build's local caches (locateArtifactPOM), and returns the nearest ancestor's
-// declarations of want: Maven merges inherited dependencies by coordinate, the child's winning.
+// declarations of want: Maven merges inherited dependencies by groupId, artifactId, type and
+// classifier, the child's winning. Only the default type (jar) with no classifier is shadowed
+// that way; when any declaration of want in the chain names another type or a classifier, every
+// ancestor's declarations join.
 // ok is false, and the inheritance unread, when any ancestor isn't in the caches as one set of
 // bytes (a miss: the build fetched it from a remote this reader never sees), doesn't parse, isn't
 // one pomModeled models whole, or is named without a groupId, an artifactId and a version that is
-// a literal pin (a range or an interpolation names no one directory in the cache). ok is false too
+// a literal release pin (a range or an interpolation names no one directory in the cache, and
+// Maven re-fetches a -SNAPSHOT from its remote, so a cached copy is not the one it binds). ok is false too
 // when no ancestor declares want but one declares another dependency, which could bring want in
 // at a version Maven picks from the graph. An ancestor's parent always comes from a repository: Maven
 // ignores relativePath on a POM it read from one.
 func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (decls []plugin.ResolvedDependency, ok bool) {
-	others := false
+	others, variant := false, false
+	var all []plugin.ResolvedDependency
 	seen := map[string]bool{}
 	for {
 		g, a, v := strings.TrimSpace(ref.GroupID), strings.TrimSpace(ref.ArtifactID), strings.TrimSpace(ref.Version)
-		if g == "" || a == "" || !pinnedVersion(v) {
+		if g == "" || a == "" || !pinnedVersion(v) || strings.HasSuffix(strings.ToUpper(v), "-SNAPSHOT") {
 			return nil, false
 		}
 		key := g + ":" + a + ":" + v
@@ -353,7 +358,9 @@ func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (
 		if decls == nil {
 			decls = d
 		}
+		all = append(all, d...)
 		others = others || o
+		variant = variant || declaresVariant(proj, want)
 		if proj.Parent.XMLName.Local == "" {
 			break
 		}
@@ -362,7 +369,24 @@ func repositoryParentDeclarations(buildDir string, ref pomParent, want string) (
 	if len(decls) == 0 && others {
 		return nil, false
 	}
+	if variant {
+		return all, true
+	}
 	return decls, true
+}
+
+// declaresVariant reports whether proj declares want with a type other than jar or with a
+// classifier: an artifact Maven's inheritance merge keys apart from the plain jar.
+func declaresVariant(proj pomProject, want string) bool {
+	for _, dep := range proj.Deps {
+		if normalizeCoordinate(strings.TrimSpace(dep.GroupID)+":"+strings.TrimSpace(dep.ArtifactID)) != want {
+			continue
+		}
+		if t := strings.TrimSpace(dep.Type); (t != "" && t != "jar") || strings.TrimSpace(dep.Classifier) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // pinnedVersion reports whether v is a plain release version: a digit first, then only letters,
@@ -612,6 +636,8 @@ type pomDep struct {
 	GroupID    string `xml:"groupId"`
 	ArtifactID string `xml:"artifactId"`
 	Version    string `xml:"version"`
+	Type       string `xml:"type"`
+	Classifier string `xml:"classifier"`
 }
 
 // pomProperties captures the arbitrary child elements of <properties> as name→value pairs

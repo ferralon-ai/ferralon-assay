@@ -101,6 +101,9 @@ func TestReachability_LaunchEntryLicence(t *testing.T) {
 		{"@WebServlet on a plain class", true, func(t *testing.T, dir string) {
 			writeClassFixture(t, dir, "com/example/Hook", callbackClass("com/example/Hook", "java/lang/Object", nil, "Ljakarta/servlet/annotation/WebServlet;"))
 		}, false, reasonContainerCallback},
+		{"javax @WebFilter beside an empty main", true, func(t *testing.T, dir string) {
+			writeClassFixture(t, dir, "com/example/AuditFilter", callbackClass("com/example/AuditFilter", "java/lang/Object", nil, "Ljavax/servlet/annotation/WebFilter;"))
+		}, false, reasonContainerCallback},
 		{"ancestor neither loaded nor in the JDK", true, func(t *testing.T, dir string) {
 			writeClassFixture(t, dir, "com/example/Hook", callbackClass("com/example/Hook", "org/unknown/Base", nil, ""))
 		}, false, reasonContainerCallback},

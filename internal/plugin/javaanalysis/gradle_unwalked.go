@@ -23,6 +23,7 @@ const (
 //   - a skipped directory has a build or settings script directly in it;
 //   - a directory a root settings script names (an include, a projectDir = file(...), an
 //     includeBuild, an includeFlat) has a script and wasn't walked, as when it lies outside root;
+//   - a root settings script names a directory by an absolute path;
 //   - a settings script names projects in a form this reader can't read literally, and any
 //     skipped subtree holds a script;
 //   - a symlink resolves to a directory outside root.
@@ -61,7 +62,10 @@ func unwalkedBuild(root string) string {
 	if reason != "" {
 		return reason
 	}
-	dirs, literal := gradleSettingsDirs(root)
+	dirs, literal, absolute := gradleSettingsDirs(root)
+	if absolute {
+		return reasonGradleProjectUnwalked
+	}
 	for _, dir := range dirs {
 		if !walked[dir] && len(gradleScriptsIn(dir))+len(gradleSettingsIn(dir)) > 0 {
 			return reasonGradleProjectUnwalked
@@ -81,6 +85,11 @@ func unwalkedBuild(root string) string {
 // comments stripped, is one of these forms in its block; any other line, anywhere, sends the build to
 // the broad fallback. A string literal holds no quote, backslash or $, so its end and its value are
 // what the text says.
+//
+// stripGradleCommentsChecked doesn't know Groovy triple-quoted or slashy strings, or string
+// templates, and can strip real code inside one. That fails closed only because whatever it leaves
+// keeps a """, a / outside a literal, or a $, and no allowed form accepts any of those outside a
+// literal; keep it that way.
 const settingsLit = `(?:"[^"$\\\n]*"|'[^'$\\\n]*')`
 
 // settingsFilterLit is a repository content-filter argument: a regex may carry backslashes, and only
@@ -101,6 +110,10 @@ var (
 	settingsReposMode     = regexp.MustCompile(`^repositoriesMode\s*(?:\.\s*set\s*\(\s*RepositoriesMode\.[A-Z_]+\s*\)|=\s*RepositoriesMode\.[A-Z_]+)$`)
 	settingsPluginLine    = regexp.MustCompile(`^(?:id\s*\(\s*(` + settingsLit + `)\s*\)|id\s+(` + settingsLit + `)|kotlin\s*\(\s*` + settingsLit + `\s*\))(?:\s+version\s+` + settingsLit + `)?(?:\s+apply\s+false)?$`)
 	settingsIncludeName   = regexp.MustCompile(settingsLit)
+
+	// The named-directory forms, matched anywhere in a script, literal or not.
+	settingsAnyInclude = regexp.MustCompile(`\b(include|includeFlat)\b\s*\(?\s*(` + settingsLit + `(?:\s*,\s*` + settingsLit + `)*)`)
+	settingsAnyPath    = regexp.MustCompile(`\b(?:includeBuild|file)\s*\(?\s*(` + settingsLit + `)`)
 )
 
 // settingsPlugins are the settings plugins a literal settings script may apply; each configures
@@ -125,26 +138,68 @@ var settingsBlocks = map[string]map[string]string{
 }
 
 // gradleSettingsDirs returns every directory root's settings scripts name: each project on an
-// include path, each includeFlat sibling, each projectDir = file(...) and each includeBuild. literal
-// is false when a script can't be read, or holds any line outside the settings allow-list, since
-// then any directory could be a project.
-func gradleSettingsDirs(root string) (dirs []string, literal bool) {
+// include path, each includeFlat sibling, each file(...) and each includeBuild, wherever in a script
+// it appears. literal is false when a script can't be read, or holds any line outside the settings
+// allow-list, since then any directory could be a project. absolute is true when a script names a
+// path by an absolute path.
+func gradleSettingsDirs(root string) (dirs []string, literal, absolute bool) {
+	literal = true
 	for _, path := range gradleSettingsIn(root) {
 		data, err := readRegular(path)
 		if err != nil {
-			return dirs, false
+			literal = false
+			continue
 		}
 		src, ok := stripGradleCommentsChecked(string(data))
 		if !ok {
-			return dirs, false
+			literal, src = false, string(data)
 		}
-		named, ok := settingsLiteralDirs(root, src)
+		named, abs := settingsNamedDirs(root, src)
 		dirs = append(dirs, named...)
-		if !ok {
-			return dirs, false
+		absolute = absolute || abs
+		named, ok = settingsLiteralDirs(root, src)
+		dirs = append(dirs, named...)
+		literal = literal && ok
+	}
+	return dirs, literal, absolute
+}
+
+// settingsNamedDirs returns every directory src names through an include, includeFlat,
+// includeBuild or file(...) with string-literal arguments, wherever it appears, and whether any of
+// those paths is absolute.
+func settingsNamedDirs(root, src string) (dirs []string, absolute bool) {
+	for _, m := range settingsAnyInclude.FindAllStringSubmatch(src, -1) {
+		named, _ := settingsIncludeDirs(root, m[2], m[1] == "includeFlat")
+		dirs = append(dirs, named...)
+	}
+	for _, m := range settingsAnyPath.FindAllStringSubmatch(src, -1) {
+		absolute = absolute || settingsAbsolute(settingsUnquote(m[1]))
+		dirs = append(dirs, settingsLitDir(root, m[1]))
+	}
+	return dirs, absolute
+}
+
+// settingsIncludeDirs returns the directories an include or includeFlat argument list names, and
+// false when a name is empty or holds a path.
+func settingsIncludeDirs(root, list string, flat bool) (dirs []string, ok bool) {
+	ok = true
+	for _, a := range settingsIncludeName.FindAllString(list, -1) {
+		name := strings.TrimPrefix(settingsUnquote(a), ":")
+		if name == "" || strings.ContainsAny(name, "/") || strings.Contains(name, "..") {
+			ok = false
+			continue
+		}
+		if flat {
+			dirs = append(dirs, filepath.Join(filepath.Dir(root), name))
+			continue
+		}
+		dir := root
+		for _, seg := range strings.Split(name, ":") {
+			dir = filepath.Join(dir, seg)
+			dirs = append(dirs, dir)
 		}
 	}
-	return dirs, true
+	return dirs, ok
 }
 
 // settingsLiteralDirs reads src line by line against the settings allow-list, returning the
@@ -162,22 +217,9 @@ func settingsLiteralDirs(root, src string) (dirs []string, ok bool) {
 		return stack[len(stack)-1]
 	}
 	include := func(list string, isFlat bool) bool {
-		for _, a := range settingsIncludeName.FindAllString(list, -1) {
-			name := strings.TrimPrefix(a[1:len(a)-1], ":")
-			if name == "" || strings.ContainsAny(name, "/") || strings.Contains(name, "..") {
-				return false
-			}
-			if isFlat {
-				dirs = append(dirs, filepath.Join(filepath.Dir(root), name))
-				continue
-			}
-			dir := root
-			for _, seg := range strings.Split(name, ":") {
-				dir = filepath.Join(dir, seg)
-				dirs = append(dirs, dir)
-			}
-		}
-		return true
+		named, ok := settingsIncludeDirs(root, list, isFlat)
+		dirs = append(dirs, named...)
+		return ok
 	}
 	for _, line := range strings.Split(src, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), ";"))
@@ -290,9 +332,20 @@ func settingsUnquote(lit string) string {
 	return lit[1 : len(lit)-1]
 }
 
-// settingsLitDir is the directory a quoted settings path names, relative to root.
+// settingsLitDir is the directory a quoted settings path names: relative to root, or as written
+// when absolute.
 func settingsLitDir(root, lit string) string {
-	return filepath.Join(root, filepath.FromSlash(settingsUnquote(lit)))
+	path := filepath.FromSlash(settingsUnquote(lit))
+	if settingsAbsolute(path) {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(root, path)
+}
+
+// settingsAbsolute reports whether a settings path is absolute on any platform Gradle runs on.
+func settingsAbsolute(path string) bool {
+	return filepath.IsAbs(path) || strings.HasPrefix(path, "/") || strings.HasPrefix(path, `\`) ||
+		len(path) >= 2 && path[1] == ':' && ('A' <= path[0] && path[0] <= 'Z' || 'a' <= path[0] && path[0] <= 'z')
 }
 
 // holdsGradleScript reports whether a build or settings script sits anywhere under dir, or dir

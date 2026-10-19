@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -18,8 +19,9 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 	tests := []struct {
 		name     string
 		files    map[string]string
-		link     string // a symlink at this path, relative to the tree, to a fresh dir outside it holding gradle
-		sub      string // the build dir within the tree, when the tree holds more than the build
+		link     string            // a symlink at this path, relative to the tree, to a fresh dir outside it holding gradle
+		sub      string            // the build dir within the tree, when the tree holds more than the build
+		out      map[string]string // files in a fresh dir outside the tree; @OUT@ in a file names it, @ROOT@ the build dir
 		withhold bool
 		reason   string // the reason withheld rows carry; reasonGradleProjectUnwalked when empty
 	}{
@@ -51,6 +53,16 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 		{name: "settings plugin outside the allow-list", files: map[string]string{"settings.gradle": "plugins {\n    id 'com.example.projects'\n}\ninclude 'app'\n", "app/build.gradle": "", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "unlisted block in settings", files: map[string]string{"settings.gradle.kts": "gradle.beforeProject {\n}\ninclude(\"app\")\n", "app/build.gradle.kts": "", "out/app/build.gradle.kts": gradle}, withhold: true},
 		{name: "unbalanced settings block", files: map[string]string{"settings.gradle.kts": "include(\"app\")\npluginManagement {\n    repositories {\n        mavenCentral()\n    }\n", "app/build.gradle.kts": "", "out/app/build.gradle.kts": gradle}, withhold: true},
+		{name: "projectDir moved by an absolute path", files: map[string]string{"settings.gradle": "include 'app'\nproject(':app').projectDir = file('@ROOT@/out/app')\n", "out/app/build.gradle": gradle}, out: map[string]string{}, withhold: true},
+		{name: "projectDir moved by an absolute path (kts)", files: map[string]string{"settings.gradle.kts": "include(\"app\")\nproject(\":app\").projectDir = file(\"@ROOT@/out/app\")\n", "out/app/build.gradle.kts": gradle}, out: map[string]string{}, withhold: true},
+		{name: "included build by an absolute path out of the root", files: map[string]string{"settings.gradle": "includeBuild('@OUT@')\n"}, out: map[string]string{"build.gradle": gradle}, withhold: true},
+		{name: "included build by an absolute path to a dir with no script", files: map[string]string{"settings.gradle": "includeBuild('@OUT@')\n"}, out: map[string]string{"README": ""}, withhold: true},
+		{name: "React Native settings with an included plugin build", sub: "android", files: map[string]string{"android/settings.gradle": "pluginManagement { includeBuild(\"../node_modules/@react-native/gradle-plugin\") }\nplugins { id(\"com.facebook.react.settings\") }\nextensions.configure(com.facebook.react.ReactSettingsExtension) { ex -> ex.autolinkLibrariesFromCommand() }\nrootProject.name = 'app'\ninclude ':app'\nincludeBuild('../node_modules/@react-native/gradle-plugin')\n", "android/app/build.gradle": "", "node_modules/@react-native/gradle-plugin/settings.gradle.kts": "", "node_modules/@react-native/gradle-plugin/build.gradle.kts": "", "node_modules/rn-lib/android/build.gradle": gradle}, withhold: true},
+		{name: "includeFlat after an unlisted block", sub: "repo", files: map[string]string{"repo/settings.gradle": "buildCache {\n    local {\n        enabled = true\n    }\n}\nincludeFlat 'shared'\n", "shared/build.gradle": gradle}, withhold: true},
+		{name: "projectDir out of the root after an unlisted line", sub: "repo", files: map[string]string{"repo/settings.gradle": "gradle.startParameter.offline = true\ninclude 'app'\nproject(':app').projectDir = file('../shared/app')\n", "shared/app/build.gradle": gradle}, withhold: true},
+		{name: "includeBuild out of the root after a develocity block", sub: "repo", files: map[string]string{"repo/settings.gradle.kts": "develocity {\n    buildScan {\n        termsOfUseAgree = \"yes\"\n    }\n}\nincludeBuild(\"../shared\")\n", "shared/build.gradle.kts": gradle}, withhold: true},
+		{name: "includeBuild in a second settings script after a non-literal one", sub: "repo", files: map[string]string{"repo/settings.gradle": "def x = 1\n", "repo/settings.gradle.kts": "includeBuild(\"../shared\")\n", "shared/build.gradle.kts": gradle}, withhold: true},
+		{name: "include with a unicode escape", files: map[string]string{"settings.gradle": "include 'build\\u003aapp'\n", "build/app/build.gradle": gradle}, withhold: true},
 		{name: "control: includeBuild with a configuration block", files: map[string]string{"settings.gradle.kts": "includeBuild(\"build-logic\") {\n    name = \"logic\"\n}\ninclude(\n    \"app\",\n    \"lib\"\n)\n", "build-logic/build.gradle.kts": "", "app/build.gradle.kts": "", "lib/build.gradle.kts": "", "node_modules/rn-lib/android/build.gradle": gradle}},
 		{name: "control: Android Studio template settings, Android build under node_modules", files: map[string]string{"settings.gradle.kts": "pluginManagement {\n    repositories {\n        google {\n            content {\n                includeGroupByRegex(\"com\\\\.android.*\")\n                includeGroupByRegex(\"com\\\\.google.*\")\n                includeGroupByRegex(\"androidx.*\")\n            }\n        }\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n    repositories {\n        google()\n        mavenCentral()\n    }\n}\n\nrootProject.name = \"My Application\"\ninclude(\":app\")\n", "app/build.gradle.kts": "", "node_modules/rn-lib/android/build.gradle": gradle}},
 		{name: "control: foojay settings plugin, Android build under node_modules", files: map[string]string{"settings.gradle.kts": "plugins {\n    id(\"org.gradle.toolchains.foojay-resolver-convention\") version \"0.8.0\"\n}\nrootProject.name = \"svc\"\ninclude(\"app\")\n", "app/build.gradle.kts": "", "node_modules/rn-lib/android/build.gradle": gradle}},
@@ -69,6 +81,16 @@ func TestResolveVersions_UnwalkedGradleProjectWithholds(t *testing.T) {
 				}
 				if err := os.Symlink(outside, filepath.Join(dir, tt.link)); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if tt.out != nil {
+				out := writeTree(t, tt.out)
+				for name, content := range tt.files {
+					content = strings.ReplaceAll(content, "@OUT@", filepath.ToSlash(out))
+					content = strings.ReplaceAll(content, "@ROOT@", filepath.ToSlash(filepath.Join(dir, tt.sub)))
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			res := resolve(t, filepath.Join(dir, tt.sub), "com.evil:netkit")

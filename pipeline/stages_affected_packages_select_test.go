@@ -240,7 +240,11 @@ func TestAffectedPackageNamed(t *testing.T) {
 	if _, ok := affectedPackageNamed(pkgs, "", "g:none"); ok {
 		t.Error("g:none matched")
 	}
-	if pkgs[0].AffectedRanges[0] != r("1.2") || len(pkgs[0].AffectedRanges) != 1 {
-		t.Errorf("input entry mutated: %+v", pkgs[0])
+	// The merge must not write into the advisory's own entries, even where a slice has room to grow.
+	roomy := append(make([]affectedRange, 0, 4), r("1.2"))
+	shared := []advisoryAffectedPackage{{Coordinate: "g:a", AffectedRanges: roomy}, {Coordinate: "g:a", AffectedRanges: []affectedRange{r("1.6")}}}
+	affectedPackageNamed(shared, "", "g:a")
+	if spare := roomy[:2]; spare[1] != (affectedRange{}) {
+		t.Errorf("input entry's backing array written: %+v", spare)
 	}
 }

@@ -404,3 +404,68 @@ func TestVersions_ItemNameInAnotherCase_Presence(t *testing.T) {
 		t.Fatalf("presence = %+v, want 13.0.1", res.Presence)
 	}
 }
+
+// Matches lists every project's reference, so a project pinned at another version is visible. A
+// project file beside packages.lock.json is superseded by the lock, and each target framework the
+// lock restores at its own version is listed.
+func TestVersions_MatchesEveryProject(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Api/Api.csproj":       `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup></Project>`,
+		"Worker/Worker.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Newtonsoft.Json" Version="[13.0,14.0)" /></ItemGroup></Project>`,
+		"Worker/packages.lock.json": `{"version": 1, "dependencies": {
+  "net6.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.0"}},
+  "net8.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.3"}}
+}}`,
+	})
+	r := versionsOf(t, dir, "newtonsoft.json")
+	got := map[string]bool{}
+	for _, m := range r.Matches {
+		if !m.Resolved {
+			t.Fatalf("an unresolved match survived: %+v", m)
+		}
+		got[m.Version] = true
+	}
+	if len(r.Matches) != 3 || !got["13.0.0"] || !got["13.0.1"] || !got["13.0.3"] {
+		t.Fatalf("Matches = %+v, want Newtonsoft.Json 13.0.0, 13.0.1 and 13.0.3", r.Matches)
+	}
+}
+
+// The .NET lane never vouches for its Matches, even where every declaration it reads is an exact
+// pin: a Choose block or a custom SDK can add a version it does not read. Matches still lists the
+// pins as evidence.
+func TestVersions_NeverMatchesComplete(t *testing.T) {
+	const pin = `<PackageReference Include="Newtonsoft.Json" Version="[13.0.1]" />`
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"exact-bracket direct pin", map[string]string{
+			"Api/Api.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>` + pin + `</ItemGroup></Project>`,
+		}},
+		{"lock beside the project", map[string]string{
+			"Api/Api.csproj":         `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>` + pin + `</ItemGroup></Project>`,
+			"Api/packages.lock.json": `{"version": 1, "dependencies": {"net8.0": {"Newtonsoft.Json": {"type": "Direct", "resolved": "13.0.1"}}}}`,
+		}},
+		{"packages.config", map[string]string{
+			"Legacy/Legacy.csproj":   `<Project ToolsVersion="15.0"></Project>`,
+			"Legacy/packages.config": `<packages><package id="Newtonsoft.Json" version="13.0.1" /></packages>`,
+		}},
+		{"a Choose block re-versions the pin", map[string]string{
+			"Api/Api.csproj": `<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>` + pin + `</ItemGroup><Choose><When Condition="'$(TargetFramework)' == 'net48'"><ItemGroup><PackageReference Update="Newtonsoft.Json" Version="[12.0.1]" /></ItemGroup></When></Choose></Project>`,
+		}},
+		{"a custom SDK", map[string]string{
+			"Api/Api.csproj": `<Project Sdk="Acme.Build.Sdk/1.0.0"><ItemGroup>` + pin + `</ItemGroup></Project>`,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := versionsOf(t, writeTree(t, tc.files), "Newtonsoft.Json")
+			if r.MatchesComplete {
+				t.Fatalf("MatchesComplete = true, want false (Matches %+v)", r.Matches)
+			}
+			if len(r.Matches) != 1 || r.Matches[0].Version != "13.0.1" || !r.Matches[0].Resolved {
+				t.Fatalf("Matches = %+v, want Newtonsoft.Json 13.0.1 as evidence", r.Matches)
+			}
+		})
+	}
+}

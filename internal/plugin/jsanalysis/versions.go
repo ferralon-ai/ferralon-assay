@@ -53,6 +53,10 @@ import (
 // Multiple installed copies: Match is chosen by matchCoordinate, which never picks one copy
 // out of several distinct versions. See its doc comment for the rule.
 //
+// Matches lists every lockfile entry and installed copy of the coordinate. MatchesComplete is set
+// only when the lockfiles cover every package.json under the build dir and every surface and
+// installed copy was read (lockSetCovers), and no yarn cache archive could hold another copy.
+//
 // Exhaustive is set only when the lockfiles cover every package.json under the build dir
 // (exhaustive.go), so a coordinate absent from All is provably not installed; with no lockfile
 // (the declared-seed path) or any doubt it stays false and absence proves nothing.
@@ -108,11 +112,20 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		All:        all,
 		Exhaustive: exhaustiveLockSet(req.BuildDir, req.Coordinate, parsed, lockFailed),
 	}
-	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...), normalizeNPMCoordinate(req.Coordinate))
+	want := normalizeNPMCoordinate(req.Coordinate)
+	installs := append(all[:len(all):len(all)], copies...)
+	res.Match, res.Found = matchCoordinate(installs, want)
 	if parseFailed && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
+	for _, d := range installs {
+		if want != "" && normalizeNPMCoordinate(d.Coordinate) == want {
+			res.Matches = append(res.Matches, d)
+		}
+	}
+	res.MatchesComplete = len(res.Matches) > 0 && lockSetCovers(req.BuildDir, req.Coordinate, parsed, parseFailed) &&
+		!installedCopyPresent(req.BuildDir, want, false)
 	return res, nil
 }
 

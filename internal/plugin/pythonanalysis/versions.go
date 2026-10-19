@@ -96,17 +96,32 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
+	want := normalizePyCoordinate(req.Coordinate)
+	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests)
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: coverageExhaustive(req.BuildDir, req.Coordinate, manifests),
+		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true),
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
-		append(origins[:len(origins):len(origins)], copyOrigins...), normalizePyCoordinate(req.Coordinate))
+		append(origins[:len(origins):len(origins)], copyOrigins...), want)
 	if parseFailed && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
+	// Under coverage every other manifest's declaration is one its governing lock pins at a version
+	// the declaration admits, so the lock entries and the installed copies are every version.
+	for i, d := range all {
+		if want != "" && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+			res.Matches = append(res.Matches, d)
+		}
+	}
+	for _, d := range copies {
+		if want != "" && normalizePyCoordinate(d.Coordinate) == want {
+			res.Matches = append(res.Matches, d)
+		}
+	}
+	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !installedCopyPresent(req.BuildDir, want, false)
 	return res, nil
 }
 
@@ -1080,13 +1095,13 @@ func normalizePyCoordinate(c string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// coverageExhaustive is the no-manifest-entry coverage check (exhaustiveManifestSet) over the
+// coverageCovers is the no-manifest-entry coverage check (manifestSetCovers) over the
 // manifests' declared names. It reads each manifest with the coverage readers
 // (parseManifestCoverage), not the version-resolution vetoes above: a surface version
 // resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
-func coverageExhaustive(root, coordinate string, manifests []string) bool {
+func coverageCovers(root, coordinate string, manifests []string) bool {
 	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
 	failed := false
 	for _, m := range manifests {
@@ -1096,7 +1111,7 @@ func coverageExhaustive(root, coordinate string, manifests []string) bool {
 		}
 		perFile[m] = deps
 	}
-	return exhaustiveManifestSet(root, coordinate, manifests, perFile, failed)
+	return manifestSetCovers(root, coordinate, manifests, perFile, failed)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the

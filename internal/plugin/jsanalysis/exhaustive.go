@@ -59,6 +59,15 @@ var rangedDependencyFields = []string{"dependencies", "devDependencies", "option
 // exhaustiveLockSet reports whether the parsed lockfiles (path → what parseLockfile read)
 // enumerate every installable package for every package.json under root.
 func exhaustiveLockSet(root, coordinate string, locks map[string]lockInfo, parseFailed bool) bool {
+	return lockSetCovers(root, coordinate, locks, parseFailed) &&
+		!installedCopyPresent(root, normalizeNPMCoordinate(coordinate), true)
+}
+
+// lockSetCovers is exhaustiveLockSet without the installed-copy condition: every lockfile and
+// install surface is read in full and governs every package.json under root, so the lockfiles
+// enumerate every copy an install creates. A caller that enumerates the installed copies itself
+// pairs it with installedCopyPresent(root, coord, false).
+func lockSetCovers(root, coordinate string, locks map[string]lockInfo, parseFailed bool) bool {
 	if parseFailed || len(locks) == 0 {
 		return false
 	}
@@ -79,12 +88,12 @@ func exhaustiveLockSet(root, coordinate string, locks map[string]lockInfo, parse
 			return false
 		}
 	}
-	return !installedCopyPresent(root, coord)
+	return true
 }
 
-// installedCopyPresent reports whether a node_modules tree or a yarn cache under root could hold
-// the coordinate. Anything it cannot read counts as holding it.
-func installedCopyPresent(root, coord string) bool {
+// installedCopyPresent reports whether a yarn cache under root, or with nodeModules a node_modules
+// tree, could hold the coordinate. Anything it cannot read counts as holding it.
+func installedCopyPresent(root, coord string, nodeModules bool) bool {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return true
@@ -96,7 +105,7 @@ func installedCopyPresent(root, coord string) bool {
 		case err != nil:
 			present = true
 		case e.Skipped:
-			if filepath.Base(e.Path) != "node_modules" {
+			if !nodeModules || filepath.Base(e.Path) != "node_modules" {
 				return nil
 			}
 			installed := map[string]bool{}

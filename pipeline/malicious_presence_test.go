@@ -208,6 +208,23 @@ func TestMaliciousPresence_EmptySet_EmitsNothing(t *testing.T) {
 	}
 }
 
+// A listed version anywhere in the tree is present, even when the representative resolved_version
+// is a clean one: a nested install of the malicious release is the same compromise.
+func TestMaliciousPresence_AnyResolvedVersionMatches(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "a1"}
+	adv, _ := json.Marshal(map[string]any{"vuln_id": "MAL-2024-1", "malicious_package": map[string]any{"affected_versions": []string{"1.0.1"}}})
+	putRaw(t, store, c.ID, artifact.TypeNormalizedAdvisory, string(adv))
+	putRaw(t, store, c.ID, artifact.TypeInventory, `{"resolved_version":"1.0.0","resolved_versions":["1.0.0","1.0.1"]}`)
+	if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("malicious_presence: %v", err)
+	}
+	res, ok := queryMaliciousPresence(t, store, c.ID)
+	if !ok || !res.Present || res.MatchedVersion != "1.0.1" {
+		t.Fatalf("presence = %+v (emitted=%v), want present at 1.0.1", res, ok)
+	}
+}
+
 // --- helpers --------------------------------------------------------------------------------
 
 // fakeMaliciousSource is a minimal AdvisorySource returning a MAL-declared fact when versions is
@@ -303,6 +320,15 @@ func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
 		// The first package is declared at a property version, so it is selected unresolved; the
 		// presence scan still reaches the second package's copy.
 		{"first package unresolved", "java", "com.example.lib:first", "pkg:maven/com.example.lib/first", "1.0.1", firstAndWidgetPOM, "",
+			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
+		// The first package is selected unresolved, and the second package's copies disagree, so it
+		// has no agreed version; the presence scan still takes its first resolved copy.
+		{"second package's copies disagree", "java", "com.example.lib:first", "pkg:maven/com.example.lib/first", "1.0.1",
+			map[string]string{
+				"pom.xml": reactor, "a/pom.xml": module("1.0.1"), "b/pom.xml": module("1.0.2"),
+				"c/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>com.example</groupId><artifactId>c</artifactId><version>1.0.0</version>` +
+					`<dependencies><dependency><groupId>com.example.lib</groupId><artifactId>first</artifactId><version>${first.version}</version></dependency></dependencies></project>`,
+			}, "",
 			[]AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
 		// No package in the array has a resolved copy, so the presence scan falls back to the
 		// advisory's own package.

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -167,5 +168,83 @@ func TestMultipkgSelect_WithArray_PatchedSecondaryDisqualifies(t *testing.T) {
 	}
 	if !res.Disqualified || res.Reason != ReasonVersionNotInRange {
 		t.Fatalf("patched secondary (v2.0.0) must disqualify version_not_in_affected_range, got %+v", res)
+	}
+}
+
+// splitEntrySource lists example.com/b in two affected[] entries: one fixed at v1.2.0, one
+// introduced at v1.4.0 and fixed at v1.6.0.
+type splitEntrySource struct{}
+
+func (splitEntrySource) Lookup(string) (AdvisoryFacts, bool) {
+	b := func(r Range, sym string) AffectedPackage {
+		return AffectedPackage{Module: "example.com/b", VersionScheme: "gomod", PURL: "pkg:golang/example.com/b", AffectedRanges: []Range{r}, Symbols: []string{sym}}
+	}
+	return AdvisoryFacts{
+		Module:         "example.com/a",
+		VersionScheme:  "gomod",
+		PURL:           "pkg:golang/example.com/a",
+		AffectedRanges: []Range{{Fixed: "v9.9.9", FixedVersion: "v9.9.9"}},
+		Provenance:     Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+		AffectedPackages: []AffectedPackage{
+			b(Range{Fixed: "v1.2.0", FixedVersion: "v1.2.0"}, "example.com/b.Reset"),
+			b(Range{Introduced: "v1.4.0", Fixed: "v1.6.0", FixedVersion: "v1.6.0"}, "example.com/b.Close"),
+		},
+	}, true
+}
+
+// A version only the second entry covers is affected; a version past every entry is not.
+func TestMultipkgSelect_SplitEntriesUnionTheirRanges(t *testing.T) {
+	for _, tc := range []struct {
+		version      string
+		disqualified bool
+	}{
+		{"v1.5.0", false},
+		{"v1.7.0", true},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "case-split-entries", Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "CVE-TEST-SPLIT", Source: "corpus"},
+				Codebase:      assessment.CodebaseRef{Repo: "example.com/target", Revision: "v1", Acquisition: assessment.Acquisition{Mode: "git"}},
+			}}
+			if err := (advisoryIntake{src: splitEntrySource{}}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("advisory_intake: %v", err)
+			}
+			inv := codebaseInventory{checkout: dirCheckout{dir: writeGoModRequiringB(t, tc.version), lang: "go"}, src: splitEntrySource{}}
+			if err := inv.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory: %v", err)
+			}
+			if res := runDisqual(t, store, c.ID); res.Disqualified != tc.disqualified {
+				t.Fatalf("disqualified = %v, want %v (%+v)", res.Disqualified, tc.disqualified, res)
+			}
+		})
+	}
+}
+
+func TestAffectedPackageNamed(t *testing.T) {
+	r := func(fixed string) affectedRange { return affectedRange{UpperExclusive: fixed} }
+	pkgs := []advisoryAffectedPackage{
+		{Coordinate: "g:a", AffectedRanges: []affectedRange{r("1.2")}, Symbols: []string{"A.x"}},
+		{Coordinate: "g:other", AffectedRanges: []affectedRange{r("9.0")}, Symbols: []string{"O.x"}},
+		{Coordinate: "g:a", AffectedRanges: []affectedRange{r("1.6")}, Symbols: []string{"A.x", "A.y"}},
+		{Coordinate: "g:bare"},
+		{Coordinate: "g:bare", AffectedRanges: []affectedRange{r("2.0")}, Symbols: []string{"B.x"}},
+	}
+	got, ok := affectedPackageNamed(pkgs, "", "g:a")
+	if !ok || !slices.Equal(got.AffectedRanges, []affectedRange{r("1.2"), r("1.6")}) || !slices.Equal(got.Symbols, []string{"A.x", "A.y"}) {
+		t.Errorf("g:a = %+v, %v; want both entries' ranges and symbols", got, ok)
+	}
+	if got, ok := affectedPackageNamed(pkgs, "", "g:bare"); !ok || got.AffectedRanges != nil || got.Symbols != nil {
+		t.Errorf("g:bare = %+v, %v; want ranges and symbols unknown", got, ok)
+	}
+	if _, ok := affectedPackageNamed(pkgs, "", "g:none"); ok {
+		t.Error("g:none matched")
+	}
+	// The merge must not write into the advisory's own entries, even where a slice has room to grow.
+	roomy := append(make([]affectedRange, 0, 4), r("1.2"))
+	shared := []advisoryAffectedPackage{{Coordinate: "g:a", AffectedRanges: roomy}, {Coordinate: "g:a", AffectedRanges: []affectedRange{r("1.6")}}}
+	affectedPackageNamed(shared, "", "g:a")
+	if spare := roomy[:2]; spare[1] != (affectedRange{}) {
+		t.Errorf("input entry's backing array written: %+v", spare)
 	}
 }

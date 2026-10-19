@@ -25,7 +25,9 @@ func runPypiDisqual(t *testing.T, resolvedVersion, upper string) DisqualResult {
 		"trust_tier":      "first_party", // curated-corpus provenance intake would stamp (inv.5 gate)
 	})
 	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{
-		"resolved_version": resolvedVersion,
+		"resolved_version":  resolvedVersion,
+		"resolved_versions": []string{resolvedVersion},
+		"versions_complete": true,
 	})
 	return runDisqual(t, store, caseID)
 }

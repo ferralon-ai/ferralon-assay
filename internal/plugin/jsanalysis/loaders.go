@@ -58,7 +58,9 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 
 // requireUse records one occurrence of a require-like name whose identifier ends at next.
 // A call loads its argument; `.resolve` only computes a path. Any other use hands the
-// loader on, so the module can load targets this lane never sees.
+// loader on, so the module can load targets this lane never sees. Declaring the name
+// (a parameter or `function require(...)`) and testing it hand nothing on: every call
+// through the declared name is judged where it occurs.
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	p := skipSpace(clean, next)
 	call := p < len(clean) && clean[p] == '('
@@ -66,6 +68,11 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
+		return
+	case w == "function": // `function require(...)` declares a parameter list, not a call
+		return
+	}
+	if !call && (declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
 		return
 	}
 	switch {
@@ -145,20 +152,172 @@ func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
 	p := skipSpace(clean, next)
 	switch {
 	case p < len(clean) && clean[p] == '(':
-	case p < len(clean) && clean[p] == '.':
-		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); w {
+	case optionalCall(clean, p):
+	case p < len(clean) && clean[p] == '.', optionalDot(clean, p):
+		// call, apply and bind are Function.prototype methods every function shares; only
+		// calling one with Function as its receiver reaches the constructor. A chain or a
+		// value use (`Function.call.bind(f)`, `Function.bind || polyfill`) calls something else.
+		q := p + 1
+		if clean[p] == '?' {
+			q = p + 2
+		}
+		w, e := peekWord(clean, skipSpace(clean, q))
+		switch w {
 		case "call", "apply", "bind":
 		default:
+			return
+		}
+		if c := skipSpace(clean, e); !(c < len(clean) && clean[c] == '(') && !optionalCall(clean, c) {
 			return
 		}
 	default:
 		w, _ := wordBefore(clean, b)
 		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
-		if w != "new" && !assigned {
+		if w != "new" && !assigned && !escapesAsValue(clean, b, p) {
 			return
 		}
 	}
 	mb.evaluated = true
+}
+
+// optionalCall reports whether `?.(` starts at p.
+func optionalCall(clean []rune, p int) bool {
+	return optionalDot(clean, p) && p+2 < len(clean) && clean[p+2] == '('
+}
+
+// optionalDot reports whether `?.` starts at p.
+func optionalDot(clean []rune, p int) bool {
+	return p+1 < len(clean) && clean[p] == '?' && clean[p+1] == '.'
+}
+
+// escapesAsValue reports whether a value whose previous token ends at b and whose next
+// token starts at p is handed on: a call argument or array element, a return or yield
+// value, an arrow body, or an operand of ||, && or ?? (which can yield it), or the
+// value of a ternary branch after '?'. An equality test after it yields a boolean.
+func escapesAsValue(clean []rune, b, p int) bool {
+	if p+1 < len(clean) && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=' {
+		return false
+	}
+	if b < 0 {
+		return false
+	}
+	switch clean[b] {
+	case '(', ',', '[':
+		return true
+	case '?':
+		return true // ternary branch or ??; `?.` cannot precede an identifier
+	case '|', '&':
+		return b >= 1 && clean[b-1] == clean[b]
+	case '>':
+		return b >= 1 && clean[b-1] == '='
+	}
+	switch w, _ := wordBefore(clean, b); w {
+	case "return", "yield", "await":
+		return true
+	}
+	return false
+}
+
+// maxParamScan bounds the scan for the bracket enclosing a parameter; a list longer than
+// this is not recognised as one, which keeps the name flagged.
+const maxParamScan = 4096
+
+// declaredParam reports whether the identifier spanning [i, next) is a formal parameter:
+// a lone arrow parameter (`require => ...`), or a name directly inside the parentheses of
+// a function (`function [name](...)`) or arrow (`(...) =>`) parameter list. Destructured
+// and defaulted-into names are not: only a name the list itself binds.
+func declaredParam(clean []rune, i, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	if p+1 < n && clean[p] == '=' && clean[p+1] == '>' {
+		return true
+	}
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || (clean[b] != '(' && clean[b] != ',') {
+		return false
+	}
+	if p >= n || (clean[p] != ',' && clean[p] != ')' && !(clean[p] == '=' && p+1 < n && clean[p+1] != '=' && clean[p+1] != '>')) {
+		return false
+	}
+	open := b
+	for depth := 0; clean[open] != '(' || depth > 0; {
+		switch clean[open] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return false // directly inside an array or object, not a parameter list
+			}
+			depth--
+		}
+		open--
+		if open < 0 || b-open > maxParamScan {
+			return false
+		}
+	}
+	end := open
+	for depth := 0; ; {
+		switch clean[end] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+		if depth == 0 {
+			break
+		}
+		end++
+		if end >= n || end-open > maxParamScan {
+			return false
+		}
+	}
+	if a := skipSpace(clean, end+1); a+1 < n && clean[a] == '=' && clean[a+1] == '>' {
+		return true
+	}
+	q := skipSpaceBack(clean, open-1)
+	if w, s := wordBefore(clean, q); w != "" && w != "function" {
+		q = skipSpaceBack(clean, s-1) // the function's name
+	}
+	if q >= 0 && clean[q] == '*' {
+		q = skipSpaceBack(clean, q-1)
+	}
+	w, _ := wordBefore(clean, q)
+	return w == "function"
+}
+
+// loaderTested reports whether the require-like name at [i, next), with any plain member
+// chain after it (`require.main`), is only tested: the operand of !, ==, ===, != or !==,
+// or the left operand of && or of a ternary. A test yields a boolean or the other
+// operand, never the loader.
+func loaderTested(clean []rune, i, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	for p < n && clean[p] == '.' {
+		w, e := peekWord(clean, skipSpace(clean, p+1))
+		if w == "" {
+			return false
+		}
+		p = skipSpace(clean, e)
+	}
+	if p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '.' || clean[p] == '_') {
+		return false // called, indexed or tagged: the chain is used, not tested
+	}
+	switch {
+	case p+1 < n && clean[p] == '&' && clean[p+1] == '&' && (p+2 >= n || clean[p+2] != '='):
+		return true
+	case p < n && clean[p] == '?' && (p+1 >= n || (clean[p+1] != '.' && clean[p+1] != '?')):
+		return true
+	case p+1 < n && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=':
+		return true
+	}
+	b := skipSpaceBack(clean, i-1)
+	switch {
+	case b >= 0 && clean[b] == '!':
+		return true
+	case b >= 1 && clean[b] == '=' && (clean[b-1] == '=' || clean[b-1] == '!'):
+		return true
+	}
+	return false
 }
 
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of

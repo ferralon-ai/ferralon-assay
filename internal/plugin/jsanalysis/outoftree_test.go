@@ -248,6 +248,111 @@ load(process.argv);
 const F = Function;
 function load(s) { return F('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode}, {"require.call", map[string]string{"app.js": `
+function load(s, n) { return require.call(null, n).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module.require with a variable", map[string]string{"app.js": `
+function load(s, n) { return module.require(n).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module.require tested then called with a variable", map[string]string{"app.js": `
+function load(s, n) { return (module.require && module.require(n)).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require tested then handed on", map[string]string{"app.js": `
+const r = typeof require === 'function' && require;
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require as a ternary branch", map[string]string{"app.js": `
+const r = require.main === module ? require : null;
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require as a parameter default", map[string]string{"app.js": `
+function load(s, r = require) { return r('json5').parse(s); }
+load(process.argv);
+function main(a) { return load(a); }
+main(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require parameter called with a variable", map[string]string{"app.js": `
+function load(s, require, n) { return require(n).parse(s); }
+load(process.argv, null, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"arrow require parameter called with a variable", map[string]string{"app.js": `
+const load = (s, require, n) => require(n).parse(s);
+load(process.argv, null, 'json5');
+function main(a) { return load(a); }
+main(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"declared require called with a variable", map[string]string{"app.js": `
+function require(n) { return n; }
+function load(s, n) { return require(n).parse(s); }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require passed to a call in a parameter-shaped position", map[string]string{"app.js": `
+function load(s) { return s; }
+const r = wrap(require, load);
+function wrap(a, b) { return a('json5'); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require destructured from module", map[string]string{"app.js": `
+const { require: r } = module;
+function load(s) { return r('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require in an object literal", map[string]string{"app.js": `
+const o = { require: require };
+function load(s) { return o.require('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"indirect eval", map[string]string{"app.js": `
+function load(s) { return (0, eval)('require')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call constructs", map[string]string{"app.js": `
+function load(s) { return Function.call(null, 'm', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.apply constructs", map[string]string{"app.js": `
+function load(s) { return Function.apply(null, ['m', 'return require(m)'])('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.bind constructs", map[string]string{"app.js": `
+function load(s) { return Function.bind(null, 'm', 'return require(m)')()('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function optional call", map[string]string{"app.js": `
+function load(s) { return Function?.('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function passed as an argument", map[string]string{"app.js": `
+function load(s) { return Reflect.construct(Function, ['m', 'return require(m)'])('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function as call receiver argument", map[string]string{"app.js": `
+function load(s) { return Function.call.call(Function, null, 'm', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function in an array", map[string]string{"app.js": `
+function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returned", map[string]string{"app.js": `
+function ctor() { return Function; }
+function load(s) { return ctor()('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function behind ||", map[string]string{"app.js": `
+const F = globalThis.F || Function;
+function load(s) { return F('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function as a ternary branch", map[string]string{"app.js": `
+const F = process.env.X ? Function : null;
+function load(s) { return F('m', 'return require(m)')('json5').parse(s); }
+load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
@@ -302,6 +407,48 @@ load(process.argv);
 	}
 	if hasDidNotRun(res.Partiality) {
 		t.Errorf("in-tree only program declared %v; want inherent reasons only", res.Partiality.Reasons)
+	}
+}
+
+// TestCallGraph_LoaderShapesThatHandNothingOn is the control for the shapes above: a
+// parameter or function named require, a test of a loader, and Function.prototype's
+// call/apply/bind reached as a chain or a value load nothing this lane does not read.
+func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
+	cases := []struct{ name, app string }{
+		{"browserify module wrapper", "var mods = {1: [function (require, module, exports) { module.exports = require('./util'); }, {}]};"},
+		{"generator wrapper", "var mods = [function* (exports, require) { yield require('./util'); }];"},
+		{"arrow parameters", "const wrap = (require, module) => require('./util');"},
+		{"lone arrow parameter", "const wrap = require => require('./util');"},
+		{"function named require", "function require(name) { return name; }"},
+		{"module.require tested before a literal call", "const freeModule = typeof module == 'object' && module;\nconst types = freeModule && freeModule.require && freeModule.require('./util');"},
+		{"require.main compared", "if (require.main === module) { load(process.argv); }"},
+		{"require negated", "if (!require) { load(process.argv); }"},
+		{"require compared on the right", "if (undefined !== require) { load(process.argv); }"},
+		{"require as a ternary test", "const t = require ? 1 : 0;"},
+		{"Function.call bound", "const has = Function.call.bind(Object.prototype.hasOwnProperty);"},
+		{"Function.bind applied", "function make(Parent, args) { return new (Function.bind.apply(Parent, args))(); }"},
+		{"Function.call applied", "function push() { return Function.call.apply(Array.prototype.push, arguments); }"},
+		{"Function.bind as a polyfill fallback", "const bind = Function.bind || function bind(that) { return that; };"},
+		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
+		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeProgram(t, map[string]string{
+				"util.js": "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
+				"app.js":  "const { trim } = require('./util');\n" + tc.app + "\nfunction load(s) { return trim(s); }\nload(process.argv);\n",
+			})
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if len(res.Edges) == 0 {
+				t.Fatalf("control must have edges; got none")
+			}
+			if hasDidNotRun(res.Partiality) {
+				t.Errorf("declared %v; want inherent reasons only", res.Partiality.Reasons)
+			}
+		})
 	}
 }
 

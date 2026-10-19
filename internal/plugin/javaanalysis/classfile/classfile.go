@@ -39,8 +39,19 @@ const (
 
 // Method access flags (JVMS §4.6) we care about for graph soundness.
 const (
+	accPublic   = 0x0001
+	accPrivate  = 0x0002
+	accStatic   = 0x0008
 	accNative   = 0x0100
 	accAbstract = 0x0400
+)
+
+// Class access flags (JVMS §4.1). An interface always carries ACC_ABSTRACT too; both
+// are checked so a malformed interface without it is still never treated as concrete.
+const (
+	accClassPublic    = 0x0001
+	accClassInterface = 0x0200
+	accClassAbstract  = 0x0400
 )
 
 // MethodRef is a resolved call target (or declared method), named the way the JVM
@@ -98,13 +109,25 @@ type Method struct {
 	Ref      MethodRef
 	Native   bool
 	Abstract bool
-	Edges    []Edge
+	// Static and Private are the ACC_STATIC / ACC_PRIVATE flags: neither kind of
+	// method can be selected by virtual dispatch, so neither can override another.
+	Static  bool
+	Private bool
+	// Public is ACC_PUBLIC: the platform's by-name instantiation (ServiceLoader and
+	// the factory lookups) needs a public constructor or provider method.
+	Public bool
+	Edges  []Edge
 	// InitTriggers are the internal names of classes whose static initializer
-	// (<clinit>) this method's bytecode triggers — via new / getstatic / putstatic /
-	// invokestatic (JVMS §5.5). <clinit> is never an explicit invoke target, so a
-	// caller building a call graph must add an edge into each triggered class's
-	// <clinit> or a sink reachable only through static initialization is invisible.
+	// (<clinit>) this method's bytecode triggers — via new / invokestatic (JVMS §5.5).
+	// <clinit> is never an explicit invoke target, so a caller building a call graph
+	// must add an edge into each triggered class's <clinit> or a sink reachable only
+	// through static initialization is invisible.
 	InitTriggers []string
+	// StaticFieldRefs are the fields this method's getstatic / putstatic name. Each
+	// initializes the class or interface that declares the resolved field (JVMS
+	// §5.4.3.2, §5.5), which may be a superinterface or superclass of the named
+	// Owner, so the caller resolves the declarer over the loaded hierarchy.
+	StaticFieldRefs []FieldRef
 	// Annotations are the method's RuntimeVisibleAnnotations (JVMS §4.7.16), decoded
 	// to their type descriptors plus string-valued element pairs. Populated only when
 	// the attribute is present; framework-ingress detection (e.g. Spring @GetMapping)
@@ -116,6 +139,12 @@ type Method struct {
 	// is present; constructor/@Bean-method injection reads the per-parameter @Qualifier/
 	// @Value. Never a source of edges — advisory metadata only.
 	ParameterAnnotations [][]Annotation
+}
+
+// FieldRef is a symbolic field reference: the class the code names, plus the field's
+// name and descriptor.
+type FieldRef struct {
+	Owner, Name, Descriptor string
 }
 
 // Field is a declared field with the annotation surface dependency-injection
@@ -135,7 +164,12 @@ type Class struct {
 	Name       string
 	Super      string
 	Interfaces []string
-	Methods    []Method
+	// Abstract is set for an abstract class or an interface: no object has exactly
+	// this class at runtime.
+	Abstract bool
+	// Public is ACC_PUBLIC on the class.
+	Public  bool
+	Methods []Method
 	// Fields are the class's declared fields, retained for their annotation + declared
 	// type only (a field is never a call-graph node). Populated for every class; a
 	// field with no annotations still appears so the injection-point type is available.
@@ -302,13 +336,22 @@ func (cp constPool) className(idx uint16) string {
 	return ""
 }
 
-// fieldOwner resolves a Fieldref constant to the internal name of the class that
-// declares the field — the class whose <clinit> a getstatic/putstatic triggers.
-func (cp constPool) fieldOwner(idx uint16) string {
-	if e, ok := cp.at(idx); ok && e.tag == cpFieldref {
-		return cp.className(e.ref1)
+// fieldRef resolves a Fieldref constant to its symbolic reference. Its Owner is the
+// class the code names, which may inherit the field rather than declare it.
+func (cp constPool) fieldRef(idx uint16) (FieldRef, bool) {
+	e, ok := cp.at(idx)
+	if !ok || e.tag != cpFieldref {
+		return FieldRef{}, false
 	}
-	return ""
+	nt, ok := cp.at(e.ref2)
+	if !ok || nt.tag != cpNameAndType {
+		return FieldRef{}, false
+	}
+	owner := cp.className(e.ref1)
+	if owner == "" {
+		return FieldRef{}, false
+	}
+	return FieldRef{Owner: owner, Name: cp.utf8(nt.ref1), Descriptor: cp.utf8(nt.ref2)}, true
 }
 
 // ParseClass parses one .class file into a Class with per-method call edges. It
@@ -326,7 +369,7 @@ func ParseClass(data []byte) (Class, error) {
 		return Class{}, err
 	}
 
-	r.u2() // access_flags
+	classAcc := r.u2()
 	thisClass := cp.className(r.u2())
 	superClass := cp.className(r.u2())
 
@@ -381,6 +424,9 @@ func ParseClass(data []byte) (Class, error) {
 			Ref:      MethodRef{Owner: thisClass, Name: name, Descriptor: desc},
 			Native:   acc&accNative != 0,
 			Abstract: acc&accAbstract != 0,
+			Static:   acc&accStatic != 0,
+			Private:  acc&accPrivate != 0,
+			Public:   acc&accPublic != 0,
 		}
 		attrCount := int(r.u2())
 		for a := 0; a < attrCount; a++ {
@@ -391,12 +437,13 @@ func ParseClass(data []byte) (Class, error) {
 				return Class{}, r.err
 			}
 			if attrName == "Code" {
-				edges, triggers, err := parseCode(body, cp)
+				edges, triggers, fieldRefs, err := parseCode(body, cp)
 				if err != nil {
 					return Class{}, fmt.Errorf("classfile: %s%s Code: %w", name, desc, err)
 				}
 				m.Edges = edges
 				m.InitTriggers = triggers
+				m.StaticFieldRefs = fieldRefs
 			}
 			if attrName == attrRuntimeVisibleAnnotations {
 				annos, err := parseAnnotations(cp, body)
@@ -435,7 +482,7 @@ func ParseClass(data []byte) (Class, error) {
 		return Class{}, err
 	}
 
-	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Fields: fields, Methods: methods, Annotations: classAnnos}, nil
+	return Class{Name: thisClass, Super: superClass, Interfaces: ifaces, Abstract: classAcc&(accClassInterface|accClassAbstract) != 0, Public: classAcc&accClassPublic != 0, Fields: fields, Methods: methods, Annotations: classAnnos}, nil
 }
 
 // parseParameterAnnotations decodes a RuntimeVisibleParameterAnnotations attribute

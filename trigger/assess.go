@@ -165,6 +165,20 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
+		// An advisory whose package no module of the build holds rests on a search of every
+		// module's source rather than on a path or a symbol inside a package. It still needs every
+		// step to have run: a run that loads code from outside the build list (plugin_load) can
+		// hold the advisory's code with no module declaring it.
+		if !undetermined {
+			if detail, ok := outsideBuildGrounds(store, assessmentID, pkg, mods); ok {
+				f = report.AdvisoryFinding{
+					Advisory: adv,
+					Verdict:  report.VerdictNotExploitable,
+					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
+				}
+				break
+			}
+		}
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
 			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
@@ -941,8 +955,16 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 			}
 		}
 	}
+	// A symbol the build's target of the package does not define was searched for and is not there.
+	absent := false
+	if res, err := pipeline.VulnerableSymbols(store, assessmentID); err == nil {
+		absent = len(targetConditionalAbsent(pipeline.AdvisorySymbols(store, assessmentID), pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)) > 0
+	}
 	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
+		if absent && reason == plugin.PartialReasonAdvisorySymbolUnresolved {
+			continue
+		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
 			didNotRun = true
 			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer

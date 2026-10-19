@@ -301,8 +301,9 @@ func TestReachability_Fixture_UnreachableIsCompleteAndEmpty(t *testing.T) {
 	main := newKClassBuilder()
 	mainCode := main.invokeStatic("com/example/VulnKt", "other", "()V")
 	mainCode = append(mainCode, opReturn)
-	main.addMethod("main", "()V", mainCode)
+	main.addMethod("main", mainStringsDesc, mainCode)
 	writeClassFixture(t, dir, "com/example/MainKt", main.build("com/example/MainKt", "java/lang/Object"))
+	nameLaunchEntry(t, dir, "com.example.MainKt")
 
 	vuln := newKClassBuilder()
 	vuln.addMethod("other", "()V", []byte{opReturn})

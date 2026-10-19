@@ -434,9 +434,10 @@ func TestResolveVersions_ModuleOutsideTheBuildDirectory(t *testing.T) {
 }
 
 // TestResolveVersions_ParentOutsideTheTree: a module inherits every dependency of its parent that it
-// doesn't declare itself. A parent Maven reads from a repository is one this reader never sees, so a
-// module that doesn't declare the coordinate and inherits from one withholds the Match. Maven takes
-// the parent from the tree only when the POM at its relativePath carries the parent's coordinates.
+// doesn't declare itself. A parent Maven reads from a repository is read from the local caches; one
+// they don't hold, or can't vouch for, withholds the Match of a module that doesn't declare the
+// coordinate. Maven takes the parent from the tree only when the POM at its relativePath carries the
+// parent's coordinates.
 func TestResolveVersions_ParentOutsideTheTree(t *testing.T) {
 	parent := func(g, a, v, extra string) string {
 		return `<parent><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + v + `</version>` + extra + `</parent>`
@@ -450,42 +451,130 @@ func TestResolveVersions_ParentOutsideTheTree(t *testing.T) {
 		return `<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + v + `</version></dependency>`
 	}
 	other := `<dependency><groupId>org.other</groupId><artifactId>thing</artifactId><version>2.1.3</version></dependency>`
+	// cached is a POM in a local repository: its path under the repository root, and its body.
+	cached := func(g, a, v, parent, deps string) map[string]string {
+		path := strings.ReplaceAll(g, ".", "/") + "/" + a + "/" + v + "/" + a + "-" + v + ".pom"
+		return map[string]string{path: `<project><modelVersion>4.0.0</modelVersion>` + parent + `<groupId>` + g + `</groupId><artifactId>` + a +
+			`</artifactId><version>` + v + `</version><packaging>pom</packaging><dependencies>` + deps + `</dependencies></project>`}
+	}
+	merge := func(ms ...map[string]string) map[string]string {
+		out := map[string]string{}
+		for _, m := range ms {
+			for k, v := range m {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	grand := parent("com.corp", "grand", "3", "")
+	corpEmpty := cached("com.corp", "corp-parent", "7", "", "")
 	tests := []struct {
 		name  string
 		files map[string]string
-		want  string
+		// repo is the user's local repository (~/.m2/repository), by path under it, or under the home
+		// directory with a "~/" prefix.
+		repo map[string]string
+		want string
 		// complete is MatchesComplete: every copy the build can install was read.
 		complete bool
 	}{
-		{"remote parent, no dependencies", map[string]string{"b/pom.xml": module(corp, "")}, "", false},
-		{"remote parent, other dependencies only", map[string]string{"b/pom.xml": module(corp, other)}, "", false},
-		{"remote parent, module declares the same version", map[string]string{"b/pom.xml": module(corp, widget("1.4.0"))}, "1.4.0", true},
-		{"remote parent, module declares another version", map[string]string{"b/pom.xml": module(corp, widget("1.3.0"))}, "", true},
-		{"parent in the tree", map[string]string{"b/pom.xml": module(root, "")}, "1.4.0", true},
+		{"remote parent in the cache, no dependencies", map[string]string{"b/pom.xml": module(corp, "")}, corpEmpty, "1.4.0", true},
+		{"remote parent in the cache declares the same version", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", "", widget("1.4.0")), "1.4.0", false},
+		{"remote parent in the cache declares another version", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", "", widget("1.3.0")), "", false},
+		{"remote parent in the cache declares an interpolated version", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", "", widget("${widget.version}")), "", false},
+		{"remote parent in the cache declares other dependencies only", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", "", other), "", false},
+		{"remote parent in the cache isn't modeled", map[string]string{"b/pom.xml": module(corp, "")},
+			map[string]string{"com/corp/corp-parent/7/corp-parent-7.pom": `<project><groupId>com.corp</groupId><artifactId>corp-parent</artifactId><version>7</version><profiles><profile><id>p</id></profile></profiles></project>`},
+			"", false},
+		{"remote parent in the cache doesn't parse", map[string]string{"b/pom.xml": module(corp, "")},
+			map[string]string{"com/corp/corp-parent/7/corp-parent-7.pom": `<project><groupId>com.corp`}, "", false},
+		{"grandparent in the cache declares another version", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", grand, ""), cached("com.corp", "grand", "3", "", widget("1.3.0"))), "", false},
+		{"grandparent missing from the cache", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", grand, ""), "", false},
+		{"nearest ancestor's declaration wins", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", grand, widget("1.4.0")), cached("com.corp", "grand", "3", "", widget("1.3.0"))), "1.4.0", false},
+		{"grandparent declares a classifier variant", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", grand, widget("1.4.0")), cached("com.corp", "grand", "3", "",
+				`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.0</version><classifier>jdk8</classifier></dependency>`)), "", false},
+		{"grandparent declares a test-jar", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", grand, widget("1.4.0")), cached("com.corp", "grand", "3", "",
+				`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.0</version><type>test-jar</type></dependency>`)), "", false},
+		{"grandparent declares an explicit jar type: nearest still wins", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", grand, widget("1.4.0")), cached("com.corp", "grand", "3", "",
+				`<dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>1.3.0</version><type>jar</type></dependency>`)), "1.4.0", false},
+		{"remote parent is a SNAPSHOT the cache holds", map[string]string{"b/pom.xml": module(parent("com.corp", "corp-parent", "7-SNAPSHOT", ""), "")},
+			cached("com.corp", "corp-parent", "7-SNAPSHOT", "", widget("1.4.0")), "", false},
+		{"remote parent is a hyphenless lower-case snapshot the cache holds", map[string]string{"b/pom.xml": module(parent("com.corp", "corp-parent", "7.snapshot", ""), "")},
+			cached("com.corp", "corp-parent", "7.snapshot", "", widget("1.4.0")), "", false},
+		{"remote parent is a timestamped snapshot the cache holds", map[string]string{"b/pom.xml": module(parent("com.corp", "corp-parent", "7-20261019.120000-3", ""), "")},
+			cached("com.corp", "corp-parent", "7-20261019.120000-3", "", widget("1.4.0")), "", false},
+		{"grandparent is a SNAPSHOT the cache holds", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(cached("com.corp", "corp-parent", "7", parent("com.corp", "grand", "3-SNAPSHOT", ""), widget("1.4.0")), cached("com.corp", "grand", "3-SNAPSHOT", "", "")), "", false},
+		{"remote parent in the cache names itself as its parent", map[string]string{"b/pom.xml": module(corp, "")},
+			cached("com.corp", "corp-parent", "7", corp, ""), "", false},
+		{"remote parent in the project-local cache, no dependencies", map[string]string{
+			"b/pom.xml": module(corp, ""), ".m2/repository/com/corp/corp-parent/7/corp-parent-7.pom": corpEmpty["com/corp/corp-parent/7/corp-parent-7.pom"],
+		}, nil, "1.4.0", true},
+		{"remote parent copies in the two caches differ", map[string]string{
+			"b/pom.xml": module(corp, ""), ".m2/repository/com/corp/corp-parent/7/corp-parent-7.pom": corpEmpty["com/corp/corp-parent/7/corp-parent-7.pom"],
+		}, cached("com.corp", "corp-parent", "7", "", widget("1.4.0")), "", false},
+		{"remote parent copies in the Maven and Gradle caches differ", map[string]string{"b/pom.xml": module(corp, "")},
+			merge(corpEmpty, map[string]string{"~/.gradle/caches/modules-2/files-2.1/com.corp/corp-parent/7/0a1b/corp-parent-7.pom": `<project><groupId>com.corp</groupId><artifactId>corp-parent</artifactId><version>7</version><dependencies>` + widget("1.3.0") + `</dependencies></project>`}),
+			"", false},
+		{"parent version differs from the tree's, cache holds it", map[string]string{"b/pom.xml": module(parent("com.example", "root", "0.9.0", ""), "")},
+			cached("com.example", "root", "0.9.0", "", ""), "1.4.0", true},
+		{"relativePath outside the root carries the parent, cache holds it too", map[string]string{
+			"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath>../../outside/pom.xml</relativePath>`), ""),
+		}, cached("com.example", "root", "1.0.0", "", ""), "", false},
+		{"remote parent version is a range, cache holds a directory named for it", map[string]string{"b/pom.xml": module(parent("com.corp", "corp-parent", "[7,8)", ""), "")},
+			cached("com.corp", "corp-parent", "[7,8)", "", ""), "", false},
+		{"remote parent, no dependencies", map[string]string{"b/pom.xml": module(corp, "")}, nil, "", false},
+		{"remote parent, other dependencies only", map[string]string{"b/pom.xml": module(corp, other)}, nil, "", false},
+		{"remote parent, module declares the same version", map[string]string{"b/pom.xml": module(corp, widget("1.4.0"))}, nil, "1.4.0", true},
+		{"remote parent, module declares another version", map[string]string{"b/pom.xml": module(corp, widget("1.3.0"))}, nil, "", true},
+		{"parent in the tree", map[string]string{"b/pom.xml": module(root, "")}, nil, "1.4.0", true},
 		{"parent in the tree named by relativePath", map[string]string{
 			"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath>..</relativePath>`), ""),
-		}, "1.4.0", true},
-		{"empty relativePath", map[string]string{"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath/>`), "")}, "", false},
-		{"parent version differs from the tree's", map[string]string{"b/pom.xml": module(parent("com.example", "root", "0.9.0", ""), "")}, "", false},
+		}, nil, "1.4.0", true},
+		{"empty relativePath", map[string]string{"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath/>`), "")}, nil, "", false},
+		{"parent version differs from the tree's", map[string]string{"b/pom.xml": module(parent("com.example", "root", "0.9.0", ""), "")}, nil, "", false},
 		{"relativePath outside the root", map[string]string{
 			"b/pom.xml": module(parent("com.example", "root", "1.0.0", `<relativePath>../../outside/pom.xml</relativePath>`), ""),
-		}, "", false},
+		}, nil, "", false},
 		{"parent in the tree inherits from a remote parent", map[string]string{
 			"b/pom.xml":   module(parent("com.example", "mid", "1.0.0", `<relativePath>../mid</relativePath>`), ""),
 			"mid/pom.xml": `<project><modelVersion>4.0.0</modelVersion>` + corp + `<groupId>com.example</groupId><artifactId>mid</artifactId><version>1.0.0</version><packaging>pom</packaging></project>`,
-		}, "", false},
+		}, nil, "", false},
 		// Maven 4 infers a parent with no coordinates from its relativePath.
 		{"parent with no coordinates, relativePath outside the root", map[string]string{
 			"b/pom.xml": module(`<parent><relativePath>../../outside/pom.xml</relativePath></parent>`, ""),
-		}, "", false},
-		{"parent with no coordinates, empty relativePath", map[string]string{"b/pom.xml": module(`<parent><relativePath/></parent>`, "")}, "", false},
-		{"parent with no coordinates, in the tree", map[string]string{"b/pom.xml": module(`<parent/>`, "")}, "1.4.0", true},
+		}, nil, "", false},
+		{"parent with no coordinates, empty relativePath", map[string]string{"b/pom.xml": module(`<parent><relativePath/></parent>`, "")}, nil, "", false},
+		{"parent with no coordinates, in the tree", map[string]string{"b/pom.xml": module(`<parent/>`, "")}, nil, "1.4.0", true},
 		{"parent with no version, in the tree", map[string]string{
 			"b/pom.xml": module(`<parent><groupId>com.example</groupId><artifactId>root</artifactId></parent>`, ""),
-		}, "1.4.0", true},
+		}, nil, "1.4.0", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			home := isolateHome(t)
+			for k, v := range tc.repo {
+				path := filepath.Join(home, ".m2", "repository", filepath.FromSlash(k))
+				if rest, ok := strings.CutPrefix(k, "~/"); ok {
+					path = filepath.Join(home, filepath.FromSlash(rest))
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(v), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			files := map[string]string{"pom.xml": reactorOf("a", "b"), "a/pom.xml": widgetPOM("1.4.0", root)}
 			for k, v := range tc.files {
 				files[k] = v

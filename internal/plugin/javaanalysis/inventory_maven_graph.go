@@ -146,6 +146,11 @@ func resolveModuleGraph(pom *mvnPOM, em effectiveModel, alt profileVersions, mod
 		}
 
 		version := javaTrim(it.dep.Version)
+		if mv, ok := em.managed[ga]; ok && it.depth > 0 {
+			// The module's dependencyManagement (imported BOMs included) overrides the version a
+			// transitive POM declares; only a direct declaration's own version beats it.
+			version = javaTrim(mv)
+		}
 		if it.depth > 0 && it.dep.unresolvedBy == "" && (alt.anyVersion || alt.reversioned(ga, version)) {
 			it.dep.unresolvedBy = reasonProfileActivation
 		}

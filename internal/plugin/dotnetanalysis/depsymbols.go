@@ -30,7 +30,7 @@ const partialReasonNoDependencyArtifact = plugin.PartialReasonToolFailure + ":no
 
 // partialReasonAdvisorySymbolUnresolved: the package's assemblies were read, but an advisory
 // symbol named no method in them. Absence never refutes.
-const partialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
+const partialReasonAdvisorySymbolUnresolved = plugin.PartialReasonAdvisorySymbolUnresolved
 
 // partialReasonAdvisorySymbolAmbiguous: a shortened advisory symbol named methods of more
 // than one qualified type in the package, so which one is vulnerable is unknown.

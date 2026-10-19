@@ -32,13 +32,17 @@ import (
 // that is not "groupId:artifactId", or any part validGAV rejects — a malformed input
 // never yields a path that could match an unrelated file.
 func mavenJarRelPath(coordinate, version string) (string, bool) {
+	return mavenArtifactRelPath(coordinate, version, "jar")
+}
+
+// mavenArtifactRelPath is mavenJarRelPath for the artifact file with extension ext ("jar", "pom").
+func mavenArtifactRelPath(coordinate, version, ext string) (string, bool) {
 	group, artifact, ok := splitCoordinate(coordinate)
 	if !ok || !validGAV(group, artifact, version) {
 		return "", false
 	}
 	groupPath := strings.ReplaceAll(group, ".", "/")
-	jar := artifact + "-" + version + ".jar"
-	return filepath.Join(groupPath, artifact, version, jar), true
+	return filepath.Join(groupPath, artifact, version, artifact+"-"+version+"."+ext), true
 }
 
 // splitCoordinate splits "groupId:artifactId" into its parts. ok is false unless
@@ -184,7 +188,18 @@ type artifactJar struct {
 // so the caller parses exactly what was checked: when copies differ, or one cannot be read or
 // leaves its cache, any of them could be the bytes the build ran, so none is offered.
 func locateArtifactJar(buildDir, coordinate, version string) (artifactJar, jarLookup) {
-	rel, ok := mavenJarRelPath(coordinate, version)
+	return locateArtifact(buildDir, coordinate, version, "jar")
+}
+
+// locateArtifactPOM finds an artifact's POM in the build's local caches, under the same rules as
+// locateArtifactJar.
+func locateArtifactPOM(buildDir, coordinate, version string) (artifactJar, jarLookup) {
+	return locateArtifact(buildDir, coordinate, version, "pom")
+}
+
+// locateArtifact is locateArtifactJar for the artifact file with extension ext.
+func locateArtifact(buildDir, coordinate, version, ext string) (artifactJar, jarLookup) {
+	rel, ok := mavenArtifactRelPath(coordinate, version, ext)
 	if !ok {
 		return artifactJar{}, jarUnreadable
 	}
@@ -203,7 +218,7 @@ func locateArtifactJar(buildDir, coordinate, version string) (artifactJar, jarLo
 			escaped = true
 		}
 	}
-	gradle, gradleEscaped := gradleJarCopies(buildDir, gradleCacheRoots(buildDir), group, artifact, version)
+	gradle, gradleEscaped := gradleArtifactCopies(buildDir, gradleCacheRoots(buildDir), group, artifact, version, ext)
 	copies = append(copies, gradle...)
 	if escaped || gradleEscaped {
 		return artifactJar{}, jarUnreadable
@@ -231,16 +246,17 @@ func locateArtifactJar(buildDir, coordinate, version string) (artifactJar, jarLo
 	return artifactJar{path: copies[0], data: first}, jarFound
 }
 
-// gradleJarCopies lists every copy of the JAR in the Gradle module cache layout:
+// gradleArtifactCopies lists every copy of the artifact file with extension ext in the Gradle
+// module cache layout:
 //
-//	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.jar
+//	<cache>/<group>/<artifact>/<version>/<sha1>/<artifact>-<version>.<ext>
 //
 // Gradle keeps the group dotted and interposes a content-hash directory, so every child of
 // the version directory is checked, in sorted order. escaped is true when any copy resolves
 // outside its cache root or cannot be read, when a version directory cannot be listed, or when
 // a cache root inside the build directory resolves outside it.
-func gradleJarCopies(buildDir string, roots []string, group, artifact, version string) (copies []string, escaped bool) {
-	jar := artifact + "-" + version + ".jar"
+func gradleArtifactCopies(buildDir string, roots []string, group, artifact, version, ext string) (copies []string, escaped bool) {
+	jar := artifact + "-" + version + "." + ext
 	for _, root := range roots {
 		if rootLeavesCheckout(buildDir, root) {
 			escaped = true

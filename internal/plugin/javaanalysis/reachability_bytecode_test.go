@@ -1052,6 +1052,40 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 		{"unresolved property: launch_entry_unmapped", func(a *appFixture) {
 			a.editPOM(pomMainClass, `<mainClass>${start.class}</mainClass>`)
 		}, reasonLaunchEntryUnmapped},
+		{"profile overrides a property mainClass: launch_entry_profile_property", func(a *appFixture) {
+			a.propertyMain()
+			a.verticle()
+			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("app.main", "io.vertx.core.Launcher"))
+		}, reasonLaunchEntryProfileProperty},
+		{"profile sets an unrelated property: searched", func(a *appFixture) {
+			a.propertyMain()
+			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
+		}, ""},
+		{"parent profile sets the mainClass property: launch_entry_profile_property", func(a *appFixture) {
+			a.propertyMain()
+			a.verticle()
+			a.cachedParent(profileSetting("app.main", "io.vertx.core.Launcher"))
+		}, reasonLaunchEntryProfileProperty},
+		{"read parent whose profile sets an unrelated property: searched", func(a *appFixture) {
+			a.propertyMain()
+			a.cachedParent(profileSetting("deploy.env", "prod"))
+		}, ""},
+		{"unread parent under a property mainClass: launch_entry_profile_property", func(a *appFixture) {
+			a.propertyMain()
+			a.editPOM(`<modelVersion>4.0.0</modelVersion>`, `<modelVersion>4.0.0</modelVersion>`+
+				`<parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>`)
+		}, reasonLaunchEntryProfileProperty},
+		{"literal mainClass under a read parent with no launch profile: searched", func(a *appFixture) {
+			a.cachedParent(profileSetting("deploy.env", "prod"))
+		}, ""},
+		{"profile configures a plugin's mainClass: launch_entry_profile_plugin", func(a *appFixture) {
+			a.verticle()
+			a.editPOM(`</dependencies>`, `</dependencies>`+profilePlugin("exec-maven-plugin", "io.vertx.core.Launcher"))
+		}, reasonLaunchEntryProfilePlugin},
+		{"parent profile configures a plugin's mainClass: launch_entry_profile_plugin", func(a *appFixture) {
+			a.verticle()
+			a.cachedParent(profilePlugin("maven-shade-plugin", "io.vertx.core.Launcher"))
+		}, reasonLaunchEntryProfilePlugin},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1074,6 +1108,51 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// propertyMain names the launch main through ${app.main}, set in the POM's own properties.
+func (a *appFixture) propertyMain() {
+	a.t.Helper()
+	a.editPOM(pomMainClass, `<mainClass>${app.main}</mainClass>`)
+	a.editPOM(`<dependencies>`, `<properties><app.main>com.acme.App</app.main></properties><dependencies>`)
+}
+
+// verticle writes a first-party MainVerticle whose start() calls the sink; no main reaches it,
+// so only a launcher the build names elsewhere (Vert.x's) would run it.
+func (a *appFixture) verticle() {
+	a.t.Helper()
+	a.source("src/main/java/com/acme/MainVerticle.java", "package com.acme;\npublic class MainVerticle { public void start() {} }\n")
+	a.class("target/classes", "com/acme/MainVerticle", func(b *cpb) []xmethod {
+		return []xmethod{{"start", "()V", accPublic, callFetch(b)}}
+	})
+}
+
+// cachedParent gives the app a parent POM, com.acme:parent:1.0.0, in the build-local cache
+// with the given profiles.
+func (a *appFixture) cachedParent(profiles string) {
+	a.t.Helper()
+	a.editPOM(`<modelVersion>4.0.0</modelVersion>`, `<modelVersion>4.0.0</modelVersion>`+
+		`<parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version></parent>`)
+	writeFileT(a.t, filepath.Join(a.build, ".m2", "repository", "com", "acme", "parent", "1.0.0", "parent-1.0.0.pom"), parentPOM(profiles))
+}
+
+func parentPOM(profiles string) string {
+	return `<project><modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>parent</artifactId><version>1.0.0</version><packaging>pom</packaging>
+  ` + profiles + `
+</project>`
+}
+
+// profileSetting is an activeByDefault profile that sets one property.
+func profileSetting(key, value string) string {
+	return `<profiles><profile><id>p</id><activation><activeByDefault>true</activeByDefault></activation>` +
+		`<properties><` + key + `>` + value + `</` + key + `></properties></profile></profiles>`
+}
+
+// profilePlugin is a profile that configures a plugin's mainClass.
+func profilePlugin(artifact, main string) string {
+	return `<profiles><profile><id>p</id><build><plugins><plugin><artifactId>` + artifact + `</artifactId>` +
+		`<configuration><mainClass>` + main + `</mainClass></configuration></plugin></plugins></build></profile></profiles>`
 }
 
 // callStatic is invokestatic owner.name()V; return.

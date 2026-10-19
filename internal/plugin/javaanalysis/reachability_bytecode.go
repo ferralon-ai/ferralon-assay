@@ -73,7 +73,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		scoped = append(scoped, fp.scoped()...)
 	}
 
-	entry := findLaunchEntry(fp, rc.class)
+	entry := findLaunchEntry(buildDir, fp, rc.class)
 	for _, r := range entry.reasons {
 		reasons[r] = true
 	}

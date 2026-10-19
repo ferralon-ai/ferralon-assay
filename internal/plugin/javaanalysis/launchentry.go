@@ -36,7 +36,10 @@ import (
 // Withheld, each with its reason: no named entry (launch_entry_unnamed); a named entry that
 // is not a first-party main, a dependency launcher such as Vert.x's (Main-Class outside the
 // build, a Main-Verticle attribute), an unresolved ${...}, or packaging other than jar
-// (launch_entry_unmapped); war packaging or a built .war (war_packaging); and a first-party
+// (launch_entry_unmapped); a ${...} entry whose property a <profile> sets, in the POM or any
+// POM it inherits from, or whose parent chain is not all read (launch_entry_profile_property);
+// a <profile> in that chain that names a launch class itself (launch_entry_profile_plugin); war
+// packaging or a built .war (war_packaging); and a first-party
 // class a container calls back without any call the search can see (container_callback):
 // one whose ancestors include a servlet Filter, listener, GenericServlet, Servlet,
 // ServletContainerInitializer, JMS MessageListener, MessageDrivenBean or WebSocket Endpoint,
@@ -51,6 +54,9 @@ const (
 	reasonLaunchEntryUnmapped = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_unmapped"
 	reasonWarPackaging        = plugin.PartialReasonRelationshipUnexpressed + ":war_packaging"
 	reasonContainerCallback   = plugin.PartialReasonRelationshipUnexpressed + ":container_callback"
+
+	reasonLaunchEntryProfileProperty = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_profile_property"
+	reasonLaunchEntryProfilePlugin   = plugin.PartialReasonRelationshipUnexpressed + ":launch_entry_profile_plugin"
 )
 
 // launchEntry is the launch mains the build names and the reasons its entry shape withholds
@@ -115,8 +121,8 @@ var springBootLaunchers = map[string]bool{
 
 // findLaunchEntry reads the launch entry of the projects whose class output fp read.
 // lookup returns a loaded class (first-party or dependency) by binary name.
-func findLaunchEntry(fp *firstPartyBytecode, lookup func(string) (*classfile.Class, bool)) launchEntry {
-	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}}
+func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string) (*classfile.Class, bool)) launchEntry {
+	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}, cache: newMavenCache(buildDir)}
 	for _, dir := range fp.projectDirs() {
 		r.maven(filepath.Join(dir, "pom.xml"))
 		for _, n := range []string{"build.gradle", "build.gradle.kts"} {
@@ -208,6 +214,7 @@ func containerCallback(c *classfile.Class, lookup func(string) (*classfile.Class
 type entryReader struct {
 	reasons map[string]bool
 	named   map[string]bool
+	cache   *mavenCache
 }
 
 var (
@@ -247,6 +254,20 @@ func (r *entryReader) maven(path string) {
 	default:
 		r.reasons[reasonLaunchEntryUnmapped] = true
 	}
+	// A profile can be switched on from outside the POM (-P, settings.xml), so a profile that
+	// sets a property or names a launch class counts whatever its activation says.
+	chain, complete := r.pomChain(pom)
+	profileProps := map[string]bool{}
+	for _, p := range chain {
+		for _, pr := range p.Profiles {
+			for k := range pr.Properties {
+				profileProps[k] = true
+			}
+		}
+		if profileNamesLaunch(p.path) {
+			r.reasons[reasonLaunchEntryProfilePlugin] = true
+		}
+	}
 	text := xmlComment.ReplaceAllString(string(data), "")
 	for _, m := range pomEntryElement.FindAllStringSubmatch(text, -1) {
 		if m[1] == "Main-Verticle" {
@@ -254,13 +275,65 @@ func (r *entryReader) maven(path string) {
 			continue
 		}
 		v := pomPropertyRef.ReplaceAllStringFunc(m[2], func(ref string) string {
-			if val, ok := pom.Properties[ref[2:len(ref)-1]]; ok && !strings.Contains(val, "${") {
-				return val
+			key := ref[2 : len(ref)-1]
+			val, ok := pom.Properties[key]
+			if !ok || strings.Contains(val, "${") {
+				return ref
 			}
-			return ref
+			if !complete || profileProps[key] {
+				r.reasons[reasonLaunchEntryProfileProperty] = true
+			}
+			return val
 		})
 		r.name(v)
 	}
+}
+
+// pomChain returns pom and the parents it inherits from, nearest first, read from the Maven
+// cache. complete is false when a parent is not there: its profiles are unknown, not absent. A
+// parent inside the checkout is a second project, which multiple_projects_unsupported withholds
+// already.
+func (r *entryReader) pomChain(pom *mvnPOM) ([]*mvnPOM, bool) {
+	chain := []*mvnPOM{pom}
+	seen := map[string]bool{pom.path: true}
+	for cur := pom; len(chain) <= 20; {
+		p := cur.Parent
+		if p.ArtifactID == "" {
+			return chain, true
+		}
+		next, ok := r.cache.get(p.GroupID, p.ArtifactID, p.Version)
+		if !ok || seen[next.path] {
+			return chain, false
+		}
+		seen[next.path] = true
+		chain = append(chain, next)
+		cur = next
+	}
+	return chain, false
+}
+
+// profileNamesLaunch reports whether any <profile> in the POM at path carries a launch-naming
+// element (a plugin's mainClass, a manifest Main-Class, the Boot start-class). A POM that cannot
+// be re-read counts as naming one.
+func profileNamesLaunch(path string) bool {
+	data, err := readRegular(path)
+	if err != nil {
+		return true
+	}
+	var xp struct {
+		Profiles []struct {
+			Inner string `xml:",innerxml"`
+		} `xml:"profiles>profile"`
+	}
+	if err := unmarshalPOM(data, &xp); err != nil {
+		return true
+	}
+	for _, pr := range xp.Profiles {
+		if pomEntryElement.MatchString(xmlComment.ReplaceAllString(pr.Inner, "")) {
+			return true
+		}
+	}
+	return false
 }
 
 var (

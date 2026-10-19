@@ -45,6 +45,7 @@ func TestMavenProfile_MvnDirAllowList(t *testing.T) {
 		{"a JVM option on no list", "jvm.config", "-javaagent:agent.jar\n", "", true},
 		{"a JVM argument file", "jvm.config", "@args\n", "", true},
 		{"a trailing comment in jvm.config", "jvm.config", "-Xmx1g # -Djava.version=1.8\n", "", true},
+		{"a # inside a jvm.config token", "jvm.config", "-Djava.version#=1.8\n", "", true},
 		{"jvm.config defines maven.ext.class.path", "jvm.config", "-Dmaven.ext.class.path=ext.jar\n", "", true},
 		{"a JVM module option without its value on the line", "jvm.config", "--add-opens\n", "", true},
 		{"a JVM option prefix without a value", "jvm.config", "-Xmx\n", "", true},
@@ -107,7 +108,8 @@ func TestMavenProfile_NestedMvnAllowList(t *testing.T) {
 }
 
 // Maven counts an activation condition when its element is present, empty or not. Beside a true
-// <jdk>, each of these leaves the profile undecided rather than applied.
+// <jdk>, each of these leaves the profile undecided rather than applied. The property a is stated
+// as 1, so a condition on it would decide.
 func TestMavenProfile_ActivationPresenceAllowList(t *testing.T) {
 	for _, tt := range []struct {
 		name, activation string
@@ -122,20 +124,24 @@ func TestMavenProfile_ActivationPresenceAllowList(t *testing.T) {
 		{"property named !", `<jdk>11</jdk><property><name>!</name></property>`, true},
 		{"property with two names", `<jdk>11</jdk><property><name>a</name><name>b</name></property>`, true},
 		{"property with two values", `<jdk>11</jdk><property><name>a</name><value>1</value><value>2</value></property>`, true},
-		{"property with an unknown child", `<jdk>11</jdk><property><name>!a</name><regex>x</regex></property>`, true},
+		{"property with an unknown child", `<jdk>11</jdk><property><name>a</name><regex>x</regex></property>`, true},
 		{"empty jdk", `<jdk/>`, true},
 		{"blank jdk", `<jdk>  </jdk>`, true},
 		{"interpolated jdk", `<jdk>${jdk.spec}</jdk>`, true},
 		{"repeated jdk, the first false", `<jdk>17</jdk><jdk>11</jdk>`, true},
 		{"interpolated property beside a false jdk", `<jdk>17</jdk><property><name>${p}</name></property>`, true},
+		{"interpolated jdk beside a false property", `<jdk>${jdk.spec}</jdk><property><name>a</name><value>2</value></property>`, true},
 		// Inversion: an activation child on no list.
 		{"an activation element on no list", `<jdk>11</jdk><packaging>jar</packaging>`, true},
 		{"control, jdk alone", `<jdk>11</jdk>`, false},
+		{"control, a stated property beside the jdk", `<jdk>11</jdk><property><name>a</name><value>1</value></property>`, false},
 		{"control, undecided element beside a false one", `<jdk>17</jdk><os/>`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, m2 := profileFixture(t, tt.activation, false)
-			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), stated(",", "11.0.2")))
+			env := stated(",", "11.0.2")
+			env["a"] = "1"
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), env))
 			if got := hasStr(inv.Partiality.Reasons, reasonProfileActivation); got != tt.disclosed {
 				t.Errorf("profile_activation listed = %v, want %v; got %+v", got, tt.disclosed, inv.Partiality)
 			}

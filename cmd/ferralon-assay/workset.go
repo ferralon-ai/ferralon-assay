@@ -92,6 +92,23 @@ const (
 	// not be resolved to facts (digest mismatch, malformed or unrecognized record). They were NOT
 	// evaluated.
 	reasonPolicyAdvisoryUnresolvable = "policy_advisory_unresolvable"
+	// reasonWorkSetDependencyUnresolved: a declared dependency has no resolved version, so OSV.dev
+	// was not asked about it and the advisories against it were NOT assessed. One note per
+	// dependency, scoped by Package. Unclassified, so the report puts it in the loud arm.
+	reasonWorkSetDependencyUnresolved = "work_set_dependency_unresolved"
+	// reasonWorkSetDependencyUnreadable: the reader failed when asked for one declared
+	// dependency's version, so the inventory is incomplete for it. Distinct from
+	// reasonWorkSetDependencyUnresolved, where the reader answered and withheld. The dependency
+	// is still admitted by name; OSV.dev was not asked about it. One note per dependency, scoped
+	// by Package, and unclassified like reasonWorkSetNoInventory, so it lands in the loud arm.
+	reasonWorkSetDependencyUnreadable = "work_set_dependency_unreadable"
+	// reasonWorkSetDependencyNotFound: the manifest pins a dependency the reader's per-coordinate
+	// read doesn't find, so the inventory and the reader disagree about it. Distinct from
+	// reasonWorkSetDependencyUnresolved (found, version withheld) and from
+	// reasonWorkSetDependencyUnreadable (the read failed). The dependency is still admitted by
+	// name; OSV.dev was not asked about it. One note per dependency, scoped by Package, and
+	// unclassified, so it lands in the loud arm.
+	reasonWorkSetDependencyNotFound = "work_set_dependency_not_found"
 )
 
 // workSetSourceBuiltinUnionOSV names a work set that is the compiled-in language floor UNIONED with
@@ -133,6 +150,15 @@ type workSet struct {
 	// policyUnresolvable is every policy id whose corpus record did not resolve to facts, sorted.
 	// Not evaluated; disclosed through the reasonPolicyAdvisoryUnresolvable note and describe().
 	policyUnresolvable []string
+	// unversioned is every declared dependency the OSV query skipped for having no resolved version,
+	// sorted. Disclosed through one reasonWorkSetDependencyUnresolved note each and describe().
+	unversioned []string
+	// unreadable is every declared dependency whose version read failed, and notFound every pinned
+	// one the dependency reader does not find, each sorted. Neither is asked of OSV; each is disclosed
+	// through its own note (reasonWorkSetDependencyUnreadable, reasonWorkSetDependencyNotFound) and
+	// describe().
+	unreadable []string
+	notFound   []string
 	// ecosystem is the dependency ecosystem the widening queried, for the CLI summary line.
 	ecosystem string
 }
@@ -176,8 +202,11 @@ func resolvePolicyWorkSet(ctx context.Context, acq *acquired, corpus pipeline.Ad
 	ws := floorWorkSet(acq.advisories)
 	ws.ecosystem = ecosystemForLanguage(acq.language)
 
-	pkgs, notes := dependencyInventory(ctx, acq)
+	// Admission is by name, so an unresolved dependency is admitted like a resolved one: its
+	// advisories get rows, and with no version to compare the version check fails open downstream.
+	resolved, unresolved, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
+	pkgs := append(resolved, unresolved...)
 	isRoot := rootMatcher(ctx, acq)
 	if len(pkgs) == 0 && isRoot == nil {
 		return ws
@@ -330,8 +359,45 @@ func resolveWorkSet(ctx context.Context, acq *acquired, osv trigger.OSVClient, s
 	ws := floorWorkSet(acq.advisories)
 	ws.ecosystem = ecosystemForLanguage(acq.language)
 
-	pkgs, notes := dependencyInventory(ctx, acq)
+	pkgs, unversioned, notes := dependencyInventory(ctx, acq)
 	ws.partiality = append(ws.partiality, notes...)
+	// OSV answers a versionless query with every advisory ever recorded against the package, so an
+	// unresolved dependency is not queried. It is named instead: skipping it silently would read
+	// as OSV having found nothing.
+	purlType := purlTypeForEcosystem(ws.ecosystem)
+	pinned := make(map[string][]string, len(pkgs))
+	for _, p := range pkgs {
+		pinned[p.Name] = append(pinned[p.Name], p.Version)
+	}
+	// A coordinate whose read failed, or that the reader didn't find, already carries its own note.
+	named := make(map[string]string)
+	for _, n := range notes {
+		if n.Reason == reasonWorkSetDependencyUnreadable || n.Reason == reasonWorkSetDependencyNotFound {
+			named[n.Package] = n.Reason
+		}
+	}
+	for _, u := range unversioned {
+		switch named[versionlessPURL(purlType, u.Name)] {
+		case reasonWorkSetDependencyUnreadable:
+			ws.unreadable = append(ws.unreadable, u.Name)
+			continue
+		case reasonWorkSetDependencyNotFound:
+			ws.notFound = append(ws.notFound, u.Name)
+			continue
+		}
+		detail := u.Name + " has no resolved version, so OSV.dev was not asked about it; advisories against it were NOT assessed"
+		if vs := pinned[u.Name]; len(vs) > 0 {
+			detail = u.Name + " has no single resolved version, so OSV.dev was asked only about its pinned copies (" +
+				strings.Join(vs, ", ") + "); advisories against any other copy were NOT assessed"
+		}
+		ws.unversioned = append(ws.unversioned, u.Name)
+		ws.partiality = append(ws.partiality, report.PartialityNote{
+			Reason:    reasonWorkSetDependencyUnresolved,
+			Ecosystem: ws.ecosystem,
+			Package:   versionlessPURL(purlType, u.Name),
+			Detail:    detail,
+		})
+	}
 	// The project's own published package is queried too, so OSV answers for advisories against
 	// the repository itself. Only a versioned one: OSV answers an unversioned query with every
 	// advisory ever recorded against the package.
@@ -486,51 +552,152 @@ func aliasIndex() map[string]string {
 // plugin's existing whole-manifest parse: ResolveDependencyVersions already parses every
 // manifest/lockfile under the build dir into DependencyVersionResult.All and only then selects the
 // requested coordinate, so an EMPTY coordinate returns the full inventory with no plugin change.
-func dependencyInventory(ctx context.Context, acq *acquired) ([]report.Package, []report.PartialityNote) {
+//
+// resolved holds every distinct resolved (coordinate, version); unresolved is every coordinate with at
+// least one declaration that carries no resolved version, Version empty (inv.5 — a version is never
+// guessed). A coordinate can sit in both: its resolved versions are still queried, and the unresolved
+// copy is still disclosed, because the pipeline's version match treats any unresolved copy as
+// unresolved. Both are sorted. The inventory is absent only when neither holds anything.
+//
+// All is evidence; the per-coordinate Match is the reader's decision. A reader can withhold a
+// coordinate whose every declaration in All is pinned (an unread surface may hold another copy, or
+// copies disagree), and a copy it reads outside All (an installed distribution) can settle the
+// version. So every coordinate with a pinned copy is checked against its Match: a withheld Match
+// moves the coordinate to unresolved and none of its pins is queried; a resolved Match's version is
+// queried with the declared pins.
+func dependencyInventory(ctx context.Context, acq *acquired) (resolved, unresolved []report.Package, notes []report.PartialityNote) {
 	eco := ecosystemForLanguage(acq.language)
 	if eco == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	if acq.language == checkout.LangGo {
-		return goDependencyInventory(acq.buildDir)
+		pkgs, notes := goDependencyInventory(acq.buildDir)
+		return pkgs, nil, notes
 	}
 
 	// No analyzer plugin means no manifest parser for this language. That is an absent inventory,
 	// not a crash: the pass degrades to the floor and discloses it, like every other failure here.
 	if acq.plugin == nil {
-		return nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
+		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
 
 	res, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir})
 	if err != nil {
-		return nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
+		return nil, nil, []report.PartialityNote{{Reason: reasonWorkSetNoInventory, Ecosystem: eco}}
 	}
 
 	seen := make(map[report.Package]struct{}, len(res.All))
-	var pkgs []report.Package
 	for _, d := range res.All {
-		// An UNRESOLVED dependency carries no version by design (inv.5 — a version is never
-		// guessed). OSV needs one to decide whether a range applies, so it is skipped here rather
-		// than queried with an empty version, which OSV would answer with every advisory ever
-		// recorded against the package.
-		if !d.Resolved || d.Version == "" || d.Coordinate == "" {
+		if d.Coordinate == "" {
 			continue
 		}
-		p := report.Package{Ecosystem: eco, Name: d.Coordinate, Version: d.Version}
+		p := report.Package{Ecosystem: eco, Name: d.Coordinate}
+		if d.Resolved && d.Version != "" {
+			p.Version = d.Version
+		}
 		if _, ok := seen[p]; ok {
 			continue
 		}
 		seen[p] = struct{}{}
-		pkgs = append(pkgs, p)
+		if p.Version == "" {
+			unresolved = append(unresolved, p)
+		} else {
+			resolved = append(resolved, p)
+		}
 	}
 
-	var notes []report.PartialityNote
-	if len(pkgs) == 0 {
+	resolved, unresolved, notes = confirmByMatch(ctx, acq, eco, resolved, unresolved)
+
+	if len(resolved) == 0 && len(unresolved) == 0 {
 		notes = append(notes, report.PartialityNote{Reason: reasonWorkSetNoInventory, Ecosystem: eco})
 	}
-	sortPackages(pkgs)
-	return pkgs, notes
+	sortPackages(resolved)
+	sortPackages(unresolved)
+	return resolved, unresolved, notes
+}
+
+// confirmByMatch asks the reader for the Match of every coordinate that has a pinned copy. A
+// withheld Match moves the coordinate to unresolved. So do a failed call and a coordinate the
+// reader doesn't find, so both are still admitted by name; but a failed call is an incomplete
+// inventory and a coordinate not found is a disagreement between the pins and the reader, not an
+// unresolved version, so each gets its own note (reasonWorkSetDependencyUnreadable,
+// reasonWorkSetDependencyNotFound) and no reasonWorkSetDependencyUnresolved one. A coordinate that
+// also has an unresolved copy keeps only the unresolved note: it is admitted and named either way.
+func confirmByMatch(ctx context.Context, acq *acquired, eco string, resolved, unresolved []report.Package) ([]report.Package, []report.Package, []report.PartialityNote) {
+	named := make(map[string]bool, len(unresolved))
+	for _, u := range unresolved {
+		named[u.Name] = true
+	}
+	withheld := make(map[string]bool)
+	have := make(map[report.Package]bool, len(resolved))
+	seen := make(map[string]bool, len(resolved))
+	var names []string
+	for _, r := range resolved {
+		have[r] = true
+		if !seen[r.Name] {
+			seen[r.Name] = true
+			names = append(names, r.Name)
+		}
+	}
+	var extra []report.Package
+	var notes []report.PartialityNote
+	for _, name := range names {
+		vr, err := acq.plugin.ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: acq.buildDir, Coordinate: name})
+		if err != nil && !named[name] {
+			notes = append(notes, report.PartialityNote{
+				Reason:    reasonWorkSetDependencyUnreadable,
+				Ecosystem: eco,
+				Package:   versionlessPURL(purlTypeForEcosystem(eco), name),
+				Detail:    name + "'s version could not be read (" + err.Error() + "), so the dependency inventory is incomplete for it; OSV.dev was not asked about it and advisories against it were NOT assessed",
+			})
+		}
+		if err == nil && !vr.Found && !named[name] {
+			notes = append(notes, report.PartialityNote{
+				Reason:    reasonWorkSetDependencyNotFound,
+				Ecosystem: eco,
+				Package:   versionlessPURL(purlTypeForEcosystem(eco), name),
+				Detail:    name + " is pinned in the manifest but the dependency reader does not find it, so its version is not settled; OSV.dev was not asked about it and advisories against it were NOT assessed",
+			})
+		}
+		if err != nil || !vr.Found || !vr.Match.Resolved || vr.Match.Version == "" {
+			withheld[name] = true
+			if !named[name] {
+				named[name] = true
+				unresolved = append(unresolved, report.Package{Ecosystem: eco, Name: name})
+			}
+			continue
+		}
+		if p := (report.Package{Ecosystem: eco, Name: name, Version: vr.Match.Version}); !have[p] {
+			have[p] = true
+			extra = append(extra, p)
+		}
+	}
+	kept := resolved[:0]
+	for _, r := range resolved {
+		if !withheld[r.Name] {
+			kept = append(kept, r)
+		}
+	}
+	return append(kept, extra...), unresolved, notes
+}
+
+// versionlessPURL renders a dependency coordinate as the versionless PURL a PartialityNote's Package
+// carries, or "" for an ecosystem with no PURL type.
+func versionlessPURL(purlType, name string) string {
+	switch purlType {
+	case "":
+		return ""
+	case "maven":
+		name = strings.Replace(name, ":", "/", 1)
+	case "npm":
+		if rest, ok := strings.CutPrefix(name, "@"); ok {
+			name = "%40" + rest
+		}
+	default:
+		name = pipeline.CanonicalName(purlType, name)
+	}
+	return "pkg:" + purlType + "/" + name
 }
 
 // goDependencyInventory reads every module go.mod requires, plus the Go standard library keyed to
@@ -685,6 +852,15 @@ func (w workSet) describeUnassessed() string {
 	if len(w.policyUnresolvable) > 0 {
 		out += "\n  " + policyUnresolvableDetail(w.policyUnresolvable)
 	}
+	if len(w.unversioned) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) have no resolved version, so OSV.dev was not asked about them and advisories against them were NOT assessed", w.unversioned)
+	}
+	if len(w.unreadable) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) could not have their version read, so the inventory is incomplete; OSV.dev was not asked about them and advisories against them were NOT assessed", w.unreadable)
+	}
+	if len(w.notFound) > 0 {
+		out += "\n  " + boundedIDDetail("dependency(ies) are pinned in the manifest but the dependency reader does not find them; OSV.dev was not asked about them and advisories against them were NOT assessed", w.notFound)
+	}
 	return out
 }
 
@@ -694,6 +870,8 @@ func (w workSet) describeSet() string {
 		return fmt.Sprintf("%d advisories (built-in language set only — OSV.dev unreachable, so the work set was NOT widened; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetNoInventory), hasNote(w.partiality, plugin.PartialReasonNoManifest):
 		return fmt.Sprintf("%d advisories (built-in language set only — no dependency manifest resolved, so there was nothing to widen from)", len(w.advisories))
+	case w.source == report.WorkSetBuiltinLanguageSet && len(w.unversioned)+len(w.unreadable)+len(w.notFound) > 0:
+		return fmt.Sprintf("%d advisories (built-in language set only — no dependency has a version OSV.dev can be asked about, so OSV.dev was asked nothing; this scan is narrower than configured)", len(w.advisories))
 	case hasNote(w.partiality, reasonWorkSetPolicyNotEnumerable):
 		return fmt.Sprintf("%d advisories (the advisory corpus cannot list its advisories, so the declared policy did NOT define the work set; this scan is narrower than configured)", len(w.advisories))
 	case w.source == report.WorkSetBuiltinLanguageSet:

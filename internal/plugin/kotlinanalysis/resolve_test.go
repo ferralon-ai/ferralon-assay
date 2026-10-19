@@ -100,6 +100,26 @@ dependencies {
 	}
 }
 
+// TestResolveDependencyVersions_ModulesDisagree proves the delegated resolver's agreement rule
+// reaches Kotlin builds: two modules naming different versions of a coordinate leave the Match
+// unresolved, so neither copy alone decides the verdict.
+func TestResolveDependencyVersions_ModulesDisagree(t *testing.T) {
+	dir := t.TempDir()
+	for _, m := range []struct{ sub, version string }{{"a", "1.2.3"}, {"b", "1.2.2"}} {
+		if err := os.Mkdir(filepath.Join(dir, m.sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeBuildFile(t, dir, filepath.Join(m.sub, "build.gradle.kts"), "\ndependencies {\n    implementation(\"com.example:widget:"+m.version+"\")\n}\n")
+	}
+	res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: "com.example:widget"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Found || res.Match.Resolved || res.Match.Version != "" {
+		t.Fatalf("match = %+v, want found and unresolved", res.Match)
+	}
+}
+
 // TestResolveDependencyVersions_HonestIncompleteForms proves the declared Kotlin-DSL
 // boundary (row 1/9 fail-open): version-catalog references, the kotlin() helper, and
 // interpolated versions MUST NOT resolve to a fabricated version. A coordinate the parser

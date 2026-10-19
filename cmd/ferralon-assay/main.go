@@ -177,11 +177,9 @@ func runBaseline(args []string) error {
 	}
 	defer cleanup()
 
-	assessOptions := []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin)}
-	if opt, err := f.advisoryCorpusOption(); err != nil {
+	assessOptions, err := f.baselineAssessOptions(pipeline.WithPlugin(acq.plugin))
+	if err != nil {
 		return err
-	} else if opt != nil {
-		assessOptions = append(assessOptions, opt)
 	}
 
 	// Widen the compiled-in language floor with the advisories OSV.dev reports against this

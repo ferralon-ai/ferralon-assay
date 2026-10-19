@@ -2469,15 +2469,45 @@ func extractSelectedPackage(store artifact.Store, caseID string) (advisoryAffect
 	if err := json.Unmarshal(advArts[0].Payload, &adv); err != nil {
 		return advisoryAffectedPackage{}, false
 	}
-	for _, p := range adv.AffectedPackages {
-		if inv.SelectedModule != "" && p.Module == inv.SelectedModule {
-			return p, true
+	return affectedPackageNamed(adv.AffectedPackages, inv.SelectedModule, inv.SelectedCoordinate)
+}
+
+// affectedPackageNamed returns the advisory's entry for a package, merged across every element that
+// names it. An advisory may list one package in several affected[] entries, and a version in any of
+// their ranges is affected, so the ranges are unioned; judging the first entry alone would refute a
+// version only a later entry covers. An entry with no ranges, or no symbols, leaves that field
+// unknown for the whole package rather than letting the other entries narrow it.
+func affectedPackageNamed(pkgs []advisoryAffectedPackage, module, coordinate string) (advisoryAffectedPackage, bool) {
+	var (
+		out                     advisoryAffectedPackage
+		found, rangeless, blind bool
+	)
+	for _, p := range pkgs {
+		if !(module != "" && p.Module == module) && !(coordinate != "" && p.Coordinate == coordinate) {
+			continue
 		}
-		if inv.SelectedCoordinate != "" && p.Coordinate == inv.SelectedCoordinate {
-			return p, true
+		rangeless = rangeless || len(p.AffectedRanges) == 0
+		blind = blind || len(p.Symbols) == 0
+		if !found {
+			out, found = p, true
+			out.AffectedRanges = slices.Clone(p.AffectedRanges)
+			out.Symbols = slices.Clone(p.Symbols)
+			continue
+		}
+		out.AffectedRanges = append(out.AffectedRanges, p.AffectedRanges...)
+		for _, sym := range p.Symbols {
+			if !slices.Contains(out.Symbols, sym) {
+				out.Symbols = append(out.Symbols, sym)
+			}
 		}
 	}
-	return advisoryAffectedPackage{}, false
+	if rangeless {
+		out.AffectedRanges = nil
+	}
+	if blind {
+		out.Symbols = nil
+	}
+	return out, found
 }
 
 func extractAffectedRange(store artifact.Store, caseID string) ([]affectedRange, bool) {
@@ -2725,11 +2755,8 @@ func extractAlsoPresent(store artifact.Store, caseID string) []presentRanges {
 	out := make([]presentRanges, 0, len(inv.AlsoPresent))
 	for _, p := range inv.AlsoPresent {
 		pr := presentRanges{presentPackage: p}
-		for _, a := range adv.AffectedPackages {
-			if (p.Module != "" && a.Module == p.Module) || (p.Coordinate != "" && a.Coordinate == p.Coordinate) {
-				pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
-				break
-			}
+		if a, ok := affectedPackageNamed(adv.AffectedPackages, p.Module, p.Coordinate); ok {
+			pr.Ranges, pr.RangeKnown = validAffectedRanges(a.AffectedRanges)
 		}
 		out = append(out, pr)
 	}

@@ -197,7 +197,8 @@ func pomDeclarations(path, want string) (decls []plugin.ResolvedDependency, mode
 // inSet. Maven reads the parent from the file at its relativePath (../pom.xml by default, with
 // pom.xml appended to a directory) only when that file's groupId, artifactId and version are the
 // parent's; otherwise, or with an empty <relativePath/>, it reads the parent from a repository.
-// A POM that can't be read counts as inheriting from outside.
+// A parent that omits any coordinate (Maven 4 infers it) is in the tree only when the file at its
+// relativePath is. A POM that can't be read counts as inheriting from outside.
 func inheritsOutOfTree(path string, inSet map[string]bool) bool {
 	data, err := readRegular(path)
 	if err != nil {
@@ -208,7 +209,7 @@ func inheritsOutOfTree(path string, inSet map[string]bool) bool {
 		return true
 	}
 	ref := proj.Parent
-	if strings.TrimSpace(ref.ArtifactID) == "" && strings.TrimSpace(ref.GroupID) == "" {
+	if ref.XMLName.Local == "" {
 		return false
 	}
 	rel := "../pom.xml"
@@ -232,6 +233,11 @@ func inheritsOutOfTree(path string, inSet map[string]bool) bool {
 	var local pomProject
 	if err := unmarshalPOM(data, &local); err != nil {
 		return true
+	}
+	// Maven 4 infers a parent that omits coordinates from the POM at its relativePath, which
+	// this read just found in the tree.
+	if strings.TrimSpace(ref.GroupID) == "" || strings.TrimSpace(ref.ArtifactID) == "" || strings.TrimSpace(ref.Version) == "" {
+		return false
 	}
 	g, a, v := strings.TrimSpace(local.GroupID), strings.TrimSpace(local.ArtifactID), strings.TrimSpace(local.VersionElem)
 	if g == "" {
@@ -424,6 +430,7 @@ type pomProject struct {
 }
 
 type pomParent struct {
+	XMLName      xml.Name
 	GroupID      string  `xml:"groupId"`
 	ArtifactID   string  `xml:"artifactId"`
 	Version      string  `xml:"version"`

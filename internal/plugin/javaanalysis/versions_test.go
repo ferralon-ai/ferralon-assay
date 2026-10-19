@@ -437,6 +437,15 @@ func TestResolveVersions_ParentOutsideTheTree(t *testing.T) {
 			"b/pom.xml":   module(parent("com.example", "mid", "1.0.0", `<relativePath>../mid</relativePath>`), ""),
 			"mid/pom.xml": `<project><modelVersion>4.0.0</modelVersion>` + corp + `<groupId>com.example</groupId><artifactId>mid</artifactId><version>1.0.0</version><packaging>pom</packaging></project>`,
 		}, ""},
+		// Maven 4 infers a parent with no coordinates from its relativePath.
+		{"parent with no coordinates, relativePath outside the root", map[string]string{
+			"b/pom.xml": module(`<parent><relativePath>../../outside/pom.xml</relativePath></parent>`, ""),
+		}, ""},
+		{"parent with no coordinates, empty relativePath", map[string]string{"b/pom.xml": module(`<parent><relativePath/></parent>`, "")}, ""},
+		{"parent with no coordinates, in the tree", map[string]string{"b/pom.xml": module(`<parent/>`, "")}, "1.4.0"},
+		{"parent with no version, in the tree", map[string]string{
+			"b/pom.xml": module(`<parent><groupId>com.example</groupId><artifactId>root</artifactId></parent>`, ""),
+		}, "1.4.0"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

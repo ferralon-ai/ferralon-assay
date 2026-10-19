@@ -143,6 +143,9 @@ func TestSearchBuildModules(t *testing.T) {
 	t.Run("cold cache downloads without touching go.mod or go.sum", func(t *testing.T) {
 		newSourceProxy(t, []srcModule{modA, modFork})
 		app := newApp(t, []string{"example.com/a", "example.com/fork/db"}, "", nil)
+		// A module in the graph whose packages the build does not compile has only its go.mod
+		// hash in go.sum; downloading it records its zip hash, which must not land here.
+		rewriteZipSum(t, app, "example.com/a", "")
 		before := readFiles(t, app, "go.mod", "go.sum")
 		coldCache(t)
 		wantSearch(t, search(t, app, gogsDB, gogsSymbols),
@@ -380,6 +383,13 @@ func readFiles(t *testing.T, dir string, names ...string) string {
 // module graph still resolves and only the download fails verification.
 func corruptZipSum(t *testing.T, app, path string) {
 	t.Helper()
+	rewriteZipSum(t, app, path, "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+}
+
+// rewriteZipSum replaces the go.sum hash of a module's zip with hash, or drops the line when
+// hash is empty.
+func rewriteZipSum(t *testing.T, app, path, hash string) {
+	t.Helper()
 	sum := filepath.Join(app, "go.sum")
 	data, err := os.ReadFile(sum)
 	if err != nil {
@@ -388,7 +398,10 @@ func corruptZipSum(t *testing.T, app, path string) {
 	var out []string
 	for _, line := range strings.Split(string(data), "\n") {
 		if f := strings.Fields(line); len(f) == 3 && f[0] == path && !strings.HasSuffix(f[1], "/go.mod") {
-			line = f[0] + " " + f[1] + " h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+			if hash == "" {
+				continue
+			}
+			line = f[0] + " " + f[1] + " " + hash
 		}
 		out = append(out, line)
 	}

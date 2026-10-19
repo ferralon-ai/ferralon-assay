@@ -600,20 +600,34 @@ func rangeAbsentLine(f report.AdvisoryFinding) string {
 	return b.String()
 }
 
-// boundsText describes the partial bounds of a range-absent advisory, one clause per range.
+// boundsText describes the bounds of a range-absent advisory, one clause per range. A GIT range's
+// bounds are commits and are named as such; "no fix" is said only of a range with no fixed or
+// last_affected event.
 func boundsText(bounds []report.AdvisoryBound) string {
 	var parts []string
 	for _, bd := range bounds {
 		var p []string
+		switch bd.Type {
+		case "":
+		case "GIT":
+			p = append(p, "by commit")
+		default:
+			p = append(p, "by "+mdCode(bd.Type))
+		}
+		events := len(p)
 		if bd.Introduced != "" {
 			p = append(p, "introduced "+mdCode(bd.Introduced))
 		}
+		if bd.Fixed != "" {
+			p = append(p, "fixed in "+mdCode(bd.Fixed))
+		}
 		if bd.LastAffected != "" {
 			p = append(p, "last affected "+mdCode(bd.LastAffected))
-		} else if bd.Introduced != "" {
+		}
+		if bd.Introduced != "" && bd.Fixed == "" && bd.LastAffected == "" {
 			p = append(p, "no fix")
 		}
-		if len(p) > 0 {
+		if len(p) > events {
 			parts = append(parts, strings.Join(p, ", "))
 		}
 	}

@@ -35,9 +35,18 @@ func TestAdvisoryRangeAbsent_Projection(t *testing.T) {
 				{Type: "GIT", Introduced: "0.0.0", LastAffected: "deadbeef"},
 			},
 			wantAbsent: true,
-			wantBounds: []RecordedBound{{Introduced: "9f3e2a1b", LastAffected: "c0ffee12"}, {LastAffected: "deadbeef"}},
+			wantBounds: []RecordedBound{
+				{Type: "GIT", Introduced: "9f3e2a1b", LastAffected: "c0ffee12"},
+				{Type: "GIT", Fixed: "abc1234"},
+				{Type: "GIT", LastAffected: "deadbeef"},
+			},
 		},
-		{name: "an unrecognized range type", ranges: []Range{{Type: "FOO", Introduced: "0", Fixed: "2.0.0"}}, wantAbsent: true},
+		{
+			name:       "an unrecognized range type",
+			ranges:     []Range{{Type: "FOO", Introduced: "0", Fixed: "2.0.0"}},
+			wantAbsent: true,
+			wantBounds: []RecordedBound{{Type: "FOO", Fixed: "2.0.0"}},
+		},
 		{name: "a GIT range beside an ordered one", ranges: []Range{{Type: "GIT", Introduced: "9f3e2a1b"}, {Introduced: "2.0.0"}}},
 		{
 			name:   "one bounded range among unbounded ones",

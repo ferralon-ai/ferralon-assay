@@ -146,7 +146,7 @@ func TestFinding_RangeAbsentCandidate(t *testing.T) {
 				{"upper_exclusive": "abc1234", "lower_inclusive": "9f3e2a1b", "scheme": "pypi", "type": "GIT"},
 			}}),
 			pkg:        requestsPkg,
-			wantBounds: []report.AdvisoryBound{{Introduced: "9f3e2a1b"}},
+			wantBounds: []report.AdvisoryBound{{Type: "GIT", Introduced: "9f3e2a1b", Fixed: "abc1234"}},
 		},
 		{
 			name: "multi-package: admitted package ranged, another absent",

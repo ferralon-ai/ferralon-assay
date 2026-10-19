@@ -13,9 +13,11 @@ import (
 func TestBytecodeReach_BootMainDetection(t *testing.T) {
 	boot := []string{springBootApplication}
 	main := mainCalling(justReturn)
+	noProfiles := map[string]string{"maven.profiles": ","}
 	tests := []struct {
 		name   string
 		setup  func(a *appFixture)
+		env    map[string]string
 		reason string // "" for a row that stays Searched
 	}{
 		{name: "annotated main: searched", setup: func(a *appFixture) {
@@ -99,6 +101,16 @@ func TestBytecodeReach_BootMainDetection(t *testing.T) {
 			a.bootApp(boot)
 			a.editPOM(`<dependencies>`, `<properties><spring-boot.run.main-class>com.acme.Tool</spring-boot.run.main-class></properties><dependencies>`)
 		}, reason: reasonLaunchEntryUnnamed},
+		// Profile properties count whether or not the profile is active: a profile the run
+		// does not select still blocks, so selection never decides the Boot main.
+		{name: "profile with another property, none selected: searched", setup: func(a *appFixture) {
+			a.bootApp(boot)
+			a.editPOM(`</project>`, `<profiles><profile><id>x</id><properties><deploy.env>prod</deploy.env></properties></profile></profiles></project>`)
+		}, env: noProfiles},
+		{name: "profile sets spring-boot.run.main-class, none selected: launch_entry_unnamed", setup: func(a *appFixture) {
+			a.bootApp(boot)
+			a.editPOM(`</project>`, `<profiles><profile><id>x</id><properties><spring-boot.run.main-class>com.acme.Tool</spring-boot.run.main-class></properties></profile></profiles></project>`)
+		}, env: noProfiles, reason: reasonLaunchEntryUnnamed},
 		{name: "CI workflow -Dstart-class: launch_entry_cli_property", setup: func(a *appFixture) {
 			a.bootApp(boot)
 			writeFileT(t, filepath.Join(a.build, ".github", "workflows", "ci.yml"), ciMaven("-Dstart-class=com.acme.Tool"))
@@ -117,7 +129,7 @@ func TestBytecodeReach_BootMainDetection(t *testing.T) {
 			a := newApp(t, "", false)
 			a.source("src/main/java/com/acme/App.java", appSource)
 			tt.setup(a)
-			res := a.reach(netkitSinkID)
+			res := a.reachUnder(tt.env, netkitSinkID)
 			if tt.reason == "" {
 				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
 					t.Fatalf("Searched = %v, partiality %+v", res.Searched, res.Partiality)

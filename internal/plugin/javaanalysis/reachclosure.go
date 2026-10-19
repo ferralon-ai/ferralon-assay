@@ -32,7 +32,11 @@ import (
 //     guess at which body runs);
 //   - a JAR that cannot be opened, or classes in it that fail to parse → tool_failure;
 //   - a class two JARs define → relationship_unexpressed:duplicate_class (the engine keeps
-//     one body per binary name, so the other body's calls are unseen).
+//     one body per binary name, so the other body's calls are unseen);
+//   - a multi-release override (META-INF/versions/N/) that cannot be merged into its base
+//     class (classfile.ReleaseMerge) → tool_failure:multi_release_unmerged, also declared
+//     run-wide in Reasons so no empty search is Searched. A mergeable override is read: its
+//     calls count as the class's own, since a JDK at release N runs it.
 //
 // A call into a class that is neither loaded nor a JDK platform class is an
 // unloaded_dependency hazard inside depreach, so code the inventory never listed is never
@@ -45,6 +49,7 @@ import (
 const (
 	reasonDuplicateClass             = plugin.PartialReasonRelationshipUnexpressed + ":duplicate_class"
 	reasonDependencyVersionAmbiguous = plugin.PartialReasonRelationshipUnexpressed + ":dependency_version_ambiguous"
+	reasonMultiReleaseUnmerged       = plugin.PartialReasonToolFailure + ":multi_release_unmerged"
 )
 
 // reachClosure is the engine over first-party plus dependency bytecode and the scoped blind
@@ -55,14 +60,20 @@ type reachClosure struct {
 	// methods indexes every loaded method by depreach's MethodRef.String() key, for the
 	// sink-concreteness check.
 	methods map[string]classfile.Method
+	// classes indexes every loaded class by binary name, for the launch-entry ancestor walk.
+	classes map[string]*classfile.Class
 	// Loaded maps "group:artifact:version" to the JAR that was opened, for evidence.
 	Loaded map[string]string
 	// Reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
 	// no empty search is Searched: the inventory's graph reasons (InventoryGraphReasons), a
 	// launch option the lanes do not model (LaunchOptionReasons), or a Gradle dependency form
 	// the inventory does not model (UnmodeledGradleDependencies). The Kotlin closure declares
-	// the same set.
+	// the same set. An unmerged multi-release override (reasonMultiReleaseUnmerged) is added
+	// here as well.
 	Reasons []string
+	// releaseReasons are the run-wide reasons loading the JARs incurred, kept with the cached
+	// engine.
+	releaseReasons []string
 }
 
 // gav is one distinct (coordinate, version) from the inventory.
@@ -156,7 +167,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	if ok && hit.key == fingerprint {
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)
-		out.Reasons = reasons
+		out.Reasons = append(reasons, hit.rc.releaseReasons...)
 		return &out, nil
 	}
 
@@ -168,7 +179,8 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 	definedBy := map[string]gav{}
 	shadowReported := map[string]bool{}
 	all := append([]classfile.Class{}, firstParty...)
-	for _, j := range jars {
+	versioned := make([][]classfile.VersionedClass, len(jars))
+	for ji, j := range jars {
 		jr, err := loadJarCached(j.jar)
 		if err != nil {
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+": "+err.Error()))
@@ -178,6 +190,7 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
 		}
 		built.Loaded[j.gav.String()] = j.jar.path
+		versioned[ji] = jr.Versioned
 		for _, c := range jr.Classes {
 			if isFirstParty[c.Name] {
 				continue
@@ -193,10 +206,17 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 			all = append(all, c)
 		}
 	}
+	gavs := make([]gav, len(jars))
+	for i, j := range jars {
+		gavs[i] = j.gav
+	}
+	all = mergeReleases(built, all, gavs, versioned, definedBy, isFirstParty, scoped)
 	built.Engine = depreach.NewEngine(all)
 	built.methods = make(map[string]classfile.Method)
-	for _, c := range all {
-		for _, m := range c.Methods {
+	built.classes = make(map[string]*classfile.Class, len(all))
+	for i := range all {
+		built.classes[all[i].Name] = &all[i]
+		for _, m := range all[i].Methods {
 			built.methods[m.Ref.String()] = m
 		}
 	}
@@ -207,8 +227,67 @@ func loadReachClosure(ctx context.Context, buildDir string, firstParty []classfi
 
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
-	out.Reasons = reasons
+	out.Reasons = append(reasons, built.releaseReasons...)
 	return &out, nil
+}
+
+// mergeReleases folds each JAR's multi-release overrides into the classes it defines and
+// returns the class set with any class only an override defines appended. An override of a
+// class the build output or another JAR defines is not loaded with that name on any
+// release, except where it is the first definition, which is a duplicate the same as two
+// base entries. An override that cannot be merged is a scoped tool_failure plus a run-wide
+// reason.
+func mergeReleases(built *reachClosure, all []classfile.Class, gavs []gav, versioned [][]classfile.VersionedClass, definedBy map[string]gav, isFirstParty map[string]bool, scoped func(reason, coord, path string) plugin.ScopedReason) []classfile.Class {
+	n := 0
+	for _, vs := range versioned {
+		n += len(vs)
+	}
+	if n == 0 {
+		return all
+	}
+	// Classes only an override defines live in extra, sized up front so the pointers the
+	// merge holds into it stay valid.
+	extra := make([]classfile.Class, 0, n)
+	merge := classfile.NewReleaseMerge(all)
+	unmerged := func(g gav, detail string) {
+		built.Scoped = append(built.Scoped, scoped(reasonMultiReleaseUnmerged, g.coordinate, g.String()+"!"+detail))
+		if !slices.Contains(built.releaseReasons, reasonMultiReleaseUnmerged) {
+			built.releaseReasons = append(built.releaseReasons, reasonMultiReleaseUnmerged)
+		}
+	}
+	shadowReported := map[string]bool{}
+	for ji, vs := range versioned {
+		g := gavs[ji]
+		vs = slices.Clone(vs)
+		sort.SliceStable(vs, func(a, b int) bool { return vs[a].Release < vs[b].Release })
+		for _, v := range vs {
+			name := v.Class.Name
+			if isFirstParty[name] {
+				continue
+			}
+			owner, defined := definedBy[name]
+			switch {
+			case !defined:
+				definedBy[name] = g
+				extra = append(extra, v.Class)
+				merge.Add(&extra[len(extra)-1])
+				continue
+			case owner != g:
+				if key := owner.String() + "|" + g.String(); !shadowReported[key] {
+					shadowReported[key] = true
+					built.Scoped = append(built.Scoped, scoped(reasonDuplicateClass, g.coordinate, fmt.Sprintf("%s shadowed by %s: %s", g, owner, v.Entry)))
+				}
+				continue
+			}
+			if err := merge.Merge(v); err != nil {
+				unmerged(g, err.Error())
+			}
+		}
+	}
+	for _, c := range merge.Check() {
+		unmerged(definedBy[c.Class], c.Detail)
+	}
+	return append(all, extra...)
 }
 
 // firstPartyFingerprint digests what the engine reads from the first-party classes: each
@@ -240,6 +319,12 @@ func firstPartyFingerprint(classes []classfile.Class) string {
 func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	m, ok := rc.methods[ref.String()]
 	return ok && !m.Abstract && !m.Native
+}
+
+// class returns the loaded class named name.
+func (rc *reachClosure) class(name string) (*classfile.Class, bool) {
+	c, ok := rc.classes[name]
+	return c, ok
 }
 
 // gradleRuntimeConfig is the one Gradle configuration whose locked versions are the
@@ -366,7 +451,7 @@ func loadJarCached(jar artifactJar) (classfile.JarResult, error) {
 	if ok {
 		return jr, nil
 	}
-	jr, err := classfile.LoadJarBytes(jar.data)
+	jr, err := classfile.LoadJarBytesReleases(jar.data)
 	if err != nil {
 		return classfile.JarResult{}, err
 	}

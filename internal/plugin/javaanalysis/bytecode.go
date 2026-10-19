@@ -174,7 +174,9 @@ func isMainSource(buildDir, path string) bool {
 }
 
 // loadClassTree parses every .class file under root. failed lists files that could not be
-// read or parsed; a file that is not a class file at all (bad magic) is skipped quietly.
+// read or parsed; a file that is not a class file at all (bad magic) is skipped quietly. A
+// multi-release override under META-INF/versions/ is listed in failed rather than read: a
+// JDK at its release runs it in place of the base class, and the output is not merged.
 func loadClassTree(root string) (classes []classfile.Class, times map[string]time.Time, failed []string) {
 	times = map[string]time.Time{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -183,6 +185,10 @@ func loadClassTree(root string) (classes []classfile.Class, times map[string]tim
 			return nil
 		}
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".class") || d.Name() == "module-info.class" {
+			return nil
+		}
+		if rel, err := filepath.Rel(root, path); err == nil && strings.HasPrefix(filepath.ToSlash(rel), "META-INF/versions/") {
+			failed = append(failed, path+": multi-release override not read")
 			return nil
 		}
 		data, err := os.ReadFile(path)

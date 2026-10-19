@@ -221,9 +221,9 @@ func lockEntry(name, kind, requested, resolved string) string {
 }
 
 // TestVersions_AllowList pins which .NET builds the Match resolves in. Every copy of the package
-// must be a pin from a source this reader models whole, and all copies must agree; the
-// multi-project, Directory.Build.targets and packages.config rows are builds where a single copy
-// once decided the verdict.
+// must be a pin from a source this reader models whole, and all copies must agree. The
+// multi-project, Directory.Build.targets and packages.config rows are builds where one copy alone
+// would put the version outside the range while another copy sits inside it.
 func TestVersions_AllowList(t *testing.T) {
 	cases := []struct {
 		name    string

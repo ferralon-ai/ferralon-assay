@@ -302,7 +302,8 @@ func reactorOf(modules ...string) string {
 
 // TestResolveVersions_MavenAllowList pins which Maven builds the Match resolves in. Every copy of
 // the coordinate must be a literal pin in a POM this reader models whole, and all copies must
-// agree; the reactor and profile rows are builds where a single copy once decided the verdict.
+// agree. The reactor and profile rows are builds where one copy alone would put the version
+// outside the range while another copy sits inside it.
 func TestResolveVersions_MavenAllowList(t *testing.T) {
 	const coord = "com.example.lib:widget"
 	cases := []struct {

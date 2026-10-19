@@ -38,6 +38,22 @@ func emitClassX(b *cpb, owner, super string, flags uint16, methods []xmethod) []
 
 // emitClassI is emitClassX with direct superinterfaces.
 func emitClassI(b *cpb, owner, super string, ifaces []string, flags uint16, methods []xmethod) []byte {
+	return emitClassA(b, owner, super, ifaces, flags, methods, nil)
+}
+
+// emitClassA is emitClassI with class annotations (type descriptors, no elements) in a
+// RuntimeVisibleAnnotations attribute.
+func emitClassA(b *cpb, owner, super string, ifaces []string, flags uint16, methods []xmethod, annos []string) []byte {
+	var rva bytes.Buffer
+	var rvaName uint16
+	if len(annos) > 0 {
+		rvaName = b.utf8("RuntimeVisibleAnnotations")
+		rva.Write(be2(uint16(len(annos))))
+		for _, a := range annos {
+			rva.Write(be2(b.utf8(a)))
+			rva.Write(be2(0))
+		}
+	}
 	thisIdx := b.class(owner)
 	superIdx := b.class(super)
 	ifaceIdx := make([]uint16, len(ifaces))
@@ -87,7 +103,14 @@ func emitClassI(b *cpb, owner, super string, ifaces []string, flags uint16, meth
 		buf.Write(be4(uint32(code.Len())))
 		buf.Write(code.Bytes())
 	}
-	buf.Write(be2(0))
+	if len(annos) == 0 {
+		buf.Write(be2(0))
+		return buf.Bytes()
+	}
+	buf.Write(be2(1))
+	buf.Write(be2(rvaName))
+	buf.Write(be4(uint32(rva.Len())))
+	buf.Write(rva.Bytes())
 	return buf.Bytes()
 }
 
@@ -161,8 +184,14 @@ func (a *appFixture) class(outDir, owner string, methods func(b *cpb) []xmethod)
 // classI is class with a chosen super class, superinterfaces and access flags.
 func (a *appFixture) classI(outDir, owner, super string, ifaces []string, flags uint16, methods func(b *cpb) []xmethod) {
 	a.t.Helper()
+	a.classA(outDir, owner, super, ifaces, flags, nil, methods)
+}
+
+// classA is classI with class annotations.
+func (a *appFixture) classA(outDir, owner, super string, ifaces []string, flags uint16, annos []string, methods func(b *cpb) []xmethod) {
+	a.t.Helper()
 	b := &cpb{}
-	data := emitClassI(b, owner, super, ifaces, flags, methods(b))
+	data := emitClassA(b, owner, super, ifaces, flags, methods(b), annos)
 	p := filepath.Join(a.build, filepath.FromSlash(outDir), filepath.FromSlash(owner)+".class")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		a.t.Fatal(err)

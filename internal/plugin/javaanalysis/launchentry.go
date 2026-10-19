@@ -31,10 +31,11 @@ import (
 //     attribute in the project's build.gradle(.kts), with no war plugin;
 //   - a manifest the project ships or built (src/main/resources/META-INF/MANIFEST.MF, the
 //     class output's META-INF/MANIFEST.MF, a JAR under target/ or build/libs/): Main-Class
-//     naming a first-party class, or Spring Boot's JarLauncher/WarLauncher with a Start-Class.
+//     naming a first-party class, or Spring Boot's JarLauncher/WarLauncher with a Start-Class;
+//   - with none of the above, the main spring-boot-maven-plugin finds itself (bootMain).
 //
-// Withheld, each with its reason: no named entry (launch_entry_unnamed); a named entry that
-// is not a first-party main, a dependency launcher such as Vert.x's (Main-Class outside the
+// Withheld, each with its reason: no named entry and no main the Boot plugin finds
+// (launch_entry_unnamed); a named entry that is not a first-party main, a dependency launcher such as Vert.x's (Main-Class outside the
 // build, a Main-Verticle attribute), an unresolved ${...}, or packaging other than jar
 // (launch_entry_unmapped); a ${...} entry whose property a <profile> sets, in the POM or any
 // POM it inherits from, or whose parent chain is not all read (launch_entry_profile_property);
@@ -139,6 +140,11 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 	for _, root := range fp.roots {
 		r.manifestFile(filepath.Join(root, "META-INF", "MANIFEST.MF"))
 	}
+	if r.bootPlugin {
+		// A -D for either key overrides the Boot plugin's main, found or configured.
+		r.propKeys["start-class"] = true
+		r.propKeys["spring-boot.run.main-class"] = true
+	}
 	if len(r.propKeys) > 0 && checkoutDefines(buildDir, r.propKeys) {
 		r.reasons[reasonLaunchEntryCLIProperty] = true
 	}
@@ -157,10 +163,14 @@ func findLaunchEntry(buildDir string, fp *firstPartyBytecode, lookup func(string
 		}
 		e.mains = append(e.mains, bin)
 	}
-	sort.Strings(e.mains)
 	if len(r.named) == 0 {
-		r.reasons[reasonLaunchEntryUnnamed] = true
+		if main, ok := r.bootMain(fp); ok {
+			e.mains = append(e.mains, main)
+		} else {
+			r.reasons[reasonLaunchEntryUnnamed] = true
+		}
 	}
+	sort.Strings(e.mains)
 	for i := range fp.classes {
 		if containerCallback(&fp.classes[i], lookup) {
 			r.reasons[reasonContainerCallback] = true
@@ -181,6 +191,83 @@ func declaresMain(c *classfile.Class) bool {
 		}
 	}
 	return false
+}
+
+const springBootApplication = "Lorg/springframework/boot/autoconfigure/SpringBootApplication;"
+
+// bootMain is the main spring-boot-maven-plugin finds when the build names none. The plugin
+// (MainClassFinder) takes every class in the project's class output with a public static
+// main(String[]), keeps those annotated @SpringBootApplication directly when there are any, and
+// fails the build unless one is left. The main is licensed only when:
+//   - the project applies the plugin, and nothing in the build can name a main for it instead
+//     (bootBlocked);
+//   - every main candidate sits in one class output directory, the one the finder reads;
+//   - the same single class is left whether a candidate is the plugin's public static main or
+//     any concrete main(String[]), so the licence does not rest on the access flags alone.
+//
+// The Gradle plugin's equivalent is not read: org.springframework.boot is outside the Gradle
+// SAFE set, so the inventory withholds such a build before the launch entry matters.
+func (r *entryReader) bootMain(fp *firstPartyBytecode) (string, bool) {
+	if !r.bootPlugin || r.bootBlocked {
+		return "", false
+	}
+	strict := bootCandidates(fp.classes, isBootMain)
+	broad := bootCandidates(fp.classes, declaresMain)
+	if len(strict) != 1 || len(broad) != 1 || strict[0] != broad[0] {
+		return "", false
+	}
+	var all []string
+	for i := range fp.classes {
+		if declaresMain(&fp.classes[i]) || isBootMain(&fp.classes[i]) {
+			all = append(all, fp.classes[i].Name)
+		}
+	}
+	dirs := 0
+	for _, root := range fp.roots {
+		for _, n := range all {
+			if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(n)+".class")); err == nil && info.Mode().IsRegular() {
+				dirs++
+				break
+			}
+		}
+	}
+	if dirs != 1 {
+		return "", false
+	}
+	return strict[0], true
+}
+
+// isBootMain reports whether c declares the main MainClassFinder looks for.
+func isBootMain(c *classfile.Class) bool {
+	for _, m := range c.Methods {
+		if m.Ref.Name == "main" && m.Ref.Descriptor == mainDescriptor && m.Public && m.Static {
+			return true
+		}
+	}
+	return false
+}
+
+// bootCandidates applies MainClassFinder's selection to the classes isMain accepts: the
+// @SpringBootApplication ones when there are any, otherwise all of them.
+func bootCandidates(classes []classfile.Class, isMain func(*classfile.Class) bool) []string {
+	var all, annotated []string
+	for i := range classes {
+		c := &classes[i]
+		if !isMain(c) {
+			continue
+		}
+		all = append(all, c.Name)
+		for _, a := range c.Annotations {
+			if a.Type == springBootApplication {
+				annotated = append(annotated, c.Name)
+				break
+			}
+		}
+	}
+	if len(annotated) > 0 {
+		return annotated
+	}
+	return all
 }
 
 // containerCallback reports whether a container may call c back with no call the search sees:
@@ -222,12 +309,21 @@ type entryReader struct {
 	named    map[string]bool
 	propKeys map[string]bool // POM properties a launch entry resolved through
 	cache    *mavenCache
+
+	bootPlugin  bool // a POM in the chain applies spring-boot-maven-plugin
+	bootBlocked bool // the build may hand the Boot plugin a main bootMain does not see
 }
 
 var (
 	xmlComment      = regexp.MustCompile(`(?s)<!--.*?-->`)
 	pomEntryElement = regexp.MustCompile(`<(mainClass|start-class|Main-Class|Start-Class|Main-Verticle)>([^<]*)</`)
 	pomPropertyRef  = regexp.MustCompile(`\$\{([^}]*)\}`)
+	// pomEntryWord is any element that can name a launch class, whatever its form (a
+	// manifestFile's Main-Class is the jar's, which the Boot plugin takes over finding one);
+	// bootStartClassRef is the one form spring-boot-starter-parent uses, which leaves the main
+	// to the Boot plugin while start-class is unset.
+	pomEntryWord      = regexp.MustCompile(`<(mainClass|start-class|Main-Class|Start-Class|Main-Verticle|manifestFile)\b`)
+	bootStartClassRef = regexp.MustCompile(`<mainClass>\$\{(start-class|spring-boot\.run\.main-class)\}</mainClass>`)
 )
 
 func (r *entryReader) name(v string) {
@@ -275,6 +371,7 @@ func (r *entryReader) maven(path string) {
 			r.reasons[reasonLaunchEntryProfilePlugin] = true
 		}
 	}
+	r.bootMaven(chain, files, complete)
 	text := xmlComment.ReplaceAllString(string(data), "")
 	for _, m := range pomEntryElement.FindAllStringSubmatch(text, -1) {
 		if m[1] == "Main-Verticle" {
@@ -294,6 +391,51 @@ func (r *entryReader) maven(path string) {
 			return val
 		})
 		r.name(v)
+	}
+}
+
+// bootMaven records whether a POM in the chain applies spring-boot-maven-plugin in its
+// <build><plugins>, and blocks bootMain when the chain is not all read, or when a POM in it names
+// a launch class any way but starter-parent's ${start-class} wiring (a <start-class> property
+// is one such way) or points spring-boot.run.main-class anywhere but ${start-class}.
+func (r *entryReader) bootMaven(chain []*mvnPOM, files []string, complete bool) {
+	if !complete {
+		r.bootBlocked = true
+	}
+	for i, p := range chain {
+		props := []map[string]string{p.Properties}
+		for _, pr := range p.Profiles {
+			props = append(props, pr.Properties)
+		}
+		for _, m := range props {
+			if v, ok := m["spring-boot.run.main-class"]; ok && strings.TrimSpace(v) != "${start-class}" {
+				r.bootBlocked = true
+			}
+		}
+		data, err := readRegular(files[i])
+		if err != nil {
+			r.bootBlocked = true
+			continue
+		}
+		text := xmlComment.ReplaceAllString(string(data), "")
+		if len(pomEntryWord.FindAllStringIndex(text, -1)) != len(bootStartClassRef.FindAllStringIndex(text, -1)) {
+			r.bootBlocked = true
+		}
+		var xp struct {
+			Plugins []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+			} `xml:"build>plugins>plugin"`
+		}
+		if err := unmarshalPOM(data, &xp); err != nil {
+			r.bootBlocked = true
+			continue
+		}
+		for _, pl := range xp.Plugins {
+			if strings.TrimSpace(pl.GroupID) == "org.springframework.boot" && strings.TrimSpace(pl.ArtifactID) == "spring-boot-maven-plugin" {
+				r.bootPlugin = true
+			}
+		}
 	}
 }
 

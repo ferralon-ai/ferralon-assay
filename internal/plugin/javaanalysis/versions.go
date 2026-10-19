@@ -116,7 +116,9 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 // build with one patched module and one affected one must not be ruled not-affected on the copy
 // that happens to sit outside the range. A modeled module with dependencies but no declaration of
 // want could still ship it transitively, at a version Maven picks from the graph, so it leaves the
-// Match unresolved too.
+// Match unresolved too. So does a module that doesn't declare want and inherits from a parent POM
+// outside poms (inheritsOutOfTree): the parent's dependencies, which this reader never sees, are
+// the module's own.
 func matchCoordinate(poms []string, all []plugin.ResolvedDependency, want string) (plugin.ResolvedDependency, bool) {
 	var (
 		match    plugin.ResolvedDependency
@@ -138,12 +140,16 @@ func matchCoordinate(poms []string, all []plugin.ResolvedDependency, want string
 		}
 		versions[d.Version] = struct{}{}
 	}
+	inSet := make(map[string]bool, len(poms))
+	for _, p := range poms {
+		inSet[filepath.Clean(p)] = true
+	}
 	for _, p := range poms {
 		decls, modeled, others := pomDeclarations(p, want)
 		for _, d := range decls {
 			add(d)
 		}
-		opaque = opaque || !modeled || (len(decls) == 0 && others)
+		opaque = opaque || !modeled || (len(decls) == 0 && (others || inheritsOutOfTree(p, inSet)))
 	}
 	for _, d := range all {
 		if d.Source == "gradle" && normalizeCoordinate(d.Coordinate) == want {
@@ -185,6 +191,56 @@ func pomDeclarations(path, want string) (decls []plugin.ResolvedDependency, mode
 		decls = append(decls, d)
 	}
 	return decls, modeled, others
+}
+
+// inheritsOutOfTree reports whether the POM at path names a <parent> that Maven takes from outside
+// inSet. Maven reads the parent from the file at its relativePath (../pom.xml by default, with
+// pom.xml appended to a directory) only when that file's groupId, artifactId and version are the
+// parent's; otherwise, or with an empty <relativePath/>, it reads the parent from a repository.
+// A POM that can't be read counts as inheriting from outside.
+func inheritsOutOfTree(path string, inSet map[string]bool) bool {
+	data, err := readRegular(path)
+	if err != nil {
+		return true
+	}
+	var proj pomProject
+	if err := unmarshalPOM(data, &proj); err != nil {
+		return true
+	}
+	ref := proj.Parent
+	if strings.TrimSpace(ref.ArtifactID) == "" && strings.TrimSpace(ref.GroupID) == "" {
+		return false
+	}
+	rel := "../pom.xml"
+	if ref.RelativePath != nil {
+		rel = strings.TrimSpace(*ref.RelativePath)
+	}
+	if rel == "" {
+		return true
+	}
+	parent := filepath.Join(filepath.Dir(path), filepath.FromSlash(rel))
+	if !strings.HasSuffix(strings.ToLower(rel), ".xml") {
+		parent = filepath.Join(parent, "pom.xml")
+	}
+	if !inSet[filepath.Clean(parent)] {
+		return true
+	}
+	data, err = readRegular(parent)
+	if err != nil {
+		return true
+	}
+	var local pomProject
+	if err := unmarshalPOM(data, &local); err != nil {
+		return true
+	}
+	g, a, v := strings.TrimSpace(local.GroupID), strings.TrimSpace(local.ArtifactID), strings.TrimSpace(local.VersionElem)
+	if g == "" {
+		g = strings.TrimSpace(local.Parent.GroupID)
+	}
+	if v == "" {
+		v = strings.TrimSpace(local.Parent.Version)
+	}
+	return a == "" || g != strings.TrimSpace(ref.GroupID) || a != strings.TrimSpace(ref.ArtifactID) || v != strings.TrimSpace(ref.Version)
 }
 
 // pinnedVersion reports whether v is a plain release version: a digit first, then only letters,
@@ -368,8 +424,10 @@ type pomProject struct {
 }
 
 type pomParent struct {
-	GroupID string `xml:"groupId"`
-	Version string `xml:"version"`
+	GroupID      string  `xml:"groupId"`
+	ArtifactID   string  `xml:"artifactId"`
+	Version      string  `xml:"version"`
+	RelativePath *string `xml:"relativePath"`
 }
 
 type pomDep struct {

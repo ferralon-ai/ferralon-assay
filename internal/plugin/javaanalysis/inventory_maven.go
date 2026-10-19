@@ -103,7 +103,7 @@ func (c *mavenCache) digestFor(g, a, v string) string {
 			if st != cacheHit {
 				continue
 			}
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readRegular(path); err == nil {
 				if h := strings.TrimSpace(string(data)); h != "" {
 					return "sha1:" + strings.Fields(h)[0]
 				}
@@ -273,7 +273,7 @@ func convDeps(in []xmlDep) []mvnDep {
 // parseMavenPOM reads and binds one pom.xml. ok is false only when the file is unreadable or the
 // XML is structurally unparseable (the caller records a cache-miss/residue, never a guess).
 func parseMavenPOM(path string) (*mvnPOM, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

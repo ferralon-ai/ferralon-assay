@@ -2,16 +2,15 @@
 //
 // compiledb parses compile_commands.json into per-TU build context (file, c or c++, std, target,
 // compiler), deriveBuildContext turns that into the lane's toolchains and generators, and
-// ResolveDependencyVersions reads Conan and vcpkg manifests. C++ TUs are carried through all of
-// it exactly as C TUs are.
+// ResolveDependencyVersions and ResolveInventory read Conan and vcpkg manifests. C++ TUs are
+// carried through all of it exactly as C TUs are.
 //
 // The graph operations (IndexSymbols, CallGraph, FindIngresses, Reachability, ComputeTaint, and
 // ResolveDependencySymbols for a named symbol) are served by the cgx lane, which links only into
 // the assay-plugin-cfamily subprocess binary (inv.8), never into the host binary. This package
 // hands that lane its inputs (ReadGraphSources) and declares the C/C++ norm, an advisory that
-// names no vulnerable symbol, without consulting any engine. GenerateHarness and
-// ResolveInventory return declared partiality (Unsupported), never an empty-but-complete result
-// (inv.5).
+// names no vulnerable symbol, without consulting any engine. GenerateHarness returns declared
+// partiality (Unsupported), never an empty-but-complete result (inv.5).
 package cfamilyanalysis
 
 import (
@@ -49,23 +48,17 @@ func GenerateHarness(_ context.Context, _ plugin.GenerateHarnessRequest) (plugin
 	return plugin.HarnessResult{Partiality: plugin.Unsupported()}, nil
 }
 
-// ResolveInventory is contract-present but unimplemented at Phase 0. It returns an honestly-partial
-// inventory (Unsupported), NOT an empty-but-successful one — a zero-node Complete() inventory would
-// read downstream as "this build has no dependencies".
-func ResolveInventory(_ context.Context, _ plugin.ResolveInventoryRequest) (plugin.DependencyInventory, error) {
-	return plugin.DependencyInventory{Partiality: plugin.Unsupported()}, nil
-}
-
 // manifestContentVersion is the C-family capability manifest's content version; it bumps when a
 // later increment adds a supported axis.
-const manifestContentVersion = "1.1.0"
+const manifestContentVersion = "1.2.0"
 
 // CapabilityManifest returns the C-family lane's capability manifest. Every listed axis is one
 // the lane does today; all slices are pre-sorted. It is a static fact and takes no input.
 //
 //   - Resolvers: the files the lane reads. compile_commands.json and CMakeCache.txt give the
-//     build context; conan.lock, conanfile.txt and vcpkg.json give dependency versions (exact
-//     pins only, everything else fails open).
+//     build context; conan.lock, conanfile.txt, vcpkg's installed status and vcpkg.json give
+//     the inventory (exact pins only, everything else fails open). Dependency versions are
+//     reported found and unresolved: a pin does not prove the package is the build's only copy.
 //   - Runtimes: c and c++. Both run through the same cgx tree-sitter graph; C++ is a stepping
 //     stone (no template, overload or exception precision) and declares its residue.
 //   - GraphSemantics: direct, cgx's resolved direct calls; fn_ptr_candidate, cgx's possible-tier
@@ -87,6 +80,7 @@ func CapabilityManifest() capability.Manifest {
 			"conan.lock",
 			"conanfile.txt",
 			"vcpkg.json",
+			"vcpkg_installed/vcpkg/status",
 		},
 		Runtimes:       []string{"c", "c++"},
 		GraphSemantics: []string{"direct", "fn_ptr_candidate", "virtual_candidate"},

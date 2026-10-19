@@ -124,6 +124,20 @@ func TestCacheReads_RefuseAFIFO(t *testing.T) {
 	if _, err := readRegular(fifo); err == nil {
 		t.Error("readRegular read a FIFO")
 	}
+	// A cached name that links, inside the cache, to a FIFO is judged by what it resolves to.
+	link := filepath.Join(root, "com", "x", "w", "1.0", "w-1.0.jar")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fifo, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, st := inCache(root, filepath.Join("com", "x", "w", "1.0", "w-1.0.jar")); st != cacheEscape {
+		t.Errorf("inCache on a link to a FIFO = %v, want cacheEscape", st)
+	}
+	if _, err := readRegular(link); err == nil {
+		t.Error("readRegular read a FIFO through a link")
+	}
 }
 
 func TestMavenRepoRoots_IncludesProjectLocalCache(t *testing.T) {

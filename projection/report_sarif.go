@@ -73,7 +73,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			props["reachable_path"] = f.Evidence.ReachablePath
 		}
 		if f.Package != nil {
-			props["package"] = fmt.Sprintf("%s:%s@%s", f.Package.Ecosystem, f.Package.Name, f.Package.Version)
+			props["package"] = f.Package.Ecosystem + ":" + f.Package.Label()
 		}
 		if f.Advisory.Source != "" {
 			props["source"] = f.Advisory.Source

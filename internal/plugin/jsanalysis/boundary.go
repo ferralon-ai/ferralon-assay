@@ -245,11 +245,16 @@ type buildPackages struct {
 	inTree   map[string]bool
 	declared map[string]bool
 	locked   map[string]bool // keyed by originPURL
+	// unread is set when a package.json exists that could not be read: its name and
+	// dependencies are unknown, so no package is taken to be a dependency.
+	unread bool
 }
 
 func readBuildPackages(ctx context.Context, buildDir string) buildPackages {
 	bp := buildPackages{inTree: map[string]bool{}, declared: map[string]bool{}, locked: map[string]bool{}}
-	for _, mf := range manifestsUnder(buildDir) {
+	manifests, read := manifestsUnder(buildDir)
+	bp.unread = !read
+	for _, mf := range manifests {
 		if mf.pkg.Name != "" {
 			bp.inTree[strings.ToLower(mf.pkg.Name)] = true
 		}
@@ -272,7 +277,7 @@ func readBuildPackages(ctx context.Context, buildDir string) buildPackages {
 // isDependency reports whether name is a package this build depends on rather than one of
 // its own: declared or locked, and not the name of any in-tree package.json.
 func (bp buildPackages) isDependency(name string) bool {
-	if name == "" || bp.inTree[name] {
+	if name == "" || bp.unread || bp.inTree[name] {
 		return false
 	}
 	return bp.declared[name] || bp.locked[originPURL(name)]

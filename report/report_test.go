@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
@@ -213,4 +214,23 @@ func TestReportValidate_Undetermined(t *testing.T) {
 			t.Fatal("expected error: a grade refines only a reachable_candidate")
 		}
 	})
+}
+
+func TestPackageLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pkg  Package
+		want string
+	}{
+		{"resolved", Package{Name: "golang.org/x/text", Version: "v0.3.7"}, "golang.org/x/text@v0.3.7"},
+		{"resolved with a package-scoped limit", Package{Name: "lodash", Version: "4.17.20", PartialReason: plugin.PartialReasonToolFailure}, "lodash@4.17.20"},
+		{"observed, not resolved", Package{Name: "zlib", Version: "1.2.11", PartialReason: plugin.PartialReasonSourceUnpinned + ":sole_source_unproven"}, "zlib (pinned 1.2.11, not resolved)"},
+		{"no version", Package{Name: "zlib", PartialReason: plugin.PartialReasonLockfileAmbiguous}, "zlib"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.pkg.Label(); got != tc.want {
+				t.Errorf("Label() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }

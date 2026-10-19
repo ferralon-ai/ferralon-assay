@@ -107,14 +107,15 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest) (pl
 }
 
 // manifestToPyReqs parses one recognized manifest into selected-set pyReq records for the
-// declared environment. The three edge-bearing / marker-aware formats route through their
-// selected-set parsers (requirements*.txt -> resolveRequirements, pdm.lock -> parsePDMLock,
-// uv.lock -> parseUVLock, all E1-E4). The three formats whose inventory-level edge extraction
-// is deferred (poetry.lock, Pipfile.lock, pyproject.toml — see e5-notes) are lifted from their
-// existing advisory resolution so their packages are still inventoried (never silently
-// dropped), conservatively classified relUnexpressed so no edge is inferred that was not read.
+// declared environment. The edge-bearing / marker-aware formats route through their
+// selected-set parsers (requirements*.txt -> resolveRequirements, with pip-compile "# via"
+// edges; pdm.lock -> parsePDMLock; uv.lock -> parseUVLock; poetry.lock ->
+// parsePoetryLockSelected). Formats that carry no edges (Pipfile.lock) or only declare
+// specifiers (pyproject.toml, setup.cfg, setup.py, hatch_build.py) are lifted from their
+// advisory resolution so their packages are still inventoried (never silently dropped),
+// classified relUnexpressed so no edge is inferred that was not read.
 func manifestToPyReqs(path string, env map[string]string, selection []string) ([]pyReq, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}
@@ -132,24 +133,38 @@ func manifestToPyReqs(path string, env map[string]string, selection []string) ([
 		}
 		return reqs, true
 	case "poetry.lock":
-		deps, ok := parsePoetryLock(data)
-		return liftAdvisory(deps, "poetry.lock"), ok
+		reqs, err := parsePoetryLockSelected(data, env, selection)
+		if err != nil {
+			return nil, false
+		}
+		return reqs, true
 	case "Pipfile.lock":
 		deps, ok := parsePipfileLock(data)
 		return liftAdvisory(deps, "Pipfile.lock"), ok
 	case "pyproject.toml":
-		deps, ok := parsePyproject(data)
+		deps, ok := parsePyproject(path, data)
 		return liftAdvisory(deps, "pyproject.toml"), ok
+	case "setup.cfg":
+		deps, ok := parseSetupCfg(path, data)
+		return liftAdvisory(deps, "setup.cfg"), ok
+	case "setup.py":
+		deps, ok := parseSetupPy(data)
+		return liftAdvisory(deps, "setup.py"), ok
+	case "hatch_build.py":
+		deps, ok := parseHatchBuild(data)
+		return liftAdvisory(deps, "hatch_build.py"), ok
 	default: // requirements*.txt
-		return resolveRequirements(data, env, selection), true
+		reqs := resolveRequirements(data, env, selection)
+		applyViaEdges(reqs, pipCompileVia(data))
+		return reqs, true
 	}
 }
 
 // liftAdvisory projects an advisory-path []plugin.ResolvedDependency onto selected-set pyReq
-// records for a format whose inventory-level edge/marker reading is deferred this cycle. Each
-// package is Selected (it is in the declared set) and relUnexpressed (this cycle derives no
-// edges for it, so it is neither claimed direct nor given an inferred parent — C4 safe). An
-// unresolved (range / unlocked) coordinate carries source_unpinned; the exact installed
+// records for a format that expresses no edges. Each package is Selected (it is in the declared
+// set) and relUnexpressed (no edge was read for it, so it is neither claimed direct nor given an
+// inferred parent — C4 safe). An unresolved (range / unlocked) coordinate carries
+// source_unpinned; the exact installed
 // identity is undetermined without a fetch, never guessed.
 func liftAdvisory(deps []plugin.ResolvedDependency, source string) []pyReq {
 	out := make([]pyReq, 0, len(deps))
@@ -253,8 +268,8 @@ func nodeProvenance(r pyReq, runtime, target string) plugin.DependencyProvenance
 		p.Lockfile, p.Resolver = "poetry.lock", "poetry"
 	case "Pipfile.lock":
 		p.Lockfile, p.Resolver = "Pipfile.lock", "pipenv"
-	case "pyproject.toml":
-		p.Manifest, p.Resolver = "pyproject.toml", "pip"
+	case "pyproject.toml", "setup.cfg", "setup.py", "hatch_build.py":
+		p.Manifest, p.Resolver = r.Source, "pip"
 	default: // requirements.txt
 		p.Manifest, p.Resolver = "requirements.txt", "pip"
 	}

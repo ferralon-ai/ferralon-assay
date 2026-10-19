@@ -21,8 +21,10 @@ const reasonMultipleProjectsUnsupported = "multiple_projects_unsupported"
 // inverted: anything that can name a second project counts unless it is read in full and names
 // none. Maven: a POM that lists <modules>, in any profile too, or more than one pom.xml. Gradle:
 // a root settings script that includes more than one project, or one beside root code, or that
-// includes a build, or that cannot be read; a settings script below the root; or more than one
-// build script beside a src directory. The walk enters every directory but VCS metadata,
+// includes a build, or that cannot be read; a settings script below the root; with a Gradle build
+// script anywhere in the tree, a settings script above the root that Gradle could take instead
+// (gradleAncestorFile), whose root project is a second one; or more than one build script
+// beside a src directory. The walk enters every directory but VCS metadata,
 // installed-package trees and the local dependency caches, since a project in bin/ or a dot-dir
 // is still a project; anything it cannot read (see walkProjectTree) counts too. why names the
 // evidence, for the partiality path.
@@ -33,6 +35,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 	}
 	tree := walkProjectTree(buildDir, skip)
 	var poms, gradle, settings []string
+	gradleScripts := false
 	for _, path := range tree.files {
 		switch filepath.Base(path) {
 		case "pom.xml":
@@ -40,6 +43,7 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 		case "settings.gradle", "settings.gradle.kts":
 			settings = append(settings, path)
 		case "build.gradle", "build.gradle.kts":
+			gradleScripts = true
 			if info, err := os.Stat(filepath.Join(filepath.Dir(path), "src")); err == nil && info.IsDir() {
 				gradle = append(gradle, path)
 			}
@@ -71,6 +75,11 @@ func multipleProjects(buildDir string) (multi bool, why string) {
 			return true, relSlash(buildDir, p) + " includes " + strings.Join(projects, ", ")
 		}
 	}
+	if gradleScripts {
+		if path, found := gradleAncestorFile(buildDir, "settings.gradle", "settings.gradle.kts"); found {
+			return true, filepath.ToSlash(path) + " can define the build from above it"
+		}
+	}
 	if len(gradle) > 1 {
 		sort.Strings(gradle)
 		return true, relSlash(buildDir, gradle[0]) + ", " + relSlash(buildDir, gradle[1])
@@ -90,7 +99,8 @@ type projectTree struct {
 // walkProjectTree walks root in lexical order without following a symlink. It enters every
 // directory except one projectWalkSkip names or one whose path is in skip. What it cannot vouch
 // for having read goes in unread: the root or a directory that cannot be read, a symlink that
-// does not resolve or resolves outside root, and a symlinked directory whose target the walk
+// does not resolve or resolves outside root, anything other than a directory or regular file
+// (itself or, for a symlink, its target), and a symlinked directory whose target the walk
 // does not itself enter. An in-root symlinked directory whose target it does enter is read at
 // that target's real path, so it costs nothing; a link back to an ancestor is that case, which
 // is what keeps the walk cycle-safe without following links. A symlink at a skip path, or one a
@@ -128,8 +138,10 @@ func walkProjectTree(root string, skip map[string]bool) projectTree {
 				if !projectWalkSkip(d.Name()) {
 					linked = append(linked, link{path, target})
 				}
-			default:
+			case isRegularPath(target):
 				tree.files = append(tree.files, path)
+			default:
+				tree.unread = append(tree.unread, path)
 			}
 			return nil
 		}
@@ -141,6 +153,10 @@ func walkProjectTree(root string, skip map[string]bool) projectTree {
 			if rel, err := filepath.Rel(root, path); err == nil {
 				walked[filepath.Join(realRoot, rel)] = true
 			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			tree.unread = append(tree.unread, path) // a FIFO, socket or device: reading it could block
 			return nil
 		}
 		tree.files = append(tree.files, path)
@@ -170,6 +186,11 @@ func isDirPath(path string) bool {
 	return err == nil && info.IsDir()
 }
 
+func isRegularPath(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // projectWalkSkip names the directories the project walk never enters: VCS metadata and
 // installed-package trees, which hold no project of this build.
 func projectWalkSkip(name string) bool {
@@ -184,7 +205,7 @@ func projectWalkSkip(name string) bool {
 // profile. A profile's modules join the reactor whenever the profile is active. A POM that
 // cannot be read or parsed may list any, so it counts as listing them.
 func pomListsModules(path string) bool {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return true
 	}
@@ -222,7 +243,7 @@ var (
 // move one out of the tree or change how the build resolves, so ok is false; so is a script
 // that cannot be read or whose comments cannot be stripped reliably.
 func gradleSettingsProjects(path string) ([]string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := readRegular(path)
 	if err != nil {
 		return nil, false
 	}

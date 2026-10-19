@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -250,6 +251,55 @@ func hasStr(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestMaven_ManagementOverridesTransitiveVersion: the root module's dependencyManagement, imported
+// BOMs included, decides a transitive's version over the one its parent's POM declares (Maven's
+// rule); a direct declaration's own version still beats management.
+func TestMaven_ManagementOverridesTransitiveVersion(t *testing.T) {
+	const (
+		jackson = `<groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId>`
+		top     = `<dependency><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version></dependency>`
+		bom     = `<dependency><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>`
+	)
+	tests := []struct {
+		name, mgmt, deps, want string
+	}{
+		{name: "imported BOM pins the transitive", mgmt: bom, deps: top, want: "2.15.2"},
+		{name: "root dependencyManagement pins the transitive", mgmt: `<dependency>` + jackson + `<version>2.14.0</version></dependency>`, deps: top, want: "2.14.0"},
+		{name: "unmanaged transitive keeps its declared version", deps: top, want: "2.13.0"},
+		{name: "direct declaration beats management", mgmt: bom, deps: top + `<dependency>` + jackson + `<version>2.12.0</version></dependency>`, want: "2.12.0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, m2 := t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(dir, "pom.xml"), `<project>
+<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
+<dependencyManagement><dependencies>`+tt.mgmt+`</dependencies></dependencyManagement>
+<dependencies>`+tt.deps+`</dependencies></project>`)
+			writeCachePOM(t, m2, "org.bom", "bom", "1.0", `<project><groupId>org.bom</groupId><artifactId>bom</artifactId><version>1.0</version><packaging>pom</packaging>
+<dependencyManagement><dependencies><dependency>`+jackson+`<version>2.15.2</version></dependency></dependencies></dependencyManagement></project>`)
+			writeCachePOM(t, m2, "org.top", "top", "1.0", `<project><groupId>org.top</groupId><artifactId>top</artifactId><version>1.0</version>
+<dependencies><dependency>`+jackson+`<version>2.13.0</version></dependency></dependencies></project>`)
+			for _, v := range []string{"2.12.0", "2.13.0", "2.14.0", "2.15.2"} {
+				writeCachePOM(t, m2, "com.fasterxml.jackson.core", "jackson-databind", v, `<project>`+jackson+`<version>`+v+`</version></project>`)
+			}
+
+			inv := toJSON(t, resolveMaven(dir, findPOMs(dir), newMavenCacheAt(m2), nil))
+			var got []string
+			for _, n := range inv.Nodes {
+				if strings.HasPrefix(n.PURL, "pkg:maven/com.fasterxml.jackson.core/jackson-databind@") {
+					got = append(got, n.Version)
+				}
+			}
+			if len(got) != 1 || got[0] != tt.want {
+				t.Errorf("jackson-databind versions = %v, want [%s]", got, tt.want)
+			}
+			if !inv.Partiality.Complete {
+				t.Errorf("inventory partial: %v", inv.Partiality.Reasons)
+			}
+		})
+	}
 }
 
 // A dependency declared with a classifier or a non-jar type names a different file than the

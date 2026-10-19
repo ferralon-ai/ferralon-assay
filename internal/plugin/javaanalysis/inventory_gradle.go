@@ -95,7 +95,7 @@ func (c *gradleCache) digest(g, a, v string) string {
 			if st != cacheHit {
 				continue
 			}
-			if data, err := os.ReadFile(path); err == nil {
+			if data, err := readRegular(path); err == nil {
 				if s := strings.TrimSpace(string(data)); s != "" {
 					return "sha1:" + strings.Fields(s)[0]
 				}
@@ -115,15 +115,52 @@ type lockedEntry struct {
 
 func (e lockedEntry) ga() string { return e.group + ":" + e.artifact }
 
+// gradleProjectLock is one project's lock state per configuration: the configurations its lock
+// holds an entry for, and those an "empty=" line names.
+type gradleProjectLock struct {
+	entries, empty map[string]bool
+}
+
+// gradleConfigPinned reports whether Gradle resolves a project's configuration only to versions
+// its lock state holds. A project whose legacy lock directory could hold lock state
+// (gradleLegacyLocks) is never pinned, whatever gradle.lockfile says: which of the two Gradle
+// binds isn't decided here, and the legacy lines aren't read as versions. Otherwise, in the
+// default lock mode a configuration with no lock state, or with empty lock state, is not
+// constrained at all, so it is pinned only when the lock holds an entry for it. STRICT mode fails
+// the build for a configuration with no lock state, so there it is pinned unless an "empty=" line
+// names it.
+func gradleConfigPinned(dir string, lock *gradleProjectLock, strict bool, conf string) bool {
+	if gradleLegacyLocks(dir) {
+		return false
+	}
+	if lock != nil && lock.entries[conf] {
+		return true
+	}
+	return strict && (lock == nil || !lock.empty[conf])
+}
+
+// gradleLegacyLocks reports whether project dir's gradle/dependency-locks could hold lock state.
+// Gradle reads gradle/dependency-locks/<configuration>.lockfile as a configuration's lock state,
+// and this reader does not take those lines as versions, so a configuration may be pinned to
+// versions not read here. The directory present, or not ruled absent (an error other than
+// not-exist), counts.
+func gradleLegacyLocks(dir string) bool {
+	_, err := os.Lstat(filepath.Join(dir, "gradle", "dependency-locks"))
+	return err == nil || !missing(err)
+}
+
 // readLockfiles parses every lock state Gradle itself reads under root (see gradleLockProject).
-// Lines are "g:a:v=conf1,conf2"; "empty=..." and comments are ignored. Returns the merged
+// Lines are "g:a:v=conf1,conf2" or "empty=conf1,conf2"; comments are ignored. Returns the merged
 // map "g:a:v" -> entry (configs accumulated), the set of lockfile rel paths, whether any lockfile
-// existed at all, and every line that is neither of those nor a coordinate ("file:line").
+// existed at all, every line that is neither of those nor a coordinate ("file:line"), and each
+// project's lock state per configuration (project dir -> state).
 // A group:artifact locked at two versions (compileClasspath at one, runtimeClasspath at another,
 // or different lockfiles) keeps both: either can be the code that runs.
-func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []string) {
+func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []string, map[string]*gradleProjectLock) {
 	out := map[string]*lockedEntry{}
+	state := map[string]*gradleProjectLock{}
 	var files, unparsed []string
+	projects, _ := gradleProjects(root)
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr
@@ -134,23 +171,32 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 			}
 			return nil
 		}
-		project, ok := gradleLockProject(root, path)
+		project, ok := gradleLockProject(root, path, projects)
 		if !ok {
 			return nil
 		}
 		rel := relToBase(root, path)
 		files = append(files, rel)
-		data, rerr := os.ReadFile(path)
+		data, rerr := readRegular(path)
 		if rerr != nil {
 			unparsed = append(unparsed, rel)
 			return nil
 		}
+		if state[project] == nil {
+			state[project] = &gradleProjectLock{entries: map[string]bool{}, empty: map[string]bool{}}
+		}
 		for n, line := range strings.Split(string(data), "\n") {
 			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "empty=") {
+			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
 			coord, configs, ok := splitLockLine(line)
+			if coord == "empty" {
+				for _, c := range configs {
+					state[project].empty[c] = true
+				}
+				continue
+			}
 			if !ok {
 				unparsed = append(unparsed, rel+":"+strconv.Itoa(n+1))
 				continue
@@ -159,6 +205,9 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 			if !ok {
 				unparsed = append(unparsed, rel+":"+strconv.Itoa(n+1))
 				continue
+			}
+			for _, c := range configs {
+				state[project].entries[c] = true
 			}
 			key := g + ":" + a + ":" + v
 			if e, seen := out[key]; seen {
@@ -172,15 +221,18 @@ func readLockfiles(root string) (map[string]*lockedEntry, []string, bool, []stri
 	})
 	sort.Strings(files)
 	sort.Strings(unparsed)
-	return out, files, len(files) > 0, unparsed
+	return out, files, len(files) > 0, unparsed, state
 }
 
 // gradleLockProject reports whether path is where Gradle keeps a project's lock state, and
 // returns that project's directory: gradle.lockfile in the project directory, or
-// <configuration>.lockfile in its gradle/dependency-locks. A project directory is root or one
-// holding a build script. A *.lockfile anywhere else (a test resource, a fixture, the
-// buildscript or settings lock) is nothing Gradle resolves the build's dependencies from.
-func gradleLockProject(root, path string) (string, bool) {
+// <configuration>.lockfile in its gradle/dependency-locks. A project directory is one in
+// projects (see gradleProjects); when the settings script cannot be read in full (projects is
+// nil), it is root or one holding a build script, and unconfirmedLocks confirms none of them. A
+// *.lockfile anywhere else (a test resource, a fixture, a directory the settings script does not
+// include, the buildscript or settings lock) is nothing Gradle resolves the build's dependencies
+// from.
+func gradleLockProject(root, path string, projects map[string]bool) (string, bool) {
 	dir, name := filepath.Dir(path), filepath.Base(path)
 	switch {
 	case name == "gradle.lockfile":
@@ -188,6 +240,9 @@ func gradleLockProject(root, path string) (string, bool) {
 		dir = filepath.Dir(filepath.Dir(dir))
 	default:
 		return "", false
+	}
+	if projects != nil {
+		return dir, projects[dir]
 	}
 	if dir == filepath.Clean(root) || len(gradleScriptsIn(dir)) > 0 {
 		return dir, true
@@ -232,7 +287,7 @@ type catalogEntry struct{ group, artifact, version string }
 // (module/group+name, literal version or version.ref). Only literal or ref-resolved versions are
 // kept; anything else is left unresolved (never guessed). Returns coord "g:a" -> entry.
 func readCatalog(root string) map[string]catalogEntry {
-	data, err := os.ReadFile(filepath.Join(root, "gradle", "libs.versions.toml"))
+	data, err := readRegular(filepath.Join(root, "gradle", "libs.versions.toml"))
 	if err != nil {
 		return nil
 	}
@@ -345,7 +400,7 @@ func stripTOMLComment(line string) string {
 // resolveGradle builds the selected graph by joining locked versions (nodes) with cached-POM
 // edges. No lockfile ⇒ declared-direct only with the gradle_transitive residue.
 func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInventory {
-	locked, lockFiles, haveLock, unparsed := readLockfiles(buildDir)
+	locked, lockFiles, haveLock, unparsed, lockState := readLockfiles(buildDir)
 	catalog := readCatalog(buildDir)
 	declared := gradleDeclaredDirect(buildDir) // "g:a" -> declared (script/catalog) direct set
 
@@ -373,7 +428,7 @@ func resolveGradle(buildDir string, cache *gradleCache) plugin.DependencyInvento
 		// A line that is not a coordinate may lock one: the node set is not known in full.
 		reasons = mergeReasons(reasons, reasonGradleLockUnparsed)
 	}
-	unconfirmed := unconfirmedLocks(buildDir, lockFiles, locked, catalog)
+	unconfirmed := unconfirmedLocks(buildDir, locked, lockState)
 	nodeAt := map[string]int{} // locked key -> index of its node
 	for _, k := range keys {
 		e := locked[k]
@@ -531,31 +586,53 @@ func splitGA(k string) (g, a string) {
 	return k, ""
 }
 
-// unconfirmedLocks returns the group:artifacts whose locked versions the build scripts do not
+// unconfirmedLocks returns the group:artifacts whose locked versions the build does not
 // confirm. A lock outlives the script edit that stales it, and Gradle reads it only for the
-// configurations locking covers. Each project's lock is checked against the scripts that
-// declare for that project: its own build script and, for a subproject, the root's (whose
-// allprojects/subprojects blocks reach it). A GA's locked versions stand only when every such
-// declaration is consistent with that project's lock: a literal version must be one it holds,
-// and a dynamic, interpolated or absent one (a platform or constraint supplies it) is
-// consistent only when locking is enforced for the project, since then Gradle fails any
-// resolution that departs from the lock. A declaration the project's lock lacks, while some
-// other lock holds the GA, leaves it unconfirmed too, and a script that cannot be read
-// confirms nothing in its project's lock. A catalog alias's version stands in for a
-// declaration that has none.
-func unconfirmedLocks(root string, lockFiles []string, locked map[string]*lockedEntry, catalog map[string]catalogEntry) map[string]bool {
-	byProject := map[string]map[string]map[string]bool{} // project dir -> "g:a" -> versions
-	for _, rel := range lockFiles {
-		if dir, ok := gradleLockProject(root, filepath.Join(root, filepath.FromSlash(rel))); ok {
-			byProject[dir] = map[string]map[string]bool{} // a lock that holds nothing still answers for its project
+// configurations locking covers. Nothing is confirmed unless every script Gradle would evaluate
+// is made of SAFE statements (gradleBuildSafe): any other statement, unread script, buildSrc,
+// init script or settings construct can move a version, so every locked GA is unconfirmed. The
+// projects are root and those the root settings script includes (see gradleProjects); each,
+// with or without a lock, is checked against the scripts that declare for it: its own build
+// script and, for a subproject, the root's, whose allprojects/subprojects blocks reach it. A
+// project's locked GAs stand only when the project locks every configuration
+// (gradleLockingEnforced); a project with no locking statement leaves its lock unread by Gradle.
+// Locking constrains only a configuration with lock state, so the project's runtimeClasspath
+// must also be pinned (gradleConfigPinned): an entry for it in the lock, or STRICT mode with no
+// "empty=" line naming it. A project whose runtimeClasspath is not pinned, or whose lock holds
+// nothing (or that has none), but whose scripts declare anything may resolve any GA, transitively
+// too, so it confirms no lock. Otherwise every declaration must be consistent with that project's
+// lock: a literal version must be one it holds, a dynamic one passes (Gradle fails a pinned
+// configuration's resolution that the lock state does not hold), and a declaration with no
+// version, or one the project's lock lacks, leaves the GA unconfirmed.
+func unconfirmedLocks(root string, locked map[string]*lockedEntry, state map[string]*gradleProjectLock) map[string]bool {
+	out := map[string]bool{}
+	all := func() map[string]bool {
+		for _, e := range locked {
+			out[e.ga()] = true
 		}
+		return out
+	}
+	if _, ok := gradleBuildSafe(root); !ok {
+		return all()
+	}
+	projects, ok := gradleProjects(root)
+	if !ok {
+		return all()
+	}
+	rootSrcs, ok := readGradleSources(gradleScriptsIn(root))
+	if !ok {
+		return all()
+	}
+	byProject := map[string]map[string]map[string]bool{} // project dir -> "g:a" -> versions
+	for dir := range projects {
+		byProject[dir] = map[string]map[string]bool{}
 	}
 	anyLock := map[string]bool{}
 	for _, e := range locked {
 		anyLock[e.ga()] = true
 		for _, dir := range e.projects {
 			if byProject[dir] == nil {
-				byProject[dir] = map[string]map[string]bool{}
+				return all() // a lock outside the project set: readLockfiles and the set disagree
 			}
 			if byProject[dir][e.ga()] == nil {
 				byProject[dir][e.ga()] = map[string]bool{}
@@ -563,21 +640,38 @@ func unconfirmedLocks(root string, lockFiles []string, locked map[string]*locked
 			byProject[dir][e.ga()][e.version] = true
 		}
 	}
-	out := map[string]bool{}
 	for dir, versions := range byProject {
-		scripts := gradleScriptsIn(dir)
-		if filepath.Clean(dir) != filepath.Clean(root) {
-			scripts = append(scripts, gradleScriptsIn(root)...)
+		own, inherited := rootSrcs, []string(nil)
+		if dir != filepath.Clean(root) {
+			if own, ok = readGradleSources(gradleScriptsIn(dir)); !ok {
+				return all()
+			}
+			inherited = rootSrcs
 		}
-		declarations, readAll := gradleDeclarations(scripts)
-		if !readAll {
+		declarations := gradleDeclarations(append(append([]string{}, own...), inherited...))
+		if len(versions) == 0 {
+			if len(declarations) > 0 {
+				return all() // what a project that locks nothing resolves, transitively too, is unknown
+			}
+			continue
+		}
+		enforced, strict := gradleLockingEnforced(own, inherited)
+		if !enforced {
 			for ga := range versions {
 				out[ga] = true
 			}
 			continue
 		}
-		enforced := gradleLockingEnforced(scripts)
-		for ga, decls := range declarations {
+		if !gradleConfigPinned(dir, state[dir], strict, "runtimeClasspath") {
+			if len(declarations) > 0 {
+				return all() // an unpinned runtimeClasspath resolves whatever it is asked for
+			}
+			for ga := range versions {
+				out[ga] = true
+			}
+			continue
+		}
+		for ga, declared := range declarations {
 			if !anyLock[ga] {
 				continue // absent from every lock: the caller reports it unresolved
 			}
@@ -585,18 +679,8 @@ func unconfirmedLocks(root string, lockFiles []string, locked map[string]*locked
 				out[ga] = true
 				continue
 			}
-			for _, d := range decls {
-				v := d.Version
-				if !d.Resolved {
-					v = catalog[ga].version
-				}
-				if !exactGradleVersion(v) {
-					v = "" // a range, dynamic selector or interpolation names no one version
-				}
-				if v == "" && enforced {
-					continue
-				}
-				if !versions[ga][v] {
+			for _, v := range declared {
+				if v == "" || exactGradleVersion(v) && !versions[ga][v] {
 					out[ga] = true
 				}
 			}
@@ -605,36 +689,295 @@ func unconfirmedLocks(root string, lockFiles []string, locked map[string]*locked
 	return out
 }
 
-// gradleScriptsIn returns the build scripts directly in dir that are regular files.
+// gradleProjects returns the directories of root and of every project the root settings script
+// creates. An include creates the project it names and each project on its path: "a:b" creates
+// :a at a and :a:b at a/b. ok is false when a settings script exists but cannot be read in full
+// (gradleSettingsProjects), or a path has an empty segment, since then any directory could be a
+// project.
+func gradleProjects(root string) (map[string]bool, bool) {
+	projects := map[string]bool{filepath.Clean(root): true}
+	for _, path := range gradleSettingsIn(root) {
+		names, ok := gradleSettingsProjects(path)
+		if !ok {
+			return nil, false
+		}
+		for _, n := range names {
+			dir := filepath.Clean(root)
+			for _, seg := range strings.Split(strings.TrimPrefix(n, ":"), ":") {
+				if seg == "" {
+					return nil, false
+				}
+				dir = filepath.Join(dir, seg)
+				projects[dir] = true
+			}
+		}
+	}
+	return projects, true
+}
+
+// gradleSettingsIn returns the settings scripts at root: every name present, readable or not.
+func gradleSettingsIn(root string) []string {
+	return gradleFilesIn(root, "settings.gradle", "settings.gradle.kts")
+}
+
+// gradleScriptsIn returns the build scripts directly in dir: every name present, readable or
+// not, so one that is not a regular file is read, and fails, rather than skipped.
 func gradleScriptsIn(dir string) []string {
+	return gradleFilesIn(dir, "build.gradle", "build.gradle.kts")
+}
+
+func gradleFilesIn(dir string, names ...string) []string {
 	var out []string
-	for _, name := range []string{"build.gradle", "build.gradle.kts"} {
+	for _, name := range names {
 		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		if _, err := os.Lstat(path); err == nil || !missing(err) {
 			out = append(out, path)
 		}
 	}
 	return out
 }
 
-// gradleLockingEnforced reports whether scripts lock every configuration in Gradle's default,
-// strict mode (dependencyLocking { lockAllConfigurations() } with no LENIENT in any of them).
-// Locking set up any other way (per configuration, in a plugin or an init script) is not
-// recognized, and a declaration only the lock can version then stays unconfirmed.
-func gradleLockingEnforced(scripts []string) bool {
-	all := false
-	for _, gp := range scripts {
-		data, err := os.ReadFile(gp)
+// readGradleSources reads each script with readRegular and strips its comments. ok is false
+// when one cannot be read or its comments cannot be stripped reliably.
+func readGradleSources(paths []string) ([]string, bool) {
+	var out []string
+	for _, p := range paths {
+		data, err := readRegular(p)
 		if err != nil {
-			return false
+			return nil, false
 		}
-		src := stripGradleComments(string(data))
-		if strings.Contains(src, "LENIENT") {
-			return false
+		src, ok := stripGradleCommentsChecked(string(data))
+		if !ok {
+			return nil, false
 		}
-		all = all || strings.Contains(src, "lockAllConfigurations()")
+		out = append(out, src)
 	}
-	return all
+	return out, true
+}
+
+// gradleLockingEnforced reports whether a project locks every configuration, and whether in
+// STRICT mode, from its own build script sources (comment-stripped) and, for a subproject, the
+// root's. Gradle's default lock mode is not STRICT: it constrains only the configurations that
+// have lock state (gradleConfigPinned). The recognizer is an allow-list: the project's own script
+// must hold dependencyLocking { lockAllConfigurations() } as a top-level statement, that call
+// alone in the block or with a STRICT lock mode (gradleLockingBody), and nothing else in its
+// script or the root's may touch locking (another dependencyLocking, a lock mode, LENIENT,
+// lockAllConfigurations anywhere else). Only the root's own top-level statement of that shape is
+// allowed there, since it locks the root project alone. A statement inside buildscript {}, under
+// a condition or in a closure is not top level. A triple-quoted string, or braces or parentheses
+// that don't balance, mean not enforced.
+func gradleLockingEnforced(own, root []string) (enforced, strict bool) {
+	found, strictN := 0, 0
+	for _, src := range own {
+		rest, n, s, ok := gradleLockAllStatements(src)
+		if !ok || touchesLocking(rest) {
+			return false, false
+		}
+		found, strictN = found+n, strictN+s
+	}
+	for _, src := range root {
+		rest, _, _, ok := gradleLockAllStatements(src)
+		if !ok || touchesLocking(rest) {
+			return false, false
+		}
+	}
+	return found > 0, found > 0 && strictN == found
+}
+
+// gradleLockingBody reports whether a dependencyLocking block's body (comment-stripped) is one
+// this reader admits: lockAllConfigurations() alone, or with a STRICT lock mode set as
+// lockMode = LockMode.STRICT or lockMode.set(LockMode.STRICT), in either order, separated by a
+// newline or ';'. Spaces and tabs inside a statement are ignored.
+func gradleLockingBody(body string) (ok, strict bool) {
+	var stmts []string
+	for _, st := range strings.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' || r == ';' }) {
+		if st = strings.NewReplacer(" ", "", "\t", "").Replace(st); st != "" {
+			stmts = append(stmts, st)
+		}
+	}
+	lockAll, strictN := 0, 0
+	for _, st := range stmts {
+		switch st {
+		case "lockAllConfigurations()":
+			lockAll++
+		case "lockMode=LockMode.STRICT", "lockMode.set(LockMode.STRICT)":
+			strictN++
+		default:
+			return false, false
+		}
+	}
+	if lockAll != 1 {
+		return false, false
+	}
+	return true, strictN > 0
+}
+
+func touchesLocking(src string) bool {
+	l := strings.ToLower(src)
+	for _, w := range []string{"dependencylocking", "lockmode", "lenient", "lockallconfigurations"} {
+		if strings.Contains(l, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// gradleLockAllStatements finds every top-level dependencyLocking { lockAllConfigurations() }
+// statement in comment-stripped src, with or without a STRICT lock mode in the block
+// (gradleLockingBody), and returns src without them, how many there were, and how many set
+// STRICT.
+// Top level means outside every brace and parenthesis, and the statement must start one: what
+// precedes it is the start of the script, a ';', a '}', the end of a string or of a word other
+// than else or do, or a call's closing parenthesis (not an if, while, for or when condition).
+// ok is false for a triple-quoted string or unbalanced braces or parentheses.
+func gradleLockAllStatements(src string) (rest string, n, strict int, ok bool) {
+	if strings.Contains(src, `"""`) || strings.Contains(src, `'''`) {
+		return "", 0, 0, false
+	}
+	const kw = "dependencyLocking"
+	var b strings.Builder
+	braces, parens := 0, 0
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case c == '"' || c == '\'':
+			j := skipQuoted(src, i)
+			b.WriteString(src[i:j])
+			i = j - 1
+			continue
+		case braces == 0 && parens == 0 && strings.HasPrefix(src[i:], kw) &&
+			(i == 0 || !isGradleIdentByte(src[i-1])) && statementStart(src[:i]):
+			k := i + len(kw)
+			for k < len(src) && (src[k] == ' ' || src[k] == '\t' || src[k] == '\n' || src[k] == '\r') {
+				k++
+			}
+			if k < len(src) && src[k] == '{' {
+				end, balanced := matchBrace(src, k)
+				if !balanced {
+					return "", 0, 0, false
+				}
+				if _, endsHere := statementEnd(src[end+1:]); endsHere {
+					if body, isStrict := gradleLockingBody(src[k+1 : end]); body {
+						n++
+						if isStrict {
+							strict++
+						}
+						i = end
+						continue
+					}
+				}
+			}
+		case c == '{':
+			braces++
+		case c == '}':
+			if braces--; braces < 0 {
+				return "", 0, 0, false
+			}
+		case c == '(':
+			parens++
+		case c == ')':
+			if parens--; parens < 0 {
+				return "", 0, 0, false
+			}
+		}
+		b.WriteByte(c)
+	}
+	if braces != 0 || parens != 0 {
+		return "", 0, 0, false
+	}
+	return b.String(), n, strict, true
+}
+
+// statementStart reports whether a statement can start right after before (see
+// gradleLockAllStatements).
+func statementStart(before string) bool {
+	t := strings.TrimRight(before, " \t\r\n")
+	if t == "" {
+		return true
+	}
+	switch c := t[len(t)-1]; {
+	case c == ';' || c == '}' || c == '"' || c == '\'':
+		return true
+	case c == ')':
+		open := matchParenBack(t)
+		if open < 0 {
+			return false
+		}
+		w := lastWord(strings.TrimRight(t[:open], " \t"))
+		return w != "" && w != "if" && w != "while" && w != "for" && w != "when" && w != "catch"
+	case isGradleIdentByte(c) && c != '.':
+		w := lastWord(t)
+		return w != "else" && w != "do"
+	}
+	return false
+}
+
+// matchParenBack returns the index of the '(' matching the ')' that ends s, or -1.
+func matchParenBack(s string) int {
+	depth := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case ')':
+			depth++
+		case '(':
+			if depth--; depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// lastWord returns the identifier that ends s, or "".
+func lastWord(s string) string {
+	i := len(s)
+	for i > 0 && isGradleIdentByte(s[i-1]) && s[i-1] != '.' {
+		i--
+	}
+	return s[i:]
+}
+
+// matchBrace returns the index of the brace closing the one at open, skipping quoted strings.
+func matchBrace(src string, open int) (int, bool) {
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '"', '\'':
+			i = skipQuoted(src, i) - 1
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// skipQuoted returns the index just past the quoted string starting at src[i], or the end of
+// the line when it doesn't close there.
+func skipQuoted(src string, i int) int {
+	q := src[i]
+	j := i + 1
+	for j < len(src) && src[j] != q && src[j] != '\n' {
+		if src[j] == '\\' {
+			j++
+		}
+		j++
+	}
+	if j < len(src) && src[j] == q {
+		j++
+	}
+	if j > len(src) {
+		j = len(src)
+	}
+	return j
+}
+
+func isGradleIdentByte(c byte) bool {
+	return c == '_' || c == '.' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
 // exactGradleVersion reports whether v names exactly one version: not empty, not interpolated,
@@ -647,47 +990,28 @@ func exactGradleVersion(v string) bool {
 // gradleCoordinateString matches a quoted string in g:a[:v[:classifier]][@ext] notation.
 var gradleCoordinateString = regexp.MustCompile(`^([\w.\-]+):([\w.\-]+)(?::([^:@\s]*))?(?::[^:@\s]*)?(?:@\w+)?$`)
 
-// gradleDeclarations returns every declaration scripts make, keyed "g:a". Besides the
-// configuration-line scan, it reads every quoted coordinate string and every map-notation line
-// anywhere in the comment-stripped scripts, so a declaration on one line with its block
-// (dependencies { implementation 'g:a:v' }) or in a constraints block still counts. A string
-// that only looks like a coordinate costs nothing unless a lock holds its GA. readAll is false
-// when a script cannot be read.
-func gradleDeclarations(scripts []string) (map[string][]plugin.ResolvedDependency, bool) {
-	out := map[string][]plugin.ResolvedDependency{}
-	add := func(rd plugin.ResolvedDependency) {
-		if c := strings.TrimSpace(rd.Coordinate); c != "" {
-			out[c] = append(out[c], rd)
-		}
-	}
-	for _, gp := range scripts {
-		data, err := os.ReadFile(gp)
-		if err != nil {
-			return nil, false
-		}
-		deps, _ := parseGradle(gp)
-		for _, rd := range deps {
-			add(rd)
-		}
-		src := stripGradleComments(string(data))
+// gradleDeclarations returns the version every declaration in the comment-stripped sources
+// gives, keyed "g:a": the raw version text, "" for none. It reads every quoted coordinate string
+// and every map-notation line anywhere in the sources, so a declaration on one line with its
+// block (dependencies { implementation 'g:a:v' }) or in a constraints block still counts. A
+// string that only looks like a coordinate costs nothing unless a lock holds its GA.
+func gradleDeclarations(srcs []string) map[string][]string {
+	out := map[string][]string{}
+	for _, src := range srcs {
 		for _, s := range quotedStrings(src) {
-			m := gradleCoordinateString.FindStringSubmatch(s)
-			if m == nil {
-				continue
+			if m := gradleCoordinateString.FindStringSubmatch(s); m != nil {
+				ga := m[1] + ":" + m[2]
+				out[ga] = append(out[ga], m[3])
 			}
-			rd := plugin.ResolvedDependency{Coordinate: m[1] + ":" + m[2], Source: "gradle"}
-			if isLiteralGradleVersion(m[3]) {
-				rd.Version, rd.Resolved = m[3], true
-			}
-			add(rd)
 		}
 		for _, line := range strings.Split(src, "\n") {
 			if rd, ok := gradleMapNotation(line); ok {
-				add(rd)
+				v, _ := gradleMapValue(line, "version")
+				out[rd.Coordinate] = append(out[rd.Coordinate], v)
 			}
 		}
 	}
-	return out, true
+	return out
 }
 
 // quotedStrings returns the contents of every single- or double-quoted string in src that

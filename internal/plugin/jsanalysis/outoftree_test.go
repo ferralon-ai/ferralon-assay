@@ -461,6 +461,36 @@ Function('x++')();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function body hiding a call behind a regular expression after return", map[string]string{"app.js": `
+var f = Function("x", "return /'/, eval(x) //'");
+f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body hiding a call behind a regular expression after typeof", map[string]string{"app.js": `
+var f = new Function("x", "return typeof /'/, eval(x) //'");
+f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body hiding a call behind a comment ended by a line separator", map[string]string{"app.js": `
+var f = Function("x", "//'` + "\u2028" + `return eval(x) //'");
+f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body with a slash", map[string]string{"app.js": `
+Function('a', 'b', 'return a / b');
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"require after a member named function and a line break", map[string]string{"app.js": `
+var o = { function: 1 };
+o.function
+require(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
 		{"Function parameter default", map[string]string{"app.js": `
 const f = Function('a = 1', 'return a');
 function load(s) { return f(s); }

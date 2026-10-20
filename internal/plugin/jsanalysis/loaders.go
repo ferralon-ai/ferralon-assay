@@ -64,12 +64,13 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	p := skipSpace(clean, next)
 	call := p < len(clean) && clean[p] == '('
-	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); {
+	switch w, s := wordBefore(clean, skipSpaceBack(clean, i-1)); {
 	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
 		return
-	case w == "function": // `function require(...)` declares a parameter list, not a call
+	case w == "function" && (s == 0 || clean[max(skipSpaceBack(clean, s-1), 0)] != '.'):
+		// `function require(...)` declares a parameter list, not a call; `o.function` is a member
 		return
 	}
 	if !call && (declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
@@ -256,7 +257,9 @@ func literalFunction(clean, src []rune, p int) (ok, open bool) {
 		}
 	}
 	body := []rune(lits[len(lits)-1])
-	if strings.ContainsRune(string(body), '`') {
+	// stripJS cannot tell a regular expression from a division after a keyword, nor end a
+	// comment at U+2028 or U+2029, so a body with a backtick or a slash is not read at all.
+	if strings.ContainsAny(string(body), "`/") {
 		return false, false
 	}
 	bc := []rune(stripJS(string(body)))

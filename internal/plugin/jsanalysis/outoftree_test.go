@@ -884,6 +884,137 @@ const F = process.env.X ? Function : null;
 function load(s) { return F('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by a for-of header, read after the loop", map[string]string{"app.js": `
+for (const self of [1]) {}
+var e = self.eval;
+function load(s) { return e(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by a for-in header, read after the loop", map[string]string{"app.js": `
+const o = {};
+for (let global in o) {}
+const e = global.eval;
+function load(s) { return e(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by a for header in a function, read after the loop", map[string]string{"app.js": `
+function load(s) {
+  for (let self = 0; self < 1; self++) {}
+  var e = self.eval;
+  return e(s);
+}
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by a for header with a statement body", map[string]string{"app.js": `
+for (const top of [1]) load(top);
+function load(s) { return top[s](s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by a for await header, indexed after the loop", map[string]string{"app.js": `
+async function load(s, xs) {
+  for await (const parent of xs) {}
+  return parent[s](s);
+}
+load(process.argv, []);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare const", map[string]string{"app.ts": `
+declare const window: any;
+const e = window.eval;
+function load(s: string) { return e(s); }
+load(process.argv[2]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare const, indexed", map[string]string{"app.ts": `
+declare const window: any;
+function load(k: string, s: string) { return window[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare function", map[string]string{"app.ts": `
+declare function self(): void;
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare global block", map[string]string{"app.ts": `
+declare global { var self: any; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+export {};
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare module block", map[string]string{"app.ts": `
+declare module 'x' { const top: any; }
+function load(k: string, s: string) { return top[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript namespace var, read outside it", map[string]string{"app.ts": `
+namespace N { var self = 1; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in an import type", map[string]string{"app.ts": `
+import type { self } from './t';
+const e = self.eval;
+function load(s: string) { return e(s); }
+load(process.argv[2]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in an inline import type", map[string]string{"app.ts": `
+import { type self, load } from './t';
+function run(k: string, s: string) { return self[k](s); }
+run(process.argv[2], load(process.argv[3]));
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a default import type", map[string]string{"app.ts": `
+import type top from './t';
+function load(k: string, s: string) { return top[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name as an arrow parameter in a ternary branch", map[string]string{"app.js": `
+const c = process.env.X;
+var e = c ? window => 1 : window.eval;
+function load(s) { return e(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name as an arrow parameter in a nested ternary branch", map[string]string{"app.js": `
+const c = process.env.X;
+var e = c ? window => (c ? 1 : 2) : c ? 0 : window.eval;
+function load(s) { return e(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a ternary else branch handed on", map[string]string{"app.js": `
+function run(g, k, s) { return g[k](s); }
+function load(s) { return run(process.env.X ? null : globalThis, 'eval', s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a ternary else branch returned", map[string]string{"app.js": `
+function pick(c) { return c ? undefined : globalThis; }
+function load(k, s) { return pick(0)[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global thrown", map[string]string{"app.js": `
+function load(k, s) { try { throw globalThis; } catch (g) { return g[k](s); } }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global stored in a member", map[string]string{"app.js": `
+const o = {};
+o.g = globalThis;
+function load(k, s) { return o.g[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global stored in a computed member", map[string]string{"app.js": `
+const o = {};
+o['g'] = window;
+function load(k, s) { return o.g[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this stored in a member", map[string]string{"app.js": `
+const o = {};
+o.g = Function('return this')();
+function load(k, s) { return o.g[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"require after a member named function", map[string]string{"app.js": `
+const x = {};
+x.function
+foo(require);
+function foo(r) { return r(process.argv[2]); }
+`}, plugin.PartialReasonComputedRequireSpecifier},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1007,6 +1138,16 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"this indexed in an arrow inside a method", "class Box { pick(k) { const f = () => this[k](); return f(); } }"},
 		{"this indexed in a getter", "const o = { get v() { return this['_' + 'v']; } };"},
 		{"this indexed in a constructor", "class Box { constructor(k) { this[k](1); } }"},
+		{"global name bound by a for-of header, indexed in the body", "for (const self of [load]) { self[process.argv[2]](1); }\nfunction load(s) { return s; }"},
+		{"global name bound by a for header, indexed in the body", "for (let top = {}; top; top = null) { top[process.argv[2]](1); }"},
+		{"global name bound by a for await header, indexed in the body", "async function run(xs) { for await (const parent of xs) { parent[process.argv[2]](1); } }"},
+		{"a value import beside an inline type import", "import self, { type T } from './util';\nself[process.argv[2]](1);"},
+		{"an import named type", "import type from './util';\nimport { type as t } from './util';\ntype[process.argv[2]](t);"},
+		{"global name declared by a TypeScript namespace var, indexed inside it", "namespace N { var self = { a: 1 }; self[process.argv[2]](1); }"},
+		{"global name as an arrow parameter in a ternary branch", "const f = process.env.X ? window => window[process.argv[2]](1) : null;"},
+		{"an arrow body holding a whole ternary", "const f = window => window ? window[process.argv[2]](1) : 0;"},
+		{"Function as an optional parameter type", "function run(cb?: Function, f?: Function): Function | undefined { return cb; }"},
+		{"a member compared with a global", "const o = {};\nif (o.g == globalThis) { o.g = 1; }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -349,17 +349,73 @@ func escapesAsValue(clean []rune, b, p int) bool {
 	case '(', ',', '[':
 		return true
 	case '?':
-		return true // ternary branch or ??; `?.` cannot precede an identifier
+		return true // a ternary branch or ??; `?.` cannot precede an identifier
+	case ':':
+		return ternaryElse(clean, b)
+	case '=':
+		return memberStore(clean, b)
 	case '|', '&':
 		return b >= 1 && clean[b-1] == clean[b]
 	case '>':
 		return b >= 1 && clean[b-1] == '='
 	}
 	switch w, _ := wordBefore(clean, b); w {
-	case "return", "yield", "await":
+	case "return", "yield", "await", "throw":
 		return true
 	}
 	return false
+}
+
+// ternaryElse reports whether the ':' at b separates a ternary's branches: a '?' that is neither
+// `?.`, `??` nor an optional-property marker (`cb?:`) precedes it at bracket depth zero within the
+// same expression. A type annotation's or an object key's ':' does not.
+func ternaryElse(clean []rune, b int) bool {
+	if q := skipSpaceBack(clean, b-1); q >= 0 && clean[q] == '?' {
+		return false
+	}
+	depth := 0
+	for k := b - 1; k >= 0 && b-k < maxParamScan; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case ',', ';', '=':
+			if depth == 0 {
+				return false
+			}
+		case '?':
+			if depth > 0 || optionalDot(clean, k) || k+1 < len(clean) && clean[k+1] == '?' || k > 0 && clean[k-1] == '?' {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// memberStore reports whether the '=' at b assigns to a member (`o.g =`, `o[k] =`), which stores
+// the value where this lane does not follow it. A compound or comparison operator is not one.
+func memberStore(clean []rune, b int) bool {
+	if b < 1 || strings.ContainsRune("=!<>+-*/%&|^?", clean[b-1]) {
+		return false
+	}
+	k := skipSpaceBack(clean, b-1)
+	if k < 0 {
+		return false
+	}
+	if clean[k] == ']' {
+		return true
+	}
+	_, s := wordBefore(clean, k)
+	if s == k && !isIdentPart(clean[k]) {
+		return false
+	}
+	d := skipSpaceBack(clean, s-1)
+	return d >= 0 && clean[d] == '.'
 }
 
 // maxParamScan bounds the scan for the bracket enclosing a parameter; a list longer than
@@ -425,7 +481,10 @@ func declaredParam(clean []rune, i, next int) bool {
 	if q >= 0 && clean[q] == '*' {
 		q = skipSpaceBack(clean, q-1)
 	}
-	w, _ := wordBefore(clean, q)
+	w, s := wordBefore(clean, q)
+	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
+		return false // a member named function
+	}
 	return w == "function"
 }
 

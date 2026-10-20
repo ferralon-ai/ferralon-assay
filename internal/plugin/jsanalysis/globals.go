@@ -145,6 +145,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		switch word {
 		case "function":
 			b := skipSpaceBack(clean, i-1)
+			if w, _ := wordBefore(clean, b); w == "declare" || ambient(clean, tf, tf.block(i)) {
+				break // a TypeScript declaration binds no value
+			}
 			if b >= 0 && clean[b] != ';' && clean[b] != '{' && clean[b] != '}' {
 				break // a function expression's name is scoped to its own body
 			}
@@ -153,15 +156,30 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				add(tf.varScope(tf.block(i)), at, name, 0, 0, false, false)
 			}
 		case "import":
+			if ambient(clean, tf, tf.block(i)) {
+				break
+			}
 			for _, at := range importSites(clean, next) {
 				name, _ := readWord(clean, at)
 				add(-1, at, name, 0, 0, false, false)
 			}
 		case "var", "let", "const":
 			block := tf.block(i)
+			if w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w == "declare" || ambient(clean, tf, block) {
+				break // a TypeScript declaration binds no value
+			}
 			scope := block
 			if word == "var" {
-				scope = tf.varScope(scope)
+				for scope >= 0 && !tf.scope[scope] && !namespaceBlock(clean, tf.opens[scope]) {
+					scope = tf.parent[scope]
+				}
+			} else if body, ok := forBody(clean, tf, i); ok {
+				// A for header's let or const is scoped to the loop; read it as the body's,
+				// and leave it undeclared when the body is not a block.
+				if body < 0 {
+					break
+				}
+				block, scope = body, body
 			}
 			for p := next; ; {
 				at := skipSpace(clean, p)
@@ -310,21 +328,91 @@ func patternSites(clean []rune, open int) (sites []int, end int) {
 	return sites, n
 }
 
+// forBody reports whether the let or const at i opens a for header, `for [await] (let ...`,
+// and returns the block of the loop body, or -1 when the body is a single statement.
+func forBody(clean []rune, tf *thisFrames, i int) (int, bool) {
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || clean[b] != '(' {
+		return 0, false
+	}
+	w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
+	if w == "await" {
+		w, _ = wordBefore(clean, skipSpaceBack(clean, s-1))
+	}
+	if w != "for" {
+		return 0, false
+	}
+	q := skipSpace(clean, closeParen(clean, b)+1)
+	if q >= len(clean) || clean[q] != '{' {
+		return -1, true
+	}
+	return tf.block(q + 1), true
+}
+
+// ambient reports whether block k lies inside a TypeScript `declare` block (`declare global`,
+// `declare module '...'`, `declare namespace N`), whose declarations bind no value.
+func ambient(clean []rune, tf *thisFrames, k int) bool {
+	for ; k >= 0; k = tf.parent[k] {
+		if w, _ := blockKeyword(clean, tf.opens[k]); w == "declare" {
+			return true
+		}
+	}
+	return false
+}
+
+// namespaceBlock reports whether the '{' at open opens a TypeScript namespace or module body,
+// which scopes a var like a function body.
+func namespaceBlock(clean []rune, open int) bool {
+	_, ns := blockKeyword(clean, open)
+	return ns
+}
+
+// blockKeyword walks the words before the '{' at open (a dotted name, a blanked module string)
+// and returns "declare" when one of them is, and whether namespace or module is among them.
+func blockKeyword(clean []rune, open int) (string, bool) {
+	ns := false
+	k := skipSpaceBack(clean, open-1)
+	for steps := 0; k >= 0 && steps < 8; steps++ {
+		w, s := wordBefore(clean, k)
+		switch w {
+		case "":
+			return "", ns
+		case "declare":
+			return w, ns
+		case "namespace", "module":
+			ns = true
+		}
+		k = skipSpaceBack(clean, s-1)
+		if k >= 0 && clean[k] == '.' {
+			k = skipSpaceBack(clean, k-1)
+		}
+	}
+	return "", ns
+}
+
 // importSites returns the positions of the names an import statement whose keyword ends
 // at p binds: `import a, { b as c, type d } from` binds a, c and d; `import * as e from`
-// binds e; `import f = require(...)` binds f. A dynamic import() or import.meta binds none.
+// binds e; `import f = require(...)` binds f. A dynamic import() or import.meta binds none,
+// and neither does a TypeScript type-only import (`import type ...`, `{ type g }`).
 func importSites(clean []rune, p int) []int {
 	n := len(clean)
 	if q := skipSpace(clean, p); q >= n || clean[q] == '(' || clean[q] == '.' {
 		return nil
 	}
+	if typeModifier(clean, skipSpace(clean, p)) {
+		return nil
+	}
 	var sites []int
+	typeOnly := false
 	for q := p; q < n; {
 		q = skipSpace(clean, q)
 		if q >= n || clean[q] == ';' || clean[q] == '_' {
 			break // the end, or the blanked module string
 		}
 		if !isIdentStart(clean[q]) {
+			if clean[q] == '{' || clean[q] == ',' {
+				typeOnly = typeModifier(clean, skipSpace(clean, q+1))
+			}
 			q++
 			continue
 		}
@@ -334,7 +422,7 @@ func importSites(clean []rune, p int) []int {
 		}
 		r := skipSpace(clean, e)
 		next, _ := peekWord(clean, r)
-		if r < n && (clean[r] == ',' || clean[r] == '}' || clean[r] == '=') || next == "from" {
+		if (r < n && (clean[r] == ',' || clean[r] == '}' || clean[r] == '=') || next == "from") && !typeOnly {
 			sites = append(sites, q)
 		}
 		if r < n && clean[r] == '=' {
@@ -343,6 +431,21 @@ func importSites(clean []rune, p int) []int {
 		q = e
 	}
 	return sites
+}
+
+// typeModifier reports whether the word at q is a TypeScript `type` modifier: `type` followed
+// by a name, a brace or a star, rather than a binding named type (`type,`, `type from`, `type as`).
+func typeModifier(clean []rune, q int) bool {
+	w, e := peekWord(clean, q)
+	if w != "type" {
+		return false
+	}
+	r := skipSpace(clean, e)
+	if r < len(clean) && (clean[r] == '{' || clean[r] == '*') {
+		return true
+	}
+	next, _ := peekWord(clean, r)
+	return next != "" && next != "from" && next != "as"
 }
 
 // typeEnd returns the index of the '=', ',' or ';' that ends a TypeScript type annotation
@@ -811,12 +914,13 @@ func newThisFrames(clean []rune) *thisFrames {
 }
 
 // arrowEnd returns the index of the ',' or ';' that ends the arrow body expression
-// starting at p at bracket depth zero, of the bracket that closes the enclosing one, or of
+// starting at p at bracket depth zero, of a ':' that closes an enclosing ternary branch, of
+// the bracket that closes the enclosing one, or of
 // a line break where the expression cannot continue. A line break the expression may run
 // on past ends it too unless an operator on either side joins the lines, so the body can
 // be read shorter than it is, never longer: a name past it resolves outward.
 func arrowEnd(clean []rune, p int) int {
-	depth := 0
+	depth, ternary := 0, 0
 	n := len(clean)
 	for ; p < n; p++ {
 		switch r := clean[p]; r {
@@ -830,6 +934,22 @@ func arrowEnd(clean []rune, p int) int {
 		case ',', ';':
 			if depth == 0 {
 				return p
+			}
+		case '?':
+			if depth == 0 && !optionalDot(clean, p) {
+				if p+1 < n && clean[p+1] == '?' {
+					p++ // ?? and ??=
+				} else {
+					ternary++
+				}
+			}
+		case ':':
+			// A ':' with no '?' of the body's own ends an enclosing ternary's branch.
+			if depth == 0 {
+				if ternary == 0 {
+					return p
+				}
+				ternary--
 			}
 		case '\n':
 			if depth > 0 {

@@ -193,7 +193,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			}
 			for _, at := range importSites(clean, next) {
 				name, _ := readWord(clean, at)
-				add(-1, at, name, 0, 0, false, false)
+				add(tf.block(i), at, name, 0, 0, false, false) // inside a block, a namespace's alias
 			}
 		case "var", "let", "const":
 			block := tf.block(i)
@@ -271,7 +271,14 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		if k < 0 && len(gs.byScope[-1][a.name]) == 0 && isGlobalBase(a.name) {
 			continue
 		}
+		// Assigning a name declared only by declarations that never shadow (a weak one's own
+		// initializer among them) does not make it shadow.
+		hoisted = true
+		for _, d := range gs.byScope[k][a.name] {
+			hoisted = hoisted && gs.decls[d].weak
+		}
 		add(k, a.at, a.name, a.start, a.end, false, false)
+		hoisted = false
 		gs.flows = append(gs.flows, [2]int{a.start, a.end})
 	}
 	gs.yields = make([]bool, len(gs.decls))

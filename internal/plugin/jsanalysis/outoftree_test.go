@@ -1387,6 +1387,47 @@ var o = { class: 1, y: { v: this[process.argv[2]](process.argv[3]) } };
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global name bound by an import alias inside a TypeScript namespace, used outside it", map[string]string{"app.ts": `
+namespace N { import self = Foo.bar; }
+export const x = self[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a member named return", map[string]string{"app.js": `
+var o = {}; o.return
+{ load(1)
+{ var e = this.eval; e(process.argv[2]); } }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a postfix increment", map[string]string{"app.js": `
+var x = 0; x++
+{ load(1)
+{ var e = this.eval; e(process.argv[2]); } }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global reached through a chain of global names, handed on", map[string]string{"app.js": `
+load(globalThis.self);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name given a value by a var in a block after a call statement, used after it", map[string]string{"app.js": `
+function f() {
+  load(a)
+  { var self = { a: 1 }; }
+  return self[process.argv[2]](1);
+}
+f();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name given a value by a for header with an unbraced body, used after the loop", map[string]string{"app.js": `
+for (let self = { a: 1 }; process.env.X;) load(self);
+self[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1561,6 +1602,9 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"a member of a local of a global name named like the global", "const self = { self: { a: 1 } };\nself.self[process.argv[2]];"},
 		{"a member named like the global on a property of the global", "globalThis.config = { self: { a: 1 } };\nglobalThis.config.self[process.argv[2]];"},
 		{"a block-level function of a global name, used in its block", "if (process.env.X) { function self(k) { return k; } self[process.argv[2]]; }"},
+		{"a member named like one global on a local of another", "const self = { window: { a: trim } };\nmodule.exports = self.window[process.argv[2]];"},
+		{"a TypeScript namespace import alias of a global name, used in the namespace", "namespace N { import self = Foo.bar; export const x = self[process.argv[2]]; }"},
+		{"a for header's let of a global name, used in the loop body", "for (let self = { a: trim }; process.env.X;) { self[process.argv[2]]; }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

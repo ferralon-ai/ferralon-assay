@@ -886,21 +886,21 @@ load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name bound by a for-of header, read after the loop", map[string]string{"app.js": `
 for (const self of [1]) {}
-var e = self.eval;
+var e = self.Function;
 function load(s) { return e(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name bound by a for-in header, read after the loop", map[string]string{"app.js": `
 const o = {};
 for (let global in o) {}
-const e = global.eval;
+const e = global.Function;
 function load(s) { return e(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name bound by a for header in a function, read after the loop", map[string]string{"app.js": `
 function load(s) {
   for (let self = 0; self < 1; self++) {}
-  var e = self.eval;
+  var e = self.Function;
   return e(s);
 }
 load(process.argv);
@@ -919,7 +919,7 @@ load(process.argv, []);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name in a TypeScript declare const", map[string]string{"app.ts": `
 declare const window: any;
-const e = window.eval;
+const e = window.Function;
 function load(s: string) { return e(s); }
 load(process.argv[2]);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -951,7 +951,7 @@ load(process.argv[2], process.argv[3]);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name in an import type", map[string]string{"app.ts": `
 import type { self } from './t';
-const e = self.eval;
+const e = self.Function;
 function load(s: string) { return e(s); }
 load(process.argv[2]);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -967,13 +967,13 @@ load(process.argv[2], process.argv[3]);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name as an arrow parameter in a ternary branch", map[string]string{"app.js": `
 const c = process.env.X;
-var e = c ? window => 1 : window.eval;
+var e = c ? window => 1 : window.Function;
 function load(s) { return e(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name as an arrow parameter in a nested ternary branch", map[string]string{"app.js": `
 const c = process.env.X;
-var e = c ? window => (c ? 1 : 2) : c ? 0 : window.eval;
+var e = c ? window => (c ? 1 : 2) : c ? 0 : window.Function;
 function load(s) { return e(s); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -1048,73 +1048,73 @@ function foo(r) { return r(process.argv[2]); }
 `}, plugin.PartialReasonComputedRequireSpecifier},
 		{"global var after an expression ending in module, before a do block", map[string]string{"app.js": `
 var m = module
-do { var self; var e = self.eval; e(process.argv[2]); } while (0);
+do { var self; var e = self.Function; e(process.argv[2]); } while (0);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global var after an assignment ending in module, in an else block", map[string]string{"app.js": `
 if (process.env.X) x = module
-else { var self; var e = self.eval; e(process.argv[2]); }
+else { var self; var e = self.Function; e(process.argv[2]); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global var after module.exports, in a try block", map[string]string{"app.js": `
 var x = module.exports
-try { var self; var e = self.eval; e(process.argv[2]); } catch (err) {}
+try { var self; var e = self.Function; e(process.argv[2]); } catch (err) {}
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global var after a name namespace, in a plain block", map[string]string{"app.js": `
 var namespace = 1, x
 x = namespace
-{ var self; var e = self.eval; e(process.argv[2]); }
+{ var self; var e = self.Function; e(process.argv[2]); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global past an arrow with JSX text holding a question mark", map[string]string{"app.jsx": `
 var e = process.env.X ? window => <p>why?</p>
-  : window.eval; e(process.argv[2]);
+  : window.Function; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global past a TSX arrow with JSX text holding a question mark", map[string]string{"app.tsx": `
 var e = process.env.X ? window => <p>why?</p>
-  : window.eval; e(process.argv[2]);
+  : window.Function; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in a case block after a call in the label", map[string]string{"app.js": `
-switch (process.env.X) { case String(self): { var e = self.eval; e(process.argv[2]); } }
+switch (process.env.X) { case String(self): { var e = self.Function; e(process.argv[2]); } }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in an object literal after a ternary call branch", map[string]string{"app.js": `
-var o = process.env.X ? load(window) : { e: window.eval }; o.e(process.argv[2]);
+var o = process.env.X ? load(window) : { e: window.Function }; o.e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in a block after a call statement", map[string]string{"app.js": `
 load(self)
-{ var e = self.eval; e(process.argv[2]); }
+{ var e = self.Function; e(process.argv[2]); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in a block after an indexed call statement", map[string]string{"app.js": `
 var a = [load]; a[0](self)
-{ var e = self.eval; e(process.argv[2]); }
+{ var e = self.Function; e(process.argv[2]); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in a block after a yield", map[string]string{"app.js": `
 function* g() { yield (self)
-{ var e = self.eval; e(process.argv[2]); } }
+{ var e = self.Function; e(process.argv[2]); } }
 g().next();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global in a block after a member call named catch", map[string]string{"app.js": `
 var p = Promise.resolve(); p.catch(self)
-{ var e = self.eval; e(process.argv[2]); }
+{ var e = self.Function; e(process.argv[2]); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -1125,7 +1125,7 @@ function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global after a TypeScript function type naming it", map[string]string{"app.ts": `
-const f: (self: any) => any = self.eval;
+const f: (self: any) => any = self.Function;
 f(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
@@ -1191,7 +1191,7 @@ function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name holding the this a function called in place returns", map[string]string{"app.js": `
-var self = (function () { return this; })(); var e = self.eval; e(process.argv[2]);
+var self = (function () { return this; })(); var e = self.Function; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -1202,13 +1202,13 @@ load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name holding the this a declared function returns", map[string]string{"app.js": `
 function G() { return this; }
-var global = G(); var e = global.eval; e(process.argv[2]);
+var global = G(); var e = global.Function; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name from a type-only import of as", map[string]string{"util.ts": "export const as = 1;\n", "app.ts": `
 import { type as as self } from './util';
-var e = self.eval; e(process.argv[2]);
+var e = self.Function; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
@@ -1295,7 +1295,7 @@ function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global reached as a member of a global, then eval", map[string]string{"app.js": `
-var e = globalThis.global.eval;
+var e = globalThis.global.Function;
 e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
@@ -1357,7 +1357,7 @@ load(process.argv);
 var x = exports.default
 {
   load(window)
-  { var e = window.eval; e(process.argv[2]); }
+  { var e = window.Function; e(process.argv[2]); }
 }
 function load(s) { return s; }
 load(process.argv);
@@ -1365,13 +1365,21 @@ load(process.argv);
 		{"global name declared as a function in a strict block", map[string]string{"app.js": `
 'use strict';
 if (process.env.X) { function self() {} }
-var e = self.eval;
+var e = self.Function;
 e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"global name declared as a function in a module block", map[string]string{"app.mjs": `
 if (process.env.X) { function self() {} }
+var e = self.Function;
+e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"eval read off a shadowing local of a global's name", map[string]string{"app.js": `
+var o = { g: globalThis };
+var self = o.g;
 var e = self.eval;
 e(process.argv[2]);
 function load(s) { return s; }

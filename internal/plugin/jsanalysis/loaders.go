@@ -135,8 +135,14 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 		mb.nativeLoad = true
 	case "eval":
 		// A call of .eval on any receiver may be the global's eval; a read of .eval is
-		// judged by globalUse when the receiver is the global.
+		// judged by globalUse when the receiver is the global. A read of .eval on a global's
+		// name flags even when a local shadows the name, since the local may hold the global
+		// by a path globalUse does not follow.
 		if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) {
+			mb.evaluated = true
+		}
+		switch recv, _ := wordBefore(clean, skipSpaceBack(clean, p-1)); recv {
+		case "globalThis", "global", "window", "self":
 			mb.evaluated = true
 		}
 	}

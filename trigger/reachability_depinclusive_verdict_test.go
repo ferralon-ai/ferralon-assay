@@ -51,7 +51,7 @@ func TestFinding_DependencyInclusiveGraphYieldsNotExploitable(t *testing.T) {
 	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
 		"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
-		"advisory_symbols": []string{"com.example.net.UrlKit.get"},
+		"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "symbol_provenance": "osv-declared",
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
 		Partiality: plugin.Complete(),
@@ -132,7 +132,7 @@ func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 			store := artifact.NewMemStore()
 			putJSON(t, store, a.ID, artifact.TypeNormalizedAdvisory, map[string]any{
 				"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
-				"advisory_symbols": []string{"com.example.net.UrlKit.get"},
+				"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "symbol_provenance": "osv-declared",
 			})
 			putJSON(t, store, a.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
 				Partiality: plugin.Complete(),

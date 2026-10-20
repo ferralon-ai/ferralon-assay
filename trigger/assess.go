@@ -274,8 +274,9 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 // advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
 // from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
 // the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
-// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
-// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed as a
+// candidate-scoped strength signal (symbolConfidenceFor); the not_exploitable grounds read the same
+// tag through vettedSymbols.
 func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -298,6 +299,7 @@ func advisorySymbolProvenance(store artifact.Store, assessmentID string) string 
 //   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
 //   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
 //   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - "cna-declared"         ⇒ ""         declared by the CNA, completeness unmeasured: no label.
 //   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
 //
 // No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
@@ -1106,7 +1108,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	}
 	switch f.UndeterminedReason {
 	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
-		report.ReasonAdvisoryRangeAbsent:
+		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem

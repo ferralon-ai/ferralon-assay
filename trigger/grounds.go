@@ -21,7 +21,8 @@ import (
 //
 //   - G1: the advisory was admitted on a package whose installed version resolved.
 //   - G2 arm A: every advisory symbol resolved to code inside that package, and the lane searched
-//     every such sink from its entry points.
+//     every such sink from its entry points. It grounds only on a vetted symbol set (vettedSymbols);
+//     an unvetted one leaves the advisory undetermined unless arm B grounds it.
 //   - G2 arm B: the lane refuted that package on positive evidence (ReachabilityResult.Refutation).
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
@@ -44,17 +45,21 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		return "", report.ReasonVulnerableSymbolUnresolved, false
 	}
 
+	unvetted := false
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
 		absent := targetConditionalAbsent(symbols, pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)
 		if err == nil && searchedInPackage(symbols, absent, res, reach.Searched, admitted, root) {
-			if len(absent) == 0 {
+			if !vettedSymbols(store, assessmentID) {
+				unvetted = true
+			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
 					strings.Join(symbols, ", "), label), "", true
+			} else {
+				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
+				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
 			}
-			present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
-			return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-				strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
@@ -68,10 +73,41 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 			return fmt.Sprintf("%s: %s (%s)", label, r.Detail, r.Basis), "", true
 		}
 	}
+	if unvetted {
+		return "", report.ReasonAdvisorySymbolsUnvetted, false
+	}
 	if len(symbols) == 0 {
 		return "", report.ReasonAdvisorySymbolAbsent, false
 	}
 	return "", report.ReasonVulnerableSymbolUnresolved, false
+}
+
+// vettedSymbols reports whether the advisory's symbol set is complete enough that no listed symbol
+// being reached grounds not_exploitable (arm A). An osv-declared or curated set is; so is an
+// untagged set in a first-party record, which is the built-in table. A diff-lexed set is a
+// candidate list lexed from the fix, which can miss the vulnerable function; a cna-declared set's
+// completeness has not been measured; and an untagged set from any other source, or a tag this
+// version does not know, says nothing about how the set was obtained.
+func vettedSymbols(store artifact.Store, assessmentID string) bool {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var adv struct {
+		SymbolProvenance string `json:"symbol_provenance"`
+		TrustTier        string `json:"trust_tier"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return false
+	}
+	switch adv.SymbolProvenance {
+	case "osv-declared", "curated":
+		return true
+	case "":
+		return pipeline.TrustTier(adv.TrustTier) == pipeline.TrustFirstParty
+	default:
+		return false
+	}
 }
 
 // outsideBuildGrounds grounds an advisory on a Go package that no module of the build holds, when

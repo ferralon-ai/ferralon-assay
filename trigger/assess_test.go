@@ -36,7 +36,7 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	}
 	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
 		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
-		"dropped_affected_packages": fx.dropped,
+		"dropped_affected_packages": fx.dropped, "symbol_provenance": "osv-declared",
 	})
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{

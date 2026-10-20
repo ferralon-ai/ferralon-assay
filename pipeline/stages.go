@@ -257,11 +257,11 @@ type AdvisoryFacts struct {
 	Symbols []string
 	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for Symbols — a single scalar
 	// per record naming how the whole set was obtained (open set: "osv-declared" | "curated" |
-	// "diff-lexed"; "reasoning" reserved). STORE-ONLY (A2): it is decoded and carried, but NO
-	// consumer reads it — it feeds no admission, reachability, or refute path this cycle. Absent →
-	// "" → UNKNOWN derivation, which is NOT low-confidence and NOT untrusted: a symbol with no
-	// provenance tag resolves and is walked exactly as one with it (honest-absent, inv.5). A future
-	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
+	// "cna-declared" | "diff-lexed"; "reasoning" reserved). It feeds no admission or reachability
+	// path: a symbol resolves and is walked the same under every tag, and absent → "" → UNKNOWN
+	// derivation. Two consumers read it: the candidate's SymbolConfidence label, and the
+	// not_exploitable grounds, where only an osv-declared or curated set (or an untagged set in a
+	// first-party record) may ground "no listed symbol reached". Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
 	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
@@ -1439,7 +1439,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
 		Conditional      []string                  `json:"target_conditional_symbols,omitempty"`
-		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag, read as a candidate-only STRENGTH signal (never admission/refute)
+		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag: a candidate STRENGTH signal, and the gate on symbol-absence grounds (never admission)
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"`        // "" ⇒ class not assessed (honest)

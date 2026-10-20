@@ -164,8 +164,8 @@ inputs:
     description: >-
       Opt-in (default OFF). Set to 'true' to let a scan that genuinely ran under the subject's own
       toolchain report a reachability verdict for a stdlib advisory it could adjudicate, instead of
-      withholding it as undetermined. OFF withholds every stdlib advisory as undetermined, because the
-      analysis ran under the scanner's own toolchain.
+      withholding it as undetermined. OFF withholds a stdlib advisory whose search found no path as
+      undetermined, because that absence describes the scanner's own toolchain, not yours.
     required: false
     default: "false"
   out:

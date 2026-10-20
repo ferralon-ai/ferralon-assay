@@ -12,6 +12,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
 )
@@ -228,7 +229,8 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritRequest, state *statestore.State, changed []string) (*report.Report, error) {
 	changedSet := make(map[string]struct{}, len(changed))
 	for _, c := range changed {
-		changedSet[c] = struct{}{}
+		ecosystem, name, _ := strings.Cut(c, "\x00")
+		changedSet[canonicalKey(ecosystem, name)] = struct{}{}
 	}
 	// The advisories the baseline holds a row for, by merge key and, for a migrated v1 row
 	// with no source, by id (supersededByFresh's shape). Only those have a row to inherit.
@@ -336,11 +338,13 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 // the package the head selected (pkg, nil when it selected none) and every package the normalized
 // advisory names, its scalar primary and each affected_packages[] element. Those are named as
 // advisoryFromArtifacts names the selected one, under the assessment's ecosystem; with no
-// ecosystem on record a name matches in any. An advisory whose package set cannot be read cannot be
-// shown unchanged, so it counts as changed.
+// ecosystem on record a name matches in any. Names compare under canonicalKey, since the changed
+// set carries the SBOM's spelling and the advisory keeps its own. An advisory whose package set
+// cannot be read cannot be shown unchanged, so it counts as changed: so does one with a nameless
+// affected_packages[] element, or one naming no package at all.
 func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *report.Package, changedSet map[string]struct{}) bool {
 	if pkg != nil {
-		if _, ok := changedSet[pkg.Ecosystem+"\x00"+pkg.Name]; ok {
+		if _, ok := changedSet[canonicalKey(pkg.Ecosystem, pkg.Name)]; ok {
 			return true
 		}
 	}
@@ -365,24 +369,42 @@ func affectedPackageChanged(store artifact.Store, assessmentID string, pkg *repo
 	} else if inv, ok := inventory(store, assessmentID); ok && inv.Language != "" {
 		ecosystem = ecosystemFor(inv.Language)
 	}
+	for _, p := range adv.AffectedPackages {
+		if cmp.Or(p.Module, p.Coordinate) == "" {
+			return true
+		}
+	}
+	anyNamed := false
 	for _, p := range append(adv.AffectedPackages, adv.named) {
 		name := cmp.Or(p.Module, p.Coordinate)
 		if name == "" {
 			continue
 		}
+		anyNamed = true
 		if ecosystem != "" {
-			if _, ok := changedSet[ecosystem+"\x00"+name]; ok {
+			if _, ok := changedSet[canonicalKey(ecosystem, name)]; ok {
 				return true
 			}
 			continue
 		}
 		for key := range changedSet {
-			if _, n, _ := strings.Cut(key, "\x00"); n == name {
+			if eco, _, _ := strings.Cut(key, "\x00"); canonicalKey(eco, name) == key {
 				return true
 			}
 		}
 	}
-	return false
+	return !anyNamed
+}
+
+// canonicalKey is the changed-set key under the ecosystem's name-equivalence rule.
+func canonicalKey(ecosystem, name string) string {
+	switch ecosystem {
+	case "PyPI":
+		name = pipeline.CanonicalName("pypi", name)
+	case "NuGet":
+		name = pipeline.CanonicalName("nuget", name)
+	}
+	return ecosystem + "\x00" + name
 }
 
 // earnestRun is the CVE-watch overlap path: re-run S1–S6 for the newly-relevant

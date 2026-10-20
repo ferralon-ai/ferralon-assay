@@ -24,6 +24,9 @@ type groundsFixture struct {
 	footprint       []string
 	mods            goModules // the build's Go modules
 	scoped          []artifact.ScopedPartialityFlag
+	provenance      string // symbol_provenance; "" = osv-declared
+	untagged        bool   // the record carries no symbol_provenance
+	builtIn         bool   // S1's marker for a record the built-in table answered
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -34,10 +37,20 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	for _, p := range fx.affected {
 		affected = append(affected, map[string]string{"purl": p})
 	}
-	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
+	adv := map[string]any{
 		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
 		"dropped_affected_packages": fx.dropped, "symbol_provenance": "osv-declared",
-	})
+	}
+	if fx.provenance != "" {
+		adv["symbol_provenance"] = fx.provenance
+	}
+	if fx.untagged {
+		delete(adv, "symbol_provenance")
+	}
+	if fx.builtIn {
+		adv["built_in"] = true
+	}
+	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
 		Partiality: plugin.Complete(),

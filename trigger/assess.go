@@ -170,13 +170,17 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// step to have run: a run that loads code from outside the build list (plugin_load) can
 		// hold the advisory's code with no module declaring it.
 		if !undetermined {
-			if detail, ok := outsideBuildGrounds(store, assessmentID, pkg, mods); ok {
+			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
+			if ok {
 				f = report.AdvisoryFinding{
 					Advisory: adv,
 					Verdict:  report.VerdictNotExploitable,
 					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
 				}
 				break
+			}
+			if unvetted != "" {
+				reason, undetermined = unvetted, true
 			}
 		}
 		detail, groundsReason, grounded := "", "", false

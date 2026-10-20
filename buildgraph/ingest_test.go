@@ -50,6 +50,8 @@ func TestLoad(t *testing.T) {
 		{name: "Validate runs", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Schema = "other" }, want: "graph_rejected:schema"},
 		{name: "other profiles", tool: "maven", stated: &Conditions{JDK: "21"}, want: "graph_rejected:conditions"},
 		{name: "other jdk", tool: "gradle", stated: &Conditions{JDK: "17"}, want: "graph_rejected:conditions"},
+		{name: "other properties", tool: "maven", stated: &Conditions{Profiles: []string{"extra"}, JDK: "21", Properties: map[string]string{"skipTests": "true"}}, want: "graph_rejected:conditions"},
+		{name: "other env", tool: "maven", stated: &Conditions{Profiles: []string{"extra"}, JDK: "21", Env: map[string]string{"CI": "true"}}, want: "graph_rejected:conditions"},
 		{name: "input edited since", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			writeFiles(t, r.dir, map[string]string{"module-a/pom.xml": "<project><x/></project>"})
 		}, want: "graph_rejected:subject_inputs"},
@@ -81,12 +83,32 @@ func TestLoad(t *testing.T) {
 		{name: "input outside checkout", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			setInputs(g, append(g.Subject.Inputs, Input{Path: "../fake/version.txt", SHA256: "x"}))
 		}, want: "graph_rejected:subject_inputs"},
+		{name: "unclean input path", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			for _, in := range g.Subject.Inputs {
+				if in.Path == "pom.xml" {
+					setInputs(g, append(g.Subject.Inputs, Input{Path: "./pom.xml", SHA256: in.SHA256}))
+					return
+				}
+			}
+			t.Fatal("no root pom.xml input")
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "input through symlink out", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			if err := os.Symlink(r.fake, filepath.Join(r.dir, "out")); err != nil {
+				t.Fatal(err)
+			}
+			sum, err := sha256File(filepath.Join(r.fake, "version.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setInputs(g, append(g.Subject.Inputs, Input{Path: "out/version.txt", SHA256: sum}))
+		}, want: "graph_rejected:subject_inputs"},
 		{name: "absolute input", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			setInputs(g, append(g.Subject.Inputs, Input{Path: filepath.Join(r.dir, "pom.xml"), SHA256: "x"}))
 		}, want: "graph_rejected:subject_inputs"},
 		{name: "unknown tool", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Tool.Name = "ant" }, want: "graph_rejected:subject_inputs"},
 		{name: "module above checkout", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "../fake" }, want: "graph_rejected:module_path"},
 		{name: "absolute module", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = r.dir }, want: "graph_rejected:module_path"},
+		{name: "unclean module path", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "./" + g.Modules[1].Path }, want: "graph_rejected:module_path"},
 		{name: "module not a directory", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "pom.xml" }, want: "graph_rejected:module_path"},
 		{name: "module missing", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "gone" }, want: "graph_rejected:module_path"},
 		{name: "module through symlink out", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) {
@@ -114,8 +136,19 @@ func TestLoad(t *testing.T) {
 			_, n := firstDep(g)
 			n.File = nil
 		}, want: "graph_rejected:node_file"},
+		// Relative to the scan's working directory, the file exists and matches; a graph still
+		// names files absolutely.
 		{name: "relative file", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) {
-			firstFile(g).File.Path = "pom.xml"
+			n := firstFile(g)
+			wd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rel, err := filepath.Rel(wd, n.File.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.File.Path = rel
 		}, want: "graph_rejected:node_file"},
 		{name: "file changed since", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			if err := os.WriteFile(firstFile(g).File.Path, []byte("tampered"), 0o644); err != nil {

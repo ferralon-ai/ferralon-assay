@@ -2,6 +2,7 @@ package javaanalysis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -116,5 +117,21 @@ func TestResolveInventory_FromGraph(t *testing.T) {
 				t.Errorf("Partiality = %+v, want reason %q", inv.Partiality, tc.wantReason)
 			}
 		})
+	}
+}
+
+// A checkout the other-tool walk cannot finish may hold the other build, so it counts as one.
+func TestOtherToolBuild_UnreadableDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 directory")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	if !otherToolBuild(&buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}}, dir) {
+		t.Error("otherToolBuild = false for a checkout the walk could not read")
 	}
 }

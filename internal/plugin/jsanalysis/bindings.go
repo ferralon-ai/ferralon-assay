@@ -87,7 +87,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 	}
 	reqNames, crNames := loaderNames(clean)
 	frames := newThisFrames(clean)
-	globals := globalNames(clean, frames.topLevel)
+	globals := newGlobalScope(clean, frames)
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {
@@ -119,7 +119,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "module":
 			mb.moduleIndexUse(clean, i, next)
 			i = next
-		case globals[word]:
+		case globals.isGlobal(word, i):
 			mb.globalUse(clean, i, next, false)
 			i = next
 		case word == "this" && frames.globalAt(i):

@@ -437,6 +437,34 @@ function load(f, s) { return f.call(globalThis, s); }
 function main(a) { return load(a, a); }
 main(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global self beside a local self", map[string]string{"app.js": `
+function Box() { var self = this; return self; }
+function load(k, s) { return self[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"alias declared in an enclosing function", map[string]string{"app.js": `
+function outer() { var g = globalThis; return function load(k, s) { return g[k](s); }; }
+const load = outer();
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level var of a global name", map[string]string{"app.js": `
+var self = self || {};
+function load(k, s) { return self[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"local initialised from a global", map[string]string{"app.js": `
+function load(k, s) { let w = typeof window !== 'undefined' ? window : global; return w[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"local self inside a block, global self after", map[string]string{"app.js": `
+function load(k, s) { if (k) { let self = {}; self.x = 1; } return self[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -534,6 +562,12 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"self declared from this", "function Stream(k, fn) { var self = this; fn.call(self, k); return self[k](); }"},
+		{"self as a parameter", "function bind(self, fn) { return fn.apply(self, arguments); }"},
+		{"self as an arrow parameter", "const call = (self, k) => { return self[k](); };"},
+		{"global as a block-scoped local", "function walk(node) { let global = node.scope; return global[node.name](); }"},
+		{"window declared from a parameter", "function setup(win) { const window = win; return window[win.key](); }"},
+		{"self declared in a nested function", "function outer(o) { return function inner() { var self = o; return self[o.k](); }; }"},
 		{"this handed on in a plain function", "function wrap(fn) { return function () { return fn.apply(this, arguments); }; }"},
 		{"this aliased in a plain function", "function Box(k) { var that = this; that[k] = 1; return that; }"},
 		{"this indexed without a call in a plain function", "function Box(k) { this[k] = 1; }"},

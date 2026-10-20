@@ -118,6 +118,53 @@ Before turning it on:
   stays `undetermined` whatever you set.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
 
+### Observed CI toolchain
+
+The CLI also reads `ASSAY_CI_GO_VERSION`, the Go the CI runner has installed. The scan uses it as a
+toolchain source only when you also set `ASSAY_TRUST_OBSERVED_GO=true`, which asserts that the
+observed Go is the one your repository builds with: true in a job that ran `actions/setup-go` ahead
+of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
+other value leaves the observation out and resolution falls back to your `go.mod` directives. The
+Action sets neither variable; set them in the `env:` of the step that runs it.
+
+## Subject build conditions for Java and Maven
+
+Maven profile activation depends on the JVM and the profile selection your build runs with, which the
+scan does not look up. State them:
+
+| What you state | CLI flag | Environment variable |
+|---|---|---|
+| The `java.version` of the JVM that runs your Maven build, as `mvn -v` reports it (for example `17.0.12` or `1.8.0_382`) | `-subject-java-version` | `ASSAY_SUBJECT_JAVA_VERSION` |
+| The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
+
+The flag wins over the environment variable. The Action has no inputs for these; set the variables in
+the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
+stay undecided until you state the Java version, and every profile of the reactor and its parents stays
+undecided until you state the selection.
+
+## Resolving the JVM build graph
+
+`resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
+`assay.buildgraph/v1` JSON, with the sha256 of every build input the tool read:
+
+```sh
+ferralon-assay resolve-graph -dir . -out ./graph-out
+```
+
+| Flag | Meaning |
+|---|---|
+| `-dir` | Repository root (default `.`). |
+| `-out` | Output directory for `buildgraph.json` and its sidecars (required). |
+| `-tool` | `auto` (default), `maven` or `gradle`. |
+| `-profiles` | Comma-separated Maven profiles to activate. |
+| `-java-version` | The JDK the job states; a different major version fails. |
+| `-D key=value` | Build property, repeatable: Maven `-D`, Gradle `-P`. |
+| `-env key=value` | Environment variable overlaid on the job's, repeatable. |
+
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan does not
+read this graph. This command runs your build's scripts and plugins, and the build tool fetches from
+the repositories your build configures; see [threat-model.md](threat-model.md).
+
 ## State and run modes
 
 `baseline` works on its own. `pr-inherit` and `cve-watch` build on a prior baseline, which lives in a
@@ -201,8 +248,8 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        # Pin the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0
+        # Use the same ref as your main workflow (see the README Quickstart).
+        uses: ferralon-ai/ferralon-assay@v0.5
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

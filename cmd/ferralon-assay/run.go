@@ -52,8 +52,8 @@ const (
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
 )
 
-// envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
-// Go installed when the Action started is the toolchain the SCANNED repository builds with. True in a
+// envTrustObservedGo carries the caller's assertion, set in the env of the step that runs the Action,
+// that the Go installed when the Action started is the toolchain the SCANNED repository builds with. True in a
 // same-job setup that ran actions/setup-go (or otherwise provisioned its build toolchain) ahead of
 // the scan; false in a dedicated scan workflow, where the observed Go is the hosted runner image's
 // and says nothing about the subject. Brand-derived for the same reason as
@@ -512,7 +512,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
-		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
+		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true)"),
 
 		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
@@ -816,7 +816,7 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 // pipeline rather than failing the scan.
 //
 // The observation's TRUST is env-only for the same reason and read from the same channel as the
-// measurement it qualifies (envTrustObservedGo, the Action's trust-observed-go input). It fails closed exactly
+// measurement it qualifies (envTrustObservedGo, the caller-set env var). It fails closed exactly
 // like FERRALON_LINK_TO_CONSOLE: anything but an explicit true leaves the observation out of
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.

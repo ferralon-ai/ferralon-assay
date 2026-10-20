@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -79,6 +80,12 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"start":"react-scripts start --require=./hook.js"}}`}, unresolved: true},
 		{name: "a react-scripts script with a config flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"test":"react-scripts test --jestConfig=x"}}`}, unresolved: true},
+		{name: "another command given a stock subcommand", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"start":"react-scripts start","serve":"node start"}}`}, unresolved: true},
+		{name: "a react-scripts flag carrying shell syntax", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"start":"react-scripts start --x;node"}}`}, unresolved: true},
+		{name: "a package.json that is a directory", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"src/package.json/.keep": ""}, unresolved: true},
 		{name: "a manifest key outside a stock CRA", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"package.json": `{"name":"app","main":"server.js","dependencies":{"react-scripts":"5.0.1"}}`}, unresolved: true},
 		{name: "a jest moduleNameMapper", spec: "./index.css", files: map[string]string{"src/index.css": css,
@@ -169,6 +176,14 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"packages/x/package.json": `{"name":"x","devDependencies":{"@craco/craco":"7"}}`}, unresolved: true},
 		{name: "a dependency on a bundler plugin", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"packages/x/package.json": `{"name":"x","devDependencies":{"vite-plugin-css":"1"}}`}, unresolved: true},
+		{name: "a dependency on a scoped framework package", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","dependencies":{"@nuxt/kit":"3"}}`}, unresolved: true},
+		{name: "a dependency naming a bundler mid-name", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"gulp-webpack":"1"}}`}, unresolved: true},
+		{name: "a dependency named in capitals", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"Browserify":"17"}}`}, unresolved: true},
+		{name: "a script that is not a string", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"build":1}}`}, unresolved: true},
 		{name: "a dependency on a require hook", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"packages/x/package.json": `{"name":"x","dependencies":{"css-modules-require-hook":"4"}}`}, unresolved: true},
 		{name: "a package.json above the build root", spec: "./index.css", files: map[string]string{"src/index.css": css}, unresolved: true,
@@ -241,6 +256,66 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 					runtime, res.Partiality.Complete, res.Partiality.Scoped)
 			}
 		})
+	}
+}
+
+// TestStylesheetRuntimeAlone: a program whose only limit is the loader runtime of an exempt
+// stylesheet import is incomplete, with that limit scoped and no run-wide reason, in both the call
+// graph and reachability (which must not widen it to dynamic_dispatch).
+func TestStylesheetRuntimeAlone(t *testing.T) {
+	parent := t.TempDir()
+	if err := os.Mkdir(filepath.Join(parent, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "build")
+	treeWrite(t, filepath.Join(root, "package.json"), craManifest)
+	treeWrite(t, filepath.Join(root, "src", "index.css"), "body { margin: 0; }\n")
+	treeWrite(t, filepath.Join(root, "src", "index.js"), "import './index.css';\nfunction parse() { return 1; }\nfunction load() { return parse(); }\nload();\n")
+	want := []plugin.ScopedReason{stylesheetRuntime()}
+
+	cg, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: root})
+	if err != nil {
+		t.Fatalf("CallGraph: %v", err)
+	}
+	if cg.Partiality.Complete || len(cg.Partiality.Reasons) != 0 || !reflect.DeepEqual(cg.Partiality.Scoped, want) {
+		t.Fatalf("call graph partiality = %+v; want incomplete with only %+v", cg.Partiality, want)
+	}
+	var sink string
+	for _, e := range cg.Edges {
+		if e.Callee.SCIP != "" && strings.HasSuffix(e.Callee.SCIP, "parse().") {
+			sink = e.Callee.SCIP
+		}
+	}
+	if sink == "" {
+		t.Fatalf("no edge into parse in %+v", cg.Edges)
+	}
+	reach, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: root, Symbols: []string{sink}})
+	if err != nil {
+		t.Fatalf("Reachability: %v", err)
+	}
+	if len(reach.Paths) == 0 {
+		t.Fatalf("parse must be reachable")
+	}
+	if reach.Partiality.Complete || len(reach.Partiality.Reasons) != 0 || !reflect.DeepEqual(reach.Partiality.Scoped, want) {
+		t.Errorf("reachability partiality = %+v; want incomplete with only %+v", reach.Partiality, want)
+	}
+}
+
+// TestStyleToolingAbove_UnreadableParent: a directory above the build root that cannot be listed
+// counts as tooling.
+func TestStyleToolingAbove_UnreadableParent(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "build")
+	treeWrite(t, filepath.Join(root, "src", "index.css"), "body { margin: 0; }\n")
+	if err := os.Chmod(parent, 0o311); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	if _, err := os.ReadDir(parent); err == nil {
+		t.Skip("directory permissions are not enforced for this user")
+	}
+	if !styleToolingIn(root) {
+		t.Error("styleToolingIn = false, want true for an unlistable parent")
 	}
 }
 

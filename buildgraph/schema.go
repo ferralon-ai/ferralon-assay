@@ -132,6 +132,12 @@ func NodeID(group, artifact, typ, classifier, version string) string {
 	return group + ":" + artifact + ":" + typ + ":" + classifier + ":" + version
 }
 
+// Key is the node's coordinate without its version, group:artifact:type:classifier: a module
+// holds at most one node per key.
+func (n Node) Key() string {
+	return n.Group + ":" + n.Artifact + ":" + n.Type + ":" + n.Classifier
+}
+
 // InputsDigest is the sha256 over the inputs sorted by path, one "path\x00sha256\n" line each.
 func InputsDigest(inputs []Input) string {
 	sorted := append([]Input(nil), inputs...)

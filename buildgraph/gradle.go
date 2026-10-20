@@ -24,23 +24,39 @@ const (
 
 // gradleProject is one project's assayBuildGraph output.
 type gradleProject struct {
-	Gradle              string                                `json:"gradle"`
-	Java                string                                `json:"java"`
-	JavaVendor          string                                `json:"java_vendor"`
-	Path                string                                `json:"path"`
-	Dir                 string                                `json:"dir"`
-	RootDir             string                                `json:"root_dir"`
-	Group               string                                `json:"group"`
-	Name                string                                `json:"name"`
-	Version             string                                `json:"version"`
-	HasRuntimeClasspath bool                                  `json:"has_runtime_classpath"`
-	OtherRuntime        []string                              `json:"other_runtime_classpaths"`
-	Projects            map[string]gradleCoord                `json:"projects"`
-	Components          []gradleComponent                     `json:"components"`
-	Edges               []Edge                                `json:"edges"`
-	Unresolved          []struct{ Requested, Failure string } `json:"unresolved"`
-	Files               []gradleFile                          `json:"files"`
+	Gradle       string                     `json:"gradle"`
+	Java         string                     `json:"java"`
+	JavaVendor   string                     `json:"java_vendor"`
+	Path         string                     `json:"path"`
+	Dir          string                     `json:"dir"`
+	RootDir      string                     `json:"root_dir"`
+	Group        string                     `json:"group"`
+	Name         string                     `json:"name"`
+	Version      string                     `json:"version"`
+	OtherRuntime []string                   `json:"other_runtime_classpaths"`
+	Projects     map[string]gradleCoord     `json:"projects"`
+	Classpaths   map[string]gradleClasspath `json:"classpaths"`
 }
+
+// gradleClasspath is one configuration as Gradle resolved it.
+type gradleClasspath struct {
+	Components []gradleComponent                     `json:"components"`
+	Edges      []Edge                                `json:"edges"`
+	Unresolved []struct{ Requested, Failure string } `json:"unresolved"`
+	Files      []gradleFile                          `json:"files"`
+}
+
+// The classpaths the producer reads, in precedence order, and the scope each contributes.
+// Gradle mediates each configuration on its own, so one coordinate can resolve to different
+// versions on each; the runtime classpath's version is the one the application runs, and wins.
+// A key on runtimeClasspath and compileClasspath is compile scope; compile-only is provided, as
+// a container supplies it at run time; test-only is test. This is the Maven tree's shape: one
+// version per key per module, at the strongest scope.
+const (
+	gradleRuntime = "runtimeClasspath"
+	gradleCompile = "compileClasspath"
+	gradleTest    = "testRuntimeClasspath"
+)
 
 // gradleFile is one resolved artifact: its component, its file, and the name it was published
 // under, which the cache's file name may not keep.
@@ -164,10 +180,10 @@ func readGradleProjects(dir string) ([]gradleProject, error) {
 	return out, nil
 }
 
-// gradleModule translates one project's runtimeClasspath. A module component becomes one node
-// per artifact file, typed by extension with the classifier read from the file name, or one pom
-// node when it has no artifact; an edge between components joins all their nodes. A project
-// component is a sibling: one jar node and no file.
+// gradleModule folds one project's three classpaths into a module. Each classpath is
+// translated on its own (gradleClasspathNodes); then each g:a:type:classifier keeps the node of
+// the first classpath in precedence order that has it, at the scope gradleScope gives, and every
+// classpath's edges are joined onto the kept nodes.
 func gradleModule(p gradleProject) (Module, error) {
 	rel, ok := relPath(p.RootDir, p.Dir)
 	if !ok {
@@ -176,94 +192,181 @@ func gradleModule(p gradleProject) (Module, error) {
 	if rel == "" {
 		rel = "."
 	}
-	if len(p.Unresolved) > 0 {
-		var log strings.Builder
-		for _, u := range p.Unresolved {
-			log.WriteString(u.Requested + ": " + u.Failure + "\n")
-		}
-		f := classify(stepResolve, []byte(log.String()))
-		return Module{}, f
-	}
 	self := gradleCoord{Group: p.Group, Name: p.Name, Version: p.Version}
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
-	if !p.HasRuntimeClasspath {
+	if _, ok := p.Classpaths[gradleRuntime]; !ok {
 		var others []string
 		for _, c := range p.OtherRuntime {
-			if c != "testRuntimeClasspath" {
+			if c != gradleTest {
 				others = append(others, c)
 			}
 		}
 		if len(others) > 0 {
 			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
 		}
-		return m, nil
 	}
 
+	type translated struct {
+		name  string
+		nodes []Node
+		ids   map[string][]string
+		edges []Edge
+	}
+	var cps []translated
+	onCompile := map[string]bool{}
+	for _, name := range []string{gradleRuntime, gradleCompile, gradleTest} {
+		cp, ok := p.Classpaths[name]
+		if !ok {
+			continue
+		}
+		nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
+		if err != nil {
+			return Module{}, err
+		}
+		if name == gradleCompile {
+			for _, n := range nodes {
+				onCompile[n.Key()] = true
+			}
+		}
+		var edges []Edge
+		for _, e := range cp.Edges {
+			from, to := ids[e.From], ids[e.To]
+			if len(from) == 0 || len(to) == 0 {
+				return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
+			}
+			for _, f := range from {
+				for _, t := range to {
+					if f != t {
+						edges = append(edges, Edge{From: f, To: t})
+					}
+				}
+			}
+		}
+		cps = append(cps, translated{name: name, nodes: nodes, ids: ids, edges: edges})
+	}
+
+	kept := map[string]string{root.Key(): root.ID}
+	for _, cp := range cps {
+		for _, n := range cp.nodes {
+			if _, dup := kept[n.Key()]; dup {
+				continue
+			}
+			kept[n.Key()] = n.ID
+			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			m.Nodes = append(m.Nodes, n)
+		}
+	}
+	keyOf := map[string]string{}
+	for _, cp := range cps {
+		for _, n := range cp.nodes {
+			keyOf[n.ID] = n.Key()
+		}
+	}
+	keyOf[root.ID] = root.Key()
+	seen := map[Edge]bool{}
+	for _, cp := range cps {
+		for _, e := range cp.edges {
+			k := Edge{From: kept[keyOf[e.From]], To: kept[keyOf[e.To]]}
+			if k.From != k.To && !seen[k] {
+				seen[k] = true
+				m.Edges = append(m.Edges, k)
+			}
+		}
+	}
+	return m, nil
+}
+
+// gradleScope is the scope of a node kept from classpath cp.
+func gradleScope(cp string, onCompile bool) string {
+	switch {
+	case cp == gradleRuntime && onCompile:
+		return "compile"
+	case cp == gradleRuntime:
+		return "runtime"
+	case cp == gradleCompile:
+		return "provided"
+	}
+	return "test"
+}
+
+// gradleClasspathNodes translates one classpath. A module component becomes one node per
+// artifact file, typed by extension with the classifier read from the file name, or one pom
+// node when it has no artifact. A project component is a sibling: one jar node and no file; the
+// project itself maps to root. ids maps each component key to its node ids.
+func gradleClasspathNodes(p gradleProject, name string, cp gradleClasspath, root Node) ([]Node, map[string][]string, error) {
+	if len(cp.Unresolved) > 0 {
+		var log strings.Builder
+		for _, u := range cp.Unresolved {
+			log.WriteString(name + ": " + u.Requested + ": " + u.Failure + "\n")
+		}
+		return nil, nil, classify(stepResolve, []byte(log.String()))
+	}
 	files := map[string][]gradleFile{}
-	for _, f := range p.Files {
+	for _, f := range cp.Files {
 		files[f.Component] = append(files[f.Component], f)
 	}
-	byKey := map[string][]string{}
+	var nodes []Node
+	ids := map[string][]string{}
 	seen := map[string]*File{root.ID: nil}
 	add := func(key string, n Node) error {
-		byKey[key] = append(byKey[key], n.ID)
+		ids[key] = append(ids[key], n.ID)
 		if prev, dup := seen[n.ID]; dup {
 			if prev != nil && n.File != nil && prev.Path != n.File.Path {
-				return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: n.ID + " resolved to " + prev.Path + " and " + n.File.Path}
+				return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": " + n.ID + " resolved to " + prev.Path + " and " + n.File.Path}
 			}
 			return nil
 		}
 		seen[n.ID] = n.File
-		m.Nodes = append(m.Nodes, n)
+		nodes = append(nodes, n)
 		return nil
 	}
-	for _, c := range p.Components {
+	for _, c := range cp.Components {
 		var err error
 		switch {
 		case c.ID.Project != "":
 			if c.ID.Project == p.Path && c.ID.Build == ":" {
-				byKey[c.Key] = []string{root.ID}
+				ids[c.Key] = []string{root.ID}
 				delete(files, c.Key)
 				continue
 			}
 			sib, ok := p.Projects[c.ID.Project]
 			if !ok || c.ID.Build != ":" {
-				return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project component outside this build: " + c.Key}
+				return nil, nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project component outside this build: " + c.Key}
 			}
 			// A sibling's own artifact is built, not resolved; its file is not this graph's.
 			delete(files, c.Key)
-			err = add(c.Key, Node{ID: NodeID(sib.Group, sib.Name, "jar", "", sib.Version), Group: sib.Group, Artifact: sib.Name, Version: sib.Version, Type: "jar", Scope: "runtime"})
+			err = add(c.Key, Node{ID: NodeID(sib.Group, sib.Name, "jar", "", sib.Version), Group: sib.Group, Artifact: sib.Name, Version: sib.Version, Type: "jar"})
 		case c.ID.Name != "":
 			fs := files[c.Key]
 			delete(files, c.Key)
 			if len(fs) == 0 {
-				err = add(c.Key, Node{ID: NodeID(c.ID.Group, c.ID.Name, "pom", "", c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version, Type: "pom", Scope: "runtime"})
+				err = add(c.Key, Node{ID: NodeID(c.ID.Group, c.ID.Name, "pom", "", c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version, Type: "pom"})
 				break
 			}
 			sort.Slice(fs, func(i, j int) bool { return fs[i].File < fs[j].File })
 			for _, f := range fs {
-				name := f.Name
-				if name == "" {
-					name = filepath.Base(f.File)
+				fname := f.Name
+				if fname == "" {
+					fname = filepath.Base(f.File)
 				}
-				typ, classifier := gradleArtifact(c.ID.Name, c.ID.Version, name)
+				typ, classifier := gradleArtifact(c.ID.Name, c.ID.Version, fname)
 				sum, sumErr := sha256File(f.File)
 				if sumErr != nil {
-					return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: sumErr.Error()}
+					return nil, nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: sumErr.Error()}
 				}
 				if err = add(c.Key, Node{
 					ID: NodeID(c.ID.Group, c.ID.Name, typ, classifier, c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version,
-					Type: typ, Classifier: classifier, Scope: "runtime", File: &File{Path: f.File, SHA256: sum},
+					Type: typ, Classifier: classifier, File: &File{Path: f.File, SHA256: sum},
 				}); err != nil {
 					break
 				}
 			}
 		default:
-			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "unsupported component " + c.Key}
+			return nil, nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "unsupported component " + c.Key}
 		}
 		if err != nil {
-			return Module{}, err
+			return nil, nil, err
 		}
 	}
 	// What remains is on the classpath without a component: files() and fileTree() dependencies,
@@ -275,24 +378,9 @@ func gradleModule(p gradleProject) (Module, error) {
 				log.WriteString(f.File + "\n")
 			}
 		}
-		return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has file dependencies without a coordinate:\n" + log.String()}
+		return nil, nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " " + name + " has file dependencies without a coordinate:\n" + log.String()}
 	}
-	edges := map[Edge]bool{}
-	for _, e := range p.Edges {
-		from, to := byKey[e.From], byKey[e.To]
-		if len(from) == 0 || len(to) == 0 {
-			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "edge to an unlisted component: " + e.From + " -> " + e.To}
-		}
-		for _, f := range from {
-			for _, t := range to {
-				if f != t && !edges[Edge{From: f, To: t}] {
-					edges[Edge{From: f, To: t}] = true
-					m.Edges = append(m.Edges, Edge{From: f, To: t})
-				}
-			}
-		}
-	}
-	return m, nil
+	return nodes, ids, nil
 }
 
 // gradleArtifact reads the type and classifier from an artifact file named

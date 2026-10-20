@@ -9,10 +9,10 @@ nothing calls reports as not-reachable, instead of landing on your desk as a fin
 It runs entirely in your own runner. It never runs a model, and it never executes code from the
 scanned repository — every stage is static analysis over the checked-out tree and its build metadata.
 
-Point it at a **Go, Java, JavaScript, Python or .NET** repository and every one gets a full scan and a
-`Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory names —
-and the [Language support](docs/language-support.md) fit matrix shows at a glance how deep the analysis
-reaches in each.
+Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
+and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
+names — and the [Language support](docs/language-support.md) fit matrix shows at a glance how far the
+analysis reaches in each.
 
 ## Quickstart — GitHub Action
 
@@ -197,7 +197,7 @@ to `advisory-corpus`. Advisory sourcing does not vary by language; a corpus supp
 advisories it carries for whichever languages it covers, and the `Report` records the corpus's own
 `corpus_digest` so a run's advisory state is independently identifiable. With neither input set the
 scan falls back to a small built-in table so the engine still runs standalone — Go carries 10 of
-these, the other four carry 3 each
+these, and each of the other five languages carries 3
 ([`cmd/ferralon-assay/acquire.go`](cmd/ferralon-assay/acquire.go)); that built-in table is a
 standalone default floor, so consume the corpus for real coverage.
 
@@ -250,7 +250,7 @@ declaration for you whenever `advisory-corpus-repo` or `advisory-corpus` is set.
 
 Assay is the free, open-source reachability engine: it resolves dependency versions, maps advisories
 onto vulnerable symbols, builds a call graph, and computes reachability, then reports what it found.
-What each of the five languages resolves today is laid out in
+What each of the six languages resolves today is laid out in
 [Language support](docs/language-support.md).
 
 It stops at reachability — there is no execution of the target codebase, no exploit synthesis, and no
@@ -273,12 +273,14 @@ and reserved for implementation.
 
 **Fit:** CI reachability triage — resolving whether a CVE's vulnerable code is actually callable in
 your build, not just present in your dependency tree. Go gets the deepest analysis, dependency-level
-reachability into the code an advisory names; Java, JavaScript, Python and .NET resolve dependency
-versions and disqualify advisories your pinned version is provably outside. [Language
+reachability into the code an advisory names. Java and Kotlin reach into dependency JARs, .NET into
+restored NuGet assemblies, and Python and JavaScript trace first-party calls to the dependency
+boundary; all of them resolve dependency versions and disqualify advisories your pinned version is
+provably outside. [Language
 support](docs/language-support.md) has the per-language specifics.
 
 **Non-fit:** Assay is not a patcher — it does not generate or apply a fix. It does not execute the
-scanned codebase, run a detonation harness, or synthesize an exploit; a `reachable_candidate`
+scanned codebase or synthesize an exploit; a `reachable_candidate`
 verdict is a candidate, never a proof of exploitability. It is pre-1.0 — see
 [API stability](#api-stability) before depending on it as a Go library.
 
@@ -318,7 +320,7 @@ coordinates — never source, never analysis results. The full picture, includin
 
 ## Automatic upgrades
 
-This project does not open pull requests against your repository, and no automation here rewrites the
+Nothing in this repository opens pull requests against yours, and no automation here rewrites the
 `uses: ferralon-ai/ferralon-assay@…` ref on your workflow line. That ref is yours to move — or to let
 float. Open [`action.yml`](action.yml): the composite action has exactly three steps — fetch the
 scanner (verifying its checksum only if you pinned one), fetch the advisory corpus, and run the scan.
@@ -380,8 +382,8 @@ comes back `Resolved=false` so the disqualification predicate fails open, since 
 be read as "not affected".
 
 **A plugin for an unlisted language is constructed and then never called.** Language detection is a
-closed set: [`checkout.DetectLanguage`](checkout/language.go) can only return `go`, `java`, `js`,
-`python`, `dotnet`, or unknown. `NewMultiPlugin` routes each operation by that detected tag
+closed set: [`checkout.DetectLanguage`](checkout/language.go) can only return `go`, `java`, `kotlin`,
+`js`, `python`, `dotnet`, `cfamily`, or unknown. `NewMultiPlugin` routes each operation by that detected tag
 ([`plugin/multiplugin.go`](plugin/multiplugin.go)), and the `codebase_inventory` stage gates its
 manifest and version reads on `Language()` matching it, so a plugin registered as, say, `ruby` is
 never selected — it produces no error, and the run reports partiality with reason
@@ -485,8 +487,8 @@ full list.
   tag and the workflow builds and publishes it, minting the BUSL Change Date onto a release-only
   leaf rather than a branch. Releases are never published from a local checkout.
 
-Upgrade pull requests are opened by the Ferralon Team bot; you can reply on any of them with
-questions.
+If you installed through the Ferralon console, its upgrade pull requests come from the Ferralon Team
+bot; you can reply on any of them with questions.
 
 ## License
 

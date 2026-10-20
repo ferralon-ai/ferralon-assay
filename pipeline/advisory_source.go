@@ -106,6 +106,7 @@ func (tableSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	if facts.Provenance.TrustTier == "" {
 		facts.Provenance.TrustTier = TrustFirstParty
 	}
+	facts.BuiltIn = true
 	return facts, true
 }
 

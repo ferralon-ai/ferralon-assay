@@ -206,6 +206,7 @@ type partialFlags struct {
 	computedReq   bool // a runtime-computed CJS target require(var) (computed_require_specifier)
 	unreadModule  bool // a relative specifier naming no in-tree source module, or process.dlopen (unresolved_module)
 	evaluated     bool // eval or the Function constructor (evaluated_code)
+	stylesheet    bool // a stylesheet import whose only code is the loader runtime (scoped uninspectable_package)
 }
 
 // callGraphInternal builds the graph and returns it alongside the per-edge provenance
@@ -247,7 +248,10 @@ func callGraphInternal(buildDir string) (plugin.CallGraphResult, map[plugin.Call
 			if !flags.uninspectable && rs.loadsOutOfTree(f.module, ls.spec, ls.viaRequire) {
 				flags.uninspectable = true
 			}
-			if !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec) {
+			switch {
+			case !flags.stylesheet && rs.stylesheetImport(f.module, ls.spec):
+				flags.stylesheet = true
+			case !flags.unreadModule && rs.loadsUnreadModule(f.module, ls.spec):
 				flags.unreadModule = true
 			}
 		}
@@ -376,8 +380,14 @@ func callGraphPartiality(prog *program, flags partialFlags) plugin.Partiality {
 	if flags.evaluated {
 		reasons = append(reasons, plugin.PartialReasonEvaluatedCode)
 	}
-	if len(reasons) == 0 {
+	var scoped []plugin.ScopedReason
+	if flags.stylesheet {
+		scoped = append(scoped, stylesheetRuntime())
+	}
+	if len(reasons) == 0 && len(scoped) == 0 {
 		return plugin.Complete()
 	}
-	return plugin.Partial(reasons...)
+	part := plugin.Partial(reasons...)
+	part.Scoped = scoped
+	return part
 }

@@ -131,27 +131,42 @@ load(process.argv[2]);
 }
 
 // TestUndeterminedReason_JSStylesheetImport: a stylesheet import loads no unread code only with
-// a stylesheet extension, a regular file in the tree, and no bundler or transform config in the
-// tree. A program that does nothing else can then refute; one that also loads unread code is
-// still held, and so is each program missing one of the three conditions.
+// a stylesheet extension, a regular file in the tree, a stock Create React App importing it, and
+// no bundler, transform or hook in the tree. A program that does nothing else can then refute an
+// advisory on any package but the loader runtime's; one that also loads unread code is still
+// held, and so is each program missing one of the conditions.
 func TestUndeterminedReason_JSStylesheetImport(t *testing.T) {
 	const body = "function parse(s) { return s.trim(); }\nfunction load(s) { return parse(s); }\nload(process.argv[2]);\n"
 	const css = "body { margin: 0; }\n"
+	cra := func(extra map[string]string) map[string]string {
+		files := map[string]string{
+			".git/HEAD":    "ref: refs/heads/main\n",
+			"package.json": `{"name":"app","private":true,"dependencies":{"json5":"2.2.1","react-scripts":"5.0.1"},"scripts":{"start":"react-scripts start","build":"react-scripts build"}}`,
+		}
+		maps.Copy(files, extra)
+		return files
+	}
+	styleLoader := &report.Package{Ecosystem: "npm", Name: "style-loader", Version: "3.3.1", PURL: "pkg:npm/style-loader@3.3.1"}
 	cases := []struct {
 		name  string
 		src   string
 		files map[string]string
+		pkg   *report.Package // json5Package when nil
 		held  bool
 	}{
-		{"an in-tree stylesheet and nothing else unread", "import './index.css';\n" + body,
-			map[string]string{"index.css": css}, false},
+		{"an in-tree stylesheet in a stock Create React App and nothing else unread", "import './index.css';\n" + body,
+			cra(map[string]string{"index.css": css}), nil, false},
+		{"an advisory on the stylesheet loader runtime", "import './index.css';\n" + body,
+			cra(map[string]string{"index.css": css}), styleLoader, true},
+		{"an in-tree stylesheet outside a Create React App", "import './index.css';\n" + body,
+			map[string]string{"index.css": css}, nil, true},
 		{"an in-tree stylesheet beside a native addon", "import './index.css';\nconst addon = require('./build/Release/x.node');\n" + body + "addon.parse(process.argv[2]);\n",
-			map[string]string{"index.css": css}, true},
+			cra(map[string]string{"index.css": css}), nil, true},
 		{"an in-tree asset that is not a stylesheet", "import './logo.svg';\n" + body,
-			map[string]string{"logo.svg": "<svg/>\n"}, true},
-		{"a stylesheet absent from the tree", "import './index.css';\n" + body, nil, true},
+			cra(map[string]string{"logo.svg": "<svg/>\n"}), nil, true},
+		{"a stylesheet absent from the tree", "import './index.css';\n" + body, cra(nil), nil, true},
 		{"an in-tree stylesheet under a custom webpack rule for .css", "import './index.css';\n" + body,
-			map[string]string{"index.css": css, "webpack.config.js": "module.exports = { module: { rules: [{ test: /\\.css$/, use: './css-loader.js' }] } };\n"}, true},
+			cra(map[string]string{"index.css": css, "webpack.config.js": "module.exports = { module: { rules: [{ test: /\\.css$/, use: './css-loader.js' }] } };\n"}), nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -159,7 +174,11 @@ func TestUndeterminedReason_JSStylesheetImport(t *testing.T) {
 			if edges == 0 {
 				t.Fatalf("program must have call edges")
 			}
-			reason, ok := undeterminedReason(store, "a1", json5Package)
+			pkg := tc.pkg
+			if pkg == nil {
+				pkg = json5Package
+			}
+			reason, ok := undeterminedReason(store, "a1", pkg)
 			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
 				t.Errorf("undeterminedReason = (%q, %v); want (%q, true)", reason, ok, report.ReasonAnalysisDidNotRun)
 			}

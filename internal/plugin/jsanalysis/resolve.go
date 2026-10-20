@@ -294,11 +294,19 @@ func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
 	if ext == ".json" {
 		return false
 	}
-	if rs.stylesheetRunsNoCode(path.Join(path.Dir(fromModule), spec)) {
+	if rs.stylesheetRunsNoCode(fromModule, path.Join(path.Dir(fromModule), spec)) {
 		return false
 	}
 	// TS sources import siblings by their emitted name ("./util.js" for util.ts).
 	return !jsExtensions[ext] || rs.resolveRelative(fromModule, strings.TrimSuffix(spec, ext)) == ""
+}
+
+// stylesheetImport reports whether spec is a relative import of a stylesheet that
+// stylesheetRunsNoCode exempts from unresolved_module; the caller declares its loader runtime.
+func (rs *resolver) stylesheetImport(fromModule, spec string) bool {
+	return isRelativeSpecifier(spec) && stylesheetExtensions[path.Ext(spec)] &&
+		rs.resolveRelative(fromModule, spec) == "" &&
+		rs.stylesheetRunsNoCode(fromModule, path.Join(path.Dir(fromModule), spec))
 }
 
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's

@@ -598,11 +598,12 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 }
 
 // globalUse records a use of the global-valued name or global `this` at [i, next): a
-// computed key on it, `.eval`, `.Function` or `.require` read from it, or the object handed on as a
-// value. A literal key is judged by keyedUse. For a function's own `this` (callOnly), which
-// is the global only when the function is called plainly, just a computed key that is
-// called and `.eval`/`.Function` count: handing that `this` on (`fn.apply(this, args)`)
-// and indexing it without a call are how methods written as functions use their receiver.
+// computed key on it, `.eval`, `.Function` or `.require` read from it, or the object
+// handed on as a value. A literal key is judged by keyedUse. For a function's own `this`
+// (callOnly), which is the global only when the function is called plainly, just a
+// computed key that is called and `.eval`/`.Function` count: handing that `this` on
+// (`fn.apply(this, args)`) and indexing it without a call are how methods written as
+// functions use their receiver.
 func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs *globalScope) {
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)

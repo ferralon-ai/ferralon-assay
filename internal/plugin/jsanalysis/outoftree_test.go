@@ -600,6 +600,30 @@ function use(o) { return o; }
 function load() { use(new Function('return this')()); }
 load();
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global after a spread argument", map[string]string{"app.js": `
+function load(k, s) {
+  return (function (a, g) { return a[k](s); })(...[], globalThis);
+}
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name of a function expression stays inside it", map[string]string{"app.js": `
+const f = function self() { return 1; };
+function load(k, s) { f(); return self[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global alias in parentheses", map[string]string{"app.js": `
+const g = (globalThis);
+function load(k, s) { return g[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this in an anonymous generator", map[string]string{"app.js": `
+const load = function* (k, s) { yield this[k](s); };
+load(process.argv, process.argv).next();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this in a named generator", map[string]string{"app.js": `
+function* load(k, s) { yield this[k](s); }
+load(process.argv, process.argv).next();
+`}, plugin.PartialReasonEvaluatedCode},
 		{"eval on any receiver", map[string]string{"app.js": `
 function load(o, s) { return o.eval(s); }
 function main(a) { return load(a, a); }
@@ -917,6 +941,7 @@ load(process.argv);
 func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 	cases := []struct{ name, app string }{
 		{"browserify module wrapper", "var mods = {1: [function (require, module, exports) { module.exports = require('./util'); }, {}]};"},
+		{"this indexed in generator methods", "class C { *items(k) { yield this[k](); } }\nconst o = { *gen(k) { yield this[k](); } };\nmodule.exports = { C, o };"},
 		{"generator wrapper", "var mods = [function* (exports, require) { yield require('./util'); }];"},
 		{"arrow parameters", "const wrap = (require, module) => require('./util');"},
 		{"lone arrow parameter", "const wrap = require => require('./util');"},

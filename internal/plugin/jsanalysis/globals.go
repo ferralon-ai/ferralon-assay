@@ -781,7 +781,11 @@ func newThisFrames(clean []rune) *thisFrames {
 							params = [2]int{o + 1, b}
 						}
 					default:
-						if w2, s2 := wordBefore(clean, skipSpaceBack(clean, s-1)); w2 == "function" {
+						r := skipSpaceBack(clean, s-1)
+						if r >= 0 && clean[r] == '*' { // function* name(...)
+							r = skipSpaceBack(clean, r-1)
+						}
+						if w2, s2 := wordBefore(clean, r); w2 == "function" {
 							g, kw = true, s2
 						} else {
 							g = false // a method, getter or setter

@@ -1,0 +1,89 @@
+// Registers assayBuildGraph on every project. The task writes the project's runtimeClasspath as
+// Gradle resolved it: components, the edges between them, and each artifact's file. Everything
+// the action reads is captured while the task is configured, so it never reaches back into the
+// project at execution time.
+import groovy.json.JsonOutput
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+
+def assayOut = System.getProperty('assay.out')
+def gradleVersion = gradle.gradleVersion
+def javaVersion = System.getProperty('java.version')
+def javaVendor = System.getProperty('java.vendor')
+
+allprojects { p ->
+    p.tasks.register('assayBuildGraph') { t ->
+        def projectPath = p.path
+        def doc = [
+            gradle     : gradleVersion,
+            java       : javaVersion,
+            java_vendor: javaVendor,
+            path       : projectPath,
+            dir        : p.projectDir.absolutePath,
+            build_file : p.buildFile.absolutePath,
+            root_dir   : p.rootDir.absolutePath,
+            group      : String.valueOf(p.group),
+            name       : p.name,
+            version    : String.valueOf(p.version),
+        ]
+        def cfg = p.configurations.findByName('runtimeClasspath')
+        def root = cfg == null ? null : cfg.incoming.resolutionResult.rootComponent
+        def artifacts = cfg == null ? null : cfg.incoming.artifactView { lenient(false) }.artifacts.resolvedArtifacts
+        def projects = [:]
+        p.rootProject.allprojects { q ->
+            projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]
+        }
+        def out = new File(assayOut, 'project' + projectPath.replace(':', '_') + '.json')
+        t.doLast {
+            doc.has_runtime_classpath = root != null
+            doc.projects = projects
+            def id = { c ->
+                if (c instanceof ModuleComponentIdentifier) {
+                    return [group: c.group, name: c.module, version: c.version]
+                }
+                if (c instanceof ProjectComponentIdentifier) {
+                    // Gradle 8.2 added buildPath and Gradle 9 removed name.
+                    def build = c.build.hasProperty('buildPath') ? c.build.buildPath : c.build.name
+                    return [project: c.projectPath, build: build]
+                }
+                return [other: c.displayName]
+            }
+            def components = []
+            def edges = []
+            def unresolved = []
+            if (root != null) {
+                def seen = [] as Set
+                def queue = [root.get()]
+                while (!queue.isEmpty()) {
+                    def c = queue.remove(0)
+                    def key = c.id.displayName
+                    if (!seen.add(key)) {
+                        continue
+                    }
+                    components << [key: key, id: id(c.id)]
+                    c.dependencies.each { d ->
+                        if (d instanceof ResolvedDependencyResult) {
+                            edges << [from: key, to: d.selected.id.displayName]
+                            queue << d.selected
+                        } else if (d instanceof UnresolvedDependencyResult) {
+                            unresolved << [requested: d.requested.displayName, failure: String.valueOf(d.failure?.message)]
+                        }
+                    }
+                }
+            }
+            def files = []
+            if (artifacts != null && unresolved.isEmpty()) {
+                artifacts.get().each { a ->
+                    files << [component: a.id.componentIdentifier.displayName, file: a.file.absolutePath]
+                }
+            }
+            doc.components = components
+            doc.edges = edges
+            doc.unresolved = unresolved
+            doc.files = files
+            out.text = JsonOutput.toJson(doc)
+        }
+    }
+}

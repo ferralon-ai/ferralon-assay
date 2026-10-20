@@ -1,0 +1,3 @@
+// Producer fixture: lib (guava), app (lib + commons-text), kt (Kotlin JVM, lib).
+rootProject.name = 'gradle-multi'
+include 'lib', 'app', 'kt'

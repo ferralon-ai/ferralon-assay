@@ -76,7 +76,8 @@ The following profiles are active:
 `
 
 // mavenEffectivePOM gives module-c a repository the root does not declare, its system-scoped
-// dependency's path, and a surefire <includes> that is not dependency:tree's.
+// dependency's path, and <includes> that never reach dependency:tree: surefire's, and a
+// dependency-plugin unpack execution's.
 const mavenEffectivePOM = `<?xml version="1.0" encoding="UTF-8"?>
 <projects>
   <project>
@@ -105,6 +106,10 @@ const mavenEffectivePOM = `<?xml version="1.0" encoding="UTF-8"?>
         <plugin>
           <artifactId>maven-surefire-plugin</artifactId>
           <configuration><includes><include>**/*IT.java</include></includes></configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-dependency-plugin</artifactId>
+          <executions><execution><id>unpack-schemas</id><configuration><includes>**/*.xsd</includes></configuration></execution></executions>
         </plugin>
       </plugins>
     </build>
@@ -436,7 +441,8 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "JAVA_TOOL_OPTIONS --define=", env: []string{"JAVA_TOOL_OPTIONS=--define=scope=compile"}, want: "tool_failed:conditions"},
 		{name: "jvm.config includes", repo: map[string]string{".mvn/jvm.config": "-Xmx1g -Dincludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "POM property scope", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <properties><scope>compile</scope></properties>", 1)}, want: "tool_failed:conditions"},
-		{name: "dependency-plugin execution excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
+		{name: "dependency-plugin default-cli excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>default-cli</id><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
+		{name: "dependency-plugin config verbose", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><configuration><verbose>true</verbose></configuration></plugin></plugins></build>", 1)}, want: "tool_failed:conditions"},
 		{name: "one coordinate at two versions", edit: map[string]string{"tree.json": strings.Replace(mavenTree, sys, strings.TrimSuffix(sys, "}")+`,"children":[`+guava31+`]}`, 1)}, want: "tool_failed:tree"},
 		{name: "published version of a sibling", edit: map[string]string{"tree.json": strings.Replace(mavenTree, `"artifactId":"module-a","version":"1.0.0","type":"jar","scope":"compile"`, `"artifactId":"module-a","version":"0.9.0","type":"jar","scope":"compile"`, 1)}, want: "tool_failed:list"},
 		{name: "systemPath missing", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "@M2@/sys.jar", "@M2@/gone.jar", 1)}, want: "tool_failed:list"},

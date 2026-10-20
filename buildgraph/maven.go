@@ -180,9 +180,9 @@ func treeShapingOverride(c Conditions, env []string, dir string) error {
 }
 
 // treeShapingInPOM fails when a module's effective POM sets one of treeShapingParams: as a
-// project property, which a mojo parameter's expression reads, or in maven-dependency-plugin
-// configuration, plugin-wide, per execution or under pluginManagement, which the command line
-// does not override.
+// project property, which a mojo parameter's expression reads, or in the maven-dependency-plugin
+// configuration a command-line goal takes (plugin-wide or the default-cli execution, in plugins
+// or pluginManagement), which -D does not override. Other executions never reach the tree goal.
 func treeShapingInPOM(effective []effectiveProject) error {
 	fail := func(p effectiveProject, where, key string) error {
 		return &Failure{Kind: KindToolFailed, Detail: stepConditions, Log: p.GroupID + ":" + p.ArtifactID + " sets " + key + " in " + where + ", which reshapes dependency:tree"}
@@ -199,7 +199,9 @@ func treeShapingInPOM(effective []effectiveProject) error {
 			}
 			configs := []xmlChildren{pl.Configuration}
 			for _, ex := range pl.Executions.Execution {
-				configs = append(configs, ex.Configuration)
+				if ex.ID == "default-cli" {
+					configs = append(configs, ex.Configuration)
+				}
 			}
 			for _, c := range configs {
 				for _, e := range c.Any {
@@ -288,6 +290,7 @@ type effectivePlugin struct {
 	Configuration xmlChildren `xml:"configuration"`
 	Executions    struct {
 		Execution []struct {
+			ID            string      `xml:"id"`
 			Configuration xmlChildren `xml:"configuration"`
 		} `xml:"execution"`
 	} `xml:"executions"`

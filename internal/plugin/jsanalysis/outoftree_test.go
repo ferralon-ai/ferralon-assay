@@ -1377,6 +1377,11 @@ e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global reached through a chain of global names, indexed", map[string]string{"app.js": `
+globalThis.window.self[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"plain function's this in an object beside a key named class", map[string]string{"app.js": `
 var o = { class: 1, y: { v: this[process.argv[2]](process.argv[3]) } };
 function load(s) { return s; }
@@ -1553,6 +1558,8 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"an object literal method in a spread", "var o = { ...{ chain() { return this; } } };"},
 		{"an object literal method after a keyword operator", "function* f() { yield { m(k) { return this[k](1); } }; }"},
 		{"an object literal method after export default", "export default { m() { var g = this; return g[process.argv[2]](1); } };"},
+		{"a member of a local of a global name named like the global", "const self = { self: { a: 1 } };\nself.self[process.argv[2]];"},
+		{"a member named like the global on a property of the global", "globalThis.config = { self: { a: 1 } };\nglobalThis.config.self[process.argv[2]];"},
 		{"a block-level function of a global name, used in its block", "if (process.env.X) { function self(k) { return k; } self[process.argv[2]]; }"},
 	}
 	for _, tc := range cases {

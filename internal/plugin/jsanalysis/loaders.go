@@ -397,17 +397,15 @@ func ternaryElse(clean []rune, b int) bool {
 	return false
 }
 
-// memberStore reports whether the '=' at b assigns to a member (`o.g =`, `o[k] =`), which stores
-// the value where this lane does not follow it. A compound or comparison operator is not one.
+// memberStore reports whether the '=' at b assigns to a member (`o.g =`, `o[k] =`) or to a
+// destructuring pattern (`({ [k]: f } =`), which stores the value where this lane does not
+// follow it. A compound or comparison operator is not one.
 func memberStore(clean []rune, b int) bool {
-	if b < 1 || strings.ContainsRune("=!<>+-*/%&|^?", clean[b-1]) {
-		return false
-	}
 	k := skipSpaceBack(clean, b-1)
 	if k < 0 {
 		return false
 	}
-	if clean[k] == ']' {
+	if clean[k] == ']' || clean[k] == '}' {
 		return true
 	}
 	_, s := wordBefore(clean, k)

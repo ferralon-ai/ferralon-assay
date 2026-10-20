@@ -145,8 +145,8 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		switch word {
 		case "function":
 			b := skipSpaceBack(clean, i-1)
-			if w, _ := wordBefore(clean, b); w == "declare" || ambient(clean, tf, tf.block(i)) {
-				break // a TypeScript declaration binds no value
+			if ambient(clean, tf, tf.block(i)) {
+				break // a TypeScript declaration binds no value; `declare function` is an expression below
 			}
 			if b >= 0 && clean[b] != ';' && clean[b] != '{' && clean[b] != '}' {
 				break // a function expression's name is scoped to its own body

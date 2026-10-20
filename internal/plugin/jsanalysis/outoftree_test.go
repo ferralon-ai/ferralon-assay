@@ -1009,6 +1009,37 @@ o.g = Function('return this')();
 function load(k, s) { return o.g[k](s); }
 load(process.argv[2], process.argv[3]);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare global function", map[string]string{"app.ts": `
+declare global { function self(): any; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+export {};
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a TypeScript declare namespace function", map[string]string{"app.ts": `
+declare namespace A { function self(): any; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a dotted TypeScript declare namespace function", map[string]string{"app.ts": `
+declare namespace A.B { function self(): any; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name imported inside a TypeScript declare module", map[string]string{"app.ts": `
+declare module 'x' { import self from 'y'; }
+function load(k: string, s: string) { return self[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured by assignment with a computed key", map[string]string{"app.js": `
+let f;
+function load(k, s) { ({ [k]: f } = globalThis); return f(s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured into a parameter default", map[string]string{"app.js": `
+function run(e, s) { return e(s); }
+function load(s, { eval: e } = globalThis) { return run(e, s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"require after a member named function", map[string]string{"app.js": `
 const x = {};
 x.function
@@ -1147,6 +1178,11 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"global name as an arrow parameter in a ternary branch", "const f = process.env.X ? window => window[process.argv[2]](1) : null;"},
 		{"an arrow body holding a whole ternary", "const f = window => window ? window[process.argv[2]](1) : 0;"},
 		{"Function as an optional parameter type", "function run(cb?: Function, f?: Function): Function | undefined { return cb; }"},
+		{"global name as an arrow parameter used in its own ternary else", "const c = process.env.X;\nconst f = window => c ? 0 : window[process.argv[2]](1);"},
+		{"Function as a parameter type after a ternary default", "function run(a = process.env.X ? 1 : 2, cb: Function) { return cb; }"},
+		{"Function as a type after a nullish default", "const v = process.env.X ?? 'y'\nlet cb: Function;"},
+		{"the global assigned to an undeclared global name", "let x = 1;\nself = globalThis;\nconsole.log(self.location, x);"},
+		{"members compared with globals and a compound assignment", "const o = {};\nif (o.g === globalThis || o.h !== window || o.i >= self || o.j <= top) {}\nlet n = 0;\nn += self;"},
 		{"a member compared with a global", "const o = {};\nif (o.g == globalThis) { o.g = 1; }"},
 	}
 	for _, tc := range cases {

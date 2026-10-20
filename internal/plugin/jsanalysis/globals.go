@@ -804,8 +804,10 @@ func (gs *globalScope) returnsThis(clean []rune, k int) bool {
 			for f >= 0 && !gs.tf.fn[f] {
 				f = gs.tf.parent[f]
 			}
-			if rw, _ := wordBefore(clean, b); rw == "return" && f == k &&
-				!(p < len(clean) && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(')) {
+			after, _ := peekWord(clean, p)
+			if rw, _ := wordBefore(clean, b); rw == "return" && f == k && after != "instanceof" && after != "in" &&
+				!(p < len(clean) && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(')) &&
+				!(p+1 < len(clean) && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=') {
 				r = true
 			}
 		}
@@ -877,6 +879,12 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 func (gs *globalScope) callsReturnThis(clean []rune, word string, i, next int) bool {
 	if p := skipSpace(clean, next); p >= len(clean) || clean[p] != '(' {
 		return false
+	}
+	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w {
+	case "new":
+		return false // a construction yields the new object
+	case "function":
+		return false // the declaration itself
 	}
 	for _, d := range gs.lookup(word, i) {
 		if k, ok := gs.fnDecl[d]; ok && gs.returnsThis(clean, k) {
@@ -1266,24 +1274,51 @@ func objectLiteral(clean []rune, b int, inObject bool) bool {
 	return w == "return" || w == "default"
 }
 
-// classBody reports whether the '{' after position b opens a class body,
-// `class [Name] [extends Expr] {`, or a TypeScript interface body, whose this is a type.
+// classBody reports whether the '{' after position b opens a class body or a TypeScript
+// interface body, whose this is a type: the keyword class (not a member named so) starts the
+// statement's head at bracket depth zero, `class A<T> extends f().B<T> {`, or interface
+// does, followed only by a name and type parameters or extends clauses.
 func classBody(clean []rune, b int) bool {
-	for k, steps := b, 0; k >= 0 && steps < 8; steps++ {
-		w, s := wordBefore(clean, k)
-		if w == "" {
+	depth := 0
+	for p := b; p >= 0 && b-p < maxTypeScan; p-- {
+		switch r := clean[p]; {
+		case r == ')' || r == ']' || r == '>':
+			depth++
+		case r == '(' || r == '[' || r == '<':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case depth == 0 && (r == ';' || r == '{' || r == '}'):
 			return false
-		}
-		if w == "class" || w == "interface" {
+		case depth == 0 && isIdentPart(r):
+			w, s := wordBefore(clean, p)
 			d := skipSpaceBack(clean, s-1)
-			return !(d >= 0 && clean[d] == '.') // not a member named class
-		}
-		k = skipSpaceBack(clean, s-1)
-		if k >= 0 && clean[k] == '.' {
-			k = skipSpaceBack(clean, k-1)
+			member := d >= 0 && clean[d] == '.'
+			if w == "class" && !member {
+				return true
+			}
+			if w == "interface" && !member {
+				return interfaceHead(clean, s)
+			}
+			p = s
 		}
 	}
 	return false
+}
+
+// interfaceHead reports whether the word interface at s begins a TypeScript interface
+// declaration on its line: a statement start before it and a name after it on the same line.
+func interfaceHead(clean []rune, s int) bool {
+	q := skipSpaceBack(clean, s-1)
+	if !(q < 0 || clean[q] == ';' || clean[q] == '{' || clean[q] == '}') {
+		if w, _ := wordBefore(clean, q); w != "export" && w != "declare" && w != "default" {
+			return false
+		}
+	}
+	_, e := readWord(clean, s)
+	name, ne := peekWord(clean, skipSpace(clean, e))
+	return name != "" && sameLine(clean, s, ne)
 }
 
 // indexKey reports whether the value between the '[' at b and the ']' at p is the key of

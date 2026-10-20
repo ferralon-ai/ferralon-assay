@@ -61,7 +61,7 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"frontend/src/index.css": css, "frontend/package.json": craManifest,
 			"package.json": `{"name":"shop","version":"1.0.0","main":"server.js","type":"module","workspaces":["frontend"],"scripts":{` +
 				`"start":"node backend/server","server":"nodemon backend/server","client":"npm start --prefix frontend",` +
-				`"dev":"concurrently \"npm run server\" \"npm run client\"","data:destroy":"node backend/seeder -d",` +
+				`"dev":"concurrently -k \"npm run server\" \"npm run client\"","data:destroy":"node backend/seeder -d",` +
 				`"heroku-postbuild":"NPM_CONFIG_PRODUCTION=false npm install --prefix frontend && npm run build --prefix=frontend",` +
 				`"test":"echo \"Error: no test specified\" && exit 1","ci":"NODE_ENV=test npm ci --silent && yarn run build --cwd frontend"},` +
 				`"dependencies":{"express":"^4.17.1"},"devDependencies":{"concurrently":"^5.3.0","nodemon":"^2.0.4"}}`}},

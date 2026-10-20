@@ -75,8 +75,8 @@ The following profiles are active:
  - extra (source: com.example:module-c:1.0.0)
 `
 
-// mavenEffectivePOM gives module-c a repository the root does not declare, and its
-// system-scoped dependency's path.
+// mavenEffectivePOM gives module-c a repository the root does not declare, its system-scoped
+// dependency's path, and a surefire <includes> that is not dependency:tree's.
 const mavenEffectivePOM = `<?xml version="1.0" encoding="UTF-8"?>
 <projects>
   <project>
@@ -100,6 +100,14 @@ const mavenEffectivePOM = `<?xml version="1.0" encoding="UTF-8"?>
       <repository><id>child-only</id><url>file:///srv/child-repo</url></repository>
       <repository><id>central</id><url>https://repo.maven.apache.org/maven2</url></repository>
     </repositories>
+    <build>
+      <plugins>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <configuration><includes><include>**/*IT.java</include></includes></configuration>
+        </plugin>
+      </plugins>
+    </build>
     <dependencies>
       <dependency>
         <groupId>com.example</groupId>
@@ -424,6 +432,11 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "stated verbose", c: Conditions{Properties: map[string]string{"verbose": "true"}}, want: "tool_failed:conditions"},
 		{name: "MAVEN_OPTS scope", env: []string{"MAVEN_OPTS=-Xmx1g -Dscope=compile"}, want: "tool_failed:conditions"},
 		{name: "maven.config excludes", repo: map[string]string{".mvn/maven.config": "-ntp\n-Dexcludes=a:b\n"}, want: "tool_failed:conditions"},
+		{name: "MAVEN_ARGS -D with a space", env: []string{"MAVEN_ARGS=-D verbose=true"}, want: "tool_failed:conditions"},
+		{name: "JAVA_TOOL_OPTIONS --define=", env: []string{"JAVA_TOOL_OPTIONS=--define=scope=compile"}, want: "tool_failed:conditions"},
+		{name: "jvm.config includes", repo: map[string]string{".mvn/jvm.config": "-Xmx1g -Dincludes=a:b\n"}, want: "tool_failed:conditions"},
+		{name: "POM property scope", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <properties><scope>compile</scope></properties>", 1)}, want: "tool_failed:conditions"},
+		{name: "dependency-plugin execution excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
 		{name: "one coordinate at two versions", edit: map[string]string{"tree.json": strings.Replace(mavenTree, sys, strings.TrimSuffix(sys, "}")+`,"children":[`+guava31+`]}`, 1)}, want: "tool_failed:tree"},
 		{name: "published version of a sibling", edit: map[string]string{"tree.json": strings.Replace(mavenTree, `"artifactId":"module-a","version":"1.0.0","type":"jar","scope":"compile"`, `"artifactId":"module-a","version":"0.9.0","type":"jar","scope":"compile"`, 1)}, want: "tool_failed:list"},
 		{name: "systemPath missing", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "@M2@/sys.jar", "@M2@/gone.jar", 1)}, want: "tool_failed:list"},
@@ -546,11 +559,24 @@ func TestWorkDirOutsideRepo(t *testing.T) {
 	if got := cause(func() error { _, err := r.resolve(t, ToolMaven, Conditions{}); return err }()); got != "tool_failed:select" {
 		t.Fatalf("cause %q", got)
 	}
-	if _, err := os.Stat(r.work); err == nil {
-		entries, _ := os.ReadDir(r.work)
-		if len(entries) != 0 {
-			t.Errorf("work dir inside the repo was written: %v", entries)
-		}
+	if _, err := os.Stat(r.work); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("work dir inside the repo was created: %v", err)
+	}
+}
+
+// TestMavenReactorPathsKeepsLinkedPath: reactor_paths records a module under a symlinked
+// directory by the path Maven names, as a "from" line would.
+func TestMavenReactorPathsKeepsLinkedPath(t *testing.T) {
+	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[2].file": "@ROOT@/link-c/pom.xml"})
+	if err := os.Symlink("module-c", filepath.Join(r.dir, "link-c")); err != nil {
+		t.Fatal(err)
+	}
+	g, err := r.resolve(t, ToolMaven, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	if m := module(t, g, "com.example:module-c"); m.Path != "link-c" {
+		t.Errorf("module-c at %q", m.Path)
 	}
 }
 

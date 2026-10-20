@@ -86,6 +86,9 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := treeShapingInPOM(effective); err != nil {
+		return nil, err
+	}
 
 	treeFile := filepath.Join(r.work, "tree.json")
 	treeLog, err := r.run(ctx, stepTree, append(base, mavenDependency+":tree", "-DoutputType=json", "-DoutputFile="+treeFile, "-DappendOutput=true", "-Dverbose=false")...)
@@ -135,11 +138,19 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	return g, nil
 }
 
-// treeShaping are dependency:tree's user properties that change which nodes it reports.
-var treeShaping = regexp.MustCompile(`(?:^|\s)-D(verbose|scope|includes|excludes)(?:[=\s]|$)`)
+// treeShapingParams are dependency:tree's parameters that change which nodes it reports.
+var treeShapingParams = map[string]bool{"verbose": true, "scope": true, "includes": true, "excludes": true}
 
-// treeShapingOverride fails a resolution whose stated properties, Maven options or .mvn
-// configuration would set one of treeShaping: the tree would then not be the build's graph.
+// treeShaping finds one of treeShapingParams set as a property on a command or JVM option line,
+// in any of Maven's spellings: -Dk, -D k, --define k, --define=k.
+var treeShaping = regexp.MustCompile(`(?:^|\s)(?:-D\s*|--define[=\s]\s*)(verbose|scope|includes|excludes)(?:[=\s]|$)`)
+
+// treeShapingEnv are the variables whose options reach Maven's command line or its JVM.
+var treeShapingEnv = map[string]bool{"MAVEN_ARGS": true, "MAVEN_OPTS": true, "JAVA_TOOL_OPTIONS": true, "JDK_JAVA_OPTIONS": true}
+
+// treeShapingOverride fails a resolution whose stated properties, Maven or JVM options, or .mvn
+// configuration would set one of treeShapingParams: the tree would then not be the build's graph.
+// A setting that happens to match the build's default still fails; that red is the safe side.
 func treeShapingOverride(c Conditions, env []string, dir string) error {
 	fail := func(where, key string) error {
 		return &Failure{Kind: KindToolFailed, Detail: stepConditions, Log: where + " sets -D" + key + ", which reshapes dependency:tree"}
@@ -151,16 +162,52 @@ func treeShapingOverride(c Conditions, env []string, dir string) error {
 	}
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
-		if k != "MAVEN_ARGS" && k != "MAVEN_OPTS" {
+		if !treeShapingEnv[k] {
 			continue
 		}
 		if m := treeShaping.FindStringSubmatch(v); m != nil {
 			return fail(k, m[1])
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(dir, ".mvn", "maven.config")); err == nil {
-		if m := treeShaping.FindStringSubmatch(string(b)); m != nil {
-			return fail(".mvn/maven.config", m[1])
+	for _, name := range []string{"maven.config", "jvm.config"} {
+		if b, err := os.ReadFile(filepath.Join(dir, ".mvn", name)); err == nil {
+			if m := treeShaping.FindStringSubmatch(string(b)); m != nil {
+				return fail(".mvn/"+name, m[1])
+			}
+		}
+	}
+	return nil
+}
+
+// treeShapingInPOM fails when a module's effective POM sets one of treeShapingParams: as a
+// project property, which a mojo parameter's expression reads, or in maven-dependency-plugin
+// configuration, plugin-wide, per execution or under pluginManagement, which the command line
+// does not override.
+func treeShapingInPOM(effective []effectiveProject) error {
+	fail := func(p effectiveProject, where, key string) error {
+		return &Failure{Kind: KindToolFailed, Detail: stepConditions, Log: p.GroupID + ":" + p.ArtifactID + " sets " + key + " in " + where + ", which reshapes dependency:tree"}
+	}
+	for _, p := range effective {
+		for _, e := range p.Properties.Any {
+			if treeShapingParams[e.XMLName.Local] {
+				return fail(p, "<properties>", e.XMLName.Local)
+			}
+		}
+		for _, pl := range append(append([]effectivePlugin{}, p.Build.Plugins.Plugin...), p.Build.PluginManagement.Plugins.Plugin...) {
+			if pl.ArtifactID != "maven-dependency-plugin" {
+				continue
+			}
+			configs := []xmlChildren{pl.Configuration}
+			for _, ex := range pl.Executions.Execution {
+				configs = append(configs, ex.Configuration)
+			}
+			for _, c := range configs {
+				for _, e := range c.Any {
+					if treeShapingParams[e.XMLName.Local] {
+						return fail(p, "maven-dependency-plugin configuration", e.XMLName.Local)
+					}
+				}
+			}
 		}
 	}
 	return nil
@@ -228,11 +275,41 @@ func parseActiveProfiles(b []byte) (map[string][]string, error) {
 	return out, sc.Err()
 }
 
+// xmlChildren holds an element's child element names.
+type xmlChildren struct {
+	Any []struct {
+		XMLName xml.Name
+	} `xml:",any"`
+}
+
+// effectivePlugin is a plugin's configuration as an effective POM gives it.
+type effectivePlugin struct {
+	ArtifactID    string      `xml:"artifactId"`
+	Configuration xmlChildren `xml:"configuration"`
+	Executions    struct {
+		Execution []struct {
+			Configuration xmlChildren `xml:"configuration"`
+		} `xml:"execution"`
+	} `xml:"executions"`
+}
+
 // effectiveProject is what the producer reads from one effective POM: its identity, its
-// repositories verbatim, and its system-scoped dependencies' paths.
+// repositories verbatim, its system-scoped dependencies' paths, and the properties and plugin
+// configuration treeShapingInPOM checks.
 type effectiveProject struct {
-	GroupID      string `xml:"groupId"`
-	ArtifactID   string `xml:"artifactId"`
+	GroupID    string      `xml:"groupId"`
+	ArtifactID string      `xml:"artifactId"`
+	Properties xmlChildren `xml:"properties"`
+	Build      struct {
+		Plugins struct {
+			Plugin []effectivePlugin `xml:"plugin"`
+		} `xml:"plugins"`
+		PluginManagement struct {
+			Plugins struct {
+				Plugin []effectivePlugin `xml:"plugin"`
+			} `xml:"plugins"`
+		} `xml:"pluginManagement"`
+	} `xml:"build"`
 	Repositories struct {
 		Repository []struct {
 			ID    string `xml:"id"`
@@ -360,9 +437,15 @@ func reactorPaths(ctx context.Context, r *runner, base []string, headers []react
 		if !filepath.IsAbs(file) {
 			return nil, fail("project %s has POM %q", key, file)
 		}
-		rel, ok := realRel(r.dir, file)
-		if !ok || rel == "" {
+		real, ok := realRel(r.dir, file)
+		if !ok || real == "" {
 			return nil, fail("module POM outside the repository: %s", file)
+		}
+		// The path as Maven names it, as a "from" line would give it, unless only the resolved
+		// one is under the repository.
+		rel, ok := relPath(r.dir, filepath.Clean(file))
+		if !ok {
+			rel = real
 		}
 		out = append(out, reactorProject{key: key, file: rel})
 	}

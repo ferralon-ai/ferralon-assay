@@ -32,15 +32,15 @@ func Resolve(ctx context.Context, req Request) (*Graph, error) {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: err.Error()}
 	}
 	work, err := filepath.Abs(req.WorkDir)
-	if err == nil {
-		err = os.MkdirAll(work, 0o755)
-	}
 	if err != nil {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: err.Error()}
 	}
 	// Generated POMs and the init script in the checkout would be read as build inputs.
 	if within(dir, work) {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: "work directory " + work + " is inside the repository"}
+	}
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: err.Error()}
 	}
 	// Steps append to their outputs, so a previous run's files would read as this one's.
 	if entries, err := os.ReadDir(work); err != nil || len(entries) > 0 {

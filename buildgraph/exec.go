@@ -213,14 +213,39 @@ func within(root, p string) bool {
 }
 
 // realRel is p relative to root once symlinks in both are resolved; false when p is outside root
-// or either is missing.
+// or root is missing. A p that does not exist yet resolves through its nearest existing parent.
 func realRel(root, p string) (string, bool) {
 	rr, err1 := filepath.EvalSymlinks(root)
-	rp, err2 := filepath.EvalSymlinks(p)
+	rp, err2 := evalExisting(p)
 	if err1 != nil || err2 != nil {
 		return "", false
 	}
 	return relPath(rr, rp)
+}
+
+// evalExisting resolves symlinks in the longest existing prefix of the absolute path p and
+// appends the rest.
+func evalExisting(p string) (string, error) {
+	p = filepath.Clean(p)
+	var rest []string
+	for {
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			for i := len(rest) - 1; i >= 0; i-- {
+				r = filepath.Join(r, rest[i])
+			}
+			return r, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", err
+		}
+		rest = append(rest, filepath.Base(p))
+		p = parent
+	}
 }
 
 // withInputs adds each of files, by slash path from dir, to inputs when collectInputs passed it

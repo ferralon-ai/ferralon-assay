@@ -1294,6 +1294,94 @@ self[process.argv[2]](1);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global reached as a member of a global, then eval", map[string]string{"app.js": `
+var e = globalThis.global.eval;
+e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global reached as a member of itself, indexed", map[string]string{"app.js": `
+window.window[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured by a quoted Function key", map[string]string{"app.js": `
+var { 'Function': F } = globalThis;
+F(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured by a quoted eval key", map[string]string{"app.js": `
+var { "eval": e } = globalThis;
+e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured by a quoted require key", map[string]string{"app.js": `
+var { 'require': r } = globalThis;
+r(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global into a parameter destructured by a quoted key", map[string]string{"app.js": `
+(function ({ 'Function': F }) { F(process.argv[2])(); })(globalThis);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var in a block after a call statement, used after it", map[string]string{"app.js": `
+load(1)
+{ var g = globalThis; }
+g[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global assigned to a var in a block after a call statement, used after it", map[string]string{"app.js": `
+load(1)
+{ var g; g = globalThis; }
+g[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global let of a for header, used in the update", map[string]string{"app.js": `
+var i = 0;
+for (let g = globalThis; i < 1; i++, g[process.argv[2]](1)) {}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global let of a for header, used in the test", map[string]string{"app.js": `
+for (let g = globalThis; g[process.argv[2]](1); ) { break; }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a call after a member named default", map[string]string{"app.js": `
+var x = exports.default
+{
+  load(window)
+  { var e = window.eval; e(process.argv[2]); }
+}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name declared as a function in a strict block", map[string]string{"app.js": `
+'use strict';
+if (process.env.X) { function self() {} }
+var e = self.eval;
+e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name declared as a function in a module block", map[string]string{"app.mjs": `
+if (process.env.X) { function self() {} }
+var e = self.eval;
+e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"plain function's this in an object beside a key named class", map[string]string{"app.js": `
+var o = { class: 1, y: { v: this[process.argv[2]](process.argv[3]) } };
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1454,6 +1542,18 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"an import of a binding named type renamed to a global name", "import { type as self } from './util';\nself[process.argv[2]](1);"},
 		{"a TypeScript namespace var of a global name, the brace on the next line", "namespace N\n{ var self; self[process.argv[2]](1); }"},
 		{"a TypeScript namespace var of a global name, after a statement with no semicolon", "var a = 1\nnamespace M { var self; self[process.argv[2]](1); }"},
+		{"a method's this in a class extending a call", "class A extends mixin(Object) { set(k, v) { this[k] = v; return this; } }\nfunction mixin(B) { return B; }"},
+		{"a method's this in a class extending a parenthesised expression", "class A extends (process.env.X ? Object : Array) { chain() { return this; } }"},
+		{"a method's this in a default-exported class extending a call", "export default class extends mixin(Object) { set(k, v) { this[k] = v; } }\nfunction mixin(B) { return B; }"},
+		{"a method's this in a class extending a member call", "class A extends Base.extend({}) { set(k, v) { this[k] = v; } }"},
+		{"a method's this in a class extending a call, inside a function", "function f() { class A extends mixin(Object) { set(k, v) { this[k] = v; return this; } } return A; }\nfunction mixin(B) { return B; }"},
+		{"a method's local of a global name in a class extending a call", "class A extends mixin(Object) { get(k) { const self = { a: 1 }; return self[k]; } }\nfunction mixin(B) { return B; }"},
+		{"an object literal method after ||", "var store = process.env.X || { get(k) { return this[k]; }, set(k, v) { this[k] = v; } };"},
+		{"an object literal method after &&", "var o = process.env.X && { chain() { return this; } };"},
+		{"an object literal method in a spread", "var o = { ...{ chain() { return this; } } };"},
+		{"an object literal method after a keyword operator", "function* f() { yield { m(k) { return this[k](1); } }; }"},
+		{"an object literal method after export default", "export default { m() { var g = this; return g[process.argv[2]](1); } };"},
+		{"a block-level function of a global name, used in its block", "if (process.env.X) { function self(k) { return k; } self[process.argv[2]]; }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -67,11 +67,14 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		}
 	}
 	n := len(clean)
+	// hoisted marks declarations made in a scope other than the block they appear in, out
+	// of a block that may be a method body: they hold values there but never shadow.
+	hoisted := false
 	add := func(scope, at int, name string, start, end int, topVar, bare bool) {
 		if gs.byScope[scope] == nil {
 			gs.byScope[scope] = map[string][]int{}
 		}
-		weak := scope >= 0 && tf.weak[scope]
+		weak := scope >= 0 && tf.weak[scope] || hoisted
 		gs.byScope[scope][name] = append(gs.byScope[scope][name], len(gs.decls))
 		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak})
 		if !weak {
@@ -177,7 +180,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			}
 			at := skipSpace(clean, next)
 			if name, _ := peekWord(clean, at); name != "" {
-				add(tf.varScope(tf.block(i)), at, name, 0, 0, false, false)
+				// Strict code scopes a function declared in a block to that block; read it so
+				// in sloppy code too, so it never shadows outside the block.
+				add(tf.block(i), at, name, 0, 0, false, false)
 				if k, ok := gs.kwFrame[i]; ok {
 					gs.fnDecl[len(gs.decls)-1] = k
 				}
@@ -196,17 +201,23 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				break // a TypeScript declaration binds no value
 			}
 			scope := block
+			header := -2
 			if word == "var" {
 				for scope >= 0 && !tf.scope[scope] && !namespaceBlock(clean, tf.opens[scope]) {
+					hoisted = hoisted || tf.weak[scope]
 					scope = tf.parent[scope]
 				}
 			} else if body, ok := forBody(clean, tf, i); ok {
 				// A for header's let or const is scoped to the loop; read it as the body's,
-				// and leave it undeclared when the body is not a block.
+				// and as a non-shadowing one in the block holding the loop, which the header
+				// lies in. A body that is not a block declares nothing.
+				header = block
 				if body < 0 {
-					break
+					block, scope = header, header
+					hoisted = true
+				} else {
+					block, scope = body, body
 				}
-				block, scope = body, body
 			}
 			for p := next; ; {
 				at := skipSpace(clean, p)
@@ -228,11 +239,17 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 					start, end = q+1, initEnd(clean, q+1)
 				}
 				bind(scope, at, start, end, word == "var" && scope < 0, block < 0)
+				if header > -2 && scope != header {
+					hoisted = true
+					bind(header, at, start, end, false, false)
+					hoisted = false
+				}
 				if end >= n || clean[end] != ',' {
 					break
 				}
 				p = end + 1
 			}
+			hoisted = false
 		default:
 			if gs.sites[i] || inParams[i] {
 				break
@@ -284,8 +301,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 }
 
 // riskyPattern reports whether the destructuring pattern opening at clean[open] takes a
-// computed key, or a key named Function, eval or require, anywhere in it: from the global
-// object, each reads code this lane cannot follow under a name it does not track.
+// computed key, a key named Function, eval or require, or a quoted key, whose text the
+// stripped source does not keep, anywhere in it: from the global object, each reads code
+// this lane cannot follow under a name it does not track.
 func riskyPattern(clean []rune, open int) bool {
 	_, end := patternSites(clean, open)
 	for p := open + 1; p < end; p++ {
@@ -296,10 +314,14 @@ func riskyPattern(clean []rune, open int) bool {
 			}
 		case isIdentStart(clean[p]):
 			w, e := readWord(clean, p)
-			if b := skipSpaceBack(clean, p-1); w == "Function" || w == "eval" || w == "require" {
+			b := skipSpaceBack(clean, p-1)
+			if w == "Function" || w == "eval" || w == "require" {
 				if !(b >= 0 && clean[b] == '.') {
 					return true
 				}
+			}
+			if a := skipSpace(clean, e); w == "_" && b >= 0 && (clean[b] == '{' || clean[b] == ',') && a < len(clean) && clean[a] == ':' {
+				return true
 			}
 			p = e - 1
 		}
@@ -899,7 +921,11 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
 	if b >= 0 && clean[b] == '.' {
-		return
+		r, ok := gs.globalReceiver(clean, b)
+		if !ok {
+			return
+		}
+		b = skipSpaceBack(clean, r-1)
 	}
 	p := skipSpace(clean, next)
 	if p < n && clean[p] == ':' && !(p+1 < n && clean[p+1] == ':') && !(b >= 0 && clean[b] == '?') {
@@ -937,6 +963,23 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 		}
 	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i) && !indexKey(clean, b, p):
 		mb.evaluated = true
+	}
+}
+
+// globalReceiver reports whether the member access whose '.' is at b reads from the global
+// through a chain of global names (`globalThis.global`, `window.window`), and returns where
+// the chain starts.
+func (gs *globalScope) globalReceiver(clean []rune, b int) (int, bool) {
+	for {
+		w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
+		if !isGlobalBase(w) {
+			return 0, false
+		}
+		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
+			b = d
+			continue
+		}
+		return s, gs.isGlobal(w, s)
 	}
 }
 
@@ -1053,6 +1096,8 @@ func newThisFrames(clean []rune) *thisFrames {
 				} else if w, s := wordBefore(clean, q); w != "" {
 					params = [2]int{s, q + 1}
 				}
+			case b >= 0 && clean[b] == ')' && classBody(clean, b): // class A extends mixin(B) {
+				g, fn, members = false, true, true
 			case b >= 0 && clean[b] == ')':
 				if o, ok := matchParen[b]; ok {
 					q := skipSpaceBack(clean, o-1)
@@ -1114,7 +1159,7 @@ func newThisFrames(clean []rune) *thisFrames {
 			case method && container:
 				g, fn, scope = false, true, true
 			case method:
-				weak, scope = true, true // this stays outer
+				weak = true // this stays outer, and a var in it is the enclosing scope's
 			}
 			push(open{len(tf.opens), g, false}, i, fn, scope, params, kw, weak, members)
 		case '}':
@@ -1252,20 +1297,35 @@ func typeParamsStart(clean []rune, q int) int {
 }
 
 // objectLiteral reports whether the '{' after position b opens an object literal: it follows
-// `=`, `(`, `[`, `,`, `?`, `return` or `export default`, or a ':' that is a ternary's or, in
-// an object literal, a property's. A ':' after a case or a label opens a block.
+// `=`, `(`, `[`, `,`, `?`, a spread, a unary or binary operator other than a postfix `++` or
+// `--`, an operator keyword, `return` or `export default`, or a ':' that is a ternary's or,
+// in an object literal, a property's. A ':' after a case or a label opens a block.
 func objectLiteral(clean []rune, b int, inObject bool) bool {
 	if b < 0 {
 		return false
 	}
 	switch clean[b] {
-	case '=', '(', '[', ',', '?':
+	case '=', '(', '[', ',', '?', '|', '&', '!', '~', '*', '%', '^':
 		return true
+	case '+', '-':
+		return !(b >= 1 && clean[b-1] == clean[b])
+	case '.':
+		return b >= 2 && clean[b-1] == '.' && clean[b-2] == '.'
 	case ':':
 		return inObject || ternaryElse(clean, b)
 	}
-	w, _ := wordBefore(clean, b)
-	return w == "return" || w == "default"
+	w, s := wordBefore(clean, b)
+	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
+		return false // a member named so
+	}
+	switch w {
+	case "return", "yield", "await", "throw", "typeof", "void", "delete", "in", "of", "instanceof", "case":
+		return true
+	case "default":
+		w2, _ := wordBefore(clean, skipSpaceBack(clean, s-1))
+		return w2 == "export"
+	}
+	return false
 }
 
 // classBody reports whether the '{' after position b opens a class body or a TypeScript
@@ -1283,14 +1343,14 @@ func classBody(clean []rune, b int) bool {
 				return false
 			}
 			depth--
-		case depth == 0 && (r == ';' || r == '{' || r == '}'):
+		case depth == 0 && (r == ';' || r == '{' || r == '}' || r == ':'):
 			return false
 		case depth == 0 && isIdentPart(r):
 			w, s := wordBefore(clean, p)
 			d := skipSpaceBack(clean, s-1)
 			member := d >= 0 && clean[d] == '.'
-			if w == "class" && !member {
-				return true
+			if a := skipSpace(clean, s+len(w)); w == "class" && !member && a < len(clean) && (isIdentStart(clean[a]) || clean[a] == '{') {
+				return true // not a key or member named class
 			}
 			if w == "interface" && !member {
 				return interfaceHead(clean, s)
@@ -1358,15 +1418,6 @@ func closeBracket(clean []rune, p int) int {
 func (tf *thisFrames) block(i int) int {
 	k := sort.SearchInts(tf.opens, i) - 1 // the last block opened before i
 	for k >= 0 && tf.closes[k] < i {
-		k = tf.parent[k]
-	}
-	return k
-}
-
-// varScope returns the function or arrow body enclosing block k (k itself if it is one),
-// or -1 for the top level.
-func (tf *thisFrames) varScope(k int) int {
-	for k >= 0 && !tf.scope[k] {
 		k = tf.parent[k]
 	}
 	return k

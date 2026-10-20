@@ -6,9 +6,10 @@ it resolves dependency versions, maps the advisory to vulnerable symbols, builds
 computes reachability from framework entry points to those symbols. A CVE sitting in a function
 nothing calls reports as not-reachable, instead of landing on your desk as a finding to triage away.
 
-It runs entirely in your own runner. It never runs a model, and a scan reads the repository without
-running its code. The `resolve-graph` command runs the repository's own Maven or Gradle, which executes
-its build scripts and plugins.
+It runs entirely in your own runner and never runs a model. For a Java or Kotlin repository, the
+project's own Maven or Gradle resolves the dependency graph, which executes its build scripts and plugins;
+no project code runs beyond what that build tool executes during resolution. The rest of the scan reads
+the repository without running it.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory

@@ -295,6 +295,10 @@ const (
 	SymbolConfidenceModerate SymbolConfidence = "moderate"
 )
 
+// symbol_provenance "cna-declared" (symbols the assigning CNA declared, with no measured
+// completeness rate) maps to no SymbolConfidence: the candidate carries an empty label, like
+// absent provenance.
+
 // Valid reports whether c is a permitted confidence label. Empty is valid (a candidate need
 // not carry a derivation signal; non-candidates must leave it empty).
 func (c SymbolConfidence) Valid() bool {
@@ -804,6 +808,12 @@ const (
 	// located inside the affected package and searched by the reachability analysis, and no
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
+	// ReasonAdvisorySymbolsUnvetted: every advisory symbol was located inside the affected package
+	// and searched, and none was reached, but the advisory's symbol set is not one an absence may
+	// rest on: its symbol_provenance is not osv-declared or curated (diff-lexed, cna-declared,
+	// unrecognized, or untagged outside a first-party record), so the vulnerable code may lie in a
+	// function the set does not list.
+	ReasonAdvisorySymbolsUnvetted = "advisory_symbols_unvetted"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
 	// reported nothing about the advisory at all. It may not know the advisory, or may never have
 	// analyzed the affected module. Its silence is not a search that came back empty.

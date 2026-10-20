@@ -33,12 +33,19 @@ var globalBase = []string{"globalThis", "global", "window", "self", "frames", "p
 // global until it is certainly replaced: in a script it binds the global object's own
 // property.
 type globalScope struct {
-	tf      *thisFrames
-	decls   []globalDecl
-	byScope map[int]map[string][]int // scope (a block index, or -1 for the top level) → name → decls
-	sites   map[int]bool             // positions of declared names, which are not uses
-	yields  []bool                   // decl initialises its name from a global-yielding expression
-	flows   [][2]int                 // initialiser and bound-argument ranges whose value a decl holds
+	tf       *thisFrames
+	decls    []globalDecl
+	byScope  map[int]map[string][]int // scope (a block index, or -1 for the top level) → name → decls
+	sites    map[int]bool             // positions of declared names, which are not uses
+	yields   []bool                   // decl initialises its name from a global-yielding expression
+	flows    [][2]int                 // initialiser and bound-argument ranges whose value a decl holds
+	thisArg  map[int][2]int           // function block → the this its in-place call binds, or {0, 0} for a plain call
+	thisIs   map[int]bool             // function block whose this, bound by its in-place call, can be the global
+	fnDecl   map[int]int              // decl → the block of the function it declares
+	kwFrame  map[int]int              // position of a function keyword → the block of its body
+	retThis  map[int]bool             // function block → whether it returns its own this (memo)
+	keyed    bool                     // a pattern takes a computed, Function, eval or require key from the global
+	patterns [][3]int                 // destructuring pattern bracket, source start and end
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.
@@ -47,18 +54,29 @@ type globalDecl struct {
 	start, end int
 	topVar     bool // a var at the top level
 	bare       bool // declared outside every block, so it runs before what follows it
+	weak       bool // declared in a block that may not be the scope it is read as; never shadows
 }
 
 func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
-	gs := &globalScope{tf: tf, byScope: map[int]map[string][]int{}, sites: map[int]bool{}}
+	gs := &globalScope{tf: tf, byScope: map[int]map[string][]int{}, sites: map[int]bool{},
+		thisArg: map[int][2]int{}, thisIs: map[int]bool{}, fnDecl: map[int]int{},
+		kwFrame: map[int]int{}, retThis: map[int]bool{}}
+	for k, kw := range tf.fnKw {
+		if kw >= 0 {
+			gs.kwFrame[kw] = k
+		}
+	}
 	n := len(clean)
 	add := func(scope, at int, name string, start, end int, topVar, bare bool) {
 		if gs.byScope[scope] == nil {
 			gs.byScope[scope] = map[string][]int{}
 		}
+		weak := scope >= 0 && tf.weak[scope]
 		gs.byScope[scope][name] = append(gs.byScope[scope][name], len(gs.decls))
-		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare})
-		gs.sites[at] = true
+		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak})
+		if !weak {
+			gs.sites[at] = true // a weak declaration's name may be a use, so it stays one
+		}
 	}
 	// bind declares the names the binding at clean[at] introduces, each holding the value
 	// of clean[start:end]. A destructured name holds a property of that value, which is
@@ -81,6 +99,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	bind := func(scope, at, start, end int, topVar, bare bool) {
 		switch {
 		case clean[at] == '{' || clean[at] == '[':
+			if start < end {
+				gs.patterns = append(gs.patterns, [3]int{at, start, end})
+			}
 			sites, _ := patternSites(clean, at)
 			for _, s := range sites {
 				name, _ := readWord(clean, s)
@@ -110,7 +131,10 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		for p := pr[0]; p < pr[1]; p++ {
 			inParams[p] = true
 		}
-		args, thisArg := iifeArgs(clean, tf, k)
+		args, thisArg, called := iifeArgs(clean, tf, k)
+		if called {
+			gs.thisArg[k] = thisArg
+		}
 		if thisArg[0] < thisArg[1] {
 			gs.flows = append(gs.flows, thisArg) // the function's own this, judged as one
 		}
@@ -154,6 +178,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			at := skipSpace(clean, next)
 			if name, _ := peekWord(clean, at); name != "" {
 				add(tf.varScope(tf.block(i)), at, name, 0, 0, false, false)
+				if k, ok := gs.kwFrame[i]; ok {
+					gs.fnDecl[len(gs.decls)-1] = k
+				}
 			}
 		case "import":
 			if ambient(clean, tf, tf.block(i)) {
@@ -239,8 +266,45 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				changed = true
 			}
 		}
+		// A sloppy function called in place plainly has the global for its this; one
+		// called with .call has the this it is handed.
+		for k, r := range gs.thisArg {
+			if !gs.thisIs[k] && (r[0] == r[1] || gs.yieldsGlobal(clean, r[0], r[1])) {
+				gs.thisIs[k] = true
+				changed = true
+			}
+		}
+	}
+	for _, pt := range gs.patterns {
+		if riskyPattern(clean, pt[0]) && gs.yieldsGlobal(clean, pt[1], pt[2]) {
+			gs.keyed = true
+		}
 	}
 	return gs
+}
+
+// riskyPattern reports whether the destructuring pattern opening at clean[open] takes a
+// computed key, or a key named Function, eval or require, anywhere in it: from the global
+// object, each reads code this lane cannot follow under a name it does not track.
+func riskyPattern(clean []rune, open int) bool {
+	_, end := patternSites(clean, open)
+	for p := open + 1; p < end; p++ {
+		switch {
+		case clean[p] == '[':
+			if b := skipSpaceBack(clean, p-1); b >= 0 && (clean[b] == '{' || clean[b] == ',') {
+				return true
+			}
+		case isIdentStart(clean[p]):
+			w, e := readWord(clean, p)
+			if b := skipSpaceBack(clean, p-1); w == "Function" || w == "eval" || w == "require" {
+				if !(b >= 0 && clean[b] == '.') {
+					return true
+				}
+			}
+			p = e - 1
+		}
+	}
+	return false
 }
 
 // paramSites returns where each parameter in the list clean[start:end] begins: its name,
@@ -353,7 +417,7 @@ func forBody(clean []rune, tf *thisFrames, i int) (int, bool) {
 // `declare module '...'`, `declare namespace N`), whose declarations bind no value.
 func ambient(clean []rune, tf *thisFrames, k int) bool {
 	for ; k >= 0; k = tf.parent[k] {
-		if w, _ := blockKeyword(clean, tf.opens[k]); w == "declare" {
+		if declareBlock(clean, tf.opens[k]) {
 			return true
 		}
 	}
@@ -361,33 +425,60 @@ func ambient(clean []rune, tf *thisFrames, k int) bool {
 }
 
 // namespaceBlock reports whether the '{' at open opens a TypeScript namespace or module body,
-// which scopes a var like a function body.
+// which scopes a var like a function body: `namespace A.B {` or `module '_' {` on one line,
+// starting a statement. Any other block, `x = module\n{` among them, does not.
 func namespaceBlock(clean []rune, open int) bool {
-	_, ns := blockKeyword(clean, open)
-	return ns
+	k := skipSpaceBack(clean, open-1)
+	if k < 0 || !sameLine(clean, k, open) {
+		return false
+	}
+	w, s := wordBefore(clean, k)
+	for w != "" && s >= 2 && clean[s-1] == '.' { // a dotted name
+		w, s = wordBefore(clean, s-2)
+	}
+	if w == "" {
+		return false
+	}
+	kw, ks := wordBefore(clean, skipSpaceBack(clean, s-1))
+	if kw != "namespace" && kw != "module" || !sameLine(clean, ks, s) {
+		return false
+	}
+	q := skipSpaceBack(clean, ks-1)
+	if q < 0 || clean[q] == ';' || clean[q] == '{' || clean[q] == '}' {
+		return true
+	}
+	w, _ = wordBefore(clean, q)
+	return w == "export" || w == "declare"
 }
 
-// blockKeyword walks the words before the '{' at open (a dotted name, a blanked module string)
-// and returns "declare" when one of them is, and whether namespace or module is among them.
-func blockKeyword(clean []rune, open int) (string, bool) {
-	ns := false
+// sameLine reports whether no line break lies between positions a and b.
+func sameLine(clean []rune, a, b int) bool {
+	for p := a; p < b; p++ {
+		if clean[p] == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+// declareBlock reports whether one of the words before the '{' at open (a dotted name, a
+// blanked module string) is declare.
+func declareBlock(clean []rune, open int) bool {
 	k := skipSpaceBack(clean, open-1)
 	for steps := 0; k >= 0 && steps < 8; steps++ {
 		w, s := wordBefore(clean, k)
 		switch w {
 		case "":
-			return "", ns
+			return false
 		case "declare":
-			return w, ns
-		case "namespace", "module":
-			ns = true
+			return true
 		}
 		k = skipSpaceBack(clean, s-1)
 		if k >= 0 && clean[k] == '.' {
 			k = skipSpaceBack(clean, k-1)
 		}
 	}
-	return "", ns
+	return false
 }
 
 // importSites returns the positions of the names an import statement whose keyword ends
@@ -444,8 +535,14 @@ func typeModifier(clean []rune, q int) bool {
 	if r < len(clean) && (clean[r] == '{' || clean[r] == '*') {
 		return true
 	}
-	next, _ := peekWord(clean, r)
-	return next != "" && next != "from" && next != "as"
+	next, e := peekWord(clean, r)
+	if next == "as" {
+		// `type as as x` and a lone `type as` import the name as, type-only; `type as x`
+		// renames a binding named type.
+		after, _ := peekWord(clean, skipSpace(clean, e))
+		return after == "" || after == "as"
+	}
+	return next != "" && next != "from"
 }
 
 // typeEnd returns the index of the '=', ',' or ';' that ends a TypeScript type annotation
@@ -502,18 +599,19 @@ func isGlobalBase(name string) bool {
 
 // iifeArgs returns the argument ranges a function expression in block k is called with
 // immediately: `(function (a) {...})(x)`, `function (a) {...}(x)` in expression position,
-// or either followed by `.call(thisArg, x)`, whose thisArg range it returns too. It
-// returns nothing when the function is not called in place, when an argument is spread,
-// or when the body reads `arguments`, which would see an argument no parameter names.
-func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]int) {
+// or either followed by `.call(thisArg, x)`, whose thisArg range it returns too. called
+// reports whether it is called in place at all. It returns no arguments when an argument
+// is spread, or when the body reads `arguments`, which would see an argument no parameter
+// names.
+func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]int, called bool) {
 	kw := tf.fnKw[k]
 	if kw < 0 {
-		return nil, thisArg
+		return nil, thisArg, false
 	}
 	n := len(clean)
 	open, close := tf.opens[k], tf.closes[k]
 	if close >= n {
-		return nil, thisArg
+		return nil, thisArg, false
 	}
 	before := skipSpaceBack(clean, kw-1)
 	p := skipSpace(clean, close+1)
@@ -522,7 +620,7 @@ func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]in
 	case p < n && clean[p] == ')' && before >= 0 && clean[before] == '(' && closeParen(clean, before) == p:
 		p = skipSpace(clean, p+1)
 	default:
-		return nil, thisArg
+		return nil, thisArg, false
 	}
 	call := false
 	if p < n && clean[p] == '.' {
@@ -531,7 +629,15 @@ func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]in
 		}
 	}
 	if p >= n || clean[p] != '(' {
-		return nil, thisArg
+		return nil, thisArg, false
+	}
+	if call {
+		e := initEnd(clean, p+1)
+		s := skipSpace(clean, p+1)
+		if s >= e {
+			return nil, thisArg, false // .call() binds undefined
+		}
+		thisArg = [2]int{s, e}
 	}
 	for i := open; i < close; {
 		if !isIdentStart(clean[i]) {
@@ -540,7 +646,7 @@ func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]in
 		}
 		w, nx := readWord(clean, i)
 		if w == "arguments" {
-			return nil, thisArg
+			return nil, thisArg, true
 		}
 		i = nx
 	}
@@ -556,13 +662,13 @@ func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]in
 				}
 				for _, a := range args {
 					if a[1]-a[0] >= 3 && string(clean[a[0]:a[0]+3]) == "..." {
-						return nil, [2]int{}
+						return nil, thisArg, true
 					}
 				}
 				if call && len(args) > 0 {
-					thisArg, args = args[0], args[1:]
+					args = args[1:]
 				}
-				return args, thisArg
+				return args, thisArg, true
 			}
 			depth--
 		case ',':
@@ -572,7 +678,7 @@ func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]in
 			}
 		}
 	}
-	return nil, [2]int{}
+	return nil, thisArg, true
 }
 
 // closeParen returns the index of the ')' that closes the '(' at p, or len(clean).
@@ -609,6 +715,12 @@ func flowsTo(clean []rune, start, i int) bool {
 			if len(stack) > 0 {
 				stack = stack[:len(stack)-1]
 			}
+		case '=':
+			// A store into a member or pattern on the way (`g = o.x = v`) hands the value
+			// where this lane does not follow it.
+			if assignStart(clean, p) == p+1 && memberStore(clean, p) {
+				return false
+			}
 		}
 	}
 	for _, stops := range stack {
@@ -638,12 +750,16 @@ func (gs *globalScope) isGlobal(name string, i int) bool {
 	base := isGlobalBase(name)
 	for k := gs.tf.block(i); ; k = gs.tf.parent[k] {
 		if ds := gs.byScope[k][name]; len(ds) > 0 {
+			shadows := false
 			for _, d := range ds {
 				if gs.yields[d] || (base && gs.decls[d].topVar && !gs.replaced(d, name, i)) {
 					return true
 				}
+				shadows = shadows || !gs.decls[d].weak
 			}
-			return false
+			if shadows {
+				return false
+			}
 		}
 		if k < 0 {
 			return base
@@ -659,9 +775,59 @@ func (gs *globalScope) replaced(d int, name string, i int) bool {
 	return decl.bare && decl.start < decl.end && i > decl.end && name != "window" && name != "top" && gs.tf.topLevel(i)
 }
 
+// thisGlobal reports whether this at position i is the global object as a value: at the top
+// level, or in a function whose in-place call binds the global to it.
+func (gs *globalScope) thisGlobal(i int) bool {
+	k := gs.tf.block(i)
+	for k >= 0 && !gs.tf.fn[k] {
+		k = gs.tf.parent[k]
+	}
+	return k < 0 || gs.thisIs[k]
+}
+
+// returnsThis reports whether the function body block k returns its own this as a value.
+func (gs *globalScope) returnsThis(clean []rune, k int) bool {
+	if r, ok := gs.retThis[k]; ok {
+		return r
+	}
+	r := false
+	for i := gs.tf.opens[k]; i < gs.tf.closes[k] && !r; {
+		if !isIdentStart(clean[i]) {
+			i++
+			continue
+		}
+		w, next := readWord(clean, i)
+		if w == "this" {
+			b := skipSpaceBack(clean, i-1)
+			p := skipSpace(clean, next)
+			f := gs.tf.block(i)
+			for f >= 0 && !gs.tf.fn[f] {
+				f = gs.tf.parent[f]
+			}
+			if rw, _ := wordBefore(clean, b); rw == "return" && f == k &&
+				!(p < len(clean) && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(')) {
+				r = true
+			}
+		}
+		i = next
+	}
+	gs.retThis[k] = r
+	return r
+}
+
+// lookup returns the declarations of name in the innermost scope enclosing i that has any.
+func (gs *globalScope) lookup(name string, i int) []int {
+	for k := gs.tf.block(i); ; k = gs.tf.parent[k] {
+		if ds := gs.byScope[k][name]; len(ds) > 0 || k < 0 {
+			return ds
+		}
+	}
+}
+
 // yieldsGlobal reports whether the expression in clean[start:end] can evaluate to the
-// global: a global-valued name or top-level `this` in value position (not a member read,
-// call or index of it, and not under typeof), or a call of a Function constructor call.
+// global: a global-valued name or `this` that is the global in value position (not a member
+// read, call or index of it, and not under typeof), a call of a Function constructor call,
+// or a plain call of a function that returns a this that is the global.
 func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 	for i := start; i < end; {
 		if !isIdentStart(clean[i]) {
@@ -679,7 +845,13 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 					return true
 				}
 			}
-		case (word == "this" && gs.tf.topLevel(i)) || (word != "this" && gs.isGlobal(word, i)):
+		case word == "function":
+			if k, ok := gs.kwFrame[i]; ok && gs.thisIs[k] && gs.returnsThis(clean, k) && flowsTo(clean, start, i) {
+				return true // (function () { return this; })()
+			}
+		case gs.callsReturnThis(clean, word, i, next) && flowsTo(clean, start, i):
+			return true
+		case (word == "this" && gs.thisGlobal(i)) || (word != "this" && gs.isGlobal(word, i)):
 			if w, _ := wordBefore(clean, b); w == "typeof" || !flowsTo(clean, start, i) {
 				break
 			}
@@ -696,6 +868,20 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 			return true
 		}
 		i = next
+	}
+	return false
+}
+
+// callsReturnThis reports whether the name at [i, next) is called plainly and declares a
+// function that returns its own this, which a plain sloppy call binds to the global.
+func (gs *globalScope) callsReturnThis(clean []rune, word string, i, next int) bool {
+	if p := skipSpace(clean, next); p >= len(clean) || clean[p] != '(' {
+		return false
+	}
+	for _, d := range gs.lookup(word, i) {
+		if k, ok := gs.fnDecl[d]; ok && gs.returnsThis(clean, k) {
+			return true
+		}
 	}
 	return false
 }
@@ -763,6 +949,11 @@ type thisFrames struct {
 	params [][2]int // the parameter list [start, end) declaring names in the block, or {-1, -1}
 	fnKw   []int    // position of the `function` keyword for a function body, or -1
 	global []bool   // this inside the block (not in a nested function) is the global
+	// weak marks a block read as a method body outside any class body or object literal,
+	// which may as well be a call followed by a plain block (`f(x)\n{`): it scopes what it
+	// declares, but those declarations never shadow, and its this is the enclosing one.
+	weak    []bool
+	members []bool // the block is a class body or an object literal, which holds methods
 }
 
 // newThisFrames scans clean once. A block is a function body when its '{' follows a
@@ -782,7 +973,7 @@ func newThisFrames(clean []rune) *thisFrames {
 	var stack []open
 	var parens []int
 	matchParen := map[int]int{} // ')' → '('
-	push := func(o open, at int, fn, scope bool, params [2]int, kw int) {
+	push := func(o open, at int, fn, scope bool, params [2]int, kw int, weak, members bool) {
 		parent := -1
 		if len(stack) > 0 {
 			parent = stack[len(stack)-1].k
@@ -796,6 +987,8 @@ func newThisFrames(clean []rune) *thisFrames {
 		tf.params = append(tf.params, params)
 		tf.fnKw = append(tf.fnKw, kw)
 		tf.global = append(tf.global, o.global)
+		tf.weak = append(tf.weak, weak)
+		tf.members = append(tf.members, members)
 	}
 	for i := 0; i < n; i++ {
 		for len(stack) > 0 && stack[len(stack)-1].arrow && i > tf.closes[stack[len(stack)-1].k] {
@@ -823,7 +1016,7 @@ func newThisFrames(clean []rune) *thisFrames {
 			if len(stack) > 0 {
 				g = stack[len(stack)-1].global
 			}
-			push(open{len(tf.opens), g, true}, i+1, false, true, params, -1)
+			push(open{len(tf.opens), g, true}, i+1, false, true, params, -1, false, false)
 			tf.closes[len(tf.closes)-1] = arrowEnd(clean, body) - 1
 		case '(':
 			parens = append(parens, i)
@@ -841,7 +1034,10 @@ func newThisFrames(clean []rune) *thisFrames {
 			fn, scope := false, false
 			params := [2]int{-1, -1}
 			kw := -1
-			b := skipSpaceBack(clean, i-1)
+			method, members := false, false
+			container := len(stack) > 0 && tf.members[stack[len(stack)-1].k]
+			raw := skipSpaceBack(clean, i-1)
+			b := raw
 			if r := typedReturn(clean, b); r >= 0 {
 				b = r
 			}
@@ -862,6 +1058,13 @@ func newThisFrames(clean []rune) *thisFrames {
 						q = typeParamsStart(clean, q)
 					}
 					w, s := wordBefore(clean, q)
+					d := skipSpaceBack(clean, s-1)
+					if w != "" && (d >= 0 && clean[d] == '.' || w == "catch" && !(d >= 0 && clean[d] == '}')) {
+						w = "." // a member call (`o.catch(x)`), read as a method name
+					}
+					if w2, _ := wordBefore(clean, d); w == "await" && w2 == "for" {
+						w = "for"
+					}
 					switch w {
 					case "catch":
 						params = [2]int{o + 1, b}
@@ -874,13 +1077,13 @@ func newThisFrames(clean []rune) *thisFrames {
 						if q >= 0 && clean[q] == '*' { // function* (...) or *method(...)
 							if w2, s2 := wordBefore(clean, skipSpaceBack(clean, q-1)); w2 == "function" {
 								g, kw = true, s2
+								fn, scope = true, true
 							} else {
-								g = false
+								method = true
 							}
-							fn, scope = true, true
 							params = [2]int{o + 1, b}
 						} else if q >= 0 && clean[q] == ']' { // a computed method name
-							g, fn, scope = false, true, true
+							method = true
 							params = [2]int{o + 1, b}
 						}
 					default:
@@ -890,19 +1093,28 @@ func newThisFrames(clean []rune) *thisFrames {
 						}
 						if w2, s2 := wordBefore(clean, r); w2 == "function" {
 							g, kw = true, s2
+							fn, scope = true, true
 						} else {
-							g = false // a method, getter or setter
+							method = true // a method, getter or setter
 						}
-						fn, scope = true, true
 						params = [2]int{o + 1, b}
 					}
 				}
 			default:
 				if classBody(clean, b) {
-					g, fn = false, true
+					g, fn, members = false, true, true
+				} else {
+					members = objectLiteral(clean, raw, container)
 				}
 			}
-			push(open{len(tf.opens), g, false}, i, fn, scope, params, kw)
+			weak := false
+			switch {
+			case method && container:
+				g, fn, scope = false, true, true
+			case method:
+				weak, scope = true, true // this stays outer
+			}
+			push(open{len(tf.opens), g, false}, i, fn, scope, params, kw, weak, members)
 		case '}':
 			if len(stack) > 0 {
 				tf.closes[stack[len(stack)-1].k] = i
@@ -919,11 +1131,25 @@ func newThisFrames(clean []rune) *thisFrames {
 // a line break where the expression cannot continue. A line break the expression may run
 // on past ends it too unless an operator on either side joins the lines, so the body can
 // be read shorter than it is, never longer: a name past it resolves outward.
+//
+// A bare '=' at depth zero ends the body as well: it is the initialiser after a TypeScript
+// function type (`f: (a) => T = v`), or an assignment the body reads shorter for. Once a
+// '<' that may open JSX appears, whose text the stripped source does not keep, a '?' no
+// longer opens a ternary and any line break ends the body.
 func arrowEnd(clean []rune, p int) int {
 	depth, ternary := 0, 0
+	jsx := false
 	n := len(clean)
 	for ; p < n; p++ {
 		switch r := clean[p]; r {
+		case '<':
+			if p+1 < n && (isIdentStart(clean[p+1]) || clean[p+1] == '>') {
+				jsx = true
+			}
+		case '=':
+			if depth == 0 && assignStart(clean, p) == p+1 && !(p > 0 && strings.ContainsRune("=!<>+-*/%&|^?", clean[p-1])) {
+				return p
+			}
 		case '(', '[', '{':
 			depth++
 		case ')', ']', '}':
@@ -936,7 +1162,7 @@ func arrowEnd(clean []rune, p int) int {
 				return p
 			}
 		case '?':
-			if depth == 0 && !optionalDot(clean, p) {
+			if depth == 0 && !optionalDot(clean, p) && !jsx {
 				if p+1 < n && clean[p+1] == '?' {
 					p++ // ?? and ??=
 				} else {
@@ -952,6 +1178,9 @@ func arrowEnd(clean []rune, p int) int {
 				ternary--
 			}
 		case '\n':
+			if jsx {
+				return p
+			}
 			if depth > 0 {
 				continue
 			}
@@ -992,7 +1221,7 @@ func typedReturn(clean []rune, b int) int {
 			}
 		case ':':
 			if depth == 0 {
-				if q := skipSpaceBack(clean, p-1); q >= 0 && clean[q] == ')' {
+				if q := skipSpaceBack(clean, p-1); q >= 0 && clean[q] == ')' && !ternaryElse(clean, p) {
 					return q
 				}
 				return -1
@@ -1020,6 +1249,23 @@ func typeParamsStart(clean []rune, q int) int {
 	return q
 }
 
+// objectLiteral reports whether the '{' after position b opens an object literal: it follows
+// `=`, `(`, `[`, `,`, `?`, `return` or `export default`, or a ':' that is a ternary's or, in
+// an object literal, a property's. A ':' after a case or a label opens a block.
+func objectLiteral(clean []rune, b int, inObject bool) bool {
+	if b < 0 {
+		return false
+	}
+	switch clean[b] {
+	case '=', '(', '[', ',', '?':
+		return true
+	case ':':
+		return inObject || ternaryElse(clean, b)
+	}
+	w, _ := wordBefore(clean, b)
+	return w == "return" || w == "default"
+}
+
 // classBody reports whether the '{' after position b opens a class body,
 // `class [Name] [extends Expr] {`, or a TypeScript interface body, whose this is a type.
 func classBody(clean []rune, b int) bool {
@@ -1029,7 +1275,8 @@ func classBody(clean []rune, b int) bool {
 			return false
 		}
 		if w == "class" || w == "interface" {
-			return true
+			d := skipSpaceBack(clean, s-1)
+			return !(d >= 0 && clean[d] == '.') // not a member named class
 		}
 		k = skipSpaceBack(clean, s-1)
 		if k >= 0 && clean[k] == '.' {

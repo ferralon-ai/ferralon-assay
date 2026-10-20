@@ -1046,6 +1046,172 @@ x.function
 foo(require);
 function foo(r) { return r(process.argv[2]); }
 `}, plugin.PartialReasonComputedRequireSpecifier},
+		{"global var after an expression ending in module, before a do block", map[string]string{"app.js": `
+var m = module
+do { var self; var e = self.eval; e(process.argv[2]); } while (0);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var after an assignment ending in module, in an else block", map[string]string{"app.js": `
+if (process.env.X) x = module
+else { var self; var e = self.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var after module.exports, in a try block", map[string]string{"app.js": `
+var x = module.exports
+try { var self; var e = self.eval; e(process.argv[2]); } catch (err) {}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var after a name namespace, in a plain block", map[string]string{"app.js": `
+var namespace = 1, x
+x = namespace
+{ var self; var e = self.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global past an arrow with JSX text holding a question mark", map[string]string{"app.jsx": `
+var e = process.env.X ? window => <p>why?</p>
+  : window.eval; e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global past a TSX arrow with JSX text holding a question mark", map[string]string{"app.tsx": `
+var e = process.env.X ? window => <p>why?</p>
+  : window.eval; e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a case block after a call in the label", map[string]string{"app.js": `
+switch (process.env.X) { case String(self): { var e = self.eval; e(process.argv[2]); } }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in an object literal after a ternary call branch", map[string]string{"app.js": `
+var o = process.env.X ? load(window) : { e: window.eval }; o.e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a block after a call statement", map[string]string{"app.js": `
+load(self)
+{ var e = self.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a block after an indexed call statement", map[string]string{"app.js": `
+var a = [load]; a[0](self)
+{ var e = self.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a block after a yield", map[string]string{"app.js": `
+function* g() { yield (self)
+{ var e = self.eval; e(process.argv[2]); } }
+g().next();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global in a block after a member call named catch", map[string]string{"app.js": `
+var p = Promise.resolve(); p.catch(self)
+{ var e = self.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a member named class", map[string]string{"app.js": `
+var o = {}; o.class
+{ var e = this.eval; e(process.argv[2]); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global after a TypeScript function type naming it", map[string]string{"app.ts": `
+const f: (self: any) => any = self.eval;
+f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"computed key destructured from a Function-built global", map[string]string{"app.js": `
+var { [process.argv[3]]: f } = Function('return this')(); f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function key destructured from a Function-built global", map[string]string{"app.js": `
+var { Function: F } = Function('return this')(); F(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"computed key destructured in an in-place parameter from a Function-built global", map[string]string{"app.js": `
+(function ({ [process.argv[3]]: f }) { f(process.argv[2]); })(Function('return this')());
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function key destructured from globalThis", map[string]string{"app.js": `
+const { Function: F } = globalThis; F(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"computed key destructured from globalThis", map[string]string{"app.js": `
+const { [process.argv[3]]: f } = globalThis; f(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function-built global stored through a chained member assignment", map[string]string{"app.js": `
+var o = {}; var g = o.x = Function('return this')(); o.x[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function-built global stored into module.exports through a chained assignment", map[string]string{"app.js": `
+var root = module.exports = Function('return this')();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function-built global stored into a member inside parentheses", map[string]string{"app.js": `
+var o = {}; var g = (o.x = Function('return this')());
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this of a function called with a Function-built global, aliased and indexed", map[string]string{"app.js": `
+(function () { var s = this; s[process.argv[2]](1); }).call(Function('return this')());
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this of a function called with a Function-built global, indexed and returned", map[string]string{"app.js": `
+var r = (function () { return this[process.argv[2]]; }).call(Function('return this')()); r(1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this of a function called with globalThis, aliased and indexed", map[string]string{"app.js": `
+(function () { var s = this; s[process.argv[2]](1); }).call(globalThis);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this of a function called in place, aliased and indexed", map[string]string{"app.js": `
+(function () { var s = this; s[process.argv[2]](1); })();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name holding the this a function called in place returns", map[string]string{"app.js": `
+var self = (function () { return this; })(); var e = self.eval; e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"name holding the this a function called in place returns, indexed", map[string]string{"app.js": `
+var g = (function () { return this; })(); g[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name holding the this a declared function returns", map[string]string{"app.js": `
+function G() { return this; }
+var global = G(); var e = global.eval; e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name from a type-only import of as", map[string]string{"util.ts": "export const as = 1;\n", "app.ts": `
+import { type as as self } from './util';
+var e = self.eval; e(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1184,6 +1350,11 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"the global assigned to an undeclared global name", "let x = 1;\nself = globalThis;\nconsole.log(self.location, x);"},
 		{"members compared with globals and a compound assignment", "const o = {};\nif (o.g === globalThis || o.h !== window || o.i >= self || o.j <= top) {}\nlet n = 0;\nn += self;"},
 		{"a member compared with a global", "const o = {};\nif (o.g == globalThis) { o.g = 1; }"},
+		{"a global-named parameter of an object literal method", "const o = { m(self) { return self[process.argv[2]]; } };\no.m({ a: trim });"},
+		{"a global-named parameter of a class method", "class A { m(parent) { return parent[process.argv[2]]; } }\nnew A().m({ a: trim });"},
+		{"a global-named parameter of a method in an object passed as an argument", "Object.assign({}, { m(top) { return top[process.argv[2]]; } });"},
+		{"a function called in place with an object for its this", "(function () { var s = this; s[process.argv[2]](1); }).call({ a: trim });"},
+		{"a TypeScript namespace var of a global name", "namespace N { var self = { a: 1 }; export const x = self[process.argv[2]]; }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

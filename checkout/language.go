@@ -1,5 +1,3 @@
-// internal/checkout/language.go
-
 package checkout
 
 import (
@@ -147,8 +145,8 @@ type sourceCounts struct {
 // without importing them (internal/checkout must stay analysis-library-free): the .d.ts
 // TypeScript-declaration exclusion for JS and the .csproj/.sln/.fsproj/.vbproj project
 // markers for .NET are preserved. .kt/.kts count toward Kotlin, not Java. The C-family
-// bucket (.c/.cc/.cpp/.cxx/.c++ sources and .h/.hpp/.hh/.hxx headers) has no analysis
-// package to mirror yet — the lane is a Phase-0 skeleton.
+// bucket (.c/.cc/.cpp/.cxx/.c++ sources and .h/.hpp/.hh/.hxx headers) has no source-notion
+// package to mirror.
 func countSources(dir string) sourceCounts {
 	var c sourceCounts
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -182,7 +180,7 @@ func countSources(dir string) sourceCounts {
 				// translation units under one build system, so a whole-tree C-vs-C++ split here
 				// would force a classification the build reality does not respect. A .h header is
 				// counted toward the family without deciding C vs C++ — that per-TU decision is the
-				// compiler mode in compile_commands.json (ground truth), deferred to Phase 1.
+				// compiler mode in compile_commands.json (ground truth), not decided here.
 				c.cfamily++
 			}
 		}

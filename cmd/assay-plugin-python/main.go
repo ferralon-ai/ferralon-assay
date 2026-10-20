@@ -12,10 +12,10 @@
 // find_ingresses (Flask/FastAPI route decorators), reachability, compute_taint,
 // resolve_inventory (the selected whole-graph dependency inventory — markers/extras evaluated
 // against the DECLARED target environment, six lockfile/manifest formats, declared integrity
-// digests; no resolver is launched — PLAN-170), and build_manifest (ecosystem-neutral build
+// digests; no resolver is launched), and build_manifest (ecosystem-neutral build
 // context — declared interpreter/version, platform, project root, resolver provenance; an
 // undeterminable interpreter version is a partial manifest naming the missing input, never a
-// guess; declared metadata only, no interpreter/resolver launched — PLAN-173).
+// guess; declared metadata only, no interpreter/resolver launched).
 // reachability and compute_taint are ALWAYS declared Partial(dynamic_dispatch) — Python
 // static reachability is structurally weak (dynamic dispatch, getattr, monkeypatching), so
 // "not reached" is UNKNOWN, never "safe", and the effect trial adjudicates. call_graph is
@@ -75,9 +75,9 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // dispatch runs the requested operation. index_symbols, resolve_symbols, resolve_versions,
 // call_graph, find_ingresses, reachability, compute_taint, and resolve_inventory call the real
 // source-level Python analysis (reachability/compute_taint always declared Partial;
-// resolve_inventory reads declared manifests/lockfiles only, never launching a resolver —
-// PLAN-170). build_manifest derives the ecosystem-neutral build context from declared
-// metadata only (PLAN-173), partial-with-a-named-reason when the interpreter version is
+// resolve_inventory reads declared manifests/lockfiles only, never launching a resolver.
+// build_manifest derives the ecosystem-neutral build context from declared
+// metadata only, partial-with-a-named-reason when the interpreter version is
 // undeterminable. generate_harness remains a contract-present op returning its result type
 // with Unsupported() partiality (the Python effect rides the corpus repro-runtime sandbox).
 // An unknown op, or a missing per-op payload, is a hard failure (inv.4).
@@ -180,8 +180,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
-		// (Supported:false), never a Supported:true manifest with empty axes.
+		// Honest absence (Supported:false), never a Supported:true manifest with empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "python"}}, nil
 
 	default:

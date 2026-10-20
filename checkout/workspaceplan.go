@@ -1,5 +1,3 @@
-// internal/checkout/workspaceplan.go
-
 package checkout
 
 import "sort"
@@ -10,7 +8,7 @@ import "sort"
 // per-project dependency graph from one root + one language.
 //
 // Today the plan holds exactly ONE Project (single-root/single-language — faithful to current
-// behavior); PLAN-400 enumerates true monorepos. Projects are emitted in explicit sorted order
+// behavior). Projects are emitted in explicit sorted order
 // (by Root); no map is an iteration source on the encoding path (mirrors DependencyInventory §7).
 type WorkspacePlan struct {
 	Root     string    `json:"root"`     // the checkout root (absolute) — the tree the Projects live under
@@ -19,8 +17,7 @@ type WorkspacePlan struct {
 
 // Project is one detected project/module within a WorkspacePlan. It carries only what checkout
 // KNOWS: the project root and its own language. Membership, build target, configuration, and
-// runtime are downstream concerns (BuildManifestResult, computed per project by the plugin —
-// PLAN-400) and are deliberately NOT on this type, which keeps `checkout` free of a `plugin`
+// runtime are downstream concerns (BuildManifestResult, computed per project by the plugin) and are deliberately NOT on this type, which keeps `checkout` free of a `plugin`
 // import and sidesteps the DependencyMembership.Target vs RuntimeSpec.Target overload.
 type Project struct {
 	Root     string `json:"root"`     // absolute project/module root (a go.mod dir, or a source tree)
@@ -42,7 +39,7 @@ func (p WorkspacePlan) Primary() Project {
 // singleProjectPlan wraps one detected (root, language) as a one-Project WorkspacePlan.
 // The single home for "the plan is one project today" — FakeCheckout.Fetch, GitCheckout.Fetch,
 // and ResolveVendored all route through it, so the git and vendored_repro paths never diverge.
-// Projects is written through the same sort PLAN-400 will rely on; a one-element slice is
+// Projects is written through the same sort that multi-project enumeration relies on; a one-element slice is
 // trivially sorted, but the discipline (deterministic order by Root, never map iteration) is
 // frozen here so the multi-project enumeration inherits it.
 func singleProjectPlan(root, language string) WorkspacePlan {

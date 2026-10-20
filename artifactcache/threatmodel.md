@@ -23,7 +23,7 @@ This document scores both halves so PLAN-200 inherits the analysis; entries flag
    third-party code. To the cache it is INERT DATA: `Handle` exposes `io.ReaderAt`,
    `Path`, `Size`, and `io.Closer` and no execution capability — no `Run`/`Exec`/`Start`/
    `Command`/open-for-write. The only sanctioned execution anywhere in Assay is the
-   microVM/sandbox detonation; a dependency artifact is never run outside it.
+   microVM/sandbox execution; a dependency artifact is never run outside it.
    **Mitigation:** the mechanical no-execution test (`noexec_test.go`) walks the `Store`
    and `Handle` method sets and fails if any method name reads as execution or any
    parameter/return type is `*exec.Cmd` or satisfies `interface{ Run() error }`, plus the

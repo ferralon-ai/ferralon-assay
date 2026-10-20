@@ -70,9 +70,9 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 
 // dispatch runs the requested operation. The live ops — index_symbols,
 // resolve_symbols, call_graph, find_ingresses, resolve_versions, reachability,
-// compute_taint, generate_harness, build_manifest, and resolve_inventory (PLAN-160) —
-// call the real source-level JS analysis; capability_manifest is the sole Phase-4
-// stub. An unknown op, or a missing per-op payload, is a hard failure (inv.4).
+// compute_taint, generate_harness, build_manifest, and resolve_inventory —
+// call the real source-level JS analysis; capability_manifest returns honest
+// absence (Supported:false). An unknown op, or a missing per-op payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:

@@ -162,7 +162,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		// PLAN-102: Go resolves the SELECTED dependency graph (go mod graph + go.mod),
+		// Go resolves the SELECTED dependency graph (go mod graph + go.mod),
 		// not go.mod's require list. A declared-partial result (e.g. no manifest) is a
 		// success payload; only a hard resolution failure is an error (inv.4).
 		res, err := goanalysis.ResolveInventory(ctx, *req.ResolveInventory)

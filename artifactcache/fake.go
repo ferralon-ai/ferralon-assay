@@ -7,12 +7,12 @@ import (
 )
 
 // declaredAbsentStore is the trivial read-only fake whose Lookup always reports
-// ErrDeclaredAbsent — the Phase-1 posture in which nothing has acquired any artifact.
+// ErrDeclaredAbsent, the posture in which nothing has acquired any artifact.
 // It touches no network and no credential and holds no capability to execute.
 type declaredAbsentStore struct{}
 
 // NewDeclaredAbsentStore returns a Store that always reports ErrDeclaredAbsent. It is
-// the inert Phase-1 fake a lane's indexer codes against today.
+// the inert fake a lane's indexer codes against.
 func NewDeclaredAbsentStore() Store { return declaredAbsentStore{} }
 
 func (declaredAbsentStore) Lookup(context.Context, Ref) (Handle, error) {

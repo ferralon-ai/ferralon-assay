@@ -24,7 +24,7 @@ type LanguagePlugin interface {
 	// Language returns the language tag this plugin serves, e.g. "go".
 	Language() string
 
-	// --- LIVE in Phase 1 (Go) ---
+	// --- Operations every lane implements ---
 
 	// IndexSymbols emits SCIP-qualified symbol ids stable across app + dependencies.
 	IndexSymbols(ctx context.Context, req IndexSymbolsRequest) (SymbolIndexResult, error)
@@ -35,7 +35,7 @@ type LanguagePlugin interface {
 	ResolveDependencySymbols(ctx context.Context, req ResolveSymbolsRequest) (SymbolResolutionResult, error)
 
 	// ResolveDependencyVersions reads the codebase's declared dependency versions
-	// (pom.xml / build.gradle for Java; Phase-1 Go: Unsupported) for the given advisory
+	// (pom.xml / build.gradle for Java; Go resolves versions from go.mod in-pipeline and returns Unsupported) for the given advisory
 	// coordinate. It NEVER guesses a version: a coordinate it cannot resolve confidently
 	// (BOM-managed, unresolvable property indirection) is returned with Resolved=false so
 	// the disqualification predicate fails OPEN (inv.5: unknown is never not-affected).
@@ -154,7 +154,7 @@ const (
 	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
 	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
 
-	// --- dependency-inventory reason localisers (PLAN-160) ---
+	// --- dependency-inventory reason localisers ---
 	//
 	// These name conditions a whole-graph dependency inventory (ResolveInventory, §4.1) cannot
 	// resolve from lockfile/manifest metadata alone, under the no-package-manager constraint
@@ -179,12 +179,12 @@ const (
 	// adjudication — anvil may want a fourth base for "resolution could not proceed".
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
 
-	// --- module-resolution reason localisers (PLAN-162) ---
+	// --- module-resolution reason localisers ---
 	//
 	// These name conditions the JS/TS import-scoped module resolver (CallGraph) cannot turn into a
 	// first-party edge, under the no-Node/no-package-manager, node_modules-excluded constraint
 	// (§3.3/§10.1). Each is a DECLARED gap, never a silent decline or a fabricated edge (§3.1). They
-	// split dynamic_dispatch into three reviewer-legible conditions (PLAN-162 C5);
+	// split dynamic_dispatch into three reviewer-legible conditions;
 	// dynamic_dispatch keeps its meaning (a callee name resolved to >1 in-tree
 	// decl / prototype dispatch).
 	//
@@ -204,7 +204,7 @@ const (
 	// (shared vocabulary; overlays import these, none invents its own). Never a fabricated
 	// edge or a flipped verdict — each is the tri-state UNKNOWN arm made legible (§3.1).
 	//
-	// PartialReasonBeanAmbiguous localises dynamic_dispatch (the PLAN-162 move — it does
+	// PartialReasonBeanAmbiguous localises dynamic_dispatch (it does
 	// NOT retire the base): a @Autowired injection point satisfied by >1 candidate bean
 	// with no @Primary/@Qualifier winner, so the wired implementation is undetermined and
 	// the interface hop stays unresolved. Raised by the bean resolver.
@@ -230,7 +230,7 @@ const (
 	// NOT a positive "guarded" signal. Raised by the guard overlay (#5).
 	PartialReasonGuardUnknown = "guard_unknown"
 
-	// --- Phase-1 C/C++ partiality codes (c-cpp-parity-map-2026-09-28.md §5) ---
+	// --- C/C++ partiality codes (c-cpp-parity-map-2026-09-28.md §5) ---
 	//
 	// New bases for the C/C++ lane's own limits — distinct from the Go-caller-into-native
 	// cgo boundary above, which names a Go program crossing OUT to native code, not a C/C++

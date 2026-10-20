@@ -1,5 +1,3 @@
-// internal/checkout/git.go
-
 package checkout
 
 import (

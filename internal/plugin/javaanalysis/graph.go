@@ -25,6 +25,26 @@ import (
 // the graph off, or the host could not hand one over. Nothing about the dependencies is known.
 const PartialReasonBuildGraphAbsent = plugin.PartialReasonToolFailure + ":build_graph_absent"
 
+// PartialReasonOtherToolBuild marks dependency facts read from a graph beside a build of the other
+// tool: the graph covers its own build, and the other can resolve versions it never saw.
+const PartialReasonOtherToolBuild = "other_tool_build"
+
+// otherToolBuild reports whether buildDir holds a build of the tool that did not resolve g. A walk
+// that fails leaves that unknown, which counts as there being one.
+func otherToolBuild(g *buildgraph.Graph, buildDir string) bool {
+	in, err := buildgraph.OtherToolInputs(buildDir, g.Tool.Name)
+	return err != nil || len(in) > 0
+}
+
+// coverage is the Partiality of facts read from g: Complete, unless the checkout also holds a
+// build of the other tool.
+func coverage(uncovered bool) plugin.Partiality {
+	if uncovered {
+		return plugin.Partial(PartialReasonOtherToolBuild)
+	}
+	return plugin.Complete()
+}
+
 // WithBuildGraph points the ops at the build graph file the host accepted for this checkout. An
 // empty file leaves them without one.
 func WithBuildGraph(file string) Option {
@@ -102,8 +122,9 @@ func nodePURL(n buildgraph.Node) string {
 }
 
 // graphInventory renders the graph as the dependency inventory: one node per module per
-// dependency, the module roots left out (an edge from one marks its child Direct).
-func graphInventory(g *buildgraph.Graph) plugin.DependencyInventory {
+// dependency, the module roots left out (an edge from one marks its child Direct). uncovered marks
+// it partial: a build of the other tool sits beside the one g resolved.
+func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInventory {
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
 	for _, m := range g.Modules {
@@ -144,16 +165,16 @@ func graphInventory(g *buildgraph.Graph) plugin.DependencyInventory {
 			}
 		}
 	}
-	return assembleInventory(nodes, edges, plugin.Complete())
+	return assembleInventory(nodes, edges, coverage(uncovered))
 }
 
 // graphVersions answers a version request from the graph. Every copy of the coordinate is a
 // Match candidate, one per module that resolved it, whatever its scope; the Match is resolved
 // only when they all agree, since one patched module beside an affected one must not rule the
 // build not-affected. The graph holds every version the build resolved, so the copies are
-// complete.
-func graphVersions(g *buildgraph.Graph, coordinate string) plugin.DependencyVersionResult {
-	res := plugin.DependencyVersionResult{Partiality: plugin.Complete()}
+// complete, unless uncovered: a build of the other tool beside it can resolve another.
+func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugin.DependencyVersionResult {
+	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered)}
 	roots := moduleRoots(g)
 	want := strings.ToLower(strings.TrimSpace(coordinate))
 	seen := map[string]bool{}
@@ -187,7 +208,7 @@ func graphVersions(g *buildgraph.Graph, coordinate string) plugin.DependencyVers
 			break
 		}
 	}
-	res.MatchesComplete = true
+	res.MatchesComplete = !uncovered
 	return res
 }
 

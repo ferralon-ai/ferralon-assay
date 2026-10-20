@@ -84,6 +84,10 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 		{name: "maven: every module patched", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", graph: []graphModule{
 			{".", widgetAt("1.4.0")}, {"service", widgetAt("1.5.0")},
 		}, want: true},
+		// The graph covers the Maven build only; the Gradle build beside it can install any version.
+		{name: "maven: every module patched, a Gradle build beside them", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", files: map[string]string{
+			"svc/build.gradle": "dependencies {\n  implementation 'com.example.lib:widget:1.5.0'\n}\n",
+		}, graph: []graphModule{{".", widgetAt("1.4.0")}}},
 		{name: "maven: a module the build resolved without the package", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", graph: []graphModule{
 			{"a", widgetAt("1.4.0")}, {"b", nil},
 		}, want: true},

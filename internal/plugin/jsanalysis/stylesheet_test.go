@@ -400,6 +400,8 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"packages/x/package.json": `{"name":"x","scripts":{"dev":"nodemon server.js -x webpack"}}`}, unresolved: true},
 		{name: "nodemon given a flag before the file", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"packages/x/package.json": `{"name":"x","scripts":{"dev":"nodemon -x webpack"}}`}, unresolved: true},
+		{name: "nodemon given only an option", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"dev":"nodemon --inspect"}}`}, unresolved: true},
 		{name: "yarn running an undeclared script, a binary", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"packages/x/package.json": `{"name":"x","scripts":{"b":"yarn run webpack"}}`}, unresolved: true},
 		{name: "yarn starting with no start script", spec: "./index.css", files: map[string]string{"src/index.css": css,

@@ -736,11 +736,8 @@ func npmrcHooks(root, file string) bool {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		key, _, _ := strings.Cut(line, "=")
-		key = strings.TrimSpace(key)
-		if strings.HasPrefix(key, "#") || strings.HasPrefix(key, ";") {
-			continue
-		}
-		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
+		// A commented line's key keeps its '#' or ';', so it matches no hook key.
+		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(strings.TrimSpace(key), "[]")), "_", "-")
 		if npmrcHookKeys[key] {
 			return true
 		}

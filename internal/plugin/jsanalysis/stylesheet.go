@@ -367,7 +367,7 @@ func allowedCommands(script string, top bool) bool {
 func allowedCommand(w []string, top bool) bool {
 	for len(w) > 0 {
 		name, _, assign := strings.Cut(w[0], "=")
-		if !assign || strings.HasPrefix(name, "-") {
+		if !assign {
 			break
 		}
 		if !scriptEnv[name] {

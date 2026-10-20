@@ -210,16 +210,19 @@ func (rs *resolver) regularInTree(rel string) bool {
 
 // styleToolingPresent reports, once per program, whether the build tree, or a directory above it
 // (styleToolingAbove), holds anything that can change what a stylesheet import loads. Presence
-// counts; nothing is parsed beyond a package.json's top-level keys and script words. It counts:
+// counts; nothing is parsed beyond a package.json's top-level keys and script words and an
+// .npmrc's keys. It counts:
 //   - a bundler, framework or test-runner config, by name and in any case: any name containing
 //     webpack (which covers an ejected Create React App's config/), esbuild*, vitest.*,
 //     gatsby-*, .babelrc*, .parcelrc, .umirc*, .storybook, bunfig.toml, nodemon.json,
 //     config-overrides.js, angular.json, or a <styleToolingConfigs>.config.* file;
 //   - a package manager hook or override: pnpm-workspace.yaml, .pnpmfile.*, .yarnrc*, .pnp.*,
-//     a patches directory;
-//   - a package.json with a key in styleToolingKeys or a jest.transform; one that depends on a
-//     bundler, build wrapper, test runner or require hook (styleToolingTools), or on anything
-//     through a version that is not a registryRange; one with a script that is not an
+//     a patches directory, an .npmrc setting an npmrcHookKeys key;
+//   - a first-party module that loads a styleToolingPackage (importsStyleTooling);
+//   - a package.json with a key in styleToolingKeys or a jest key outside craJestKeys; one named
+//     as a styleToolingPackage, which a workspace links in place of the published one; one that
+//     depends on a bundler, build wrapper, test runner or require hook (styleToolingTools), or on
+//     anything through a version that is not a registryRange; one with a script that is not an
 //     allowedScript; or one that cannot be read or decoded;
 //   - a directory the walk cannot read, or a symlinked directory whose target the walk does not
 //     itself read (one that leaves the tree included). A symlink to a file needs no rule of its
@@ -227,10 +230,55 @@ func (rs *resolver) regularInTree(rel string) bool {
 //     tree cannot be read.
 func (p *program) styleToolingPresent() bool {
 	if p.styleTooling == nil {
-		present := styleToolingIn(p.root)
+		present := styleToolingIn(p.root) || p.importsStyleTooling()
 		p.styleTooling = &present
 	}
 	return *p.styleTooling
+}
+
+// importsStyleTooling reports whether any first-party module loads a styleToolingPackage by name:
+// a script that runs a bundler or a loader itself, whatever package.json script starts it, can
+// compile the CRA source with its own stylesheet rule.
+func (p *program) importsStyleTooling() bool {
+	for _, mi := range p.modules {
+		for _, ls := range mi.bindings.specifiers {
+			if name := specPackage(ls.spec); name != "" && styleToolingPackage(name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// specPackage is the package name a bare specifier names ("@a/b/c" is "@a/b", "a/c" is "a"), or
+// "" for a relative, absolute or node: specifier.
+func specPackage(spec string) string {
+	if spec == "" || spec[0] == '.' || spec[0] == '/' || strings.HasPrefix(spec, "node:") {
+		return ""
+	}
+	parts := strings.SplitN(spec, "/", 3)
+	if strings.HasPrefix(spec, "@") {
+		if len(parts) < 2 {
+			return ""
+		}
+		return parts[0] + "/" + parts[1]
+	}
+	return parts[0]
+}
+
+// styleToolingPackage reports whether a package can decide what a stylesheet import loads when
+// first-party code loads it, or when an in-tree package of that name stands in for the published
+// one: a styleToolingDependency, react-scripts and the packages its webpack config builds the
+// stylesheet pipeline from (react-dev-utils, the loaders, postcss, sass, less and babel).
+func styleToolingPackage(name string) bool {
+	name = strings.ToLower(name)
+	switch name {
+	case "react-scripts", "react-dev-utils", "mini-css-extract-plugin", "sass", "less":
+		return true
+	}
+	return styleToolingDependency(name) || strings.HasSuffix(name, "-loader") ||
+		strings.HasPrefix(name, "postcss") || strings.HasPrefix(name, "babel-") ||
+		strings.HasPrefix(name, "@babel/")
 }
 
 func styleToolingIn(root string) bool {
@@ -259,6 +307,8 @@ func styleToolingIn(root string) bool {
 			return nil
 		case e.D.Name() == "package.json":
 			present = styleToolingManifest(root, e.Path)
+		case e.D.Name() == ".npmrc":
+			present = npmrcHooks(root, e.Path)
 		}
 		if present {
 			return filepath.SkipAll
@@ -321,7 +371,8 @@ var styleToolingKeys = []string{
 }
 
 // scriptEnv are the environment assignments a script may lead with; none of them makes node or a
-// package manager load a module.
+// package manager load a module. BROWSER is admitted only as none: react-dev-utils runs a .js value
+// with node.
 var scriptEnv = map[string]bool{
 	"NODE_ENV": true, "NPM_CONFIG_PRODUCTION": true, "PORT": true, "CI": true,
 	"GENERATE_SOURCEMAP": true, "BROWSER": true,
@@ -331,22 +382,52 @@ var scriptEnv = map[string]bool{
 // command, including among the arguments node hands to the script it runs.
 var scriptPreloadFlags = []string{"--config", "-c", "-r", "--require", "--loader", "--experimental-loader", "--import"}
 
+// scriptSite is where a package.json script is declared: the build root, the manifest's
+// directory, and the names of the scripts the manifest declares.
+type scriptSite struct {
+	root, dir string
+	scripts   map[string]bool
+}
+
+// declares reports whether the manifest a package-manager command runs against (the site's own,
+// or the one in its --prefix/--cwd directory) declares script. yarn classic runs a binary of that
+// name when no script has it.
+func (site scriptSite) declares(prefix, script string) bool {
+	if prefix == "" {
+		return site.scripts[script]
+	}
+	data, ok := readInRoot(site.root, filepath.Join(site.dir, filepath.FromSlash(prefix), "package.json"), maxStyleManifest)
+	if !ok {
+		return false
+	}
+	var m struct {
+		Scripts map[string]json.RawMessage `json:"scripts"`
+	}
+	if json.Unmarshal(data, &m) != nil {
+		return false
+	}
+	_, ok = m.Scripts[script]
+	return ok
+}
+
 // allowedScript reports whether every command in a package.json script, joined only by &&, is
 // one this lane knows loads no stylesheet through other tooling:
 //   - a reactScriptsCommand;
-//   - node or nodemon running a file in the tree, with no flag before it;
-//   - npm, yarn or pnpm running a script (which is itself checked where it is declared),
-//     starting, testing or installing, with packageManagerFlags only;
+//   - node running a file in the tree with no flag before it, or nodemon running a file in the
+//     tree with nothing else (nodemon reads its own options after the file);
+//   - npm, yarn or pnpm running, starting or testing a script that the manifest it runs against
+//     declares (and which is itself checked there), or installing, with packageManagerFlags only
+//     and no --prefix/--cwd into node_modules;
 //   - concurrently, at the top level only, running allowed commands;
 //   - echo, or exit with a status.
 //
 // Each may lead with scriptEnv assignments. Shell expansion, redirection, pipes, escapes, a path
 // leaving the tree, and a scriptPreloadFlags word all disqualify.
-func allowedScript(script string) bool {
-	return allowedCommands(script, true)
+func allowedScript(script string, site scriptSite) bool {
+	return allowedCommands(script, true, site)
 }
 
-func allowedCommands(script string, top bool) bool {
+func allowedCommands(script string, top bool, site scriptSite) bool {
 	words, ok := scriptWords(script)
 	if !ok || len(words) == 0 {
 		return false
@@ -356,7 +437,7 @@ func allowedCommands(script string, top bool) bool {
 		if i < len(words) && words[i] != "&&" {
 			continue
 		}
-		if !allowedCommand(words[start:i], top) {
+		if !allowedCommand(words[start:i], top, site) {
 			return false
 		}
 		start = i + 1
@@ -364,13 +445,13 @@ func allowedCommands(script string, top bool) bool {
 	return true
 }
 
-func allowedCommand(w []string, top bool) bool {
+func allowedCommand(w []string, top bool, site scriptSite) bool {
 	for len(w) > 0 {
-		name, _, assign := strings.Cut(w[0], "=")
+		name, value, assign := strings.Cut(w[0], "=")
 		if !assign {
 			break
 		}
-		if !scriptEnv[name] {
+		if !scriptEnv[name] || (name == "BROWSER" && value != "none") {
 			return false
 		}
 		w = w[1:]
@@ -388,16 +469,27 @@ func allowedCommand(w []string, top bool) bool {
 	switch w[0] {
 	case "react-scripts":
 		return reactScriptsArgs(w[1:])
-	case "node", "nodemon":
+	case "node":
 		return len(w) > 1 && !strings.HasPrefix(w[1], "-")
+	case "nodemon":
+		return len(w) == 2 && !strings.HasPrefix(w[1], "-")
 	case "npm", "yarn", "pnpm":
-		return packageManagerArgs(w[1:])
+		script, prefix, ok := packageManagerArgs(w[1:])
+		if !ok {
+			return false
+		}
+		for _, part := range strings.Split(prefix, "/") {
+			if buildtree.Skipped(part) {
+				return false
+			}
+		}
+		return script == "" || site.declares(prefix, script)
 	case "concurrently":
 		if !top || len(w) == 1 {
 			return false
 		}
 		for _, cmd := range w[1:] {
-			if !concurrentlyFlags[cmd] && !allowedCommands(cmd, false) {
+			if !concurrentlyFlags[cmd] && !allowedCommands(cmd, false, site) {
 				return false
 			}
 		}
@@ -421,41 +513,52 @@ var packageManagerFlags = map[string]bool{
 }
 
 // packageManagerArgs reports whether a package-manager invocation runs a named script (run,
-// run-script), or starts, tests or installs, with packageManagerFlags only. Nothing may be
-// appended to the script it runs, and nothing may be installed by name.
-func packageManagerArgs(args []string) bool {
+// run-script), or starts, tests or installs, with packageManagerFlags only, and returns the script
+// it runs ("" for an install) and its --prefix/--cwd directory. Nothing may be appended to the
+// script it runs, and nothing may be installed by name.
+func packageManagerArgs(args []string) (script, prefix string, ok bool) {
 	if len(args) == 0 {
-		return false
+		return "", "", false
 	}
 	positional := 0
 	switch args[0] {
 	case "run", "run-script":
 		positional = 1
-	case "start", "test", "install", "ci", "i":
+	case "start", "test":
+		script = args[0]
+	case "install", "ci", "i":
 	default:
-		return false
+		return "", "", false
 	}
 	for i := 1; i < len(args); i++ {
 		a := args[i]
-		flag, _, valued := strings.Cut(a, "=")
+		flag, value, valued := strings.Cut(a, "=")
 		switch {
 		case strings.HasPrefix(a, "-"):
 			if !packageManagerFlags[flag] || (valued && flag != "--prefix" && flag != "--cwd") {
-				return false
+				return "", "", false
 			}
 			if !valued && (a == "--prefix" || a == "--cwd") {
 				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-					return false
+					return "", "", false
 				}
 				i++
+				value = args[i]
+			}
+			if flag == "--prefix" || flag == "--cwd" {
+				if prefix != "" {
+					return "", "", false
+				}
+				prefix = value
 			}
 		case positional > 0:
 			positional--
+			script = a
 		default:
-			return false
+			return "", "", false
 		}
 	}
-	return positional == 0
+	return script, prefix, positional == 0
 }
 
 // scriptWords splits a script into words as a shell would, honouring single and double quotes,
@@ -522,10 +625,10 @@ func styleToolingManifest(root, file string) bool {
 	if !ok {
 		return true
 	}
-	return styleToolingManifestData(data)
+	return styleToolingManifestData(root, filepath.Dir(file), data)
 }
 
-func styleToolingManifestData(data []byte) bool {
+func styleToolingManifestData(root, dir string, data []byte) bool {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(data, &m) != nil || m == nil {
 		return true
@@ -535,13 +638,31 @@ func styleToolingManifestData(data []byte) bool {
 			return true
 		}
 	}
+	if raw, ok := m["name"]; ok {
+		var name string
+		if json.Unmarshal(raw, &name) != nil || styleToolingPackage(name) {
+			return true
+		}
+	}
 	if raw, ok := m["jest"]; ok {
 		var jest map[string]json.RawMessage
 		if json.Unmarshal(raw, &jest) != nil {
 			return true
 		}
-		if _, ok := jest["transform"]; ok {
+		for k := range jest {
+			if !craJestKeys[k] {
+				return true
+			}
+		}
+	}
+	site := scriptSite{root: root, dir: dir, scripts: map[string]bool{}}
+	if raw, ok := m["scripts"]; ok {
+		var scripts map[string]json.RawMessage
+		if json.Unmarshal(raw, &scripts) != nil {
 			return true
+		}
+		for name := range scripts {
+			site.scripts[name] = true
 		}
 	}
 	for _, field := range []string{"scripts", "dependencies", "devDependencies", "optionalDependencies", "peerDependencies"} {
@@ -559,7 +680,7 @@ func styleToolingManifestData(data []byte) bool {
 				return true
 			}
 			if field == "scripts" {
-				if !allowedScript(s) {
+				if !allowedScript(s, site) {
 					return true
 				}
 			} else if styleToolingDependency(name) || !registryRange(s) {
@@ -590,11 +711,41 @@ func styleToolingAbove(realRoot string) bool {
 			return true
 		}
 		for _, e := range entries {
-			if e.Name() == "package.json" || styleToolingName(e.Name()) {
+			if e.Name() == "package.json" || styleToolingName(e.Name()) ||
+				(e.Name() == ".npmrc" && npmrcHooks(dir, filepath.Join(dir, e.Name()))) {
 				return true
 			}
 		}
 	}
+}
+
+// npmrcHookKeys are the .npmrc settings that make a package manager load code of the project's
+// choosing into a script (node-options), run a hook file or another shell, or read further config.
+var npmrcHookKeys = map[string]bool{
+	"node-options": true, "pnpmfile": true, "global-pnpmfile": true, "script-shell": true,
+	"shell": true, "onload-script": true, "userconfig": true, "globalconfig": true,
+}
+
+// npmrcHooks reports whether the .npmrc at file sets an npmrcHookKeys key, or cannot be read.
+// npm, pnpm and yarn classic all read a project .npmrc. Keys are compared as npm normalises them:
+// case-insensitively, with _ as -.
+func npmrcHooks(root, file string) bool {
+	data, ok := readInRoot(root, file, maxStyleManifest)
+	if !ok {
+		return true
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, _, assign := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !assign || strings.HasPrefix(key, "#") || strings.HasPrefix(key, ";") {
+			continue
+		}
+		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
+		if npmrcHookKeys[key] {
+			return true
+		}
+	}
+	return false
 }
 
 // maxStyleManifest bounds the read of a package.json the tooling check inspects.

@@ -50,6 +50,8 @@ const (
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
+	// envBuildGraphTool is the env channel for -build-graph-tool.
+	envBuildGraphTool = brand.EnvPrefix + "_BUILD_GRAPH_TOOL"
 )
 
 // envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
@@ -456,6 +458,7 @@ type runFlags struct {
 	subjectJava      *string
 	subjectMvnProf   *string
 	buildGraph       *string
+	buildGraphTool   *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -519,13 +522,16 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
 
 		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
-		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's build (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK); a build graph resolved on another major version fails the run; overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
+		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's build (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK). With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
 
 		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
 		// buildGraph is where a Java or Kotlin scan's dependency graph comes from (D7: no static fallback).
 		buildGraph: fs.String("build-graph", buildGraphAuto, "where a Java or Kotlin scan's dependency graph comes from: auto runs the repository's own Maven or Gradle with this job's environment and JDK; a path reads a graph resolved ahead of the scan (`"+brand.Name+" resolve-graph`); off scans without one and records that. A graph that cannot be had fails the run once the Report is published"),
 
-		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\"; passed to Maven verbatim when the build graph is resolved; overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
+		// buildGraphTool is which build the graph is resolved from; a caller statement, never guessed.
+		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and fails the run when both are; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
+
+		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 	}
 }
 

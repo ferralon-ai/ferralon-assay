@@ -65,6 +65,12 @@ func TestAcquireBuildGraph(t *testing.T) {
 		{name: "file missing", req: graphRequest{mode: filepath.Join(dir, "absent.json"), conditions: stated}, wantSource: "build_tool_file", wantCause: "graph_rejected:decode"},
 		{name: "auto without a toolchain", req: graphRequest{mode: buildGraphAuto, conditions: stated}, wantSource: "build_tool", wantCause: "toolchain_absent"},
 		{name: "unset is auto", req: graphRequest{conditions: stated}, wantSource: "build_tool", wantCause: "toolchain_absent"},
+		{name: "file by the stated tool", req: graphRequest{mode: file, tool: "maven", conditions: stated}, wantSource: "build_tool_file", wantFile: file},
+		{name: "file by another tool than stated", req: graphRequest{mode: file, tool: "gradle", conditions: stated}, wantSource: "build_tool_file", wantCause: "graph_rejected:conditions"},
+		{name: "auto with a stated tool", req: graphRequest{mode: buildGraphAuto, tool: "maven", conditions: stated}, wantSource: "build_tool", wantCause: "toolchain_absent"},
+		{name: "unknown tool", req: graphRequest{mode: buildGraphAuto, tool: "ant", conditions: stated}, wantSource: "build_tool", wantCause: "tool_failed:select"},
+		{name: "unknown tool with a file", req: graphRequest{mode: file, tool: "ant", conditions: stated}, wantSource: "build_tool_file", wantCause: "tool_failed:select"},
+		{name: "off ignores the tool", req: graphRequest{mode: buildGraphOff, tool: "ant"}, wantSource: "off"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,10 +118,11 @@ func TestBuildGraphRecordNilForOtherLanguages(t *testing.T) {
 	}
 }
 
-// The subject conditions' env channels spelled out, so a rename of either side goes red.
+// The run conditions' env channels spelled out, so a rename of either side goes red.
 const (
 	subjectJavaEnv          = "ASSAY_SUBJECT_JAVA_VERSION"
 	subjectMavenProfilesEnv = "ASSAY_SUBJECT_MAVEN_PROFILES"
+	buildGraphToolEnv       = "ASSAY_BUILD_GRAPH_TOOL"
 )
 
 func TestGraphRequestConditions(t *testing.T) {
@@ -144,6 +151,27 @@ func TestGraphRequestConditions(t *testing.T) {
 				if got.conditions.Profiles[i] != tc.want.Profiles[i] {
 					t.Fatalf("got %+v, want %+v", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+func TestGraphRequestTool(t *testing.T) {
+	for _, tc := range []struct{ name, flag, env, want string }{
+		{"unstated", "", "", "auto"},
+		{"flag", "maven", "", "maven"},
+		{"env", "", "gradle", "gradle"},
+		{"flag over env", "maven", "gradle", "maven"},
+		{"blank flag falls back to env", " ", "gradle", "gradle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(buildGraphToolEnv, tc.env)
+			var args []string
+			if tc.flag != "" {
+				args = []string{"-build-graph-tool", tc.flag}
+			}
+			if got := runFlagsFor(t, args...).graphRequest().tool; got != tc.want {
+				t.Errorf("tool = %q, want %q", got, tc.want)
 			}
 		})
 	}

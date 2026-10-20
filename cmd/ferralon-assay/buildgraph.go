@@ -24,6 +24,7 @@ const (
 // caller states for the build.
 type graphRequest struct {
 	mode       string
+	tool       string // buildgraph.ToolAuto, ToolMaven or ToolGradle as stated
 	conditions buildgraph.Conditions
 }
 
@@ -66,11 +67,31 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 	switch req.mode {
 	case buildGraphOff:
 		return &jvmGraph{source: report.BuildGraphSourceOff}, noop
+	}
+	tool := req.tool
+	switch tool {
+	case "":
+		tool = buildgraph.ToolAuto
+	case buildgraph.ToolAuto, buildgraph.ToolMaven, buildgraph.ToolGradle:
+	default:
+		source := report.BuildGraphSourceTool
+		if req.mode != buildGraphAuto && req.mode != "" {
+			source = report.BuildGraphSourceFile
+		}
+		return &jvmGraph{source: source, failure: &buildgraph.Failure{Kind: buildgraph.KindToolFailed, Detail: "select", Log: "unknown build tool " + tool}}, noop
+	}
+	switch req.mode {
 	case buildGraphAuto, "":
 	default:
 		g := &jvmGraph{source: report.BuildGraphSourceFile}
-		if _, err := buildgraph.Load(req.mode, dir, req.conditions); err != nil {
+		graph, err := buildgraph.Load(req.mode, dir, req.conditions)
+		if err != nil {
 			g.failure = asFailure(err)
+			return g, noop
+		}
+		if tool != buildgraph.ToolAuto && tool != graph.Tool.Name {
+			g.failure = &buildgraph.Failure{Kind: buildgraph.KindGraphRejected, Detail: buildgraph.CheckConditions,
+				Log: "graph resolved by " + graph.Tool.Name + "; the scan states " + tool}
 			return g, noop
 		}
 		g.file = req.mode
@@ -87,7 +108,7 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 	out := filepath.Join(work, "out")
 	graph, err := buildgraph.Resolve(ctx, buildgraph.Request{
 		Dir:        dir,
-		Tool:       buildgraph.ToolAuto,
+		Tool:       tool,
 		Conditions: req.conditions,
 		WorkDir:    out,
 		Producer:   buildgraph.Producer{Name: brand.Name, Version: version},
@@ -133,7 +154,14 @@ func asFailure(err error) *buildgraph.Failure {
 // graphRequest is -build-graph with the subject conditions run and baseline already take: the
 // Java version, and the Maven profile selection in -P syntax ("," states none).
 func (f *runFlags) graphRequest() graphRequest {
-	req := graphRequest{mode: strings.TrimSpace(*f.buildGraph)}
+	req := graphRequest{mode: strings.TrimSpace(*f.buildGraph), tool: buildgraph.ToolAuto}
+	if f.buildGraphTool != nil {
+		if v := strings.TrimSpace(*f.buildGraphTool); v != "" {
+			req.tool = v
+		} else if v := strings.TrimSpace(os.Getenv(envBuildGraphTool)); v != "" {
+			req.tool = v
+		}
+	}
 	req.conditions.JDK = f.subjectJavaVersion()
 	for _, p := range strings.Split(f.subjectMavenProfiles(), ",") {
 		if p = strings.TrimSpace(p); p != "" {

@@ -198,3 +198,49 @@ func relPath(root, p string) (string, bool) {
 	}
 	return filepath.ToSlash(rel), true
 }
+
+// sameDir reports whether a and b name the same directory once symlinks are resolved.
+func sameDir(a, b string) bool {
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
+}
+
+// within reports whether p is root or under it once symlinks are resolved.
+func within(root, p string) bool {
+	_, ok := realRel(root, p)
+	return ok
+}
+
+// realRel is p relative to root once symlinks in both are resolved; false when p is outside root
+// or either is missing.
+func realRel(root, p string) (string, bool) {
+	rr, err1 := filepath.EvalSymlinks(root)
+	rp, err2 := filepath.EvalSymlinks(p)
+	if err1 != nil || err2 != nil {
+		return "", false
+	}
+	return relPath(rr, rp)
+}
+
+// withInputs adds each of files, by slash path from dir, to inputs when collectInputs passed it
+// over: a reactor POM under a skipped directory is still an input. A missing file fails.
+func withInputs(dir string, inputs []Input, files []string) ([]Input, error) {
+	have := map[string]bool{}
+	for _, in := range inputs {
+		have[in.Path] = true
+	}
+	for _, f := range files {
+		if have[f] {
+			continue
+		}
+		sum, err := sha256File(filepath.Join(dir, filepath.FromSlash(f)))
+		if err != nil {
+			return nil, &Failure{Kind: KindToolFailed, Detail: "inputs", Log: err.Error()}
+		}
+		have[f] = true
+		inputs = append(inputs, Input{Path: f, SHA256: sum})
+	}
+	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Path < inputs[j].Path })
+	return inputs, nil
+}

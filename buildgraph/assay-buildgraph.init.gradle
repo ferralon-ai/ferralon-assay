@@ -13,6 +13,26 @@ def gradleVersion = gradle.gradleVersion
 def javaVersion = System.getProperty('java.version')
 def javaVendor = System.getProperty('java.vendor')
 
+// A resolution failure's own message rarely names the cause; the transport error (a 401, a
+// missing artifact) sits further down the cause chain.
+def failureText = { Throwable top ->
+    def lines = []
+    def seen = [] as Set
+    def queue = [top]
+    while (!queue.isEmpty()) {
+        def e = queue.remove(0)
+        if (e == null || !seen.add(System.identityHashCode(e))) {
+            continue
+        }
+        lines << String.valueOf(e.message)
+        if (e.metaClass.respondsTo(e, 'getCauses')) {
+            queue.addAll(e.causes)
+        }
+        queue << e.cause
+    }
+    lines.join('\n')
+}
+
 allprojects { p ->
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
@@ -31,6 +51,9 @@ allprojects { p ->
         def cfg = p.configurations.findByName('runtimeClasspath')
         def root = cfg == null ? null : cfg.incoming.resolutionResult.rootComponent
         def artifacts = cfg == null ? null : cfg.incoming.artifactView { lenient(false) }.artifacts.resolvedArtifacts
+        // Other runtime classpaths (Android variants, KMP targets) this producer does not choose
+        // between.
+        def otherRuntime = p.configurations.findAll { it.canBeResolved && it.name.endsWith('RuntimeClasspath') }.collect { it.name }.sort()
         def projects = [:]
         p.rootProject.allprojects { q ->
             projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]
@@ -38,6 +61,7 @@ allprojects { p ->
         def out = new File(assayOut, 'project' + projectPath.replace(':', '_') + '.json')
         t.doLast {
             doc.has_runtime_classpath = root != null
+            doc.other_runtime_classpaths = otherRuntime
             doc.projects = projects
             def id = { c ->
                 if (c instanceof ModuleComponentIdentifier) {
@@ -68,7 +92,7 @@ allprojects { p ->
                             edges << [from: key, to: d.selected.id.displayName]
                             queue << d.selected
                         } else if (d instanceof UnresolvedDependencyResult) {
-                            unresolved << [requested: d.requested.displayName, failure: String.valueOf(d.failure?.message)]
+                            unresolved << [requested: d.requested.displayName, failure: failureText(d.failure)]
                         }
                     }
                 }
@@ -76,7 +100,9 @@ allprojects { p ->
             def files = []
             if (artifacts != null && unresolved.isEmpty()) {
                 artifacts.get().each { a ->
-                    files << [component: a.id.componentIdentifier.displayName, file: a.file.absolutePath]
+                    // The published file name, not the cache's, carries the classifier.
+                    def name = a.id.metaClass.respondsTo(a.id, 'getFileName') ? a.id.fileName : a.file.name
+                    files << [component: a.id.componentIdentifier.displayName, file: a.file.absolutePath, name: name]
                 }
             }
             doc.components = components

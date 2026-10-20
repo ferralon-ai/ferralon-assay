@@ -47,10 +47,12 @@ func tail(out []byte) string {
 }
 
 var (
-	// Maven: "Could not transfer artifact … from/to central (https://…): status code: 401, …".
-	mavenAuth = regexp.MustCompile(`from/to ([^\s()]+) \([^)]*\): status code: (?:401|403)\b`)
-	// Gradle: "Could not GET 'https://host/…'. Received status code 401 from server: …".
-	gradleAuth = regexp.MustCompile(`Could not (?:GET|HEAD) '([a-z]+://[^/']+)[^']*'\. Received status code (?:401|403)\b`)
+	// Maven: "Could not transfer artifact … from/to central (https://…): status code: 401, …"; the
+	// Wagon transport before 3.9 says "…: authentication failed for <url>, status: 401 …".
+	mavenAuth = regexp.MustCompile(`from/to ([^\s()]+) \([^)]*\): (?:status code: |(?:authentication|authorization) failed for [^,\s]+, status: )(?:401|403)\b`)
+	// Gradle: "Could not GET 'https://host/…'. Received status code 401 from server: …"; Gradle 9
+	// breaks the line before "Received".
+	gradleAuth = regexp.MustCompile(`Could not (?:GET|HEAD) '([a-z]+://[^/']+)[^']*'\.\s+Received status code (?:401|403)\b`)
 	noJava     = regexp.MustCompile(`JAVA_HOME (?:is not set|is set to an invalid directory|environment variable is not defined correctly|not found)|Unable to locate a Java Runtime|no 'java' command could be found`)
 )
 

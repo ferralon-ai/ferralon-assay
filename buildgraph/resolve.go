@@ -38,6 +38,10 @@ func Resolve(ctx context.Context, req Request) (*Graph, error) {
 	if err != nil {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: err.Error()}
 	}
+	// Generated POMs and the init script in the checkout would be read as build inputs.
+	if within(dir, work) {
+		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: "work directory " + work + " is inside the repository"}
+	}
 	// Steps append to their outputs, so a previous run's files would read as this one's.
 	if entries, err := os.ReadDir(work); err != nil || len(entries) > 0 {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: "work directory " + work + " is not empty"}

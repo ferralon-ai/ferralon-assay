@@ -29,6 +29,7 @@ const (
 	stepActiveProfiles = "active-profiles"
 	stepEffectivePOM   = "effective-pom"
 	stepTree           = "tree"
+	stepReactorPaths   = "reactor_paths"
 	stepList           = "list"
 )
 
@@ -51,6 +52,9 @@ func mavenBase(c Conditions) []string {
 }
 
 func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) {
+	if err := treeShapingOverride(c, r.env, r.dir); err != nil {
+		return nil, err
+	}
 	base := mavenBase(c)
 	g := &Graph{Tool: Tool{Name: "maven"}}
 
@@ -84,13 +88,18 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	}
 
 	treeFile := filepath.Join(r.work, "tree.json")
-	treeLog, err := r.run(ctx, stepTree, append(base, mavenDependency+":tree", "-DoutputType=json", "-DoutputFile="+treeFile, "-DappendOutput=true")...)
+	treeLog, err := r.run(ctx, stepTree, append(base, mavenDependency+":tree", "-DoutputType=json", "-DoutputFile="+treeFile, "-DappendOutput=true", "-Dverbose=false")...)
 	if err != nil {
 		return nil, err
 	}
 	reactor, err := parseReactor(treeLog)
 	if err != nil {
 		return nil, err
+	}
+	if reactor[0].file == "" {
+		if reactor, err = reactorPaths(ctx, r, base, reactor); err != nil {
+			return nil, err
+		}
 	}
 	trees, err := readOutput(stepTree, treeFile, parseTrees)
 	if err != nil {
@@ -116,7 +125,45 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
+	poms := make([]string, 0, len(reactor))
+	for _, rp := range reactor {
+		poms = append(poms, rp.file)
+	}
+	if g.Subject.Inputs, err = withInputs(r.dir, g.Subject.Inputs, poms); err != nil {
+		return nil, err
+	}
 	return g, nil
+}
+
+// treeShaping are dependency:tree's user properties that change which nodes it reports.
+var treeShaping = regexp.MustCompile(`(?:^|\s)-D(verbose|scope|includes|excludes)(?:[=\s]|$)`)
+
+// treeShapingOverride fails a resolution whose stated properties, Maven options or .mvn
+// configuration would set one of treeShaping: the tree would then not be the build's graph.
+func treeShapingOverride(c Conditions, env []string, dir string) error {
+	fail := func(where, key string) error {
+		return &Failure{Kind: KindToolFailed, Detail: stepConditions, Log: where + " sets -D" + key + ", which reshapes dependency:tree"}
+	}
+	for k := range c.Properties {
+		if m := treeShaping.FindStringSubmatch("-D" + k); m != nil {
+			return fail("the stated properties", m[1])
+		}
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if k != "MAVEN_ARGS" && k != "MAVEN_OPTS" {
+			continue
+		}
+		if m := treeShaping.FindStringSubmatch(v); m != nil {
+			return fail(k, m[1])
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, ".mvn", "maven.config")); err == nil {
+		if m := treeShaping.FindStringSubmatch(string(b)); m != nil {
+			return fail(".mvn/maven.config", m[1])
+		}
+	}
+	return nil
 }
 
 // readOutput parses a step's output file; a missing or unparseable file fails that step.
@@ -231,36 +278,98 @@ var (
 )
 
 // parseReactor reads the module list from a step's batch log: each "--< g:a >--" header and the
-// "from <pom>" line Maven 3.9 and later print beneath it. An older Maven prints no "from" line,
-// which leaves a single-module build's POM unambiguous and a reactor's unknown.
+// "from <pom>" line newer Mavens print beneath it. Older ones print no "from" line, which leaves
+// every file empty for reactorPaths to fill; a log naming some POMs and not others fails.
 func parseReactor(log []byte) ([]reactorProject, error) {
-	var out, headers []reactorProject
-	pending := ""
+	var out []reactorProject
+	pending, named := -1, 0
 	sc := bufio.NewScanner(bytes.NewReader(log))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		if m := reactorHeader.FindStringSubmatch(line); m != nil {
-			pending = m[1] + ":" + m[2]
-			headers = append(headers, reactorProject{key: pending})
+			out = append(out, reactorProject{key: m[1] + ":" + m[2]})
+			pending = len(out) - 1
 			continue
 		}
-		if m := reactorFrom.FindStringSubmatch(line); m != nil && pending != "" {
+		if m := reactorFrom.FindStringSubmatch(line); m != nil && pending >= 0 {
 			file := filepath.ToSlash(strings.TrimSpace(m[1]))
 			if path.IsAbs(file) || file == ".." || strings.HasPrefix(file, "../") {
 				return nil, &Failure{Kind: KindToolFailed, Detail: stepTree, Log: "module POM outside the repository: " + file}
 			}
-			out = append(out, reactorProject{key: pending, file: file})
-			pending = ""
+			out[pending].file = file
+			pending = -1
+			named++
 		}
 	}
 	switch {
-	case len(out) == 0 && len(headers) == 1:
-		return []reactorProject{{key: headers[0].key, file: "pom.xml"}}, nil
-	case len(out) == 0 && len(headers) > 1:
-		return nil, &Failure{Kind: KindToolFailed, Detail: stepTree, Log: "the log names no module POMs; a multi-module build needs Maven 3.9 or later"}
-	case len(out) == 0 || len(out) != len(headers):
+	case len(out) == 0:
 		return nil, &Failure{Kind: KindToolFailed, Detail: stepTree, Log: "no reactor modules in the log\n" + tail(log)}
+	case named != 0 && named != len(out):
+		return nil, &Failure{Kind: KindToolFailed, Detail: stepTree, Log: fmt.Sprintf("the log names POMs for %d of %d modules", named, len(out))}
+	}
+	return out, nil
+}
+
+// evaluateNull is what help:evaluate writes for an expression with no value.
+const evaluateNull = "null object or invalid expression"
+
+// reactorPaths asks Maven for each module's POM when its log does not name them. help:evaluate is
+// an aggregator, so it reads session.projects one index at a time, with the tree step's
+// arguments: the id must be a module the log announced, the file must be inside the repository,
+// and the index past the last module must be empty.
+func reactorPaths(ctx context.Context, r *runner, base []string, headers []reactorProject) ([]reactorProject, error) {
+	fail := func(format string, a ...any) error {
+		return &Failure{Kind: KindToolFailed, Detail: stepReactorPaths, Log: fmt.Sprintf(format, a...)}
+	}
+	eval := func(i int, prop string) (string, error) {
+		out := filepath.Join(r.work, "reactor", fmt.Sprintf("%d.%s", i, prop))
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return "", fail("%v", err)
+		}
+		args := append(append([]string{}, base...), mavenHelp+":evaluate", fmt.Sprintf("-Dexpression=session.projects[%d].%s", i, prop), "-Doutput="+out)
+		if _, err := r.run(ctx, stepReactorPaths, args...); err != nil {
+			return "", err
+		}
+		b, err := os.ReadFile(out)
+		if err != nil {
+			return "", fail("%v", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	pending := map[string]bool{}
+	for _, h := range headers {
+		pending[h.key] = true
+	}
+	out := make([]reactorProject, 0, len(headers))
+	for i := range headers {
+		id, err := eval(i, "id")
+		if err != nil {
+			return nil, err
+		}
+		f := strings.Split(id, ":")
+		if len(f) != 4 || !pending[f[0]+":"+f[1]] {
+			return nil, fail("project %d is %q, not a module the log announced", i, id)
+		}
+		key := f[0] + ":" + f[1]
+		delete(pending, key)
+		file, err := eval(i, "file")
+		if err != nil {
+			return nil, err
+		}
+		if !filepath.IsAbs(file) {
+			return nil, fail("project %s has POM %q", key, file)
+		}
+		rel, ok := realRel(r.dir, file)
+		if !ok || rel == "" {
+			return nil, fail("module POM outside the repository: %s", file)
+		}
+		out = append(out, reactorProject{key: key, file: rel})
+	}
+	if extra, err := eval(len(headers), "id"); err != nil {
+		return nil, err
+	} else if extra != evaluateNull {
+		return nil, fail("Maven has a project the log did not announce: %s", extra)
 	}
 	return out, nil
 }
@@ -352,21 +461,33 @@ func mavenModules(reactor []reactorProject, trees []treeNode, profiles map[strin
 		root := t.node()
 		m := Module{ID: rp.key, Path: path.Dir(rp.file), Root: root.ID, ActiveProfiles: ap}
 		seen := map[string]bool{}
-		var walk func(n treeNode, id string)
-		walk = func(n treeNode, id string) {
+		// A mediated tree holds one version of a coordinate; two mean it is not the build's graph.
+		versions := map[string]string{}
+		var walk func(n treeNode, id string) error
+		walk = func(n treeNode, id string) error {
 			for _, c := range n.Children {
 				cn := c.node()
+				coord := cn.Group + ":" + cn.Artifact + ":" + cn.Type + ":" + cn.Classifier
+				if v, ok := versions[coord]; ok && v != cn.Version {
+					return &Failure{Kind: KindToolFailed, Detail: stepTree, Log: rp.key + " holds " + coord + " at " + v + " and " + cn.Version}
+				}
+				versions[coord] = cn.Version
 				m.Edges = append(m.Edges, Edge{From: id, To: cn.ID})
 				if !seen[cn.ID] {
 					seen[cn.ID] = true
 					m.Nodes = append(m.Nodes, cn)
-					walk(c, cn.ID)
+					if err := walk(c, cn.ID); err != nil {
+						return err
+					}
 				}
 			}
+			return nil
 		}
 		seen[root.ID] = true
 		m.Nodes = append(m.Nodes, root)
-		walk(t, root.ID)
+		if err := walk(t, root.ID); err != nil {
+			return nil, err
+		}
 		modules = append(modules, m)
 	}
 	return modules, nil
@@ -375,24 +496,22 @@ func mavenModules(reactor []reactorProject, trees []treeNode, profiles map[strin
 // fileKey is how dependency:list names an artifact: g:a:type[:classifier]:version.
 type fileKey = string
 
-// pinned is one coordinate the generated reactor declares, with its systemPath when it is
-// system-scoped.
-type pinned struct {
-	Node
-	systemPath string
-}
-
 // resolveMavenFiles fills each external node's file. dependency:list on the reactor itself
 // needs its modules built, so the external nodes are listed through a generated reactor that
 // declares exactly them, by full coordinate and scope, with every transitive excluded, against
-// the repositories the effective POMs name. Reactor modules have no file. A system-scoped node
-// carries the systemPath its module's effective POM gives it; one only a dependency declares
-// fails closed.
+// the repositories the effective POMs name. Reactor modules, at the version the reactor builds,
+// have no file. A system-scoped node's file is the systemPath its module's effective POM gives
+// it, which Maven reads in place; one only a dependency declares fails closed.
 func resolveMavenFiles(ctx context.Context, r *runner, base []string, modules []Module, effective []effectiveProject) error {
 	reactor := map[string]bool{}
 	for _, m := range modules {
-		reactor[m.ID] = true
+		for _, n := range m.Nodes {
+			if n.ID == m.Root {
+				reactor[n.Group+":"+n.Artifact+":"+n.Version] = true
+			}
+		}
 	}
+	sibling := func(n Node) bool { return reactor[n.Group+":"+n.Artifact+":"+n.Version] }
 	system := map[string]map[string]string{} // module g:a → dependency g:a → systemPath
 	for _, p := range effective {
 		k := p.GroupID + ":" + p.ArtifactID
@@ -406,23 +525,17 @@ func resolveMavenFiles(ctx context.Context, r *runner, base []string, modules []
 		}
 	}
 
-	var want []pinned
-	seen := map[pinned]bool{}
+	var want []Node
+	seen := map[Node]bool{}
 	for _, m := range modules {
 		for _, n := range m.Nodes {
-			if n.ID == m.Root || reactor[n.Group+":"+n.Artifact] {
+			if n.ID == m.Root || sibling(n) || n.Scope == "system" {
 				continue
 			}
-			pn := pinned{Node: n}
-			if n.Scope == "system" {
-				if pn.systemPath = system[m.ID][n.Group+":"+n.Artifact]; pn.systemPath == "" {
-					return &Failure{Kind: KindToolFailed, Detail: stepList, Log: "no systemPath in " + m.ID + " for system-scoped " + n.ID}
-				}
-			}
-			pn.File = nil
-			if !seen[pn] {
-				seen[pn] = true
-				want = append(want, pn)
+			n.File = nil
+			if !seen[n] {
+				seen[n] = true
+				want = append(want, n)
 			}
 		}
 	}
@@ -438,10 +551,16 @@ func resolveMavenFiles(ctx context.Context, r *runner, base []string, modules []
 		m := &modules[mi]
 		for ni := range m.Nodes {
 			n := &m.Nodes[ni]
-			if n.ID == m.Root || reactor[n.Group+":"+n.Artifact] {
+			if n.ID == m.Root || sibling(*n) {
 				continue
 			}
 			p := files[n.ID]
+			if n.Scope == "system" {
+				if p = system[m.ID][n.Group+":"+n.Artifact]; p == "" || !filepath.IsAbs(p) {
+					return &Failure{Kind: KindToolFailed, Detail: stepList, Log: "no absolute systemPath in " + m.ID + " for system-scoped " + n.ID}
+				}
+				p = filepath.Clean(p)
+			}
 			if p == "" {
 				return &Failure{Kind: KindToolFailed, Detail: stepList, Log: "no file listed for " + n.ID}
 			}
@@ -457,9 +576,9 @@ func resolveMavenFiles(ctx context.Context, r *runner, base []string, modules []
 
 // listFiles writes the generated reactor and runs dependency:list over it. A coordinate held at
 // several versions goes into several layers, since one POM declares a coordinate once.
-func listFiles(ctx context.Context, r *runner, base []string, want []pinned, effective []effectiveProject) (map[fileKey]string, error) {
+func listFiles(ctx context.Context, r *runner, base []string, want []Node, effective []effectiveProject) (map[fileKey]string, error) {
 	dir := filepath.Join(r.work, "resolve")
-	var layers [][]pinned
+	var layers [][]Node
 	for _, n := range want {
 		k := n.Group + ":" + n.Artifact + ":" + n.Type + ":" + n.Classifier
 		placed := false
@@ -478,7 +597,7 @@ func listFiles(ctx context.Context, r *runner, base []string, want []pinned, eff
 			}
 		}
 		if !placed {
-			layers = append(layers, []pinned{n})
+			layers = append(layers, []Node{n})
 		}
 	}
 	repos := mavenRepositories(effective)
@@ -564,13 +683,13 @@ func aggregatorPOM(repos, modules string) string {
 		"  <repositories>\n" + repos + "  </repositories>\n</project>\n"
 }
 
-func layerPOM(name, repos string, nodes []pinned) string {
+func layerPOM(name, repos string, nodes []Node) string {
 	var b strings.Builder
 	b.WriteString(pomHead + "  <artifactId>" + name + "</artifactId>\n  <version>0</version>\n  <packaging>pom</packaging>\n")
 	b.WriteString("  <repositories>\n" + repos + "  </repositories>\n  <dependencies>\n")
 	for _, n := range nodes {
 		b.WriteString("    <dependency>\n")
-		for _, f := range [][2]string{{"groupId", n.Group}, {"artifactId", n.Artifact}, {"version", n.Version}, {"type", n.Type}, {"classifier", n.Classifier}, {"scope", n.Scope}, {"systemPath", n.systemPath}} {
+		for _, f := range [][2]string{{"groupId", n.Group}, {"artifactId", n.Artifact}, {"version", n.Version}, {"type", n.Type}, {"classifier", n.Classifier}, {"scope", n.Scope}} {
 			if f[1] != "" {
 				b.WriteString("      <" + f[0] + ">" + xmlText(f[1]) + "</" + f[0] + ">\n")
 			}
@@ -589,7 +708,9 @@ func xmlText(s string) string {
 }
 
 var (
-	listScope  = regexp.MustCompile(`^(.+?):(compile|provided|runtime|test|system):(.+)$`)
+	// The coordinate holds no slash and the path is absolute, so a coordinate part spelled like
+	// a scope cannot split the line early.
+	listScope  = regexp.MustCompile(`^([^/]+):(compile|provided|runtime|test|system):(/.*)$`)
 	listModule = regexp.MustCompile(` -- module \S+(?: \[auto\]| \(auto\))?$`)
 )
 

@@ -34,11 +34,20 @@ type gradleProject struct {
 	Name                string                                `json:"name"`
 	Version             string                                `json:"version"`
 	HasRuntimeClasspath bool                                  `json:"has_runtime_classpath"`
+	OtherRuntime        []string                              `json:"other_runtime_classpaths"`
 	Projects            map[string]gradleCoord                `json:"projects"`
 	Components          []gradleComponent                     `json:"components"`
 	Edges               []Edge                                `json:"edges"`
 	Unresolved          []struct{ Requested, Failure string } `json:"unresolved"`
-	Files               []struct{ Component, File string }    `json:"files"`
+	Files               []gradleFile                          `json:"files"`
+}
+
+// gradleFile is one resolved artifact: its component, its file, and the name it was published
+// under, which the cache's file name may not keep.
+type gradleFile struct {
+	Component string `json:"component"`
+	File      string `json:"file"`
+	Name      string `json:"name"`
 }
 
 type gradleCoord struct {
@@ -92,6 +101,10 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		return nil, err
 	}
 	first := projects[0]
+	// Gradle looks upward for a settings file, so a directory inside a larger build runs that build.
+	if !sameDir(first.RootDir, r.dir) {
+		return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "Gradle ran the build rooted at " + first.RootDir + ", not " + r.dir}
+	}
 	g := &Graph{
 		Tool: Tool{Name: "gradle", Version: first.Gradle},
 		JVM:  JVM{Version: first.Java, Vendor: first.JavaVendor},
@@ -175,55 +188,94 @@ func gradleModule(p gradleProject) (Module, error) {
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
 	if !p.HasRuntimeClasspath {
+		var others []string
+		for _, c := range p.OtherRuntime {
+			if c != "testRuntimeClasspath" {
+				others = append(others, c)
+			}
+		}
+		if len(others) > 0 {
+			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
+		}
 		return m, nil
 	}
 
-	files := map[string][]string{}
+	files := map[string][]gradleFile{}
 	for _, f := range p.Files {
-		files[f.Component] = append(files[f.Component], f.File)
+		files[f.Component] = append(files[f.Component], f)
 	}
 	byKey := map[string][]string{}
-	seen := map[string]bool{root.ID: true}
-	add := func(key string, n Node) {
+	seen := map[string]*File{root.ID: nil}
+	add := func(key string, n Node) error {
 		byKey[key] = append(byKey[key], n.ID)
-		if !seen[n.ID] {
-			seen[n.ID] = true
-			m.Nodes = append(m.Nodes, n)
+		if prev, dup := seen[n.ID]; dup {
+			if prev != nil && n.File != nil && prev.Path != n.File.Path {
+				return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: n.ID + " resolved to " + prev.Path + " and " + n.File.Path}
+			}
+			return nil
 		}
+		seen[n.ID] = n.File
+		m.Nodes = append(m.Nodes, n)
+		return nil
 	}
 	for _, c := range p.Components {
+		var err error
 		switch {
 		case c.ID.Project != "":
 			if c.ID.Project == p.Path && c.ID.Build == ":" {
 				byKey[c.Key] = []string{root.ID}
+				delete(files, c.Key)
 				continue
 			}
 			sib, ok := p.Projects[c.ID.Project]
 			if !ok || c.ID.Build != ":" {
 				return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project component outside this build: " + c.Key}
 			}
-			add(c.Key, Node{ID: NodeID(sib.Group, sib.Name, "jar", "", sib.Version), Group: sib.Group, Artifact: sib.Name, Version: sib.Version, Type: "jar", Scope: "runtime"})
+			// A sibling's own artifact is built, not resolved; its file is not this graph's.
+			delete(files, c.Key)
+			err = add(c.Key, Node{ID: NodeID(sib.Group, sib.Name, "jar", "", sib.Version), Group: sib.Group, Artifact: sib.Name, Version: sib.Version, Type: "jar", Scope: "runtime"})
 		case c.ID.Name != "":
 			fs := files[c.Key]
+			delete(files, c.Key)
 			if len(fs) == 0 {
-				add(c.Key, Node{ID: NodeID(c.ID.Group, c.ID.Name, "pom", "", c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version, Type: "pom", Scope: "runtime"})
-				continue
+				err = add(c.Key, Node{ID: NodeID(c.ID.Group, c.ID.Name, "pom", "", c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version, Type: "pom", Scope: "runtime"})
+				break
 			}
-			sort.Strings(fs)
+			sort.Slice(fs, func(i, j int) bool { return fs[i].File < fs[j].File })
 			for _, f := range fs {
-				typ, classifier := gradleArtifact(c.ID.Name, c.ID.Version, filepath.Base(f))
-				sum, err := sha256File(f)
-				if err != nil {
-					return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: err.Error()}
+				name := f.Name
+				if name == "" {
+					name = filepath.Base(f.File)
 				}
-				add(c.Key, Node{
+				typ, classifier := gradleArtifact(c.ID.Name, c.ID.Version, name)
+				sum, sumErr := sha256File(f.File)
+				if sumErr != nil {
+					return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: sumErr.Error()}
+				}
+				if err = add(c.Key, Node{
 					ID: NodeID(c.ID.Group, c.ID.Name, typ, classifier, c.ID.Version), Group: c.ID.Group, Artifact: c.ID.Name, Version: c.ID.Version,
-					Type: typ, Classifier: classifier, Scope: "runtime", File: &File{Path: f, SHA256: sum},
-				})
+					Type: typ, Classifier: classifier, Scope: "runtime", File: &File{Path: f.File, SHA256: sum},
+				}); err != nil {
+					break
+				}
 			}
 		default:
 			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "unsupported component " + c.Key}
 		}
+		if err != nil {
+			return Module{}, err
+		}
+	}
+	// What remains is on the classpath without a component: files() and fileTree() dependencies,
+	// which have no coordinate to record.
+	if len(files) > 0 {
+		var log strings.Builder
+		for _, fs := range files {
+			for _, f := range fs {
+				log.WriteString(f.File + "\n")
+			}
+		}
+		return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has file dependencies without a coordinate:\n" + log.String()}
 	}
 	edges := map[Edge]bool{}
 	for _, e := range p.Edges {

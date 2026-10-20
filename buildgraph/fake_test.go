@@ -5,14 +5,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
 
 // fakeMaven answers each step the producer runs from files in $FAKE_DIR, writing the step's
-// output where the producer asked, and fails the step named by $FAKE_FAIL with fail.txt.
+// output where the producer asked, and fails the step named by $FAKE_FAIL with fail.txt. An
+// evaluated expression's answer is eval/<expression>, or Maven's null text when there is none.
 const fakeMaven = `#!/bin/sh
-out=""; step=""
+out=""; step=""; expr=""
 for a in "$@"; do
   case "$a" in
     -v) step=version ;;
@@ -20,17 +22,22 @@ for a in "$@"; do
     *:effective-pom) step=effective-pom ;;
     *:tree) step=tree ;;
     *:list) step=list ;;
+    *:evaluate) step=evaluate ;;
+    -Dexpression=*) expr="${a#-Dexpression=}" ;;
     -Doutput=*) out="${a#-Doutput=}" ;;
     -DoutputFile=*) out="${a#-DoutputFile=}" ;;
   esac
 done
 echo "$step $*" >> "$FAKE_DIR/calls"
 if [ "$FAKE_FAIL" = "$step" ]; then cat "$FAKE_DIR/fail.txt"; exit 1; fi
+sub() { sed "s|@M2@|$FAKE_M2|g; s|@ROOT@|$FAKE_ROOT|g" "$1"; }
 case "$step" in
   version) cat "$FAKE_DIR/version.txt" ;;
   tree) cat "$FAKE_DIR/tree.log"; cp "$FAKE_DIR/tree.json" "$out" ;;
-  list) sed "s|@M2@|$FAKE_M2|g" "$FAKE_DIR/list.txt" > "$out" ;;
-  *) cp "$FAKE_DIR/$step.txt" "$out" ;;
+  evaluate)
+    if [ -f "$FAKE_DIR/eval/$expr" ]; then sub "$FAKE_DIR/eval/$expr" > "$out"
+    else echo "null object or invalid expression" > "$out"; fi ;;
+  *) sub "$FAKE_DIR/$step.txt" > "$out" ;;
 esac
 `
 
@@ -99,7 +106,7 @@ const mavenEffectivePOM = `<?xml version="1.0" encoding="UTF-8"?>
         <artifactId>sys</artifactId>
         <version>1</version>
         <scope>system</scope>
-        <systemPath>/srv/lib/sys.jar</systemPath>
+        <systemPath>@M2@/sys.jar</systemPath>
       </dependency>
     </dependencies>
   </project>
@@ -120,15 +127,15 @@ const mavenTreeLog = `[INFO] Scanning for projects...
 `
 
 // mavenTree has guava at two versions across modules, a classified artifact, a sibling, and a
-// system-scoped jar. optional is a string, as dependency:tree writes it.
+// system-scoped jar. module-c's test-scoped guava 33 wins mediation, so module-a's guava 32 is
+// not under it. optional is a string, as dependency:tree writes it.
 const mavenTree = `{"groupId":"com.example","artifactId":"root","version":"1.0.0","type":"pom","scope":"","classifier":"","optional":"false"}
 {"groupId":"com.example","artifactId":"module-a","version":"1.0.0","type":"jar","scope":"","classifier":"","optional":"false","children":[
   {"groupId":"com.google.guava","artifactId":"guava","version":"32.1.3-jre","type":"jar","scope":"compile","classifier":"","optional":"false","children":[
     {"groupId":"com.google.guava","artifactId":"failureaccess","version":"1.0.1","type":"jar","scope":"compile","classifier":"","optional":"false"}]},
   {"groupId":"org.lwjgl","artifactId":"lwjgl","version":"3.3.4","type":"jar","scope":"runtime","classifier":"natives-linux","optional":"true"}]}
 {"groupId":"com.example","artifactId":"module-c","version":"1.0.0","type":"jar","scope":"","classifier":"","optional":"false","children":[
-  {"groupId":"com.example","artifactId":"module-a","version":"1.0.0","type":"jar","scope":"compile","classifier":"","optional":"false","children":[
-    {"groupId":"com.google.guava","artifactId":"guava","version":"32.1.3-jre","type":"jar","scope":"compile","classifier":"","optional":"false"}]},
+  {"groupId":"com.example","artifactId":"module-a","version":"1.0.0","type":"jar","scope":"compile","classifier":"","optional":"false"},
   {"groupId":"com.google.guava","artifactId":"guava","version":"33.0.0-jre","type":"jar","scope":"test","classifier":"","optional":"false"},
   {"groupId":"com.example","artifactId":"sys","version":"1","type":"jar","scope":"system","classifier":"","optional":"false"}]}
 `
@@ -138,13 +145,25 @@ The following files have been resolved:
    com.google.guava:guava:jar:32.1.3-jre:compile:@M2@/guava-32.jar -- module com.google.common [auto]
    com.google.guava:failureaccess:jar:1.0.1:compile:@M2@/failureaccess.jar -- module failureaccess (auto)
    org.lwjgl:lwjgl:jar:natives-linux:3.3.4:runtime:@M2@/lwjgl-natives.jar
-   com.example:sys:jar:1:system:@M2@/sys.jar
 
 
 The following files have been resolved:
    com.google.guava:guava:jar:33.0.0-jre:test:@M2@/guava-33.jar -- module com.google.common [auto]
 
 `
+
+// mavenTreeLogBefore388 is mavenTreeLog as Maven 3.8.2 prints it: no "from" lines, so the
+// module POMs come from the reactor_paths step's answers in mavenEval.
+var mavenTreeLogBefore388 = regexp.MustCompile(`(?m)^\[INFO\]   from .*\n`).ReplaceAllString(mavenTreeLog, "")
+
+var mavenEval = map[string]string{
+	"eval/session.projects[0].id":   "com.example:root:pom:1.0.0",
+	"eval/session.projects[0].file": "@ROOT@/pom.xml",
+	"eval/session.projects[1].id":   "com.example:module-a:jar:1.0.0",
+	"eval/session.projects[1].file": "@ROOT@/module-a/pom.xml",
+	"eval/session.projects[2].id":   "com.example:module-c:jar:1.0.0",
+	"eval/session.projects[2].file": "@ROOT@/module-c/pom.xml",
+}
 
 type fakeRepo struct {
 	dir, fake, m2, work string
@@ -171,6 +190,11 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 // newFakeMaven is a three-module reactor whose ./mvnw is fakeMaven. fail names a step to fail
 // with failOut; edit replaces any fake answer file.
 func newFakeMaven(t *testing.T, fail, failOut string, edit map[string]string) fakeRepo {
+	return newFakeMavenRepo(t, fail, failOut, edit, nil)
+}
+
+// newFakeMavenRepo is newFakeMaven with repo's files added to, or replacing, the checkout's.
+func newFakeMavenRepo(t *testing.T, fail, failOut string, edit, repo map[string]string) fakeRepo {
 	t.Helper()
 	root := t.TempDir()
 	r := fakeRepo{dir: filepath.Join(root, "repo"), fake: filepath.Join(root, "fake"), m2: filepath.Join(root, "m2"), work: filepath.Join(root, "work")}
@@ -181,6 +205,7 @@ func newFakeMaven(t *testing.T, fail, failOut string, edit map[string]string) fa
 		"module-c/pom.xml":  "<project/>",
 		".mvn/maven.config": "-ntp\n",
 	})
+	writeFiles(t, r.dir, repo)
 	answers := map[string]string{
 		"version.txt":         mavenVersionOut,
 		"active-profiles.txt": mavenActiveProfiles,
@@ -190,6 +215,9 @@ func newFakeMaven(t *testing.T, fail, failOut string, edit map[string]string) fa
 		"list.txt":            mavenList,
 		"fail.txt":            failOut,
 	}
+	for k, v := range mavenEval {
+		answers[k] = v
+	}
 	for k, v := range edit {
 		answers[k] = v
 	}
@@ -197,7 +225,7 @@ func newFakeMaven(t *testing.T, fail, failOut string, edit map[string]string) fa
 	writeFiles(t, r.m2, map[string]string{
 		"guava-32.jar": "g32", "guava-33.jar": "g33", "failureaccess.jar": "fa", "lwjgl-natives.jar": "nat", "sys.jar": "sys",
 	})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -270,11 +298,17 @@ func TestMavenProducer(t *testing.T) {
 	if n := node(t, c, "com.example:sys:jar:1"); n.File == nil || n.File.Path != filepath.Join(r.m2, "sys.jar") {
 		t.Errorf("system node file %+v", n.File)
 	}
+	if !hasEdge(c, "com.example:module-c:jar:1.0.0", "com.example:module-a:jar:1.0.0") || !hasEdge(c, "com.example:module-c:jar:1.0.0", "com.google.guava:guava:jar:33.0.0-jre") {
+		t.Errorf("module-c edges %+v", c.Edges)
+	}
 	if n := node(t, c, "com.google.guava:guava:jar:33.0.0-jre"); n.Scope != "test" || n.File == nil || n.File.Path != filepath.Join(r.m2, "guava-33.jar") {
 		t.Errorf("guava 33 %+v", n)
 	}
 	a := module(t, g, "com.example:module-a")
 	nat := node(t, a, "org.lwjgl:lwjgl:jar:natives-linux:3.3.4")
+	if !hasEdge(a, "com.google.guava:guava:jar:32.1.3-jre", "com.google.guava:failureaccess:jar:1.0.1") {
+		t.Errorf("module-a edges %+v", a.Edges)
+	}
 	if !nat.Optional || nat.Classifier != "natives-linux" || nat.File == nil || nat.File.Path != filepath.Join(r.m2, "lwjgl-natives.jar") {
 		t.Errorf("classified node %+v", nat)
 	}
@@ -283,17 +317,20 @@ func TestMavenProducer(t *testing.T) {
 	}
 
 	// The generated reactor pins each external node by full coordinate and scope, separates the
-	// two guava versions, and carries the child-only repository and the .mvn configuration.
+	// two guava versions, and carries the child-only repository and the .mvn configuration. The
+	// system-scoped jar is read in place, so it is not in it.
 	layer0 := readFile(t, filepath.Join(r.work, "resolve", "layer-0", "pom.xml"))
 	layer1 := readFile(t, filepath.Join(r.work, "resolve", "layer-1", "pom.xml"))
 	for _, want := range []string{
 		"<classifier>natives-linux</classifier>", "<scope>runtime</scope>",
-		"<scope>system</scope>", "<systemPath>/srv/lib/sys.jar</systemPath>",
 		"<id>child-only</id>", "<groupId>*</groupId><artifactId>*</artifactId>",
 	} {
 		if !strings.Contains(layer0, want) {
 			t.Errorf("layer-0 lacks %s", want)
 		}
+	}
+	if strings.Contains(layer0+layer1, "system") {
+		t.Errorf("generated reactor declares the system-scoped jar:\n%s\n%s", layer0, layer1)
 	}
 	if strings.Count(layer0, "<artifactId>guava</artifactId>")+strings.Count(layer1, "<artifactId>guava</artifactId>") != 2 || !strings.Contains(layer1, "33.0.0-jre") {
 		t.Errorf("guava versions not layered:\n%s\n%s", layer0, layer1)
@@ -317,6 +354,10 @@ func TestMavenProducer(t *testing.T) {
 	if strings.Join(steps, ",") != "version,active-profiles,effective-pom,tree,list" {
 		t.Errorf("steps %v", steps)
 	}
+	tree := strings.Join(g.Commands[3].Argv, " ")
+	if !strings.HasSuffix(tree, "-Dverbose=false") {
+		t.Errorf("tree argv %s", tree)
+	}
 	list := g.Commands[len(g.Commands)-1]
 	if !strings.Contains(strings.Join(list.Argv, " "), "-f $OUT/resolve/pom.xml") {
 		t.Errorf("list step does not name the generated reactor: %v", list.Argv)
@@ -334,6 +375,15 @@ func TestMavenProducer(t *testing.T) {
 	}
 }
 
+func hasEdge(m Module, from, to string) bool {
+	for _, e := range m.Edges {
+		if e == (Edge{From: from, To: to}) {
+			return true
+		}
+	}
+	return false
+}
+
 func readFile(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)
@@ -344,12 +394,15 @@ func readFile(t *testing.T, p string) string {
 }
 
 func TestMavenProducerFailures(t *testing.T) {
-	noSystemPath := strings.Replace(mavenEffectivePOM, "<systemPath>/srv/lib/sys.jar</systemPath>", "", 1)
+	noSystemPath := strings.Replace(mavenEffectivePOM, "<systemPath>@M2@/sys.jar</systemPath>", "", 1)
 	listMissing := strings.Replace(mavenList, "   org.lwjgl:lwjgl:jar:natives-linux:3.3.4:runtime:@M2@/lwjgl-natives.jar\n", "", 1)
-	multi38 := strings.ReplaceAll(mavenTreeLog, "[INFO]   from ", "[INFO]   was ")
+	partialFrom := strings.Replace(mavenTreeLog, "[INFO]   from module-a/pom.xml\n", "", 1)
+	guava31 := `{"groupId":"com.google.guava","artifactId":"guava","version":"31.0-jre","type":"jar","scope":"compile","classifier":"","optional":"false"}`
+	sys := `"artifactId":"sys","version":"1","type":"jar","scope":"system","classifier":"","optional":"false"}`
 	for _, tc := range []struct {
 		name, fail, failOut string
-		edit                map[string]string
+		edit, repo          map[string]string
+		env                 []string
 		c                   Conditions
 		want                string
 	}{
@@ -361,16 +414,31 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "unreadable version", edit: map[string]string{"version.txt": "Maven something\n"}, want: "tool_failed:version"},
 		{name: "unreadable tree", edit: map[string]string{"tree.json": "{"}, want: "tool_failed:tree"},
 		{name: "tree for a module the log omits", edit: map[string]string{"tree.log": strings.Replace(mavenTreeLog, "[INFO] -------------------------< com.example:module-c >-------------------------\n[INFO] Building module-c 1.0.0                                                [3/3]\n[INFO]   from module-c/pom.xml\n", "", 1)}, want: "tool_failed:tree"},
-		{name: "reactor without module paths", edit: map[string]string{"tree.log": multi38}, want: "tool_failed:tree"},
+		{name: "some modules without a POM", edit: map[string]string{"tree.log": partialFrom}, want: "tool_failed:tree"},
+		{name: "reactor_paths evaluate fails", fail: "evaluate", failOut: "[ERROR] BUILD FAILURE\n", edit: map[string]string{"tree.log": mavenTreeLogBefore388}, want: "tool_failed:reactor_paths"},
+		{name: "reactor_paths names another module", edit: map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[1].id": "com.example:module-z:jar:1.0.0"}, want: "tool_failed:reactor_paths"},
+		{name: "reactor_paths names a module twice", edit: map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[2].id": "com.example:module-a:jar:1.0.0"}, want: "tool_failed:reactor_paths"},
+		{name: "reactor_paths POM outside the repo", edit: map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[2].file": "@M2@/sys.jar"}, want: "tool_failed:reactor_paths"},
+		{name: "reactor_paths relative POM", edit: map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[2].file": "module-c/pom.xml"}, want: "tool_failed:reactor_paths"},
+		{name: "reactor_paths project past the log's", edit: map[string]string{"tree.log": mavenTreeLogBefore388, "eval/session.projects[3].id": "com.example:module-d:jar:1.0.0"}, want: "tool_failed:reactor_paths"},
+		{name: "stated verbose", c: Conditions{Properties: map[string]string{"verbose": "true"}}, want: "tool_failed:conditions"},
+		{name: "MAVEN_OPTS scope", env: []string{"MAVEN_OPTS=-Xmx1g -Dscope=compile"}, want: "tool_failed:conditions"},
+		{name: "maven.config excludes", repo: map[string]string{".mvn/maven.config": "-ntp\n-Dexcludes=a:b\n"}, want: "tool_failed:conditions"},
+		{name: "one coordinate at two versions", edit: map[string]string{"tree.json": strings.Replace(mavenTree, sys, strings.TrimSuffix(sys, "}")+`,"children":[`+guava31+`]}`, 1)}, want: "tool_failed:tree"},
+		{name: "published version of a sibling", edit: map[string]string{"tree.json": strings.Replace(mavenTree, `"artifactId":"module-a","version":"1.0.0","type":"jar","scope":"compile"`, `"artifactId":"module-a","version":"0.9.0","type":"jar","scope":"compile"`, 1)}, want: "tool_failed:list"},
+		{name: "systemPath missing", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "@M2@/sys.jar", "@M2@/gone.jar", 1)}, want: "tool_failed:list"},
+		{name: "systemPath relative", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "@M2@/sys.jar", "lib/sys.jar", 1)}, want: "tool_failed:list"},
+		{name: "reactor POM missing", edit: map[string]string{"tree.log": strings.Replace(mavenTreeLog, "from module-c/pom.xml", "from module-x/pom.xml", 1)}, want: "tool_failed:inputs"},
 		{name: "module POM outside the repo", edit: map[string]string{"tree.log": strings.Replace(mavenTreeLog, "from module-c/pom.xml", "from ../elsewhere/pom.xml", 1)}, want: "tool_failed:tree"},
 		{name: "module without active-profiles", edit: map[string]string{"active-profiles.txt": strings.Replace(mavenActiveProfiles, "com.example:module-a:jar:1.0.0", "com.example:module-z:jar:1.0.0", 1)}, want: "tool_failed:active-profiles"},
 		{name: "system dependency without systemPath", edit: map[string]string{"effective-pom.txt": noSystemPath}, want: "tool_failed:list"},
 		{name: "node the generated reactor does not list", edit: map[string]string{"list.txt": listMissing}, want: "tool_failed:list"},
 		{name: "node listed at two files", edit: map[string]string{"list.txt": mavenList + "   com.google.guava:guava:jar:32.1.3-jre:compile:@M2@/guava-33.jar\n"}, want: "tool_failed:list"},
-		{name: "listed file missing", edit: map[string]string{"list.txt": strings.Replace(mavenList, "@M2@/sys.jar", "@M2@/gone.jar", 1)}, want: "tool_failed:list"},
+		{name: "listed file missing", edit: map[string]string{"list.txt": strings.Replace(mavenList, "@M2@/guava-32.jar", "@M2@/gone.jar", 1)}, want: "tool_failed:list"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newFakeMaven(t, tc.fail, tc.failOut, tc.edit)
+			r := newFakeMavenRepo(t, tc.fail, tc.failOut, tc.edit, tc.repo)
+			r.env = append(r.env, tc.env...)
 			g, err := r.resolve(t, ToolMaven, tc.c)
 			if got := cause(err); got != tc.want {
 				t.Fatalf("cause %q, want %q (graph %v)", got, tc.want, g != nil)
@@ -379,31 +447,83 @@ func TestMavenProducerFailures(t *testing.T) {
 	}
 }
 
-func TestMavenSingleModuleBefore39(t *testing.T) {
-	log := "[INFO] ----------------------< com.example:solo >-----------------------\n[INFO] Building solo 1.0.0\n[INFO] BUILD SUCCESS\n"
-	got, err := parseReactor([]byte(log))
-	if err != nil || len(got) != 1 || got[0] != (reactorProject{key: "com.example:solo", file: "pom.xml"}) {
-		t.Fatalf("got %+v, %v", got, err)
+// TestMavenReactorPaths: a Maven that prints no "from" lines gets its module POMs from
+// help:evaluate, one index at a time with the tree step's arguments, plus one probe past the end.
+func TestMavenReactorPaths(t *testing.T) {
+	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388})
+	g, err := r.resolve(t, ToolMaven, Conditions{Profiles: []string{"extra"}})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	paths := map[string]string{}
+	for _, m := range g.Modules {
+		paths[m.ID] = m.Path
+	}
+	if len(paths) != 3 || paths["com.example:root"] != "." || paths["com.example:module-a"] != "module-a" || paths["com.example:module-c"] != "module-c" {
+		t.Fatalf("module paths %v", paths)
+	}
+	var exprs []string
+	for _, cmd := range g.Commands {
+		if cmd.Step != stepReactorPaths {
+			continue
+		}
+		argv := strings.Join(cmd.Argv, " ")
+		if !strings.HasPrefix(argv, "./mvnw -B -P extra ") || strings.Contains(argv, " -f ") {
+			t.Errorf("reactor_paths argv %s", argv)
+		}
+		for _, a := range cmd.Argv {
+			if e, ok := strings.CutPrefix(a, "-Dexpression="); ok {
+				exprs = append(exprs, e)
+			}
+		}
+	}
+	want := "session.projects[0].id,session.projects[0].file,session.projects[1].id,session.projects[1].file,session.projects[2].id,session.projects[2].file,session.projects[3].id"
+	if strings.Join(exprs, ",") != want {
+		t.Errorf("evaluated %v", exprs)
+	}
+}
+
+// TestMavenInputsUnderSkippedDir: a reactor POM under a directory the input walk skips is still
+// an input.
+func TestMavenInputsUnderSkippedDir(t *testing.T) {
+	r := newFakeMavenRepo(t, "", "", map[string]string{"tree.log": strings.Replace(mavenTreeLog, "from module-c/pom.xml", "from build/module-c/pom.xml", 1)}, map[string]string{"build/module-c/pom.xml": "<project/>"})
+	g, err := r.resolve(t, ToolMaven, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	var inputs []string
+	for _, in := range g.Subject.Inputs {
+		inputs = append(inputs, in.Path)
+	}
+	if strings.Join(inputs, ",") != ".mvn/maven.config,build/module-c/pom.xml,module-a/pom.xml,module-c/pom.xml,pom.xml" {
+		t.Errorf("inputs %v", inputs)
 	}
 }
 
 func TestSelectAndToolchain(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		files map[string]string
-		tool  string
-		want  string
+		name    string
+		files   map[string]string
+		tool    string
+		wrapper string
+		want    string
 	}{
 		{name: "both build files", files: map[string]string{"pom.xml": "", "settings.gradle": ""}, want: "tool_failed:select"},
 		{name: "no build file", files: map[string]string{"README": ""}, want: "tool_failed:select"},
 		{name: "unknown tool", files: map[string]string{"pom.xml": ""}, tool: "ant", want: "tool_failed:select"},
 		{name: "no wrapper, no mvn", files: map[string]string{"pom.xml": ""}, want: "toolchain_absent"},
 		{name: "no wrapper, no gradle", files: map[string]string{"build.gradle.kts": ""}, want: "toolchain_absent"},
-		{name: "wrapper not executable", files: map[string]string{"pom.xml": "", "mvnw.txt": ""}, want: "toolchain_absent"},
+		{name: "wrapper not executable", files: map[string]string{"pom.xml": ""}, wrapper: "mvnw", want: "toolchain_absent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFiles(t, dir, tc.files)
+			if tc.wrapper != "" {
+				// writeFiles makes wrappers executable.
+				if err := os.WriteFile(filepath.Join(dir, tc.wrapper), []byte(fakeMaven), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			_, err := Resolve(context.Background(), Request{Dir: dir, Tool: tc.tool, WorkDir: filepath.Join(t.TempDir(), "w"), Env: []string{"PATH=" + t.TempDir()}})
 			if got := cause(err); got != tc.want {
 				t.Fatalf("cause %q, want %q", got, tc.want)
@@ -417,6 +537,20 @@ func TestWorkDirMustBeEmpty(t *testing.T) {
 	writeFiles(t, r.work, map[string]string{"list.txt": "stale"})
 	if got := cause(func() error { _, err := r.resolve(t, ToolMaven, Conditions{}); return err }()); got != "tool_failed:select" {
 		t.Fatalf("cause %q", got)
+	}
+}
+
+func TestWorkDirOutsideRepo(t *testing.T) {
+	r := newFakeMaven(t, "", "", nil)
+	r.work = filepath.Join(r.dir, "out")
+	if got := cause(func() error { _, err := r.resolve(t, ToolMaven, Conditions{}); return err }()); got != "tool_failed:select" {
+		t.Fatalf("cause %q", got)
+	}
+	if _, err := os.Stat(r.work); err == nil {
+		entries, _ := os.ReadDir(r.work)
+		if len(entries) != 0 {
+			t.Errorf("work dir inside the repo was written: %v", entries)
+		}
 	}
 }
 
@@ -514,7 +648,9 @@ func TestGradleProducer(t *testing.T) {
 }
 
 func TestGradleProducerFailures(t *testing.T) {
-	unresolved := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not resolve corp:x:1. Could not GET 'https://maven.corp.example/repo/corp/x/1/x-1.pom'. Received status code 401 from server: Unauthorized"}]`, 1)
+	// The init script joins the failure's cause chain one message per line, as Gradle 9 words it.
+	unresolved := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not resolve corp:x:1.\nCould not get resource 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nCould not GET 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nReceived status code 401 from server: Unauthorized"}]`, 1)
+	otherRoot := func(s string) string { return strings.Replace(s, `"root_dir":"@ROOT@"`, `"root_dir":"@ROOT@/.."`, 1) }
 	unresolvedPlain := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not find corp:x:1."}]`, 1)
 	for _, tc := range []struct {
 		name, fail string
@@ -530,6 +666,10 @@ func TestGradleProducerFailures(t *testing.T) {
 		{name: "a project wrote nothing", edit: map[string]string{"project_lib.json": "{}"}, want: "tool_failed:graph"},
 		{name: "unreadable output", edit: map[string]string{"project_lib.json": "{"}, want: "tool_failed:graph"},
 		{name: "edge to an unlisted component", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"to":"org.lwjgl:lwjgl:3.3.4"`, `"to":"x:y:1"`, 1)}, want: "tool_failed:graph"},
+		{name: "file dependency", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"files":[`, `"files":[{"component":"lib/local.jar","file":"@ROOT@/lib/local.jar"},`, 1)}, want: "tool_failed:graph"},
+		{name: "two files at one node", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"files":[`, `"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4-natives-linux.jar","name":"lwjgl-3.3.4.jar"},`, 1)}, want: "tool_failed:graph"},
+		{name: "build rooted elsewhere", edit: map[string]string{"project_.json": otherRoot(gradleRoot), "project_app.json": otherRoot(gradleApp), "project_lib.json": otherRoot(gradleLib)}, want: "tool_failed:graph"},
+		{name: "other runtime classpaths only", edit: map[string]string{"project_.json": strings.Replace(gradleRoot, `"has_runtime_classpath":false`, `"has_runtime_classpath":false,"other_runtime_classpaths":["debugRuntimeClasspath","testRuntimeClasspath"]`, 1)}, want: "tool_failed:graph"},
 		{name: "included build", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"key":"project :lib","id":{"project":":lib","build":":"}},`, `"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"project :inc:x","id":{"project":":x","build":":inc"}},`, 1)}, want: "tool_failed:graph"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

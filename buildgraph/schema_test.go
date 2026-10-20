@@ -126,7 +126,9 @@ func TestClassify(t *testing.T) {
 		{"Error: JAVA_HOME is not set and no 'java' command could be found in your PATH.", "toolchain_absent"},
 		{"Could not transfer artifact a:b:pom:1 from/to corp (https://x): status code: 401, reason phrase: Unauthorized", "credentials:corp"},
 		{"Could not transfer artifact a:b:pom:1 from/to corp (https://x): status code: 404, reason phrase: Not Found", "tool_failed:tree"},
+		{"Could not transfer artifact corp:x:pom:1 from/to corp (http://127.0.0.1:18401/repo): authentication failed for http://127.0.0.1:18401/repo/corp/x/1/x-1.pom, status: 401 Unauthorized -> [Help 1]", "credentials:corp"},
 		{"> Could not GET 'https://maven.corp.example/a/b.pom'. Received status code 403 from server: Forbidden", "credentials:https://maven.corp.example"},
+		{"Could not resolve corp:x:1.\nCould not get resource 'https://maven.corp.example/x-1.pom'.\nCould not GET 'https://maven.corp.example/x-1.pom'.\nReceived status code 401 from server: Unauthorized", "credentials:https://maven.corp.example"},
 		{"[ERROR] BUILD FAILURE", "tool_failed:tree"},
 	} {
 		if got := classify("tree", []byte(tc.out)).Cause(); got != tc.cause {

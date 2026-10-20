@@ -68,6 +68,27 @@ func TestMavenRoundTrip(t *testing.T) {
 			if len(g.Modules) != 5 {
 				t.Fatalf("modules %d", len(g.Modules))
 			}
+			// Whether the log named the POMs (3.8.8 and later) or reactor_paths asked for them,
+			// each module sits in its own directory.
+			for _, m := range g.Modules {
+				want := strings.TrimPrefix(m.ID, "com.ferralon.benchmark:")
+				if m.ID == "com.ferralon.benchmark:maven-reactor-divergence" {
+					want = "."
+				}
+				if m.Path != want {
+					t.Errorf("module %s at %q", m.ID, m.Path)
+				}
+			}
+			evals := 0
+			for _, cmd := range g.Commands {
+				if cmd.Step == stepReactorPaths {
+					evals++
+				}
+			}
+			if evals != 0 && evals != 2*len(g.Modules)+1 {
+				t.Errorf("%d reactor_paths evaluations for %d modules", evals, len(g.Modules))
+			}
+			t.Logf("maven %s: %d reactor_paths evaluations", g.Tool.Version, evals)
 			c := module(t, g, "com.ferralon.benchmark:module-c")
 			_, hasText := nodeIDs(c)["org.apache.commons:commons-text:jar:1.12.0"]
 			if hasText != (len(profiles) == 1) {

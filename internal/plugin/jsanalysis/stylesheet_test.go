@@ -440,6 +440,8 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"rs/package.json": `{"name":"babel-preset-react-app","version":"5.0.1"}`}, unresolved: true},
 		{name: "an in-tree package named @babel/core", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"rs/package.json": `{"name":"@babel/core","version":"5.0.1"}`}, unresolved: true},
+		{name: "an in-tree package named React-Scripts", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"rs/package.json": `{"name":"React-Scripts","version":"5.0.1"}`}, unresolved: true},
 		{name: "an in-tree package whose name is not a string", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"rs/package.json": `{"name":1}`}, unresolved: true},
 		{name: "a module that requires a bundler", spec: "./index.css", files: map[string]string{"src/index.css": css,

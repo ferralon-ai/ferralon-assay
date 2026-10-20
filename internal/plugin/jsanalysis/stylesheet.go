@@ -735,9 +735,9 @@ func npmrcHooks(root, file string) bool {
 		return true
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		key, _, assign := strings.Cut(line, "=")
+		key, _, _ := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
-		if !assign || strings.HasPrefix(key, "#") || strings.HasPrefix(key, ";") {
+		if strings.HasPrefix(key, "#") || strings.HasPrefix(key, ";") {
 			continue
 		}
 		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")

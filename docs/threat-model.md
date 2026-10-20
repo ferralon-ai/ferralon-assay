@@ -1,7 +1,6 @@
 # Network egress and security posture
 
-Relocated from the README's former "Network egress" section (behavior-preserving move; see the
-README's [pointer](../README.md#network-egress) for where this fits into a first read).
+See also the README's [Network egress](../README.md#network-egress) summary.
 
 **Your code and your credentials never leave the runner.** No run mode is offline, though, and it is
 worth being precise about what does leave.
@@ -16,7 +15,7 @@ A default `baseline` or `pr-inherit` run contacts two public hosts:
 These are the same fetches `go build` and `govulncheck` perform.
 
 A run configured with `advisory-corpus-repo` (recommended — see the README's
-[Scope](../README.md#scope)) additionally clones that public corpus repository
+[Advisory corpus](../README.md#advisory-corpus)) additionally clones that public corpus repository
 from **`github.com`** before the scan: unauthenticated (it presents no token), shallow (`--depth 1`)
 and sparse (the manifest and record partitions only). It sends the repository coordinates and nothing
 about your code. With `advisory-corpus-policy` set and a bundle published for that policy, it instead

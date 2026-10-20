@@ -19,7 +19,7 @@ import (
 // unknown receiver indexed by a computed key is not treated as the global.
 
 // globalBase are the names that hold the global object in Node and in browsers.
-var globalBase = []string{"globalThis", "global", "window", "self"}
+var globalBase = []string{"globalThis", "global", "window", "self", "frames", "parent", "top", "opener"}
 
 // globalScope resolves a name at a position to the global object or to something else.
 // A name resolves through the innermost enclosing scope that declares it: a function
@@ -507,10 +507,10 @@ func (gs *globalScope) isGlobal(name string, i int) bool {
 
 // replaced reports whether the top-level var d of a global name has certainly replaced the
 // global by position i: it is assigned outside every block, and i is top-level code that
-// runs after it. window cannot be replaced by a var.
+// runs after it. window and top cannot be replaced by a var.
 func (gs *globalScope) replaced(d int, name string, i int) bool {
 	decl := gs.decls[d]
-	return decl.bare && decl.start < decl.end && i > decl.end && name != "window" && gs.tf.topLevel(i)
+	return decl.bare && decl.start < decl.end && i > decl.end && name != "window" && name != "top" && gs.tf.topLevel(i)
 }
 
 // yieldsGlobal reports whether the expression in clean[start:end] can evaluate to the

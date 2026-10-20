@@ -567,6 +567,35 @@ function load(k, s) { return k; }
 function main(a) { return load(a, a); }
 main(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"computed key on parent", map[string]string{"app.js": `
+function load(k, s) { return parent[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"computed key on frames", map[string]string{"app.js": `
+function load(k, s) { return frames[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top handed on as a value", map[string]string{"app.js": `
+function load(k, s) { return run(top, k, s); }
+function run(g, k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"alias of opener", map[string]string{"app.js": `
+const g = opener;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level var of top", map[string]string{"app.js": `
+var top = {};
+top[process.argv[2]](process.argv[3]);
+function load(k, s) { return k; }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -664,6 +693,9 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"parent as a local", "function walk(node, k) { const parent = node.parent; return parent[k]; }"},
+		{"top as a parameter", "function peek(top, k) { return top[k](); }"},
+		{"frames member read", "const n = frames.length;"},
 		{"window destructured from a local", "function close(state, w) { const { window } = state; w.closeWindow(window); }"},
 		{"top-level var of a global name replaced", "var global = make();\nif (global.RegExp) { redefine(global, 'RegExp', {}); }\nfunction make() { return {}; }\nfunction redefine(o, k, v) { o[k] = v; }"},
 		{"UMD wrapper assigning the global", "(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = global || self, factory(global.Lib = {})); }(this, function (exports) { exports.x = 1; }));"},

@@ -61,7 +61,7 @@ const SchemaVersionV1 = "tegron.report.v1"
 // Verdict is the per-advisory deterministic verdict an OSS scan may assign. It is
 // the constrained subset of the full (direction × strength) verdict grammar that
 // invariant 5 permits the runner to emit. The full grammar lives in package
-// verdict; the OSS Report deliberately exposes only these four values so a
+// verdict; the OSS Report deliberately exposes only these five values so a
 // downstream reader cannot encounter `exploitable` or `reasoned_*` in OSS state.
 type Verdict string
 
@@ -541,7 +541,8 @@ type AdvisoryFinding struct {
 	// SBOM.Packages this finding concerns). Optional when the advisory is codebase-wide.
 	Package *Package `json:"package,omitempty"`
 	// Verdict is the per-advisory deterministic verdict. It MUST satisfy Verdict.Valid
-	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined.
+	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined /
+	// malicious_package_present.
 	Verdict Verdict `json:"verdict"`
 	// UndeterminedReason is the machine-readable reason the scan established no verdict.
 	// Set IFF Verdict is VerdictUndetermined (Validate enforces both directions): a bare

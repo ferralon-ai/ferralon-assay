@@ -19,11 +19,12 @@
 #   the tool name plus the version of the scanner release that ran.
 #
 # READING THE VERDICTS — this matters most on a repository whose analyzer is shallower than Go's.
-# The Report is three-valued, and the third value is the one to look for: an `undetermined` finding
+# The Report has five verdicts, and `undetermined` is the one to look for: an `undetermined` finding
 # carries an `undetermined_reason`. An undetermined row is an open question, never a clean bill —
 # treat it as unassessed. `not_exploitable` and `disqualified` each carry the basis they stand on.
-# OpenVEX mirrors the split: `under_investigation` for the open rows, `not_affected` for the two
-# that adjudicated.
+# OpenVEX mirrors the split: `under_investigation` for the open rows (`undetermined` and
+# `reachable_candidate`), `not_affected` for the two that adjudicated, and `affected` for
+# `malicious_package_present`.
 #
 # How deep the analysis goes for YOUR ecosystem is a property of the release you pin, not of this
 # file — the per-finding verdicts and the scan-level limits in the Report you get are the answer.
@@ -97,15 +98,15 @@ name: Ferralon Assay
 # QUOTED, and it must stay quoted: the value contains ": ", which a plain YAML scalar may not carry.
 # GitHub's parser accepts it unquoted; a spec-conforming one rejects the whole file, so a consumer
 # running any ordinary YAML tooling over their workflow dependencies would choke on this Action.
-description: 'Free, deterministic reachability scan — fetches a versioned scanner release at run time (no committed binary). Three-valued verdicts: an advisory the analysis could not resolve is reported undetermined, never as a clean bill.'
+description: 'Free, deterministic reachability scan — fetches a versioned scanner release at run time (no committed binary). An advisory the analysis could not resolve is reported undetermined, never as a clean bill.'
 author: ferralon-ai
 
 # Marketplace listing metadata. GitHub accepts exactly two keys here, `icon` and `color`, and
 # rejects the LISTING (not the parse) on any value outside its accepted sets — so a wrong value
 # looks fine in every local check and fails only at submission time. `share-2` is the node-link
 # graph glyph: this scanner's answer comes from a call graph, not from a version comparison.
-# `blue` reads analytic rather than alerting, which is the right register for a three-valued
-# report whose most common row is an open question.
+# `blue` reads analytic rather than alerting, which is the right register for a report whose
+# most common row is an open question.
 branding:
   icon: share-2
   color: blue
@@ -157,7 +158,7 @@ inputs:
     required: false
     default: baseline
   target:
-    description: "Go module root to scan, relative to the workspace."
+    description: "Repository root to scan, relative to the workspace. The language is detected from its contents."
     required: false
     default: .
   subject-toolchain-reachability:
@@ -202,14 +203,14 @@ inputs:
   include-house-canaries:
     description: >-
       Set to 'true' to include the first-party house-canary advisories (the FERRALON-APP-* Go
-      application-sink findings and the synthetic Java/JS/Python corpus advisories) in the scan
-      corpus, forwarding -include-house-canaries to the scanner. OFF by default so a normal scan
-      never evaluates them; the Ferralon demo scan sets it so the app-level DOS canary surfaces as
-      a reachable_candidate the pipeline can enumerate and fire. This flag is NOT the fix for the
-      empty non-Go advisory set — see LANGUAGE COVERAGE at the top of this file. The canaries are
-      synthetic first-party advisories over synthetic packages; turning them on to get a Java, JS
-      or Python scan to complete would report findings against packages the subject does not
-      depend on. VERSION REQUIREMENT: a scanner release carrying the -include-house-canaries flag. A
+      application-sink findings and the synthetic Java, Kotlin, JS, Python and .NET corpus
+      advisories) in the scan corpus, forwarding -include-house-canaries to the scanner. OFF by
+      default so a normal scan never evaluates them; the Ferralon demo scan sets it so the
+      app-level DOS canary surfaces as a reachable_candidate the pipeline can enumerate and fire.
+      It is not a coverage control: the canaries are synthetic first-party advisories over
+      synthetic packages, so turning them on to get a scan to complete would report findings
+      against packages the subject does not depend on. VERSION REQUIREMENT: a scanner release
+      carrying the -include-house-canaries flag. A
       release that lacks it fails the scan loudly ("flag provided but not defined:
       -include-house-canaries") rather than ignoring the input; if that is what you get, raise
       scanner-version to a release that carries it.

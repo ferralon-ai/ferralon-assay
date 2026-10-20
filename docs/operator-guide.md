@@ -8,11 +8,37 @@ surfaces a run publishes to under which permissions. The Action's own inputs are
 
 ## Reading the Report
 
-Every finding carries one verdict. [Language support](language-support.md#the-three-valued-verdict)
-explains the three-valued core — `reachable_candidate`, `disqualified`, `undetermined` — and why an
-`undetermined` row is an open question, never a clean bill. The rest of this section is the evidence
-that sits next to the verdict. None of it changes the verdict; it tells you which findings to look at
-first.
+Every finding carries one of five verdicts: `reachable_candidate`, `not_exploitable`, `disqualified`,
+`malicious_package_present` and `undetermined`. [Language support](language-support.md#verdicts)
+defines each. The rest of this section is the evidence that sits next to the verdict. None of it
+changes the verdict; it tells you which findings to look at first.
+
+### `not_exploitable` grounds
+
+A `not_exploitable` row stands on named grounds in every ecosystem. It needs an admitted package with a
+resolved version, and either every advisory symbol resolved inside that package and searched from the
+entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
+module in the build holds the advisory's package, and none of the build's modules declares an advisory
+symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
+`undetermined`, with the missing ground as its reason.
+
+### `undetermined` reasons
+
+An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
+the scan did not establish:
+
+| Reason | What was missing |
+|---|---|
+| `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
+| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
+| `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
+| `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
+| `advisory_range_absent` | A path reaches the advisory's code, but the advisory records no version range the scan can bound. The path stays as evidence, and `advisory_bounds` records what the advisory does state. |
+| `go_toolchain_unresolved`, `go_toolchain_not_scanned` | A Go standard-library advisory could not be adjudicated against your toolchain; see [the Go toolchain](#the-go-toolchain-your-repository-builds-with). |
+
+To close a row, supply the missing fact: resolve the version, state the build condition, or fix the
+failing step.
 
 ### Reachability grade
 

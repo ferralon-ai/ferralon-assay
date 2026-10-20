@@ -667,6 +667,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"window destructured from a local", "function close(state, w) { const { window } = state; w.closeWindow(window); }"},
 		{"top-level var of a global name replaced", "var global = make();\nif (global.RegExp) { redefine(global, 'RegExp', {}); }\nfunction make() { return {}; }\nfunction redefine(o, k, v) { o[k] = v; }"},
 		{"UMD wrapper assigning the global", "(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = global || self, factory(global.Lib = {})); }(this, function (exports) { exports.x = 1; }));"},
+		{"interface method returning this", "interface Emitter { on(name: string, fn: Handler): this; off: (name: string) => this; }"},
 		{"computed method returning this", "class S { [Symbol.iterator]() { return this; } }"},
 		{"generic method handing on this", "class S { lift<R>(op: R): S { const s = new S(this, this); return s; } }"},
 		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},

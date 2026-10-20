@@ -780,15 +780,15 @@ func typeParamsStart(clean []rune, q int) int {
 	return q
 }
 
-// classBody reports whether the '{' after position b opens a class body:
-// `class [Name] [extends Expr] {`.
+// classBody reports whether the '{' after position b opens a class body,
+// `class [Name] [extends Expr] {`, or a TypeScript interface body, whose this is a type.
 func classBody(clean []rune, b int) bool {
 	for k, steps := b, 0; k >= 0 && steps < 8; steps++ {
 		w, s := wordBefore(clean, k)
 		if w == "" {
 			return false
 		}
-		if w == "class" {
+		if w == "class" || w == "interface" {
 			return true
 		}
 		k = skipSpaceBack(clean, s-1)

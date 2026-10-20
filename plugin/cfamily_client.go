@@ -14,9 +14,9 @@ import (
 // the exact analog of goPlugin/javaPlugin/kotlinPlugin/dotnetPlugin: it implements
 // LanguagePlugin by execing the assay-plugin-cfamily subprocess once per operation and
 // exchanging a single newline-delimited JSON Request/Response over the child's stdin/stdout.
-// Like the others it imports no analysis code — the C-family analysis (when it lands in
-// Phase 1) links only into the subprocess binary (inv.8). At Phase 0 the lane is a skeleton:
-// every operation returns declared partiality (honest absence), never a fabricated result.
+// Like the others it imports no analysis code — the C-family analysis links only into the
+// subprocess binary (inv.8). Every operation returns declared partiality (honest absence) where the
+// lane cannot establish a fact, never a fabricated result.
 type cfamilyPlugin struct {
 	bin string   // resolved path to the assay-plugin-cfamily binary
 	env []string // extra KEY=VALUE entries for the subprocess environment

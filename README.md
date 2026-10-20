@@ -483,7 +483,7 @@ you import it:
 
 - **Third-party types on the public surface.** An exported signature carrying a `golang.org/x/tools`
   or `golang.org/x/vuln` type would pin every consumer to our version of it. The public surface is
-  audited for this, and the exceptions found were removed rather than kept.
+  audited for this, and there are no exceptions.
 - **Exported process-wide mutable state.** A few exported variables and setters
   (`pipeline.AdvisoryTable`, `pipeline.SetDefaultAdvisorySource`, `trigger.AnalyzerVersion`, and the
   marker/title variables in `resultsink/github`) are writable at runtime and are not `-race`-safe.

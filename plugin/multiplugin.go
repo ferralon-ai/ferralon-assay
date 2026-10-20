@@ -142,8 +142,8 @@ func (m *multiPlugin) ResolveInventory(ctx context.Context, req ResolveInventory
 
 // CapabilityManifestRequest carries no BuildDir to route on (a capability manifest is a static
 // per-lane fact, not a per-build one), so the multiplexer serves it from the primary plugin — the
-// GenerateHarness pattern. Every lane returns honest absence this cycle; NoPlugin fallback returns
-// capability.Manifest{Supported:false}.
+// GenerateHarness pattern. Lanes without a manifest return capability.Manifest{Supported:false}; so
+// does the NoPlugin fallback.
 func (m *multiPlugin) CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error) {
 	if m.primary != nil {
 		return m.primary.CapabilityManifest(ctx, req)
@@ -152,8 +152,8 @@ func (m *multiPlugin) CapabilityManifest(ctx context.Context, req CapabilityMani
 }
 
 // GenerateHarnessRequest carries no BuildDir to route on (it names a sink/ingress/kind), so
-// the multiplexer serves it from the primary plugin. This is a Phase-1 contract stub across
-// every language (Unsupported), so there is nothing per-language to route.
+// the multiplexer serves it from the primary plugin. Go and JavaScript implement it; the other
+// lanes return Unsupported.
 func (m *multiPlugin) GenerateHarness(ctx context.Context, req GenerateHarnessRequest) (HarnessResult, error) {
 	if m.primary != nil {
 		return m.primary.GenerateHarness(ctx, req)

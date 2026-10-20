@@ -5,16 +5,16 @@
 // source scanner links ONLY into this binary — never into the host binary.
 //
 // This binary deliberately mirrors cmd/assay-plugin-java: same one-shot protocol,
-// same hard-error-vs-declared-partiality contract. It ships nine LIVE ops —
+// same hard-error-vs-declared-partiality contract. It ships ten LIVE ops —
 // index_symbols, resolve_symbols, call_graph, find_ingresses, resolve_versions,
-// reachability, compute_taint, generate_harness, build_manifest — backed by the real
+// reachability, compute_taint, generate_harness, build_manifest, resolve_inventory — backed by the real
 // source-level analysis. resolve_versions reads installed versions from npm/yarn/pnpm
 // lockfiles; reachability and compute_taint derive source→sink paths over the lexical
 // call graph (declared Partial where the lexer cannot resolve dynamic dispatch / value
 // flow). generate_harness renders a Node/CommonJS reproducer SKELETON for the sink
 // (always Skeleton + Partial, never a working exploit); build_manifest parses the
 // package.json into project-root/Node-runtime/resolver-command (Complete only on a
-// clean single-package parse, else declared Partial). resolve_inventory (PLAN-160)
+// clean single-package parse, else declared Partial). resolve_inventory
 // resolves the whole selected dependency graph from npm/yarn/pnpm lockfile metadata
 // (SELECT one authoritative lock per root, never merge), declaring per-node partiality
 // for every condition it cannot resolve without executing a package manager (§3.3).
@@ -70,9 +70,9 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 
 // dispatch runs the requested operation. The live ops — index_symbols,
 // resolve_symbols, call_graph, find_ingresses, resolve_versions, reachability,
-// compute_taint, generate_harness, build_manifest, and resolve_inventory (PLAN-160) —
-// call the real source-level JS analysis; capability_manifest is the sole Phase-4
-// stub. An unknown op, or a missing per-op payload, is a hard failure (inv.4).
+// compute_taint, generate_harness, build_manifest, and resolve_inventory —
+// call the real source-level JS analysis; capability_manifest returns honest
+// absence (Supported:false). An unknown op, or a missing per-op payload, is a hard failure (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
@@ -176,8 +176,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
-		// (Supported:false), never a Supported:true manifest with empty axes.
+		// Honest absence (Supported:false), never a Supported:true manifest with empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "js"}}, nil
 
 	default:

@@ -1,4 +1,3 @@
-// internal/checkout/checkout.go
 package checkout
 
 import (

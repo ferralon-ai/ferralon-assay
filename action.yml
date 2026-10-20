@@ -165,7 +165,8 @@ inputs:
     description: >-
       Opt-in (default OFF). Set to 'true' to let a scan that genuinely ran under the subject's own
       toolchain report a reachability verdict for a stdlib advisory it could adjudicate, instead of
-      withholding it as undetermined. OFF keeps every scan byte-identical to pre-M4 behavior.
+      withholding it as undetermined. OFF withholds a stdlib advisory whose search found no path as
+      undetermined, because that absence describes the scanner's own toolchain, not yours.
     required: false
     default: "false"
   out:
@@ -305,10 +306,8 @@ inputs:
       state ref). Set this to 'false' to keep the console link on but HOLD that removal: the revoke is
       still beaconed, counted and reported, but nothing is deleted. Default 'true' — installing the
       Action and accepting its PR is the opt-in, and the operator turns the removal off here. VERSION
-      REQUIREMENT: honored only by a scanner release carrying the FERRALON_SELF_CLEANUP_ON_REVOKE gate.
-      This input lands together with the scanner-version pin bump to such a release; an older release
-      silently ignores it and self-cleanup stays on, which is why it is never pinned ahead of the
-      binary that reads it.
+      REQUIREMENT: honored by scanner releases carrying the FERRALON_SELF_CLEANUP_ON_REVOKE gate;
+      older releases ignore it and self-cleanup stays on.
     required: false
     default: "true"
   ingest-url:

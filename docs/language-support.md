@@ -34,8 +34,8 @@ Every advisory lands as one of five values:
 | Verdict | Meaning |
 |---|---|
 | `reachable_candidate` | A path from an entry point reaches the advisory's symbols. A candidate, not a proof of exploitability. |
-| `not_exploitable` | The package is present, and the vulnerable code is provably absent or unreachable. The row names its grounds in `evidence.basis`. |
-| `disqualified` | Your resolved version is provably outside the advisory's affected range. |
+| `not_exploitable` | The vulnerable code is provably absent from what your build compiles, or provably unreachable from its entry points. The row names its grounds in `evidence.basis`. |
+| `disqualified` | Your resolved version is provably outside the advisory's affected range, or the advisory's package is not in your dependency manifest or ecosystem at all. `evidence.detail` says which. |
 | `malicious_package_present` | A known-malicious package resolved to a version the advisory lists as affected. |
 | `undetermined` | The scan established nothing about the advisory. `undetermined_reason` says why. Treat it as unassessed, never as safe. |
 

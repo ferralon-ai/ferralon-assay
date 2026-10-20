@@ -383,8 +383,8 @@ be read as "not affected".
 
 **A plugin for an unlisted language is constructed and then never called.** Language detection is a
 closed set: [`checkout.DetectLanguage`](checkout/language.go) can only return `go`, `java`, `kotlin`,
-`js`, `python`, `dotnet`, `cfamily`, or unknown. `NewMultiPlugin` routes each operation by that detected tag
-([`plugin/multiplugin.go`](plugin/multiplugin.go)), and the `codebase_inventory` stage gates its
+`js`, `python`, `dotnet`, `cfamily`, or unknown. `NewMultiPlugin` routes each operation by that
+detected tag ([`plugin/multiplugin.go`](plugin/multiplugin.go)), and the `codebase_inventory` stage gates its
 manifest and version reads on `Language()` matching it, so a plugin registered as, say, `ruby` is
 never selected — it produces no error, and the run reports partiality with reason
 `no_language_plugin` rather than telling you your plugin was ignored. Adding a language means

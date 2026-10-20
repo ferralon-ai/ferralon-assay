@@ -541,7 +541,8 @@ type AdvisoryFinding struct {
 	// SBOM.Packages this finding concerns). Optional when the advisory is codebase-wide.
 	Package *Package `json:"package,omitempty"`
 	// Verdict is the per-advisory deterministic verdict. It MUST satisfy Verdict.Valid
-	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined.
+	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined /
+	// malicious_package_present.
 	Verdict Verdict `json:"verdict"`
 	// UndeterminedReason is the machine-readable reason the scan established no verdict.
 	// Set IFF Verdict is VerdictUndetermined (Validate enforces both directions): a bare

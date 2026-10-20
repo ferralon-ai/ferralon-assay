@@ -5,8 +5,8 @@ excerpt below is hand-written from the `report` package's Go types
 ([`report/report.go`](../report/report.go)), to show the shape of the `Report` schema
 (`tegron.report.v2`), not a real scan's output. Field names, nesting, and the five permitted
 verdict values (`disqualified`, `not_exploitable`, `reachable_candidate`, `undetermined`,
-`malicious_package_present`) are taken directly from the types; the identifiers, paths, and scores inside are invented for illustration
-and correspond to no real advisory or codebase.
+`malicious_package_present`) are taken directly from the types; the identifiers, paths, and scores
+inside are invented for illustration and correspond to no real advisory or codebase.
 
 ```json
 {
@@ -101,5 +101,6 @@ These fields appear only when the scan has something to say:
 | `advisory_bounds` | finding `evidence` | The affected ranges an advisory records, on an `advisory_range_absent` finding only. |
 | `package`, `path` | `partiality` note | The package and location inside it that a limit is bounded to. |
 
-New partiality reasons: `work_set_dependency_unresolved`, `uninspectable_package`, `computed_require`,
-`ifdef_config_variance`, `native_link_boundary` and `macro_expansion`.
+Partiality reasons a scan can carry include `work_set_dependency_unresolved` and the JavaScript
+`relationship_unexpressed:uninspectable_package` and `relationship_unexpressed:computed_require`;
+[`plugin/plugin.go`](../plugin/plugin.go) holds the full vocabulary.

@@ -105,8 +105,8 @@ author: ferralon-ai
 # rejects the LISTING (not the parse) on any value outside its accepted sets — so a wrong value
 # looks fine in every local check and fails only at submission time. `share-2` is the node-link
 # graph glyph: this scanner's answer comes from a call graph, not from a version comparison.
-# `blue` reads analytic rather than alerting, which is the right register for a three-valued
-# report whose most common row is an open question.
+# `blue` reads analytic rather than alerting, which is the right register for a report whose
+# most common row is an open question.
 branding:
   icon: share-2
   color: blue

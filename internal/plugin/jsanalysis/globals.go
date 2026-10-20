@@ -634,12 +634,13 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 			}
 		}
 	case p < n && clean[p] == '.':
-		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); {
+		switch w, e := peekWord(clean, skipSpace(clean, p+1)); {
 		case w == "eval", w == "Function":
 			mb.evaluated = true
-		case w == "require" && !callOnly:
+		case w == "require" && !callOnly && !andTest(clean, skipSpace(clean, e)):
 			// The global's require is not the module's: whatever a host put there loads
-			// code this lane cannot follow.
+			// code this lane cannot follow. A test of it (`window.require && ...`) is not
+			// a use.
 			mb.evaluated = true
 		}
 	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i) && !indexKey(clean, b, p):

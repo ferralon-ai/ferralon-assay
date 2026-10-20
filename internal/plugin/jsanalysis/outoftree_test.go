@@ -490,6 +490,11 @@ load(process.argv);
 function load(a, s) { return Function('a', s)(a); }
 load(process.argv, process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global require read", map[string]string{"app.js": `
+const r = globalThis.require;
+function load(m) { return r(m); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"eval on any receiver", map[string]string{"app.js": `
 function load(o, s) { return o.eval(s); }
 function main(a) { return load(a, a); }
@@ -845,6 +850,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function with an empty body", "const noop = Function('');"},
 		{"Function of nothing", "const nil = Function();"},
 		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
+		{"global require tested", "const electron = typeof window !== 'undefined' && !!(window.require && window.process);"},
 		{"global from Function read by a literal member", "const T = Function('return this')().TextEncoder;"},
 		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
 		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},

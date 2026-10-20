@@ -638,7 +638,7 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 		case "eval", "Function":
 			mb.evaluated = true
 		}
-	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i):
+	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i) && !indexKey(clean, b, p):
 		mb.evaluated = true
 	}
 }
@@ -668,12 +668,54 @@ func newThisFrames(clean []rune) *thisFrames {
 	type open struct {
 		k      int // index into tf.opens
 		global bool
+		arrow  bool // an arrow's expression body, which no '}' closes
 	}
 	var stack []open
 	var parens []int
 	matchParen := map[int]int{} // ')' → '('
+	push := func(o open, at int, fn, scope bool, params [2]int, kw int) {
+		parent := -1
+		if len(stack) > 0 {
+			parent = stack[len(stack)-1].k
+		}
+		stack = append(stack, o)
+		tf.opens = append(tf.opens, at)
+		tf.closes = append(tf.closes, n)
+		tf.parent = append(tf.parent, parent)
+		tf.fn = append(tf.fn, fn)
+		tf.scope = append(tf.scope, scope)
+		tf.params = append(tf.params, params)
+		tf.fnKw = append(tf.fnKw, kw)
+		tf.global = append(tf.global, o.global)
+	}
 	for i := 0; i < n; i++ {
+		for len(stack) > 0 && stack[len(stack)-1].arrow && i > tf.closes[stack[len(stack)-1].k] {
+			stack = stack[:len(stack)-1]
+		}
 		switch clean[i] {
+		case '=':
+			// An arrow with an expression body scopes its parameters over that expression.
+			if i+1 >= n || clean[i+1] != '>' {
+				break
+			}
+			body := skipSpace(clean, i+2)
+			if body >= n || clean[body] == '{' {
+				break
+			}
+			params := [2]int{-1, -1}
+			if q := skipSpaceBack(clean, i-1); q >= 0 && clean[q] == ')' {
+				if o, ok := matchParen[q]; ok {
+					params = [2]int{o + 1, q}
+				}
+			} else if w, s := wordBefore(clean, q); w != "" {
+				params = [2]int{s, q + 1}
+			}
+			g := true
+			if len(stack) > 0 {
+				g = stack[len(stack)-1].global
+			}
+			push(open{len(tf.opens), g, true}, i+1, false, true, params, -1)
+			tf.closes[len(tf.closes)-1] = arrowEnd(clean, body) - 1
 		case '(':
 			parens = append(parens, i)
 		case ')':
@@ -747,19 +789,7 @@ func newThisFrames(clean []rune) *thisFrames {
 					g, fn = false, true
 				}
 			}
-			parent := -1
-			if len(stack) > 0 {
-				parent = stack[len(stack)-1].k
-			}
-			stack = append(stack, open{len(tf.opens), g})
-			tf.opens = append(tf.opens, i)
-			tf.closes = append(tf.closes, n)
-			tf.parent = append(tf.parent, parent)
-			tf.fn = append(tf.fn, fn)
-			tf.scope = append(tf.scope, scope)
-			tf.params = append(tf.params, params)
-			tf.fnKw = append(tf.fnKw, kw)
-			tf.global = append(tf.global, g)
+			push(open{len(tf.opens), g, false}, i, fn, scope, params, kw)
 		case '}':
 			if len(stack) > 0 {
 				tf.closes[stack[len(stack)-1].k] = i
@@ -768,6 +798,43 @@ func newThisFrames(clean []rune) *thisFrames {
 		}
 	}
 	return tf
+}
+
+// arrowEnd returns the index of the ',' or ';' that ends the arrow body expression
+// starting at p at bracket depth zero, of the bracket that closes the enclosing one, or of
+// a line break where the expression cannot continue. A line break the expression may run
+// on past ends it too unless an operator on either side joins the lines, so the body can
+// be read shorter than it is, never longer: a name past it resolves outward.
+func arrowEnd(clean []rune, p int) int {
+	depth := 0
+	n := len(clean)
+	for ; p < n; p++ {
+		switch r := clean[p]; r {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return p
+			}
+			depth--
+		case ',', ';':
+			if depth == 0 {
+				return p
+			}
+		case '\n':
+			if depth > 0 {
+				continue
+			}
+			b := skipSpaceBack(clean, p-1)
+			a := skipSpace(clean, p+1)
+			joined := b >= 0 && strings.ContainsRune("=+-*/%&|^<>?:!~(", clean[b]) ||
+				a < n && strings.ContainsRune(".?:+-*/%&|^<>=([", clean[a])
+			if !joined {
+				return p
+			}
+		}
+	}
+	return p
 }
 
 // maxTypeScan bounds the backward scan over a TypeScript return type annotation.
@@ -840,6 +907,22 @@ func classBody(clean []rune, b int) bool {
 		}
 	}
 	return false
+}
+
+// indexKey reports whether the value between the '[' at b and the ']' at p is the key of
+// a member access, which reads only the property its string names.
+func indexKey(clean []rune, b, p int) bool {
+	if b < 1 || clean[b] != '[' || p >= len(clean) || clean[p] != ']' {
+		return false
+	}
+	q := skipSpaceBack(clean, b-1)
+	if q < 0 {
+		return false
+	}
+	if w, _ := wordBefore(clean, q); w == "return" || w == "yield" || w == "await" || w == "typeof" || w == "in" || w == "of" {
+		return false
+	}
+	return isIdentPart(clean[q]) || clean[q] == ')' || clean[q] == ']'
 }
 
 // andTest reports whether the operator at p is `&&` (not `&&=`): a value tested by it is

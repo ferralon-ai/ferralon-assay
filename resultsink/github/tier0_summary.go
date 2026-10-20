@@ -14,9 +14,10 @@
 // # Invariant 5 (deterministic verdicts only)
 //
 // The sink renders report.Verdict and nothing else. The Report can only carry
-// disqualified / not_exploitable / reachable_candidate (report.Verdict.Valid), so
-// no `affected` / `error` / Case / Assessment / living-verdict concept can appear —
-// the boundary is structural, inherited from the Report it is handed.
+// disqualified / not_exploitable / reachable_candidate / undetermined /
+// malicious_package_present (report.Verdict.Valid), so no Case / Assessment /
+// living-verdict concept can appear — the boundary is structural, inherited from
+// the Report it is handed. `::error::` is reserved for malicious_package_present.
 package github
 
 import (
@@ -219,7 +220,7 @@ func (c counts) groundedSafe() int { return c.notExploitable + c.disqualified }
 
 // renderSummary builds the GFM job-summary headline: a one-line verdict statement, a
 // counts table, and a per-candidate table when any candidate exists. It renders only
-// the four deterministic verdicts (inv. 5).
+// the five deterministic verdicts (inv. 5).
 func renderSummary(r report.Report) string {
 	c := tally(r)
 	var b strings.Builder

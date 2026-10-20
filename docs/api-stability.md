@@ -16,16 +16,11 @@ ours — a compatibility promise on a type we neither own nor version. That is a
 so the exported surface is audited to keep it from happening.
 
 The watched modules are `golang.org/x/tools`, `golang.org/x/vuln`, `golang.org/x/mod`, and
-`go.opentelemetry.io/otel`, including all sub-paths. Together with `github.com/google/uuid` they are
-this module's only non-stdlib dependencies.
+`go.opentelemetry.io/otel`, including all sub-paths.
 
 **Today the importable packages expose zero third-party types.**
 
-The audit found two, both in `plugin/goanalysis` — `LoadResult.Packages` and `LoadProgram`, each
-leaking `golang.org/x/tools/go/packages.Package`. Neither had an importer outside its own package,
-so instead of documenting them as accepted exceptions we removed them: the package now lives under
-`internal/`, where it is not part of the public API at all. There are no remaining exceptions and
-therefore no exception list.
+There are no exceptions and therefore no exception list.
 
 Two cases are worth calling out because they look like they should leak and do not:
 
@@ -52,8 +47,9 @@ about to depend on:
 
 ```sh
 cd ferralon-assay
-for p in artifact assessment checkout corpus hostmatch pipeline plugin projection report \
-         resultsink resultsink/github statestore telemetry trigger verdict vulnclass; do
+for p in artifact artifactcache artifactcache/acquire assessment buildgraph capability checkout \
+         corpus hostmatch pipeline plugin projection report resultsink resultsink/github statestore \
+         telemetry trigger verdict vulnclass; do
   GOWORK=off go doc -all ./$p
 done | grep -nE '(x/tools|x/vuln|x/mod|go\.opentelemetry\.io|packages|otel|metric|attribute|sdkmetric|sdktrace|modfile|semver|ssa)\.[A-Z]'
 ```

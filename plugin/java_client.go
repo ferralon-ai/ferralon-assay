@@ -124,13 +124,6 @@ func (p *javaPlugin) IndexSymbols(ctx context.Context, req IndexSymbolsRequest) 
 	return *resp.SymbolIndex, nil
 }
 
-// The remaining ops are CONTRACT-PRESENT for Java but not yet implemented in this
-// increment. Each calls the subprocess, which returns its result type carrying
-// Unsupported() partiality (the same convention the Go plugin uses for its
-// Phase-1 stub ops). This is a real seam: the next Java dispatch implements the
-// op in javaanalysis + the subprocess switch, and the client decode below is
-// already correct.
-
 func (p *javaPlugin) ResolveDependencySymbols(ctx context.Context, req ResolveSymbolsRequest) (SymbolResolutionResult, error) {
 	resp, err := p.run(ctx, Request{Op: OpResolveSymbols, ResolveSymbols: &req})
 	if err != nil {

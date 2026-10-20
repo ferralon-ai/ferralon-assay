@@ -2,6 +2,7 @@
 //
 // The per-range reading of an advisory's affected set for the version axis: introduced and
 // upper-exclusive bounds under each ecosystem's comparator.
+
 package pipeline
 
 import (

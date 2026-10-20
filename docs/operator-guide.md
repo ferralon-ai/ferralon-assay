@@ -8,11 +8,37 @@ surfaces a run publishes to under which permissions. The Action's own inputs are
 
 ## Reading the Report
 
-Every finding carries one verdict. [Language support](language-support.md#the-three-valued-verdict)
-explains the three-valued core — `reachable_candidate`, `disqualified`, `undetermined` — and why an
-`undetermined` row is an open question, never a clean bill. The rest of this section is the evidence
-that sits next to the verdict. None of it changes the verdict; it tells you which findings to look at
-first.
+Every finding carries one of five verdicts: `reachable_candidate`, `not_exploitable`, `disqualified`,
+`malicious_package_present` and `undetermined`. [Language support](language-support.md#verdicts)
+defines each. The rest of this section is the evidence that sits next to the verdict. None of it
+changes the verdict; it tells you which findings to look at first.
+
+### `not_exploitable` grounds
+
+A `not_exploitable` row stands on named grounds in every ecosystem. It needs an admitted package with a
+resolved version, and either every advisory symbol resolved inside that package and searched from the
+entry points, or a positive refutation of the package. In Go it can also rest on the build itself: no
+module in the build holds the advisory's package, and none of the build's modules declares an advisory
+symbol. The row's `evidence.basis` and `evidence.detail` state which. Anything short of that is
+`undetermined`, with the missing ground as its reason.
+
+### `undetermined` reasons
+
+An `undetermined` row is an open question, never a clean bill. Its `undetermined_reason` names what
+the scan did not establish:
+
+| Reason | What was missing |
+|---|---|
+| `analysis_did_not_run` | A step the verdict rests on failed or did not run. The scan-level `partiality` notes name the step; when the step failed outright, the row's detail also carries the redacted error. |
+| `package_version_unresolved` | The package's installed version was not resolved, so nothing establishes which code the build carries. |
+| `advisory_symbol_absent` | The advisory names no vulnerable symbol, so there was nothing to search for. |
+| `vulnerable_symbol_unresolved` | The advisory names vulnerable symbols, and not every one was located in the affected package and searched. |
+| `advisory_unknown_to_analyzer` | The analyzer reported nothing about the advisory at all. |
+| `advisory_range_absent` | A path reaches the advisory's code, but the advisory records no version range the scan can bound. The path stays as evidence, and `advisory_bounds` records what the advisory does state. |
+| `go_toolchain_unresolved`, `go_toolchain_not_scanned` | A Go standard-library advisory could not be adjudicated against your toolchain; see [the Go toolchain](#the-go-toolchain-your-repository-builds-with). |
+
+To close a row, supply the missing fact: resolve the version, state the build condition, or fix the
+failing step.
 
 ### Reachability grade
 
@@ -118,6 +144,57 @@ Before turning it on:
   stays `undetermined` whatever you set.
 - **The first run is slower.** It downloads a Go toolchain from the module proxy.
 
+### Observed CI toolchain
+
+The CLI also reads `ASSAY_CI_GO_VERSION`, the Go the CI runner has installed. The scan uses it as a
+toolchain source only when you also set `ASSAY_TRUST_OBSERVED_GO=true`, which asserts that the
+observed Go is the one your repository builds with: true in a job that ran `actions/setup-go` ahead
+of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
+other value leaves the observation out and resolution falls back to your `go.mod` directives. When
+trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
+directives. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
+toolchain from `go.mod` alone.
+
+## Subject build conditions for Java and Maven
+
+Maven profile activation depends on the JVM and the profile selection your build runs with, which the
+scan does not look up. State them:
+
+| What you state | CLI flag | Environment variable |
+|---|---|---|
+| The `java.version` of the JVM that runs your Maven build, as `mvn -v` reports it (for example `17.0.12` or `1.8.0_382`) | `-subject-java-version` | `ASSAY_SUBJECT_JAVA_VERSION` |
+| The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
+
+The flag wins over the environment variable. The Action has no inputs for these; set the variables in
+the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
+stay undecided until you state the Java version, and every profile of the reactor and its parents stays
+undecided until you state the selection.
+
+## Resolving the JVM build graph
+
+`resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
+`assay.buildgraph/v1` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
+version catalogs and lockfiles):
+
+```sh
+ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
+```
+
+| Flag | Meaning |
+|---|---|
+| `-dir` | Repository root (default `.`). |
+| `-out` | Output directory for `buildgraph.json` and its sidecars (required). It must be empty and outside the repository; the command rejects any other path, so a previous run's files are never read as this one's. |
+| `-tool` | `auto` (default), `maven` or `gradle`. |
+| `-profiles` | Comma-separated Maven profiles to activate. |
+| `-java-version` | The JDK the job states; a different major version fails. |
+| `-D key=value` | Build property, repeatable: Maven `-D`, Gradle `-P`. |
+| `-env key=value` | Environment variable overlaid on the job's, repeatable. |
+
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan does not
+read this graph. This command runs your build's scripts and plugins, and the build tool fetches from
+the repositories your build configures; see [threat-model.md](threat-model.md).
+
 ## State and run modes
 
 `baseline` works on its own. `pr-inherit` and `cve-watch` build on a prior baseline, which lives in a
@@ -201,8 +278,8 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        # Pin the same ref as your main workflow (see the README Quickstart).
-        uses: ferralon-ai/ferralon-assay@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0
+        # Use the same ref as your main workflow (see the README Quickstart).
+        uses: ferralon-ai/ferralon-assay@v0.5
         with:
           mode: cve-watch
           state-repo: ${{ github.repository }}

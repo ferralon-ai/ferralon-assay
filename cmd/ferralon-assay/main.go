@@ -10,6 +10,9 @@
 // `pr-inherit` (diff a PR head SBOM vs the stored baseline) and `cve-watch` (scheduled OSV.dev
 // watch). All three select a StateStore the same way: -git-dir / -repo seed and read the persistent
 // refs/assay/state, so a baseline can seed the ref a later pr-inherit / cve-watch inherits from.
+//
+// Two auxiliary commands sit beside them: `state` (operator views of the StateStore ref) and
+// `resolve-graph` (runs the repository's Maven or Gradle and writes its build graph).
 package main
 
 import (

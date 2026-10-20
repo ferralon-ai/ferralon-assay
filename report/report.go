@@ -61,7 +61,7 @@ const SchemaVersionV1 = "tegron.report.v1"
 // Verdict is the per-advisory deterministic verdict an OSS scan may assign. It is
 // the constrained subset of the full (direction × strength) verdict grammar that
 // invariant 5 permits the runner to emit. The full grammar lives in package
-// verdict; the OSS Report deliberately exposes only these four values so a
+// verdict; the OSS Report deliberately exposes only these five values so a
 // downstream reader cannot encounter `exploitable` or `reasoned_*` in OSS state.
 type Verdict string
 
@@ -294,6 +294,10 @@ const (
 	// walked and graded identically, never gated out.
 	SymbolConfidenceModerate SymbolConfidence = "moderate"
 )
+
+// symbol_provenance "cna-declared" (symbols the assigning CNA declared, with no measured
+// completeness rate) maps to no SymbolConfidence: the candidate carries an empty label, like
+// absent provenance.
 
 // Valid reports whether c is a permitted confidence label. Empty is valid (a candidate need
 // not carry a derivation signal; non-candidates must leave it empty).
@@ -541,7 +545,8 @@ type AdvisoryFinding struct {
 	// SBOM.Packages this finding concerns). Optional when the advisory is codebase-wide.
 	Package *Package `json:"package,omitempty"`
 	// Verdict is the per-advisory deterministic verdict. It MUST satisfy Verdict.Valid
-	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined.
+	// (inv. 5): one of disqualified / not_exploitable / reachable_candidate / undetermined /
+	// malicious_package_present.
 	Verdict Verdict `json:"verdict"`
 	// UndeterminedReason is the machine-readable reason the scan established no verdict.
 	// Set IFF Verdict is VerdictUndetermined (Validate enforces both directions): a bare
@@ -804,6 +809,12 @@ const (
 	// located inside the affected package and searched by the reachability analysis, and no
 	// analyzer refuted the package as a whole.
 	ReasonVulnerableSymbolUnresolved = "vulnerable_symbol_unresolved"
+	// ReasonAdvisorySymbolsUnvetted: every advisory symbol was located inside the affected package
+	// and searched, and none was reached, but the advisory's symbol set is not one an absence may
+	// rest on: its symbol_provenance is not osv-declared or curated (diff-lexed, cna-declared,
+	// unrecognized, or untagged outside a first-party record), so the vulnerable code may lie in a
+	// function the set does not list.
+	ReasonAdvisorySymbolsUnvetted = "advisory_symbols_unvetted"
 	// ReasonAdvisoryUnknownToAnalyzer: the analyzer that searches for this advisory's symbols
 	// reported nothing about the advisory at all. It may not know the advisory, or may never have
 	// analyzed the affected module. Its silence is not a search that came back empty.

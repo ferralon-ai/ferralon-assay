@@ -5,11 +5,10 @@
 // source parser links ONLY into this binary — never into the host binary.
 //
 // This binary deliberately mirrors cmd/assay-plugin-go: same one-shot protocol,
-// same hard-error-vs-declared-partiality contract. Six ops are live source-level
-// Java analysis (index_symbols, resolve_symbols, resolve_versions, call_graph,
-// find_ingresses, reachability, compute_taint); generate_harness and
-// build_manifest remain CONTRACT-PRESENT stubs (they return their result type
-// carrying Unsupported() partiality) because Java's effect proof rides the
+// same hard-error-vs-declared-partiality contract. Nine ops are live (index_symbols,
+// resolve_symbols, resolve_versions, call_graph, find_ingresses, reachability,
+// compute_taint, build_manifest, resolve_inventory); generate_harness returns its result
+// type carrying Unsupported() partiality because Java's effect proof rides the
 // repro-runtime sandbox rather than a plugin-generated harness.
 //
 // The client (internal/plugin.javaPlugin) owns the timeout via exec.CommandContext;
@@ -193,8 +192,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
-		// (Supported:false), never a Supported:true manifest with empty axes.
+		// Honest absence (Supported:false), never a Supported:true manifest with empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "java"}}, nil
 
 	default:

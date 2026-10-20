@@ -144,8 +144,10 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 
 // functionUse records a use of the Function constructor at i: a call, `new Function`, a
 // `.call`/`.apply`/`.bind` on it, or an assignment that aliases it. A TypeScript type
-// annotation (`cb: Function`) and `Function.prototype` are not uses.
-func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
+// annotation (`cb: Function`) and `Function.prototype` are not uses. A direct call whose
+// source is all plain literals with no way to run other code (literalFunction) is not one
+// either; when it is called at once, its result is judged as the global it can be.
+func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *globalScope) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
@@ -157,6 +159,19 @@ func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
 	}
 	switch {
 	case p < len(clean) && clean[p] == '(':
+		if ok, open := literalFunction(clean, src, p); ok {
+			if q := skipSpace(clean, closeParen(clean, p)+1); q < len(clean) && clean[q] == '(' {
+				start := i
+				if w, s := wordBefore(clean, b); w == "new" {
+					start = s
+				}
+				mb.globalUse(clean, start, closeParen(clean, q)+1, false, gs)
+				return
+			}
+			if !open {
+				return
+			}
+		}
 	case optionalCall(clean, p):
 	case p < len(clean) && clean[p] == '.', optionalDot(clean, p):
 		// call, apply and bind are Function.prototype methods every function shares; only
@@ -183,6 +198,130 @@ func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
 		}
 	}
 	mb.evaluated = true
+}
+
+// literalFunction reports whether the Function constructor call whose argument list opens
+// at p builds a function that runs no code but its own operators: every argument is one
+// plain string literal (no escape, no template), the leading ones lists of parameter
+// names, and the body has no call, construction, tagged template, member or index access,
+// assignment, update, `arguments`, `with`, or loader or evaluator name. open reports
+// whether the body reads `this` or a name that is not a parameter, through which a
+// later call could reach the global.
+func literalFunction(clean, src []rune, p int) (ok, open bool) {
+	e := closeParen(clean, p)
+	if e >= len(clean) {
+		return false, false
+	}
+	var lits []string
+	for a := skipSpace(clean, p+1); a < e; {
+		if clean[a] != '_' || (src[a] != '\'' && src[a] != '"') {
+			return false, false
+		}
+		lit, ok := plainLiteral(src, a)
+		if !ok {
+			return false, false
+		}
+		lits = append(lits, lit)
+		a = skipSpace(clean, a+1)
+		if a < e && clean[a] == ',' {
+			a = skipSpace(clean, a+1)
+		} else if a < e {
+			return false, false
+		}
+	}
+	if len(lits) == 0 {
+		return true, false
+	}
+	params := map[string]bool{}
+	for _, l := range lits[:len(lits)-1] {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		for _, name := range strings.Split(l, ",") {
+			name = strings.TrimSpace(name)
+			r := []rune(name)
+			if len(r) == 0 || !isIdentStart(r[0]) {
+				return false, false
+			}
+			if w, end := readWord(r, 0); end != len(r) || functionBodyWords[w] {
+				return false, false
+			}
+			params[name] = true
+		}
+	}
+	body := []rune(lits[len(lits)-1])
+	if strings.ContainsRune(string(body), '`') {
+		return false, false
+	}
+	bc := []rune(stripJS(string(body)))
+	for k := 0; k < len(bc); {
+		c := bc[k]
+		switch {
+		case c == '(' || c == '[' || c == '.':
+			return false, false
+		case c == '=':
+			prev, nxt := rune(0), rune(0)
+			if k > 0 {
+				prev = bc[k-1]
+			}
+			if k+1 < len(bc) {
+				nxt = bc[k+1]
+			}
+			if !strings.ContainsRune("=!<>", prev) && nxt != '=' && nxt != '>' {
+				return false, false
+			}
+			if strings.ContainsRune("<>", prev) && k > 1 && bc[k-2] == prev {
+				return false, false // <<= or >>=
+			}
+		case (c == '+' || c == '-') && k+1 < len(bc) && bc[k+1] == c:
+			return false, false
+		case c == '_' && body[k] != '_':
+			// a string literal inside the body
+		case isIdentStart(c):
+			w, end := readWord(bc, k)
+			switch {
+			case functionBodyWords[w]:
+				return false, false
+			case w == "this":
+				open = true
+			case !params[w] && !functionBodyKeywords[w]:
+				open = true
+			}
+			k = end
+			continue
+		}
+		k++
+	}
+	return true, open
+}
+
+// functionBodyWords may not appear in a literal Function body: each constructs, loads,
+// evaluates, or reaches the caller's arguments or a dynamic scope.
+var functionBodyWords = map[string]bool{
+	"new": true, "import": true, "require": true, "eval": true, "Function": true,
+	"arguments": true, "with": true,
+}
+
+// functionBodyKeywords are the words a literal Function body may use without reading a
+// name from its scope.
+var functionBodyKeywords = map[string]bool{
+	"return": true, "typeof": true, "void": true, "in": true, "instanceof": true,
+	"true": true, "false": true, "null": true, "undefined": true, "if": true, "else": true,
+}
+
+// plainLiteral reads the string literal whose quote is at src[a]: its text, and false when
+// it holds an escape or is unterminated.
+func plainLiteral(src []rune, a int) (string, bool) {
+	quote := src[a]
+	for k := a + 1; k < len(src); k++ {
+		switch src[k] {
+		case quote:
+			return string(src[a+1 : k]), true
+		case '\\', '\n':
+			return "", false
+		}
+	}
+	return "", false
 }
 
 // optionalCall reports whether `?.(` starts at p.

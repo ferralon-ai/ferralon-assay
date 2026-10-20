@@ -386,6 +386,110 @@ const g = Function('return this')();
 function load(s) { return g.Function(s)(); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function return this then computed key inline", map[string]string{"app.js": `
+function load(k, s) { return Function('return this')()[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"new Function return this then eval", map[string]string{"app.js": `
+function load(s) { return new Function('return this')().eval(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning this called later", map[string]string{"app.js": `
+const f = Function('return this');
+function load(k, s) { return f()[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning a global name called later", map[string]string{"app.js": `
+const f = Function('return globalThis');
+function load(k, s) { return f()[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning eval", map[string]string{"app.js": `
+function load(s) { return Function('return eval')()(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning require", map[string]string{"app.js": `
+function load(m) { return Function('return require')()(m); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning Function", map[string]string{"app.js": `
+function load(s) { return Function('return Function')()(s)(); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning arguments", map[string]string{"app.js": `
+const f = Function('a', 'return arguments');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body constructs", map[string]string{"app.js": `
+const f = Function('C', 'return new C');
+function load(C) { return f(C); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body calls a parameter", map[string]string{"app.js": `
+const f = Function('s', 'return s()');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body reads a member", map[string]string{"app.js": `
+const f = Function('o', 'return o.x');
+function load(o) { return f(o); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body indexes", map[string]string{"app.js": `
+const f = Function('o', 'return o[0]');
+function load(o) { return f(o); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body tags a template", map[string]string{"app.js": `
+const f = Function('t', 'return t` + "`" + `` + "`" + `');
+function load(t) { return f(t); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body assigns a global", map[string]string{"app.js": `
+Function('x = globalThis')();
+function load(k, s) { return x[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body shifts into a global", map[string]string{"app.js": `
+Function('x <<= 1')();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body increments a global", map[string]string{"app.js": `
+Function('x++')();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function parameter default", map[string]string{"app.js": `
+const f = Function('a = 1', 'return a');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function parameter named eval", map[string]string{"app.js": `
+const f = Function('eval', 'return 1');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function literal with an escape", map[string]string{"app.js": `
+const f = Function('a', 'return \\x61');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body concatenated", map[string]string{"app.js": `
+const f = Function('a', 'return ' + 'a');
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body a template", map[string]string{"app.js": `
+const f = Function('a', ` + "`" + `return a` + "`" + `);
+function load(s) { return f(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body a variable", map[string]string{"app.js": `
+function load(a, s) { return Function('a', s)(a); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"eval on any receiver", map[string]string{"app.js": `
 function load(o, s) { return o.eval(s); }
 function main(a) { return load(a, a); }
@@ -735,6 +839,13 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},
 		{"UMD wrapper through call", "(function (root) { root.Lib = {}; }).call(this, this);"},
 		{"IIFE called with this", "(function () { var x = 1; return x; }).call(this);"},
+		{"global root from Function", "var root = Function('return this')() || {};"},
+		{"Function of parameters", "const add = new Function('a', 'b', 'return a + b');"},
+		{"Function of a parameter list", "const min = Function('a, b', 'return a < b ? a : b');"},
+		{"Function with an empty body", "const noop = Function('');"},
+		{"Function of nothing", "const nil = Function();"},
+		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
+		{"global from Function read by a literal member", "const T = Function('return this')().TextEncoder;"},
 		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
 		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},
 		{"TypeScript function return type", "function pick(this: Box, k: string): Box { const s = wrap(this); return s; }\nfunction wrap(o) { return o; }"},

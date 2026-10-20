@@ -598,7 +598,7 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 }
 
 // globalUse records a use of the global-valued name or global `this` at [i, next): a
-// computed key on it, `.eval` or `.Function` read from it, or the object handed on as a
+// computed key on it, `.eval`, `.Function` or `.require` read from it, or the object handed on as a
 // value. A literal key is judged by keyedUse. For a function's own `this` (callOnly), which
 // is the global only when the function is called plainly, just a computed key that is
 // called and `.eval`/`.Function` count: handing that `this` on (`fn.apply(this, args)`)
@@ -634,8 +634,12 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 			}
 		}
 	case p < n && clean[p] == '.':
-		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); w {
-		case "eval", "Function":
+		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); {
+		case w == "eval", w == "Function":
+			mb.evaluated = true
+		case w == "require" && !callOnly:
+			// The global's require is not the module's: whatever a host put there loads
+			// code this lane cannot follow.
 			mb.evaluated = true
 		}
 	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i) && !indexKey(clean, b, p):

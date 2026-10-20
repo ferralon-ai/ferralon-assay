@@ -114,7 +114,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			mb.memberUse(clean, i, word)
 			i = next
 		case word == "Function":
-			mb.functionUse(clean, i, next)
+			mb.functionUse(clean, src, i, next, globals)
 			i = next
 		case word == "module":
 			mb.moduleIndexUse(clean, i, next)

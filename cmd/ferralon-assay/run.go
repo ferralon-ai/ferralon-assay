@@ -512,7 +512,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
-		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true)"),
+		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
@@ -810,7 +810,7 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 //
 // The DECLARED value follows this CLI's usual flag > env precedence (-subject-go-version, then
 // envSubjectGoVersion). The OBSERVED value is env-only (envCIGoVersion) on purpose: it
-// is a measurement of the CI runner taken by the Action's pre-setup-go step, not a knob a human
+// is a measurement of the CI runner's installed Go that the caller supplies, not a knob a human
 // sets, and giving it a flag would invite passing the scanner's own toolchain as if it were the
 // subject's. Neither value is validated here — an unorderable version resolves nothing in the
 // pipeline rather than failing the scan.

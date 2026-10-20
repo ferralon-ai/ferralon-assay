@@ -124,8 +124,11 @@ The CLI also reads `ASSAY_CI_GO_VERSION`, the Go the CI runner has installed. Th
 toolchain source only when you also set `ASSAY_TRUST_OBSERVED_GO=true`, which asserts that the
 observed Go is the one your repository builds with: true in a job that ran `actions/setup-go` ahead
 of the scan, false in a dedicated scan workflow where the observed Go is the runner image's. Any
-other value leaves the observation out and resolution falls back to your `go.mod` directives. The
-Action sets neither variable; set them in the `env:` of the step that runs it.
+other value leaves the observation out and resolution falls back to your `go.mod` directives. When
+trusted, it counts as an exact toolchain, ranked after your declaration and above your `go.mod`
+directives. The Action sets neither variable; set them in the `env:` of the step that runs it. These,
+like `ASSAY_SUBJECT_GO_VERSION`, take effect in `pr-inherit` and `cve-watch`; `baseline` resolves the Go
+toolchain from `go.mod` alone.
 
 ## Subject build conditions for Java and Maven
 
@@ -145,16 +148,17 @@ undecided until you state the selection.
 ## Resolving the JVM build graph
 
 `resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
-`assay.buildgraph/v1` JSON, with the sha256 of every build input the tool read:
+`assay.buildgraph/v1` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
+version catalogs and lockfiles):
 
 ```sh
-ferralon-assay resolve-graph -dir . -out ./graph-out
+ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
 ```
 
 | Flag | Meaning |
 |---|---|
 | `-dir` | Repository root (default `.`). |
-| `-out` | Output directory for `buildgraph.json` and its sidecars (required). |
+| `-out` | Output directory for `buildgraph.json` and its sidecars (required). It must be empty and outside the repository; the command rejects any other path, so a previous run's files are never read as this one's. |
 | `-tool` | `auto` (default), `maven` or `gradle`. |
 | `-profiles` | Comma-separated Maven profiles to activate. |
 | `-java-version` | The JDK the job states; a different major version fails. |

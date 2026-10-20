@@ -624,6 +624,11 @@ load(process.argv, process.argv).next();
 function* load(k, s) { yield this[k](s); }
 load(process.argv, process.argv).next();
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global name renamed away by an import", map[string]string{"util.js": "export const self = 1;\n", "app.js": `
+import { self as me } from './util.js';
+function load(k, s) { return me + self[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"eval on any receiver", map[string]string{"app.js": `
 function load(o, s) { return o.eval(s); }
 function main(a) { return load(a, a); }
@@ -942,6 +947,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 	cases := []struct{ name, app string }{
 		{"browserify module wrapper", "var mods = {1: [function (require, module, exports) { module.exports = require('./util'); }, {}]};"},
 		{"this indexed in generator methods", "class C { *items(k) { yield this[k](); } }\nconst o = { *gen(k) { yield this[k](); } };\nmodule.exports = { C, o };"},
+		{"global alias in parentheses read by name", "const g = (globalThis);\nmodule.exports = g.TextEncoder;"},
 		{"generator wrapper", "var mods = [function* (exports, require) { yield require('./util'); }];"},
 		{"arrow parameters", "const wrap = (require, module) => require('./util');"},
 		{"lone arrow parameter", "const wrap = require => require('./util');"},

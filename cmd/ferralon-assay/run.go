@@ -40,6 +40,11 @@ const (
 	// envAdvisoryCorpusPolicy declares the advisory policy the corpus was selected by — see
 	// advisoryCorpusPolicy. Declaring one is what makes the corpus define the work set.
 	envAdvisoryCorpusPolicy = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
+	// envAdvisoryCorpusSignerIdentity and envAdvisoryCorpusSignerIssuer carry the signer the
+	// Action's bundle route verified the corpus release against — see advisoryCorpusSigner. Env
+	// only: they report a check made before the scanner ran, not a knob.
+	envAdvisoryCorpusSignerIdentity = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_IDENTITY"
+	envAdvisoryCorpusSignerIssuer   = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_ISSUER"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
@@ -458,6 +463,7 @@ type runFlags struct {
 	resolvedSource   pipeline.AdvisorySource // the chain the pass resolves facts through
 	corpusReader     pipeline.AdvisorySource // the configured corpus's own reader; nil when none
 	resolvedPolicy   string                  // the declared advisory policy id; "" when none
+	resolvedSigner   *report.CorpusSigner    // the verified corpus signer; nil when none
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
@@ -636,12 +642,17 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.resolvedSource = pipeline.NewTableSource()
 	f.corpusReader = nil
 	f.resolvedPolicy = ""
+	f.resolvedSigner = nil
 
 	required, err := f.advisoryCorpusRequired()
 	if err != nil {
 		return nil, err
 	}
 	policy, err := f.advisoryCorpusPolicy()
+	if err != nil {
+		return nil, err
+	}
+	signer, err := advisoryCorpusSigner()
 	if err != nil {
 		return nil, err
 	}
@@ -685,7 +696,32 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.resolvedSource = chain
 	f.corpusReader = src
 	f.resolvedPolicy = policy
+	f.resolvedSigner = signer
 	return pipeline.WithAdvisorySource(chain), nil
+}
+
+// advisoryCorpusSigner returns the signer the corpus release was verified against, from
+// envAdvisoryCorpusSignerIdentity and envAdvisoryCorpusSignerIssuer, or nil when neither is set.
+//
+// action.yml sets the pair only from the bundle step's outputs, which scripts/fetch-corpus-bundle.sh
+// writes only after cosign verified the release's bundles.json for exactly that identity and issuer
+// and the bundle passed the digest chain. So a non-nil value is what was verified, never the
+// corpus-signer-* inputs echoed back; a route that verified nothing leaves both unset and the Report
+// carries no signer at all, rather than an empty one.
+//
+// Exactly one of the two set is an ERROR: a signer is an identity AS CERTIFIED BY an issuer, and
+// recording half of it would claim a verification that cannot have happened.
+func advisoryCorpusSigner() (*report.CorpusSigner, error) {
+	id := os.Getenv(envAdvisoryCorpusSignerIdentity)
+	issuer := os.Getenv(envAdvisoryCorpusSignerIssuer)
+	switch {
+	case id == "" && issuer == "":
+		return nil, nil
+	case id == "" || issuer == "":
+		return nil, fmt.Errorf("%s and %s must be set together (got identity %q, issuer %q): refusing to record half of a verified corpus signer",
+			envAdvisoryCorpusSignerIdentity, envAdvisoryCorpusSignerIssuer, id, issuer)
+	}
+	return &report.CorpusSigner{Identity: id, Issuer: issuer}, nil
 }
 
 // corpusSourceFor picks the reader for a resolved -advisory-corpus path. The path names one of two
@@ -801,6 +837,10 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
+	if f.resolvedCorpusOK && f.resolvedSigner != nil {
+		signer := *f.resolvedSigner
+		p.CorpusSigner = &signer
+	}
 	return p
 }
 

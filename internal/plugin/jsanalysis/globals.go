@@ -425,11 +425,13 @@ func ambient(clean []rune, tf *thisFrames, k int) bool {
 }
 
 // namespaceBlock reports whether the '{' at open opens a TypeScript namespace or module body,
-// which scopes a var like a function body: `namespace A.B {` or `module '_' {` on one line,
-// starting a statement. Any other block, `x = module\n{` among them, does not.
+// which scopes a var like a function body: `namespace A.B {` or `module '_' {`, the keyword
+// and the name on one line. Under ASI neither word heads a namespace across a line break, and
+// with no line break between them the words parse only as a namespace head, so any other
+// block, `x = module\n{` among them, does not.
 func namespaceBlock(clean []rune, open int) bool {
 	k := skipSpaceBack(clean, open-1)
-	if k < 0 || !sameLine(clean, k, open) {
+	if k < 0 {
 		return false
 	}
 	w, s := wordBefore(clean, k)
@@ -440,15 +442,7 @@ func namespaceBlock(clean []rune, open int) bool {
 		return false
 	}
 	kw, ks := wordBefore(clean, skipSpaceBack(clean, s-1))
-	if kw != "namespace" && kw != "module" || !sameLine(clean, ks, s) {
-		return false
-	}
-	q := skipSpaceBack(clean, ks-1)
-	if q < 0 || clean[q] == ';' || clean[q] == '{' || clean[q] == '}' {
-		return true
-	}
-	w, _ = wordBefore(clean, q)
-	return w == "export" || w == "declare"
+	return (kw == "namespace" || kw == "module") && sameLine(clean, ks, s)
 }
 
 // sameLine reports whether no line break lies between positions a and b.

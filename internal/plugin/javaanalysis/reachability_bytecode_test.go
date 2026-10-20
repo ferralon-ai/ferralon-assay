@@ -759,6 +759,9 @@ func TestBytecodeReach_LaunchOptionsWithholdSearched(t *testing.T) {
 		{"logging config class: unmapped framework ingress", map[string]string{
 			"Dockerfile": "ENV JAVA_TOOL_OPTIONS=\"-Djava.util.logging.config.class=com.acme.Hidden\"\nENTRYPOINT exec java -jar /app.jar\n",
 		}, true, PartialReasonLaunchOption},
+		{"gradle build beside the maven graph", map[string]string{
+			"svc/build.gradle": "dependencies {}\n",
+		}, false, PartialReasonOtherToolBuild},
 		{"JAR manifest Launcher-Agent-Class", map[string]string{
 			"target/app.jar": manifestJar("Manifest-Version: 1.0\r\nLauncher-Agent-Class: com.acme.Agent\r\n"),
 		}, false, PartialReasonLaunchAgent},

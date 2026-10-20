@@ -275,6 +275,10 @@ type CVEWatchRequest struct {
 	AnalyzerVersion string
 	// AssessOptions are the pipeline seams for an earnest re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// HoldCursor keeps the stored cursor on an earnest run, so its new advisories are assessed
+	// again next run. Set it when this run's analysis inputs could not be had (a failed build
+	// graph): the Report is still written, but the advisories it could not assess stay new.
+	HoldCursor bool
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -348,7 +352,9 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	state.Cursor = newCursor
+	if !req.HoldCursor {
+		state.Cursor = newCursor
+	}
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

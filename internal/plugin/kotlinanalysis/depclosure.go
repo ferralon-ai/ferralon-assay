@@ -54,8 +54,9 @@ type depClosure struct {
 	// listed leaves it unlisted.
 	cp depreach.Classpath
 	// reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: the build graph is absent, or a JVM launch option the lanes do
-	// not model is set (javaanalysis.LaunchOptionReasons).
+	// no empty search is Searched: the build graph is absent, a build of the other tool sits
+	// beside it, or a JVM launch option the lanes do not model is set
+	// (javaanalysis.LaunchOptionReasons).
 	reasons []string
 }
 
@@ -68,6 +69,9 @@ func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...
 	if g == nil {
 		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonBuildGraphAbsent)
 		return dc
+	}
+	if javaanalysis.OtherToolBuild(g, buildDir) {
+		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonOtherToolBuild)
 	}
 	load, misses := javaanalysis.RuntimeSelection(g)
 	for _, m := range misses {

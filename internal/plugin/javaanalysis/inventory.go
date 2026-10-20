@@ -28,7 +28,7 @@ func ResolveInventory(_ context.Context, req plugin.ResolveInventoryRequest, opt
 	if g == nil {
 		return assembleInventory(nil, nil, plugin.Partial(PartialReasonBuildGraphAbsent)), nil
 	}
-	return graphInventory(g, otherToolBuild(g, req.BuildDir)), nil
+	return graphInventory(g, OtherToolBuild(g, req.BuildDir)), nil
 }
 
 // --- shared PURL + assembly --------------------------------------------------

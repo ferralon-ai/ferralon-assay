@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,9 +30,10 @@ const PartialReasonBuildGraphAbsent = plugin.PartialReasonToolFailure + ":build_
 // tool: the graph covers its own build, and the other can resolve versions it never saw.
 const PartialReasonOtherToolBuild = "other_tool_build"
 
-// otherToolBuild reports whether buildDir holds a build of the tool that did not resolve g. A walk
-// that fails leaves that unknown, which counts as there being one.
-func otherToolBuild(g *buildgraph.Graph, buildDir string) bool {
+// OtherToolBuild reports whether buildDir holds a build of the tool that did not resolve g. A walk
+// that fails leaves that unknown, which counts as there being one. Every fact read from g is then
+// partial: the version answer, the inventory and the runtime closure alike.
+func OtherToolBuild(g *buildgraph.Graph, buildDir string) bool {
 	in, err := buildgraph.OtherToolInputs(buildDir, g.Tool.Name)
 	return err != nil || len(in) > 0
 }
@@ -59,26 +61,38 @@ var graphMemo struct {
 }
 
 // BuildGraph returns the build graph the options name, or nil when there is none or it no longer
-// decodes.
+// decodes (CheckBuildGraph, which a plugin runs first, reports that).
 func BuildGraph(opts ...Option) *buildgraph.Graph {
 	return resolveOptions(opts).graph()
 }
 
+// CheckBuildGraph fails when the options name a graph that no longer decodes. The host accepted
+// that graph, so a plugin calls this before any op, which would otherwise read it as absent.
+func CheckBuildGraph(opts ...Option) error {
+	_, err := resolveOptions(opts).loadGraph()
+	return err
+}
+
 func (a analyzer) graph() *buildgraph.Graph {
+	g, _ := a.loadGraph()
+	return g
+}
+
+func (a analyzer) loadGraph() (*buildgraph.Graph, error) {
 	if a.graphFile == "" {
-		return nil
+		return nil, nil
 	}
 	graphMemo.Lock()
 	defer graphMemo.Unlock()
 	if graphMemo.file == a.graphFile {
-		return graphMemo.g
+		return graphMemo.g, nil
 	}
 	g, err := buildgraph.Decode(a.graphFile)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("javaanalysis: build graph: %w", err)
 	}
 	graphMemo.file, graphMemo.g = a.graphFile, g
-	return g
+	return g, nil
 }
 
 // moduleRoots returns the root node id of every module: the reactor's own projects, which a
@@ -184,8 +198,9 @@ func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugi
 				continue
 			}
 			d := plugin.ResolvedDependency{Coordinate: n.Group + ":" + n.Artifact, Version: n.Version, Resolved: true, Source: g.Tool.Name}
-			// One module holds a coordinate once per file; its versions are the same.
-			if k := m.Path + "|" + d.Coordinate; !seen[k] {
+			// A module can hold a coordinate under several classifiers or types, each mediated on
+			// its own; one copy per version keeps a disagreeing one.
+			if k := m.Path + "|" + d.Coordinate + "|" + d.Version; !seen[k] {
 				seen[k] = true
 				res.All = append(res.All, d)
 				if want != "" && strings.ToLower(d.Coordinate) == want {

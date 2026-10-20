@@ -55,7 +55,11 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 		return writeError(stdout, fmt.Sprintf("protocol mismatch: got %q, want %q", req.Protocol, plugin.ProtocolVersion))
 	}
 
-	resp, opErr := dispatch(ctx, req, javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv)))
+	graph := javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv))
+	if err := javaanalysis.CheckBuildGraph(graph); err != nil {
+		return writeError(stdout, err.Error())
+	}
+	resp, opErr := dispatch(ctx, req, graph)
 	if opErr != nil {
 		return writeError(stdout, opErr.Error())
 	}

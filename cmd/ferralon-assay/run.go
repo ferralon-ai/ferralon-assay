@@ -1110,6 +1110,7 @@ func runCVEWatch(args []string) error {
 		Subject:       cfg.subject,
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
+		HoldCursor:    cfg.graph.err() != nil,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
@@ -1126,7 +1127,7 @@ func runCVEWatch(args []string) error {
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
 		postScan(ctx, cfg.store, cfg.subject, rescan)
-		return nil
+		return cfg.graph.err()
 	}
 
 	fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)

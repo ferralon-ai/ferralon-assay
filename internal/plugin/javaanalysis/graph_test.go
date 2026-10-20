@@ -38,6 +38,12 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 			wantFound: true, wantVersions: []string{"1.4.0", "1.3.9"}, wantComplete: true},
 		{name: "a test-scope copy counts", tool: "maven", copies: [][]graphDep{{dep("1.4.0", "")}, {dep("1.3.9", "test")}},
 			wantFound: true, wantVersions: []string{"1.4.0", "1.3.9"}, wantComplete: true},
+		{name: "classifiers disagree in one module", tool: "maven",
+			copies:    [][]graphDep{{dep("2.0", ""), {group: "com.example.lib", artifact: "widget", version: "1.0", scope: "test", classifier: "tests"}}},
+			wantFound: true, wantVersions: []string{"2.0", "1.0"}, wantComplete: true},
+		{name: "classifiers agree in one module", tool: "maven",
+			copies:    [][]graphDep{{dep("2.0", ""), {group: "com.example.lib", artifact: "widget", version: "2.0", scope: "test", classifier: "tests"}}},
+			wantFound: true, wantVersion: "2.0", wantVersions: []string{"2.0"}, wantComplete: true},
 		{name: "not in the graph", tool: "maven", copies: [][]graphDep{{}}, wantComplete: false},
 		{name: "a gradle build beside a maven graph", tool: "maven", files: map[string]string{"svc/build.gradle": "dependencies {}\n"},
 			copies: [][]graphDep{{dep("1.4.0", "")}}, wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, wantReason: PartialReasonOtherToolBuild},
@@ -120,6 +126,23 @@ func TestResolveInventory_FromGraph(t *testing.T) {
 	}
 }
 
+// A named graph that does not decode is an error, never an absent graph.
+func TestCheckBuildGraph(t *testing.T) {
+	bad := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(bad, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBuildGraph(WithBuildGraph(bad)); err == nil {
+		t.Error("CheckBuildGraph accepted a graph that does not decode")
+	}
+	if err := CheckBuildGraph(graphOption(t, "maven", testModule(t, ".", "app"))); err != nil {
+		t.Errorf("CheckBuildGraph rejected a decodable graph: %v", err)
+	}
+	if err := CheckBuildGraph(WithBuildGraph("")); err != nil {
+		t.Errorf("CheckBuildGraph without a graph: %v", err)
+	}
+}
+
 // A checkout the other-tool walk cannot finish may hold the other build, so it counts as one.
 func TestOtherToolBuild_UnreadableDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -131,7 +154,7 @@ func TestOtherToolBuild_UnreadableDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
-	if !otherToolBuild(&buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}}, dir) {
-		t.Error("otherToolBuild = false for a checkout the walk could not read")
+	if !OtherToolBuild(&buildgraph.Graph{Tool: buildgraph.Tool{Name: "maven"}}, dir) {
+		t.Error("OtherToolBuild = false for a checkout the walk could not read")
 	}
 }

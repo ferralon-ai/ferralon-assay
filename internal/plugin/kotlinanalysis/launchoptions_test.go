@@ -47,6 +47,7 @@ func TestReachability_LaunchOptions(t *testing.T) {
 		setup  func(t *testing.T) string
 		reason string // "" when the row stays Searched
 	}{
+		{"a pom beside the gradle graph", inventory(map[string]string{"pom.xml": "<project/>"}), javaanalysis.PartialReasonOtherToolBuild},
 		{"start script: -Djava.system.class.loader", func(t *testing.T) string {
 			return jvmOptsBuild(t, `'"-Djava.system.class.loader=org.d.D"'`)
 		}, option},

@@ -62,8 +62,9 @@ type reachClosure struct {
 	// Loaded maps "group:artifact:version" to the JAR that was opened, for evidence.
 	Loaded map[string]string
 	// Reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: no build graph (PartialReasonBuildGraphAbsent), or a launch
-	// option the lanes do not model (LaunchOptionReasons). The Kotlin closure declares the same
+	// no empty search is Searched: no build graph (PartialReasonBuildGraphAbsent), a build of the
+	// other tool beside the graph's (PartialReasonOtherToolBuild), or a launch option the lanes do
+	// not model (LaunchOptionReasons). The Kotlin closure declares the same
 	// set. An unmerged multi-release override (reasonMultiReleaseUnmerged) is added
 	// here as well.
 	Reasons []string
@@ -132,6 +133,9 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Opt
 	if g == nil {
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
 	} else {
+		if OtherToolBuild(g, buildDir) {
+			reasons = append([]string{PartialReasonOtherToolBuild}, reasons...)
+		}
 		load, miss := RuntimeSelection(g)
 		for _, m := range miss {
 			reason := reasonNoDependencyArtifact

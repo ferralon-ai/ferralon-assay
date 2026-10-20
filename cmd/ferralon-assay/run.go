@@ -518,14 +518,14 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
 
-		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
-		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
+		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
+		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's build (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK); a build graph resolved on another major version fails the run; overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
 
 		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
 		// buildGraph is where a Java or Kotlin scan's dependency graph comes from (D7: no static fallback).
 		buildGraph: fs.String("build-graph", buildGraphAuto, "where a Java or Kotlin scan's dependency graph comes from: auto runs the repository's own Maven or Gradle with this job's environment and JDK; a path reads a graph resolved ahead of the scan (`"+brand.Name+" resolve-graph`); off scans without one and records that. A graph that cannot be had fails the run once the Report is published"),
 
-		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax: its -P list together with settings.xml <activeProfiles>, e.g. \"release,!docs\", or \",\" for none; overrides "+envSubjectMavenProfiles+" (default: unstated, and every profile of the reactor and its parents is reported as undecided)"),
+		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\"; passed to Maven verbatim when the build graph is resolved; overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 	}
 }
 
@@ -839,27 +839,6 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	return pipeline.WithSubjectToolchain(declared, observed, trustObservedGo())
 }
 
-// subjectJavaOption passes the subject's Java version (-subject-java-version, then
-// envSubjectJavaVersion) to inventory resolution, or returns nil when neither is set.
-func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
-	v := f.subjectJavaVersion()
-	if v == "" {
-		return nil
-	}
-	return pipeline.WithSubjectJavaVersion(v)
-}
-
-// subjectMavenProfilesOption passes the subject build's explicit Maven profile selection
-// (-subject-maven-profiles, then envSubjectMavenProfiles) to inventory resolution, or returns nil
-// when neither is set.
-func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
-	v := f.subjectMavenProfiles()
-	if v == "" {
-		return nil
-	}
-	return pipeline.WithSubjectMavenProfiles(v)
-}
-
 // subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
 func (f *runFlags) subjectJavaVersion() string {
 	if v := strings.TrimSpace(*f.subjectJava); v != "" {
@@ -876,20 +855,8 @@ func (f *runFlags) subjectMavenProfiles() string {
 	return strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
 }
 
-// subjectOptions returns the subject conditions run and baseline both take: the Java version and
-// the Maven profile selection. A condition added here reaches both commands.
-func (f *runFlags) subjectOptions() []pipeline.AssessOption {
-	var opts []pipeline.AssessOption
-	for _, opt := range []pipeline.AssessOption{f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
-		if opt != nil {
-			opts = append(opts, opt)
-		}
-	}
-	return opts
-}
-
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus and the shared subject conditions. The subject Go toolchain and its reachability gate
+// corpus. The subject Go toolchain and its reachability gate
 // stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
@@ -900,11 +867,11 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 	if opt != nil {
 		opts = append(opts, opt)
 	}
-	return append(opts, f.subjectOptions()...), nil
+	return opts, nil
 }
 
 // runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
-// corpus, the subject Go toolchain, the shared subject conditions, and the subject-toolchain
+// corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
@@ -918,7 +885,6 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	if opt := f.subjectToolchainOption(); opt != nil {
 		opts = append(opts, opt)
 	}
-	opts = append(opts, f.subjectOptions()...)
 	if opt := subjectToolchainReachOption(); opt != nil {
 		opts = append(opts, opt)
 	}

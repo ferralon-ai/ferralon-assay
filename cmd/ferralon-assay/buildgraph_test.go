@@ -112,19 +112,28 @@ func TestBuildGraphRecordNilForOtherLanguages(t *testing.T) {
 	}
 }
 
+// The subject conditions' env channels spelled out, so a rename of either side goes red.
+const (
+	subjectJavaEnv          = "ASSAY_SUBJECT_JAVA_VERSION"
+	subjectMavenProfilesEnv = "ASSAY_SUBJECT_MAVEN_PROFILES"
+)
+
 func TestGraphRequestConditions(t *testing.T) {
 	tests := []struct {
-		name, java, profiles string
-		want                 buildgraph.Conditions
+		name, java, profiles, javaEnv, profilesEnv string
+		want                                       buildgraph.Conditions
 	}{
 		{name: "unstated"},
 		{name: "stated", java: "17.0.12", profiles: "release, ci", want: buildgraph.Conditions{JDK: "17.0.12", Profiles: []string{"release", "ci"}}},
 		{name: "none", profiles: ",", want: buildgraph.Conditions{}},
+		{name: "env", javaEnv: "11.0.24", profilesEnv: "ci", want: buildgraph.Conditions{JDK: "11.0.24", Profiles: []string{"ci"}}},
+		{name: "flag over env", java: "17", profiles: "release", javaEnv: "11", profilesEnv: "ci", want: buildgraph.Conditions{JDK: "17", Profiles: []string{"release"}}},
+		{name: "blank flag falls back to env", java: "  ", profiles: " ", javaEnv: "11", profilesEnv: "ci", want: buildgraph.Conditions{JDK: "11", Profiles: []string{"ci"}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(envSubjectJavaVersion, "")
-			t.Setenv(envSubjectMavenProfiles, "")
+			t.Setenv(subjectJavaEnv, tc.javaEnv)
+			t.Setenv(subjectMavenProfilesEnv, tc.profilesEnv)
 			mode := buildGraphAuto
 			f := &runFlags{buildGraph: &mode, subjectJava: &tc.java, subjectMvnProf: &tc.profiles}
 			got := f.graphRequest()

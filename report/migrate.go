@@ -110,6 +110,8 @@ func UndeterminedDetail(reason string) string {
 		return "the advisory names no vulnerable function to search for, so no verdict was established"
 	case ReasonVulnerableSymbolUnresolved:
 		return "the advisory's vulnerable functions were not all located inside the affected package and searched, so no verdict was established"
+	case ReasonAdvisorySymbolsUnvetted:
+		return "no path reaches the vulnerable functions this advisory lists, but the list was not declared by the advisory database or curated, so it may leave out the vulnerable code and no verdict was established"
 	case ReasonAdvisoryUnknownToAnalyzer:
 		return "the analyzer that traces calls to this advisory's vulnerable functions reported nothing about the advisory (it may not know the advisory, or may not analyze the affected module), so no verdict was established"
 	case ReasonAdvisoryRangeAbsent:

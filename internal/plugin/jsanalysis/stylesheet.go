@@ -27,8 +27,8 @@ var stylesheetExtensions = map[string]bool{".css": true, ".scss": true, ".sass":
 // (stylesheetRuntime). Any other toolchain, or a config the lane does not parse, can route the
 // extension to any loader.
 func (rs *resolver) stylesheetRunsNoCode(fromModule, rel string) bool {
-	return stylesheetExtensions[path.Ext(rel)] && rs.regularInTree(rel) &&
-		rs.stockCRAPackage(fromModule) && !rs.prog.styleToolingPresent()
+	return stylesheetExtensions[path.Ext(rel)] && regularInTree(rs.prog.root, rel) &&
+		stockCRAPackage(rs.prog.root, fromModule) && !rs.prog.styleToolingPresent()
 }
 
 // stylesheetRuntime is the limit a stylesheet import leaves under react-scripts: each import runs
@@ -50,15 +50,15 @@ func stylesheetRuntime() plugin.ScopedReason {
 // is a reactScriptsCommand, and it has no top-level key outside craManifestKeys. react-scripts
 // compiles only src, so a module elsewhere is built by something else. A missing, unreadable or
 // undecodable manifest does not qualify.
-func (rs *resolver) stockCRAPackage(fromModule string) bool {
+func stockCRAPackage(root, fromModule string) bool {
 	dir := path.Dir(fromModule)
 	for {
-		file := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "package.json")
+		file := filepath.Join(root, filepath.FromSlash(dir), "package.json")
 		if _, err := os.Lstat(file); err == nil {
 			if !strings.HasPrefix(fromModule, path.Join(dir, "src")+"/") {
 				return false
 			}
-			data, ok := readInRoot(rs.prog.root, file, maxStyleManifest)
+			data, ok := readInRoot(root, file, maxStyleManifest)
 			return ok && stockCRAManifest(data)
 		}
 		if dir == "." || dir == "" {
@@ -186,26 +186,32 @@ func reactScriptsArgs(args []string) bool {
 // walk visits at its real path: it resolves inside the root, through no node_modules or
 // site-packages directory. A symlink on the way counts only when its target is such a place,
 // as the walk reads a symlinked directory only through its target.
-func (rs *resolver) regularInTree(rel string) bool {
-	realRoot, err := filepath.EvalSymlinks(rs.prog.root)
+func regularInTree(root, rel string) bool {
+	_, ok := realInTree(root, rel)
+	return ok
+}
+
+// realInTree is regularInTree that also returns the file's real path relative to the root.
+func realInTree(root, rel string) (string, bool) {
+	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return false
+		return "", false
 	}
-	real, err := filepath.EvalSymlinks(filepath.Join(rs.prog.root, filepath.FromSlash(rel)))
+	real, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil {
-		return false
+		return "", false
 	}
 	under, err := filepath.Rel(realRoot, real)
 	if err != nil || under == "." || under == ".." || strings.HasPrefix(under, ".."+string(filepath.Separator)) {
-		return false
+		return "", false
 	}
 	for _, part := range strings.Split(filepath.ToSlash(under), "/") {
 		if buildtree.Skipped(part) {
-			return false
+			return "", false
 		}
 	}
 	fi, err := os.Stat(real)
-	return err == nil && fi.Mode().IsRegular()
+	return filepath.ToSlash(under), err == nil && fi.Mode().IsRegular()
 }
 
 // styleToolingPresent reports, once per program, whether the build tree, or a directory above it
@@ -218,7 +224,8 @@ func (rs *resolver) regularInTree(rel string) bool {
 //     config-overrides.js, angular.json, or a <styleToolingConfigs>.config.* file;
 //   - a package manager hook or override: pnpm-workspace.yaml, .pnpmfile.*, .yarnrc*, .pnp.*,
 //     a patches directory, an .npmrc setting an npmrcHookKeys key;
-//   - a first-party module that loads a styleToolingPackage (importsStyleTooling);
+//   - a first-party module outside a stock Create React App's src that loads a package off
+//     serverRuntimePackages (importsUnlisted);
 //   - a package.json with a key in styleToolingKeys or a jest key outside craJestKeys; one named
 //     as a styleToolingPackage, which a workspace links in place of the published one; one that
 //     depends on a bundler, build wrapper, test runner or require hook (styleToolingTools), or on
@@ -230,55 +237,80 @@ func (rs *resolver) regularInTree(rel string) bool {
 //     tree cannot be read.
 func (p *program) styleToolingPresent() bool {
 	if p.styleTooling == nil {
-		present := styleToolingIn(p.root) || p.importsStyleTooling()
+		present := styleToolingIn(p.root) || p.importsUnlisted()
 		p.styleTooling = &present
 	}
 	return *p.styleTooling
 }
 
-// importsStyleTooling reports whether any first-party module loads a styleToolingPackage by name:
-// a script that runs a bundler or a loader itself, whatever package.json script starts it, can
-// compile the CRA source with its own stylesheet rule.
-func (p *program) importsStyleTooling() bool {
+// importsUnlisted reports whether a first-party module outside every stock Create React App's
+// src loads anything but a Node builtin, a relative file outside those src directories, or a
+// serverRuntimePackages package. Such a module runs under node, not react-scripts, and a package
+// off that list may compile the app's source with its own stylesheet rule, whatever script starts
+// it. Every other package counts, so one missing from the list costs the exemption, never
+// soundness. A module under a stock app's src is compiled for the browser and runs no bundler.
+func (p *program) importsUnlisted() bool {
+	inSrc := map[string]bool{}
+	craSrc := func(module string) bool {
+		v, ok := inSrc[module]
+		if !ok {
+			v = stockCRAPackage(p.root, module)
+			inSrc[module] = v
+		}
+		return v
+	}
 	for _, mi := range p.modules {
+		if craSrc(mi.module) {
+			continue
+		}
 		for _, ls := range mi.bindings.specifiers {
-			if name := specPackage(ls.spec); name != "" && styleToolingPackage(name) {
+			switch spec := ls.spec; {
+			case strings.HasPrefix(spec, "."):
+				// A relative load into an app's src runs that module under node too.
+				target := path.Join(path.Dir(mi.module), spec)
+				if craSrc(target) || craSrc(target+"/index") {
+					return true
+				}
+			case spec == "" || spec[0] == '/':
 				return true
+			case isNodeBuiltin(spec):
+			default:
+				if name, _ := splitBareSpecifier(spec); !serverRuntimePackages[name] {
+					return true
+				}
 			}
 		}
 	}
 	return false
 }
 
-// specPackage is the package name a bare specifier names ("@a/b/c" is "@a/b", "a/c" is "a"), or
-// "" for a relative, absolute or node: specifier.
-func specPackage(spec string) string {
-	if spec == "" || spec[0] == '.' || spec[0] == '/' || strings.HasPrefix(spec, "node:") {
-		return ""
-	}
-	parts := strings.SplitN(spec, "/", 3)
-	if strings.HasPrefix(spec, "@") {
-		if len(parts) < 2 {
-			return ""
-		}
-		return parts[0] + "/" + parts[1]
-	}
-	return parts[0]
+// serverRuntimePackages are the server runtime libraries a full-stack Create React App's own
+// server code may load: none of them bundles, compiles or transforms source.
+var serverRuntimePackages = map[string]bool{
+	"axios": true, "bcrypt": true, "bcryptjs": true, "body-parser": true, "cloudinary": true,
+	"colors": true, "compression": true, "connect-mongo": true, "cookie-parser": true, "cors": true,
+	"debug": true, "dotenv": true, "express": true, "express-async-handler": true,
+	"express-rate-limit": true, "express-session": true, "express-validator": true, "helmet": true,
+	"http-errors": true, "joi": true, "jsonwebtoken": true, "mongodb": true, "mongoose": true,
+	"morgan": true, "multer": true, "nodemailer": true, "passport": true, "passport-jwt": true,
+	"passport-local": true, "slugify": true, "socket.io": true, "stripe": true, "uuid": true,
+	"validator": true,
 }
 
-// styleToolingPackage reports whether a package can decide what a stylesheet import loads when
-// first-party code loads it, or when an in-tree package of that name stands in for the published
-// one: a styleToolingDependency, react-scripts and the packages its webpack config builds the
-// stylesheet pipeline from (react-dev-utils, the loaders, postcss, sass, less and babel).
+// styleToolingPackage reports whether an in-tree package.json of this name, linked by a workspace
+// in place of the published package, can decide what a stylesheet import loads: react-scripts, a
+// package its webpack config builds the stylesheet pipeline from, or a styleToolingTools entry.
+// Names are matched exactly.
 func styleToolingPackage(name string) bool {
 	name = strings.ToLower(name)
 	switch name {
-	case "react-scripts", "react-dev-utils", "mini-css-extract-plugin", "sass", "less":
+	case "react-scripts", "react-dev-utils", "mini-css-extract-plugin", "css-loader", "style-loader",
+		"sass-loader", "postcss-loader", "resolve-url-loader", "babel-loader", "file-loader",
+		"url-loader", "babel-preset-react-app", "@babel/core", "postcss", "postcss-preset-env",
+		"postcss-flexbugs-fixes", "postcss-normalize", "sass", "less", "next":
 		return true
 	}
-	return styleToolingDependency(name) || strings.HasSuffix(name, "-loader") ||
-		strings.HasPrefix(name, "postcss") || strings.HasPrefix(name, "babel-") ||
-		strings.HasPrefix(name, "@babel/")
+	return slices.Contains(styleToolingTools, name)
 }
 
 func styleToolingIn(root string) bool {
@@ -410,11 +442,40 @@ func (site scriptSite) declares(prefix, script string) bool {
 	return ok
 }
 
+// runsParsed reports whether file, run by node from the site's directory, is a module the source
+// walk parses, so that importsUnlisted reads what it loads: a regular in-tree file (realInTree)
+// with a jsExtensions extension, or named without one and found as such a .js file, under no
+// directory the walk skips, and outside every stock Create React App's src.
+func (site scriptSite) runsParsed(file string) bool {
+	rel, err := filepath.Rel(site.root, filepath.Join(site.dir, filepath.FromSlash(file)))
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	if path.Ext(rel) == "" {
+		if _, err := os.Lstat(filepath.Join(site.root, filepath.FromSlash(rel))); err == nil {
+			return false // node runs an extensionless file, or a directory's entry point, as it is
+		}
+		rel += ".js"
+	}
+	under, ok := realInTree(site.root, rel)
+	if !ok || !jsExtensions[path.Ext(rel)] || !jsExtensions[path.Ext(under)] ||
+		stockCRAPackage(site.root, rel) || stockCRAPackage(site.root, under) {
+		return false
+	}
+	for _, part := range strings.Split(rel+"/"+under, "/") {
+		if skipDir(part) {
+			return false
+		}
+	}
+	return true
+}
+
 // allowedScript reports whether every command in a package.json script, joined only by &&, is
 // one this lane knows loads no stylesheet through other tooling:
 //   - a reactScriptsCommand;
-//   - node running a file in the tree with no flag before it, or nodemon running a file in the
-//     tree with nothing else (nodemon reads its own options after the file);
+//   - node running a file the source walk parses (runsParsed) with no flag before it, or nodemon
+//     running one with nothing else (nodemon reads its own options after the file);
 //   - npm, yarn or pnpm running, starting or testing a script that the manifest it runs against
 //     declares (and which is itself checked there), or installing, with packageManagerFlags only
 //     and no --prefix/--cwd into node_modules;
@@ -470,9 +531,9 @@ func allowedCommand(w []string, top bool, site scriptSite) bool {
 	case "react-scripts":
 		return reactScriptsArgs(w[1:])
 	case "node":
-		return len(w) > 1 && !strings.HasPrefix(w[1], "-")
+		return len(w) > 1 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1])
 	case "nodemon":
-		return len(w) == 2 && !strings.HasPrefix(w[1], "-")
+		return len(w) == 2 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1])
 	case "npm", "yarn", "pnpm":
 		script, prefix, ok := packageManagerArgs(w[1:])
 		if !ok {
@@ -640,7 +701,8 @@ func styleToolingManifestData(root, dir string, data []byte) bool {
 	}
 	if raw, ok := m["name"]; ok {
 		var name string
-		if json.Unmarshal(raw, &name) != nil || styleToolingPackage(name) {
+		if json.Unmarshal(raw, &name) != nil || styleToolingPackage(name) ||
+			serverRuntimePackages[strings.ToLower(name)] {
 			return true
 		}
 	}
@@ -727,7 +789,8 @@ var npmrcHookKeys = map[string]bool{
 }
 
 // npmrcHooks reports whether the .npmrc at file sets an npmrcHookKeys key, or cannot be read.
-// npm, pnpm and yarn classic all read a project .npmrc. Keys are compared as npm normalises them:
+// npm, pnpm and yarn classic all read a project .npmrc. A key loses one pair of enclosing quotes,
+// as npm's ini parser removes them, and is then compared more loosely than npm does:
 // case-insensitively, with _ as -.
 func npmrcHooks(root, file string) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
@@ -737,7 +800,11 @@ func npmrcHooks(root, file string) bool {
 	for _, line := range strings.Split(string(data), "\n") {
 		key, _, _ := strings.Cut(line, "=")
 		// A commented line's key keeps its '#' or ';', so it matches no hook key.
-		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(strings.TrimSpace(key), "[]")), "_", "-")
+		key = strings.TrimSpace(key)
+		if len(key) >= 2 && (key[0] == '"' || key[0] == '\'') && key[len(key)-1] == key[0] {
+			key = key[1 : len(key)-1]
+		}
+		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
 		if npmrcHookKeys[key] {
 			return true
 		}

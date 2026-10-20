@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Declares a repository the root does not: a file repository beside this POM that alone holds
+  local-only, as a plain jar and under the natives-linux classifier. Also a system-scoped jar.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.ferralon.benchmark</groupId>
+    <artifactId>maven-reactor-divergence</artifactId>
+    <version>1.0.0</version>
+  </parent>
+
+  <artifactId>module-d</artifactId>
+
+  <repositories>
+    <repository>
+      <id>module-d-local</id>
+      <url>file://${project.basedir}/repo</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.ferralon.fixture</groupId>
+      <artifactId>local-only</artifactId>
+      <version>1.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.ferralon.fixture</groupId>
+      <artifactId>local-only</artifactId>
+      <version>1.0.0</version>
+      <classifier>natives-linux</classifier>
+    </dependency>
+    <dependency>
+      <groupId>com.ferralon.fixture</groupId>
+      <artifactId>system-only</artifactId>
+      <version>1.0.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/lib/system-only.jar</systemPath>
+    </dependency>
+  </dependencies>
+</project>

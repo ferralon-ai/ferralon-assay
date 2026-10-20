@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // The global object holds eval and the Function constructor, so any access to it that
@@ -42,40 +43,92 @@ type globalDecl struct {
 	name       string
 	start, end int
 	topVar     bool // a var at the top level
+	bare       bool // declared outside every block, so it runs before what follows it
 }
 
 func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	gs := &globalScope{tf: tf, byScope: map[int]map[string][]int{}, sites: map[int]bool{}}
-	add := func(scope, at int, name string, start, end int, topVar bool) {
+	n := len(clean)
+	add := func(scope, at int, name string, start, end int, topVar, bare bool) {
 		if gs.byScope[scope] == nil {
 			gs.byScope[scope] = map[string][]int{}
 		}
 		gs.byScope[scope][name] = append(gs.byScope[scope][name], len(gs.decls))
-		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar})
+		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare})
 		gs.sites[at] = true
 	}
-	n := len(clean)
+	// bind declares the names the binding at clean[at] introduces, each holding the value
+	// of clean[start:end]. A destructured name holds a property of that value, which is
+	// judged as the value itself; a rest name holds an array of it and is not followed.
+	// withDefault declares name at site s holding clean[start:end], and also holding its
+	// default value when one follows the name.
+	withDefault := func(scope, s int, name string, start, end int, topVar, bare bool) {
+		add(scope, s, name, start, end, topVar, bare)
+		_, e := readWord(clean, s)
+		q := skipSpace(clean, e)
+		if q < n && clean[q] == ':' {
+			q = typeEnd(clean, q+1)
+		}
+		if q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>')) {
+			d := [2]int{q + 1, initEnd(clean, q+1)}
+			add(scope, s, name, d[0], d[1], topVar, bare)
+			gs.flows = append(gs.flows, d)
+		}
+	}
+	bind := func(scope, at, start, end int, topVar, bare bool) {
+		switch {
+		case clean[at] == '{' || clean[at] == '[':
+			sites, _ := patternSites(clean, at)
+			for _, s := range sites {
+				name, _ := readWord(clean, s)
+				withDefault(scope, s, name, start, end, topVar, bare)
+			}
+		case at+3 <= n && string(clean[at:at+3]) == "...":
+			if s := skipSpace(clean, at+3); s < n && isIdentStart(clean[s]) {
+				name, _ := readWord(clean, s)
+				add(scope, s, name, 0, 0, false, false)
+			}
+			return
+		case isIdentStart(clean[at]):
+			name, _ := readWord(clean, at)
+			withDefault(scope, at, name, start, end, topVar, bare)
+		default:
+			return
+		}
+		if start < end {
+			gs.flows = append(gs.flows, [2]int{start, end})
+		}
+	}
+	inParams := make([]bool, n)
 	for k, pr := range tf.params {
 		if pr[0] < 0 {
 			continue
+		}
+		for p := pr[0]; p < pr[1]; p++ {
+			inParams[p] = true
 		}
 		args, thisArg := iifeArgs(clean, tf, k)
 		if thisArg[0] < thisArg[1] {
 			gs.flows = append(gs.flows, thisArg) // the function's own this, judged as one
 		}
-		for j, at := range paramSites(clean, pr[0], pr[1]) {
-			if at < 0 {
-				continue
+		j := 0
+		for _, at := range paramSites(clean, pr[0], pr[1]) {
+			if w, _ := peekWord(clean, at); w == "this" {
+				continue // a TypeScript this parameter takes no argument
 			}
-			name, _ := readWord(clean, at)
+			var arg [2]int
 			if j < len(args) {
-				add(k, at, name, args[j][0], args[j][1], false)
-				gs.flows = append(gs.flows, args[j])
-			} else {
-				add(k, at, name, 0, 0, false)
+				arg = args[j]
 			}
+			j++
+			bind(k, at, arg[0], arg[1], false, false)
 		}
 	}
+	type assign struct {
+		name           string
+		at, start, end int
+	}
+	var assigns []assign
 	for i := 0; i < n; {
 		if !isIdentStart(clean[i]) {
 			i++
@@ -94,35 +147,62 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			}
 			at := skipSpace(clean, next)
 			if name, _ := peekWord(clean, at); name != "" {
-				add(tf.varScope(tf.block(i)), at, name, 0, 0, false)
+				add(tf.varScope(tf.block(i)), at, name, 0, 0, false, false)
 			}
 		case "var", "let", "const":
-			scope := tf.block(i)
+			block := tf.block(i)
+			scope := block
 			if word == "var" {
 				scope = tf.varScope(scope)
 			}
 			for p := next; ; {
 				at := skipSpace(clean, p)
-				name, nx := peekWord(clean, at)
-				if name == "" {
+				var nx int
+				if at < n && (clean[at] == '{' || clean[at] == '[') {
+					_, e := patternSites(clean, at)
+					nx = e + 1
+				} else if name, e := peekWord(clean, at); name != "" {
+					nx = e
+				} else {
 					break
 				}
 				q := skipSpace(clean, nx)
+				if q < n && clean[q] == ':' {
+					q = typeEnd(clean, q+1) // a TypeScript annotation
+				}
 				start, end := q, q
 				if q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>')) {
 					start, end = q+1, initEnd(clean, q+1)
 				}
-				add(scope, at, name, start, end, word == "var" && scope < 0)
-				if start < end {
-					gs.flows = append(gs.flows, [2]int{start, end})
-				}
+				bind(scope, at, start, end, word == "var" && scope < 0, block < 0)
 				if end >= n || clean[end] != ',' {
 					break
 				}
 				p = end + 1
 			}
+		default:
+			if gs.sites[i] || inParams[i] {
+				break
+			}
+			if start := assignStart(clean, skipSpace(clean, next)); start > 0 {
+				assigns = append(assigns, assign{word, i, start, initEnd(clean, start)})
+			}
 		}
 		i = next
+	}
+	// An assignment is one more value its name can hold, in the scope that declares the
+	// name, or at the top level for an undeclared one. A global name assigned without a
+	// declaration stays the global.
+	for _, a := range assigns {
+		k := tf.block(a.at)
+		for k >= 0 && len(gs.byScope[k][a.name]) == 0 {
+			k = tf.parent[k]
+		}
+		if k < 0 && len(gs.byScope[-1][a.name]) == 0 && isGlobalBase(a.name) {
+			continue
+		}
+		add(k, a.at, a.name, a.start, a.end, false, false)
+		gs.flows = append(gs.flows, [2]int{a.start, a.end})
 	}
 	gs.yields = make([]bool, len(gs.decls))
 	for changed := true; changed; {
@@ -137,50 +217,141 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	return gs
 }
 
-// paramSites returns, for each parameter in the list clean[start:end], the position of
-// the plain name it declares, or -1 for a destructured or rest parameter.
+// paramSites returns where each parameter in the list clean[start:end] begins: its name,
+// the bracket of a destructuring pattern, or the dots of a rest parameter.
 func paramSites(clean []rune, start, end int) []int {
 	var out []int
-	depth := 0
-	slot := -2 // the current slot's site, or -2 before anything is seen in it
-	flush := func() {
-		if slot == -2 {
-			return
-		}
-		out = append(out, slot)
-	}
+	depth, slot := 0, -1
 	for p := start; p < end; p++ {
-		r := clean[p]
-		switch {
+		switch r := clean[p]; {
+		case r == ',' && depth == 0:
+			if slot >= 0 {
+				out = append(out, slot)
+			}
+			slot = -1
 		case r == '(' || r == '[' || r == '{':
-			if depth == 0 && slot == -2 {
-				slot = -1
+			if depth == 0 && slot < 0 {
+				slot = p
 			}
 			depth++
 		case r == ')' || r == ']' || r == '}':
 			depth--
-		case r == ',' && depth == 0:
-			flush()
-			slot = -2
-		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
-		case r == '.':
-			if depth == 0 && slot == -2 {
-				slot = -1 // a rest parameter
-			}
-		case isIdentStart(r):
-			_, nx := readWord(clean, p)
-			if depth == 0 && slot == -2 {
-				slot = p
-			}
-			p = nx - 1
+		case unicode.IsSpace(r):
 		default:
-			if depth == 0 && slot == -2 {
-				slot = -1
+			if depth == 0 && slot < 0 {
+				slot = p
 			}
 		}
 	}
-	flush()
+	if slot >= 0 {
+		out = append(out, slot)
+	}
 	return out
+}
+
+// patternSites returns the positions of the names the destructuring pattern opening at
+// clean[open] binds, and the index of its closing bracket.
+func patternSites(clean []rune, open int) (sites []int, end int) {
+	n := len(clean)
+	obj := clean[open] == '{'
+	for p := open + 1; p < n; {
+		p = skipSpace(clean, p)
+		if p >= n {
+			break
+		}
+		switch clean[p] {
+		case '}', ']', ')':
+			return sites, p
+		case ',':
+			p++
+			continue
+		}
+		from, target := p, p
+		if p+3 <= n && string(clean[p:p+3]) == "..." {
+			target = skipSpace(clean, p+3)
+		} else if obj {
+			key := p
+			if clean[p] == '[' {
+				key = closeBracket(clean, p)
+			} else if isIdentStart(clean[p]) {
+				_, e := readWord(clean, p)
+				key = e - 1
+			}
+			if q := skipSpace(clean, key+1); q < n && clean[q] == ':' {
+				target = skipSpace(clean, q+1)
+			}
+		}
+		switch {
+		case target < n && (clean[target] == '{' || clean[target] == '['):
+			inner, e := patternSites(clean, target)
+			sites = append(sites, inner...)
+			p = e + 1
+		case target < n && isIdentStart(clean[target]):
+			sites = append(sites, target)
+			_, p = readWord(clean, target)
+		default:
+			p = target + 1
+		}
+		if q := skipSpace(clean, p); q < n && clean[q] == '=' {
+			p = initEnd(clean, q+1) // a default value
+		}
+		if p <= from {
+			p = from + 1
+		}
+	}
+	return sites, n
+}
+
+// typeEnd returns the index of the '=', ',' or ';' that ends a TypeScript type annotation
+// starting at p at bracket depth zero, or of the bracket that closes the enclosing one.
+func typeEnd(clean []rune, p int) int {
+	depth := 0
+	for ; p < len(clean); p++ {
+		switch clean[p] {
+		case '(', '[', '{', '<':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				return p
+			}
+			depth--
+		case '>':
+			if !(p > 0 && clean[p-1] == '=') && depth > 0 {
+				depth--
+			}
+		case '=':
+			if depth == 0 && !(p+1 < len(clean) && clean[p+1] == '>') {
+				return p
+			}
+		case ',', ';':
+			if depth == 0 {
+				return p
+			}
+		}
+	}
+	return p
+}
+
+// assignStart returns the start of the value assigned when the operator at p is `=`,
+// `||=`, `&&=` or `??=`, or -1.
+func assignStart(clean []rune, p int) int {
+	n := len(clean)
+	if p < n && clean[p] == '=' && !(p+1 < n && (clean[p+1] == '=' || clean[p+1] == '>')) {
+		return p + 1
+	}
+	if p+2 < n && clean[p+2] == '=' && clean[p] == clean[p+1] && (clean[p] == '|' || clean[p] == '&' || clean[p] == '?') {
+		return p + 3
+	}
+	return -1
+}
+
+func isGlobalBase(name string) bool {
+	for _, b := range globalBase {
+		if name == b {
+			return true
+		}
+	}
+	return false
 }
 
 // iifeArgs returns the argument ranges a function expression in block k is called with
@@ -318,14 +489,11 @@ func (gs *globalScope) isGlobal(name string, i int) bool {
 	if gs.sites[i] {
 		return false
 	}
-	base := false
-	for _, b := range globalBase {
-		base = base || name == b
-	}
+	base := isGlobalBase(name)
 	for k := gs.tf.block(i); ; k = gs.tf.parent[k] {
 		if ds := gs.byScope[k][name]; len(ds) > 0 {
 			for _, d := range ds {
-				if gs.yields[d] || (base && gs.decls[d].topVar) {
+				if gs.yields[d] || (base && gs.decls[d].topVar && !gs.replaced(d, name, i)) {
 					return true
 				}
 			}
@@ -335,6 +503,14 @@ func (gs *globalScope) isGlobal(name string, i int) bool {
 			return base
 		}
 	}
+}
+
+// replaced reports whether the top-level var d of a global name has certainly replaced the
+// global by position i: it is assigned outside every block, and i is top-level code that
+// runs after it. window cannot be replaced by a var.
+func (gs *globalScope) replaced(d int, name string, i int) bool {
+	decl := gs.decls[d]
+	return decl.bare && decl.start < decl.end && i > decl.end && name != "window" && gs.tf.topLevel(i)
 }
 
 // yieldsGlobal reports whether the expression in clean[start:end] can evaluate to the
@@ -488,6 +664,9 @@ func newThisFrames(clean []rune) *thisFrames {
 			case b >= 0 && clean[b] == ')':
 				if o, ok := matchParen[b]; ok {
 					q := skipSpaceBack(clean, o-1)
+					if q >= 0 && clean[q] == '>' { // a generic: name<T>(...)
+						q = typeParamsStart(clean, q)
+					}
 					w, s := wordBefore(clean, q)
 					switch w {
 					case "catch":
@@ -505,6 +684,9 @@ func newThisFrames(clean []rune) *thisFrames {
 								g = false
 							}
 							fn, scope = true, true
+							params = [2]int{o + 1, b}
+						} else if q >= 0 && clean[q] == ']' { // a computed method name
+							g, fn, scope = false, true, true
 							params = [2]int{o + 1, b}
 						}
 					default:
@@ -578,6 +760,24 @@ func typedReturn(clean []rune, b int) int {
 		}
 	}
 	return -1
+}
+
+// typeParamsStart returns the last non-space index before the '<' that opens the type
+// parameter list closing at q, or q when there is none within reach.
+func typeParamsStart(clean []rune, q int) int {
+	depth := 0
+	for p := q; p >= 0 && q-p < maxTypeScan; p-- {
+		switch clean[p] {
+		case '>':
+			depth++
+		case '<':
+			depth--
+			if depth == 0 {
+				return skipSpaceBack(clean, p-1)
+			}
+		}
+	}
+	return q
 }
 
 // classBody reports whether the '{' after position b opens a class body:

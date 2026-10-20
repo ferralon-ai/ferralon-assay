@@ -503,6 +503,70 @@ var load = (function (g) { return function (k, s) { return g[k](s); }; })(...[gl
 function main(a) { return load(a, a); }
 main(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global assigned to a declared name", map[string]string{"app.js": `
+var g;
+g = globalThis;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global assigned to an undeclared name", map[string]string{"app.js": `
+g = this;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global assigned by a logical assignment", map[string]string{"app.js": `
+let g;
+g ??= globalThis;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global behind a type annotation", map[string]string{"app.js": `
+const g: any = globalThis;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global as a destructuring default", map[string]string{"app.js": `
+const { g = globalThis } = {};
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured from the global", map[string]string{"app.js": `
+const { self: g } = globalThis;
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global as a parameter default", map[string]string{"app.js": `
+function load(k, s, g = globalThis) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level var of a global name read in a function", map[string]string{"app.js": `
+var self = make();
+function make() { return {}; }
+function load(k, s) { return self[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level var of a global name assigned in a block", map[string]string{"app.js": `
+if (process.env.X) { var global = {}; }
+global[process.argv[2]](process.argv[3]);
+function load(k, s) { return k; }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level var of window", map[string]string{"app.js": `
+var window = {};
+window[process.argv[2]](process.argv[3]);
+function load(k, s) { return k; }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -600,6 +664,11 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"window destructured from a local", "function close(state, w) { const { window } = state; w.closeWindow(window); }"},
+		{"top-level var of a global name replaced", "var global = make();\nif (global.RegExp) { redefine(global, 'RegExp', {}); }\nfunction make() { return {}; }\nfunction redefine(o, k, v) { o[k] = v; }"},
+		{"UMD wrapper assigning the global", "(function (global, factory) { typeof exports === 'object' ? factory(exports) : (global = global || self, factory(global.Lib = {})); }(this, function (exports) { exports.x = 1; }));"},
+		{"computed method returning this", "class S { [Symbol.iterator]() { return this; } }"},
+		{"generic method handing on this", "class S { lift<R>(op: R): S { const s = new S(this, this); return s; } }"},
 		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},
 		{"UMD wrapper through call", "(function (root) { root.Lib = {}; }).call(this, this);"},
 		{"IIFE called with this", "(function () { var x = 1; return x; }).call(this);"},

@@ -1443,6 +1443,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"a global-named parameter of a method in an object passed as an argument", "Object.assign({}, { m(top) { return top[process.argv[2]]; } });"},
 		{"a function called in place with an object for its this", "(function () { var s = this; s[process.argv[2]](1); }).call({ a: trim });"},
 		{"a TypeScript namespace var of a global name", "namespace N { var self = { a: 1 }; export const x = self[process.argv[2]]; }"},
+		{"a dotted TypeScript namespace var of a global name", "namespace A.B { var self = { a: 1 }; export const x = self[process.argv[2]]; }"},
 		{"a named generator's this, indexed", "function* g(k) { var t = this; yield t[k](1); }\nmodule.exports = g;"},
 		{"a block-scoped let of a global name in a block after a parenthesised statement", "if (process.env.X) (0)\n{ let self = { a: 1 }; self[process.argv[2]](1); }"},
 		{"an object literal method named catch", "var o = { catch(e) { var g = this; return g[process.argv[2]](1); } };\nmodule.exports = o;"},

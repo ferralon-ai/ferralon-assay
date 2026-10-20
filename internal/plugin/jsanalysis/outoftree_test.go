@@ -495,6 +495,111 @@ const r = globalThis.require;
 function load(m) { return r(m); }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global into an IIFE that reads arguments", map[string]string{"app.js": `
+function load(k, s) {
+  return (function (g) { const h = arguments[0]; return h[k](s); })(globalThis);
+}
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name assigned without a declaration", map[string]string{"app.js": `
+self = make();
+function make() { return {}; }
+function load(k, s) { return self[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global awaited into an alias", map[string]string{"app.js": `
+async function load(k, s) { const g = await globalThis; return g[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global before || into an alias", map[string]string{"app.js": `
+const g = globalThis || {};
+function load(k, s) { return g[k](s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global non-null asserted into an alias", map[string]string{"app.ts": `
+const g = globalThis!;
+function load(k: string, s: string) { return (g as any)[k](s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name read before its top-level var", map[string]string{"app.js": `
+self[process.argv[2]](process.argv[3]);
+var self = make();
+function make() { return {}; }
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global as a ternary branch", map[string]string{"app.js": `
+function use(o) { return o; }
+function load(c) { return use(c ? globalThis : null); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"this optional computed call in a plain function", map[string]string{"app.js": `
+function load(k, s) { return this[k]?.(s); }
+load(process.argv, process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global before || as an argument", map[string]string{"app.js": `
+function use(o) { return o; }
+function load() { return use(globalThis || {}); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global returned in an array", map[string]string{"app.js": `
+function load() { return [globalThis]; }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a parenthesized expression", map[string]string{"app.js": `
+var y = (1)
+{ this[process.argv[2]](process.argv[3]); }
+function load() { return y; }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a try block", map[string]string{"app.js": `
+try { this[process.argv[2]](process.argv[3]); } catch (e) { load(); }
+function load() { return 1; }
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this handed on", map[string]string{"app.js": `
+function use(o) { return o; }
+use(this);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body constructs, called at once", map[string]string{"app.js": `
+function load() { Function('new Date')(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body reads a member, called at once", map[string]string{"app.js": `
+function load() { Function('this.x')(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body tags a template, called at once", map[string]string{"app.js": `
+function load() { Function('x` + "`" + `` + "`" + `')(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body decrements a global, called at once", map[string]string{"app.js": `
+function load() { Function('x--')(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning require, called at once", map[string]string{"app.js": `
+function load(m) { const r = Function('return require')(); r(m); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function returning Function, called at once", map[string]string{"app.js": `
+function load(s) { const F = Function('return Function')(); F(s)(); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body reads arguments, called at once", map[string]string{"app.js": `
+function load(s) { Function('a', 'arguments')(s); }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body with an escape, called at once", map[string]string{"app.js": `
+function load() { Function('this\x5b"ev"+"al"\x5d\x28"1"\x29')(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function parameter with a default expression", map[string]string{"app.js": `
+const f = Function('a = this["ev" + "al"]("1")', 'return 1');
+function load() { return f(); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
+		{"new Function result handed on", map[string]string{"app.js": `
+function use(o) { return o; }
+function load() { use(new Function('return this')()); }
+load();
+`}, plugin.PartialReasonEvaluatedCode},
 		{"eval on any receiver", map[string]string{"app.js": `
 function load(o, s) { return o.eval(s); }
 function main(a) { return load(a, a); }

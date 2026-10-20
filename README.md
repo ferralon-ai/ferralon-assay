@@ -228,11 +228,17 @@ without qualifying the headline. Without
 a policy, the corpus supplies facts only and does not change what the scan evaluates. For a policy
 the corpus release publishes a bundle for, the Action downloads that single `<policy>.jsonl.gz` from
 the `corpus-*` release named by `advisory-corpus-ref` (the default `main` resolves to the most recent
-release) instead of git-fetching the record tree, and verifies it before the scan: its sha256 against the release's `bundles.json`, and its member set
-against the policy manifest at the release's git tag. Any mismatch fails the run. Those checks detect
-a corrupt or mismatched bundle; they do not make an unsigned release trustworthy, because every input
-to them comes from the same repository. A policy with no bundle is read through the git fetch using
-that policy's manifest. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
+release) instead of git-fetching the record tree, and verifies it before the scan. First it checks
+the release's signature: `bundles.json` is verified with cosign against `bundles.json.sigstore.json`
+for the exact signer you name in `corpus-signer-identity` and `corpus-signer-issuer`, which this route
+requires and which have no default; Assay does not choose whose signature you trust, so take the values
+from the corpus's own consumer documentation. Then the bundle's sha256 is checked against that
+`bundles.json`, and its member set against the policy manifest at the release's git tag. A missing
+signer input, a missing or failing signature, or any mismatch fails the run; there is no unverified
+mode. The `Report` records the verified signer as `corpus_signer` (`identity`, `issuer`), and has no
+`corpus_signer` when no signature was verified. What stays trusted rather than verified is the
+Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
+release, is read through the git fetch, which is not signature-checked. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
 file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`
 publishes for it.
 
@@ -312,7 +318,9 @@ mode's behavior, a scheduled `cve-watch` workflow, and which surface fires under
 fetches the Go vulnerability database from `vuln.go.dev` uncached on every run (the same fetches
 `go build` and `govulncheck` perform) — these two hosts are also the scan's main cost drivers, see
 [Expected scan duration](#expected-scan-duration). `cve-watch`, and opt-in work-set widening, add
-`api.osv.dev`. What any of this carries is dependency metadata — module paths, versions, package
+`api.osv.dev`. The advisory corpus bundle route also downloads cosign from the `sigstore/cosign`
+GitHub release and needs the Sigstore TUF CDN, `tuf-repo-cdn.sigstore.dev`, to verify the corpus
+signature. What any of this carries is dependency metadata — module paths, versions, package
 coordinates — never source, never analysis results. The full picture, including where the
 `link-to-console` self-cleanup surface fits in, is in [docs/threat-model.md](docs/threat-model.md).
 

@@ -23,7 +23,9 @@ about your code. With `advisory-corpus-policy` set and a bundle published for th
 downloads the release's `bundles.json` and `<policy>.jsonl.gz` as **`github.com`** release assets
 (which redirect to **`release-assets.githubusercontent.com`**) and the policy manifest from
 **`raw.githubusercontent.com`**, likewise unauthenticated and carrying nothing
-about your code.
+about your code. To verify the release signature first, that route also downloads cosign from the
+`sigstore/cosign` release on **`github.com`** and fetches the Sigstore trust root from the Sigstore TUF
+CDN, **`tuf-repo-cdn.sigstore.dev`**; neither request carries anything about your code.
 
 `cve-watch` adds **`api.osv.dev`**. The scan modes reach OSV only when work-set widening is switched
 on explicitly (`-osv-work-set` / `ASSAY_OSV_WORK_SET`, off by default) and no advisory policy is

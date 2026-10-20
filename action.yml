@@ -69,10 +69,16 @@
 # plus every advisory in the policy whose affected package is one of the repository's own
 # dependencies. The repo fetch downloads that policy's prebuilt bundle
 # (`<policy>.jsonl.gz`) from a `corpus-*` release instead of git-fetching the record tree, and
-# verifies it before the scan: the bundle's sha256 against the release's bundles.json, and its
-# member set against the policy manifest read from the git commit the release tag points at.
-# TRUST LIMIT: the release assets, the tag and the git tree all come from the same unsigned
-# repository, so the pin detects corruption and mismatch, not a malicious release. See
+# verifies it before the scan. First the release's bundles.json is verified with cosign (v3.1.3,
+# fetched by scripts/install-cosign.sh and checked against a pinned sha256) against its
+# bundles.json.sigstore.json, for the exact `corpus-signer-identity` and `corpus-signer-issuer` the
+# caller supplies; then the bundle's sha256 against that bundles.json, and its member set against the
+# policy manifest read from the git commit the release tag points at. Any failure fails the run, and
+# a release is never used unverified. The scanner records the verified signer on the Report.
+# TRUST LIMIT: the signature proves bundles.json came from the identity the CALLER names, as
+# certified by the Sigstore public-good trust root; both are trusted, not verified, here. Assay
+# names no signer of its own. A ref that names no release, and a policy the release publishes no
+# bundle for, take the git fetch, which is not signature-checked. See
 # scripts/fetch-corpus-bundle.sh for the full chain. Reading a bundle needs a scanner release whose
 # -advisory-corpus accepts a bundle file.
 #
@@ -277,11 +283,32 @@ inputs:
       as an analysis limit (count and ids) without qualifying the report headline. When the corpus release named by advisory-corpus-ref publishes a bundle for the
       policy, the run downloads that one file instead of git-fetching the record tree, and verifies
       it first (sha256 against the release's bundles.json; members against the policy manifest at
-      the release's git tag). A bundle that fails any check FAILS the run. A policy the release
+      the release's git tag), after verifying the release's signature with cosign against
+      corpus-signer-identity and corpus-signer-issuer, which this route then requires. A bundle that
+      fails any check FAILS the run. A policy the release
       publishes no bundle for is read from the git fetch, using the policy's manifest. Empty
       (default) = the whole corpus via the git fetch, exactly as without this input. Ignored when
       advisory-corpus is set. Bundles need a scanner release whose -advisory-corpus accepts a
       bundle file.
+    required: false
+    default: ""
+  corpus-signer-identity:
+    description: >-
+      Certificate identity that must have signed the corpus release (the exact value cosign's
+      --certificate-identity matches; no pattern). REQUIRED when advisory-corpus-policy is set and
+      advisory-corpus-ref names a corpus release, which the default main does: the bundle route
+      verifies the release's bundles.json against bundles.json.sigstore.json with cosign before it
+      trusts anything in it, and fails the run when this is empty, the signature is missing, or it
+      does not verify. There is no default: Assay does not choose whose signature you trust. Take the
+      value from the corpus's own consumer documentation. Verification needs the runner to reach
+      github.com (the pinned cosign release) and the Sigstore TUF CDN (tuf-repo-cdn.sigstore.dev),
+      which serves the Sigstore trust root.
+    required: false
+    default: ""
+  corpus-signer-issuer:
+    description: >-
+      OIDC issuer of corpus-signer-identity (cosign's --certificate-oidc-issuer, matched exactly).
+      Required on the same bundle route as corpus-signer-identity; no default.
     required: false
     default: ""
   link-to-console:
@@ -484,9 +511,14 @@ runs:
     # <policy>.jsonl.gz, and the run step picks it by the file's existence rather than by this
     # step's outputs. The script only moves the bundle there after every check passed and wipes the
     # directory first, so the file exists iff a verified bundle does; a failed pin fails this step
-    # and the job. The step's route/git-ref outputs only steer the git fetch below, which runs when
-    # the bundle route did not apply.
-    - name: Fetch the advisory corpus bundle (release asset, digest-pinned)
+    # and the job. The step's route/git-ref outputs steer the git fetch below, which runs when the
+    # bundle route did not apply; its signer outputs only feed the run step's Report disclosure.
+    #
+    # cosign is installed here, in the bundle route only, from the sigstore/cosign release pinned by
+    # version and sha256 in scripts/install-cosign.sh, and put first on PATH so the fetch script runs
+    # that binary and no other. The signer outputs exist only when route=bundle, i.e. only for the
+    # signature the scanner's bundle was verified under.
+    - name: Fetch the advisory corpus bundle (release asset, signature-verified, digest-pinned)
       id: corpus-bundle
       if: inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '' && inputs.advisory-corpus-policy != ''
       shell: bash
@@ -494,9 +526,13 @@ runs:
         CORPUS_REPO: ${{ inputs.advisory-corpus-repo }}
         CORPUS_REF: ${{ inputs.advisory-corpus-ref }}
         CORPUS_POLICY: ${{ inputs.advisory-corpus-policy }}
+        CORPUS_SIGNER_IDENTITY: ${{ inputs.corpus-signer-identity }}
+        CORPUS_SIGNER_ISSUER: ${{ inputs.corpus-signer-issuer }}
       run: |
         set -euo pipefail
-        DEST="$RUNNER_TEMP/ferralon-assay-corpus-bundle" bash "$GITHUB_ACTION_PATH/scripts/fetch-corpus-bundle.sh"
+        COSIGN_DIR="$RUNNER_TEMP/ferralon-assay-cosign"
+        DEST="$COSIGN_DIR" bash "$GITHUB_ACTION_PATH/scripts/install-cosign.sh"
+        PATH="$COSIGN_DIR:$PATH" DEST="$RUNNER_TEMP/ferralon-assay-corpus-bundle" bash "$GITHUB_ACTION_PATH/scripts/fetch-corpus-bundle.sh"
 
     - name: Fetch the advisory corpus (unauthenticated, shallow + sparse)
       # A CONFIGURATION condition, not a success condition: it asks whether a corpus was requested,
@@ -639,6 +675,13 @@ runs:
         # Passed as an env var rather than a flag on purpose: a scanner release that predates it
         # ignores an unknown env var, whereas an unknown flag fails the run.
         ASSAY_ADVISORY_CORPUS_POLICY: ${{ (inputs.advisory-corpus == '' && inputs.advisory-corpus-repo != '') && inputs.advisory-corpus-policy || '' }}
+        # THE VERIFIED SIGNER. Unlike the two declarations above, these ARE step outputs on purpose:
+        # they exist only when the bundle step verified the release signature and produced the
+        # bundle this run reads, so the Report records a signer exactly when one was verified, and
+        # never the corpus-signer-* inputs echoed back. Env vars, like the policy, so a scanner release
+        # that predates them ignores them.
+        ASSAY_ADVISORY_CORPUS_SIGNER_IDENTITY: ${{ steps.corpus-bundle.outputs.route == 'bundle' && steps.corpus-bundle.outputs.corpus-signer-identity || '' }}
+        ASSAY_ADVISORY_CORPUS_SIGNER_ISSUER: ${{ steps.corpus-bundle.outputs.route == 'bundle' && steps.corpus-bundle.outputs.corpus-signer-issuer || '' }}
         # --- self-cleanup + advisory-rescan plumbing -------------------------------------------------
         # FERRALON_LINK_TO_CONSOLE is the ONLY switch: unless it parses as true the scanner resolves
         # every Ferralon endpoint to empty and behaves exactly as the OSS build does, whatever the two

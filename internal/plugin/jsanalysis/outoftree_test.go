@@ -1212,6 +1212,88 @@ var e = self.eval; e(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global indexed in a call's argument before a block on the next line", map[string]string{"app.js": `
+load(self[process.argv[2]](1))
+{ }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global named by a member read in a call's argument before a block on the next line", map[string]string{"app.js": `
+load(self.x)
+{ self[process.argv[2]](1); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a call of a member named function", map[string]string{"app.js": `
+var o = {};
+o.function(1)
+{ var g = this; g[process.argv[2]](1); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after an assignment of a name interface", map[string]string{"app.js": `
+var interface = 1, y
+y = interface
+{ var g = this; g[process.argv[2]](1); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in an else block after a test of a name interface", map[string]string{"app.js": `
+var interface = {}, b
+if (process.env.X) b = interface instanceof Object
+else { var g = this; g[process.argv[2]](1); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a statement interface", map[string]string{"app.js": `
+var interface = 1;
+interface
+{ var g = this; g[process.argv[2]](1); }
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a call in a labelled block", map[string]string{"app.js": `
+L: {
+  m(1)
+  { var g = this; g[process.argv[2]](1); }
+}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this in a block after a call in an else block", map[string]string{"app.js": `
+if (process.env.X) {} else {
+  m(1)
+  { var g = this; g[process.argv[2]](1); }
+}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var in a block after a name namespace and a name on separate lines", map[string]string{"app.ts": `
+var namespace = 1;
+namespace
+N {
+  var self; self[process.argv[2]](1);
+}
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global var in a do block after else", map[string]string{"app.js": `
+if (process.env.X) 0; else do { var self; self[process.argv[2]](1); } while (0);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global destructured by its key require", map[string]string{"app.js": `
+const { require: r } = globalThis;
+r(process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global name in a function of a namespace nested in a dotted declare namespace", map[string]string{"app.ts": `
+declare namespace A.B { namespace C { function self(): void; } }
+self[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1361,6 +1443,16 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"a global-named parameter of a method in an object passed as an argument", "Object.assign({}, { m(top) { return top[process.argv[2]]; } });"},
 		{"a function called in place with an object for its this", "(function () { var s = this; s[process.argv[2]](1); }).call({ a: trim });"},
 		{"a TypeScript namespace var of a global name", "namespace N { var self = { a: 1 }; export const x = self[process.argv[2]]; }"},
+		{"a named generator's this, indexed", "function* g(k) { var t = this; yield t[k](1); }\nmodule.exports = g;"},
+		{"a block-scoped let of a global name in a block after a parenthesised statement", "if (process.env.X) (0)\n{ let self = { a: 1 }; self[process.argv[2]](1); }"},
+		{"an object literal method named catch", "var o = { catch(e) { var g = this; return g[process.argv[2]](1); } };\nmodule.exports = o;"},
+		{"a function called in place returning a nested function's this", "var g = (function () { function h() { return this; } return h; })();\ng[process.argv[2]](1);"},
+		{"a function called in place returning a member of its this", "var g = (function () { return this.x; })();\ng[process.argv[2]](1);"},
+		{"a function returning an instanceof test of its this", "function F() { return this instanceof F; }\nvar g = F();\ng[process.argv[2]](1);"},
+		{"an object literal method in a ternary's else after a call", "var o = process.env.X ? load(1) : { m() { var g = this; return g[process.argv[2]](1); } };\nmodule.exports = o;"},
+		{"an import of a binding named type renamed to a global name", "import { type as self } from './util';\nself[process.argv[2]](1);"},
+		{"a TypeScript namespace var of a global name, the brace on the next line", "namespace N\n{ var self; self[process.argv[2]](1); }"},
+		{"a TypeScript namespace var of a global name, after a statement with no semicolon", "var a = 1\nnamespace M { var self; self[process.argv[2]](1); }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

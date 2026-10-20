@@ -18,6 +18,7 @@
 //     (Java symmetry — plugin resolves the literal version, pipeline applies the bound).
 //   - npmVersionInRange(ver, rangeExpr): the full range matcher (^ ~ || x-ranges, hyphen,
 //     comparators) for advisories that carry a node-semver range string.
+
 package pipeline
 
 import (

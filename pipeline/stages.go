@@ -11,6 +11,7 @@
 // (PutArtifact, InventoryBuildDir, HarnessArtifact, DisqualResult + reason constants, AdvisoryTable,
 // AdvisoryFacts) because the Prove stages build on the same artifact contracts. They are neutral
 // plumbing, not proof.
+
 package pipeline
 
 import (
@@ -34,7 +35,7 @@ import (
 )
 
 // AssessConfig holds the free-stage seams an AssessStages caller may inject. It is the OSS half of
-// the former stageConfig; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
+// the stage configuration; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
 // Service prove package, which builds its own stages and appends them after AssessStages.
 type AssessConfig struct {
 	Plugin   plugin.LanguagePlugin

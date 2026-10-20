@@ -1,4 +1,5 @@
 // internal/checkout/vendored.go
+
 package checkout
 
 import (

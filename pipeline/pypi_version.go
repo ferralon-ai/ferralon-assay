@@ -13,6 +13,7 @@
 //     (plugin resolves the literal installed version, pipeline applies the bound).
 //   - pypiVersionInRange(ver, spec): the full PEP 440 specifier set (a ","-joined AND of
 //     >=, <=, >, <, ==, !=, ~=, ==prefix.*, ===) for advisories carrying a specifier.
+
 package pipeline
 
 import (

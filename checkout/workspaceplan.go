@@ -1,4 +1,5 @@
 // internal/checkout/workspaceplan.go
+
 package checkout
 
 import "sort"

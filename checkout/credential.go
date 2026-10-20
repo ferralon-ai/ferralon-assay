@@ -1,4 +1,5 @@
 // internal/checkout/credential.go
+
 package checkout
 
 import (

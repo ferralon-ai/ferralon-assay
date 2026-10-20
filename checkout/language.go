@@ -1,4 +1,5 @@
 // internal/checkout/language.go
+
 package checkout
 
 import (
@@ -50,11 +51,10 @@ const (
 // since both compile through the same substrate, so the cost of the bias is one-sided and
 // small.
 //
-// Ties among the remaining languages (equal source-file counts, including the all-zero
-// case) fall back to the historical precedence order java > js > python > dotnet, so
-// behavior stays deterministic and every pre-existing single-language tree — which has a
-// nonzero count in exactly one bucket — detects exactly as it did under the old first-match
-// precedence. Zero source files in every bucket yields LangUnknown — the caller treats that
+// Ties among the languages (equal source-file counts) fall back to the precedence order
+// kotlin > java > js > python > dotnet > cfamily, so behavior stays deterministic and a
+// single-language tree — which has a nonzero count in exactly one bucket — detects as that
+// language. Zero source files in every bucket yields LangUnknown — the caller treats that
 // as "not a recognizable source tree" and errors (inv.5: never a silent half-checkout).
 func DetectLanguage(dir string) string {
 	if _, ok := FindGoModuleRoot(dir); ok {

@@ -1,4 +1,5 @@
 // internal/pipeline/stage.go
+
 package pipeline
 
 import (

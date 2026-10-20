@@ -11,6 +11,7 @@
 // (zero AdvisoryFacts, false), which downstream reads exactly as today's map miss: no facts →
 // fail OPEN → proceed to analysis, NEVER refute, NEVER a fabricated not-affected. A source never
 // returns a partial or laundered fact.
+
 package pipeline
 
 import (
@@ -429,7 +430,7 @@ type advisoryDoc struct {
 
 	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the ENUMERATED
 	// affected version set. Object presence (non-nil) IS the marker: "this advisory is a malicious
-	// package; the presence-verdict model applies; there is no reachability/symbol/detonation."
+	// package; the presence-verdict model applies; there is no reachability/symbol/instrumented run."
 	// Absent (a v2 doc or any non-MAL advisory) ⇒ nil ⇒ the presence path never fires (inv.5
 	// fail-open). It carries NO bounds — a MAL record enumerates versions[], never a range — so it
 	// cannot feed the range/version axis; it is exact-string membership only (see toFacts / the

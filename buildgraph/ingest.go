@@ -37,13 +37,9 @@ var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true,
 //
 // Any failure is a *Failure of kind graph_rejected naming the check.
 func Load(file, dir string, stated Conditions) (*Graph, error) {
-	b, err := os.ReadFile(file)
+	g, err := Decode(file)
 	if err != nil {
-		return nil, reject(CheckDecode, err.Error())
-	}
-	var g Graph
-	if err := json.Unmarshal(b, &g); err != nil {
-		return nil, reject(CheckDecode, err.Error())
+		return nil, err
 	}
 	if check := g.Validate(); check != "" {
 		return nil, reject(check, "")
@@ -55,7 +51,7 @@ func Load(file, dir string, stated Conditions) (*Graph, error) {
 	if err != nil {
 		return nil, reject(CheckSubjectInputs, err.Error())
 	}
-	if err := checkInputs(&g, dir); err != nil {
+	if err := checkInputs(g, dir); err != nil {
 		return nil, err
 	}
 	siblings := map[string]bool{}
@@ -66,6 +62,20 @@ func Load(file, dir string, stated Conditions) (*Graph, error) {
 		if err := checkModule(m, dir, siblings); err != nil {
 			return nil, err
 		}
+	}
+	return g, nil
+}
+
+// Decode reads the graph at file without checking it. Only a reader handed a file that Load has
+// already accepted in this run uses it.
+func Decode(file string) (*Graph, error) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, reject(CheckDecode, err.Error())
+	}
+	var g Graph
+	if err := json.Unmarshal(b, &g); err != nil {
+		return nil, reject(CheckDecode, err.Error())
 	}
 	return &g, nil
 }

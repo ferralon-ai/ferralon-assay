@@ -870,6 +870,40 @@ type Report struct {
 	// Baseline points at the prior baseline Report this one inherits from / diffs
 	// against. Nil for a fresh baseline run.
 	Baseline *BaselineRef `json:"baseline,omitempty"`
+	// BuildGraph records where a JVM scan's dependency graph came from and, when it could not be
+	// had, the typed cause. Set on every Java and Kotlin scan; nil for every other language.
+	BuildGraph *BuildGraph `json:"build_graph,omitempty"`
+}
+
+// Build graph sources.
+const (
+	// BuildGraphSourceTool is a graph the scan resolved by running the repository's own Maven or
+	// Gradle.
+	BuildGraphSourceTool = "build_tool"
+	// BuildGraphSourceFile is a graph the caller resolved ahead of the scan and handed in.
+	BuildGraphSourceFile = "build_tool_file"
+	// BuildGraphSourceOff is a scan the caller ran with the build graph switched off: it has no
+	// JVM dependency inventory, and says so.
+	BuildGraphSourceOff = "off"
+)
+
+// BuildGraph is the provenance of a JVM scan's dependency graph.
+type BuildGraph struct {
+	// Source is one of the BuildGraphSource constants.
+	Source string `json:"source"`
+	// Cause is why the graph could not be had. Nil when the scan read a graph, and for "off".
+	// A scan with a Cause exits non-zero once its Report is published.
+	Cause *BuildGraphCause `json:"cause,omitempty"`
+}
+
+// BuildGraphCause is a typed build graph failure.
+type BuildGraphCause struct {
+	// Kind is one of toolchain_absent, jdk_mismatch, credentials, tool_failed or
+	// graph_rejected.
+	Kind string `json:"kind"`
+	// Detail narrows Kind: the wanted and found JDK (jdk_mismatch, as want/have), the repository
+	// (credentials), the failed step (tool_failed) or the failed check (graph_rejected).
+	Detail string `json:"detail,omitempty"`
 }
 
 // Subject identifies the scanned codebase by neutral coordinates. It carries no

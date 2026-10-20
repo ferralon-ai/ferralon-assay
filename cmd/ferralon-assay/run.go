@@ -246,8 +246,9 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // in this same binary, so nothing about the analyzed ref needs to travel through the environment.
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string) error {
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph) error {
 	rep.Provenance.Intel = &intel
+	rep.BuildGraph = graph.record()
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
@@ -430,6 +431,8 @@ type runConfig struct {
 	// analyzeRef is the resolved .github/ferralon.yml analyze.ref (empty on the default path),
 	// carried from acquireTarget so publishResult can gate delivery on the canonical ref.
 	analyzeRef string
+	// graph is the JVM scan's build graph; nil for every other language.
+	graph *jvmGraph
 }
 
 // runFlags registers the flags common to the pr-inherit / cve-watch modes. It reuses
@@ -452,6 +455,7 @@ type runFlags struct {
 	subjectGo        *string
 	subjectJava      *string
 	subjectMvnProf   *string
+	buildGraph       *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -518,6 +522,9 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
 
 		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
+		// buildGraph is where a Java or Kotlin scan's dependency graph comes from (D7: no static fallback).
+		buildGraph: fs.String("build-graph", buildGraphAuto, "where a Java or Kotlin scan's dependency graph comes from: auto runs the repository's own Maven or Gradle with this job's environment and JDK; a path reads a graph resolved ahead of the scan (`"+brand.Name+" resolve-graph`); off scans without one and records that. A graph that cannot be had fails the run once the Report is published"),
+
 		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax: its -P list together with settings.xml <activeProfiles>, e.g. \"release,!docs\", or \",\" for none; overrides "+envSubjectMavenProfiles+" (default: unstated, and every profile of the reactor and its parents is reported as undecided)"),
 	}
 }
@@ -835,10 +842,7 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 // subjectJavaOption passes the subject's Java version (-subject-java-version, then
 // envSubjectJavaVersion) to inventory resolution, or returns nil when neither is set.
 func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
-	v := strings.TrimSpace(*f.subjectJava)
-	if v == "" {
-		v = strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
-	}
+	v := f.subjectJavaVersion()
 	if v == "" {
 		return nil
 	}
@@ -849,14 +853,27 @@ func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
 // (-subject-maven-profiles, then envSubjectMavenProfiles) to inventory resolution, or returns nil
 // when neither is set.
 func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
-	v := strings.TrimSpace(*f.subjectMvnProf)
-	if v == "" {
-		v = strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
-	}
+	v := f.subjectMavenProfiles()
 	if v == "" {
 		return nil
 	}
 	return pipeline.WithSubjectMavenProfiles(v)
+}
+
+// subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
+func (f *runFlags) subjectJavaVersion() string {
+	if v := strings.TrimSpace(*f.subjectJava); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
+}
+
+// subjectMavenProfiles is -subject-maven-profiles, then envSubjectMavenProfiles.
+func (f *runFlags) subjectMavenProfiles() string {
+	if v := strings.TrimSpace(*f.subjectMvnProf); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
 }
 
 // subjectOptions returns the subject conditions run and baseline both take: the Java version and
@@ -958,7 +975,7 @@ func envEnabled(v string) bool {
 // dependencies (the scan path) or is the compiled-in floor alone (cve-watch, which drives its own
 // OSV query against the stored SBOM and must be left alone).
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries)
+	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -1000,6 +1017,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		outDir:        *f.outDir,
 		cleanup:       acq.cleanup,
 		analyzeRef:    acq.analyzeRef,
+		graph:         acq.graph,
 	}, nil
 }
 
@@ -1073,13 +1091,13 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report)
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return nil
+	return cfg.graph.err()
 }
 
 // runCVEWatch runs the scheduled `cve-watch` mode: it queries OSV.dev for advisories
@@ -1142,11 +1160,11 @@ func runCVEWatch(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
 	fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
 	fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report)
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return nil
+	return cfg.graph.err()
 }

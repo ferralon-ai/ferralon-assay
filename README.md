@@ -6,8 +6,9 @@ it resolves dependency versions, maps the advisory to vulnerable symbols, builds
 computes reachability from framework entry points to those symbols. A CVE sitting in a function
 nothing calls reports as not-reachable, instead of landing on your desk as a finding to triage away.
 
-It runs entirely in your own runner. It never runs a model, and it never executes code from the
-scanned repository — every stage is static analysis over the checked-out tree and its build metadata.
+It runs entirely in your own runner. It never runs a model, and a scan reads the repository without
+running its code. The `resolve-graph` command runs the repository's own Maven or Gradle, which executes
+its build scripts and plugins.
 
 Point it at a **Go, Java, Kotlin, JavaScript, Python or .NET** repository and every one gets a full scan
 and a `Report`. Go's analysis runs deepest — dependency-level reachability into the code an advisory
@@ -46,7 +47,7 @@ jobs:
 
       - name: Run the Ferralon Assay
         id: assay
-        uses: ferralon-ai/ferralon-assay@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0
+        uses: ferralon-ai/ferralon-assay@v0.5
         with:
           mode: baseline
           target: .
@@ -77,12 +78,12 @@ Two more scopes are conditional on inputs this Quickstart does not set: `state-r
 GitHub issues a read-only token whatever you declare, and every write surface skips itself; the
 job summary still lands.
 
-**Pinning by commit SHA** (`@163061bb0fb4b0f1cea8bb4991032d680b9d300c # v0.2.0`) pins the Action
-source, and through its `scanner-version` default the exact scanner release the Action fetches — so
-nothing runs that you did not choose, and no binary is ever committed into your repository. Every
-release tag's `action.yml` names the exact `vX.Y.Z` scanner it was cut with; only `@main` carries a
-minor alias (`vX.Y`), which resolves at run time to that minor's current patch release. By default
-the scanner is selected by that version tag alone. If you want to freeze the exact bytes as well, set
+**`@v0.5` floats** to the newest 0.5.x release, and no binary is ever committed into your
+repository. Every release tag's `action.yml` names, in its `scanner-version` default, the exact
+`vX.Y.Z` scanner it was cut with, so `@v0.5` fetches the scanner of the patch it currently points at.
+Run from a branch ref such as `main`, the Action instead defaults `scanner-version` to the current
+minor alias. A full tag (`@v0.5.0`) or a commit SHA freezes the Action source and, through it, that
+scanner release. To freeze the exact bytes as well, set
 **`scanner-sha256`** yourself — each release publishes the value as a `.sha256` asset — and the run
 verifies the fetched tarball against your pin, failing loudly on any mismatch. It is off by default and
 entirely your call: a checksum *we* pinned against *our own* release asset would only verify our bytes
@@ -131,8 +132,18 @@ Action uses. What halts a run is a *resolved* work set of zero advisories — fo
 `-advisory-corpus` at a table that has nothing for your detected language. See [Scope](#scope).
 
 Run `./ferralon-assay baseline -h` for the full flag list, including `-advisory-corpus` to scan
-against a filesystem corpus instead of the built-in table, and `-subject-go-version` to state the
-target's Go toolchain explicitly.
+against a filesystem corpus instead of the built-in table, and `-subject-java-version` /
+`-subject-maven-profiles` to state the JVM and Maven profile selection your build uses (env
+`ASSAY_SUBJECT_JAVA_VERSION`, `ASSAY_SUBJECT_MAVEN_PROFILES`). For `pr-inherit` and `cve-watch`,
+`-subject-go-version` states the target's Go toolchain explicitly; `baseline` resolves it from
+`go.mod` alone.
+
+`./ferralon-assay resolve-graph -dir /path/to/repo -out "$RUNNER_TEMP/graph"` runs the repository's own Maven or
+Gradle and writes its resolved dependency graph as `assay.buildgraph/v1` JSON (`buildgraph.json`) into
+`-out`, which must be an empty directory outside the repository; the command rejects any other path.
+It takes `-tool auto|maven|gradle`, `-profiles`, `-java-version`, `-D` and `-env`. The build
+tool fetches from the repositories your build configures. See the
+[operator guide](docs/operator-guide.md#resolving-the-jvm-build-graph).
 
 ## Scanning another branch — `.github/ferralon.yml`
 
@@ -359,6 +370,10 @@ implementation detail with no compatibility promise; the packages below are the 
 | `vulnclass` | Maps an advisory's CWE to a closed vulnerability-class enum. |
 | `hostmatch` | A standalone host-allowlist matcher used by the checkout credential seam. |
 | `telemetry` | OpenTelemetry wiring for the pipeline's spans and metrics. |
+| `buildgraph` | The `assay.buildgraph/v1` resolved JVM dependency graph schema, and `Resolve`, which runs Maven or Gradle to produce it (what `resolve-graph` calls). |
+| `capability` | The per-language capability manifest: what a language's analyzer declares it supports. |
+| `artifactcache` | The content-addressed, read-through view of dependency artifact bytes, keyed by PURL and integrity digest; the acquirer is `artifactcache/acquire`. |
+| `plugin/symboltest` | The symbol-profile golden-equality harness for language-lane conformance tests. A test helper with no API-stability promise. |
 
 ## Extending Assay
 

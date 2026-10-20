@@ -76,7 +76,7 @@ inside are invented for illustration and correspond to no real advisory or codeb
   "partiality": [],
   "provenance": {
     "commit_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
-    "analyzer_version": "v0.2.0",
+    "analyzer_version": "v0.5.0",
     "advisory_cursor": "2026-08-01",
     "timestamp": "2026-08-01T00:00:00Z"
   }

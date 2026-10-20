@@ -1,6 +1,9 @@
 package jsanalysis
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // The global object holds eval and the Function constructor, so any access to it that
 // can name one of them runs code built at run time: a computed key (`globalThis[k](s)`),
@@ -31,6 +34,7 @@ type globalScope struct {
 	byScope map[int]map[string][]int // scope (a block index, or -1 for the top level) → name → decls
 	sites   map[int]bool             // positions of declared names, which are not uses
 	yields  []bool                   // decl initialises its name from a global-yielding expression
+	flows   [][2]int                 // initialiser and bound-argument ranges whose value a decl holds
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.
@@ -55,9 +59,21 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		if pr[0] < 0 {
 			continue
 		}
-		for _, at := range paramSites(clean, pr[0], pr[1]) {
+		args, thisArg := iifeArgs(clean, tf, k)
+		if thisArg[0] < thisArg[1] {
+			gs.flows = append(gs.flows, thisArg) // the function's own this, judged as one
+		}
+		for j, at := range paramSites(clean, pr[0], pr[1]) {
+			if at < 0 {
+				continue
+			}
 			name, _ := readWord(clean, at)
-			add(k, at, name, 0, 0, false)
+			if j < len(args) {
+				add(k, at, name, args[j][0], args[j][1], false)
+				gs.flows = append(gs.flows, args[j])
+			} else {
+				add(k, at, name, 0, 0, false)
+			}
 		}
 	}
 	for i := 0; i < n; {
@@ -97,6 +113,9 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 					start, end = q+1, initEnd(clean, q+1)
 				}
 				add(scope, at, name, start, end, word == "var" && scope < 0)
+				if start < end {
+					gs.flows = append(gs.flows, [2]int{start, end})
+				}
 				if end >= n || clean[end] != ',' {
 					break
 				}
@@ -118,36 +137,180 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	return gs
 }
 
-// paramSites returns the positions of the plain names declared by the parameter list in
-// clean[start:end]: each name at depth zero that opens a parameter, after `(`, `,` or
-// `...`. A destructured parameter declares nothing here.
+// paramSites returns, for each parameter in the list clean[start:end], the position of
+// the plain name it declares, or -1 for a destructured or rest parameter.
 func paramSites(clean []rune, start, end int) []int {
 	var out []int
 	depth := 0
-	expect := true
+	slot := -2 // the current slot's site, or -2 before anything is seen in it
+	flush := func() {
+		if slot == -2 {
+			return
+		}
+		out = append(out, slot)
+	}
 	for p := start; p < end; p++ {
 		r := clean[p]
 		switch {
 		case r == '(' || r == '[' || r == '{':
+			if depth == 0 && slot == -2 {
+				slot = -1
+			}
 			depth++
-			expect = false
 		case r == ')' || r == ']' || r == '}':
 			depth--
 		case r == ',' && depth == 0:
-			expect = true
-		case r == '.' || r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			flush()
+			slot = -2
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+		case r == '.':
+			if depth == 0 && slot == -2 {
+				slot = -1 // a rest parameter
+			}
 		case isIdentStart(r):
 			_, nx := readWord(clean, p)
-			if expect && depth == 0 {
-				out = append(out, p)
+			if depth == 0 && slot == -2 {
+				slot = p
 			}
-			expect = false
 			p = nx - 1
 		default:
-			expect = false
+			if depth == 0 && slot == -2 {
+				slot = -1
+			}
 		}
 	}
+	flush()
 	return out
+}
+
+// iifeArgs returns the argument ranges a function expression in block k is called with
+// immediately: `(function (a) {...})(x)`, `function (a) {...}(x)` in expression position,
+// or either followed by `.call(thisArg, x)`, whose thisArg range it returns too. It
+// returns nothing when the function is not called in place, when an argument is spread,
+// or when the body reads `arguments`, which would see an argument no parameter names.
+func iifeArgs(clean []rune, tf *thisFrames, k int) (args [][2]int, thisArg [2]int) {
+	kw := tf.fnKw[k]
+	if kw < 0 {
+		return nil, thisArg
+	}
+	n := len(clean)
+	open, close := tf.opens[k], tf.closes[k]
+	if close >= n {
+		return nil, thisArg
+	}
+	before := skipSpaceBack(clean, kw-1)
+	p := skipSpace(clean, close+1)
+	switch {
+	case p < n && clean[p] == '(' && before >= 0 && strings.ContainsRune("(,=!+-~?:&|[", clean[before]):
+	case p < n && clean[p] == ')' && before >= 0 && clean[before] == '(' && closeParen(clean, before) == p:
+		p = skipSpace(clean, p+1)
+	default:
+		return nil, thisArg
+	}
+	call := false
+	if p < n && clean[p] == '.' {
+		if w, nx := peekWord(clean, skipSpace(clean, p+1)); w == "call" {
+			p, call = skipSpace(clean, nx), true
+		}
+	}
+	if p >= n || clean[p] != '(' {
+		return nil, thisArg
+	}
+	for i := open; i < close; {
+		if !isIdentStart(clean[i]) {
+			i++
+			continue
+		}
+		w, nx := readWord(clean, i)
+		if w == "arguments" {
+			return nil, thisArg
+		}
+		i = nx
+	}
+	depth, from := 0, p+1
+	for q := p + 1; q < n; q++ {
+		switch clean[q] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				if s := skipSpace(clean, from); s < q {
+					args = append(args, [2]int{s, q})
+				}
+				for _, a := range args {
+					if a[1]-a[0] >= 3 && string(clean[a[0]:a[0]+3]) == "..." {
+						return nil, [2]int{}
+					}
+				}
+				if call && len(args) > 0 {
+					thisArg, args = args[0], args[1:]
+				}
+				return args, thisArg
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				args = append(args, [2]int{skipSpace(clean, from), q})
+				from = q + 1
+			}
+		}
+	}
+	return nil, [2]int{}
+}
+
+// closeParen returns the index of the ')' that closes the '(' at p, or len(clean).
+func closeParen(clean []rune, p int) int {
+	depth := 0
+	for ; p < len(clean); p++ {
+		switch clean[p] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return p
+			}
+		}
+	}
+	return p
+}
+
+// flowsTo reports whether the value at position i is the value of the expression in
+// clean[start:i...]: no call, index, array, object or function bracket opened after start
+// encloses i. A grouping parenthesis does not stop the value.
+func flowsTo(clean []rune, start, i int) bool {
+	var stack []bool // true for a bracket that stops the value
+	for p := start; p < i; p++ {
+		switch clean[p] {
+		case '(':
+			b := skipSpaceBack(clean, p-1)
+			call := b >= start && (isIdentPart(clean[b]) || clean[b] == ')' || clean[b] == ']')
+			stack = append(stack, call)
+		case '[', '{':
+			stack = append(stack, true)
+		case ')', ']', '}':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+	for _, stops := range stack {
+		if stops {
+			return false
+		}
+	}
+	return true
+}
+
+// held reports whether the global-valued token at i is the value a tracked declaration
+// holds, so that handing it there is followed rather than an escape.
+func (gs *globalScope) held(clean []rune, i int) bool {
+	for _, r := range gs.flows {
+		if r[0] <= i && i < r[1] && flowsTo(clean, r[0], i) {
+			return true
+		}
+	}
+	return false
 }
 
 // isGlobal reports whether the name at position i is the global object.
@@ -195,10 +358,13 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 				}
 			}
 		case (word == "this" && gs.tf.topLevel(i)) || (word != "this" && gs.isGlobal(word, i)):
-			if w, _ := wordBefore(clean, b); w == "typeof" {
+			if w, _ := wordBefore(clean, b); w == "typeof" || !flowsTo(clean, start, i) {
 				break
 			}
 			p := skipSpace(clean, next)
+			if andTest(clean, p) {
+				break
+			}
 			if p < end && (clean[p] == '.' || clean[p] == '[' || clean[p] == '(') {
 				break
 			}
@@ -218,13 +384,16 @@ func (gs *globalScope) yieldsGlobal(clean []rune, start, end int) bool {
 // is the global only when the function is called plainly, just a computed key that is
 // called and `.eval`/`.Function` count: handing that `this` on (`fn.apply(this, args)`)
 // and indexing it without a call are how methods written as functions use their receiver.
-func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool) {
+func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs *globalScope) {
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
 	if b >= 0 && clean[b] == '.' {
 		return
 	}
 	p := skipSpace(clean, next)
+	if p < n && clean[p] == ':' && !(p+1 < n && clean[p+1] == ':') && !(b >= 0 && clean[b] == '?') {
+		return // an object key or a typed this parameter, not a use
+	}
 	if optionalDot(clean, p) {
 		p++
 		if q := skipSpace(clean, p+1); q < n && clean[q] == '[' {
@@ -250,7 +419,7 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool) {
 		case "eval", "Function":
 			mb.evaluated = true
 		}
-	case !callOnly && escapesAsValue(clean, b, p):
+	case !callOnly && escapesAsValue(clean, b, p) && !andTest(clean, p) && !gs.held(clean, i):
 		mb.evaluated = true
 	}
 }
@@ -264,6 +433,7 @@ type thisFrames struct {
 	fn     []bool   // the block is a function body (not an arrow body, which keeps this)
 	scope  []bool   // the block is a function or arrow body, which scopes a var
 	params [][2]int // the parameter list [start, end) declaring names in the block, or {-1, -1}
+	fnKw   []int    // position of the `function` keyword for a function body, or -1
 	global []bool   // this inside the block (not in a nested function) is the global
 }
 
@@ -300,7 +470,11 @@ func newThisFrames(clean []rune) *thisFrames {
 			g := outer
 			fn, scope := false, false
 			params := [2]int{-1, -1}
+			kw := -1
 			b := skipSpaceBack(clean, i-1)
+			if r := typedReturn(clean, b); r >= 0 {
+				b = r
+			}
 			switch {
 			case b >= 1 && clean[b] == '>' && clean[b-1] == '=': // arrow body
 				scope = true
@@ -322,10 +496,11 @@ func newThisFrames(clean []rune) *thisFrames {
 					case "function":
 						g, fn, scope = true, true, true
 						params = [2]int{o + 1, b}
+						kw = s
 					case "":
 						if q >= 0 && clean[q] == '*' { // function* (...) or *method(...)
-							if w2, _ := wordBefore(clean, skipSpaceBack(clean, q-1)); w2 == "function" {
-								g = true
+							if w2, s2 := wordBefore(clean, skipSpaceBack(clean, q-1)); w2 == "function" {
+								g, kw = true, s2
 							} else {
 								g = false
 							}
@@ -333,8 +508,8 @@ func newThisFrames(clean []rune) *thisFrames {
 							params = [2]int{o + 1, b}
 						}
 					default:
-						if w2, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); w2 == "function" {
-							g = true
+						if w2, s2 := wordBefore(clean, skipSpaceBack(clean, s-1)); w2 == "function" {
+							g, kw = true, s2
 						} else {
 							g = false // a method, getter or setter
 						}
@@ -358,6 +533,7 @@ func newThisFrames(clean []rune) *thisFrames {
 			tf.fn = append(tf.fn, fn)
 			tf.scope = append(tf.scope, scope)
 			tf.params = append(tf.params, params)
+			tf.fnKw = append(tf.fnKw, kw)
 			tf.global = append(tf.global, g)
 		case '}':
 			if len(stack) > 0 {
@@ -367,6 +543,41 @@ func newThisFrames(clean []rune) *thisFrames {
 		}
 	}
 	return tf
+}
+
+// maxTypeScan bounds the backward scan over a TypeScript return type annotation.
+const maxTypeScan = 256
+
+// typedReturn returns the position of the ')' that ends a parameter list when the '{'
+// after position b follows a TypeScript return type (`(...): Type {`), or -1.
+func typedReturn(clean []rune, b int) int {
+	if b < 0 || clean[b] == ')' {
+		return -1
+	}
+	depth := 0
+	for p := b; p >= 0 && b-p < maxTypeScan; p-- {
+		switch clean[p] {
+		case '>', ']', ')':
+			depth++
+		case '<', '[', '(':
+			if depth == 0 {
+				return -1
+			}
+			depth--
+		case ';', '{', '}', '=':
+			if depth == 0 && !(clean[p] == '=' && p+1 < len(clean) && clean[p+1] == '>') {
+				return -1
+			}
+		case ':':
+			if depth == 0 {
+				if q := skipSpaceBack(clean, p-1); q >= 0 && clean[q] == ')' {
+					return q
+				}
+				return -1
+			}
+		}
+	}
+	return -1
 }
 
 // classBody reports whether the '{' after position b opens a class body:
@@ -386,6 +597,12 @@ func classBody(clean []rune, b int) bool {
 		}
 	}
 	return false
+}
+
+// andTest reports whether the operator at p is `&&` (not `&&=`): a value tested by it is
+// handed on only when it is falsy, and the global object never is.
+func andTest(clean []rune, p int) bool {
+	return p+1 < len(clean) && clean[p] == '&' && clean[p+1] == '&' && !(p+2 < len(clean) && clean[p+2] == '=')
 }
 
 // closeBracket returns the index of the ']' that closes the '[' at p, or len(clean).

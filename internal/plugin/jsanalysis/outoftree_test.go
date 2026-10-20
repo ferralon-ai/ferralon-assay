@@ -465,6 +465,44 @@ function load(k, s) { if (k) { let self = {}; self.x = 1; } return self[k](s); }
 function main(a) { return load(a, a); }
 main(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global bound to an IIFE parameter", map[string]string{"app.js": `
+var load = (function (root) { return function (k, s) { return root[k](s); }; })(this);
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global bound through call", map[string]string{"app.js": `
+var load = (function (g) { return function (k, s) { return g[k](s); }; }).call(this, this);
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global bound to an IIFE that reads arguments", map[string]string{"app.js": `
+var load = (function () { var g = arguments[0]; return function (k, s) { return g[k](s); }; })(globalThis);
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global passed beyond the parameters", map[string]string{"app.js": `
+var load = (function (a) { return function (k, s) { return a(k, s); }; })(eval, globalThis);
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global handed to a call in an initialiser", map[string]string{"app.js": `
+const g = wrap(globalThis);
+function wrap(o) { return o; }
+function load(k, s) { return g[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"top-level this tested then indexed", map[string]string{"app.js": `
+var r = this && this[process.argv[2]](process.argv[3]);
+function load(k, s) { return r; }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global into a spread IIFE", map[string]string{"app.js": `
+var load = (function (g) { return function (k, s) { return g[k](s); }; })(...[globalThis]);
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -562,6 +600,12 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},
+		{"UMD wrapper through call", "(function (root) { root.Lib = {}; }).call(this, this);"},
+		{"IIFE called with this", "(function () { var x = 1; return x; }).call(this);"},
+		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
+		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},
+		{"TypeScript function return type", "function pick(this: Box, k: string): Box { const s = wrap(this); return s; }\nfunction wrap(o) { return o; }"},
 		{"self declared from this", "function Stream(k, fn) { var self = this; fn.call(self, k); return self[k](); }"},
 		{"self as a parameter", "function bind(self, fn) { return fn.apply(self, arguments); }"},
 		{"self as an arrow parameter", "const call = (self, k) => { return self[k](); };"},

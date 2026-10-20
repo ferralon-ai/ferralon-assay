@@ -120,10 +120,10 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			mb.moduleIndexUse(clean, i, next)
 			i = next
 		case globals.isGlobal(word, i):
-			mb.globalUse(clean, i, next, false)
+			mb.globalUse(clean, i, next, false, globals)
 			i = next
 		case word == "this" && frames.globalAt(i):
-			mb.globalUse(clean, i, next, !frames.topLevel(i))
+			mb.globalUse(clean, i, next, !frames.topLevel(i), globals)
 			i = next
 		case word == "_" && src[i] != '_': // a string literal; see keyedUse
 			mb.keyedUse(clean, src, i)

@@ -19,7 +19,7 @@
 // PRESENCE, projected into the flat ecosystem-neutral BuildManifestResult with declared partiality
 // where the shape cannot carry a fact — it too never runs dotnet/MSBuild/NuGet. generate_harness
 // stays CONTRACT-PRESENT Unsupported (Prove-tier; the .NET effect rides the corpus repro-runtime
-// sandbox, exactly as the Go/Java/JS/Python plugins ship it). Every op keeps the nil-payload
+// sandbox, exactly as the Java/Kotlin plugins ship it). Every op keeps the nil-payload
 // hard-error guard (inv.4).
 //
 // The client (internal/plugin.dotnetPlugin) owns the timeout via exec.CommandContext; this

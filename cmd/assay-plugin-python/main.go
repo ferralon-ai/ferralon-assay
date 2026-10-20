@@ -21,7 +21,7 @@
 // "not reached" is UNKNOWN, never "safe", and the effect trial adjudicates. call_graph is
 // likewise always Partial. generate_harness stays CONTRACT-PRESENT Unsupported (as on the
 // Assess path; the Python effect rides the corpus repro-runtime sandbox, exactly as the
-// Go/Java/JS plugins ship it) — it appears in no §5.4 deliverable, so it is out of scope.
+// Java/Kotlin plugins ship it) — it appears in no §5.4 deliverable, so it is out of scope.
 //
 // The client (internal/plugin.pythonPlugin) owns the timeout via exec.CommandContext;
 // this process runs to completion on a single request. A hard failure sets

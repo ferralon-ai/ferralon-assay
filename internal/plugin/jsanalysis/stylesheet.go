@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -43,16 +44,20 @@ func stylesheetRuntime() plugin.ScopedReason {
 	}
 }
 
-// stockCRAPackage reports whether the nearest package.json at or above fromModule's directory,
-// inside the build tree, declares a stock Create React App: it depends on the published
-// react-scripts (registryRange), every
-// script runs react-scripts with a plain subcommand and plain flags, and it has no top-level key
-// outside craManifestKeys. A missing, unreadable or undecodable manifest does not qualify.
+// stockCRAPackage reports whether fromModule lies under the src directory of the package whose
+// package.json is nearest at or above it, inside the build tree, and that package.json declares a
+// stock Create React App: it depends on the published react-scripts (registryRange), every script
+// is a reactScriptsCommand, and it has no top-level key outside craManifestKeys. react-scripts
+// compiles only src, so a module elsewhere is built by something else. A missing, unreadable or
+// undecodable manifest does not qualify.
 func (rs *resolver) stockCRAPackage(fromModule string) bool {
 	dir := path.Dir(fromModule)
 	for {
 		file := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "package.json")
 		if _, err := os.Lstat(file); err == nil {
+			if !strings.HasPrefix(fromModule, path.Join(dir, "src")+"/") {
+				return false
+			}
 			data, ok := readInRoot(rs.prog.root, file, maxStyleManifest)
 			return ok && stockCRAManifest(data)
 		}
@@ -137,33 +142,41 @@ func stockCRAManifest(data []byte) bool {
 }
 
 // registryRange reports whether a dependency version is a plain semver range, which installs the
-// published package; an alias (npm:), a path, a URL or a git ref can install a fork.
+// published package; an alias (npm:), a path (".", "./x"), a URL, a git ref or a tag can install
+// a fork or something unpinned.
 func registryRange(v string) bool {
-	return strings.TrimSpace(v) != "" && strings.Trim(v, "0123456789.^~<>=xX* |-") == ""
+	return strings.ContainsAny(v, "0123456789xX*") && !strings.HasPrefix(v, ".") &&
+		strings.Trim(v, "0123456789.^~<>=xX* |-") == ""
 }
 
-// reactScriptsCommand reports whether a script is "react-scripts <start|build|test|eject>"
-// followed only by --flags that load nothing: no shell syntax, and no flag that names a config,
-// a require hook or a loader.
+// reactScriptsCommand reports whether a script is the single command
+// "react-scripts <start|build|test|eject>" followed only by reactScriptsFlags.
 func reactScriptsCommand(script string) bool {
-	f := strings.Fields(script)
-	if len(f) < 2 || f[0] != "react-scripts" {
+	words, ok := scriptWords(script)
+	return ok && len(words) > 0 && words[0] == "react-scripts" && reactScriptsArgs(words[1:])
+}
+
+// reactScriptsFlags are the react-scripts and jest flags that neither name a module nor change
+// how one is resolved or transformed. Any other flag (jest's --resolver, --preset, --setupFiles,
+// --config and the like) disqualifies.
+var reactScriptsFlags = map[string]bool{
+	"--watchAll": true, "--watchAll=true": true, "--watchAll=false": true, "--watch": true,
+	"--coverage": true, "--ci": true, "--passWithNoTests": true, "--silent": true, "--verbose": true,
+	"--runInBand": true, "--env=jsdom": true, "--env=node": true, "--profile": true, "--stats": true,
+}
+
+func reactScriptsArgs(args []string) bool {
+	if len(args) == 0 {
 		return false
 	}
-	switch f[1] {
+	switch args[0] {
 	case "start", "build", "test", "eject":
 	default:
 		return false
 	}
-	for _, flag := range f[2:] {
-		name, _, _ := strings.Cut(strings.TrimPrefix(flag, "--"), "=")
-		if !strings.HasPrefix(flag, "--") || name == "" || strings.ContainsAny(flag, "$`;&|<>()\\\"'") {
+	for _, a := range args[1:] {
+		if !reactScriptsFlags[a] {
 			return false
-		}
-		for _, w := range []string{"config", "require", "loader", "import", "preload"} {
-			if strings.Contains(strings.ToLower(name), w) {
-				return false
-			}
 		}
 	}
 	return true
@@ -198,14 +211,16 @@ func (rs *resolver) regularInTree(rel string) bool {
 // styleToolingPresent reports, once per program, whether the build tree, or a directory above it
 // (styleToolingAbove), holds anything that can change what a stylesheet import loads. Presence
 // counts; nothing is parsed beyond a package.json's top-level keys and script words. It counts:
-//   - a bundler, framework or test-runner config, by name and in any case: anything named
-//     *webpack* (which covers an ejected Create React App's config/), esbuild*, gatsby-*,
-//     .babelrc*, .parcelrc, .umirc*, config-overrides.js, angular.json, or a
-//     <styleToolingConfigs>.config.* file;
-//   - a package.json with a browser, babel, alias or browserify key or a jest.transform; one
-//     that depends on a bundler, build wrapper or require hook (styleToolingTools); one with a
-//     script that runs one, names a config, preloads a module or sets NODE_OPTIONS; or one that
-//     cannot be read or decoded;
+//   - a bundler, framework or test-runner config, by name and in any case: any name containing
+//     webpack (which covers an ejected Create React App's config/), esbuild*, vitest.*,
+//     gatsby-*, .babelrc*, .parcelrc, .umirc*, .storybook, bunfig.toml, nodemon.json,
+//     config-overrides.js, angular.json, or a <styleToolingConfigs>.config.* file;
+//   - a package manager hook or override: pnpm-workspace.yaml, .pnpmfile.*, .yarnrc*, .pnp.*,
+//     a patches directory;
+//   - a package.json with a key in styleToolingKeys or a jest.transform; one that depends on a
+//     bundler, build wrapper, test runner or require hook (styleToolingTools), or on anything
+//     through a version that is not a registryRange; one with a script that is not an
+//     allowedScript; or one that cannot be read or decoded;
 //   - a directory the walk cannot read, or a symlinked directory whose target the walk does not
 //     itself read (one that leaves the tree included). A symlink to a file needs no rule of its
 //     own: a config is recognised by its name, and a package.json that resolves outside the
@@ -272,9 +287,12 @@ func styleToolingName(name string) bool {
 	name = strings.ToLower(name)
 	switch {
 	case strings.Contains(name, "webpack"), strings.HasPrefix(name, "esbuild"),
-		strings.HasPrefix(name, ".babelrc"), strings.HasPrefix(name, "gatsby-"),
-		strings.HasPrefix(name, ".umirc"), name == ".parcelrc", name == "config-overrides.js",
-		name == "angular.json":
+		strings.HasPrefix(name, "vitest."), strings.HasPrefix(name, ".babelrc"),
+		strings.HasPrefix(name, "gatsby-"), strings.HasPrefix(name, ".umirc"),
+		strings.HasPrefix(name, ".pnpmfile."), strings.HasPrefix(name, ".yarnrc"),
+		strings.HasPrefix(name, ".pnp."), name == ".parcelrc", name == ".storybook",
+		name == "bunfig.toml", name == "nodemon.json", name == "pnpm-workspace.yaml",
+		name == "patches", name == "config-overrides.js", name == "angular.json":
 		return true
 	}
 	for _, c := range styleToolingConfigs {
@@ -285,35 +303,205 @@ func styleToolingName(name string) bool {
 	return false
 }
 
-// styleToolingTools are the bundlers, build wrappers and require hooks whose presence in a
-// dependency or a script means a stylesheet import may be routed to a loader the lane does not
-// know. A script also counts when it names a config file or preloads a module.
+// styleToolingTools are the bundlers, build wrappers, test runners and require hooks whose
+// presence in a dependency means a stylesheet import may be routed to a loader the lane does not
+// know, whether a script or a CI step runs them.
 var styleToolingTools = []string{
-	"webpack", "esbuild", "vite", "rollup", "parcel", "browserify", "rsbuild", "rspack", "craco",
-	"react-app-rewired", "customize-cra", "vue-cli-service", "@vue/cli", "gatsby", "nuxt", "umi",
-	"require-hook", "css-modules", "@babel/register",
+	"webpack", "esbuild", "vite", "vitejs", "vitest", "rollup", "parcel", "browserify", "rsbuild",
+	"rspack", "craco", "react-app-rewired", "customize-cra", "vue-cli-service", "@vue/cli",
+	"gatsby", "nuxt", "umi", "storybook", "bun", "require-hook", "css-modules", "ignore-styles",
+	"@babel/register",
 }
 
-// styleToolingScriptFlags are script tokens that name a config or preload code.
-var styleToolingScriptFlags = []string{"--config", "-c", "-r", "--require", "--loader", "--experimental-loader", "--import"}
+// styleToolingKeys are the package.json keys that remap or rewrite what a module resolves to,
+// or that configure a runner to preload code.
+var styleToolingKeys = []string{
+	"browser", "babel", "alias", "browserify", "resolutions", "overrides", "pnpm",
+	"patchedDependencies", "nodemonConfig",
+}
 
-func styleToolingScript(script string) bool {
-	if strings.Contains(script, "NODE_OPTIONS") {
-		return true
+// scriptEnv are the environment assignments a script may lead with; none of them makes node or a
+// package manager load a module.
+var scriptEnv = map[string]bool{
+	"NODE_ENV": true, "NPM_CONFIG_PRODUCTION": true, "PORT": true, "CI": true,
+	"GENERATE_SOURCEMAP": true, "BROWSER": true,
+}
+
+// scriptPreloadFlags are words that name a config or preload code, rejected anywhere in a
+// command, including among the arguments node hands to the script it runs.
+var scriptPreloadFlags = []string{"--config", "-c", "-r", "--require", "--loader", "--experimental-loader", "--import"}
+
+// allowedScript reports whether every command in a package.json script, joined only by &&, is
+// one this lane knows loads no stylesheet through other tooling:
+//   - a reactScriptsCommand;
+//   - node or nodemon running a file in the tree, with no flag before it;
+//   - npm, yarn or pnpm running a script (which is itself checked where it is declared),
+//     starting, testing or installing, with packageManagerFlags only;
+//   - concurrently, at the top level only, running allowed commands;
+//   - echo, or exit with a status.
+//
+// Each may lead with scriptEnv assignments. Shell expansion, redirection, pipes, escapes, a path
+// leaving the tree, and a scriptPreloadFlags word all disqualify.
+func allowedScript(script string) bool {
+	return allowedCommands(script, true)
+}
+
+func allowedCommands(script string, top bool) bool {
+	words, ok := scriptWords(script)
+	if !ok || len(words) == 0 {
+		return false
 	}
-	for _, tok := range strings.Fields(script) {
-		tok = strings.Trim(tok, `"'`)
-		flag, _, _ := strings.Cut(tok, "=")
-		for _, f := range styleToolingScriptFlags {
-			if flag == f {
-				return true
+	start := 0
+	for i := 0; i <= len(words); i++ {
+		if i < len(words) && words[i] != "&&" {
+			continue
+		}
+		if !allowedCommand(words[start:i], top) {
+			return false
+		}
+		start = i + 1
+	}
+	return true
+}
+
+func allowedCommand(w []string, top bool) bool {
+	for len(w) > 0 {
+		name, _, assign := strings.Cut(w[0], "=")
+		if !assign || strings.HasPrefix(name, "-") {
+			break
+		}
+		if !scriptEnv[name] {
+			return false
+		}
+		w = w[1:]
+	}
+	if len(w) == 0 {
+		return false
+	}
+	for _, word := range w {
+		flag, _, _ := strings.Cut(word, "=")
+		if strings.Contains(word, "..") || strings.HasPrefix(word, "/") || strings.HasPrefix(word, "~") ||
+			slices.Contains(scriptPreloadFlags, flag) {
+			return false
+		}
+	}
+	switch w[0] {
+	case "react-scripts":
+		return reactScriptsArgs(w[1:])
+	case "node", "nodemon":
+		return len(w) > 1 && !strings.HasPrefix(w[1], "-")
+	case "npm", "yarn", "pnpm":
+		return packageManagerArgs(w[1:])
+	case "concurrently":
+		if !top || len(w) == 1 {
+			return false
+		}
+		for _, cmd := range w[1:] {
+			if !concurrentlyFlags[cmd] && !allowedCommands(cmd, false) {
+				return false
 			}
 		}
-		if tok == "next" || styleToolingDependency(tok) {
-			return true
-		}
+		return true
+	case "echo":
+		return true
+	case "exit":
+		return len(w) == 2 && strings.Trim(w[1], "0123456789") == "" && w[1] != ""
 	}
 	return false
+}
+
+// concurrentlyFlags are concurrently's flags that take no value.
+var concurrentlyFlags = map[string]bool{"-k": true, "--kill-others": true, "--kill-others-on-fail": true, "-r": true, "--raw": true}
+
+// packageManagerFlags are the package-manager flags that load nothing. --prefix and --cwd take
+// the next word as a directory; --prefix=dir is the same.
+var packageManagerFlags = map[string]bool{
+	"--prefix": true, "--cwd": true, "--silent": true, "-s": true, "--if-present": true,
+	"--production": true, "--legacy-peer-deps": true, "--no-audit": true,
+}
+
+// packageManagerArgs reports whether a package-manager invocation runs a named script (run,
+// run-script), or starts, tests or installs, with packageManagerFlags only. Nothing may be
+// appended to the script it runs, and nothing may be installed by name.
+func packageManagerArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	positional := 0
+	switch args[0] {
+	case "run", "run-script":
+		positional = 1
+	case "start", "test", "install", "ci", "i":
+	default:
+		return false
+	}
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		flag, _, valued := strings.Cut(a, "=")
+		switch {
+		case strings.HasPrefix(a, "-"):
+			if !packageManagerFlags[flag] || (valued && flag != "--prefix" && flag != "--cwd") {
+				return false
+			}
+			if !valued && (a == "--prefix" || a == "--cwd") {
+				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+					return false
+				}
+				i++
+			}
+		case positional > 0:
+			positional--
+		default:
+			return false
+		}
+	}
+	return positional == 0
+}
+
+// scriptWords splits a script into words as a shell would, honouring single and double quotes,
+// with "&&" as a word of its own. It reports false for an unterminated quote, an escape, any
+// character a shell expands, redirects or pipes on, and any other use of &.
+func scriptWords(script string) ([]string, bool) {
+	if strings.ContainsAny(script, "$`;|<>()\\*?!\n") {
+		return nil, false
+	}
+	var words []string
+	var cur strings.Builder
+	var quote rune
+	inWord := false
+	for _, r := range script {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote, inWord = r, true
+		case r == ' ' || r == '\t':
+			if inWord {
+				words = append(words, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteRune(r)
+			inWord = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	if inWord {
+		words = append(words, cur.String())
+	}
+	for _, w := range words {
+		if w != "&&" && strings.Contains(w, "&") {
+			return nil, false
+		}
+	}
+	return words, true
 }
 
 func styleToolingDependency(name string) bool {
@@ -342,7 +530,7 @@ func styleToolingManifestData(data []byte) bool {
 	if json.Unmarshal(data, &m) != nil || m == nil {
 		return true
 	}
-	for _, key := range []string{"browser", "babel", "alias", "browserify"} {
+	for _, key := range styleToolingKeys {
 		if _, ok := m[key]; ok {
 			return true
 		}
@@ -366,14 +554,16 @@ func styleToolingManifestData(data []byte) bool {
 			return true
 		}
 		for name, v := range entries {
-			if field != "scripts" && styleToolingDependency(name) {
+			var s string
+			if json.Unmarshal(v, &s) != nil {
 				return true
 			}
 			if field == "scripts" {
-				var script string
-				if json.Unmarshal(v, &script) != nil || styleToolingScript(script) {
+				if !allowedScript(s) {
 					return true
 				}
+			} else if styleToolingDependency(name) || !registryRange(s) {
+				return true
 			}
 		}
 	}
@@ -381,12 +571,13 @@ func styleToolingManifestData(data []byte) bool {
 }
 
 // styleToolingAbove reports whether a directory above the build root, up to and including the
-// first one holding .git, holds a package.json or a tooling config: a build run from the root
-// can read either (a workspace root's manifest, a config found by walking up).
+// first one holding a .git directory, holds a package.json or a tooling config: a build run from
+// the root can read either (a workspace root's manifest, a config found by walking up). A .git
+// file marks a submodule or a linked worktree, whose enclosing directories a build still reads.
 func styleToolingAbove(realRoot string) bool {
 	dir := realRoot
 	for {
-		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+		if fi, err := os.Lstat(filepath.Join(dir, ".git")); err == nil && fi.IsDir() {
 			return false
 		}
 		parent := filepath.Dir(dir)

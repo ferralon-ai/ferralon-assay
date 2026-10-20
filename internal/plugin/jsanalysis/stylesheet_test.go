@@ -31,6 +31,7 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 	cases := []struct {
 		name       string
 		spec       string
+		from       string            // the importing module; src/index.js when empty
 		files      map[string]string // relative to the build root
 		noCRA      bool
 		setup      func(t *testing.T, root string)
@@ -51,8 +52,19 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"package.json": `{"name":"app","scripts":{"start":"react-scripts start"},"dependencies":{"react-scripts":"5.0.1"},"jest":{"testEnvironment":"node"}}`}},
 		{name: "react-scripts as a devDependency with a range", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"package.json": `{"name":"app","devDependencies":{"react-scripts":"^5.0.1"},"scripts":{"build":"react-scripts build --stats"}}`}},
-		{name: "a CRA manifest governing from above the importing module", spec: "./index.css", files: map[string]string{"src/index.css": css,
-			"package.json": `{"name":"backend","scripts":{"start":"node server"}}`, "src/package.json": craManifest}},
+		{name: "a CRA manifest governing from above the importing module", spec: "./index.css", from: "web/src/app/index.js", files: map[string]string{
+			"web/src/app/index.css": css, "package.json": `{"name":"backend","scripts":{"start":"node server"}}`, "web/package.json": craManifest}},
+		{name: "a module nested under src", spec: "./App.css", from: "src/components/App.js", files: map[string]string{"src/components/App.css": css}},
+		{name: "a stock test script with harmless flags", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"^5.0.1"},"scripts":{"test":"react-scripts test --env=jsdom --watchAll=false --coverage"}}`}},
+		{name: "a server package with the scripts of a full-stack app", spec: "./index.css", from: "frontend/src/index.js", files: map[string]string{
+			"frontend/src/index.css": css, "frontend/package.json": craManifest,
+			"package.json": `{"name":"shop","version":"1.0.0","main":"server.js","type":"module","workspaces":["frontend"],"scripts":{` +
+				`"start":"node backend/server","server":"nodemon backend/server","client":"npm start --prefix frontend",` +
+				`"dev":"concurrently \"npm run server\" \"npm run client\"","data:destroy":"node backend/seeder -d",` +
+				`"heroku-postbuild":"NPM_CONFIG_PRODUCTION=false npm install --prefix frontend && npm run build --prefix=frontend",` +
+				`"test":"echo \"Error: no test specified\" && exit 1","ci":"NODE_ENV=test npm ci --silent && yarn run build --cwd frontend"},` +
+				`"dependencies":{"express":"^4.17.1"},"devDependencies":{"concurrently":"^5.3.0","nodemon":"^2.0.4"}}`}},
 		{name: "a non-CRA backend package elsewhere in the tree", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"server/package.json": `{"name":"backend","main":"server.js","type":"module","scripts":{"start":"node server","dev":"nodemon server"},"dependencies":{"express":"4"},"devDependencies":{"nodemon":"3","concurrently":"8"}}`}},
 
@@ -94,6 +106,29 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"start":1}}`}, unresolved: true},
 		{name: "a non-CRA package.json nearer the importing module", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"src/package.json": `{"name":"inner"}`}, unresolved: true},
+		{name: "an importing module beside the CRA manifest, outside src", spec: "./index.css", from: "index.js", files: map[string]string{"index.css": css}, unresolved: true},
+		{name: "an importing module in a server directory of the CRA package", spec: "./index.css", from: "server/index.js", files: map[string]string{"server/index.css": css}, unresolved: true},
+		{name: "a CRA manifest in src governing src itself", spec: "./index.css", files: map[string]string{"src/index.css": css, "package.json": `{"name":"backend"}`, "src/package.json": craManifest}, unresolved: true},
+		{name: "react-scripts given the current directory", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"."}}`}, unresolved: true},
+		{name: "react-scripts given the parent directory", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":".."}}`}, unresolved: true},
+		{name: "react-scripts given a dotted path that is no range", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":".5"}}`}, unresolved: true},
+		{name: "react-scripts given a tag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"latest"}}`}, unresolved: true},
+		{name: "react-scripts given a range with no version", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"^ -"}}`}, unresolved: true},
+		{name: "a jest resolver flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"test":"react-scripts test --resolver=./resolver.js"}}`}, unresolved: true},
+		{name: "a jest preset flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"test":"react-scripts test --preset=acme"}}`}, unresolved: true},
+		{name: "a jest setupFiles flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"test":"react-scripts test --setupFiles=./hook.js"}}`}, unresolved: true},
+		{name: "a jest environment outside the stock two", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"test":"react-scripts test --env=./env.js"}}`}, unresolved: true},
+		{name: "a bare react-scripts", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"package.json": `{"name":"app","dependencies":{"react-scripts":"5.0.1"},"scripts":{"start":"react-scripts"}}`}, unresolved: true},
 
 		// The extension.
 		{name: "in-tree svg", spec: "./logo.svg", files: map[string]string{"src/logo.svg": "<svg/>\n"}, unresolved: true},
@@ -209,6 +244,126 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 				treeWrite(t, outside, `{"name":"app"}`)
 				treeSymlink(t, outside, filepath.Join(root, "package.json"))
 			}},
+		{name: "pnpm-workspace.yaml", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"pnpm-workspace.yaml": "packages: ['.']\npatchedDependencies:\n  react-scripts@5.0.1: patches/x.patch\n"}, unresolved: true},
+		{name: "a pnpm-workspace.yaml above the build root", spec: "./index.css", files: map[string]string{"src/index.css": css}, unresolved: true,
+			setup: func(t *testing.T, root string) {
+				treeWrite(t, filepath.Join(filepath.Dir(root), "pnpm-workspace.yaml"), "overrides:\n  json5: link:./fork\n")
+			}},
+		{name: ".pnpmfile.cjs", spec: "./index.css", files: map[string]string{"src/index.css": css, ".pnpmfile.cjs": "module.exports = { hooks: {} };\n"}, unresolved: true},
+		{name: ".yarnrc.yml", spec: "./index.css", files: map[string]string{"src/index.css": css, ".yarnrc.yml": "packageExtensions: {}\n"}, unresolved: true},
+		{name: ".pnp.cjs", spec: "./index.css", files: map[string]string{"src/index.css": css, ".pnp.cjs": "\n"}, unresolved: true},
+		{name: "a patches directory", spec: "./index.css", files: map[string]string{"src/index.css": css, "patches/react-scripts+5.0.1.patch": "\n"}, unresolved: true},
+		{name: "a postinstall applying patches", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"postinstall":"patch-package"}}`}, unresolved: true},
+		{name: "a resolutions key", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","resolutions":{"css-loader":"file:./fork"}}`}, unresolved: true},
+		{name: "an overrides key", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","overrides":{"json5":"npm:fork@1"}}`}, unresolved: true},
+		{name: "a pnpm key", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","pnpm":{"overrides":{"json5":"1"}}}`}, unresolved: true},
+		{name: "a nodemonConfig key", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","nodemonConfig":{"execMap":{"js":"node -r hook"}}}`}, unresolved: true},
+		{name: "nodemon.json", spec: "./index.css", files: map[string]string{"src/index.css": css, "nodemon.json": `{"execMap":{"js":"node -r hook"}}`}, unresolved: true},
+		{name: "a dependency installed from a path", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","dependencies":{"css-loader":"file:./fork"}}`}, unresolved: true},
+		{name: "a dependency given a tag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","dependencies":{"express":"latest"}}`}, unresolved: true},
+		{name: "a dependency given a non-string version", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","dependencies":{"express":4}}`}, unresolved: true},
+		{name: "vitest.config.ts", spec: "./index.css", files: map[string]string{"src/index.css": css, "vitest.config.ts": "export default {};\n"}, unresolved: true},
+		{name: "vitest.workspace.ts", spec: "./index.css", files: map[string]string{"src/index.css": css, "vitest.workspace.ts": "export default [];\n"}, unresolved: true},
+		{name: "a dependency on vitest", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"vitest":"^1.0.0"}}`}, unresolved: true},
+		{name: "a dependency on the vite React plugin", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"@vitejs/plugin-react":"^4.0.0"}}`}, unresolved: true},
+		{name: "a dependency on storybook", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"@storybook/react-vite":"^8.0.0"}}`}, unresolved: true},
+		{name: "a dependency on bun types", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","devDependencies":{"@types/bun":"^1.0.0"}}`}, unresolved: true},
+		{name: "a dependency on ignore-styles", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","dependencies":{"ignore-styles":"^5.0.1"}}`}, unresolved: true},
+		{name: ".storybook", spec: "./index.css", files: map[string]string{"src/index.css": css, ".storybook/main.js": "module.exports = {};\n"}, unresolved: true},
+		{name: "bunfig.toml", spec: "./index.css", files: map[string]string{"src/index.css": css, "bunfig.toml": "preload = ['./hook.ts']\n"}, unresolved: true},
+		{name: "a script running vitest", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"test":"vitest run"}}`}, unresolved: true},
+		{name: "a script running bun", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"build":"bun build ./src/index.js"}}`}, unresolved: true},
+		{name: "a script running a binary through npx", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"test":"npx vitest"}}`}, unresolved: true},
+		{name: "a script running a binary through yarn", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"test":"yarn vitest"}}`}, unresolved: true},
+		{name: "a script running a binary through npm exec", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"test":"npm exec vitest"}}`}, unresolved: true},
+		{name: "a script appending arguments to another", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"npm run test -- --setupFiles=./hook.js"}}`}, unresolved: true},
+		{name: "a script running another with an extra argument", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"npm run test hook"}}`}, unresolved: true},
+		{name: "a script running no script", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"npm run"}}`}, unresolved: true},
+		{name: "a script installing a package by name", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"setup":"npm install vitest"}}`}, unresolved: true},
+		{name: "a script setting a package-manager config flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"npm start --node-options=--require=./hook.js"}}`}, unresolved: true},
+		{name: "a script giving a value to a bare flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"npm start --silent=x"}}`}, unresolved: true},
+		{name: "a script with a dangling prefix", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"npm start --prefix"}}`}, unresolved: true},
+		{name: "a script with a prefix that is a flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"npm start --prefix --silent"}}`}, unresolved: true},
+		{name: "a script with a bare package manager", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"setup":"yarn"}}`}, unresolved: true},
+		{name: "a script setting NODE_PATH", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"NODE_PATH=./shim node server.js"}}`}, unresolved: true},
+		{name: "a script setting npm's node-options", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"NPM_CONFIG_NODE_OPTIONS=-r./hook.js npm start"}}`}, unresolved: true},
+		{name: "a script of environment assignments only", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"NODE_ENV=x"}}`}, unresolved: true},
+		{name: "a script giving node a flag before the file", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node --experimental-vm-modules server.js"}}`}, unresolved: true},
+		{name: "a script giving node no file", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"repl":"node"}}`}, unresolved: true},
+		{name: "a script running a file outside the tree", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node ../../server.js"}}`}, unresolved: true},
+		{name: "a script running an absolute path", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node /srv/server.js"}}`}, unresolved: true},
+		{name: "a script running a home-relative path", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node ~/server.js"}}`}, unresolved: true},
+		{name: "a script running an unknown tool", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"ts-node server.ts"}}`}, unresolved: true},
+		{name: "a script running a disallowed command beside allowed ones", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node server.js && vitest"}}`}, unresolved: true},
+		{name: "a script ending in &&", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node server.js &&"}}`}, unresolved: true},
+		{name: "an empty script", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"  "}}`}, unresolved: true},
+		{name: "concurrently running a disallowed command", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"dev":"concurrently \"node server\" \"vitest\""}}`}, unresolved: true},
+		{name: "concurrently nested in concurrently", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"dev":"concurrently \"concurrently 'node a'\""}}`}, unresolved: true},
+		{name: "concurrently given a valued flag", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"dev":"concurrently -n api,web \"node a\" \"node b\""}}`}, unresolved: true},
+		{name: "concurrently given nothing", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"dev":"concurrently"}}`}, unresolved: true},
+		{name: "exit with a word", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"exit now"}}`}, unresolved: true},
+		{name: "exit with an empty status", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"exit ''"}}`}, unresolved: true},
+		{name: "a script with an unterminated quote", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"echo 'hi"}}`}, unresolved: true},
+		{name: "a script running in the background", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"node a & node b"}}`}, unresolved: true},
+		{name: "a script expanding a glob", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"node scripts/*.js"}}`}, unresolved: true},
+		{name: "a script with a newline", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"t":"node a\nvitest"}}`}, unresolved: true},
+		{name: "a .git file above the build root does not end the walk", spec: "./index.css", files: map[string]string{"src/index.css": css}, unresolved: true,
+			setup: func(t *testing.T, root string) {
+				treeWrite(t, filepath.Join(root, ".git"), "gitdir: ../.git/modules/build\n")
+				treeWrite(t, filepath.Join(filepath.Dir(root), "package.json"), `{"name":"workspace"}`)
+			}},
+		{name: "a script with tab-separated words does not count", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			"packages/x/package.json": `{"name":"x","scripts":{"start":"node\tserver.js"}}`}},
 		{name: "a dangling symlink to a file does not count", spec: "./index.css", files: map[string]string{"src/index.css": css},
 			setup: func(t *testing.T, root string) {
 				treeSymlink(t, filepath.Join(root, "missing.txt"), filepath.Join(root, "notes.txt"))
@@ -227,7 +382,11 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := filepath.Join(parent, "build")
-			treeWrite(t, filepath.Join(root, "src", "index.js"), "import '"+tc.spec+"';\nfunction load(s) { return s.trim(); }\nload(process.argv);\n")
+			from := tc.from
+			if from == "" {
+				from = "src/index.js"
+			}
+			treeWrite(t, filepath.Join(root, filepath.FromSlash(from)), "import '"+tc.spec+"';\nfunction load(s) { return s.trim(); }\nload(process.argv);\n")
 			if _, own := tc.files["package.json"]; !own && !tc.noCRA {
 				treeWrite(t, filepath.Join(root, "package.json"), craManifest)
 			}

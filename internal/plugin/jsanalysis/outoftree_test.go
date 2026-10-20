@@ -596,6 +596,12 @@ function load(k, s) { return k; }
 function main(a) { return load(a, a); }
 main(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"global name beside an import call", map[string]string{"app.js": `
+const m = import('./m').then(String);
+function load(k, s) { return self[k](s); }
+function main(a) { return load(a, a); }
+main(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function in an array", map[string]string{"app.js": `
 function load(s) { return [Function][0]('m', 'return require(m)')('json5').parse(s); }
 load(process.argv);
@@ -693,6 +699,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
+		{"imported names of global names", "import { top, left } from './util';\nimport * as parent from './util';\nimport self from './util';\nexport const placements = [top, left, parent, self];"},
 		{"parent as a local", "function walk(node, k) { const parent = node.parent; return parent[k]; }"},
 		{"top as a parameter", "function peek(top, k) { return top[k](); }"},
 		{"frames member read", "const n = frames.length;"},

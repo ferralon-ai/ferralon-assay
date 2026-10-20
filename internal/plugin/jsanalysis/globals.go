@@ -9,26 +9,29 @@ import (
 // The global object holds eval and the Function constructor, so any access to it that
 // can name one of them runs code built at run time: a computed key (`globalThis[k](s)`),
 // `.eval` or `.Function`, or the object handed to code that indexes it
-// (`Reflect.get(g, k)`). The global is reached by name (globalThis, global, window,
-// self), through a local alias of one, through `this` where it is the global, and
-// through `Function('return this')()`.
+// (`Reflect.get(g, k)`). The global is reached by name (see globalBase), through a local
+// alias of one, through `this` where it is the global, and through
+// `Function('return this')()`.
 //
-// This tracking is lexical and bounded. It follows a name declared from a global value,
-// and a local declaration of a global name shadows it;
-// it does not follow the global into an object property or through a parameter, and an
-// unknown receiver indexed by a computed key is not treated as the global.
+// This tracking is lexical and bounded. It follows the global into a name that is
+// declared, assigned, defaulted or destructured from it, and into the parameter of a
+// function called in place; a local declaration or import of a global name shadows it.
+// It does not follow the global into an object property or through the parameter of a
+// function called elsewhere, and an unknown receiver indexed by a computed key is not
+// treated as the global.
 
-// globalBase are the names that hold the global object in Node and in browsers.
+// globalBase are the names that hold a global object in Node and in browsers.
 var globalBase = []string{"globalThis", "global", "window", "self", "frames", "parent", "top", "opener"}
 
 // globalScope resolves a name at a position to the global object or to something else.
 // A name resolves through the innermost enclosing scope that declares it: a function
 // parameter, a function declaration, a var (scoped to its function), or a let/const
-// (scoped to its block). It is the global when that declaration initialises it from an
-// expression that can yield the global, and otherwise is a local that shadows the global
-// (`var self = this` in a constructor). A name no scope declares is the global only when it
-// is one of globalBase. At the top level a var of a globalBase name stays the global: in a
-// script it binds the global object's own property.
+// (scoped to its block), or an import. It is the global when any value that declaration or
+// an assignment gives it can yield the global, and otherwise is a local that shadows the
+// global (`var self = this` in a constructor). A name no scope declares is the global
+// only when it is one of globalBase. At the top level a var of a globalBase name stays the
+// global until it is certainly replaced: in a script it binds the global object's own
+// property.
 type globalScope struct {
 	tf      *thisFrames
 	decls   []globalDecl
@@ -148,6 +151,11 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			at := skipSpace(clean, next)
 			if name, _ := peekWord(clean, at); name != "" {
 				add(tf.varScope(tf.block(i)), at, name, 0, 0, false, false)
+			}
+		case "import":
+			for _, at := range importSites(clean, next) {
+				name, _ := readWord(clean, at)
+				add(-1, at, name, 0, 0, false, false)
 			}
 		case "var", "let", "const":
 			block := tf.block(i)
@@ -300,6 +308,41 @@ func patternSites(clean []rune, open int) (sites []int, end int) {
 		}
 	}
 	return sites, n
+}
+
+// importSites returns the positions of the names an import statement whose keyword ends
+// at p binds: `import a, { b as c, type d } from` binds a, c and d; `import * as e from`
+// binds e; `import f = require(...)` binds f. A dynamic import() or import.meta binds none.
+func importSites(clean []rune, p int) []int {
+	n := len(clean)
+	if q := skipSpace(clean, p); q >= n || clean[q] == '(' || clean[q] == '.' {
+		return nil
+	}
+	var sites []int
+	for q := p; q < n; {
+		q = skipSpace(clean, q)
+		if q >= n || clean[q] == ';' || clean[q] == '_' {
+			break // the end, or the blanked module string
+		}
+		if !isIdentStart(clean[q]) {
+			q++
+			continue
+		}
+		w, e := readWord(clean, q)
+		if w == "from" {
+			break
+		}
+		r := skipSpace(clean, e)
+		next, _ := peekWord(clean, r)
+		if r < n && (clean[r] == ',' || clean[r] == '}' || clean[r] == '=') || next == "from" {
+			sites = append(sites, q)
+		}
+		if r < n && clean[r] == '=' {
+			break
+		}
+		q = e
+	}
+	return sites
 }
 
 // typeEnd returns the index of the '=', ',' or ';' that ends a TypeScript type annotation

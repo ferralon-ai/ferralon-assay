@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -38,29 +37,6 @@ func runDisqualWith(t *testing.T, vulnID, lang string, src AdvisorySource, files
 		t.Fatalf("codebase_inventory: %v", err)
 	}
 	return runDisqual(t, store, c.ID)
-}
-
-func pomDeclaring(version string) string {
-	return `<project>
-  <groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-  <dependencies>
-    <dependency><groupId>com.example.lib</groupId><artifactId>widget</artifactId><version>` + version + `</version></dependency>
-  </dependencies>
-</project>`
-}
-
-func aggregatorOf(modules ...string) string {
-	var b strings.Builder
-	b.WriteString(`<project><groupId>com.example</groupId><artifactId>root</artifactId><version>1.0.0</version><packaging>pom</packaging><modules>`)
-	for _, m := range modules {
-		b.WriteString("<module>" + m + "</module>")
-	}
-	b.WriteString(`</modules></project>`)
-	return b.String()
-}
-
-func moduleWithParent(g, a, v string) string {
-	return `<project><parent><groupId>` + g + `</groupId><artifactId>` + a + `</artifactId><version>` + v + `</version></parent><artifactId>b</artifactId></project>`
 }
 
 func csprojReferencing(version string) string {
@@ -99,62 +75,59 @@ func TestDisqualify_EveryResolvedVersion(t *testing.T) {
 		vulnID string
 		lang   string
 		files  map[string]string
+		graph  []graphModule // the Maven build graph handed to the Java resolver
 		want   bool
 	}{
-		{"maven: one module patched, another affected", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
-			"pom.xml": pomDeclaring("1.4.0"), "service/pom.xml": pomDeclaring("1.3.9"),
-		}, false},
-		{"maven: every module patched", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
-			"pom.xml": pomDeclaring("1.4.0"), "service/pom.xml": pomDeclaring("1.5.0"),
-		}, true},
-		{"maven: every declaration patched, a Gradle build beside them", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
-			"pom.xml": pomDeclaring("1.4.0"), "svc/build.gradle": "dependencies {\n  implementation 'com.example.lib:widget:1.5.0'\n}\n",
-		}, false},
-		// The parent POM supplies dependencies to a module that declares none; one outside the tree
-		// can supply widget at any version.
-		{"maven: module inheriting a parent outside the tree", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
-			"pom.xml": aggregatorOf("a", "b"), "a/pom.xml": pomDeclaring("1.4.0"), "b/pom.xml": moduleWithParent("com.corp", "corp-parent", "7"),
-		}, false},
-		{"maven: module inheriting the tree's root", "FERRALON-JAVA-DEP-0001", "java", map[string]string{
-			"pom.xml": aggregatorOf("a", "b"), "a/pom.xml": pomDeclaring("1.4.0"), "b/pom.xml": moduleWithParent("com.example", "root", "1.0.0"),
-		}, true},
-		{"npm: top-level patched, nested install affected", "FERRALON-JS-DEP-0001", "js", map[string]string{
+		{name: "maven: one module patched, another affected", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", graph: []graphModule{
+			{".", widgetAt("1.4.0")}, {"service", widgetAt("1.3.9")},
+		}},
+		{name: "maven: every module patched", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", graph: []graphModule{
+			{".", widgetAt("1.4.0")}, {"service", widgetAt("1.5.0")},
+		}, want: true},
+		{name: "maven: a module the build resolved without the package", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java", graph: []graphModule{
+			{"a", widgetAt("1.4.0")}, {"b", nil},
+		}, want: true},
+		{name: "maven: no build graph", vulnID: "FERRALON-JAVA-DEP-0001", lang: "java"},
+		{name: "npm: top-level patched, nested install affected", vulnID: "FERRALON-JS-DEP-0001", lang: "js", files: map[string]string{
 			"package-lock.json": lockWithLeftPads("1.4.0", "1.3.0"),
-		}, false},
-		{"npm: nested install patched, top-level affected", "FERRALON-JS-DEP-0001", "js", map[string]string{
+		}, want: false},
+		{name: "npm: nested install patched, top-level affected", vulnID: "FERRALON-JS-DEP-0001", lang: "js", files: map[string]string{
 			"package-lock.json": lockWithLeftPads("1.3.0", "1.4.0"),
-		}, false},
-		{"npm: every install patched", "FERRALON-JS-DEP-0001", "js", map[string]string{
+		}, want: false},
+		{name: "npm: every install patched", vulnID: "FERRALON-JS-DEP-0001", lang: "js", files: map[string]string{
 			"package-lock.json": lockWithLeftPads("1.4.0", "1.5.0"),
-		}, true},
-		{"pypi: one service lock patched, another affected", "FERRALON-PY-DEP-0001", "python", map[string]string{
+		}, want: true},
+		{name: "pypi: one service lock patched, another affected", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
 			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.1"),
-		}, false},
-		{"pypi: every service lock patched", "FERRALON-PY-DEP-0001", "python", map[string]string{
+		}, want: false},
+		{name: "pypi: every service lock patched", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
 			"poetry.lock": poetryLockOf("2.3.2"), "worker/poetry.lock": poetryLockOf("2.3.3"),
-		}, true},
-		{"pypi: every requirements pin patched, nothing locked", "FERRALON-PY-DEP-0001", "python", map[string]string{
+		}, want: true},
+		{name: "pypi: every requirements pin patched, nothing locked", vulnID: "FERRALON-PY-DEP-0001", lang: "python", files: map[string]string{
 			"requirements.txt": "flask==2.3.2\n", "worker/requirements.txt": "flask==2.3.3\n",
-		}, false},
-		{"nuget: one project patched, another affected", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
+		}, want: false},
+		{name: "nuget: one project patched, another affected", vulnID: "FERRALON-NET-DEP-0001", lang: "dotnet", files: map[string]string{
 			"Api/Api.csproj": csprojReferencing("[13.0.1]"), "Worker/Worker.csproj": csprojReferencing("[13.0.0]"),
-		}, false},
-		{"nuget: every project pinned patched, which the lane does not vouch for", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
+		}, want: false},
+		{name: "nuget: every project pinned patched, which the lane does not vouch for", vulnID: "FERRALON-NET-DEP-0001", lang: "dotnet", files: map[string]string{
 			"Api/Api.csproj": csprojReferencing("[13.0.1]"), "Worker/Worker.csproj": csprojReferencing("[13.0.2]"),
-		}, false},
-		{"nuget: every minimum patched", "FERRALON-NET-DEP-0001", "dotnet", map[string]string{
+		}, want: false},
+		{name: "nuget: every minimum patched", vulnID: "FERRALON-NET-DEP-0001", lang: "dotnet", files: map[string]string{
 			"Api/Api.csproj": csprojReferencing("13.0.1"), "Worker/Worker.csproj": csprojReferencing("13.0.2"),
-		}, false},
+		}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := runRealDisqual(t, tc.vulnID, tc.lang, nil, tc.files)
+			res := runDisqualWith(t, tc.vulnID, tc.lang, nil, tc.files, realResolverPlugin{lang: tc.lang, java: mavenGraph(t, tc.graph...)})
 			if res.Disqualified != tc.want {
 				t.Fatalf("disqualified = %v (%s), want %v", res.Disqualified, res.Reason, tc.want)
 			}
 		})
 	}
 }
+
+// widgetAt is a module's dependencies when the build resolved com.example.lib:widget at v.
+func widgetAt(v string) map[string]string { return map[string]string{"com.example.lib:widget": v} }
 
 // twoPresentPackagesSource is a two-package advisory whose packages the target both depends on.
 type twoPresentPackagesSource struct{}

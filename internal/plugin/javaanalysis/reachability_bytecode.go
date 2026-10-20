@@ -49,7 +49,7 @@ type bytecodeRoot struct {
 }
 
 // bytecodeReachability searches each sink from every main and mapped ingress.
-func bytecodeReachability(ctx context.Context, buildDir string, targetEnv map[string]string, prog *program, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
+func bytecodeReachability(ctx context.Context, buildDir string, prog *program, fp *firstPartyBytecode, sinks []string, opts ...Option) ([]plugin.ReachPath, []string, map[string]bool, []plugin.ScopedReason, error) {
 	reasons := map[string]bool{}
 	var scoped []plugin.ScopedReason
 
@@ -61,7 +61,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, targetEnv map[st
 		reasons[r] = true
 	}
 
-	rc, err := loadReachClosure(ctx, buildDir, targetEnv, fp.classes)
+	rc, err := loadReachClosure(buildDir, fp.classes, opts...)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

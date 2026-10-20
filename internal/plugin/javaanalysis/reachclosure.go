@@ -1,10 +1,10 @@
 package javaanalysis
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -16,21 +16,18 @@ import (
 )
 
 // reachclosure.go — the whole-program classpath a bytecode reachability search runs over:
-// the build's compiled classes plus every dependency JAR the inventory resolved
-// (ResolveInventory: the effective graph, transitive nodes included). JARs are located in
-// the local caches, never fetched.
+// the build's compiled classes plus every dependency JAR on the runtime classpath the build
+// graph resolved (RuntimeSelection). Each JAR is the file the graph names, read only when it
+// still has the digest the graph recorded; nothing is fetched or looked up in a cache.
 //
 // Every blind spot is a ScopedReason bounded by what the unseen code could call, callbacks
-// into first-party code included (unloadedJarTargets; nil when that closure cannot be
-// bounded):
-//   - a node whose resolved version's JAR no cache holds → maven_uncached_subtree;
-//   - a node with no resolved version, a Gradle dependency no lockfile pins, a JAR whose
-//     cached copies differ, or one the build declares with a classifier or non-jar type →
-//     tool_failure:no_dependency_artifact;
+// into first-party code included (BlindSpotTargets):
+//   - a runtime node whose file is not a JAR → tool_failure:no_dependency_artifact;
 //   - a package the runtime classpath holds at more than one version →
 //     relationship_unexpressed:dependency_version_ambiguous (searching one pick would be a
 //     guess at which body runs);
-//   - a JAR that cannot be opened, or classes in it that fail to parse → tool_failure;
+//   - a JAR that cannot be read, no longer has its recorded digest, cannot be opened, or holds
+//     classes that fail to parse → tool_failure;
 //   - a class two JARs define → relationship_unexpressed:duplicate_class (the engine keeps
 //     one body per binary name, so the other body's calls are unseen);
 //   - a multi-release override (META-INF/versions/N/) that cannot be merged into its base
@@ -39,7 +36,7 @@ import (
 //     calls count as the class's own, since a JDK at release N runs it.
 //
 // A call into a class that is neither loaded nor a JDK platform class is an
-// unloaded_dependency hazard inside depreach, so code the inventory never listed is never
+// unloaded_dependency hazard inside depreach, so code the graph never listed is never
 // silently trusted.
 //
 // This mirrors kotlinanalysis's dependency closure rather than sharing a package with it:
@@ -65,10 +62,9 @@ type reachClosure struct {
 	// Loaded maps "group:artifact:version" to the JAR that was opened, for evidence.
 	Loaded map[string]string
 	// Reasons are declared run-wide and mean the loaded bytes may not be the code that runs, so
-	// no empty search is Searched: the inventory's graph reasons (InventoryGraphReasons), a
-	// launch option the lanes do not model (LaunchOptionReasons), or a Gradle dependency form
-	// the inventory does not model (UnmodeledGradleDependencies). The Kotlin closure declares
-	// the same set. An unmerged multi-release override (reasonMultiReleaseUnmerged) is added
+	// no empty search is Searched: no build graph (PartialReasonBuildGraphAbsent), or a launch
+	// option the lanes do not model (LaunchOptionReasons). The Kotlin closure declares the same
+	// set. An unmerged multi-release override (reasonMultiReleaseUnmerged) is added
 	// here as well.
 	Reasons []string
 	// releaseReasons are the run-wide reasons loading the JARs incurred, kept with the cached
@@ -76,10 +72,17 @@ type reachClosure struct {
 	releaseReasons []string
 }
 
-// gav is one distinct (coordinate, version) from the inventory.
-type gav struct{ coordinate, version string }
+// gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
+// build loads a variant file.
+type gav struct{ coordinate, version, classifier string }
 
-func (g gav) String() string { return g.coordinate + ":" + g.version }
+func (g gav) String() string {
+	s := g.coordinate + ":" + g.version
+	if g.classifier != "" {
+		s += ":" + g.classifier
+	}
+	return s
+}
 
 // closureCache keeps the last engine built per build dir. The pipeline asks Reachability
 // once per advisory, and every ask would otherwise rebuild the hierarchy over the whole
@@ -95,30 +98,23 @@ type closureEntry struct {
 	rc  *reachClosure
 }
 
-// loadReachClosure resolves the inventory for buildDir under the run's stated targetEnv and loads every node's JAR it can
-// locate. firstParty is the build's compiled output: it goes into the engine, and a
-// dependency class with the same binary name is skipped, since the build output is what
-// the build packaged.
-func loadReachClosure(ctx context.Context, buildDir string, targetEnv map[string]string, firstParty []classfile.Class) (*reachClosure, error) {
-	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir, TargetEnv: targetEnv})
-	if err != nil {
-		return nil, err
-	}
-	reasons := InventoryGraphReasons(inv)
-	reasons = append(reasons, LaunchOptionReasons(buildDir)...)
-	if UnmodeledGradleDependencies(buildDir) != nil {
-		reasons = append(reasons, PartialReasonUnmodeledDependency)
-	}
-	ix := indexInventory(inv)
-	cache := newMavenCache(buildDir)
-	reactor := reactorCoordinates(buildDir)
+// loadReachClosure loads every runtime JAR the build graph names. firstParty is the build's
+// compiled output: it goes into the engine, and a dependency class with the same binary name is
+// skipped, since the build output is what the build packaged. Without a graph only firstParty
+// is loaded, and the closure says so run-wide.
+func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Option) (*reachClosure, error) {
+	g := BuildGraph(opts...)
+	reasons := LaunchOptionReasons(buildDir)
 
 	targetsMemo := map[string][]string{}
 	targets := func(coord string) []string {
 		if t, ok := targetsMemo[coord]; ok {
 			return t
 		}
-		t := unloadedJarTargets(ix, cache, coord)
+		var t []string
+		if g != nil {
+			t = BlindSpotTargets(g, coord)
+		}
 		targetsMemo[coord] = t
 		return t
 	}
@@ -133,30 +129,27 @@ func loadReachClosure(ctx context.Context, buildDir string, targetEnv map[string
 	}
 	var jars []opened
 	fp := sha256.New()
-	locks, _ := GradleLockEntries(buildDir)
-	sel := selectRuntimeGAVs(ix, reactor, locks)
-	for _, m := range sel.miss {
-		rc.Scoped = append(rc.Scoped, scoped(m.reason, m.coordinate, m.detail))
-	}
-	for _, n := range sel.load {
-		if ix.variantAt(n.coordinate, n.version) {
-			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": artifact variant declared"))
-			continue
+	if g == nil {
+		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
+	} else {
+		load, miss := RuntimeSelection(g)
+		for _, m := range miss {
+			reason := reasonNoDependencyArtifact
+			if m.Ambiguous {
+				reason = reasonDependencyVersionAmbiguous
+			}
+			rc.Scoped = append(rc.Scoped, scoped(reason, m.Coordinate, m.Detail))
 		}
-		jar, found := locateArtifactJar(buildDir, n.coordinate, n.version)
-		switch found {
-		case jarCopiesDiffer:
-			rc.Scoped = append(rc.Scoped, scoped(reasonNoDependencyArtifact, n.coordinate, n.String()+": cached copies differ"))
-			continue
-		case jarUnreadable:
-			rc.Scoped = append(rc.Scoped, scoped(plugin.PartialReasonToolFailure, n.coordinate, n.String()+": cached copy unreadable or outside the cache"))
-			continue
-		case jarMissing:
-			rc.Scoped = append(rc.Scoped, scoped(reasonMavenUncachedSubtree, n.coordinate, n.String()))
-			continue
+		for _, j := range load {
+			n := gav{coordinate: j.Coordinate, version: j.Version, classifier: j.Classifier}
+			jar, found := readJar(j)
+			if found != jarFound {
+				rc.Scoped = append(rc.Scoped, scoped(plugin.PartialReasonToolFailure, n.coordinate, n.String()+": "+filepath.Base(j.Path)+" unreadable or changed since the build resolved it"))
+				continue
+			}
+			fmt.Fprintln(fp, j.Path, j.SHA256)
+			jars = append(jars, opened{n, jar})
 		}
-		fmt.Fprintln(fp, jarKey(jar.data))
-		jars = append(jars, opened{n, jar})
 	}
 	fmt.Fprintln(fp, firstPartyFingerprint(firstParty))
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
@@ -327,112 +320,9 @@ func (rc *reachClosure) class(name string) (*classfile.Class, bool) {
 	return c, ok
 }
 
-// gradleRuntimeConfig is the one Gradle configuration whose locked versions are the
-// classpath the application runs with. compileClasspath can differ from it (compileOnly,
-// constraints), and test*, annotationProcessor and kapt* classpaths never run in production.
-const gradleRuntimeConfig = "runtimeClasspath"
-
-// runtimeSelection is, per dependency coordinate, either the one version the build runs or
-// the named reason no version could be chosen.
-type runtimeSelection struct {
-	load []gav
-	miss []selectionMiss
-}
-
-type selectionMiss struct{ coordinate, reason, detail string }
-
-// selectRuntimeGAVs picks the dependency versions the search loads: only those on the
-// classpath the application runs with, and only when that is a single resolved version.
-//
-//   - A Maven node counts when its scope is compile, runtime, provided (the container
-//     supplies it at run time) or system; a test node never does.
-//   - A Gradle lockfile node counts at each version a lockfile line pins in
-//     runtimeClasspath. The inventory keeps one version per coordinate, so the lockfile
-//     lines are read directly.
-//   - A Gradle dependency with no lockfile has no known configuration or resolved
-//     version, so it is a miss.
-//
-// A coordinate left with two or more distinct versions, or any unresolved one, is a miss
-// rather than a pick. Leaving a coordinate out is sound on its own: a call into a class
-// nothing loaded is an unloaded_dependency hazard, and a sink in it has no concrete body.
-// The build's own reactor modules are skipped, since their code is the first-party output.
-// Output is sorted by coordinate so the load order (and so which JAR wins a duplicate class)
-// is deterministic.
-func selectRuntimeGAVs(ix inventoryIndex, reactor map[string]bool, locks []GradleLockEntry) runtimeSelection {
-	lockedRuntime := map[string][]string{}
-	for _, e := range locks {
-		if slices.Contains(e.Configs, gradleRuntimeConfig) {
-			c := e.Group + ":" + e.Artifact
-			lockedRuntime[c] = append(lockedRuntime[c], e.Version)
-		}
-	}
-	coords := make([]string, 0, len(ix.byCoordinate))
-	for c := range ix.byCoordinate {
-		if !reactor[c] {
-			coords = append(coords, c)
-		}
-	}
-	sort.Strings(coords)
-
-	var sel runtimeSelection
-	for _, coord := range coords {
-		var versions []string
-		unlocked := false
-		for _, n := range ix.byCoordinate[coord] {
-			switch n.Provenance.Resolver {
-			case "gradle-lockfile":
-				versions = append(versions, lockedRuntime[coord]...)
-			case "gradle-script", "gradle-catalog":
-				unlocked = true
-			default:
-				if mavenRuntimeScope(n.Membership.Target) {
-					versions = append(versions, n.Version)
-				}
-			}
-		}
-		slices.Sort(versions)
-		versions = slices.Compact(versions)
-		switch {
-		case unlocked:
-			sel.miss = append(sel.miss, selectionMiss{coord, reasonNoDependencyArtifact, coord + ": no lockfile pins its configuration or version"})
-		case len(versions) == 0:
-		case slices.Contains(versions, ""):
-			sel.miss = append(sel.miss, selectionMiss{coord, reasonNoDependencyArtifact, coord + ": no resolved version"})
-		case len(versions) > 1:
-			sel.miss = append(sel.miss, selectionMiss{coord, reasonDependencyVersionAmbiguous, coord + ": runtime versions " + strings.Join(versions, ", ")})
-		default:
-			sel.load = append(sel.load, gav{coordinate: coord, version: versions[0]})
-		}
-	}
-	return sel
-}
-
-// mavenRuntimeScope reports whether a Maven dependency scope puts the JAR on the classpath
-// the application runs with.
-func mavenRuntimeScope(scope string) bool {
-	switch scope {
-	case "compile", "runtime", "provided", "system":
-		return true
-	}
-	return false
-}
-
-// reactorCoordinates returns the "group:artifact" of every Maven module under buildDir.
-func reactorCoordinates(buildDir string) map[string]bool {
-	out := map[string]bool{}
-	for _, p := range findPOMs(buildDir) {
-		pom, ok := parseMavenPOM(p)
-		if !ok || pom.ArtifactID == "" {
-			continue
-		}
-		out[pom.GroupID+":"+pom.ArtifactID] = true
-	}
-	return out
-}
-
 // jarCache keeps each parsed JAR for the life of the plugin process, keyed by the digest of
-// the bytes locateArtifactJar read, so a rewritten JAR is re-read and what is parsed is what
-// was compared.
+// the bytes readJar checked, so a rewritten JAR is re-read and what is parsed is what was
+// checked.
 var jarCache = struct {
 	sync.Mutex
 	m map[string]classfile.JarResult

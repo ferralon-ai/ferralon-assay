@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/kotlinanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -54,7 +55,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 		return writeError(stdout, fmt.Sprintf("protocol mismatch: got %q, want %q", req.Protocol, plugin.ProtocolVersion))
 	}
 
-	resp, opErr := dispatch(ctx, req)
+	resp, opErr := dispatch(ctx, req, javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv)))
 	if opErr != nil {
 		return writeError(stdout, opErr.Error())
 	}
@@ -66,8 +67,9 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // reachability call the real bytecode analysis over the compiled build output;
 // capability_manifest returns the lane's honest manifest. The remaining ops are
 // contract-present and return declared partiality. An unknown op, or a missing per-op
-// payload, is a hard failure (inv.4).
-func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
+// payload, is a hard failure (inv.4). opts carry the build graph the host accepted
+// (plugin.BuildGraphEnv) to every op that reads the dependency graph.
+func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Option) (plugin.Response, error) {
 	switch req.Op {
 	case plugin.OpIndexSymbols:
 		if req.IndexSymbols == nil {
@@ -83,7 +85,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveSymbols == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_symbols request", req.Op)
 		}
-		res, err := kotlinanalysis.ResolveDependencySymbols(ctx, *req.ResolveSymbols)
+		res, err := kotlinanalysis.ResolveDependencySymbols(ctx, *req.ResolveSymbols, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -93,7 +95,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveVersions == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_versions request", req.Op)
 		}
-		res, err := kotlinanalysis.ResolveDependencyVersions(ctx, *req.ResolveVersions)
+		res, err := kotlinanalysis.ResolveDependencyVersions(ctx, *req.ResolveVersions, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -123,7 +125,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.Reachability == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing reachability request", req.Op)
 		}
-		res, err := kotlinanalysis.Reachability(ctx, *req.Reachability)
+		res, err := kotlinanalysis.Reachability(ctx, *req.Reachability, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -153,7 +155,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.BuildManifest == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
-		res, err := kotlinanalysis.BuildManifest(ctx, *req.BuildManifest)
+		res, err := kotlinanalysis.BuildManifest(ctx, *req.BuildManifest, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -163,7 +165,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		res, err := kotlinanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		res, err := kotlinanalysis.ResolveInventory(ctx, *req.ResolveInventory, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}

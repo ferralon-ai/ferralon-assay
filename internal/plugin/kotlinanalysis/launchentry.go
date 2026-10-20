@@ -117,6 +117,9 @@ var (
 	pomWar          = regexp.MustCompile(`<packaging>\s*war\s*</packaging>`)
 )
 
+// javaBinaryName matches a dotted Java binary class name.
+var javaBinaryName = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$`)
+
 type entryReader struct {
 	reasons map[string]bool
 	named   map[string]bool
@@ -127,13 +130,11 @@ type entryReader struct {
 // first-party and dependency, for the ancestor walk.
 func launchEntryReasons(buildDir string, prog *program, deps *depClosure, all []classfile.Class) []string {
 	r := &entryReader{reasons: map[string]bool{}, named: map[string]bool{}}
-	for _, cls := range deps.mainClasses {
-		r.name(strings.ReplaceAll(cls, "/", "."))
-	}
 	for _, n := range []string{"build.gradle", "build.gradle.kts"} {
 		r.gradle(filepath.Join(buildDir, n))
 	}
 	r.maven(filepath.Join(buildDir, "pom.xml"))
+	r.startScripts(buildDir)
 	r.manifestFile(filepath.Join(buildDir, "src", "main", "resources", "META-INF", "MANIFEST.MF"))
 	for _, rel := range firstPartyClassRoots {
 		r.manifestFile(filepath.Join(buildDir, rel, "META-INF", "MANIFEST.MF"))
@@ -305,6 +306,49 @@ func (r *entryReader) gradle(path string) {
 		}
 		if !covered {
 			r.reasons[reasonLaunchEntryUnmapped] = true
+		}
+	}
+}
+
+// startScriptDirs are where Gradle writes the start scripts it generates: `startScripts` (run
+// by `assemble` for the application plugin) and `installDist`.
+var startScriptDirs = []string{
+	filepath.Join("build", "scripts"),
+	filepath.Join("build", "install", "*", "bin"),
+}
+
+// startScripts names the class each Gradle unix start script launches: the line after
+// `-classpath "$CLASSPATH" \`. A script that launches no plain class (a --module launch, a
+// hand-edited script) is an entry the reader cannot resolve.
+func (r *entryReader) startScripts(buildDir string) {
+	for _, pattern := range startScriptDirs {
+		dirs, _ := filepath.Glob(filepath.Join(buildDir, pattern))
+		for _, d := range dirs {
+			entries, err := os.ReadDir(d)
+			if err != nil {
+				r.reasons[reasonLaunchEntryUnmapped] = true
+				continue
+			}
+			for _, e := range entries {
+				if e.IsDir() || strings.HasSuffix(e.Name(), ".bat") {
+					continue
+				}
+				text, ok := r.read(filepath.Join(d, e.Name()))
+				if !ok {
+					continue
+				}
+				lines := strings.Split(text, "\n")
+				named := false
+				for i, line := range lines {
+					if strings.TrimSpace(line) == `-classpath "$CLASSPATH" \` && i+1 < len(lines) {
+						r.name(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(lines[i+1]), `\`)))
+						named = true
+					}
+				}
+				if !named {
+					r.reasons[reasonLaunchEntryUnmapped] = true
+				}
+			}
 		}
 	}
 }

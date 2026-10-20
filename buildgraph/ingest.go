@@ -28,7 +28,7 @@ var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true,
 // scan states. On top of Validate it requires that:
 //   - the graph was resolved under exactly the stated conditions;
 //   - every build input it names still has its recorded sha256, and the checkout holds no build
-//     input it does not name;
+//     input it does not name, of its own tool or the other;
 //   - every module path is a clean relative path to a directory inside dir;
 //   - each module holds one node per group:artifact:type:classifier, every non-root node at a
 //     known scope;
@@ -122,10 +122,10 @@ func checkInputs(g *Graph, dir string) error {
 		}
 		recorded[in.Path] = true
 	}
-	match := gradleInput
+	match, other, otherName := gradleInput, mavenInput(nil), "Maven"
 	switch g.Tool.Name {
 	case "maven":
-		match = mavenInput(nil)
+		match, other, otherName = mavenInput(nil), gradleInput, "Gradle"
 	case "gradle":
 	default:
 		return reject(CheckSubjectInputs, "unknown tool "+g.Tool.Name)
@@ -138,6 +138,14 @@ func checkInputs(g *Graph, dir string) error {
 		if !recorded[in.Path] {
 			return reject(CheckSubjectInputs, in.Path+" is a build input the graph does not name")
 		}
+	}
+	// A build of the other tool beside this one resolves dependencies this graph never saw.
+	foreign, err := collectInputs(dir, other)
+	if err != nil {
+		return reject(CheckSubjectInputs, err.Error())
+	}
+	if len(foreign) > 0 {
+		return reject(CheckSubjectInputs, foreign[0].Path+" is a "+otherName+" build input the "+g.Tool.Name+" graph does not cover")
 	}
 	return nil
 }

@@ -5,20 +5,35 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-func buildManifest(t *testing.T, dir, lang string) plugin.BuildManifestResult {
+func buildManifest(t *testing.T, dir, lang string, opts ...Option) plugin.BuildManifestResult {
 	t.Helper()
-	res, err := BuildManifest(context.Background(), plugin.BuildManifestRequest{BuildDir: dir}, lang)
+	res, err := BuildManifest(context.Background(), plugin.BuildManifestRequest{BuildDir: dir}, lang, opts...)
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
 	return res
 }
 
+// manifestGraph is a graph resolved by tool on a JDK at jvm, holding a module at each path.
+func manifestGraph(t *testing.T, tool, jvm string, paths ...string) Option {
+	t.Helper()
+	g := buildgraph.Graph{Schema: buildgraph.Schema, Tool: buildgraph.Tool{Name: tool, Version: "test"}, JVM: buildgraph.JVM{Version: jvm}}
+	for _, p := range paths {
+		name := "app"
+		if p != "." {
+			name = p
+		}
+		g.Modules = append(g.Modules, testModule(t, p, name))
+	}
+	return writeGraph(t, g)
+}
+
 // The irreducible residue every JVM manifest must declare (Target/Configuration always;
-// exact-Toolchain unless a pin file records it). The tests assert these are named, never
+// toolchain_unpinned unless the graph names the JDK). The tests assert these are named, never
 // silently dropped, and never Complete over them (inv.5).
 func assertHonestResidue(t *testing.T, res plugin.BuildManifestResult, wantToolchainUnpinned bool) {
 	t.Helper()
@@ -42,143 +57,81 @@ func assertHonestResidue(t *testing.T, res plugin.BuildManifestResult, wantToolc
 	}
 }
 
-const pomManifest = `<project>
-  <groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-  <properties>
-    <maven.compiler.release>17</maven.compiler.release>
-    <maven.compiler.source>11</maven.compiler.source>
-  </properties>
-</project>`
-
-const pomJavaVersionProp = `<project>
-  <groupId>com.example</groupId><artifactId>svc</artifactId><version>1.0.0</version>
-  <properties>
-    <java.ver>1.8</java.ver>
-    <java.version>${java.ver}</java.version>
-  </properties>
-</project>`
-
-const pomNoVersion = `<project>
-  <groupId>com.example</groupId><artifactId>bare</artifactId><version>1.0.0</version>
-</project>`
-
+// The runtime is the JDK the build tool ran on: exact, ambient, its feature release the version.
 func TestBuildManifest_MavenEmitBar(t *testing.T) {
-	dir := writeTree(t, map[string]string{"pom.xml": pomManifest})
-	res := buildManifest(t, dir, "java")
+	dir := writeTree(t, map[string]string{})
+	res := buildManifest(t, dir, "java", manifestGraph(t, "maven", "17.0.9", "."))
 
 	if res.ProjectRoot != "com.example:app" {
 		t.Errorf("ProjectRoot = %q, want com.example:app", res.ProjectRoot)
 	}
-	if runtimeOf(res).Name != "java" {
-		t.Errorf("Runtime.Name = %q, want java", runtimeOf(res).Name)
-	}
-	if runtimeOf(res).Version != "17" { // release ⊐ source
-		t.Errorf("Runtime.Version = %q, want 17", runtimeOf(res).Version)
+	rt := runtimeOf(res)
+	if rt.Name != "java" || rt.Version != "17" || rt.Toolchain != "17.0.9" || rt.Source != plugin.RuntimeSourceAmbient {
+		t.Errorf("Runtime = %+v, want java 17, toolchain 17.0.9, ambient", rt)
 	}
 	if resolverOf(res).Name != "maven" || resolverOf(res).Command != "mvn -o -DskipTests package" {
 		t.Errorf("Resolver = %+v, want maven / offline package", resolverOf(res))
 	}
-	assertHonestResidue(t, res, true)
+	assertHonestResidue(t, res, false)
 	if hasReason(res.Partiality, reasonNoRuntimeVersion) {
 		t.Errorf("must not declare no_runtime_version when a version resolved: %v", res.Partiality.Reasons)
 	}
 }
 
-func TestBuildManifest_MavenPropertyInterpolation(t *testing.T) {
-	dir := writeTree(t, map[string]string{"pom.xml": pomJavaVersionProp})
-	res := buildManifest(t, dir, "java")
-	if runtimeOf(res).Version != "1.8" {
-		t.Errorf("Runtime.Version = %q, want 1.8 (resolved ${java.ver})", runtimeOf(res).Version)
-	}
-}
-
-func TestBuildManifest_MavenNoRuntimeVersion(t *testing.T) {
-	dir := writeTree(t, map[string]string{"pom.xml": pomNoVersion})
-	res := buildManifest(t, dir, "java")
-	if runtimeOf(res).Version != "" {
-		t.Errorf("Runtime.Version = %q, want empty (never guessed)", runtimeOf(res).Version)
-	}
-	if !hasReason(res.Partiality, reasonNoRuntimeVersion) {
-		t.Errorf("missing no_runtime_version reason: %v", res.Partiality.Reasons)
-	}
-}
-
-const gradleManifest = `plugins { id 'java' }
-java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    toolchain { languageVersion = JavaLanguageVersion.of(21) }
-}
-dependencies { implementation 'com.example:lib:1.0.0' }
-`
-
-const settingsGradle = `rootProject.name = 'my-service'
-`
-
 func TestBuildManifest_GradleEmitBar(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"build.gradle":    gradleManifest,
-		"settings.gradle": settingsGradle,
-	})
-	res := buildManifest(t, dir, "java")
-
-	if res.ProjectRoot != "my-service" {
-		t.Errorf("ProjectRoot = %q, want my-service", res.ProjectRoot)
-	}
-	if runtimeOf(res).Version != "21" { // languageVersion floor wins over sourceCompatibility
+	dir := writeTree(t, map[string]string{})
+	res := buildManifest(t, dir, "java", manifestGraph(t, "gradle", "21.0.4", "."))
+	if runtimeOf(res).Version != "21" {
 		t.Errorf("Runtime.Version = %q, want 21", runtimeOf(res).Version)
 	}
 	if resolverOf(res).Name != "gradle" || resolverOf(res).Command != "gradle --offline assemble" {
 		t.Errorf("Resolver = %+v, want gradle / offline assemble", resolverOf(res))
 	}
+	assertHonestResidue(t, res, false)
+}
+
+func TestJavaMajor(t *testing.T) {
+	for in, want := range map[string]string{"1.8.0_402": "8", "21.0.4": "21", "17": "17", "11.0.2+9": "11", "25-ea": "25"} {
+		if got := javaMajor(in); got != want {
+			t.Errorf("javaMajor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A graph that does not name its JDK leaves the version empty, never guessed.
+func TestBuildManifest_NoRuntimeVersion(t *testing.T) {
+	dir := writeTree(t, map[string]string{})
+	res := buildManifest(t, dir, "java", manifestGraph(t, "maven", "", "."))
+	if runtimeOf(res).Version != "" || runtimeOf(res).Toolchain != "" {
+		t.Errorf("Runtime = %+v, want no version or toolchain (never guessed)", runtimeOf(res))
+	}
+	if !hasReason(res.Partiality, reasonNoRuntimeVersion) {
+		t.Errorf("missing no_runtime_version reason: %v", res.Partiality.Reasons)
+	}
 	assertHonestResidue(t, res, true)
 }
 
-func TestBuildManifest_GradleKotlinDSLJvmTarget(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"build.gradle.kts": "kotlin { }\ntasks.compileKotlin { kotlinOptions.jvmTarget = \"11\" }\n",
-	})
-	res := buildManifest(t, dir, "kotlin")
-	if runtimeOf(res).Version != "11" {
-		t.Errorf("Runtime.Version = %q, want 11 (jvmTarget)", runtimeOf(res).Version)
-	}
-}
-
-func TestBuildManifest_ToolchainPinFromFile(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"pom.xml":        pomManifest,
-		".tool-versions": "java temurin-17.0.9\nnodejs 20.0.0\n",
-	})
-	res := buildManifest(t, dir, "java")
-	if runtimeOf(res).Toolchain != "temurin-17.0.9" {
-		t.Errorf("Runtime.Toolchain = %q, want temurin-17.0.9", runtimeOf(res).Toolchain)
-	}
-	assertHonestResidue(t, res, false) // an exact pin exists ⇒ no toolchain_unpinned reason
-}
-
 func TestBuildManifest_MultiModule(t *testing.T) {
-	dir := writeTree(t, map[string]string{
-		"pom.xml":       "<project><groupId>com.example</groupId><artifactId>parent</artifactId><version>1.0.0</version></project>",
-		"mod-a/pom.xml": "<project><parent><groupId>com.example</groupId></parent><artifactId>a</artifactId></project>",
-		"mod-b/pom.xml": "<project><parent><groupId>com.example</groupId></parent><artifactId>b</artifactId></project>",
-	})
-	res := buildManifest(t, dir, "java")
-	if res.ProjectRoot != "com.example:parent" {
-		t.Errorf("ProjectRoot = %q, want com.example:parent (root pom)", res.ProjectRoot)
+	dir := writeTree(t, map[string]string{})
+	res := buildManifest(t, dir, "java", manifestGraph(t, "maven", "21.0.4", ".", "mod-a", "mod-b"))
+	if res.ProjectRoot != "com.example:app" {
+		t.Errorf("ProjectRoot = %q, want com.example:app (root module)", res.ProjectRoot)
 	}
-	if !hasReason(res.Partiality, reasonMultiModule) {
-		t.Errorf("missing multi_module_project reason: %v", res.Partiality.Reasons)
+	if !hasReason(res.Partiality, reasonMultiModule) || !hasReason(res.Partiality, reasonMultiModule+": 3 module(s): ., mod-a, mod-b") {
+		t.Errorf("missing multi_module_project reason naming the modules: %v", res.Partiality.Reasons)
 	}
 }
 
-func TestBuildManifest_NoManifest(t *testing.T) {
-	dir := writeTree(t, map[string]string{})
+func TestBuildManifest_NoGraph(t *testing.T) {
+	dir := writeTree(t, map[string]string{"pom.xml": "<project><artifactId>a</artifactId></project>"})
 	res := buildManifest(t, dir, "java")
-	if !hasReason(res.Partiality, plugin.PartialReasonNoManifest) {
-		t.Errorf("missing no_manifest reason: %v", res.Partiality.Reasons)
+	if !hasReason(res.Partiality, PartialReasonBuildGraphAbsent) {
+		t.Errorf("missing %s reason: %v", PartialReasonBuildGraphAbsent, res.Partiality.Reasons)
 	}
-	if res.ProjectRoot != "." {
-		t.Errorf("ProjectRoot = %q, want . fallback", res.ProjectRoot)
+	if res.ProjectRoot != "." || len(res.Resolvers) != 0 || runtimeOf(res).Version != "" {
+		t.Errorf("want nothing read off the checkout, got %+v", res)
 	}
+	assertHonestResidue(t, res, true)
 }
 
 func TestBuildManifest_MissingBuildDirIsHardError(t *testing.T) {
@@ -188,17 +141,11 @@ func TestBuildManifest_MissingBuildDirIsHardError(t *testing.T) {
 	}
 }
 
-// Delegation parity: kotlin == java for the same build tree (Runtime.Name aside).
+// Delegation parity: kotlin == java for the same graph (Runtime.Name aside).
 func TestBuildManifest_KotlinDelegationParity(t *testing.T) {
-	files := map[string]string{
-		"build.gradle":    gradleManifest,
-		"settings.gradle": settingsGradle,
-	}
-	javaDir := writeTree(t, cloneFiles(files))
-	kotlinDir := writeTree(t, cloneFiles(files))
-
-	jres := buildManifest(t, javaDir, "java")
-	kres := buildManifest(t, kotlinDir, "kotlin")
+	graph := manifestGraph(t, "gradle", "21.0.4", ".")
+	jres := buildManifest(t, writeTree(t, map[string]string{}), "java", graph)
+	kres := buildManifest(t, writeTree(t, map[string]string{}), "kotlin", graph)
 
 	if runtimeOf(jres).Name != "java" || runtimeOf(kres).Name != "kotlin" {
 		t.Fatalf("Runtime.Name should differ per lane: java=%q kotlin=%q", runtimeOf(jres).Name, runtimeOf(kres).Name)
@@ -210,26 +157,10 @@ func TestBuildManifest_KotlinDelegationParity(t *testing.T) {
 	}
 }
 
-func cloneFiles(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
 func equalManifest(a, b plugin.BuildManifestResult) bool {
-	if !slices.Equal(a.Runtimes, b.Runtimes) || a.Configuration != b.Configuration ||
-		a.ProjectRoot != b.ProjectRoot || !slices.Equal(a.Resolvers, b.Resolvers) ||
-		a.Partiality.Complete != b.Partiality.Complete || len(a.Partiality.Reasons) != len(b.Partiality.Reasons) {
-		return false
-	}
-	for i := range a.Partiality.Reasons {
-		if a.Partiality.Reasons[i] != b.Partiality.Reasons[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a.Runtimes, b.Runtimes) && a.Configuration == b.Configuration &&
+		a.ProjectRoot == b.ProjectRoot && slices.Equal(a.Resolvers, b.Resolvers) &&
+		a.Partiality.Complete == b.Partiality.Complete && slices.Equal(a.Partiality.Reasons, b.Partiality.Reasons)
 }
 
 // runtimeOf and resolverOf return the manifest's sole runtime/resolver, or the zero value when

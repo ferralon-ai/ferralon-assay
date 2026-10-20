@@ -136,11 +136,17 @@ var ret = []byte{0xB1}
 type appFixture struct {
 	t     *testing.T
 	build string
+	tool  string     // the build tool the graph names
+	deps  []graphDep // the root module's resolved dependencies
+	graph Option     // replaces the graph built from tool and deps when set
 }
 
-// newApp writes a pom declaring netkit (plus extra dependency XML), and netkit's JAR and a
-// dependency-free POM for it in the build-local cache, so netkit's own subtree is closed.
-// abstractSink makes UrlFetcher.fetch abstract.
+// dep adds a resolved dependency to the fixture's build graph.
+func (a *appFixture) dep(d graphDep) { a.deps = append(a.deps, d) }
+
+// newApp writes a pom declaring netkit (plus extra dependency XML), netkit's JAR and a
+// dependency-free POM for it in the build-local cache, and a Maven build graph resolving netkit
+// to that JAR. abstractSink makes UrlFetcher.fetch abstract.
 func newApp(t *testing.T, extraDeps string, abstractSink bool) *appFixture {
 	t.Helper()
 	build := t.TempDir()
@@ -166,7 +172,12 @@ func newApp(t *testing.T, extraDeps string, abstractSink bool) *appFixture {
 	writeJar(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"), "com/evil/netkit/UrlFetcher.class", jar)
 	writeFileT(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), `<project><modelVersion>4.0.0</modelVersion>
   <groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version></project>`)
-	return &appFixture{t: t, build: build}
+	return &appFixture{t: t, build: build, tool: "maven", deps: []graphDep{netkitDep(build)}}
+}
+
+// netkitDep is netkit as the graph resolves it: a compile dependency on the build-local JAR.
+func netkitDep(build string) graphDep {
+	return graphDep{group: "com.evil", artifact: "netkit", version: "1.0.0", jar: netkitJarPath(build)}
 }
 
 // source writes a main source file under src/main/java (or under module/ when given).
@@ -213,7 +224,11 @@ func (a *appFixture) reach(symbols ...string) plugin.ReachabilityResult {
 // reachUnder runs Reachability with the run's stated target-environment conditions.
 func (a *appFixture) reachUnder(env map[string]string, symbols ...string) plugin.ReachabilityResult {
 	a.t.Helper()
-	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: symbols, TargetEnv: env})
+	graph := a.graph
+	if graph == nil {
+		graph = graphOption(a.t, a.tool, testModule(a.t, ".", "app", a.deps...))
+	}
+	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{BuildDir: a.build, Symbols: symbols, TargetEnv: env}, graph)
 	if err != nil {
 		a.t.Fatalf("Reachability: %v", err)
 	}
@@ -492,37 +507,27 @@ func TestBytecodeReach_AbstractSinkIsNotSearched(t *testing.T) {
 	}
 }
 
-// A closure JAR no cache holds hides code that can call its own closure and, through objects
-// the build hands it, first-party code and everything that reaches. So the scoped
-// maven_uncached_subtree is bounded by "", the JAR, its closure and the build's direct
-// dependencies' closure, and is nil when the JAR's own POM is not cached either. Each scoped
-// reason is also listed run-wide.
-func TestBytecodeReach_UncachedJarIsScopedAndRunWide(t *testing.T) {
-	const goneDep = `<dependency><groupId>com.dep</groupId><artifactId>gone</artifactId><version>1</version></dependency>`
+// A JAR the graph names but that is gone hides code that can call anything else the build
+// resolved and, through objects the build hands it, first-party code. So the scoped tool_failure
+// is bounded by "" and every dependency of the module holding it, and is listed run-wide.
+func TestBytecodeReach_MissingJarIsScopedAndRunWide(t *testing.T) {
 	const gonePURL = "pkg:maven/com.dep/gone"
 	for _, tc := range []struct {
-		name        string
-		jar, pom    bool
-		wantScoped  bool
-		wantTargets []string
+		name       string
+		jar        bool
+		wantScoped bool
 	}{
-		{name: "jar present", jar: true, pom: true},
-		{name: "jar missing, closure known", pom: true, wantScoped: true,
-			wantTargets: []string{"", gonePURL, "pkg:maven/com.dep/optdep", "pkg:maven/com.dep/profdep", "pkg:maven/com.dep/provdep", netkitPURL}},
-		{name: "jar missing, metadata missing", wantScoped: true, wantTargets: nil},
+		{name: "jar present", jar: true},
+		{name: "jar missing", wantScoped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := newApp(t, goneDep, false)
-			writeNetkitOwnPom(t, a.build)
-			dir := filepath.Join(a.build, ".m2", "repository", "com", "dep", "gone", "1")
-			if tc.pom {
-				writeFileT(t, filepath.Join(dir, "gone-1.pom"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.dep</groupId><artifactId>gone</artifactId><version>1</version></project>`)
-			}
+			a := newApp(t, "", false)
+			jar := filepath.Join(a.build, ".m2", "repository", "com", "dep", "gone", "1", "gone-1.jar")
 			if tc.jar {
 				b := &cpb{}
-				writeJar(t, filepath.Join(dir, "gone-1.jar"), "com/dep/gone/Gone.class", emitClassX(b, "com/dep/gone/Gone", "java/lang/Object", 0x0021, []xmethod{{"run", "()V", accPublic, ret}}))
+				writeJar(t, jar, "com/dep/gone/Gone.class", emitClassX(b, "com/dep/gone/Gone", "java/lang/Object", 0x0021, []xmethod{{"run", "()V", accPublic, ret}}))
 			}
+			a.dep(graphDep{group: "com.dep", artifact: "gone", version: "1", jar: jar})
 			a.source("src/main/java/com/acme/App.java", appSource)
 			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
 
@@ -534,56 +539,32 @@ func TestBytecodeReach_UncachedJarIsScopedAndRunWide(t *testing.T) {
 				}
 			}
 			if !tc.wantScoped {
-				if len(got) != 0 || hasReason(res.Partiality, reasonMavenUncachedSubtree) {
-					t.Fatalf("a cached JAR costs a reason: %+v", res.Partiality)
+				if len(got) != 0 || hasReason(res.Partiality, plugin.PartialReasonToolFailure) {
+					t.Fatalf("a present JAR costs a reason: %+v", res.Partiality)
 				}
 				return
 			}
-			if len(got) != 1 || got[0].Reason != reasonMavenUncachedSubtree || got[0].Path != "com.dep:gone:1" {
-				t.Fatalf("want one scoped maven_uncached_subtree for gone, got %+v", res.Partiality.Scoped)
+			if len(got) != 1 || got[0].Reason != plugin.PartialReasonToolFailure || got[0].Path != "com.dep:gone:1: gone-1.jar unreadable or changed since the build resolved it" {
+				t.Fatalf("want one scoped tool_failure for gone, got %+v", res.Partiality.Scoped)
 			}
-			if !reflect.DeepEqual(got[0].Targets, tc.wantTargets) {
-				t.Errorf("targets = %q, want %q", got[0].Targets, tc.wantTargets)
+			if want := []string{"", gonePURL, netkitPURL}; !reflect.DeepEqual(got[0].Targets, want) {
+				t.Errorf("targets = %q, want %q", got[0].Targets, want)
 			}
-			if !hasReason(res.Partiality, reasonMavenUncachedSubtree) || res.Partiality.Complete {
+			if !hasReason(res.Partiality, plugin.PartialReasonToolFailure) || res.Partiality.Complete {
 				t.Errorf("scoped reason not mirrored run-wide: %+v", res.Partiality)
 			}
 		})
 	}
 }
 
-// A dependency declared with a classifier is never bound to the plain JAR: its code is
-// unloaded, so a call into it is a hazard, not a path or a negative.
-func TestBytecodeReach_VariantDependencyIsNotLoaded(t *testing.T) {
-	build := t.TempDir()
-	a := &appFixture{t: t, build: build}
-	writeFileT(t, filepath.Join(build, "pom.xml"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.acme</groupId><artifactId>app</artifactId><version>1.0.0</version>
-  <dependencies>
-    <dependency><groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version><classifier>jdk8</classifier></dependency>
-  </dependencies>
-</project>`)
-	b := &cpb{}
-	jar := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}})
-	writeJar(t, filepath.Join(build, ".m2", "repository", "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.jar"), "com/evil/netkit/UrlFetcher.class", jar)
-	a.source("src/main/java/com/acme/App.java", appSource)
-	a.class("target/classes", "com/acme/App", mainCalling(callFetch))
-
-	res := a.reach(netkitSinkID)
-	if len(res.Paths) != 0 || len(res.Searched) != 0 {
-		t.Fatalf("variant JAR was loaded: Paths %v Searched %v", res.Paths, res.Searched)
-	}
-	if !hasScoped(res.Partiality, reasonNoDependencyArtifact, netkitPURL) {
-		t.Errorf("missing scoped no_dependency_artifact for the variant: %+v", res.Partiality.Scoped)
-	}
-}
-
 // Two JARs defining one class: the second body is unseen, and says so.
 func TestBytecodeReach_DuplicateClassIsScoped(t *testing.T) {
-	a := newApp(t, `<dependency><groupId>com.dup</groupId><artifactId>fork</artifactId><version>1</version></dependency>`, false)
+	a := newApp(t, "", false)
 	b := &cpb{}
 	dup := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}})
-	writeJar(t, filepath.Join(a.build, ".m2", "repository", "com", "dup", "fork", "1", "fork-1.jar"), "com/evil/netkit/UrlFetcher.class", dup)
+	fork := filepath.Join(a.build, ".m2", "repository", "com", "dup", "fork", "1", "fork-1.jar")
+	writeJar(t, fork, "com/evil/netkit/UrlFetcher.class", dup)
+	a.dep(graphDep{group: "com.dup", artifact: "fork", version: "1", jar: fork})
 	a.source("src/main/java/com/acme/App.java", appSource)
 	a.class("target/classes", "com/acme/App", mainCalling(justReturn))
 
@@ -635,18 +616,14 @@ func TestBytecodeReach_StaleClassesAreNotSearched(t *testing.T) {
 	}
 }
 
-// Two modules — declared in the POM, or two class output trees — are not traced at all.
+// Two modules — in the build graph, or two class output trees — are not traced at all.
 func TestBytecodeReach_TwoModulesAreUnsupported(t *testing.T) {
 	cases := map[string]func(a *appFixture){
-		"pom modules": func(a *appFixture) {
-			pom, err := os.ReadFile(filepath.Join(a.build, "pom.xml"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			withModules := strings.Replace(string(pom), "<dependencies>", "<modules><module>app</module><module>lib</module></modules><dependencies>", 1)
-			writeFileT(t, filepath.Join(a.build, "pom.xml"), withModules)
+		"graph modules": func(a *appFixture) {
 			a.source("src/main/java/com/acme/App.java", appSource)
+			a.source("lib/src/main/java/com/acme/Lib.java", "package com.acme;\npublic class Lib {}\n")
 			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
+			a.graph = graphOption(t, "maven", testModule(t, ".", "app", netkitDep(a.build)), testModule(t, "lib", "lib"))
 		},
 		"two class outputs": func(a *appFixture) {
 			a.source("app/src/main/java/com/acme/App.java", appSource)
@@ -817,99 +794,9 @@ func TestBytecodeReach_LaunchOptionsWithholdSearched(t *testing.T) {
 	}
 }
 
-// gradleApp is newApp's Gradle twin: a Java project whose build.gradle declares netkit (plus
-// extra dependency lines), enforces locking and locks netkit, plus extra lockfile lines, on
-// runtimeClasspath. netkit's JAR and POM sit in the build-local module cache. HOME is an empty
-// directory so no machine cache answers for the build.
-func gradleApp(t *testing.T, extraDeps, extraLocks string) *appFixture {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	build := t.TempDir()
-	writeFileT(t, filepath.Join(build, "settings.gradle"), "rootProject.name = 'app'\n")
-	writeFileT(t, filepath.Join(build, "build.gradle"), "plugins {\n    id 'java'\n    id 'application'\n}\ndependencies {\n    implementation 'com.evil:netkit:1.0.0'\n"+extraDeps+"}\n"+
-		"dependencyLocking { lockAllConfigurations() }\napplication { mainClass = 'com.acme.App' }\n")
-	writeFileT(t, filepath.Join(build, "gradle.lockfile"), "com.evil:netkit:1.0.0=compileClasspath,runtimeClasspath\n"+extraLocks+"empty=\n")
-	b := &cpb{}
-	jar := emitClassX(b, "com/evil/netkit/UrlFetcher", "java/lang/Object", 0x0021, []xmethod{{"fetch", fetchDesc, accPublic, ret}})
-	gradleCacheArtifact(t, build, "com.evil", "netkit", "1.0.0", map[string][]byte{"com/evil/netkit/UrlFetcher.class": jar})
-	return &appFixture{t: t, build: build}
-}
-
-// gradleCacheArtifact writes a dependency-free POM for group:artifact:version into the HOME
-// Gradle module cache, where the lockfile inventory reads edges, and its JAR into the
-// build-local module cache.
-func gradleCacheArtifact(t *testing.T, build, group, artifact, version string, entries map[string][]byte) {
-	t.Helper()
-	rel := filepath.Join("caches", "modules-2", "files-2.1", group, artifact, version, "0123abcd")
-	writeFileT(t, filepath.Join(os.Getenv("HOME"), ".gradle", rel, artifact+"-"+version+".pom"), "<project><modelVersion>4.0.0</modelVersion><groupId>"+group+
-		"</groupId><artifactId>"+artifact+"</artifactId><version>"+version+"</version></project>")
-	writeJarEntries(t, filepath.Join(build, ".gradle", rel, artifact+"-"+version+".jar"), entries)
-}
-
-// Graph and declaration reasons the closure carries withhold Searched on their own: a cached
-// netkit whose own dependency's POM is not cached leaves netkit's subtree open, and a
-// dependencies entry the scan cannot model (files()) puts unseen code on the classpath.
-func TestBytecodeReach_ClosureReasonsWithholdSearched(t *testing.T) {
-	mavenChild := func(childPOM bool) func(t *testing.T) *appFixture {
-		return func(t *testing.T) *appFixture {
-			a := newApp(t, "", false)
-			repo := filepath.Join(a.build, ".m2", "repository")
-			writeFileT(t, filepath.Join(repo, "com", "evil", "netkit", "1.0.0", "netkit-1.0.0.pom"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.evil</groupId><artifactId>netkit</artifactId><version>1.0.0</version>
-  <dependencies><dependency><groupId>com.evil</groupId><artifactId>child</artifactId><version>1</version></dependency></dependencies></project>`)
-			b := &cpb{}
-			writeJar(t, filepath.Join(repo, "com", "evil", "child", "1", "child-1.jar"), "com/evil/child/Child.class",
-				emitClassX(b, "com/evil/child/Child", "java/lang/Object", 0x0021, []xmethod{{"run", "()V", accPublic, ret}}))
-			if childPOM {
-				writeFileT(t, filepath.Join(repo, "com", "evil", "child", "1", "child-1.pom"), `<project><modelVersion>4.0.0</modelVersion>
-  <groupId>com.evil</groupId><artifactId>child</artifactId><version>1</version></project>`)
-			}
-			return a
-		}
-	}
-	gradle := func(extraDeps string) func(t *testing.T) *appFixture {
-		return func(t *testing.T) *appFixture { return gradleApp(t, extraDeps, "") }
-	}
-	tests := []struct {
-		name   string
-		build  func(t *testing.T) *appFixture
-		out    string
-		reason string // "" for a control, which stays Searched
-	}{
-		{"maven, child POM cached: searched", mavenChild(true), "target/classes", ""},
-		{"maven, child POM uncached: maven_uncached_subtree", mavenChild(false), "target/classes", reasonMavenUncachedSubtree},
-		{"gradle, locked: searched", gradle(""), "build/classes/java/main", ""},
-		{"gradle, files() entry: gradle_unmodeled_dependency", gradle("    implementation files('libs/extra.jar')\n"), "build/classes/java/main", PartialReasonUnmodeledDependency},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := tt.build(t)
-			a.source("src/main/java/com/acme/App.java", appSource)
-			a.class(tt.out, "com/acme/App", mainCalling(justReturn))
-			res := a.reach(netkitSinkID)
-			if tt.reason == "" {
-				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
-					t.Fatalf("control: Searched = %v, partiality %+v", res.Searched, res.Partiality)
-				}
-				return
-			}
-			if len(res.Searched) != 0 {
-				t.Fatalf("Searched despite %s: %v", tt.reason, res.Searched)
-			}
-			if !hasReason(res.Partiality, tt.reason) {
-				t.Errorf("missing run-wide %s: %+v", tt.reason, res.Partiality)
-			}
-		})
-	}
-}
-
-// libJar is com.dep:lib's JAR: a Lib with a no-op static run(), plus a second method when
-// variant is set so two copies' bytes differ while both would answer the call.
-func libJar(variant bool) map[string][]byte {
+// libJar is com.dep:lib's JAR: a Lib with a no-op static run().
+func libJar() map[string][]byte {
 	methods := []xmethod{{"run", "()V", accPublicStatic, ret}}
-	if variant {
-		methods = append(methods, xmethod{"other", "()V", accPublicStatic, ret})
-	}
 	return map[string][]byte{"com/dep/lib/Lib.class": emitClassX(&cpb{}, "com/dep/lib/Lib", "java/lang/Object", 0x0021, methods)}
 }
 
@@ -919,58 +806,52 @@ func callLib(b *cpb) []byte {
 	return append([]byte{0xB8}, append(be2(idx), 0xB1)...)
 }
 
-// The search loads only the artifact the application runs with. main calls com.dep.lib's
-// Lib.run, and every cached lib JAR answers it with a no-op: loading any of them on a row
-// below would make the empty search Searched. A lib that is test-, processor- or kapt-only,
-// ambiguous, a classifier variant, or held as differing cache copies stays unloaded, so the
-// call is a hazard and the answer is undetermined. The unresolved-version case is
-// TestBytecodeReach_UnresolvedVersionIsScopedAndRunWide: no JAR can be bound to it.
+// The search loads only the files the build graph puts on the runtime classpath. main calls
+// com.dep.lib's Lib.run, and the lib JAR answers it with a no-op: loading it on a row below
+// would make the empty search Searched. A lib that is test-only, resolved at two runtime
+// versions, not a JAR, or changed since the build resolved it stays unloaded, so the call is a
+// hazard, the answer is undetermined, and the miss is scoped to lib.
 func TestBytecodeReach_RuntimeArtifactsWithholdSearched(t *testing.T) {
-	const libPOM = `<project><modelVersion>4.0.0</modelVersion><groupId>com.dep</groupId><artifactId>lib</artifactId><version>1</version></project>`
-	maven := func(depXML string, gradleCopy bool) func(t *testing.T) (*appFixture, string) {
-		return func(t *testing.T) (*appFixture, string) {
-			t.Setenv("HOME", t.TempDir())
-			a := newApp(t, depXML, false)
-			dir := filepath.Join(a.build, ".m2", "repository", "com", "dep", "lib", "1")
-			writeFileT(t, filepath.Join(dir, "lib-1.pom"), libPOM)
-			writeJarEntries(t, filepath.Join(dir, "lib-1.jar"), libJar(false))
-			if gradleCopy {
-				gradleCacheArtifact(t, a.build, "com.dep", "lib", "1", libJar(true))
-			}
-			return a, "target/classes"
-		}
+	const libPURL = "pkg:maven/com.dep/lib"
+	lib := func(version, scope, file string) graphDep {
+		return graphDep{group: "com.dep", artifact: "lib", version: version, scope: scope, jar: file}
 	}
-	gradle := func(decl, locks string) func(t *testing.T) (*appFixture, string) {
-		return func(t *testing.T) (*appFixture, string) {
-			a := gradleApp(t, decl, locks)
-			gradleCacheArtifact(t, a.build, "com.dep", "lib", "1", libJar(false))
-			gradleCacheArtifact(t, a.build, "com.dep", "lib", "2", libJar(false))
-			return a, "build/classes/java/main"
-		}
-	}
-	const lib = `<dependency><groupId>com.dep</groupId><artifactId>lib</artifactId><version>1</version>`
 	tests := []struct {
 		name     string
-		build    func(t *testing.T) (*appFixture, string)
+		tool     string
+		deps     func(jar string) []graphDep
+		after    func(t *testing.T, jar string) // runs once the graph has recorded the JAR's digest
+		reason   string                         // the scoped reason the miss carries, if any
 		searched bool
 	}{
-		{"maven compile scope: loaded, searched", maven(lib+`</dependency>`, false), true},
-		{"maven test scope", maven(lib+`<scope>test</scope></dependency>`, false), false},
-		{"maven classifier variant", maven(lib+`<classifier>jdk8</classifier></dependency>`, false), false},
-		{"maven, .m2 and Gradle cache copies differ", maven(lib+`</dependency>`, true), false},
-		{"gradle runtimeClasspath: loaded, searched", gradle("    implementation 'com.dep:lib:1'\n", "com.dep:lib:1=compileClasspath,runtimeClasspath\n"), true},
-		{"gradle testRuntimeClasspath only", gradle("    testImplementation 'com.dep:lib:1'\n", "com.dep:lib:1=testCompileClasspath,testRuntimeClasspath\n"), false},
-		{"gradle annotationProcessor only", gradle("    annotationProcessor 'com.dep:lib:1'\n", "com.dep:lib:1=annotationProcessor\n"), false},
-		// The Gradle allow-list admits no kapt declaration in a Java build (one makes the lock
-		// unconfirmed, which withholds on its own), so this row carries only the lock line.
-		{"gradle kapt only", gradle("", "com.dep:lib:1=kapt,kaptClasspath_kaptKotlin\n"), false},
-		{"gradle two runtime versions", gradle("    implementation 'com.dep:lib:1'\n", "com.dep:lib:1=runtimeClasspath\ncom.dep:lib:2=runtimeClasspath\n"), false},
+		{name: "maven compile scope: loaded, searched", tool: "maven", deps: func(jar string) []graphDep { return []graphDep{lib("1", "compile", jar)} }, searched: true},
+		{name: "gradle runtime scope: loaded, searched", tool: "gradle", deps: func(jar string) []graphDep { return []graphDep{lib("1", "runtime", jar)} }, searched: true},
+		{name: "provided scope: loaded, searched", tool: "maven", deps: func(jar string) []graphDep { return []graphDep{lib("1", "provided", jar)} }, searched: true},
+		{name: "test scope", tool: "maven", deps: func(jar string) []graphDep { return []graphDep{lib("1", "test", jar)} }},
+		{name: "two runtime versions", tool: "maven", deps: func(jar string) []graphDep {
+			return []graphDep{lib("1", "compile", jar), lib("2", "runtime", jar)}
+		}, reason: reasonDependencyVersionAmbiguous},
+		{name: "file is not a JAR", tool: "maven", deps: func(jar string) []graphDep {
+			return []graphDep{lib("1", "compile", strings.TrimSuffix(jar, ".jar")+".aar")}
+		}, reason: reasonNoDependencyArtifact},
+		{name: "JAR changed since the build resolved it", tool: "maven", deps: func(jar string) []graphDep { return []graphDep{lib("1", "compile", jar)} },
+			after: func(t *testing.T, jar string) {
+				writeJarEntries(t, jar, map[string][]byte{"com/dep/lib/Other.class": emitClassX(&cpb{}, "com/dep/lib/Other", "java/lang/Object", 0x0021, nil)})
+			}, reason: plugin.PartialReasonToolFailure},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, out := tt.build(t)
+			a := newApp(t, "", false)
+			a.tool = tt.tool
+			jar := filepath.Join(a.build, ".m2", "repository", "com", "dep", "lib", "1", "lib-1.jar")
+			writeJarEntries(t, jar, libJar())
+			writeJarEntries(t, strings.TrimSuffix(jar, ".jar")+".aar", libJar())
 			a.source("src/main/java/com/acme/App.java", appSource)
-			a.class(out, "com/acme/App", mainCalling(callLib))
+			a.class("target/classes", "com/acme/App", mainCalling(callLib))
+			a.graph = graphOption(t, a.tool, testModule(t, ".", "app", append(a.deps, tt.deps(jar)...)...))
+			if tt.after != nil {
+				tt.after(t, jar)
+			}
 			res := a.reach(netkitSinkID)
 			if tt.searched {
 				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
@@ -984,16 +865,8 @@ func TestBytecodeReach_RuntimeArtifactsWithholdSearched(t *testing.T) {
 			if !hasReason(res.Partiality, plugin.PartialReasonReachabilityUndetermined) {
 				t.Errorf("missing reachability_undetermined: %+v", res.Partiality)
 			}
-			// A run-wide graph reason no scoped reason mirrors would withhold Searched before the
-			// selection is ever tested.
-			mirrored := map[string]bool{}
-			for _, sr := range res.Partiality.Scoped {
-				mirrored[sr.Reason] = true
-			}
-			for _, r := range res.Partiality.Reasons {
-				if !mirrored[r] && (strings.HasPrefix(r, plugin.PartialReasonSourceUnpinned) || strings.HasPrefix(r, plugin.PartialReasonRelationshipUnexpressed)) {
-					t.Errorf("row is withheld by %s, not by artifact selection: %+v", r, res.Partiality)
-				}
+			if tt.reason != "" && !hasScoped(res.Partiality, tt.reason, libPURL) {
+				t.Errorf("missing scoped %s for lib: %+v", tt.reason, res.Partiality.Scoped)
 			}
 		})
 	}
@@ -1092,21 +965,21 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			a.verticle()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("app.main", "io.vertx.core.Launcher"))
 		}, reasonLaunchEntryProfileProperty},
-		// With no profile selection stated, a profile that sets any property is undecided and
-		// withholds whether or not the launch main reads it.
-		{"profile sets an unrelated property: profile_activation", func(a *appFixture) {
+		// The build tool resolved the dependencies under the run's profiles, so a profile that
+		// leaves the launch main alone withholds nothing.
+		{"profile sets an unrelated property: searched", func(a *appFixture) {
 			a.propertyMain()
 			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
-		}, reasonProfileActivation},
+		}, ""},
 		{"parent profile sets the mainClass property: launch_entry_profile_property", func(a *appFixture) {
 			a.propertyMain()
 			a.verticle()
 			a.cachedParent(profileSetting("app.main", "io.vertx.core.Launcher"))
 		}, reasonLaunchEntryProfileProperty},
-		{"read parent whose profile sets an unrelated property: profile_activation", func(a *appFixture) {
+		{"read parent whose profile sets an unrelated property: searched", func(a *appFixture) {
 			a.propertyMain()
 			a.cachedParent(profileSetting("deploy.env", "prod"))
-		}, reasonProfileActivation},
+		}, ""},
 		{"property mainClass under a read parent with no profiles: searched", func(a *appFixture) {
 			a.propertyMain()
 			a.cachedParent("")
@@ -1171,61 +1044,6 @@ func TestBytecodeReach_LaunchEntryLicence(t *testing.T) {
 			}
 			if !hasReason(res.Partiality, tt.reason) {
 				t.Errorf("missing run-wide %s: %+v", tt.reason, res.Partiality)
-			}
-		})
-	}
-}
-
-// The profile selection and Java version are run conditions handed in on the request: stated,
-// they decide the profiles the inventory would otherwise leave undecided; absent, those profiles
-// stay undecided and withhold Searched.
-func TestBytecodeReach_ProfileRunConditions(t *testing.T) {
-	// nativeProfile is shaped like spring-boot-starter-parent's: no activation, a <build> section.
-	nativeProfile := `<profiles><profile><id>native</id><build><plugins><plugin><groupId>org.graalvm.buildtools</groupId>` +
-		`<artifactId>native-maven-plugin</artifactId></plugin></plugins></build></profile></profiles>`
-	jdkProfile := `<profiles><profile><id>modern</id><activation><jdk>[17,)</jdk></activation>` +
-		`<properties><deploy.env>prod</deploy.env></properties></profile></profiles>`
-	none := map[string]string{"maven.profiles": ","}
-	tests := []struct {
-		name     string
-		setup    func(a *appFixture)
-		env      map[string]string
-		withheld bool
-	}{
-		{"parent native profile, no selection stated", func(a *appFixture) { a.cachedParent(nativeProfile) }, nil, true},
-		{"parent native profile, no profiles selected", func(a *appFixture) { a.cachedParent(nativeProfile) }, none, false},
-		{"parent native profile, another profile selected", func(a *appFixture) { a.cachedParent(nativeProfile) }, map[string]string{"maven.profiles": "release"}, false},
-		{"own profile setting a property, no selection stated", func(a *appFixture) {
-			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
-		}, nil, true},
-		{"own profile setting a property, no profiles selected", func(a *appFixture) {
-			a.editPOM(`</dependencies>`, `</dependencies>`+profileSetting("deploy.env", "prod"))
-		}, none, false},
-		{"jdk-activated profile, selection stated but not the Java version", func(a *appFixture) {
-			a.editPOM(`</dependencies>`, `</dependencies>`+jdkProfile)
-		}, none, true},
-		{"jdk-activated profile, selection and Java version stated", func(a *appFixture) {
-			a.editPOM(`</dependencies>`, `</dependencies>`+jdkProfile)
-		}, map[string]string{"maven.profiles": ",", "java.version": "21"}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := newApp(t, "", false)
-			a.source("src/main/java/com/acme/App.java", appSource)
-			a.class("target/classes", "com/acme/App", mainCalling(justReturn))
-			tt.setup(a)
-			res := a.reachUnder(tt.env, netkitSinkID)
-			if !tt.withheld {
-				if !slices.Equal(res.Searched, []string{netkitSinkID}) {
-					t.Fatalf("Searched = %v, partiality %+v", res.Searched, res.Partiality)
-				}
-				return
-			}
-			if len(res.Searched) != 0 {
-				t.Fatalf("Searched with the profile undecided: %v", res.Searched)
-			}
-			if !hasReason(res.Partiality, reasonProfileActivation) {
-				t.Errorf("missing run-wide %s: %+v", reasonProfileActivation, res.Partiality)
 			}
 		})
 	}

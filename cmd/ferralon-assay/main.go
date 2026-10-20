@@ -90,6 +90,11 @@ func run() int {
 			fmt.Fprintln(os.Stderr, brand.Name+" state:", err)
 			return 1
 		}
+	case "resolve-graph":
+		if err := runResolveGraph(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, brand.Name+" resolve-graph:", err)
+			return 1
+		}
 	case "version", "-version", "--version":
 		fmt.Fprintf(os.Stdout, "%s %s\n", brand.Name, version)
 	case "help", "-h", "--help":
@@ -139,6 +144,7 @@ Usage:
   %[1]s pr-inherit [flags]   diff a PR head SBOM vs the stored baseline; inherit or re-analyze
   %[1]s cve-watch  [flags]   scheduled OSV.dev watch; heartbeat or earnest re-analysis
   %[1]s state <op> [flags]   operator views of the persisted StateStore ref (show | export)
+  %[1]s resolve-graph [flags] run the repository's Maven or Gradle, write its JVM build graph
   %[1]s version              print the build identity
   %[1]s help                 show this help
 

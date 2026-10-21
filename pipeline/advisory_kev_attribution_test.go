@@ -48,7 +48,25 @@ const attributionSignals = `{"signals_version": "1.0.0", "record_count": 4,
 //
 // These two tests guard the join and the structural cause behind the first defect.
 
-// TestKEVAttributionFollowsListedCVE pins the join over the whole advisory table:
+// tableClaims are the claims of a run asked about every AdvisoryTable entry. A run's claims are its
+// work set: every advisory the run was asked about, by its id and the aliases its record lists, and
+// every row its report holds, fresh or inherited. trigger's rankWith builds them that way, reading
+// the records through the run's fact source; here the source is the table, and every row such a run
+// holds is an entry the work set already names.
+func tableClaims() *intel.Claims {
+	ids := make([]string, 0, len(AdvisoryTable))
+	for id := range AdvisoryTable {
+		ids = append(ids, id)
+	}
+	claims := new(intel.Claims)
+	LookupEach(NewTableSource(), ids, func(id string, facts AdvisoryFacts, _ bool) {
+		claims.Add(id, facts.Aliases...)
+	})
+	return claims
+}
+
+// TestKEVAttributionFollowsListedCVE pins the join over a run whose work set is the whole advisory
+// table (tableClaims):
 //
 //   - no entry takes a signals record whose identifier is the id or an alias of a DIFFERENT entry;
 //   - an entry keyed by a CVE takes only the record under its own id — never a roll-up reached
@@ -58,10 +76,7 @@ func TestKEVAttributionFollowsListedCVE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := new(intel.Claims)
-	for id, facts := range AdvisoryTable {
-		claims.Add(id, facts.Aliases...)
-	}
+	claims := tableClaims()
 	// namedByOther is the invariant's own reading of the table, independent of intel.Claims.
 	namedByOther := func(ident, id string) string {
 		for other, facts := range AdvisoryTable {

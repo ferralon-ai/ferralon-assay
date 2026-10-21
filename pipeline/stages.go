@@ -81,6 +81,19 @@ func WithAdvisorySource(src AdvisorySource) AssessOption {
 	return func(c *AssessConfig) { c.Source = src }
 }
 
+// AdvisorySourceOf returns the AdvisorySource a run assessed with opts reads advisory facts through:
+// the one WithAdvisorySource injected, else the process-wide default — the source S1 reads.
+func AdvisorySourceOf(opts ...AssessOption) AdvisorySource {
+	var cfg AssessConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	if cfg.Source != nil {
+		return cfg.Source
+	}
+	return defaultAdvisorySource()
+}
+
 // WithSubjectToolchain injects the two candidate EXACT sources of the subject's Go toolchain that
 // the pipeline cannot read off the tree, both ranked above its go.mod floors: declared is the
 // subject's own statement of the toolchain it builds with, observed is `go env GOVERSION` sampled
@@ -840,13 +853,13 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// established. They live in GuardSufficiency instead, which is Prove-side evidence framing
 	// that Assess never refutes on.
 	//
-	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// CISA's KEV catalog lists only CVE-2025-8110, and trigger's priorityFor joined the run's signals
-	// on ID + Aliases, so the successor sitting in the predecessor's alias array reported
-	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
-	// not decoration: they are the key govulncheck reports dependency findings under
-	// (reachcandidate.govulnMatchID, which takes the FIRST GO- alias — with one GO- id per entry
-	// that is now unambiguous, where the merged entry could only ever key one of the two).
+	// Each entry carries ONLY its own OSV aliases. They are two vulnerabilities, and every join on
+	// an entry's id and aliases has one slot per entry: CISA's KEV catalog lists only
+	// CVE-2025-8110, so the successor in the predecessor's alias array would attribute that listing
+	// to CVE-2024-55947, which CISA does not list (TestNoEntryAliasesAnotherEntrysPrimaryID guards
+	// the split). The GO- ids are load-bearing, not decoration: they are the key govulncheck reports
+	// dependency findings under (reachcandidate.govulnMatchID, which takes the FIRST GO- alias), and
+	// with one GO- id per entry that key is unambiguous.
 	"CVE-2024-55947": {
 		Aliases: []string{"GHSA-qf5v-rp47-55gg", "GO-2024-3356"},
 		PURL:    "pkg:golang/gogs.io/gogs/internal/db",

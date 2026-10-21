@@ -165,7 +165,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		AdvisoryCursor:  req.Cursor,
 		Timestamp:       time.Now().UTC(),
 	})
-	rankWith(b, req.Signals)
+	rankWith(b, req.Signals, req.Advisories, pipeline.AdvisorySourceOf(req.AssessOptions...))
 
 	rep, err := b.BuildValidated()
 	if err != nil {

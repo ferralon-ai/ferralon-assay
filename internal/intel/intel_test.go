@@ -137,17 +137,31 @@ func TestLookupIsOneRecord(t *testing.T) {
 
 // attributionDoc holds a CVE record with EPSS only, a KEV-listed sibling CVE, and a GO roll-up
 // standing for both CVEs that carries the sibling's listing.
-const attributionDoc = `{"signals_version": "1.0.0", "record_count": 3, "signals_digest": "` + testDigest + `",
+//
+// CVE-2026-1001..1005 are one multi-CVE advisory's aliases: 1001 carries a stamped "not listed", 1002
+// is KEV-listed with the same EPSS value, 1003 agrees with 1001 in every value and stamp, 1004
+// differs from 1001 only in its EPSS score, and 1005 only in its EPSS as_of.
+const attributionDoc = `{"signals_version": "1.0.0", "record_count": 8, "signals_digest": "` + testDigest + `",
   "records": [
     {"identifier": "CVE-2023-39325", "epss": {"score": 0.03, "as_of": "2026-08-01"}},
     {"identifier": "CVE-2023-44487", "epss": {"score": 0.99, "as_of": "2026-08-11"},
      "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}},
     {"identifier": "GO-2023-2102", "epss": {"score": 0.99, "as_of": "2026-08-11"},
-     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}}]}`
+     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}},
+    {"identifier": "CVE-2026-1001", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1002", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": true, "date_added": "2026-10-01", "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1003", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1004", "epss": {"score": 0.7, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1005", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-11"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`
 
 // TestAttribute pins the join's three rules: the advisory's own record and only it; nothing through
-// an alias for a CVE-keyed advisory; otherwise the first CVE alias with a record that no other
-// advisory of the run names.
+// an alias for a CVE-keyed advisory; otherwise a CVE alias with a record that no other advisory of
+// the run names, and nothing when two such aliases' records disagree.
 func TestAttribute(t *testing.T) {
 	s, err := Parse(strings.NewReader(attributionDoc))
 	if err != nil {
@@ -163,6 +177,9 @@ func TestAttribute(t *testing.T) {
 	both := new(Claims)
 	both.Add("GHSA-4374-p667-p6c8", "CVE-2023-39325", "GO-2023-2102")
 	both.Add("CVE-2023-39325", "GO-2023-2102")
+	listedClaimed := new(Claims)
+	listedClaimed.Add("GO-2026-0001", "CVE-2026-1001", "CVE-2026-1002")
+	listedClaimed.Add("CVE-2026-1002")
 	for _, c := range []struct {
 		name, id string
 		aliases  []string
@@ -180,6 +197,14 @@ func TestAttribute(t *testing.T) {
 		{"GHSA, roll-up alias only", "GHSA-4374-p667-p6c8", []string{"GO-2023-2102"}, nil, "none"},
 		{"GHSA, alias another advisory names", "GHSA-4374-p667-p6c8", []string{"CVE-2023-39325", "GO-2023-2102"}, both, "none"},
 		{"house id, no alias", "FERRALON-APP-SSRF-0001", nil, nil, "none"},
+		// Rule 3 with several CVE aliases that have records: they must agree, whatever their order.
+		{"only the second CVE is KEV-listed", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1002"}, nil, "none"},
+		{"only the first CVE is KEV-listed", "GO-2026-0001", []string{"CVE-2026-1002", "CVE-2026-1001"}, nil, "none"},
+		{"CVEs differ in EPSS score", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1004"}, nil, "none"},
+		{"CVEs differ in EPSS as_of", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1005"}, nil, "none"},
+		{"CVEs agree", "GO-2026-0001", []string{"GHSA-xxxx-yyyy-zzzz", "CVE-2026-1001", "CVE-2026-1003"}, nil, "CVE-2026-1001 epss=true kev=true"},
+		{"a disagreeing CVE another advisory names", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1002"}, listedClaimed, "CVE-2026-1001 epss=true kev=true"},
+		{"a disagreeing CVE with no record", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2099-0003"}, nil, "CVE-2026-1001 epss=true kev=true"},
 	} {
 		if g := got(c.id, c.aliases, c.claims); g != c.want {
 			t.Errorf("%s: Attribute(%s, %v) = %s, want %s", c.name, c.id, c.aliases, g, c.want)

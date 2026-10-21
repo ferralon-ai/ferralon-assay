@@ -276,3 +276,21 @@ func TestAdvisorySignals_StaleShareWarns(t *testing.T) {
 		})
 	}
 }
+
+// TestPercentOf pins the share's clamps: a non-zero share short of the whole rounds to 0% or 100%
+// on a large total (1/300 and 299/300), and prints as 1% and 99% instead, while none and all stay
+// 0% and 100%.
+func TestPercentOf(t *testing.T) {
+	for _, c := range []struct{ n, total, want int }{
+		{1, 300, 1},
+		{299, 300, 99},
+		{0, 300, 0},
+		{300, 300, 100},
+		{150, 300, 50},
+		{0, 0, 0},
+	} {
+		if got := percentOf(c.n, c.total); got != c.want {
+			t.Errorf("percentOf(%d, %d) = %d%%, want %d%%", c.n, c.total, got, c.want)
+		}
+	}
+}

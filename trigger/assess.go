@@ -513,7 +513,8 @@ func maliciousPresentDetail(matchedVersion string) string {
 // signal, which is correct.
 //
 // The join takes the record under the advisory's own id, or — for an advisory not keyed by a CVE —
-// the record of a CVE alias that no other advisory in the run's table (claims) also names. It never
+// the record of a CVE alias that no other advisory in the run's work set (claims) also names, and
+// nothing when two such aliases' records disagree. It never
 // hands a CVE-keyed advisory a GO/PYSEC/RUSTSEC/GHSA roll-up record through an alias: that record
 // may carry a sibling CVE's KEV listing (GO-2023-2102 stands for CVE-2023-39325 AND KEV-listed
 // CVE-2023-44487). pipeline's TestKEVAttributionFollowsListedCVE guards the rule.
@@ -538,12 +539,27 @@ func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) 
 	return &p
 }
 
-// rankWith makes b rank every finding by the run's signals sig (nil for none). The run's advisory
-// table the join refuses a shared alias against is every advisory b's report holds, fresh or
-// inherited, so it is read from b itself — Build has no side effects — once every finding is added.
-func rankWith(b *report.Builder, sig *intel.Signals) {
+// rankWith makes b rank every finding by the run's signals sig (nil for none). The join refuses a
+// shared alias against the run's claims, and a run's claims are its work set: every advisory the run
+// was asked about, by its id and the aliases its record lists, and every row its report holds, fresh
+// or inherited. workSet is what the run was asked about, its records read through src, the fact
+// source its assessments read; the rows are read from b itself — Build has no side effects — once
+// every finding is added.
+//
+// So an advisory the run deferred, or assessed into no row, still claims its aliases, and a row ranks
+// the same in a baseline and in a PR-inherit report over the same work set. pipeline's
+// TestKEVAttributionFollowsListedCVE guards the join over the same scope.
+func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
 	claims := new(intel.Claims)
 	if sig != nil {
+		ids := make([]string, 0, len(workSet))
+		for _, v := range workSet {
+			ids = append(ids, v.ID)
+		}
+		// An id whose record does not resolve still claims itself.
+		pipeline.LookupEach(src, ids, func(id string, facts pipeline.AdvisoryFacts, _ bool) {
+			claims.Add(id, facts.Aliases...)
+		})
 		for _, f := range b.Build().Advisories {
 			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
 		}

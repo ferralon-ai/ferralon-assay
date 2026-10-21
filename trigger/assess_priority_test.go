@@ -7,6 +7,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
@@ -89,8 +90,8 @@ func TestPriorityForRefusesSiblingThroughGOAlias(t *testing.T) {
 	}
 }
 
-// TestRankWithRefusesAnAliasAnotherRowNames: the run's own rows are the advisory table the join
-// refuses a shared alias against. A GHSA row aliasing CVE-2021-38561 takes that CVE's EPSS when it
+// TestRankWithRefusesAnAliasAnotherRowNames: the run's rows are part of the work set the join
+// refuses a shared alias against, whatever else it holds. A GHSA row aliasing CVE-2021-38561 takes that CVE's EPSS when it
 // is alone, and none when the run also reports CVE-2021-38561 as a row of its own — which keeps it.
 func TestRankWithRefusesAnAliasAnotherRowNames(t *testing.T) {
 	sig := prioritySignals(t)
@@ -101,7 +102,7 @@ func TestRankWithRefusesAnAliasAnotherRowNames(t *testing.T) {
 		for _, f := range fs {
 			b.AddFinding(f)
 		}
-		rankWith(b, sig)
+		rankWith(b, sig, nil, pipeline.NewTableSource())
 		got := make(map[string]*report.Priority)
 		for _, f := range b.Build().Advisories {
 			got[f.Advisory.ID] = f.Priority

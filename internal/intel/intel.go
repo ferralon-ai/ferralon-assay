@@ -342,8 +342,10 @@ func (s *Signals) has(id string) bool {
 }
 
 // Claims indexes the advisories of one run by every identifier they name — each advisory's id and
-// each of its aliases — so that Attribute can refuse an alias some OTHER advisory also names. The
-// zero value is empty and ready to use; a nil *Claims names nothing.
+// each of its aliases — so that Attribute can refuse an alias some OTHER advisory also names. A
+// run's claims are its work set: every advisory the run was asked about, by its id and the aliases
+// its record lists, and every row its report holds, fresh or inherited. The zero value is empty and
+// ready to use; a nil *Claims names nothing.
 type Claims struct {
 	by map[string]map[string]struct{} // identifier → the ids of the advisories naming it
 }
@@ -405,8 +407,13 @@ type Match struct {
 //     CVE, and the file has none. An alias record — a GO roll-up that may carry a sibling CVE's KEV
 //     listing, or another CVE — is never taken in its place.
 //  3. Otherwise (a GO-, GHSA-, PYSEC-, RUSTSEC- or house-keyed advisory with no record of its own):
-//     the record of its first alias that is a CVE id, has a record, and is named by no other
-//     advisory in claims (the run's advisory table) — as that advisory's id or one of its aliases.
+//     the record of a CVE alias that has a record and is named by no other advisory in claims (the
+//     run's work set) — as that advisory's id or one of its aliases. When two or more of its CVE
+//     aliases qualify, their records must agree: the same KEV observation, or none, and the same
+//     EPSS value, or none, each with the same stamp. Then the first is taken, and which one does not
+//     change a value. When they disagree, nothing: which of the advisory's CVEs its signal is cannot
+//     be told from the file, and taking the first would hand it CVE-A's stamped "not listed" while
+//     its CVE-B is KEV-listed.
 //
 // A refused match is honest absence: ok is false and the row gets no priority, never a guess.
 // Safe for concurrent use.
@@ -421,14 +428,34 @@ func (s *Signals) Attribute(id string, aliases []string, claims *Claims) (Match,
 	if isCVE(own) {
 		return Match{}, false
 	}
+	var m Match
+	found := false
 	for _, alias := range aliases {
 		a := normalise(alias)
 		if a == own || !isCVE(a) || !s.has(a) || claims.ClaimedByOther(a, own) {
 			continue
 		}
-		return s.match(a), true
+		c := s.match(a)
+		if !found {
+			m, found = c, true
+			continue
+		}
+		if !m.sameValues(c) {
+			return Match{}, false
+		}
 	}
-	return Match{}, false
+	return m, found
+}
+
+// sameValues reports whether two matches carry the same values with the same stamps, whichever
+// record each came from.
+func (m Match) sameValues(o Match) bool {
+	if m.HasEPSS != o.HasEPSS || m.HasKEV != o.HasKEV {
+		return false
+	}
+	me, oe, mk, ok := m.EPSS, o.EPSS, m.KEV, o.KEV
+	me.Identifier, oe.Identifier, mk.Identifier, ok.Identifier = "", "", "", ""
+	return me == oe && mk == ok
 }
 
 // match assembles the values of the record keyed by the normalised id.

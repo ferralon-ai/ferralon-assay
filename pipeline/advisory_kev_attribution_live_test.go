@@ -33,10 +33,7 @@ func TestKEVAttributionOverRealSignals(t *testing.T) {
 	}
 	t.Logf("signals: %d records, digest %s", sig.Records(), sig.Digest)
 
-	claims := new(intel.Claims)
-	for id, facts := range AdvisoryTable {
-		claims.Add(id, facts.Aliases...)
-	}
+	claims := tableClaims()
 	// legacy is #167's join: per value, the first of id+aliases the file has one for.
 	legacy := func(id string, aliases []string) (epssFrom, kevFrom string) {
 		for _, x := range append([]string{id}, aliases...) {

@@ -428,7 +428,7 @@ func TestReach_SignatureRoots(t *testing.T) {
 					callsSink(d, "start", "()V"),
 				}},
 			},
-			cp:   Classpath{Packages: map[string]bool{"javax/net": true}, },
+			cp:   Classpath{Packages: map[string]bool{"javax/net": true}},
 			want: ReachableCandidate, via: "D.start",
 		},
 		{

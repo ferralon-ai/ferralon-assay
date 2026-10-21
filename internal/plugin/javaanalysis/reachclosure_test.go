@@ -162,7 +162,6 @@ func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 	}{
 		{jdk: "21.0.4", wantPath: false},
 		{jdk: "17.0.12", wantPath: true},
-		{jdk: "21.0.4", wantPath: false},
 		{jdk: "21.0.4", toolchains: []string{"17"}, wantPath: true},
 		{jdk: "21.0.4", toolchains: []string{"21"}, wantPath: false},
 		{jdk: "21.0.4", unread: true, wantPath: true},

@@ -1742,6 +1742,113 @@ self[process.argv[2]](1);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call bound", map[string]string{"app.js": "const has = Function.call.bind(Object.prototype.hasOwnProperty);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.bind applied", map[string]string{"app.js": "function make(Parent, args) { return new (Function.bind.apply(Parent, args))(); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call applied", map[string]string{"app.js": "function push() { return Function.call.apply(Array.prototype.push, arguments); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.bind as a polyfill fallback", map[string]string{"app.js": "const bind = Function.bind || function bind(that) { return that; };" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call handed on", map[string]string{"app.js": "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call compared", map[string]string{"app.js": "if (Function.call !== undefined) { load(); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call handed on in parentheses", map[string]string{"app.js": "function ctx(fn) { return fn; }\nconst c = ctx((Function.call));" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call in an array and an object", map[string]string{"app.js": "const fns = [Function.call];\nconst o = { c: Function.call };" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call in nullish, ternary, logical and comparison operators", map[string]string{"app.js": "const a = Function.call ?? null;\nconst b = a ? Function.call : null;\nconst c = Function.call === a, d = Function.call !== b, e = Function.call >= 0, f = Function.call & 1;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call as the last token", map[string]string{"app.js": "let f;\nf = Function.call" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call ending a statement with no semicolon", map[string]string{"app.js": "const f = Function.call\nconst g = Function.bind\nmodule.exports = { f, g }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"a called Function.call.bind chain in a logical operator", map[string]string{"app.js": "function f() {}\nconst ok = Function.call.bind(f) && true;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function member read optionally", map[string]string{"app.js": "const n = Function?.length;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"a Function.call.call chain called optionally", map[string]string{"app.js": "function f() {}\nconst r = Function.call.call?.(f);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"a Function.call.call chain called optionally after a space", map[string]string{"app.js": "function f() {}\nconst r = Function.call.call?. (f);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function compared", map[string]string{"app.js": "function isCtor(f) { return f instanceof Function || (Function === f); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"global root from Function", map[string]string{"app.js": "var root = Function('return this')() || {};" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"global from Function read by a literal member", map[string]string{"app.js": "const T = Function('return this')().TextEncoder;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function as an optional parameter type", map[string]string{"app.js": "function run(cb?: Function, f?: Function): Function | undefined { return cb; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function as a parameter type after a ternary default", map[string]string{"app.js": "function run(a = process.env.X ? 1 : 2, cb: Function) { return cb; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function as a type after a nullish default", map[string]string{"app.js": "const v = process.env.X ?? 'y'\nlet cb: Function;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Function", map[string]string{"app.js": `
+Function.foo = Function.call; Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Function across a line", map[string]string{"app.js": `
+Function.foo = Function.call
+Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.bind stored on Function", map[string]string{"app.js": `
+Function.foo = Function.bind; Function.foo(null, process.argv[2])()();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.apply stored on Function", map[string]string{"app.js": `
+Function.foo = Function.apply; Function.foo(null, [process.argv[2]])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Function through an operator", map[string]string{"app.js": `
+Function.foo = Function.call || 0; Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Function.prototype", map[string]string{"app.js": `
+Function.prototype.foo = Function.call; Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Object.prototype", map[string]string{"app.js": `
+Object.prototype.foo = Function.call; Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored on Function.__proto__", map[string]string{"app.js": `
+Function.__proto__.foo = Function.call; Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call defined on Function.prototype", map[string]string{"app.js": `
+Object.defineProperty(Function.prototype, 'foo', {value: Function.call}); Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a call of Function.call stored by a destructuring default", map[string]string{"app.js": `
+({foo: Function.foo = Function.call} = {}); Function.foo(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call spelled with an escape after its first letter", map[string]string{"app.js": `
+Function.c\u0061ll(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.bind spelled with an escape after its first letter", map[string]string{"app.js": `
+Function.b\u0069nd(null, process.argv[2])()();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.constructor spelled with an escape at its end", map[string]string{"app.js": `
+Function.constructo\u0072(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call tagged with no space", map[string]string{"app.js": `
+Function.call` + "`" + `${'a'}${process.argv[2]}` + "`" + `();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.apply tagged with no space", map[string]string{"app.js": `
+Function.apply` + "`" + `${[process.argv[2]]}` + "`" + `();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a literal Function called at once", map[string]string{"app.js": `
+const one = Function('return 1')();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a literal Function called optionally at once", map[string]string{"app.js": `
+const one = Function('return 1')?.();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1770,8 +1877,7 @@ load(process.argv);
 func TestCallGraph_InTreeOnlyDeclaresNoDidNotRun(t *testing.T) {
 	dir := writeProgram(t, map[string]string{
 		"util.js":      "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
-		"fmt.ts":       "export function fmt(s: string, cb?: Function) { return s; }\nconst bind = Function.prototype.bind;\n",
-		"tail.js":      "module.exports.call = Function.call",
+		"fmt.ts":       "export function fmt(s: string, cb?: () => void) { return s; }\n",
 		"config.json":  `{"a": 1}`,
 		"package.json": `{"name": "app", "imports": {"#u": {"import": "./util.js", "require": "./util.js", "types": "./util.d.ts"}}}`,
 		"app.js": `
@@ -1816,22 +1922,6 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"require negated", "if (!require) { load(process.argv); }"},
 		{"require compared on the right", "if (undefined !== require) { load(process.argv); }"},
 		{"require as a ternary test", "const t = require ? 1 : 0;"},
-		{"Function.call bound", "const has = Function.call.bind(Object.prototype.hasOwnProperty);"},
-		{"Function.bind applied", "function make(Parent, args) { return new (Function.bind.apply(Parent, args))(); }"},
-		{"Function.call applied", "function push() { return Function.call.apply(Array.prototype.push, arguments); }"},
-		{"Function.bind as a polyfill fallback", "const bind = Function.bind || function bind(that) { return that; };"},
-		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
-		{"Function.call compared", "if (Function.call !== undefined) { load(); }"},
-		{"Function.call handed on in parentheses", "function ctx(fn) { return fn; }\nconst c = ctx((Function.call));"},
-		{"Function.call in an array and an object", "const fns = [Function.call];\nconst o = { c: Function.call };"},
-		{"Function.call in nullish, ternary, logical and comparison operators", "const a = Function.call ?? null;\nconst b = a ? Function.call : null;\nconst c = Function.call === a, d = Function.call !== b, e = Function.call >= 0, f = Function.call & 1;"},
-		{"Function.call as the last token", "let f;\nf = Function.call"},
-		{"Function.call ending a statement with no semicolon", "const f = Function.call\nconst g = Function.bind\nmodule.exports = { f, g }"},
-		{"a called Function.call.bind chain in a logical operator", "function f() {}\nconst ok = Function.call.bind(f) && true;"},
-		{"Function member read optionally", "const n = Function?.length;"},
-		{"a Function.call.call chain called optionally", "function f() {}\nconst r = Function.call.call?.(f);"},
-		{"a Function.call.call chain called optionally after a space", "function f() {}\nconst r = Function.call.call?. (f);"},
-		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
 		{"imported names of global names", "import { top, left } from './util';\nimport * as parent from './util';\nimport self from './util';\nexport const placements = [top, left, parent, self];"},
 		{"global name as an arrow parameter", "const isSuper = (node, parent) => isClass(parent) && parent.superClass === node;\nfunction isClass(n) { return !!n; }"},
@@ -1849,14 +1939,13 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},
 		{"UMD wrapper through call", "(function (root) { root.Lib = {}; }).call(this, this);"},
 		{"IIFE called with this", "(function () { var x = 1; return x; }).call(this);"},
-		{"global root from Function", "var root = Function('return this')() || {};"},
 		{"Function of parameters", "const add = new Function('a', 'b', 'return a + b');"},
 		{"Function of a parameter list", "const min = Function('a, b', 'return a < b ? a : b');"},
 		{"Function with an empty body", "const noop = Function('');"},
 		{"Function of nothing", "const nil = Function();"},
+		{"a literal Function stored and called later", "const add = Function('a', 'b', 'return a + b');\nconst three = add(1, 2);"},
 		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
 		{"global require tested", "const electron = typeof window !== 'undefined' && !!(window.require && window.process);"},
-		{"global from Function read by a literal member", "const T = Function('return this')().TextEncoder;"},
 		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
 		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},
 		{"TypeScript function return type", "function pick(this: Box, k: string): Box { const s = wrap(this); return s; }\nfunction wrap(o) { return o; }"},
@@ -1885,10 +1974,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"global name declared by a TypeScript namespace var, indexed inside it", "namespace N { var self = { a: 1 }; self[process.argv[2]](1); }"},
 		{"global name as an arrow parameter in a ternary branch", "const f = process.env.X ? window => window[process.argv[2]](1) : null;"},
 		{"an arrow body holding a whole ternary", "const f = window => window ? window[process.argv[2]](1) : 0;"},
-		{"Function as an optional parameter type", "function run(cb?: Function, f?: Function): Function | undefined { return cb; }"},
 		{"global name as an arrow parameter used in its own ternary else", "const c = process.env.X;\nconst f = window => c ? 0 : window[process.argv[2]](1);"},
-		{"Function as a parameter type after a ternary default", "function run(a = process.env.X ? 1 : 2, cb: Function) { return cb; }"},
-		{"Function as a type after a nullish default", "const v = process.env.X ?? 'y'\nlet cb: Function;"},
 		{"the global assigned to an undeclared global name", "let x = 1;\nself = globalThis;\nconsole.log(self.location, x);"},
 		{"members compared with globals and a compound assignment", "const o = {};\nif (o.g === globalThis || o.h !== window || o.i >= self || o.j <= top) {}\nlet n = 0;\nn += self;"},
 		{"a member compared with a global", "const o = {};\nif (o.g == globalThis) { o.g = 1; }"},

@@ -150,12 +150,12 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	}
 }
 
-// functionUse records a use of the Function constructor at i: a call, `new Function`, a
-// `.call`/`.apply`/`.bind` on it, or an assignment that aliases it. A TypeScript type
-// annotation (`cb: Function`) and `Function.prototype` are not uses. A direct call whose
-// source is all plain literals with no way to run other code (literalFunction) is not one
-// either; when it is called at once, its result is judged as the global it can be.
-func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *globalScope) {
+// functionUse records a use of the Function constructor at i. Every reference to Function
+// counts, whatever follows it: a call, `new Function`, a member, an alias or a value handed
+// on may each reach the constructor by a path the walk does not follow. The one exception is
+// a direct call whose source is all plain literals with no way to run other code
+// (literalFunction) and whose result is not called at once.
+func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
@@ -165,115 +165,14 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 		}
 		return
 	}
-	switch {
-	case p < len(clean) && clean[p] == '(':
-		if ok, open := literalFunction(clean, src, p); ok {
-			if q := skipSpace(clean, closeParen(clean, p)+1); q < len(clean) && clean[q] == '(' {
-				start := i
-				if w, s := wordBefore(clean, b); w == "new" {
-					start = s
-				}
-				mb.globalUse(clean, start, closeParen(clean, q)+1, false, gs)
+	if p < len(clean) && clean[p] == '(' {
+		if ok, open := literalFunction(clean, src, p); ok && !open {
+			if q := skipSpace(clean, closeParen(clean, p)+1); !(q < len(clean) && clean[q] == '(' || optionalCall(clean, q)) {
 				return
 			}
-			if !open {
-				return
-			}
-		}
-	case optionalCall(clean, p):
-	case p < len(clean) && clean[p] == '.', optionalDot(clean, p), p < len(clean) && clean[p] == '[':
-		// call, apply and bind are functions like Function itself, so a chain of them ends
-		// at the constructor when it is called, indexed or read for `.constructor`. A chain
-		// that goes on to another method or is used as a value (`Function.call.bind(f)`,
-		// `Function.bind || polyfill`) calls something else; Function handed on as that
-		// receiver is a value use of its own.
-		if !functionChainReaches(clean, p) {
-			return
-		}
-	default:
-		w, _ := wordBefore(clean, b)
-		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
-		if w != "new" && !assigned && !escapesAsValue(clean, b, p) {
-			return
 		}
 	}
 	mb.evaluated = true
-}
-
-// functionChainReaches reports whether the member chain that starts at p after a Function
-// token may reach the constructor. It walks `.call`, `.apply` and `.bind` members and denies
-// by default: the chain is exempt in exactly three shapes, and every other continuation counts.
-//   - A named member other than call, apply, bind or constructor read directly on Function
-//     (`Function.prototype`).
-//   - A chain of two or more methods called, then called again or ending as a value
-//     (`Function.call.bind(f)`, `new (Function.bind.apply(P, a))()`): that runs the last method
-//     on the one before it, and Function handed on as its receiver is a value use of its own.
-//   - A chain ending as a value (`Function.bind || polyfill`, `ctx(Function.call, f)`), as
-//     chainValueEnds lists the ends.
-//
-// Closing parentheses around the chain change nothing but that a call after them counts.
-func functionChainReaches(clean []rune, p int) bool {
-	n := len(clean)
-	for steps := 0; ; steps++ {
-		switch {
-		case p < n && clean[p] == '.', optionalDot(clean, p) && !optionalCall(clean, p) && !optionalIndex(clean, p):
-			q := p + 1
-			if clean[p] == '?' {
-				q = p + 2
-			}
-			w, e := peekWord(clean, skipSpace(clean, q))
-			switch {
-			case w == "call" || w == "apply" || w == "bind":
-				p = skipSpace(clean, e)
-				continue
-			case steps == 0 && w != "" && w != "constructor":
-				return false
-			}
-			return true
-		case steps >= 2 && (p < n && clean[p] == '(' || optionalCall(clean, p)):
-			o := p
-			if clean[p] == '?' {
-				o = skipSpace(clean, p+2)
-			}
-			r := closeParen(clean, o) + 1
-			for r = skipSpace(clean, r); r < n && clean[r] == ')'; r = skipSpace(clean, r+1) {
-			}
-			return !(r < n && clean[r] == '(' || chainValueEnds(clean, r))
-		case p < n && clean[p] == ')':
-			for ; p < n && clean[p] == ')'; p = skipSpace(clean, p+1) {
-			}
-			if p < n && clean[p] == '(' || optionalCall(clean, p) {
-				return true
-			}
-			steps--
-			continue
-		}
-		return !chainValueEnds(clean, p)
-	}
-}
-
-// chainValueEnds reports whether an expression ends as a value at p: p ends the source or
-// starts a separator, a closing bracket, a ternary or nullish operator, a logical or bitwise
-// operator, an assignment or a comparison other than `<`, or a word on a later line, where a
-// statement without a semicolon ends. Nothing that may call, index, tag or assert the value
-// (`(`, `[`, `.`, `?.`, a template, `!`, `<`, `as`, `satisfies`) is listed; a template reads
-// as the word `_`, which tags across a line break, so `_` is not an end either.
-func chainValueEnds(clean []rune, p int) bool {
-	if p >= len(clean) {
-		return true
-	}
-	if w, _ := peekWord(clean, p); w != "" && w != "_" && w != "as" && w != "satisfies" {
-		return !sameLine(clean, skipSpaceBack(clean, p-1), p)
-	}
-	switch clean[p] {
-	case ',', ';', '}', ']', ':', '|', '&', '=', '>':
-		return true
-	case '?':
-		return !optionalDot(clean, p)
-	case '!':
-		return p+1 < len(clean) && clean[p+1] == '='
-	}
-	return false
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens
@@ -406,12 +305,6 @@ func plainLiteral(src []rune, a int) (string, bool) {
 func optionalCall(clean []rune, p int) bool {
 	q := skipSpace(clean, p+2)
 	return optionalDot(clean, p) && q < len(clean) && clean[q] == '('
-}
-
-// optionalIndex reports whether `?.[` starts at p, with any space after the `?.`.
-func optionalIndex(clean []rune, p int) bool {
-	q := skipSpace(clean, p+2)
-	return optionalDot(clean, p) && q < len(clean) && clean[q] == '['
 }
 
 // optionalDot reports whether `?.` starts at p.

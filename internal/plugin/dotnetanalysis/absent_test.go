@@ -106,11 +106,18 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"traversal project", withFile("build.proj", "<Project/>")},
 		{"solution naming a project outside the tree", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"Lib\", \"..\\Lib\\Lib.csproj\", \"{1}\"\nEndProject\n")},
 		{"solution naming a project in a skipped directory", withFile("App.slnx", `<Solution><Project Path=".tools/Tool.csproj" /></Solution>`)},
+		{"symlink", func(t *testing.T, dir string) {
+			if err := os.Symlink("Decoy.cs", filepath.Join(dir, "Link.cs")); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"lockfile without a project", withFile("orphan/packages.lock.json", `{"version":1,"dependencies":{}}`)},
 		{"a project with no restore record", withFile("Lib/Lib.csproj", projectDeclaring([]string{"net8.0"}, nil, ""))},
 		{"stale restore record", withItems(`<ItemGroup><PackageReference Include="Serilog" Version="3.0.0" /></ItemGroup>`)},
 		{"reference with a hint path", withItems(`<ItemGroup><Reference Include="Vendor"><HintPath>vendor/Vendor.dll</HintPath></Reference></ItemGroup>`)},
 		{"reference to an assembly file", withItems(`<ItemGroup><Reference Include="vendor\Vendor.dll" /></ItemGroup>`)},
+		{"reference to an assembly file by name", withItems(`<ItemGroup><Reference Include="Vendor.dll" /></ItemGroup>`)},
+		{"reference to an assembly by path", withItems(`<ItemGroup><Reference Include="lib/Vendor" /></ItemGroup>`)},
 		{"reference with unknown metadata", withItems(`<ItemGroup><Reference Include="Vendor"><Foo>x</Foo></Reference></ItemGroup>`)},
 		{"package download", withItems(`<ItemGroup><PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup>`)},
 		{"analyzer item", withItems(`<ItemGroup><Analyzer Include="tools/Gen.dll" /></ItemGroup>`)},
@@ -213,5 +220,19 @@ func TestNotInBuild_CurrentLockfileSettles(t *testing.T) {
 	}
 	if v := exhaustiveFor(t, dir, "System.Text.Json"); !v.Found {
 		t.Fatalf("transitive: Found=false, want true")
+	}
+}
+
+// TestTreeClosed_RootIsWalked: a build whose own directory has a name skipDir skips is still
+// walked.
+func TestTreeClosed_RootIsWalked(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "bin")
+	writeFixtureFile(t, root, "lib/Vendor.dll", "MZ")
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if treeClosed(real, nil) {
+		t.Fatal("treeClosed = true for a tree holding an assembly")
 	}
 }

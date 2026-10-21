@@ -100,14 +100,18 @@ type reportHTMLFinding struct {
 	// alongside the human sentence so a reader can match it to the coverage limit above and to
 	// the same code in the SARIF and JSON.
 	UndeterminedReason string
-	// Priority / intel fields — zero values mean "not present"; template gates on HasPriority.
-	HasPriority    bool
-	EPSSScore      float64
-	EPSSPercentile float64
-	EPSSPct        int // EPSSPercentile as an integer percentile (0–100) for display
-	KEVListed      bool
-	KEVDateAdded   string
-	IntelSnapshot  string
+	// Priority / intel fields — zero values mean "not present"; the template gates on HasPriority,
+	// and on HasEPSS / KEVListed for each value, which it shows with its own stamp.
+	HasPriority       bool
+	HasEPSS           bool
+	EPSSScore         float64
+	EPSSPercentile    float64
+	EPSSPct           int    // EPSSPercentile as an integer percentile (0–100) for display
+	EPSSAsOf          string // the EPSS model date the score is from
+	KEVListed         bool
+	KEVDateAdded      string
+	KEVCatalogVersion string // the CISA catalog the KEV observation was read from
+	KEVDateReleased   string
 	// Reachability-grade and entry-point fields — gated on HasGrade / HasEntryPoint.
 	HasGrade             bool
 	Grade                string // "attacker_tainted" | "control_flow_only"
@@ -242,16 +246,23 @@ func reportHTMLFindingFrom(f report.AdvisoryFinding) reportHTMLFinding {
 		UndeterminedReason: f.UndeterminedReason,
 	}
 
-	// Priority: EPSS/KEV exploitation-likelihood context from the pinned intel snapshot.
-	// These are NEVER exploitability claims for this codebase (inv. 5).
-	if f.Priority != nil {
+	// Priority: EPSS/KEV exploitation-likelihood context from the run's signals file, each value
+	// with its own stamp. These are NEVER exploitability claims for this codebase (inv. 5).
+	if p := f.Priority; p != nil {
 		out.HasPriority = true
-		out.EPSSScore = f.Priority.EPSSScore
-		out.EPSSPercentile = f.Priority.EPSSPercentile
-		out.EPSSPct = int(f.Priority.EPSSPercentile * 100)
-		out.KEVListed = f.Priority.KEVListed
-		out.KEVDateAdded = f.Priority.KEVDateAdded
-		out.IntelSnapshot = f.Priority.Snapshot
+		if p.HasEPSS() {
+			out.HasEPSS = true
+			out.EPSSScore = p.EPSSScore
+			out.EPSSPercentile = p.EPSSPercentile
+			out.EPSSPct = int(p.EPSSPercentile * 100)
+			out.EPSSAsOf = p.EPSSAsOf
+		}
+		if p.HasKEV() {
+			out.KEVListed = p.KEVListed
+			out.KEVDateAdded = p.KEVDateAdded
+			out.KEVCatalogVersion = p.KEVCatalogVersion
+			out.KEVDateReleased = p.KEVDateReleased
+		}
 	}
 
 	// Reachability grade — evidence-strength context for a reachable_candidate.

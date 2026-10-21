@@ -2,35 +2,70 @@ package trigger
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
-// TestPriorityForResolvesViaCVEAlias proves the offline EPSS lookup fires through a
-// GO-id advisory's CVE alias (the plumbing from AdvisoryFacts.Aliases all the way to
-// report.Priority). GO-2021-0113 aliases CVE-2021-38561, which is in the pinned EPSS
-// snapshot.
+// prioritySignals is a hand-written signals 1.x fixture: CVE-2021-38561 has EPSS only, CVE-2025-8110
+// is KEV-listed with EPSS, and CVE-2024-55947 carries a stamped not-listed KEV observation.
+func prioritySignals(t *testing.T) *intel.Signals {
+	t.Helper()
+	s, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 3,
+	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	  "records": [
+	    {"identifier": "CVE-2021-38561", "epss": {"score": 0.0123, "percentile": 0.456, "as_of": "2026-10-18"}},
+	    {"identifier": "CVE-2025-8110", "epss": {"score": 0.91, "percentile": 0.99, "as_of": "2026-10-19"},
+	     "kev": {"listed": true, "date_added": "2025-07-28", "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+	    {"identifier": "CVE-2024-55947", "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestPriorityForResolvesViaCVEAlias proves the EPSS lookup fires through a GO-id advisory's CVE
+// alias (the plumbing from AdvisoryFacts.Aliases all the way to report.Priority), with the value's
+// own stamp.
 func TestPriorityForResolvesViaCVEAlias(t *testing.T) {
-	p := priorityFor(report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"}})
-	if p == nil {
-		t.Fatal("expected EPSS priority via the CVE alias, got nil")
-	}
-	if p.EPSSScore <= 0 || p.EPSSPercentile <= 0 {
-		t.Errorf("expected a positive EPSS score/percentile, got %+v", p)
-	}
-	if p.Snapshot == "" {
-		t.Error("expected the snapshot date stamped for provenance")
+	p := priorityFor(report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"}}, prioritySignals(t))
+	want := report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, EPSSAsOf: "2026-10-18"}
+	if p == nil || *p != want {
+		t.Fatalf("priority = %+v, want %+v (EPSS via the CVE alias, no KEV fields)", p, want)
 	}
 }
 
-// TestPriorityForNoCVEisNil proves a synthetic advisory with no CVE id/alias carries
-// no likelihood signal (correct: EPSS/KEV are CVE-keyed).
-func TestPriorityForNoCVEisNil(t *testing.T) {
-	if p := priorityFor(report.Advisory{ID: "FERRALON-APP-SSRF-0001", Source: "osv"}); p != nil {
-		t.Errorf("expected nil priority for a non-CVE advisory, got %+v", p)
+// TestPriorityForCarriesEachValuesStamp: every value comes with its own stamp, and a stamped
+// not-listed KEV observation is carried as one.
+func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
+	sig := prioritySignals(t)
+	got := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv", Aliases: []string{"GO-2025-3900"}}, sig)
+	want := report.Priority{
+		EPSSScore: 0.91, EPSSPercentile: 0.99, EPSSAsOf: "2026-10-19",
+		KEVListed: true, KEVDateAdded: "2025-07-28", KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z",
+	}
+	if got == nil || *got != want {
+		t.Errorf("CVE-2025-8110 priority = %+v, want %+v", got, want)
+	}
+	got = priorityFor(report.Advisory{ID: "CVE-2024-55947", Source: "osv"}, sig)
+	want = report.Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}
+	if got == nil || *got != want {
+		t.Errorf("CVE-2024-55947 priority = %+v, want the stamped not-listed observation %+v", got, want)
+	}
+}
+
+// TestPriorityForNoSignalIsNil: a synthetic advisory with no id in the signals file, and any
+// advisory in a run with no signals at all, carries no Priority.
+func TestPriorityForNoSignalIsNil(t *testing.T) {
+	if p := priorityFor(report.Advisory{ID: "FERRALON-APP-SSRF-0001", Source: "osv"}, prioritySignals(t)); p != nil {
+		t.Errorf("expected nil priority for an id the signals file lacks, got %+v", p)
+	}
+	if p := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv"}, nil); p != nil {
+		t.Errorf("expected nil priority with no signals, got %+v", p)
 	}
 }
 

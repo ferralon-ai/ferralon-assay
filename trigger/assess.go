@@ -210,10 +210,8 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	}
-	// Attach offline EPSS/KEV likelihood context (package intel) to every finding by
-	// the advisory's CVE id/aliases. It only ranks attention; it NEVER changes the
-	// deterministic verdict (inv. 5) — a disqualified high-EPSS CVE stays disqualified.
-	f.Priority = priorityFor(adv)
+	// No Priority here: EPSS/KEV context is attached by the report Builder (rankBy), after every
+	// verdict is final, so nothing on this path can read it (inv. 5).
 	return f
 }
 
@@ -509,27 +507,35 @@ func maliciousPresentDetail(matchedVersion string) string {
 	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
 }
 
-// priorityFor looks the advisory up in the pinned EPSS/KEV snapshot by its id and
-// aliases (EPSS/KEV are CVE-keyed; a GO-/GHSA-keyed advisory matches via its CVE
-// alias). Returns nil when neither feed has a record — most synthetic corpus ids
-// have no CVE, so they carry no likelihood signal, which is correct.
-func priorityFor(adv report.Advisory) *report.Priority {
+// priorityFor looks the advisory up in the run's signals file by its id and then its aliases (a GO-
+// or GHSA-keyed advisory matches through its CVE alias), and returns each value with its own stamp.
+// It returns nil when the run has no signals, or the file has no stamped value for any of the ids —
+// most synthetic corpus ids have no CVE and so no likelihood signal, which is correct.
+//
+// The join is only sound because an advisory's alias set names the SAME vulnerability its id does
+// (pipeline's TestKEVAttributionFollowsListedCVE): an alias naming a different CVE would hand this
+// advisory another vulnerability's KEV listing.
+//
+// Ranking context only (inv. 5): it is read by Builder.WithPriority after every verdict is final.
+func priorityFor(adv report.Advisory, sig *intel.Signals) *report.Priority {
 	ids := append([]string{adv.ID}, adv.Aliases...)
-	p := &report.Priority{}
-	matched := false
-	if s, ok := intel.EPSS(ids...); ok {
-		p.EPSSScore, p.EPSSPercentile = s.Score, s.Percentile
-		matched = true
+	var p report.Priority
+	if e, ok := sig.EPSS(ids...); ok {
+		p.EPSSScore, p.EPSSPercentile, p.EPSSAsOf = e.Score, e.Percentile, e.AsOf
 	}
-	if k, ok := intel.KEV(ids...); ok {
-		p.KEVListed, p.KEVDateAdded = true, k.DateAdded
-		matched = true
+	if k, ok := sig.KEV(ids...); ok {
+		p.KEVListed, p.KEVDateAdded = k.Listed, k.DateAdded
+		p.KEVCatalogVersion, p.KEVDateReleased = k.CatalogVersion, k.DateReleased
 	}
-	if !matched {
+	if !p.HasEPSS() && !p.HasKEV() {
 		return nil
 	}
-	p.Snapshot = intel.SnapshotDate
-	return p
+	return &p
+}
+
+// rankBy is the Builder.WithPriority function for a run with signals sig (nil for none).
+func rankBy(sig *intel.Signals) func(report.Advisory) *report.Priority {
+	return func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig) }
 }
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate

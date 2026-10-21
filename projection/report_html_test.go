@@ -173,6 +173,12 @@ func TestReportHTML_Priority_RendersEPSSAndKEV(t *testing.T) {
 	if !strings.Contains(html, "2024-01-15") {
 		t.Errorf("KEV date added not found in HTML")
 	}
+	// Each value shows its own stamp.
+	for _, stamp := range []string{"as of 2026-06-15", "catalog 2026.06.14"} {
+		if !strings.Contains(html, stamp) {
+			t.Errorf("stamp %q not found in HTML", stamp)
+		}
+	}
 	// EPSS/KEV footnote.
 	if !strings.Contains(html, "EPSS / CISA KEV") {
 		t.Errorf("EPSS/KEV footnote not found in HTML")

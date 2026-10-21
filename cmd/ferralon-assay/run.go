@@ -11,9 +11,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
 	"github.com/ferralon-ai/ferralon-assay/internal/brand"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/internal/resultsink/ferralon"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/projection"
@@ -45,6 +47,9 @@ const (
 	// only: they report a check made before the scanner ran, not a knob.
 	envAdvisoryCorpusSignerIdentity = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_IDENTITY"
 	envAdvisoryCorpusSignerIssuer   = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_ISSUER"
+	// envAdvisorySignals is the env channel for -advisory-signals: the EPSS/KEV signals file the run
+	// ranks its findings with (see resolveSignals).
+	envAdvisorySignals = brand.EnvPrefix + "_ADVISORY_SIGNALS"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
@@ -464,6 +469,11 @@ type runFlags struct {
 	corpusReader     pipeline.AdvisorySource // the configured corpus's own reader; nil when none
 	resolvedPolicy   string                  // the declared advisory policy id; "" when none
 	resolvedSigner   *report.CorpusSigner    // the verified corpus signer; nil when none
+	corpusTree       string                  // the configured corpus path when it is a directory; "" otherwise
+	signalsPath      *string
+	signalsMaxAge    *time.Duration
+	resolvedSignals  *intel.Signals // the signals file the run ranks with; nil when none — set by resolveSignals
+	signalsOrigin    string         // where resolvedSignals came from, or why there are none
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
@@ -506,6 +516,10 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// corpusPolicy declares which advisory policy the corpus was selected by. Declaring one makes
 		// the corpus define the work set (selectWorkSet); without it the corpus is fact scope only.
 		corpusPolicy: fs.String("advisory-corpus-policy", "", "the advisory policy -advisory-corpus was selected by (e.g. published-7d, full). When set, the work set is the built-in floor plus every advisory in the corpus whose affected package is one of the repository's dependencies, and no OSV.dev query is made; requires -advisory-corpus; overrides "+envAdvisoryCorpusPolicy),
+		// signalsPath is the EPSS/KEV signals file findings are ranked with. The scanner holds no
+		// signals of its own and fetches none: without one, no finding carries a priority.
+		signalsPath:   fs.String("advisory-signals", "", "path to an EPSS/KEV signals file (signals.json or signals.json.gz, signals_version 1.x) used to rank findings; each value is reported with its own date. Default: the signals.json of an -advisory-corpus directory, when it has one. Without signals no finding carries EPSS/KEV priority; overrides "+envAdvisorySignals),
+		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file is older than this (the file still loads)"),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
 		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),
@@ -643,6 +657,7 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.corpusReader = nil
 	f.resolvedPolicy = ""
 	f.resolvedSigner = nil
+	f.corpusTree = ""
 
 	required, err := f.advisoryCorpusRequired()
 	if err != nil {
@@ -676,6 +691,9 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	}
 
 	src := corpusSourceFor(dir)
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		f.corpusTree = dir
+	}
 	if v, ok := src.(pipeline.CorpusValidator); ok {
 		if err := v.Validate(); err != nil {
 			return nil, fmt.Errorf("advisory corpus %q is unusable: %w", dir, err)
@@ -837,6 +855,9 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
+	if f.resolvedSignals != nil {
+		p.SignalsDigest = f.resolvedSignals.Digest
+	}
 	if f.resolvedCorpusOK && f.resolvedSigner != nil {
 		signer := *f.resolvedSigner
 		p.CorpusSigner = &signer
@@ -1014,6 +1035,11 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		acq.cleanup()
 		return nil, err
 	}
+	// After runAssessOptions, which resolves the corpus tree the signals default to.
+	if err := f.resolveSignals(); err != nil {
+		acq.cleanup()
+		return nil, err
+	}
 
 	// Resolved AFTER advisoryCorpusOption, which is what decides the fact source the widener
 	// consults when admitting an OSV-reported id.
@@ -1097,6 +1123,7 @@ func runPRInherit(args []string) error {
 		// path so an inherit forced by an unresolvable head SBOM is not read as "clean".
 		DiffLimits:    sbomLimits,
 		AssessOptions: cfg.assessOptions,
+		Signals:       f.resolvedSignals,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
@@ -1116,7 +1143,7 @@ func runPRInherit(args []string) error {
 	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
 		return err
 	}
-	printSummary(cfg.outDir, res.Report)
+	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
 	return nil
@@ -1160,6 +1187,7 @@ func runCVEWatch(args []string) error {
 		Subject:       cfg.subject,
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
+		Signals:       f.resolvedSignals,
 	})
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
@@ -1185,7 +1213,7 @@ func runCVEWatch(args []string) error {
 	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
 		return err
 	}
-	printSummary(cfg.outDir, res.Report)
+	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
 	return nil

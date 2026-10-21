@@ -273,6 +273,140 @@ func TestReach_ProviderRoots(t *testing.T) {
 	})
 }
 
+// TestReach_SignatureRoots: of a JDK-loadable class's overridable methods, only those
+// the JDK can name through a supertype it holds the object under are roots.
+func TestReach_SignatureRoots(t *testing.T) {
+	const (
+		d    = "com/acme/D"
+		base = "com/acme/Base"
+		cowl = "java/util/concurrent/CopyOnWriteArrayList"
+		ueh  = "java/lang/Thread$UncaughtExceptionHandler"
+	)
+	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
+	uncaught := "(Ljava/lang/Thread;Ljava/lang/Throwable;)V"
+	runHoleCases(t, []holeCase{
+		{
+			name: "a method no platform supertype declares is no root, and no re-entry hazard",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
+					callsSink(d, "snapshot", "()Ljava/lang/Object;"),
+					callsSink(d, "cursor", "()Ljava/util/Iterator;"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "the same on a platform interface's implementor",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "uncaughtException", uncaught),
+					callsSink(d, "snapshot", "()Ljava/lang/Object;"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "a platform-declared override returning Object stays a root with its hazard",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/util/Hashtable", Public: true, Methods: []classfile.Method{
+					pubMethod(d, "get", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+			},
+			want: Undetermined, kind: HazardKindReentry, why: "returns java/lang/Object",
+		},
+		{
+			name: "an override of a platform interface the class is handed to the JDK under",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "uncaughtException", uncaught),
+				}},
+			},
+			want: ReachableCandidate, via: "D.uncaughtException",
+		},
+		{
+			name: "the same override when the code hands the object to the JDK",
+			classes: []classfile.Class{
+				mainCalls(
+					edge(classfile.EdgeSpecial, d, "<init>", "()V"),
+					edge(classfile.EdgeStatic, "java/lang/Thread", "setDefaultUncaughtExceptionHandler", "(L"+ueh+";)V"),
+				),
+				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "<init>", "()V"),
+					callsSink(d, "uncaughtException", uncaught),
+				}},
+			},
+			want: ReachableCandidate, via: "D.uncaughtException",
+		},
+		{
+			name: "an inherited method a subclass's platform interface names",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: cowl, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: base, Interfaces: []string{ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.uncaughtException",
+		},
+		{
+			name: "a method an unopened supertype may declare",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: cowl, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a method a subclass's unopened supertype may declare",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: cowl, Public: true, Methods: []classfile.Method{
+					callsSink(base, "start", "()V"),
+				}},
+				{Name: d, Super: base, Interfaces: []string{"org/unopened/Plugin"}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.start",
+		},
+		{
+			name: "a JDK-prefixed supertype a classpath JAR defines is unopened",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:   Classpath{Packages: map[string]bool{"javax/net": true}},
+			want: ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a covariant override of a platform method",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/nio/charset/spi/CharsetProvider", Public: true, Methods: []classfile.Method{
+					callsSink(d, "charsetForName", "(Ljava/lang/String;)Lcom/acme/AcmeCharset;"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.charsetForName",
+		},
+		{
+			name: "an override of java/lang/Object's methods",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/nio/charset/spi/CharsetProvider", Public: true, Methods: []classfile.Method{
+					callsSink(d, "hashCode", "()I"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.hashCode",
+		},
+	})
+}
+
 // TestReach_PlatformBodyOnThis: a JDK body running with an application object as
 // `this` can call what the object overrides or holds.
 func TestReach_PlatformBodyOnThis(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 )
@@ -26,6 +27,7 @@ type Engine struct {
 	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
 	overridable map[string]bool              // hasOverridable cache
 	loadable    map[string]bool              // platformLoadable cache
+	held        map[string]heldTypes         // heldAs cache
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
 }
@@ -54,6 +56,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		subtypes:    map[string][]string{},
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
+		held:        map[string]heldTypes{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 	}
@@ -811,15 +814,109 @@ func (e *Engine) loadableType(t string) bool {
 	return !deniedLoadable[t] && !strings.HasPrefix(t, "java/util/function/")
 }
 
+// objectOverridable are java/lang/Object's overridable methods, keyed as platformMethods
+// keys them.
+var objectOverridable = map[string]bool{
+	"toString()": true, "equals(Ljava/lang/Object;)": true, "hashCode()": true, "finalize()": true, "clone()": true,
+}
+
+// platformSigs indexes platformMethods' methods by type.
+var platformSigs = sync.OnceValue(func() map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(platformMethods))
+	for t, pt := range platformMethods {
+		sigs := map[string]bool{}
+		for _, s := range strings.Fields(pt.methods) {
+			sigs[s] = true
+		}
+		out[t] = sigs
+	}
+	return out
+})
+
+// heldTypes is how the JDK can hold an object: the platformMethods types among its
+// supertypes, and unseen when some supertype's methods are unknown to the engine.
+type heldTypes struct {
+	types  []string
+	unseen bool
+}
+
+// heldAs returns the heldTypes of every loaded class that is owner or a subtype of it,
+// merged: a method owner declares runs on an object of each that does not override it.
+// A supertype is unseen when it is neither loaded, java/lang/Object, nor a platform type
+// platformMethods lists: an unopened dependency type, whose own supertypes are unknown,
+// or a platform type outside the list.
+func (e *Engine) heldAs(owner string) heldTypes {
+	if h, ok := e.held[owner]; ok {
+		return h
+	}
+	var h heldTypes
+	seen := map[string]bool{}
+	stack := e.subtypeClosure(owner)
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[cur] || cur == objectClass {
+			continue
+		}
+		seen[cur] = true
+		if cls := e.classes[cur]; cls != nil {
+			if cls.Super != "" {
+				stack = append(stack, cls.Super)
+			}
+			stack = append(stack, cls.Interfaces...)
+			continue
+		}
+		pt, listed := platformMethods[cur]
+		if !listed || !e.platform(cur) {
+			h.unseen = true
+			break
+		}
+		h.types = append(h.types, cur)
+		stack = append(stack, strings.Fields(pt.supers)...)
+	}
+	e.held[owner] = h
+	return h
+}
+
+// jdkCallable reports whether JDK code can invoke m, an overridable method of loaded
+// class owner, without reflection: the JDK names a method only through a type of its
+// own, so m must override a method a platform supertype declares (platformMethods,
+// objectOverridable) or one of a supertype the engine cannot see. A match is on name
+// and parameter types: a covariant override's bridge and the override itself both
+// match. Any other JDK call into m is reflective (deserialization hooks, java/beans,
+// JMX, method handles), and the search meets its JDK entry point as a hazard instead:
+// isReflection, or a call on an out-of-classpath receiver (SignedObject.getObject).
+func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
+	i := strings.IndexByte(m.Descriptor, ')')
+	if i < 0 {
+		return true
+	}
+	sig := m.Name + m.Descriptor[:i+1]
+	if objectOverridable[sig] {
+		return true
+	}
+	h := e.heldAs(owner)
+	if h.unseen {
+		return true
+	}
+	sigs := platformSigs()
+	for _, t := range h.types {
+		if sigs[t][sig] {
+			return true
+		}
+	}
+	return false
+}
+
 // providerRoots returns the methods the JDK itself can call on loaded classes it
 // finds or holds without the searched code handing them over: for each
-// platformLoadable class, its overridable methods, and when it is a public concrete
-// class, its public constructors, public static provider() and the static
-// initializers instantiating it runs (ServiceLoader, DriverManager and the factory
-// lookups load providers named in META-INF/services). A root method that returns an
-// object the JDK then calls is a hazard when the object's type is not itself
-// covered (a denied or unopened type, such as Object or Iterator), because the
-// object's class need not be platformLoadable.
+// platformLoadable class, its overridable methods the JDK can name (jdkCallable), and
+// when it is a public concrete class, its public constructors, public static
+// provider() and the static initializers instantiating it runs (ServiceLoader,
+// DriverManager and the factory lookups load providers named in META-INF/services).
+// A root method that returns an object the JDK then calls is a hazard when the
+// object's type is not itself covered (a denied or unopened type, such as Object or
+// Iterator), because the object's class need not be platformLoadable.
 func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 	names := make([]string, 0, len(e.classes))
 	for n := range e.classes {
@@ -836,6 +933,9 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 			m := &cls.Methods[i]
 			switch {
 			case isOverridable(m):
+				if !e.jdkCallable(n, m.Ref) {
+					continue
+				}
 				roots = append(roots, m)
 				if rt, ok := returnRefType(m.Ref.Descriptor); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
 					hazard = "higher-order re-entry: platform-callable " + m.Ref.String() + " returns " + rt + ", which can carry application objects"

@@ -116,7 +116,7 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 	if err == nil {
 		file := filepath.Join(work, graphFileName)
 		if err = writeGraph(file, graph); err == nil {
-			if _, err = buildgraph.Load(file, dir, req.conditions); err == nil {
+			if err = loadResolved(file, dir, req.conditions); err == nil {
 				g.file = file
 				return g, cleanup
 			}
@@ -124,6 +124,13 @@ func acquireBuildGraph(ctx context.Context, dir string, req graphRequest) (*jvmG
 	}
 	g.failure = asFailure(err)
 	return g, cleanup
+}
+
+// loadResolved loads a graph this run resolved: fresh, so it accepts included builds outside the
+// checkout that a graph file from elsewhere could not bind.
+func loadResolved(file, dir string, c buildgraph.Conditions) error {
+	_, err := buildgraph.Load(file, dir, c, buildgraph.Fresh())
+	return err
 }
 
 func writeGraph(file string, g *buildgraph.Graph) error {

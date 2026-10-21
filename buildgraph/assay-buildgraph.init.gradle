@@ -16,6 +16,21 @@ def gradleVersion = gradle.gradleVersion
 def javaVersion = System.getProperty('java.version')
 def javaVendor = System.getProperty('java.vendor')
 
+// Every build in the tree evaluates its settings with this script applied, a nested included
+// build too, though the root build never lists it. Each included build records its directory,
+// so the build logic it holds is hashed as input. The root build records the builds it includes
+// directly, so a nested build that never ran this script cannot go unrecorded.
+def record = { String kind, File dir ->
+    def d = new File(assayOut, kind)
+    d.mkdirs()
+    new File(d, UUID.randomUUID().toString() + '.txt').setText(dir.absolutePath, 'UTF-8')
+}
+if (gradle.parent != null) {
+    gradle.settingsEvaluated { s -> record('included', s.rootDir) }
+} else {
+    gradle.projectsEvaluated { g -> g.includedBuilds.each { b -> record('direct', b.projectDir) } }
+}
+
 // A resolution failure's own message rarely names the cause; the transport error (a 401, a
 // missing artifact) sits further down the cause chain.
 def failureText = { Throwable top ->

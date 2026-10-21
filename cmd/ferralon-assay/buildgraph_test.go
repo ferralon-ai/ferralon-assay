@@ -47,6 +47,58 @@ func mavenCheckout(t *testing.T, c buildgraph.Conditions) (dir, file string) {
 	return dir, file
 }
 
+// gradleCheckout is a one-project Gradle checkout and a graph file for it whose settings include a
+// build outside the checkout.
+func gradleCheckout(t *testing.T) (dir, file string, g buildgraph.Graph) {
+	t.Helper()
+	dir = t.TempDir()
+	settings := []byte("includeBuild(\"../plugin\")")
+	if err := os.WriteFile(filepath.Join(dir, "settings.gradle.kts"), settings, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(settings)
+	inputs := []buildgraph.Input{{Path: "settings.gradle.kts", SHA256: hex.EncodeToString(sum[:])}}
+	root := buildgraph.Node{Group: "com.example", Artifact: "app", Version: "1", Type: "jar"}
+	root.ID = buildgraph.NodeID(root.Group, root.Artifact, root.Type, "", root.Version)
+	g = buildgraph.Graph{
+		Schema:  buildgraph.Schema,
+		Tool:    buildgraph.Tool{Name: "gradle", Version: "8.14"},
+		JVM:     buildgraph.JVM{Version: "21.0.4"},
+		Subject: buildgraph.Subject{Inputs: inputs, InputsDigest: buildgraph.InputsDigest(inputs), UnbindableIncludedBuilds: []string{"/elsewhere/plugin"}},
+		Modules: []buildgraph.Module{{ID: ":", Path: ".", Root: root.ID, Nodes: []buildgraph.Node{root}}},
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file = filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, file, g
+}
+
+// A graph whose build logic lies outside the checkout loads only when this run resolved it: a file
+// could be stale against that build logic, and resolve-graph refuses to write one.
+func TestUnbindableIncludedBuild(t *testing.T) {
+	dir, file, g := gradleCheckout(t)
+	if err := loadResolved(file, dir, buildgraph.Conditions{}); err != nil {
+		t.Fatalf("resolved in this run: %v", err)
+	}
+	gr, cleanup := acquireBuildGraph(context.Background(), dir, graphRequest{mode: file})
+	defer cleanup()
+	if rec := gr.record(); rec.Cause == nil || rec.Cause.Kind+":"+rec.Cause.Detail != "graph_rejected:subject_inputs" {
+		t.Fatalf("file mode: %+v", rec.Cause)
+	}
+	if err := writableGraph(&g); err == nil {
+		t.Fatal("resolve-graph wrote an unbindable graph")
+	}
+	g.Subject.UnbindableIncludedBuilds = nil
+	if err := writableGraph(&g); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAcquireBuildGraph(t *testing.T) {
 	stated := buildgraph.Conditions{Profiles: []string{"ci"}, JDK: "21"}
 	dir, file := mavenCheckout(t, stated)

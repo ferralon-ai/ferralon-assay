@@ -53,6 +53,16 @@ if [ -n "$FAKE_FAIL" ]; then cat "$FAKE_DIR/fail.txt"; exit 1; fi
 for f in "$FAKE_DIR"/project*.json; do
   sed "s|@M2@|$FAKE_M2|g; s|@ROOT@|$FAKE_ROOT|g" "$f" > "$out/$(basename "$f")"
 done
+for kind in included direct; do
+  if [ -f "$FAKE_DIR/$kind.txt" ]; then
+    mkdir -p "$out/$kind"
+    i=0
+    while IFS= read -r d; do
+      i=$((i+1))
+      echo "$d" | sed "s|@ROOT@|$FAKE_ROOT|g; s|@OUT@|$FAKE_OUTSIDE|g" > "$out/$kind/$i.txt"
+    done < "$FAKE_DIR/$kind.txt"
+  fi
+done
 `
 
 const mavenVersionOut = `Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937)
@@ -247,6 +257,16 @@ func newFakeMavenRepo(t *testing.T, fail, failOut string, edit, repo map[string]
 func (r fakeRepo) resolve(t *testing.T, tool string, c Conditions) (*Graph, error) {
 	t.Helper()
 	return Resolve(context.Background(), Request{Dir: r.dir, Tool: tool, Conditions: c, WorkDir: r.work, Env: r.env, Producer: Producer{Name: "test", Version: "0"}})
+}
+
+// failureLog is the log of err's Failure, which names the check that failed where two checks share
+// a cause.
+func failureLog(err error) string {
+	var f *Failure
+	if errors.As(err, &f) {
+		return f.Log
+	}
+	return ""
 }
 
 func cause(err error) string {

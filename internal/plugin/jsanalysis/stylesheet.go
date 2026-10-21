@@ -260,15 +260,17 @@ func (p *program) importsUnlisted() bool {
 		}
 		return v
 	}
-	for _, mi := range p.modules {
-		if craSrc(mi.module) {
+	// Each parsed file counts on its own: files sharing a module id (build.js beside build.cjs)
+	// share one moduleIndex, which keeps only the last one's bindings.
+	for _, f := range p.files {
+		if craSrc(f.module) {
 			continue
 		}
-		for _, ls := range mi.bindings.specifiers {
+		for _, ls := range f.bindings.specifiers {
 			switch spec := ls.spec; {
 			case strings.HasPrefix(spec, "."):
 				// A relative load into an app's src runs that module under node too.
-				target := path.Join(path.Dir(mi.module), spec)
+				target := path.Join(path.Dir(f.module), spec)
 				if craSrc(target) || craSrc(target+"/index") {
 					return true
 				}

@@ -156,6 +156,10 @@ load(process.argv, 'json5');
 async function load(s, n) { const J = await import(` + "`./${n}`" + `); return J.parse(s); }
 load(process.argv, 'json5');
 `}, plugin.PartialReasonDynamicImportSpecifier},
+		{"dynamic import spread into an object", map[string]string{"app.js": `
+function load(s, n) { const J = { ...import(` + "`./${n}`" + `) }; return J; }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonDynamicImportSpecifier},
 		{"native addon", map[string]string{"app.js": `
 const addon = require('./build/Release/x.node');
 function load(s) { return addon.parse(s); }
@@ -1866,6 +1870,19 @@ const k = 'ev' + 'al';
 Ⅰ = globalThis;
 const g = Function('return Ⅰ');
 setTimeout(() => g()[k](process.argv[2]));
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function after a member named import", map[string]string{"app.js": `
+var cfg = {};
+cfg.import, Function(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function in a block after a member named export", map[string]string{"app.js": `
+var cfg = {};
+cfg?.export
+{ Function(process.argv[2])(); }
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},

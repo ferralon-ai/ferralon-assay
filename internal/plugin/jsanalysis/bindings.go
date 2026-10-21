@@ -99,9 +99,9 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 		word, next := readWord(clean, i)
 		switch {
-		case word == "import":
+		case word == "import" && !memberName(clean, i):
 			i = parseImportForm(clean, src, next, &mb, add)
-		case word == "export":
+		case word == "export" && !memberName(clean, i):
 			i = parseExportForm(clean, src, next, &mb)
 		case word == "const", word == "let", word == "var":
 			i = parseDeclForm(clean, src, next, &mb, add)
@@ -140,6 +140,13 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 	}
 	return mb
+}
+
+// memberName reports whether the word at i is read as a property (`x.import`, `x?.export`),
+// not a keyword, so what follows it is still scanned. A spread (`...import(x)`) is not one.
+func memberName(clean []rune, i int) bool {
+	b := skipSpaceBack(clean, i-1)
+	return b >= 0 && clean[b] == '.' && (b == 0 || clean[b-1] != '.')
 }
 
 // importPair is one (local, imported) name pair collected while parsing an import clause

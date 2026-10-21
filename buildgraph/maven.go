@@ -3,6 +3,7 @@ package buildgraph
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -120,6 +121,15 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
 		return nil, err
 	}
+	override, overridden := toolchainVersionOverride(c, r.env, r.dir)
+	toolchains, err := mavenToolchains(effective, override, overridden)
+	if err != nil {
+		return nil, err
+	}
+	for i := range modules {
+		modules[i].JDKToolchains = toolchains[modules[i].ID]
+		modules[i].JDKToolchainsKnown = true
+	}
 	g.Modules = modules
 	g.Subject.Outputs = mavenOutputs(r.dir, reactor, effective, modules)
 	if g.Incomplete, err = mavenIncomplete(r.dir, g.Subject.Outputs, modules, reactor, effective); err != nil {
@@ -151,11 +161,12 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 var treeShapingParams = map[string]bool{"verbose": true, "scope": true, "includes": true, "excludes": true}
 
 // treeShaping finds one of treeShapingParams set as a property on a command or JVM option line,
-// in any of Maven's spellings: -Dk, -D k, --define k, --define=k.
-var treeShaping = regexp.MustCompile(`(?:^|\s)(?:-D\s*|--define[=\s]\s*)(verbose|scope|includes|excludes)(?:[=\s]|$)`)
+// in any of Maven's spellings: -Dk, -D k, --define k, --define=k, quoted or not.
+var treeShaping = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)(verbose|scope|includes|excludes)(?:[=\s]|$)`)
 
-// treeShapingEnv are the variables whose options reach Maven's command line or its JVM.
-var treeShapingEnv = map[string]bool{"MAVEN_ARGS": true, "MAVEN_OPTS": true, "JAVA_TOOL_OPTIONS": true, "JDK_JAVA_OPTIONS": true}
+// treeShapingEnv are the variables whose options reach Maven's command line or its JVM. The Maven
+// wrapper's script passes MAVEN_CONFIG on Maven's command line.
+var treeShapingEnv = map[string]bool{"MAVEN_ARGS": true, "MAVEN_CONFIG": true, "MAVEN_OPTS": true, "JAVA_TOOL_OPTIONS": true, "JDK_JAVA_OPTIONS": true}
 
 // treeShapingOverride fails a resolution whose stated properties, Maven or JVM options, or .mvn
 // configuration would set one of treeShapingParams: the tree would then not be the build's graph.
@@ -224,6 +235,131 @@ func treeShapingInPOM(effective []effectiveProject) error {
 	return nil
 }
 
+// toolchainConfig is the part of a plugin's configuration that selects a JDK toolchain: any
+// plugin's <toolchains><jdk>, the maven-toolchains-plugin's <version> for its select-jdk-toolchain
+// goal, or a toolchain-aware plugin's own <jdkToolchain>.
+type toolchainConfig struct {
+	Version    string `xml:"version"`
+	Toolchains struct {
+		JDK []struct {
+			Version string `xml:"version"`
+		} `xml:"jdk"`
+	} `xml:"toolchains"`
+	JDKToolchain *struct {
+		Version string `xml:"version"`
+	} `xml:"jdkToolchain"`
+}
+
+// toolchainUnstated stands for a toolchain selected by vendor or other requirements alone, whose
+// version the build does not state.
+const toolchainUnstated = "unstated"
+
+// toolchainVersion finds toolchain.jdk.version set as a property on a command or JVM option line.
+var toolchainVersion = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)toolchain\.jdk\.version(?:[=\s]|$)`)
+
+// toolchainVersionOverride is the toolchain.jdk.version set outside the POM, which
+// select-jdk-toolchain reads over the POM's property: the stated value, or "" when Maven or JVM
+// options or .mvn configuration set it; false when nothing the resolution sees sets it.
+func toolchainVersionOverride(c Conditions, env []string, dir string) (string, bool) {
+	if v, ok := c.Properties["toolchain.jdk.version"]; ok {
+		return v, true
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if treeShapingEnv[k] && toolchainVersion.MatchString(v) {
+			return "", true
+		}
+	}
+	for _, name := range []string{"maven.config", "jvm.config"} {
+		if b, err := os.ReadFile(filepath.Join(dir, ".mvn", name)); err == nil && toolchainVersion.Match(b) {
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// mavenToolchains reads the JDK toolchains each module's build plugins select, by
+// groupId:artifactId, from the plugin-wide and every execution's configuration. Any plugin's
+// <toolchains><jdk> or <jdkToolchain> counts: a plugin that selects a JDK that way runs on it, and
+// one that doesn't only switches the table off. override is toolchain.jdk.version set outside the
+// POM, when overridden.
+func mavenToolchains(effective []effectiveProject, override string, overridden bool) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, p := range effective {
+		key := p.GroupID + ":" + p.ArtifactID
+		for _, pl := range p.Build.Plugins.Plugin {
+			decode := func(c xmlChildren) (toolchainConfig, error) {
+				var tc toolchainConfig
+				if err := xml.Unmarshal([]byte("<configuration>"+c.Inner+"</configuration>"), &tc); err != nil {
+					return tc, &Failure{Kind: KindToolFailed, Detail: stepEffectivePOM, Log: key + " " + pl.ArtifactID + " configuration: " + err.Error()}
+				}
+				return tc, nil
+			}
+			wide, err := decode(pl.Configuration)
+			if err != nil {
+				return nil, err
+			}
+			tcs := []toolchainConfig{wide}
+			var versions []string
+			for _, ex := range pl.Executions.Execution {
+				tc, err := decode(ex.Configuration)
+				if err != nil {
+					return nil, err
+				}
+				tcs = append(tcs, tc)
+				// select-jdk-toolchain takes its version from the execution, the plugin, or the
+				// toolchain.jdk.version property, which a value set outside the POM overrides. Stated in
+				// none of them, it may come from the command line, so it is unstated.
+				if pl.ArtifactID == "maven-toolchains-plugin" && slices.Contains(ex.Goals.Goal, "select-jdk-toolchain") {
+					v := cmp.Or(strings.TrimSpace(tc.Version), strings.TrimSpace(wide.Version))
+					if v == "" && overridden {
+						v = override
+					} else if v == "" {
+						v = property(p.Properties, "toolchain.jdk.version")
+					}
+					versions = append(versions, v)
+				}
+			}
+			for _, tc := range tcs {
+				for _, j := range tc.Toolchains.JDK {
+					versions = append(versions, j.Version)
+				}
+				if tc.JDKToolchain != nil {
+					versions = append(versions, tc.JDKToolchain.Version)
+				}
+			}
+			for _, v := range versions {
+				if v = strings.TrimSpace(v); v == "" {
+					v = toolchainUnstated
+				}
+				if !slices.Contains(out[key], v) {
+					out[key] = append(out[key], v)
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// property is the value of a project property, or "" when the project does not set it.
+func property(props xmlChildren, name string) string {
+	var ps struct {
+		Any []struct {
+			XMLName xml.Name
+			Value   string `xml:",chardata"`
+		} `xml:",any"`
+	}
+	if xml.Unmarshal([]byte("<properties>"+props.Inner+"</properties>"), &ps) != nil {
+		return ""
+	}
+	for _, e := range ps.Any {
+		if e.XMLName.Local == name {
+			return strings.TrimSpace(e.Value)
+		}
+	}
+	return ""
+}
+
 // readOutput parses a step's output file; a missing or unparseable file fails that step.
 func readOutput[T any](step, file string, parse func([]byte) (T, error)) (T, error) {
 	var zero T
@@ -286,7 +422,7 @@ func parseActiveProfiles(b []byte) (map[string][]string, error) {
 	return out, sc.Err()
 }
 
-// xmlChildren holds an element's child element names.
+// xmlChildren holds an element's child element names, and its content verbatim.
 type xmlChildren struct {
 	Any []struct {
 		XMLName xml.Name

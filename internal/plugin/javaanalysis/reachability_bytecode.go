@@ -61,7 +61,7 @@ func bytecodeReachability(ctx context.Context, buildDir string, prog *program, f
 		reasons[r] = true
 	}
 
-	rc, err := loadReachClosure(buildDir, fp.classes, opts...)
+	rc, err := loadReachClosure(buildDir, fp.classes, fp.cp, opts...)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

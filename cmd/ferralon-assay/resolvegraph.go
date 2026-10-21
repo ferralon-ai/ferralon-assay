@@ -26,7 +26,7 @@ func runResolveGraph(args []string) error {
 	out := fs.String("out", "", "output directory for "+graphFileName+" and its sidecars (required)")
 	tool := fs.String("tool", buildgraph.ToolAuto, "build tool: auto, maven or gradle")
 	profiles := fs.String("profiles", "", "comma-separated Maven profiles to activate")
-	jdk := fs.String("java-version", "", "the JDK the job states; a different major version fails")
+	jdk := fs.String("java-version", "", "the JDK the job states, which the program runs on; a build tool on a different major version fails. Leave it unstated when the program runs on another JDK than the build")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

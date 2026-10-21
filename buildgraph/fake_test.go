@@ -1,6 +1,7 @@
 package buildgraph
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -461,6 +463,8 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "maven.config excludes", repo: map[string]string{".mvn/maven.config": "-ntp\n-Dexcludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "MAVEN_ARGS -D with a space", env: []string{"MAVEN_ARGS=-D verbose=true"}, want: "tool_failed:conditions"},
 		{name: "JAVA_TOOL_OPTIONS --define=", env: []string{"JAVA_TOOL_OPTIONS=--define=scope=compile"}, want: "tool_failed:conditions"},
+		{name: "MAVEN_CONFIG verbose", env: []string{"MAVEN_CONFIG=-Dverbose"}, want: "tool_failed:conditions"},
+		{name: "JDK_JAVA_OPTIONS quoted scope", env: []string{`JDK_JAVA_OPTIONS="-Dscope=compile"`}, want: "tool_failed:conditions"},
 		{name: "jvm.config includes", repo: map[string]string{".mvn/jvm.config": "-Xmx1g -Dincludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "POM property scope", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <properties><scope>compile</scope></properties>", 1)}, want: "tool_failed:conditions"},
 		{name: "dependency-plugin default-cli excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>default-cli</id><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
@@ -940,6 +944,134 @@ func TestGradleProducerFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJDKToolchains(t *testing.T) {
+	t.Run("maven", func(t *testing.T) {
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", `<artifactId>module-a</artifactId>
+    <build>
+      <plugins>
+        <plugin>
+          <artifactId>maven-toolchains-plugin</artifactId>
+          <configuration><toolchains><jdk><version>17</version><vendor>temurin</vendor></jdk></toolchains></configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <executions><execution><id>it</id><configuration><jdkToolchain><vendor>temurin</vendor></jdkToolchain></configuration></execution></executions>
+        </plugin>
+      </plugins>
+      <pluginManagement><plugins><plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration><jdkToolchain><version>11</version></jdkToolchain></configuration>
+      </plugin></plugins></pluginManagement>
+    </build>`, 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{JDK: "21"})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		// A managed plugin no module binds selects nothing; a toolchain chosen by vendor alone
+		// has no version the stated JDK can be checked against.
+		if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, []string{"17", toolchainUnstated}) {
+			t.Errorf("module-a toolchains %q", got)
+		}
+		if got := module(t, g, "com.example:module-c").JDKToolchains; got != nil {
+			t.Errorf("module-c toolchains %q", got)
+		}
+		for _, m := range g.Modules {
+			if !m.JDKToolchainsKnown {
+				t.Errorf("%s toolchains unknown", m.ID)
+			}
+		}
+	})
+	// maven-toolchains-plugin 3.2's select-jdk-toolchain goal states its version as a top-level
+	// parameter, or through the toolchain.jdk.version property, which a value set outside the POM
+	// overrides. Another plugin's <toolchains><jdk> is read like the toolchain goal's.
+	t.Run("maven select-jdk-toolchain", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, props, wide, exec, goal string
+			plugin                        string // "" is maven-toolchains-plugin
+			stated                        string // toolchain.jdk.version among the stated properties
+			config                        string // .mvn/maven.config
+			jvm                           string // .mvn/jvm.config
+			env                           string // a variable of Maven's environment
+			want                          []string
+		}{
+			{name: "execution version", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide version", wide: "<version>[17,18)</version>", goal: "select-jdk-toolchain", want: []string{"[17,18)"}},
+			{name: "execution over plugin-wide", wide: "<version>21</version>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "property", props: "<properties><toolchain.jdk.version>17</toolchain.jdk.version></properties>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated nowhere in the POM", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another goal", exec: "<version>17</version>", goal: "display-discovered-jdk-toolchains"},
+			{name: "execution over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", stated: "17", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "maven.config property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", config: "-ntp\n-Dtoolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Xmx1g -Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "plugin-wide over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide over a stated property", stated: "21", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "MAVEN_CONFIG property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_CONFIG=-Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_ARGS --define= over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_ARGS=--define=toolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "JDK_JAVA_OPTIONS quoted over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: `JDK_JAVA_OPTIONS="-Dtoolchain.jdk.version=17"`, goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS without a value over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "jvm.config -D with a space over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", jvm: "-Xmx1g -D toolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another property's name", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version.x=17", goal: "select-jdk-toolchain", want: []string{"21"}},
+			{name: "execution over a maven.config property", config: "-Dtoolchain.jdk.version=21\n", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "another plugin's toolchains", plugin: "toolchains-maven-plugin", wide: "<toolchains><jdk><version>17</version></jdk></toolchains>", goal: "toolchain", want: []string{"17"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>"+tc.props+`
+    <build><plugins><plugin>
+      <artifactId>`+cmp.Or(tc.plugin, "maven-toolchains-plugin")+`</artifactId>
+      <configuration>`+tc.wide+`</configuration>
+      <executions><execution><id>jdk</id><goals><goal>`+tc.goal+`</goal></goals><configuration>`+tc.exec+`</configuration></execution></executions>
+    </plugin></plugins></build>`, 1)
+				repo := map[string]string{}
+				if tc.config != "" {
+					repo[".mvn/maven.config"] = tc.config
+				}
+				if tc.jvm != "" {
+					repo[".mvn/jvm.config"] = tc.jvm
+				}
+				c := Conditions{JDK: "21"}
+				if tc.stated != "" {
+					c.Properties = map[string]string{"toolchain.jdk.version": tc.stated}
+				}
+				r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+				if tc.env != "" {
+					r.env = append(r.env, tc.env)
+				}
+				g, err := r.resolve(t, ToolMaven, c)
+				if err != nil {
+					t.Fatalf("resolve: %v", cause(err))
+				}
+				if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, tc.want) {
+					t.Errorf("module-a toolchains %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("gradle", func(t *testing.T) {
+		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17","jdk_toolchain_known":true,`, 1)
+		r := newFakeGradle(t, "", map[string]string{"project_app.json": app})
+		g, err := r.resolve(t, ToolGradle, Conditions{})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		for _, id := range []string{":app", ":app#testRuntimeClasspath"} {
+			if got := module(t, g, id).JDKToolchains; !slices.Equal(got, []string{"17"}) {
+				t.Errorf("%s toolchains %q", id, got)
+			}
+		}
+		if got := module(t, g, ":lib").JDKToolchains; got != nil {
+			t.Errorf(":lib toolchains %q", got)
+		}
+		// :lib's producer record does not say its toolchain was read.
+		for id, want := range map[string]bool{":app": true, ":app#testRuntimeClasspath": true, ":lib": false} {
+			if got := module(t, g, id).JDKToolchainsKnown; got != want {
+				t.Errorf("%s toolchains known = %t, want %t", id, got, want)
+			}
+		}
+	})
 }
 
 // realDir is dir with its links resolved: the checkout path a real build tool, run from the

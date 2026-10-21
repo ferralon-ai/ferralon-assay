@@ -149,3 +149,49 @@ func TestBytecodeReach_LambdaOnlyIngressPathIsNeverClean(t *testing.T) {
 		t.Errorf("lambda-only path came back clean: Paths %v, partiality %+v", res.Paths, res.Partiality)
 	}
 }
+
+// The closure engine runs on the JDK the graph's run conditions state: on the platformMethods
+// release, a loadable class's method no platform supertype declares is no root, and on any
+// other release or none, or when a module's toolchain selects another or went unread, as in a
+// graph written before toolchains were recorded, it stays one. The rows share one build dir, so a
+// cached engine built for one JDK is never reused for another.
+func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
+	a := newApp(t, "", false)
+	a.source("src/main/java/com/acme/App.java", appSource)
+	a.class("target/classes", "com/acme/App", mainCalling(func(b *cpb) []byte {
+		idx := b.mref("java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")
+		return append([]byte{0x01, 0xB8}, append(be2(idx), 0x57, 0xB1)...)
+	}))
+	a.classI("target/classes", "com/acme/Snap", "java/util/concurrent/CopyOnWriteArrayList", nil, 0x0021, func(b *cpb) []xmethod {
+		return []xmethod{{"snapshot", "()Ljava/lang/Object;", accPublic, callFetch(b)}}
+	})
+	for _, tc := range []struct {
+		jdk        string
+		toolchains []string
+		unread     bool
+		wantPath   bool
+	}{
+		{jdk: "21.0.4", wantPath: false},
+		{jdk: "17.0.12", wantPath: true},
+		{jdk: "21.0.4", wantPath: false}, // the same build dir again: the closure cache is keyed on the JDK
+		{jdk: "21.0.4", toolchains: []string{"17"}, wantPath: true},
+		{jdk: "21.0.4", toolchains: []string{"21"}, wantPath: false},
+		{jdk: "21.0.4", unread: true, wantPath: true},
+		{jdk: "", wantPath: true},
+	} {
+		m := testModule(t, ".", "app", a.deps...)
+		m.JDKToolchains = tc.toolchains
+		m.JDKToolchainsKnown = !tc.unread
+		a.graph = writeGraph(t, buildgraph.Graph{
+			Schema:     buildgraph.Schema,
+			Tool:       buildgraph.Tool{Name: "maven", Version: "test"},
+			JVM:        buildgraph.JVM{Version: "21.0.4"},
+			Conditions: buildgraph.Conditions{JDK: tc.jdk},
+			Modules:    []buildgraph.Module{m},
+		})
+		res := a.reach(netkitSinkID)
+		if got := len(res.Paths) > 0; got != tc.wantPath {
+			t.Errorf("JDK %q, toolchains %q, unread %t: path found = %t, want %t: Paths %v, partiality %+v", tc.jdk, tc.toolchains, tc.unread, got, tc.wantPath, res.Paths, res.Partiality)
+		}
+	}
+}

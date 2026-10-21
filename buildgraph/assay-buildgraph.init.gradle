@@ -191,6 +191,14 @@ allprojects { p ->
     p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
+        // The JDK the project's toolchain selects, which Kotlin's jvmToolchain sets too. Without
+        // the java extension it is known only for a project with no classpath at all. A project
+        // with an Android plugin, Kotlin Multiplatform's Android target included, is never known:
+        // its Android code runs on Android's runtime, whatever the java extension says.
+        def javaExt = p.extensions.findByName('java')
+        def toolchain = javaExt != null && javaExt.hasProperty('toolchain') ? javaExt.toolchain.languageVersion.getOrNull() : null
+        def android = p.plugins.any { it.class.name.startsWith('com.android.') }
+        def toolchainKnown = !android && (javaExt != null || !p.configurations.any { it.canBeResolved && it.name.endsWith('Classpath') })
         def doc = [
             gradle     : gradleVersion,
             java       : javaVersion,
@@ -204,6 +212,8 @@ allprojects { p ->
             group      : String.valueOf(p.group),
             name       : p.name,
             version    : String.valueOf(p.version),
+            jdk_toolchain: toolchain == null ? '' : String.valueOf(toolchain.asInt()),
+            jdk_toolchain_known: toolchainKnown,
         ]
         // Other runtime classpaths: beside runtimeClasspath, ones such as
         // integrationTestRuntimeClasspath, resolved too; without it, Android variants or KMP

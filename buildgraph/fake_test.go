@@ -485,6 +485,7 @@ func TestMavenDependencyPluginArtifactItems(t *testing.T) {
 		{name: "copy with artifactItems", build: "<plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins>", want: []string{"maven-dependency-plugin execution copy-agent"}},
 		{name: "unpack with plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "unpack-ui", "unpack", "") + "</plugins>", want: []string{"maven-dependency-plugin execution unpack-ui"}},
 		{name: "copy-dependencies", build: "<plugins>" + plugin("", "deps", "copy-dependencies", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
+		{name: "copy-dependencies under plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "deps", "copy-dependencies", "") + "</plugins>"},
 		{name: "copy without artifactItems", build: "<plugins>" + plugin("", "copy-none", "copy", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
 		{name: "only managed", build: "<pluginManagement><plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins></pluginManagement>"},
 		{name: "another plugin", build: "<plugins><plugin><artifactId>maven-assembly-plugin</artifactId><executions><execution><id>copy-agent</id><goals><goal>copy</goal></goals><configuration>" + items + "</configuration></execution></executions></plugin></plugins>"},

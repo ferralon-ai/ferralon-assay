@@ -151,6 +151,7 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 		purl                    string // "" ⇒ netkit's
 		jar, inGraph, otherTool bool
 		unlisted                bool // the graph's module installs something it does not list
+		multi                   bool // the graph holds a second module with sources
 		wantReason              string
 		wantRunWide             []string
 		wantPath                string
@@ -160,6 +161,8 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 		{name: "jar gone", inGraph: true, wantReason: plugin.PartialReasonToolFailure, wantRunWide: []string{plugin.PartialReasonToolFailure},
 			wantPath: "com.evil:netkit:1.0.0: netkit-1.0.0.jar unreadable or changed since the build resolved it", wantTargets: []string{"", netkitPURL}},
 		{name: "not resolved by the build", jar: true, wantReason: PartialReasonDependencyNotInBuild,
+			wantPath: "com.evil:netkit", wantTargets: []string{netkitPURL}},
+		{name: "not resolved by a multi-module build", jar: true, multi: true, wantReason: PartialReasonDependencyNotInBuild,
 			wantPath: "com.evil:netkit", wantTargets: []string{netkitPURL}},
 		{name: "not resolved beside a build of the other tool", jar: true, otherTool: true, wantReason: reasonNoDependencyArtifact,
 			wantRunWide: []string{reasonNoDependencyArtifact}, wantPath: "com.evil:netkit"},
@@ -177,7 +180,16 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 				if tc.unlisted {
 					m.Unlisted = []string{"maven-dependency-plugin execution copy-agent"}
 				}
-				graph = graphOption(t, "maven", m)
+				mods := []buildgraph.Module{m}
+				if tc.multi {
+					for _, d := range []string{"src", filepath.Join("lib", "src")} {
+						if err := os.MkdirAll(filepath.Join(build, d), 0o755); err != nil {
+							t.Fatal(err)
+						}
+					}
+					mods = append(mods, testModule(t, "lib", "lib"))
+				}
+				graph = graphOption(t, "maven", mods...)
 			}
 			if tc.otherTool {
 				if err := os.WriteFile(filepath.Join(build, "build.gradle"), []byte("plugins { id 'java' }\n"), 0o644); err != nil {

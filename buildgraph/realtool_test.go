@@ -351,7 +351,9 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 }
 
 // The graph records the JDK a project's toolchain selects, set through the java extension or
-// Kotlin's jvmToolchain, and none for a project that runs on the build's own JVM.
+// Kotlin's jvmToolchain, and none for a project that runs on the build's own JVM. Gradle resolves
+// a JVM project's classpaths only with its toolchain installed, so the rows select the JDK the
+// image has; RuntimeJDK's comparison is TestRuntimeJDK's.
 func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
 	dir := copyFixture(t, "gradle-multi")
@@ -365,13 +367,13 @@ func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	appendFile("app/build.gradle", "\njava { toolchain { languageVersion = JavaLanguageVersion.of(17) } }\n")
-	appendFile("kt/build.gradle.kts", "\nkotlin { jvmToolchain(11) }\n")
+	appendFile("app/build.gradle", "\njava { toolchain { languageVersion = JavaLanguageVersion.of(21) } }\n")
+	appendFile("kt/build.gradle.kts", "\nkotlin { jvmToolchain(21) }\n")
 	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
 	if err != nil {
 		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
 	}
-	for id, want := range map[string][]string{":app": {"17"}, ":kt": {"11"}, ":lib": nil, ":": nil} {
+	for id, want := range map[string][]string{":app": {"21"}, ":kt": {"21"}, ":lib": nil, ":": nil} {
 		if got := module(t, g, id).JDKToolchains; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s toolchains %q, want %q", id, got, want)
 		}

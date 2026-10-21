@@ -151,12 +151,13 @@ func TestChi_AdapterAndRouterServeHTTPAreNoIngress(t *testing.T) {
 	}
 }
 
-// TestChi_NetHTTPHandlerFuncIsNoHandler pins chiHandler's explicit net/http
+// TestChi_NetHTTPHandlerFuncIsNoHandler pins routerHandler's explicit net/http
 // exclusion, which no chimod fixture can reach: the fixture stands net/http in at
 // another path, and a value boxed into its own Handler interface is already caught by
 // the adapter clause. Here a net/http HandlerFunc is boxed into an http.Handler-shaped
 // interface declared elsewhere, so only the net/http clause keeps its ServeHTTP from
-// becoming a chi handler. The packages are type-checked in memory (no net/http load).
+// becoming a chi (or gin) handler. The packages are type-checked in memory (no
+// net/http load).
 func TestChi_NetHTTPHandlerFuncIsNoHandler(t *testing.T) {
 	fset := token.NewFileSet()
 	parse := func(path, src string) *ast.File {
@@ -209,8 +210,10 @@ func Box(f http.HandlerFunc) iface.Handler { return f }`
 		t.Fatal("no MakeInterface in app.Box")
 	}
 	sp := &ssaProgram{prog: app.Prog}
-	if fn := sp.chiHandler(mi); fn != nil {
-		t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
+	for _, r := range pathRouters {
+		if fn := sp.routerHandler(r, mi); fn != nil {
+			t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
+		}
 	}
 }
 

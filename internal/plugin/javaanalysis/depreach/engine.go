@@ -53,12 +53,18 @@ func NewEngine(classes []classfile.Class) *Engine {
 
 // BootOnly reports whether a classpath copy of the class named name may not be the body that runs
 // on feature release jdk (0 when not recorded): a java/ class, which the JVM refuses from any
-// loader but the boot and platform loaders, or a class in a package the JDK itself defines a class
-// in. On 9 and later the package of a system module in the boot layer hides a classpath copy, and
-// on 8 the boot and extension class paths are searched first. On a runtime image without the
-// module the copy does run, so outside java/ the copy is neither walked nor taken for the JDK's
-// leaf: the engine finds its package defined by the classpath and a call into it unopened. A
-// release jdkPackages does not cover counts a package any covered release defines.
+// loader but the boot and platform loaders, or a class in a package the JDK's own code occupies.
+// On 9 and later a package of a system module in the boot layer hides a classpath copy, and on 8
+// the boot and extension class paths are searched first. On a runtime image without the module
+// the copy does run, so outside java/ the copy is neither walked nor taken for the JDK's leaf: the
+// engine finds its package defined by the classpath and a call into it unopened.
+//
+// jdkPackages is read from Temurin images, so a vendor's additions (a JavaFX or GraalVM build) are
+// not in it. jdk is the release of the JVM that ran the build, which the deployed runtime need not
+// match: a copy of a package that only the deployed release has is still walked. An unrecorded
+// release, or one jdkPackages does not cover, counts a package any covered release has; a release
+// after the newest covered one also counts every package under a namespace the JDK adds packages
+// in, since it may have added one no covered release has.
 func BootOnly(name string, jdk int) bool {
 	if strings.HasPrefix(name, "java/") {
 		return true
@@ -68,6 +74,9 @@ func BootOnly(name string, jdk int) bool {
 		return false
 	}
 	mask, ok := jdkPackages[name[:i]]
+	if jdk > jdkReleases[len(jdkReleases)-1] {
+		return ok || jdkNamespace(name)
+	}
 	if !ok {
 		return false
 	}
@@ -77,6 +86,16 @@ func BootOnly(name string, jdk int) bool {
 		}
 	}
 	return true
+}
+
+// jdkNamespace reports whether name lies under a prefix the JDK defines packages in.
+func jdkNamespace(name string) bool {
+	for _, p := range []string{"javax/", "jdk/", "sun/", "com/sun/", "org/w3c/", "org/xml/", "org/ietf/"} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The

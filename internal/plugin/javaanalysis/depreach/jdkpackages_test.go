@@ -26,7 +26,16 @@ func TestBootOnly(t *testing.T) {
 		{"javax/annotation/PostConstruct", 8, true},
 		{"javax/annotation/PostConstruct", 17, false},
 		{"javax/annotation/PostConstruct", 0, true},
-		{"javax/annotation/PostConstruct", 23, true}, // a release the table does not cover
+		{"javax/annotation/PostConstruct", 23, false},
+		{"javax/annotation/PostConstruct", 12, true}, // a release the table does not cover
+		{"javax/servlet/GenericServlet", 12, false},
+		// A release after the newest covered one may have added any package under the JDK's namespaces.
+		{"javax/servlet/GenericServlet", 99, true},
+		{"org/w3c/dom/svg/SVGDocument", 99, true},
+		{"jdk/incubator/foo/Bar", 99, true},
+		{"javax/xml/parsers/SAXParser", 99, true},
+		{"com/acme/Foo", 99, false},
+		{"javaxx/Foo", 99, false},
 		{"Unpackaged", 0, false},
 	} {
 		if got := BootOnly(tc.name, tc.jdk); got != tc.want {
@@ -38,10 +47,10 @@ func TestBootOnly(t *testing.T) {
 // TestJDKPackages_CoverPlatform: every package the engine takes for the JDK 21 boot layer's is one
 // jdkPackages has JDK 21 define, so a classpath copy of it is never walked on 21.
 func TestJDKPackages_CoverPlatform(t *testing.T) {
-	if want := [...]int{8, 11, 17, 21, 25}; jdkReleases != want {
+	if want := [...]int{8, 11, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27}; jdkReleases != want {
 		t.Fatalf("jdkReleases = %v, want %v", jdkReleases, want)
 	}
-	bit := uint8(1) << slices.Index(jdkReleases[:], 21)
+	bit := uint16(1) << slices.Index(jdkReleases[:], 21)
 	for p := range platformPackages {
 		if jdkPackages[p]&bit == 0 {
 			t.Errorf("%s is a JDK 21 platform package jdkPackages lacks", p)
@@ -129,6 +138,12 @@ func TestReach_JDKPackageCopies(t *testing.T) {
 			name:    "the same on an unrecorded JDK",
 			classes: []classfile.Class{callsRun(annotation), staticSink(annotation)},
 			want:    Undetermined, why: annotation,
+		},
+		{
+			name:    "a JAR's javax/servlet class is unopened on a JDK newer than the table",
+			classes: []classfile.Class{callsRun(servlet), staticSink(servlet)},
+			cp:      Classpath{JDK: 99},
+			want:    Undetermined, why: servlet,
 		},
 	})
 }

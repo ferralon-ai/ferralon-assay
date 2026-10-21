@@ -1,5 +1,5 @@
-// Command genjdkpackages writes depreach's jdkpackages.go: every package the JDK itself defines a
-// class in, per feature release, so the engine can leave out a classpath copy of a class the JVM
+// Command genjdkpackages writes depreach's jdkpackages.go: every package of the JDK's own code, per
+// feature release, so the engine can leave out a classpath copy of a class the JVM
 // loads from the JDK instead.
 //
 // Each argument is release:label:dir. dir is searched for the JDK's own classes, read as data and
@@ -81,8 +81,8 @@ func generate(args []string) ([]byte, error) {
 			}
 		}
 	})
-	if len(releases) > 8 {
-		return nil, errors.New("more than 8 releases do not fit a uint8 mask")
+	if len(releases) > 16 {
+		return nil, errors.New("more than 16 releases do not fit a uint16 mask")
 	}
 
 	var b bytes.Buffer
@@ -102,9 +102,9 @@ func generate(args []string) ([]byte, error) {
 		b.WriteString(strconv.Itoa(r))
 	}
 	b.WriteString("}\n\n")
-	b.WriteString("// jdkPackages maps each package a covered JDK defines a class in to the releases that do, bit i\n")
+	b.WriteString("// jdkPackages maps each package of a covered JDK's own code (a system module's, or on 8 a boot or\n// extension class path class's) to the releases that have it, bit i\n")
 	b.WriteString("// for jdkReleases[i].\n")
-	b.WriteString("var jdkPackages = map[string]uint8{\n")
+	b.WriteString("var jdkPackages = map[string]uint16{\n")
 	for _, p := range slices.Sorted(func(yield func(string) bool) {
 		for p := range owned {
 			if !yield(p) {
@@ -112,7 +112,7 @@ func generate(args []string) ([]byte, error) {
 			}
 		}
 	}) {
-		var mask uint8
+		var mask uint16
 		for i, r := range releases {
 			if owned[p][r] {
 				mask |= 1 << i

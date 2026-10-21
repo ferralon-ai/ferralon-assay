@@ -815,8 +815,7 @@ func styleToolingAbove(realRoot string) bool {
 
 // npmrcPlainKeys are the .npmrc settings that only choose a registry, its credentials, proxy
 // and TLS, or how a package manager resolves peers, saves, audits or prints: none loads code, runs
-// a hook or a shell, or reads further config. A scoped registry (@scope:registry) and a key scoped
-// to one registry (//host/path:_authToken) are plain too.
+// a hook or a shell, or reads further config. A scoped registry (@scope:registry) is plain too.
 var npmrcPlainKeys = map[string]bool{
 	"registry": true, "always-auth": true, "strict-ssl": true, "ca": true, "cafile": true,
 	"proxy": true, "https-proxy": true, "noproxy": true, "email": true, "save-exact": true,
@@ -826,12 +825,21 @@ var npmrcPlainKeys = map[string]bool{
 	"update-notifier": true, "ignore-scripts": true, "fetch-retries": true, "fetch-timeout": true,
 }
 
-// npmrcHooks reports whether the .npmrc at file sets anything but npmrcPlainKeys, or cannot be
-// read. npm, pnpm and yarn classic all read a project .npmrc. Lines end at \n or \r, a line
-// starting with '#' or ';' is a comment, and a line with no key sets nothing. A key loses one pair
-// of enclosing quotes, as npm's ini parser removes them, and is then compared case-insensitively,
-// with _ as -. A key npm may rewrite (a quote, escape, ${…} substitution, '#' or ';' left in it,
-// or any non-ASCII character such as a byte-order mark) counts, whatever it spells.
+// npmrcRegistryKeys are the settings, as npmrcHooks normalises them, that a key scoped to one
+// registry (//host/path:_authToken) may set and stay plain: its credentials and client
+// certificate. Any other, such as pnpm's tokenHelper, which runs a program, counts.
+var npmrcRegistryKeys = map[string]bool{
+	"-auth": true, "-authtoken": true, "username": true, "-password": true, "email": true,
+	"always-auth": true, "certfile": true, "keyfile": true,
+}
+
+// npmrcHooks reports whether the .npmrc at file sets anything but npmrcPlainKeys or
+// npmrcRegistryKeys, or cannot be read. npm, pnpm and yarn classic all read a project .npmrc.
+// Lines end at \n or \r, a line starting with '#' or ';' is a comment, and a line with no key
+// sets nothing. A key loses one pair of enclosing quotes, as npm's ini parser removes them, and is
+// then compared case-insensitively, with _ as -. A key npm may rewrite (a quote, escape, ${…}
+// substitution, '#' or ';' left in it, or any non-ASCII character such as a byte-order mark)
+// counts, whatever it spells.
 func npmrcHooks(root, file string) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
 	if !ok {
@@ -856,8 +864,14 @@ func npmrcHooks(root, file string) bool {
 			return true
 		}
 		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
-		scoped := strings.HasPrefix(key, "//") || strings.HasPrefix(key, "@") && strings.HasSuffix(key, ":registry")
-		if !scoped && !npmrcPlainKeys[key] {
+		if strings.HasPrefix(key, "//") {
+			if !npmrcRegistryKeys[key[strings.LastIndexByte(key, ':')+1:]] {
+				return true
+			}
+			continue
+		}
+		scope := strings.HasPrefix(key, "@") && strings.HasSuffix(key, ":registry")
+		if !scope && !npmrcPlainKeys[key] {
 			return true
 		}
 	}

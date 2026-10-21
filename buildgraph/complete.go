@@ -695,7 +695,7 @@ func CheckedInArchives(dir string, g *Graph) ([]string, error) {
 	var out []string
 	for _, a := range archives {
 		r, err := evalExisting(filepath.Join(dir, filepath.FromSlash(a.Path)))
-		if a.Escapes || err != nil || !held[r] {
+		if err != nil || !held[r] {
 			out = append(out, a.Path)
 		}
 	}

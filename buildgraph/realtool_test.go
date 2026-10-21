@@ -393,7 +393,8 @@ func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 }
 
 // The graph records the JDK toolchains a module's bound plugins select, from the
-// maven-toolchains-plugin and a plugin's own jdkToolchain, as the effective POM gives them.
+// maven-toolchains-plugin's toolchain and select-jdk-toolchain goals and a plugin's own
+// jdkToolchain, as the effective POM gives them.
 func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 	env := realToolEnv(t, "ASSAY_BUILDGRAPH_MAVEN_BIN")
 	dir := copyFixture(t, "maven-reactor")
@@ -413,11 +414,14 @@ func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 		"<configuration><toolchains><jdk><version>17</version></jdk></toolchains></configuration></plugin>")
 	addBuild("module-b", "<plugin><artifactId>maven-compiler-plugin</artifactId>"+
 		"<configuration><jdkToolchain><version>[11,12)</version></jdkToolchain></configuration></plugin>")
+	addBuild("module-c", "<plugin><artifactId>maven-toolchains-plugin</artifactId><version>3.2.0</version>"+
+		"<executions><execution><goals><goal>select-jdk-toolchain</goal></goals></execution></executions>"+
+		"<configuration><version>17</version></configuration></plugin>")
 	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolMaven, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
 	if err != nil {
 		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
 	}
-	want := map[string][]string{"module-a": {"17"}, "module-b": {"[11,12)"}}
+	want := map[string][]string{"module-a": {"17"}, "module-b": {"[11,12)"}, "module-c": {"17"}}
 	for _, m := range g.Modules {
 		name := m.ID[strings.LastIndex(m.ID, ":")+1:]
 		if got := m.JDKToolchains; !reflect.DeepEqual(got, want[name]) {

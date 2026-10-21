@@ -1,19 +1,22 @@
 // Command ginmod exercises gin ingress detection. Every gin registration form — the
 // verb methods, Any, Handle, Match, a route's handler chain, handlers registered on a
-// Group's *RouterGroup and through the IRoutes interface, and net/http handlers
-// adapted by WrapF / WrapH — registers a handler that hands attacker-controlled
-// request data (a *gin.Context accessor, or a field of its *http.Request) to its OWN
-// sink, so a test can prove per form that the handler is an http_route ingress AND
-// heads the taint trace to that form's sink.
+// Group's *RouterGroup (nested, and through the IRoutes interface in a helper),
+// NoRoute and NoMethod, and net/http handlers adapted by WrapF / WrapH — registers a
+// handler that hands attacker-controlled request data (a *gin.Context accessor, or a
+// field of its *http.Request) to its OWN sink, so a test can prove per form that the
+// handler is an http_route ingress under its full composed pattern AND heads the
+// taint trace to that form's sink. accessors.go does the same for every modeled
+// *gin.Context accessor and binder.
 //
 // gin handlers are func(*gin.Context), a shape no signature rule lists, so the gin
 // registration is the only thing that makes them ingresses. (The http types here are
 // tegron.test/nethttp's stand-ins; see nethttpstub/http.go.)
 //
 // The negatives sit in the same module: a handler-shaped method and a package-scope
-// func never registered, Use and Group middleware, gin's own Engine.ServeHTTP and
-// HandlerFunc adapter reached through WrapH, and handlers registered on a look-alike
-// router (same package name, type and method names as gin, different import path).
+// func never registered, Use and Group middleware, a file system served by StaticFS,
+// gin's own Engine.ServeHTTP and HandlerFunc adapter reached through WrapH, and
+// handlers registered on a look-alike router (same package name, type and method
+// names as gin, different import path).
 package main
 
 import (
@@ -44,11 +47,16 @@ func sinkNested(v string)    { sunk = append(sunk, v) }
 func sinkIRoutes(v string)   { sunk = append(sunk, v) }
 func sinkWrapF(v string)     { sunk = append(sunk, v) }
 func sinkWrapH(v string)     { sunk = append(sunk, v) }
+func sinkNoRoute(v string)   { sunk = append(sunk, v) }
+func sinkNoMethod(v string)  { sunk = append(sunk, v) }
+func sinkTwice(v string)     { sunk = append(sunk, v) }
+func sinkDynamic(v string)   { sunk = append(sunk, v) }
 
 // Negative sinks: no gin-registered handler reaches these.
 func sinkNeverRegistered(v string) { sunk = append(sunk, v) }
 func sinkMiddleware(v string)      { sunk = append(sunk, v) }
 func sinkLookalike(v string)       { sunk = append(sunk, v) }
+func sinkStatic(v string)          { sunk = append(sunk, v) }
 
 type server struct{}
 
@@ -66,6 +74,12 @@ func (s *server) chainAuth(c *gin.Context)   { sinkChainAuth(c.Query("token")) }
 func (s *server) chainForm(c *gin.Context)   { sinkChain(c.Param("id")) }
 func (s *server) nestedForm(c *gin.Context)  { sinkNested(c.Param("id")) }
 func (s *server) iroutesForm(c *gin.Context) { sinkIRoutes(c.PostForm("v")) }
+func (s *server) noRouteForm(c *gin.Context) { sinkNoRoute(c.Request.URL.Path) }
+func (s *server) noMethodForm(c *gin.Context) {
+	sinkNoMethod(c.Request.Method)
+}
+func (s *server) twiceForm(c *gin.Context)   { sinkTwice(c.Param("id")) }
+func (s *server) dynamicForm(c *gin.Context) { sinkDynamic(c.Param("id")) }
 
 // netForm is a net/http handler adapted by gin.WrapF: it, not gin's wrapper closure,
 // is the ingress.
@@ -76,6 +90,16 @@ func (s *server) netForm(w http.ResponseWriter, r *http.Request) { sinkWrapF(r.U
 type wrappedHandler struct{}
 
 func (h *wrappedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) { sinkWrapH(r.URL.Path) }
+
+// assetFS is a file system served by StaticFS. It is handler-shaped as well, so were
+// StaticFS a registrar its ServeHTTP would surface: Static* serve files and take no
+// first-party handler, so it must not.
+type assetFS struct{}
+
+func (a *assetFS) Open(name string) (http.File, error) { return nil, nil }
+func (a *assetFS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	sinkStatic(r.URL.Path)
+}
 
 // neverRegistered is handler-shaped but registered on no gin router directly (only
 // through fwdRouter's forwarding, which the detector does not follow): no ingress.
@@ -108,10 +132,19 @@ type fwdRouter struct{ r gin.IRouter }
 
 func (f *fwdRouter) Get(p string, h http.HandlerFunc) { f.r.GET(p, gin.WrapH(h)) }
 
-// registerAPI registers through the gin.IRouter interface (an invoke call).
+// registerAPI registers through the gin.IRouter interface (an invoke call), on the
+// group its one caller passes: the route is composed under that group's prefix.
 func registerAPI(g gin.IRouter, s *server) {
 	g.POST("/iroutes", s.iroutesForm)
 }
+
+// registerTwice is called with two groups: its route is registered under each prefix.
+func registerTwice(g gin.IRoutes, s *server) {
+	g.GET("/twice/:id", s.twiceForm)
+}
+
+// prefixFromConfig stands in for a prefix read at run time: no constant.
+func prefixFromConfig() string { return sunk[0] }
 
 func main() {
 	s := &server{}
@@ -136,6 +169,17 @@ func main() {
 	})
 	v1.Group("/admin").DELETE("/:id", s.nestedForm)
 	registerAPI(r.Group("/api"), s)
+	registerTwice(r.Group("/a"), s)
+	registerTwice(v1.Group("/b"), s)
+	// A group whose prefix is no constant, under /v1: its route keeps its local
+	// pattern, neither guessing the prefix nor skipping it to /v1/dynamic/:id.
+	v1.Group(prefixFromConfig()).GET("/dynamic/:id", s.dynamicForm)
+
+	r.NoRoute(s.noRouteForm)
+	r.NoMethod(s.noMethodForm)
+	r.Static("/assets", "./public")
+	r.StaticFile("/favicon.ico", "./favicon.ico")
+	r.StaticFS("/fs", &assetFS{})
 
 	r.GET("/wrapf", gin.WrapF(s.netForm))
 	r.GET("/wraph", gin.WrapH(&wrappedHandler{}))

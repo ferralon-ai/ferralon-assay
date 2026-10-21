@@ -16,7 +16,16 @@ package goanalysis
 
 import (
 	"context"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -117,9 +126,118 @@ func TestChi_RouteIngressHeadsTaintTrace(t *testing.T) {
 }
 
 // TestChi_UnregisteredHandlerIsNoIngress proves a handler-shaped func that no router
-// registers — a method and a package-scope func — yields no ingress of any kind.
+// registers — a method and a package-scope func — yields no ingress of any kind, and
+// neither do the arguments of chi's Route, Group and With: the grouping closures
+// (main$1 for Route, main$2 for Group) and the With middleware are not handlers.
 func TestChi_UnregisteredHandlerIsNoIngress(t *testing.T) {
-	assertNoChiIngress(t, chiIngresses(t), "server#neverRegistered().", "unregisteredFunc().")
+	assertNoChiIngress(t, chiIngresses(t),
+		"server#neverRegistered().",
+		"unregisteredFunc().",
+		"main$1().",
+		"main$2().",
+		"middleware().",
+	)
+}
+
+// TestChi_AdapterAndRouterServeHTTPAreNoIngress proves no http_route ingress lies
+// outside the fixture's own package: neither the adapter's HandlerFunc.ServeHTTP (a
+// handler reaching chi as an http.HandlerFunc in a variable, through fwdRouter) nor
+// a chi router's own ServeHTTP (a bare sub-router mounted directly).
+func TestChi_AdapterAndRouterServeHTTPAreNoIngress(t *testing.T) {
+	for _, in := range chiIngresses(t) {
+		if in.Kind == "http_route" && !strings.HasPrefix(in.Symbol.SCIP, chiFixtureSCIP) {
+			t.Errorf("http_route ingress outside the fixture: %s (selector %q)", in.Symbol.SCIP, in.Selector)
+		}
+	}
+}
+
+// TestChi_NetHTTPHandlerFuncIsNoHandler pins chiHandler's explicit net/http
+// exclusion, which no chimod fixture can reach: the fixture stands net/http in at
+// another path, and a value boxed into its own Handler interface is already caught by
+// the adapter clause. Here a net/http HandlerFunc is boxed into an http.Handler-shaped
+// interface declared elsewhere, so only the net/http clause keeps its ServeHTTP from
+// becoming a chi handler. The packages are type-checked in memory (no net/http load).
+func TestChi_NetHTTPHandlerFuncIsNoHandler(t *testing.T) {
+	fset := token.NewFileSet()
+	parse := func(path, src string) *ast.File {
+		f, err := parser.ParseFile(fset, path+".go", src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		return f
+	}
+	checked := map[string]*types.Package{}
+	conf := &types.Config{Importer: importerFunc(func(path string) (*types.Package, error) {
+		if p, ok := checked[path]; ok {
+			return p, nil
+		}
+		return nil, fmt.Errorf("no package %q", path)
+	})}
+	for _, dep := range []struct{ path, src string }{
+		{"net/http", `package http
+type ResponseWriter interface{ Write([]byte) (int, error) }
+type Request struct{}
+type HandlerFunc func(ResponseWriter, *Request)
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) { f(w, r) }`},
+		{"tegron.test/iface", `package iface
+import "net/http"
+type Handler interface{ ServeHTTP(http.ResponseWriter, *http.Request) }`},
+	} {
+		pkg, err := conf.Check(dep.path, fset, []*ast.File{parse(dep.path, dep.src)}, nil)
+		if err != nil {
+			t.Fatalf("check %s: %v", dep.path, err)
+		}
+		checked[dep.path] = pkg
+	}
+	appSrc := `package app
+import ("net/http"; "tegron.test/iface")
+func Box(f http.HandlerFunc) iface.Handler { return f }`
+	app, _, err := ssautil.BuildPackage(conf, fset, types.NewPackage("tegron.test/app", "app"),
+		[]*ast.File{parse("tegron.test/app", appSrc)}, ssa.SanityCheckFunctions)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var mi *ssa.MakeInterface
+	for _, b := range app.Func("Box").Blocks {
+		for _, instr := range b.Instrs {
+			if m, ok := instr.(*ssa.MakeInterface); ok {
+				mi = m
+			}
+		}
+	}
+	if mi == nil {
+		t.Fatal("no MakeInterface in app.Box")
+	}
+	sp := &ssaProgram{prog: app.Prog}
+	if fn := sp.chiHandler(mi); fn != nil {
+		t.Errorf("net/http HandlerFunc boxed into %s resolved to handler %s, want none", mi.Type(), fn)
+	}
+}
+
+type importerFunc func(path string) (*types.Package, error)
+
+func (f importerFunc) Import(path string) (*types.Package, error) { return f(path) }
+
+// TestChi_MethodSelectorIsPattern proves Method and MethodFunc drop their leading
+// HTTP-method argument: the selector is the route pattern, never the method.
+func TestChi_MethodSelectorIsPattern(t *testing.T) {
+	want := map[string]string{"server#methodForm().": "/method", "server#methodFuncForm().": "/methodfunc"}
+	seen := map[string]bool{}
+	for _, in := range chiIngresses(t) {
+		for h, sel := range want {
+			if in.Kind == "http_route" && in.Symbol.SCIP == chiFixtureSCIP+h {
+				seen[h] = true
+				if in.Selector != sel {
+					t.Errorf("%s selector = %q, want %q", h, in.Selector, sel)
+				}
+			}
+		}
+	}
+	for h := range want {
+		if !seen[h] {
+			t.Errorf("%s: no http_route ingress found", h)
+		}
+	}
 }
 
 // TestChi_LookalikeRouterIsNoIngress proves the router is identified by its import

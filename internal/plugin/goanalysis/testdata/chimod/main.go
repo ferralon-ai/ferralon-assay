@@ -87,7 +87,8 @@ type mountedHandler struct{}
 
 func (h *mountedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) { sinkMount(r.URL.Path) }
 
-// neverRegistered is handler-shaped but registered on no router: no ingress.
+// neverRegistered is handler-shaped but registered on no chi router directly (only
+// through fwdRouter's forwarding, which the detector does not follow): no ingress.
 func (s *server) neverRegistered(w http.ResponseWriter, r *http.Request) {
 	sinkNeverRegistered(r.URL.Path)
 }
@@ -111,6 +112,13 @@ func (h *lookalikeMounted) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func middleware(next http.Handler) http.Handler { return next }
+
+// fwdRouter is a first-party wrapper that forwards to chi with a non-constant
+// pattern, so the handler reaches chi boxed as an http.HandlerFunc in a variable:
+// the adapter's ServeHTTP must not become an ingress.
+type fwdRouter struct{ r chi.Router }
+
+func (f *fwdRouter) Get(p string, h http.HandlerFunc) { f.r.Method("GET", p, h) }
 
 // subRouter builds a chi router that the main router mounts; its own route is
 // discovered on the sub-router itself.
@@ -148,6 +156,9 @@ func main() {
 	r.With(middleware).Get("/with", s.withForm)
 	r.Mount("/mount", &mountedHandler{})
 	r.Mount("/sub", subRouter(s))
+	// A bare chi router mounted directly: chi's own ServeHTTP is no ingress.
+	r.Mount("/bare", chi.NewRouter())
+	(&fwdRouter{r: r}).Get("/fwd", s.neverRegistered)
 
 	old := chiv1.NewRouter()
 	old.Get("/v1/{id}", s.v1Form)

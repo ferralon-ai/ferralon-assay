@@ -362,9 +362,11 @@ func chiRegistrar(common *ssa.CallCommon) (string, bool) {
 
 // chiHandler is staticHandler plus the http.Handler that chi's Handle, Method and
 // Mount take: a concrete value boxed into the interface contributes its ServeHTTP
-// method. A chi router mounted as a sub-router, or a net/http handler type (an
+// method. A chi router mounted as a sub-router, or an adapter handler type (an
 // http.HandlerFunc held in a variable), is skipped: the sub-router's own
-// registrations are the ingresses, and net/http's ServeHTTP is no first-party handler.
+// registrations are the ingresses, and the adapter's ServeHTTP is no first-party
+// handler. The adapter package is the one declaring the http.Handler interface the
+// value is boxed into — net/http in real code, named explicitly as well.
 func (s *ssaProgram) chiHandler(v ssa.Value) *ssa.Function {
 	if fn := staticHandler(v); fn != nil {
 		return fn
@@ -374,7 +376,9 @@ func (s *ssaProgram) chiHandler(v ssa.Value) *ssa.Function {
 		return nil
 	}
 	t := mi.X.Type()
-	if pkg := namedTypePkg(t); pkg == nil || pkg.Path() == "net/http" || chiPkgPaths[pkg.Path()] {
+	adapter := namedTypePkg(mi.Type())
+	if pkg := namedTypePkg(t); pkg == nil || pkg.Path() == "net/http" ||
+		(adapter != nil && pkg.Path() == adapter.Path()) || chiPkgPaths[pkg.Path()] {
 		return nil
 	}
 	sel := s.prog.MethodSets.MethodSet(t).Lookup(nil, "ServeHTTP")

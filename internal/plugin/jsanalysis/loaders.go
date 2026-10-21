@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Node's module loader can be reached under other names than a direct require('x') call:
@@ -58,14 +59,23 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 
 // requireUse records one occurrence of a require-like name whose identifier ends at next.
 // A call loads its argument; `.resolve` only computes a path. Any other use hands the
-// loader on, so the module can load targets this lane never sees.
+// loader on, so the module can load targets this lane never sees. Declaring the name
+// (a parameter or `function require(...)`) and testing it hand nothing on: every call
+// through the declared name is judged where it occurs.
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 	p := skipSpace(clean, next)
 	call := p < len(clean) && clean[p] == '('
-	switch w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); {
+	switch w, s := wordBefore(clean, skipSpaceBack(clean, i-1)); {
 	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
+		return
+	case w == "function" && (s == 0 || !strings.ContainsRune(".#", clean[max(skipSpaceBack(clean, s-1), 0)])):
+		// `function require(...)` declares a parameter list, not a call; `o.function` and
+		// `this.#function` are members
+		return
+	}
+	if !call && (declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
 		return
 	}
 	switch {
@@ -127,6 +137,13 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	case "dlopen":
 		mb.nativeLoad = true
 	case "eval":
+		// A call of .eval on any receiver may be the global's eval; a read of .eval is
+		// judged by globalUse when the receiver is the global. A read of .eval on a global's
+		// name flags even when a local shadows the name, since the local may hold the global
+		// by a path globalUse does not follow.
+		if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) {
+			mb.evaluated = true
+		}
 		switch recv, _ := wordBefore(clean, skipSpaceBack(clean, p-1)); recv {
 		case "globalThis", "global", "window", "self":
 			mb.evaluated = true
@@ -134,31 +151,360 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	}
 }
 
-// functionUse records a use of the Function constructor at i: a call, `new Function`, a
-// `.call`/`.apply`/`.bind` on it, or an assignment that aliases it. A TypeScript type
-// annotation (`cb: Function`) and `Function.prototype` are not uses.
-func (mb *moduleBindings) functionUse(clean []rune, i, next int) {
+// functionUse records a use of the Function constructor at i. Every reference to Function
+// counts, whatever follows it: a call, `new Function`, a member, an alias or a value handed
+// on may each reach the constructor by a path the walk does not follow. The one exception is
+// a direct call whose source is all plain literals with no way to run other code
+// (literalFunction) and whose result is not called at once.
+func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
+	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
+		// A call of .Function on any receiver may be the global's Function constructor.
+		if p < len(clean) && clean[p] == '(' || optionalCall(clean, p) {
+			mb.evaluated = true
+		}
 		return
 	}
-	p := skipSpace(clean, next)
-	switch {
-	case p < len(clean) && clean[p] == '(':
-	case p < len(clean) && clean[p] == '.':
-		switch w, _ := peekWord(clean, skipSpace(clean, p+1)); w {
-		case "call", "apply", "bind":
-		default:
-			return
-		}
-	default:
-		w, _ := wordBefore(clean, b)
-		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
-		if w != "new" && !assigned {
-			return
+	if p < len(clean) && clean[p] == '(' {
+		if ok, open := literalFunction(clean, src, p); ok && !open {
+			if q := skipSpace(clean, closeParen(clean, p)+1); !(q < len(clean) && clean[q] == '(' || optionalCall(clean, q)) {
+				return
+			}
 		}
 	}
 	mb.evaluated = true
+}
+
+// literalFunction reports whether the Function constructor call whose argument list opens
+// at p builds a function that runs no code but its own operators: every argument is one
+// plain string literal (no escape, no template), the leading ones lists of parameter
+// names, and the body has no call, construction, tagged template, member or index access,
+// assignment, update, `arguments`, `with`, or loader or evaluator name. open reports
+// whether the body reads `this` or a name that is not a parameter, through which a
+// later call could reach the global.
+func literalFunction(clean, src []rune, p int) (ok, open bool) {
+	e := closeParen(clean, p)
+	if e >= len(clean) {
+		return false, false
+	}
+	var lits []string
+	for a := skipSpace(clean, p+1); a < e; {
+		if clean[a] != '_' || (src[a] != '\'' && src[a] != '"') {
+			return false, false
+		}
+		lit, ok := plainLiteral(src, a)
+		if !ok {
+			return false, false
+		}
+		// JS names admit non-ASCII runes readWord does not (Nl letters, combining marks,
+		// ZWNJ), so a literal holding one may read a name the scan never sees.
+		for _, r := range lit {
+			if r >= utf8.RuneSelf {
+				return false, false
+			}
+		}
+		lits = append(lits, lit)
+		a = skipSpace(clean, a+1)
+		if a < e && clean[a] == ',' {
+			a = skipSpace(clean, a+1)
+		} else if a < e {
+			return false, false
+		}
+	}
+	if len(lits) == 0 {
+		return true, false
+	}
+	params := map[string]bool{}
+	for _, l := range lits[:len(lits)-1] {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		for _, name := range strings.Split(l, ",") {
+			name = strings.TrimSpace(name)
+			r := []rune(name)
+			if len(r) == 0 || !isIdentStart(r[0]) {
+				return false, false
+			}
+			if w, end := readWord(r, 0); end != len(r) || functionBodyWords[w] {
+				return false, false
+			}
+			params[name] = true
+		}
+	}
+	body := []rune(lits[len(lits)-1])
+	// stripJS cannot tell a regular expression from a division after a keyword, nor end a
+	// comment at U+2028 or U+2029, so a body with a backtick or a slash is not read at all.
+	if strings.ContainsAny(string(body), "`/") {
+		return false, false
+	}
+	bc := []rune(stripJS(string(body)))
+	for k := 0; k < len(bc); {
+		c := bc[k]
+		switch {
+		case c == '(' || c == '[' || c == '.':
+			return false, false
+		case c == '=':
+			prev, nxt := rune(0), rune(0)
+			if k > 0 {
+				prev = bc[k-1]
+			}
+			if k+1 < len(bc) {
+				nxt = bc[k+1]
+			}
+			if !strings.ContainsRune("=!<>", prev) && nxt != '=' && nxt != '>' {
+				return false, false
+			}
+			if strings.ContainsRune("<>", prev) && k > 1 && bc[k-2] == prev {
+				return false, false // <<= or >>=
+			}
+		case (c == '+' || c == '-') && k+1 < len(bc) && bc[k+1] == c:
+			return false, false
+		case c == '_' && body[k] != '_':
+			// a string literal inside the body
+		case isIdentStart(c):
+			w, end := readWord(bc, k)
+			switch {
+			case functionBodyWords[w]:
+				return false, false
+			case w == "this":
+				open = true
+			case !params[w] && !functionBodyKeywords[w]:
+				open = true
+			}
+			k = end
+			continue
+		}
+		k++
+	}
+	return true, open
+}
+
+// functionBodyWords may not appear in a literal Function body: each constructs, loads,
+// evaluates, or reaches the caller's arguments or a dynamic scope.
+var functionBodyWords = map[string]bool{
+	"new": true, "import": true, "require": true, "eval": true, "Function": true,
+	"arguments": true, "with": true,
+}
+
+// functionBodyKeywords are the words a literal Function body may use without reading a
+// name from its scope.
+var functionBodyKeywords = map[string]bool{
+	"return": true, "typeof": true, "void": true, "in": true, "instanceof": true,
+	"true": true, "false": true, "null": true, "undefined": true, "if": true, "else": true,
+}
+
+// plainLiteral reads the string literal whose quote is at src[a]: its text, and false when
+// it holds an escape or is unterminated.
+func plainLiteral(src []rune, a int) (string, bool) {
+	quote := src[a]
+	for k := a + 1; k < len(src); k++ {
+		switch src[k] {
+		case quote:
+			return string(src[a+1 : k]), true
+		case '\\', '\n':
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// optionalCall reports whether `?.(` starts at p, with any space after the `?.`.
+func optionalCall(clean []rune, p int) bool {
+	q := skipSpace(clean, p+2)
+	return optionalDot(clean, p) && q < len(clean) && clean[q] == '('
+}
+
+// optionalDot reports whether `?.` starts at p.
+func optionalDot(clean []rune, p int) bool {
+	return p+1 < len(clean) && clean[p] == '?' && clean[p+1] == '.'
+}
+
+// escapesAsValue reports whether a value whose previous token ends at b and whose next
+// token starts at p is handed on: a call argument or array element, a return or yield
+// value, an arrow body, or an operand of ||, && or ?? (which can yield it), or the
+// value of a ternary branch after '?'. An equality test after it yields a boolean.
+func escapesAsValue(clean []rune, b, p int) bool {
+	if p+1 < len(clean) && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=' {
+		return false
+	}
+	if b < 0 {
+		return false
+	}
+	switch clean[b] {
+	case '(', ',', '[':
+		return true
+	case '?':
+		return true // a ternary branch or ??; `?.` cannot precede an identifier
+	case ':':
+		return ternaryElse(clean, b)
+	case '=':
+		return memberStore(clean, b)
+	case '|', '&':
+		return b >= 1 && clean[b-1] == clean[b]
+	case '>':
+		return b >= 1 && clean[b-1] == '='
+	}
+	switch w, _ := wordBefore(clean, b); w {
+	case "return", "yield", "await", "throw":
+		return true
+	}
+	return false
+}
+
+// ternaryElse reports whether the ':' at b separates a ternary's branches: a '?' that is neither
+// `?.`, `??` nor an optional-property marker (`cb?:`) precedes it at bracket depth zero within the
+// same expression. A type annotation's or an object key's ':' does not.
+func ternaryElse(clean []rune, b int) bool {
+	if q := skipSpaceBack(clean, b-1); q >= 0 && clean[q] == '?' {
+		return false
+	}
+	depth := 0
+	for k := b - 1; k >= 0 && b-k < maxParamScan; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case ',', ';', '=':
+			if depth == 0 {
+				return false
+			}
+		case '?':
+			if depth > 0 || optionalDot(clean, k) || k+1 < len(clean) && clean[k+1] == '?' || k > 0 && clean[k-1] == '?' {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// memberStore reports whether the '=' at b assigns to a member (`o.g =`, `o[k] =`) or to a
+// destructuring pattern (`({ [k]: f } =`), which stores the value where this lane does not
+// follow it. A compound or comparison operator is not one.
+func memberStore(clean []rune, b int) bool {
+	k := skipSpaceBack(clean, b-1)
+	if k < 0 {
+		return false
+	}
+	if clean[k] == ']' || clean[k] == '}' {
+		return true
+	}
+	_, s := wordBefore(clean, k)
+	if s == k && !isIdentPart(clean[k]) {
+		return false
+	}
+	d := skipSpaceBack(clean, s-1)
+	return d >= 0 && clean[d] == '.'
+}
+
+// maxParamScan bounds the scan for the bracket enclosing a parameter; a list longer than
+// this is not recognised as one, which keeps the name flagged.
+const maxParamScan = 4096
+
+// declaredParam reports whether the identifier spanning [i, next) is a formal parameter:
+// a lone arrow parameter (`require => ...`), or a name directly inside the parentheses of
+// a function (`function [name](...)`) or arrow (`(...) =>`) parameter list. Destructured
+// and defaulted-into names are not: only a name the list itself binds.
+func declaredParam(clean []rune, i, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	if p+1 < n && clean[p] == '=' && clean[p+1] == '>' {
+		return true
+	}
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || (clean[b] != '(' && clean[b] != ',') {
+		return false
+	}
+	if p >= n || (clean[p] != ',' && clean[p] != ')' && !(clean[p] == '=' && p+1 < n && clean[p+1] != '=' && clean[p+1] != '>')) {
+		return false
+	}
+	open := b
+	for depth := 0; clean[open] != '(' || depth > 0; {
+		switch clean[open] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return false // directly inside an array or object, not a parameter list
+			}
+			depth--
+		}
+		open--
+		if open < 0 || b-open > maxParamScan {
+			return false
+		}
+	}
+	end := open
+	for depth := 0; ; {
+		switch clean[end] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+		if depth == 0 {
+			break
+		}
+		end++
+		if end >= n || end-open > maxParamScan {
+			return false
+		}
+	}
+	if a := skipSpace(clean, end+1); a+1 < n && clean[a] == '=' && clean[a+1] == '>' {
+		return true
+	}
+	q := skipSpaceBack(clean, open-1)
+	if w, s := wordBefore(clean, q); w != "" && w != "function" {
+		q = skipSpaceBack(clean, s-1) // the function's name
+	}
+	if q >= 0 && clean[q] == '*' {
+		q = skipSpaceBack(clean, q-1)
+	}
+	w, s := wordBefore(clean, q)
+	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
+		return false // a member named function
+	}
+	return w == "function"
+}
+
+// loaderTested reports whether the require-like name at [i, next), with any plain member
+// chain after it (`require.main`), is only tested: the operand of !, ==, ===, != or !==,
+// or the left operand of && or of a ternary. A test yields a boolean or the other
+// operand, never the loader.
+func loaderTested(clean []rune, i, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	for p < n && clean[p] == '.' {
+		w, e := peekWord(clean, skipSpace(clean, p+1))
+		if w == "" {
+			return false
+		}
+		p = skipSpace(clean, e)
+	}
+	if p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '.' || clean[p] == '_') {
+		return false // called, indexed or tagged: the chain is used, not tested
+	}
+	switch {
+	case p+1 < n && clean[p] == '&' && clean[p+1] == '&' && (p+2 >= n || clean[p+2] != '='):
+		return true
+	case p < n && clean[p] == '?' && (p+1 >= n || (clean[p+1] != '.' && clean[p+1] != '?')):
+		return true
+	case p+1 < n && (clean[p] == '=' || clean[p] == '!') && clean[p+1] == '=':
+		return true
+	}
+	b := skipSpaceBack(clean, i-1)
+	switch {
+	case b >= 0 && clean[b] == '!':
+		return true
+	case b >= 1 && clean[b] == '=' && (clean[b-1] == '=' || clean[b-1] == '!'):
+		return true
+	}
+	return false
 }
 
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of

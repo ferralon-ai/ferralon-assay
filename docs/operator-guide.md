@@ -174,7 +174,7 @@ undecided until you state the selection.
 ## Resolving the JVM build graph
 
 `resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
-`assay.buildgraph/v1` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
+`assay.buildgraph/v2` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
 version catalogs and lockfiles):
 
 ```sh

@@ -43,7 +43,11 @@ func Load(file, dir string, stated Conditions) (*Graph, error) {
 		return nil, err
 	}
 	if check := g.Validate(); check != "" {
-		return nil, reject(check, "")
+		log := ""
+		if check == "schema" && g.Schema == schemaV1 {
+			log = "graph written by an older resolve-graph; re-run resolve-graph"
+		}
+		return nil, reject(check, log)
 	}
 	if !sameConditions(g.Conditions, stated) {
 		return nil, reject(CheckConditions, "graph resolved under other conditions than the scan states")

@@ -1,7 +1,7 @@
 // Package buildgraph produces and checks a JVM project's dependency graph as the project's own
 // build tool resolves it. The repository's Maven or Gradle runs with the job's environment and
 // JDK; the run conditions it is handed are recorded, never inferred. The result is an
-// assay.buildgraph/v1 document bound to the checkout by the sha256 of every build input the
+// assay.buildgraph/v2 document bound to the checkout by the sha256 of every build input the
 // tool read.
 package buildgraph
 
@@ -14,9 +14,13 @@ import (
 )
 
 // Schema is the only schema identifier this package writes or accepts.
-const Schema = "assay.buildgraph/v1"
+const Schema = "assay.buildgraph/v2"
 
-// Graph is one assay.buildgraph/v1 document.
+// schemaV1 is what v0.5.x's resolve-graph wrote: no classpath copies, and none of a Gradle
+// project's other *RuntimeClasspath configurations. Load rejects it with the fix in the log.
+const schemaV1 = "assay.buildgraph/v1"
+
+// Graph is one assay.buildgraph/v2 document.
 type Graph struct {
 	Schema     string     `json:"schema"`
 	Producer   Producer   `json:"producer"`

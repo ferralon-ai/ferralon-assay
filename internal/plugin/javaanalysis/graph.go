@@ -16,7 +16,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// graph.go — the one source of a JVM build's dependencies: the assay.buildgraph/v1 graph the
+// graph.go — the one source of a JVM build's dependencies: the assay.buildgraph/v2 graph the
 // host resolved with the repository's own Maven or Gradle and checked against the checkout
 // (buildgraph.Load) before it handed the plugin the file. The node set, every version, every
 // scope and every artifact file come from it. Nothing here reads a build script, a lockfile or

@@ -17,7 +17,7 @@ import (
 // graphFileName is the graph's name inside the -out directory, beside its sidecars.
 const graphFileName = "buildgraph.json"
 
-// runResolveGraph runs the repository's Maven or Gradle and writes its assay.buildgraph/v1
+// runResolveGraph runs the repository's Maven or Gradle and writes its assay.buildgraph/v2
 // graph. A failed resolution prints its typed cause and exits nonzero; nothing is written in
 // its place.
 func runResolveGraph(args []string) error {

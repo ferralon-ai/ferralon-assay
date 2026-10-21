@@ -43,7 +43,8 @@ func TestValidate(t *testing.T) {
 		want string
 	}{
 		{name: "valid", edit: func(*Graph) {}, want: ""},
-		{name: "unknown schema", edit: func(g *Graph) { g.Schema = "assay.buildgraph/v2" }, want: "schema"},
+		{name: "unknown schema", edit: func(g *Graph) { g.Schema = "assay.buildgraph/v3" }, want: "schema"},
+		{name: "older schema", edit: func(g *Graph) { g.Schema = schemaV1 }, want: "schema"},
 		{name: "no tool version", edit: func(g *Graph) { g.Tool.Version = " " }, want: "tool_version"},
 		{name: "no tool name", edit: func(g *Graph) { g.Tool.Name = "" }, want: "tool_version"},
 		{name: "no jvm", edit: func(g *Graph) { g.JVM.Version = "" }, want: "jvm"},

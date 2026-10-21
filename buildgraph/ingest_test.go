@@ -2,8 +2,10 @@ package buildgraph
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,11 +45,13 @@ func TestLoad(t *testing.T) {
 		raw    string
 		edit   func(t *testing.T, g *Graph, r fakeRepo)
 		want   string
+		log    string
 	}{
 		{name: "maven graph loads", tool: "maven"},
 		{name: "gradle graph loads", tool: "gradle"},
 		{name: "not json", tool: "maven", raw: "{", want: "graph_rejected:decode"},
 		{name: "Validate runs", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Schema = "other" }, want: "graph_rejected:schema"},
+		{name: "graph from v0.5.x", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Schema = schemaV1 }, want: "graph_rejected:schema", log: "re-run resolve-graph"},
 		{name: "other profiles", tool: "maven", stated: &Conditions{JDK: "21"}, want: "graph_rejected:conditions"},
 		{name: "other jdk", tool: "gradle", stated: &Conditions{JDK: "17"}, want: "graph_rejected:conditions"},
 		{name: "other properties", tool: "maven", stated: &Conditions{Profiles: []string{"extra"}, JDK: "21", Properties: map[string]string{"skipTests": "true"}}, want: "graph_rejected:conditions"},
@@ -192,6 +196,10 @@ func TestLoad(t *testing.T) {
 			loaded, err := Load(file, r.dir, stated)
 			if got := cause(err); got != tc.want {
 				t.Fatalf("Load = %q, want %q", got, tc.want)
+			}
+			var f *Failure
+			if tc.log != "" && (!errors.As(err, &f) || !strings.Contains(f.Log, tc.log)) {
+				t.Fatalf("Load log = %v, want it to contain %q", err, tc.log)
 			}
 			if tc.want == "" && len(loaded.Modules) != len(g.Modules) {
 				t.Fatalf("loaded %d modules, resolved %d", len(loaded.Modules), len(g.Modules))

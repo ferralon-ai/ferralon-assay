@@ -32,6 +32,9 @@ type gradleProject struct {
 	JavaVendor   string                     `json:"java_vendor"`
 	Path         string                     `json:"path"`
 	Dir          string                     `json:"dir"`
+	BuildFile    string                     `json:"build_file"`
+	BuildDir     string                     `json:"build_dir"`
+	UserHome     string                     `json:"user_home"`
 	RootDir      string                     `json:"root_dir"`
 	Group        string                     `json:"group"`
 	Name         string                     `json:"name"`
@@ -40,6 +43,21 @@ type gradleProject struct {
 	Projects     map[string]gradleCoord     `json:"projects"`
 	Classpaths   map[string]gradleClasspath `json:"classpaths"`
 	Extra        map[string]gradleClasspath `json:"extra_classpaths"`
+	Uncollected  []string                   `json:"uncollected"`
+	Aliases      []string                   `json:"aliases"`
+	Tasks        []gradleTask               `json:"tasks"`
+}
+
+// gradleTask is one task as the init script observed it: its type, the origin of each action
+// added beside its type's own, the tasks it depends on or is finalized by, and the input files
+// it reads from outside the build's root.
+type gradleTask struct {
+	Path    string   `json:"path"`
+	Type    string   `json:"type"`
+	Actions []string `json:"actions"`
+	Depends []string `json:"depends"`
+	Outside []string `json:"outside"`
+	Failure string   `json:"failure"`
 }
 
 // gradleClasspath is one configuration as Gradle resolved it.
@@ -147,6 +165,10 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 	if err != nil {
 		return nil, err
 	}
+	if g.Incomplete, err = gradleIncomplete(out, r.dir, projects, g); err != nil {
+		return nil, err
+	}
+	g.Complete = len(g.Incomplete) == 0
 	return g, nil
 }
 
@@ -311,6 +333,11 @@ func gradleModule(p gradleProject) ([]Module, error) {
 	self := gradleCoord{Group: p.Group, Name: p.Name, Version: p.Version}
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
+	for _, a := range p.Aliases {
+		if a != self.Group+":"+self.Name && !slices.Contains(m.Aliases, a) {
+			m.Aliases = append(m.Aliases, a)
+		}
+	}
 	var others []string
 	for _, c := range p.OtherRuntime {
 		if c != gradleRuntime && c != gradleTest {

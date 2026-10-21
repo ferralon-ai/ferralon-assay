@@ -2,11 +2,18 @@
 // compileClasspath and testRuntimeClasspath, and beside runtimeClasspath every other resolvable
 // *RuntimeClasspath, as Gradle resolved each: components, the edges between them, and each
 // artifact's file. Beside runtimeClasspath it also resolves every other resolvable configuration
-// that declares a dependency (an agent or a driver a distribution copies in, say), each leniently:
-// one that fails records its failure rather than failing the task. Everything the action reads is captured while the task
-// is configured, so it never reaches back into the project at execution time.
+// (an agent or a driver a distribution copies in, say), each leniently: one that fails records
+// its failure rather than failing the task. Everything the action reads is captured while the
+// task is configured, so it never reaches back into the project at execution time.
+//
+// It also records what the producer needs to tell whether those configurations are everything
+// the build installs: each task's type, the actions added to it beside its type's own, the
+// tasks it depends on and the input files it reads from outside the build, and every
+// resolution the root build makes, whatever resolved it.
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ModuleComponentSelector
+import org.gradle.api.artifacts.component.ProjectComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
@@ -20,15 +27,15 @@ def javaVendor = System.getProperty('java.vendor')
 // build too, though the root build never lists it. Each included build records its directory,
 // so the build logic it holds is hashed as input. The root build records the builds it includes
 // directly, so a nested build that never ran this script cannot go unrecorded.
-def record = { String kind, File dir ->
+def record = { String kind, String text ->
     def d = new File(assayOut, kind)
     d.mkdirs()
-    new File(d, UUID.randomUUID().toString() + '.txt').setText(dir.absolutePath, 'UTF-8')
+    new File(d, UUID.randomUUID().toString() + '.txt').setText(text, 'UTF-8')
 }
 if (gradle.parent != null) {
-    gradle.settingsEvaluated { s -> record('included', s.rootDir) }
+    gradle.settingsEvaluated { s -> record('included', s.rootDir.absolutePath) }
 } else {
-    gradle.projectsEvaluated { g -> g.includedBuilds.each { b -> record('direct', b.projectDir) } }
+    gradle.projectsEvaluated { g -> g.includedBuilds.each { b -> record('direct', b.projectDir.absolutePath) } }
 }
 
 // A resolution failure's own message rarely names the cause; the transport error (a 401, a
@@ -51,6 +58,107 @@ def failureText = { Throwable top ->
     lines.join('\n')
 }
 
+// Every resolution the root build makes, with the files it resolved: a configuration's, a build
+// script classpath's (path "classpath"), and a detached configuration's, which no project lists.
+// The producer finds each file it resolved among the graph's own; one that is not was installed
+// from outside the configurations it collected. An included build's resolutions are its build
+// logic's, and its own listener never records them.
+//
+// A resolution whose only unresolved dependencies are on a project, or on a detached
+// configuration's own unspecified root (the dependency-management plugin's, on Gradle 9, declare
+// unspecified:unspecified:unspecified, and that root has no variants), is read leniently: neither
+// carries a third-party file, and every module file it did resolve is still recorded. A project
+// whose own coordinate is an external one gets no such exemption. Any other failure is recorded
+// as one.
+if (gradle.parent == null) {
+    gradle.addListener(new DependencyResolutionListener() {
+        void beforeResolve(ResolvableDependencies d) {}
+        void afterResolve(ResolvableDependencies d) {
+            def doc = [path: d.path]
+            def files = { set ->
+                set.collect { a -> [file: a.file.absolutePath, project: a.id.componentIdentifier instanceof ProjectComponentIdentifier] }
+            }
+            try {
+                doc.artifacts = files(d.artifacts.artifacts)
+            } catch (Exception e) {
+                doc.failure = failureText(e)
+                try {
+                    def rr = d.resolutionResult
+                    def self = rr.root.moduleVersion
+                    def unspecified = { g, n, v -> g == 'unspecified' && n == 'unspecified' && v == 'unspecified' }
+                    def detachedRoot = self != null && unspecified(self.group, self.name, self.version) &&
+                        !(rr.root.id instanceof ProjectComponentIdentifier)
+                    def unresolved = rr.allDependencies.findAll { it instanceof UnresolvedDependencyResult }
+                    def own = { r ->
+                        r instanceof ProjectComponentSelector ||
+                            (detachedRoot && r instanceof ModuleComponentSelector && unspecified(r.group, r.module, r.version))
+                    }
+                    if (!unresolved.isEmpty() && unresolved.every { own(it.requested) }) {
+                        doc.artifacts = files(d.artifactView { lenient(true) }.artifacts.artifacts)
+                        doc.remove('failure')
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+            record('resolved', JsonOutput.toJson(doc))
+        }
+    })
+}
+
+// actionOrigin is the class an action added to a task came from: the closure or Action a doFirst
+// or doLast wraps, unwrapped. A task type's own actions have none.
+def actionOrigin = { a ->
+    if (a.getClass().simpleName in ['StandardTaskAction', 'IncrementalTaskAction']) {
+        return null
+    }
+    def x = a
+    for (int i = 0; i < 4; i++) {
+        def f = null
+        for (def c = x.getClass(); c != null && f == null; c = c.superclass) {
+            f = c.declaredFields.find { it.name in ['closure', 'action'] }
+        }
+        if (f == null) {
+            break
+        }
+        f.accessible = true
+        def y = f.get(x)
+        if (y == null) {
+            break
+        }
+        x = y
+    }
+    x.getClass().name
+}
+
+// observeTasks records each of p's tasks. Reading a task's input files resolves whatever a lazy
+// input would at execution, so the listener sees that resolution too.
+def observeTasks = { p ->
+    def root = p.rootDir.toPath()
+    def tasks = []
+    try {
+        // assayBuildGraph is the task being configured, and only writes the graph.
+        def names = p.tasks.names.toList() - ['assayBuildGraph']
+        names.each { n ->
+            def k = p.tasks.named(n).get()
+            def t = [path: k.path, type: k.getClass().name.replace('_Decorated', '')]
+            try {
+                t.actions = k.actions.collect(actionOrigin).findAll { it != null }
+                t.depends = (k.taskDependencies.getDependencies(k) + k.finalizedBy.getDependencies(k)).collect { it.path }.sort()
+                t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) }.collect { it.absolutePath }.sort()
+            } catch (Exception e) {
+                t.failure = String.valueOf(e.message)
+            }
+            tasks << t
+        }
+        if (p.tasks.names.toList() - ['assayBuildGraph'] != names) {
+            tasks << [path: p.path, failure: 'tasks were registered while the tasks were observed']
+        }
+    } catch (Exception e) {
+        tasks << [path: p.path, failure: String.valueOf(e.message)]
+    }
+    tasks
+}
+
 allprojects { p ->
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
@@ -61,6 +169,8 @@ allprojects { p ->
             path       : projectPath,
             dir        : p.projectDir.absolutePath,
             build_file : p.buildFile.absolutePath,
+            build_dir  : p.layout.buildDirectory.get().asFile.absolutePath,
+            user_home  : p.gradle.gradleUserHomeDir.absolutePath,
             root_dir   : p.rootDir.absolutePath,
             group      : String.valueOf(p.group),
             name       : p.name,
@@ -76,7 +186,26 @@ allprojects { p ->
         }
         // Every other resolvable configuration, on every project: a distribution-only project with no
         // runtimeClasspath is where an agent or driver configuration is usually declared.
-        def extraNames = p.configurations.findAll { it.canBeResolved && !names.contains(it.name) && !otherRuntime.contains(it.name) && !it.allDependencies.isEmpty() }.collect { it.name }.sort()
+        // A configuration a plugin fills lazily (defaultDependencies, withDependencies) reads empty
+        // here, so none is skipped for being empty.
+        def extraNames = p.configurations.findAll { it.canBeResolved && !names.contains(it.name) && !otherRuntime.contains(it.name) }.collect { it.name }.sort()
+        // Without runtimeClasspath, the other runtime classpaths are left uncollected (an Android
+        // variant or a KMP target).
+        def uncollected = otherRuntime.findAll { !names.contains(it) }
+        // The coordinates the project publishes under beside group:name.
+        def aliases = []
+        def base = p.extensions.findByName('base')
+        if (base != null && base.hasProperty('archivesName')) {
+            aliases << String.valueOf(p.group) + ':' + base.archivesName.get()
+        }
+        p.extensions.findByName('publishing')?.publications?.each { pub ->
+            if (pub.hasProperty('artifactId')) {
+                aliases << String.valueOf(pub.groupId) + ':' + pub.artifactId
+            } else if (pub.hasProperty('module')) {
+                aliases << String.valueOf(pub.organisation) + ':' + pub.module
+            }
+        }
+        def tasks = observeTasks(p)
         def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {
@@ -96,6 +225,9 @@ allprojects { p ->
         def out = new File(assayOut, 'project' + projectPath.replace(':', '_') + '.json')
         t.doLast {
             doc.other_runtime_classpaths = otherRuntime
+            doc.uncollected = uncollected
+            doc.aliases = aliases.unique()
+            doc.tasks = tasks
             doc.projects = projects
             def id = { c ->
                 if (c instanceof ModuleComponentIdentifier) {

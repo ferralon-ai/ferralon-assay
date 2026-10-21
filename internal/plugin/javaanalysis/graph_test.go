@@ -209,3 +209,67 @@ func TestOtherToolBuild_UnreadableDirectory(t *testing.T) {
 		t.Error("OtherToolBuild = false for a checkout the walk could not read")
 	}
 }
+
+// TestListsEveryInstall pins what an absence rests on: a graph its producer marked Complete, no
+// unlisted install, and no archive in the checkout the graph does not hold.
+func TestListsEveryInstall(t *testing.T) {
+	jar := filepath.Join(t.TempDir(), "lib-1.jar")
+	lib := graphDep{group: "com.example", artifact: "lib", version: "1", jar: jar}
+	for _, tc := range []struct {
+		name     string
+		edit     func(g *buildgraph.Graph)
+		files    map[string]string
+		absent   bool
+		coord    string
+		wantRoot bool
+	}{
+		{name: "complete", absent: true},
+		{name: "producer withheld Complete", edit: func(g *buildgraph.Graph) { g.Complete = false; g.Incomplete = []string{"task :fetch"} }},
+		{name: "unlisted install", edit: func(g *buildgraph.Graph) { g.Modules[0].Unlisted = []string{"gradle configuration agent"} }},
+		{name: "checked-in archive", files: map[string]string{"libs/agent.jar": "x"}},
+		{name: "wrapper jar only", files: map[string]string{"gradle/wrapper/gradle-wrapper.jar": "x"}, absent: true},
+		{name: "advisory on a module's alias", coord: "com.example:app-core", edit: func(g *buildgraph.Graph) { g.Modules[0].Aliases = []string{"com.example:app-core"} }, wantRoot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				p := filepath.Join(dir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			g := &buildgraph.Graph{Tool: buildgraph.Tool{Name: "gradle"}, Complete: true, Modules: []buildgraph.Module{testModule(t, ".", "app", lib)}}
+			if tc.edit != nil {
+				tc.edit(g)
+			}
+			coord := tc.coord
+			if coord == "" {
+				coord = "com.evil:netkit"
+			}
+			if got := AbsentFromBuild(g, dir, coord); got != tc.absent {
+				t.Errorf("AbsentFromBuild = %v, want %v", got, tc.absent)
+			}
+			res := graphVersions(g, coord, false, listsEveryInstall(g, dir))
+			if want := tc.absent && !tc.wantRoot; res.Exhaustive != want {
+				t.Errorf("Exhaustive = %v, want %v", res.Exhaustive, want)
+			}
+			if got := isRootCoordinate(g, coord); got != tc.wantRoot {
+				t.Errorf("isRootCoordinate = %v, want %v", got, tc.wantRoot)
+			}
+		})
+	}
+}
+
+// TestGraphInventoryUnlistedIsPartial: an inventory omitting what a module installs unlisted
+// says so.
+func TestGraphInventoryUnlistedIsPartial(t *testing.T) {
+	m := testModule(t, ".", "app")
+	m.Unlisted = []string{"maven-dependency-plugin execution copy-agent"}
+	inv := graphInventory(&buildgraph.Graph{Modules: []buildgraph.Module{m}}, false)
+	if inv.Partiality.Complete || len(inv.Partiality.Reasons) != 1 || inv.Partiality.Reasons[0] != PartialReasonUnlistedInstall {
+		t.Fatalf("partiality = %+v, want %s", inv.Partiality, PartialReasonUnlistedInstall)
+	}
+}

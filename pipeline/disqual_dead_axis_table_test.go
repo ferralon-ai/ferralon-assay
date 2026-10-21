@@ -104,7 +104,7 @@ func mavenGraph(t *testing.T, modules ...graphModule) []javaanalysis.Option {
 	if modules == nil {
 		return nil
 	}
-	g := buildgraph.Graph{Schema: buildgraph.Schema, Tool: buildgraph.Tool{Name: "maven", Version: "test"}, JVM: buildgraph.JVM{Version: "21.0.4"}}
+	g := buildgraph.Graph{Schema: buildgraph.Schema, Tool: buildgraph.Tool{Name: "maven", Version: "test"}, JVM: buildgraph.JVM{Version: "21.0.4"}, Complete: true}
 	for i, m := range modules {
 		name := "m" + string(rune('a'+i))
 		root := buildgraph.Node{Group: "com.example", Artifact: name, Version: "1.0.0", Type: "jar"}

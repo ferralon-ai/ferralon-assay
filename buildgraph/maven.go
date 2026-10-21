@@ -121,6 +121,10 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 		return nil, err
 	}
 	g.Modules = modules
+	if g.Incomplete, err = mavenIncomplete(r.dir, reactor, effective); err != nil {
+		return nil, err
+	}
+	g.Complete = len(g.Incomplete) == 0
 
 	sum, err := sha256File(epFile)
 	if err != nil {
@@ -286,6 +290,7 @@ type xmlChildren struct {
 	Any []struct {
 		XMLName xml.Name
 	} `xml:",any"`
+	Inner string `xml:",innerxml"`
 }
 
 func (c xmlChildren) has(local string) bool {
@@ -333,17 +338,21 @@ func unlistedInPOM(modules []Module, effective []effectiveProject) error {
 
 // effectivePlugin is a plugin's configuration as an effective POM gives it.
 type effectivePlugin struct {
+	GroupID       string      `xml:"groupId"`
 	ArtifactID    string      `xml:"artifactId"`
 	Configuration xmlChildren `xml:"configuration"`
 	Executions    struct {
-		Execution []struct {
-			ID    string `xml:"id"`
-			Goals struct {
-				Goal []string `xml:"goal"`
-			} `xml:"goals"`
-			Configuration xmlChildren `xml:"configuration"`
-		} `xml:"execution"`
+		Execution []effectiveExecution `xml:"execution"`
 	} `xml:"executions"`
+}
+
+type effectiveExecution struct {
+	ID    string `xml:"id"`
+	Phase string `xml:"phase"`
+	Goals struct {
+		Goal []string `xml:"goal"`
+	} `xml:"goals"`
+	Configuration xmlChildren `xml:"configuration"`
 }
 
 // effectiveProject is what the producer reads from one effective POM: its identity, its
@@ -354,6 +363,18 @@ type effectiveProject struct {
 	ArtifactID string      `xml:"artifactId"`
 	Properties xmlChildren `xml:"properties"`
 	Build      struct {
+		Extensions struct {
+			Extension []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+			} `xml:"extension"`
+		} `xml:"extensions"`
+		Resources struct {
+			Resource []effectiveResource `xml:"resource"`
+		} `xml:"resources"`
+		TestResources struct {
+			Resource []effectiveResource `xml:"testResource"`
+		} `xml:"testResources"`
 		Plugins struct {
 			Plugin []effectivePlugin `xml:"plugin"`
 		} `xml:"plugins"`
@@ -377,6 +398,10 @@ type effectiveProject struct {
 			SystemPath string `xml:"systemPath"`
 		} `xml:"dependency"`
 	} `xml:"dependencies"`
+}
+
+type effectiveResource struct {
+	Directory string `xml:"directory"`
 }
 
 // parseEffectivePOM reads help:effective-pom output: a <projects> list for a reactor, a single

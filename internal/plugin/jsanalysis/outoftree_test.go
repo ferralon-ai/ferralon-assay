@@ -1849,6 +1849,18 @@ const one = Function('return 1')?.();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function called optionally on any receiver", map[string]string{"app.js": `
+function run(o) { return o.Function?.(process.argv[2])(); }
+run(globalThis);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function handed on beside a literal argument", map[string]string{"app.js": `
+function call(F, s) { return F(process.argv[2])(); }
+call(Function, 'return 1');
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1943,6 +1955,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function of a parameter list", "const min = Function('a, b', 'return a < b ? a : b');"},
 		{"Function with an empty body", "const noop = Function('');"},
 		{"Function of nothing", "const nil = Function();"},
+		{"a member named Function read on a parameter", "function ctorOf(o) { return o.Function; }"},
 		{"a literal Function stored and called later", "const add = Function('a', 'b', 'return a + b');\nconst three = add(1, 2);"},
 		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
 		{"global require tested", "const electron = typeof window !== 'undefined' && !!(window.require && window.process);"},

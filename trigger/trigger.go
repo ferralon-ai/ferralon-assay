@@ -346,15 +346,19 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		return &CVEWatchResult{Heartbeat: true, Cursor: committed.Cursor}, nil
 	}
 
-	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, newCursor)
+	// The Report's provenance carries the cursor too, and a conflicting write merges the
+	// cursor from it, so a held cursor is the one both record.
+	cursor := newCursor
+	if req.HoldCursor {
+		cursor = state.Cursor
+	}
+	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, cursor)
 	if err != nil {
 		return nil, err
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	if !req.HoldCursor {
-		state.Cursor = newCursor
-	}
+	state.Cursor = cursor
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

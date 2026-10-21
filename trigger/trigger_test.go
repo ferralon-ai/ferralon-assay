@@ -415,6 +415,10 @@ func TestRunCVEWatch_HoldCursor(t *testing.T) {
 		if store.state.Cursor != "GO-2021-0113" {
 			t.Fatalf("run %d: cursor = %q, want it held at GO-2021-0113", run, store.state.Cursor)
 		}
+		// A write that conflicts merges the cursor from the Report, so it must hold there too.
+		if got := statestore.Merge(&statestore.State{}, store.state).Cursor; got != "GO-2021-0113" {
+			t.Fatalf("run %d: merged cursor = %q, want it held at GO-2021-0113", run, got)
+		}
 	}
 	if store.writes != 2 {
 		t.Fatalf("writes = %d, want the Report written each run", store.writes)

@@ -696,7 +696,8 @@ func (e *Engine) hasOverridable(c string) bool {
 //     javax/management (MBean server, MLet), javax/script, java/lang/instrument.
 //   - deserialization: ObjectInputStream/ObjectOutputStream run readObject,
 //     readResolve, writeReplace and a serializable lambda's $deserializeLambda$ on
-//     classes the stream names; java/rmi lookups and calls deserialize results.
+//     classes the stream names; SignedObject and SealedObject getObject read one
+//     through an ObjectInputStream; java/rmi lookups and calls deserialize results.
 //   - process-global inputs: System/Runtime load/loadLibrary (a native library's
 //     JNI_OnLoad can call any Java method) and System.setProperty/setProperties
 //     (platform factories instantiate classes their properties name).
@@ -707,6 +708,8 @@ func isReflection(r classfile.MethodRef) bool {
 	case r.Owner == "java/util/ServiceLoader" || strings.HasPrefix(r.Owner, "java/util/ServiceLoader$"):
 		return true
 	case r.Owner == "java/io/ObjectInputStream" || r.Owner == "java/io/ObjectOutputStream":
+		return true
+	case (r.Owner == "java/security/SignedObject" || r.Owner == "javax/crypto/SealedObject") && r.Name == "getObject":
 		return true
 	case (r.Owner == "java/lang/System" || r.Owner == "java/lang/Runtime") && (r.Name == "load" || r.Name == "loadLibrary"):
 		return true
@@ -788,7 +791,7 @@ func (e *Engine) platformLoadable(c string) bool {
 	}
 	e.loadable[c] = false // cycle guard
 	found := false
-	if cls := e.classes[c]; cls != nil {
+	if cls := e.runtimeClass(c); cls != nil {
 		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
 			if s != "" && e.loadableType(s) {
 				found = true
@@ -800,13 +803,23 @@ func (e *Engine) platformLoadable(c string) bool {
 	return found
 }
 
+// runtimeClass returns the loaded class the JVM runs under name: none for a java/ name,
+// which the JVM refuses to define from any loader but the boot loader, so a JAR's own
+// copy never shadows the JDK's.
+func (e *Engine) runtimeClass(name string) *classfile.Class {
+	if strings.HasPrefix(name, "java/") {
+		return nil
+	}
+	return e.classes[name]
+}
+
 // loadableType reports whether type t can be the static type under which the JDK
 // holds an object it may call: a loaded class that is platformLoadable, an unopened
 // dependency type, or a platform type outside deniedLoadable and the Throwables.
 // A Throwable needs no roots: every instance ran Throwable's constructor on itself,
 // which the search already treats as a platform body running on that receiver.
 func (e *Engine) loadableType(t string) bool {
-	if _, ok := e.classes[t]; ok {
+	if e.runtimeClass(t) != nil {
 		return e.platformLoadable(t)
 	}
 	if !e.platform(t) {
@@ -866,7 +879,7 @@ func (e *Engine) heldAs(owner string) heldTypes {
 			continue
 		}
 		seen[cur] = true
-		if cls := e.classes[cur]; cls != nil {
+		if cls := e.runtimeClass(cur); cls != nil {
 			if cls.Super != "" {
 				stack = append(stack, cls.Super)
 			}
@@ -891,8 +904,8 @@ func (e *Engine) heldAs(owner string) heldTypes {
 // objectOverridable) or one of a supertype the engine cannot see. A match is on name
 // and parameter types: a covariant override's bridge and the override itself both
 // match. Any other JDK call into m is reflective (deserialization hooks, java/beans,
-// JMX, method handles), and the search meets its JDK entry point as a hazard instead:
-// isReflection, or a call on an out-of-classpath receiver (SignedObject.getObject).
+// JMX, method handles), and the search meets its JDK entry point as a hazard instead
+// (isReflection).
 func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
 	i := strings.IndexByte(m.Descriptor, ')')
 	if i < 0 {
@@ -972,7 +985,7 @@ func (e *Engine) loadableSupertypes() map[string]bool {
 	out := map[string]bool{}
 	var stack []string
 	for n, cls := range e.classes {
-		if e.platformLoadable(n) {
+		if e.runtimeClass(n) != nil && e.platformLoadable(n) {
 			stack = append(stack, cls.Super)
 			stack = append(stack, cls.Interfaces...)
 		}
@@ -980,7 +993,7 @@ func (e *Engine) loadableSupertypes() map[string]bool {
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		cls := e.classes[cur]
+		cls := e.runtimeClass(cur)
 		if cls == nil || out[cur] {
 			continue
 		}

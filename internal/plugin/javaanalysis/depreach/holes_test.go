@@ -440,6 +440,29 @@ func TestReach_SignatureRoots(t *testing.T) {
 			want: ReachableCandidate, via: "D.start",
 		},
 		{
+			name: "a JAR's own java/ class does not shadow the JDK's",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: cowl, Super: objectClass, Public: true},
+				{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
+					callsSink(d, "add", "(Ljava/lang/Object;)Z"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.add",
+		},
+		{
+			name: "the same when the class is JDK-loadable through another supertype",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: cowl, Super: objectClass, Public: true},
+				{Name: d, Super: cowl, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "uncaughtException", uncaught),
+					callsSink(d, "add", "(Ljava/lang/Object;)Z"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.add",
+		},
+		{
 			name: "a covariant override of a platform method",
 			classes: []classfile.Class{
 				mainCalls(touch),
@@ -672,6 +695,8 @@ func TestIsReflection_DynamicResolutionChannels(t *testing.T) {
 		mref("java/lang/ClassLoader", "findSystemClass", "(Ljava/lang/String;)Ljava/lang/Class;"),
 		mref("java/io/ObjectInputStream", "readObject", "()Ljava/lang/Object;"),
 		mref("java/io/ObjectOutputStream", "writeObject", "(Ljava/lang/Object;)V"),
+		mref("java/security/SignedObject", "getObject", "()Ljava/lang/Object;"),
+		mref("javax/crypto/SealedObject", "getObject", "(Ljava/security/Key;)Ljava/lang/Object;"),
 		mref("java/rmi/Naming", "lookup", "(Ljava/lang/String;)Ljava/rmi/Remote;"),
 		mref("javax/naming/InitialContext", "<init>", "()V"),
 		mref("java/lang/System", "loadLibrary", "(Ljava/lang/String;)V"),
@@ -688,6 +713,7 @@ func TestIsReflection_DynamicResolutionChannels(t *testing.T) {
 		mref("java/lang/System", "getProperty", getProperty),
 		mref("com/acme/Loader", "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;"),
 		mref("java/lang/String", "valueOf", "(I)Ljava/lang/String;"),
+		mref("java/security/SignedObject", "getSignature", "()[B"),
 	}
 	for _, r := range no {
 		if isReflection(r) {

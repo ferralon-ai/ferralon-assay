@@ -131,6 +131,10 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "_" && src[i] != '_': // a string literal; see keyedUse
 			mb.keyedUse(clean, src, i)
 			i = next
+		case globals.callsReturnThis(clean, word, i, next):
+			// `G()` for `function G() { return this; }` is the global, used where it is called
+			mb.globalUse(clean, i, closeParen(clean, skipSpace(clean, next))+1, false, globals)
+			i = next
 		default:
 			i = next
 		}

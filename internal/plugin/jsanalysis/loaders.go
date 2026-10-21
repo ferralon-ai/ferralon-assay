@@ -69,8 +69,9 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
 		return
-	case w == "function" && (s == 0 || clean[max(skipSpaceBack(clean, s-1), 0)] != '.'):
-		// `function require(...)` declares a parameter list, not a call; `o.function` is a member
+	case w == "function" && (s == 0 || !strings.ContainsRune(".#", clean[max(skipSpaceBack(clean, s-1), 0)])):
+		// `function require(...)` declares a parameter list, not a call; `o.function` and
+		// `this.#function` are members
 		return
 	}
 	if !call && (declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
@@ -180,21 +181,13 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 			}
 		}
 	case optionalCall(clean, p):
-	case p < len(clean) && clean[p] == '.', optionalDot(clean, p):
-		// call, apply and bind are Function.prototype methods every function shares; only
-		// calling one with Function as its receiver reaches the constructor. A chain or a
-		// value use (`Function.call.bind(f)`, `Function.bind || polyfill`) calls something else.
-		q := p + 1
-		if clean[p] == '?' {
-			q = p + 2
-		}
-		w, e := peekWord(clean, skipSpace(clean, q))
-		switch w {
-		case "call", "apply", "bind":
-		default:
-			return
-		}
-		if c := skipSpace(clean, e); !(c < len(clean) && clean[c] == '(') && !optionalCall(clean, c) {
+	case p < len(clean) && clean[p] == '.', optionalDot(clean, p), p < len(clean) && clean[p] == '[':
+		// call, apply and bind are functions like Function itself, so a chain of them ends
+		// at the constructor when it is called, indexed or read for `.constructor`. A chain
+		// that goes on to another method or is used as a value (`Function.call.bind(f)`,
+		// `Function.bind || polyfill`) calls something else; Function handed on as that
+		// receiver is a value use of its own.
+		if !functionChainReaches(clean, p) {
 			return
 		}
 	default:
@@ -205,6 +198,36 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 		}
 	}
 	mb.evaluated = true
+}
+
+// functionChainReaches reports whether the member chain that starts at p after a Function
+// token reaches the constructor: zero or more of `.call`, `.apply` and `.bind`, then a
+// computed key or `.constructor`; or exactly one of them, called. A longer chain that is
+// called runs the last method on the one before it (`Function.call.bind(f)` binds call to
+// f), and Function handed on as that receiver is a value use of its own.
+func functionChainReaches(clean []rune, p int) bool {
+	for steps := 0; ; steps++ {
+		switch {
+		case p < len(clean) && clean[p] == '[', optionalIndex(clean, p):
+			return true
+		case steps == 1 && (p < len(clean) && clean[p] == '(' || optionalCall(clean, p)):
+			return true
+		case p < len(clean) && clean[p] == '.', optionalDot(clean, p):
+			q := p + 1
+			if clean[p] == '?' {
+				q = p + 2
+			}
+			w, e := peekWord(clean, skipSpace(clean, q))
+			switch w {
+			case "constructor":
+				return true
+			case "call", "apply", "bind":
+				p = skipSpace(clean, e)
+				continue
+			}
+		}
+		return false
+	}
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens
@@ -336,6 +359,11 @@ func plainLiteral(src []rune, a int) (string, bool) {
 // optionalCall reports whether `?.(` starts at p.
 func optionalCall(clean []rune, p int) bool {
 	return optionalDot(clean, p) && p+2 < len(clean) && clean[p+2] == '('
+}
+
+// optionalIndex reports whether `?.[` starts at p.
+func optionalIndex(clean []rune, p int) bool {
+	return optionalDot(clean, p) && p+2 < len(clean) && clean[p+2] == '['
 }
 
 // optionalDot reports whether `?.` starts at p.

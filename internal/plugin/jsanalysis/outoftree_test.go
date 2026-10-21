@@ -491,6 +491,125 @@ require(process.argv[2]);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonComputedRequireSpecifier},
+		{"require after a private member named function and a line break", map[string]string{"app.js": `
+class A { #function = 1; run() { this.#function
+require(process.argv[2]); } }
+new A().run();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"Function argument spliced in behind a comment ended by a line separator", map[string]string{"app.js": `
+var f = Function("x", "return x" // ` + "\u2028" + ` + process.argv[2]
+); f(1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"new Function argument spliced in behind a comment ended by a paragraph separator", map[string]string{"app.js": `
+var f = new Function("x", "return x" // ` + "\u2029" + ` + process.argv[2]
+); f(1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function body spliced in behind a comment ended by a line separator", map[string]string{"app.js": `
+Function("return 1" // ` + "\u2028" + ` + process.argv[2]
+)();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function parameter list from input behind a comment ended by a line separator", map[string]string{"app.js": `
+var f = Function(// ` + "\u2028" + ` process.argv[2],
+"return 1"); f(1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call called behind a comment ended by a line separator", map[string]string{"app.js": `
+var f = Function.call // ` + "\u2028" + ` (null, process.argv[2])
+; f();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call.bind called behind a comment ended by a line separator", map[string]string{"app.js": `
+var g = Function.call.bind // ` + "\u2028" + ` (Function)
+; g(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function.call", map[string]string{"app.js": `
+Function.call.constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function.bind", map[string]string{"app.js": `
+Function.bind.constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function.apply", map[string]string{"app.js": `
+Function.apply.constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function.call by a literal key", map[string]string{"app.js": `
+Function.call['constructor'](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call indexed by a computed key", map[string]string{"app.js": `
+Function.call[process.argv[3]](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function.call aliased", map[string]string{"app.js": `
+var C = Function.call.constructor; C(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function", map[string]string{"app.js": `
+Function.constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of Function by a literal key", map[string]string{"app.js": `
+Function['constructor'](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global returned by a declared function indexed inline", map[string]string{"app.js": `
+function G() { return this; }
+G()[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global returned by a declared function indexed inline in an initializer", map[string]string{"app.js": `
+function G() { return this; }
+var r = G()[process.argv[2]](1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global returned by a declared function exported", map[string]string{"app.js": `
+function G() { return this; }
+module.exports = G();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"global returned by a declared function handed on", map[string]string{"app.js": `
+function G() { return this; }
+console.log(G());
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"typeof require called behind a comment ended by a line separator", map[string]string{"app.js": `
+var t = typeof require // ` + "\u2028" + ` (process.argv[2])
+;
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"computed key on globalThis behind a comment ended by a line separator", map[string]string{"app.js": `
+globalThis // ` + "\u2028" + ` [process.argv[3]](process.argv[2])
+;
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"Function parameter default", map[string]string{"app.js": `
 const f = Function('a = 1', 'return a');
 function load(s) { return f(s); }

@@ -79,6 +79,17 @@ func TestRuntimeSelection(t *testing.T) {
 				testModule(t, "b", "b"),
 			},
 		},
+		{
+			name: "a reactor sibling's alias in another case is first-party output",
+			modules: func() []buildgraph.Module {
+				b := testModule(t, "b", "b")
+				b.Aliases = []string{"com.example:b-core"}
+				return []buildgraph.Module{
+					testModule(t, "a", "a", graphDep{group: "com.example", artifact: "B-Core", version: "1", jar: filepath.Join(dir, "b-core-1.jar")}),
+					b,
+				}
+			}(),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			load, miss := RuntimeSelection(&buildgraph.Graph{Schema: buildgraph.Schema, Modules: tc.modules})

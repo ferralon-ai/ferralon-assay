@@ -34,8 +34,58 @@ const PartialReasonOtherToolBuild = "other_tool_build"
 // that fails leaves that unknown, which counts as there being one. Every fact read from g is then
 // partial: the version answer, the inventory and the runtime closure alike.
 func OtherToolBuild(g *buildgraph.Graph, buildDir string) bool {
-	in, err := buildgraph.OtherToolInputs(buildDir, g.Tool.Name)
-	return err != nil || len(in) > 0
+	files, err := buildgraph.OtherToolBuildFiles(buildDir, g)
+	return err != nil || len(files) > 0
+}
+
+// PartialReasonUnlistedInstall marks a dependency inventory of a build that installs something
+// its graph does not list (Unlisted): the inventory omits it.
+const PartialReasonUnlistedInstall = "unlisted_install"
+
+// PartialReasonDependencyNotInBuild marks an advisory on a package the build resolves no version
+// of, by a graph that lists every coordinate the build resolves: a known absence of this
+// advisory's package, bounded to it, never a tool failure.
+const PartialReasonDependencyNotInBuild = "dependency_not_in_build"
+
+// AbsentFromBuild reports whether g proves the build installs no version of coordinate: g lists
+// every install of the build (listsEveryInstall), it lacks the coordinate, the coordinate is not
+// one of the build's own modules, and no build of the other tool beside it could resolve one.
+func AbsentFromBuild(g *buildgraph.Graph, buildDir, coordinate string) bool {
+	return g != nil && !isRootCoordinate(g, coordinate) && len(graphVersionsOf(g, coordinate)) == 0 && !OtherToolBuild(g, buildDir) && listsEveryInstall(g, buildDir)
+}
+
+// listsEveryInstall reports whether g lists everything its build installs: its producer observed
+// every way the build installs a dependency (Complete), no module installs something g does not
+// list (Unlisted), and the checkout carries no archive g does not hold. A walk that fails leaves
+// that unknown, which counts as there being one.
+func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
+	if !g.Complete || unlisted(g) {
+		return false
+	}
+	archives, err := buildgraph.CheckedInArchives(buildDir, g)
+	return err == nil && len(archives) == 0
+}
+
+// unlisted reports whether any module of g installs something g does not list.
+func unlisted(g *buildgraph.Graph) bool {
+	for _, m := range g.Modules {
+		if len(m.Unlisted) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// NotInBuild is the Partiality of an advisory on a package AbsentFromBuild: it holds only that
+// package's own advisories.
+func NotInBuild(coordinate string) plugin.Partiality {
+	purl := mavenPURLNoVersion(coordinate)
+	return plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: PartialReasonDependencyNotInBuild, Package: purl, Path: coordinate, Targets: []string{purl}}}}
+}
+
+// notInBuild reports whether p is NotInBuild's.
+func notInBuild(p plugin.Partiality) bool {
+	return len(p.Reasons) == 0 && len(p.Scoped) == 1 && p.Scoped[0].Reason == PartialReasonDependencyNotInBuild
 }
 
 // coverage is the Partiality of facts read from g: Complete, unless the checkout also holds a
@@ -105,14 +155,24 @@ func moduleRoots(g *buildgraph.Graph) map[string]bool {
 	return out
 }
 
-// moduleCoordinates returns the group:artifact of every module.
+// isCoordinate reports whether n is coordinate. Every graph lookup matches through it, so a
+// coordinate spelled in another case or with stray space reads the same everywhere.
+func isCoordinate(n buildgraph.Node, coordinate string) bool {
+	return strings.EqualFold(n.Group+":"+n.Artifact, strings.TrimSpace(coordinate))
+}
+
+// moduleCoordinates returns the group:artifact of every module, and every alias it publishes
+// under, lower-cased, since graph lookups compare coordinates case-insensitively.
 func moduleCoordinates(g *buildgraph.Graph) map[string]bool {
 	out := make(map[string]bool, len(g.Modules))
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
 			if n.ID == m.Root {
-				out[n.Group+":"+n.Artifact] = true
+				out[strings.ToLower(n.Group+":"+n.Artifact)] = true
 			}
+		}
+		for _, a := range m.Aliases {
+			out[strings.ToLower(a)] = true
 		}
 	}
 	return out
@@ -137,7 +197,8 @@ func nodePURL(n buildgraph.Node) string {
 
 // graphInventory renders the graph as the dependency inventory: one node per module per
 // dependency, the module roots left out (an edge from one marks its child Direct). uncovered marks
-// it partial: a build of the other tool sits beside the one g resolved.
+// it partial: a build of the other tool sits beside the one g resolved. So does a module that
+// installs something g does not list.
 func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInventory {
 	var nodes []plugin.DependencyNode
 	var edges []plugin.DependencyEdge
@@ -179,18 +240,26 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 			}
 		}
 	}
-	return assembleInventory(nodes, edges, coverage(uncovered))
+	part := coverage(uncovered)
+	if unlisted(g) {
+		part = plugin.Partial(append(part.Reasons, PartialReasonUnlistedInstall)...)
+	}
+	return assembleInventory(nodes, edges, part)
 }
 
 // graphVersions answers a version request from the graph. Every copy of the coordinate is a
 // Match candidate, one per module that resolved it, whatever its scope; the Match is resolved
 // only when they all agree, since one patched module beside an affected one must not rule the
 // build not-affected. The graph holds every version the build resolved, so the copies are
-// complete, unless uncovered: a build of the other tool beside it can resolve another.
-func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugin.DependencyVersionResult {
-	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered)}
+// complete when listed (listsEveryInstall) and not uncovered: a build of the other tool beside it
+// can resolve another. For the same reason All then lists every coordinate the build installs, so
+// one absent from it is not installed by the build (Exhaustive).
+func graphVersions(g *buildgraph.Graph, coordinate string, uncovered, listed bool) plugin.DependencyVersionResult {
+	// A module's own coordinate is first-party: the build ships it, though no module resolves it
+	// as a dependency.
+	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered), Exhaustive: !uncovered && listed && !isRootCoordinate(g, coordinate)}
 	roots := moduleRoots(g)
-	want := strings.ToLower(strings.TrimSpace(coordinate))
+	want := strings.TrimSpace(coordinate)
 	seen := map[string]bool{}
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
@@ -203,7 +272,7 @@ func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugi
 			if k := m.Path + "|" + d.Coordinate + "|" + d.Version; !seen[k] {
 				seen[k] = true
 				res.All = append(res.All, d)
-				if want != "" && strings.ToLower(d.Coordinate) == want {
+				if want != "" && isCoordinate(n, want) {
 					res.Matches = append(res.Matches, d)
 				}
 			}
@@ -223,7 +292,8 @@ func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugi
 			break
 		}
 	}
-	res.MatchesComplete = !uncovered
+	// What the build installs unlisted can be another version of the coordinate.
+	res.MatchesComplete = !uncovered && listed
 	return res
 }
 
@@ -292,7 +362,7 @@ func RuntimeSelection(g *buildgraph.Graph) (load []RuntimeJar, miss []RuntimeMis
 		}
 		for _, n := range m.Nodes {
 			c := n.Group + ":" + n.Artifact
-			if roots[n.ID] || reactor[c] || !runtimeScope(n.Scope) {
+			if roots[n.ID] || reactor[strings.ToLower(c)] || !runtimeScope(n.Scope) {
 				continue
 			}
 			byCoord[c] = append(byCoord[c], n)
@@ -350,7 +420,7 @@ func CoordinateJars(g *buildgraph.Graph, coordinate, version string) []RuntimeJa
 	var out []RuntimeJar
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
-			if roots[n.ID] || n.Group+":"+n.Artifact != coordinate || n.File == nil || seen[n.File.Path] {
+			if roots[n.ID] || !isCoordinate(n, coordinate) || n.File == nil || seen[n.File.Path] {
 				continue
 			}
 			if version != "" && n.Version != version || !strings.HasSuffix(n.File.Path, ".jar") {
@@ -371,7 +441,7 @@ func graphVersionsOf(g *buildgraph.Graph, coordinate string) []string {
 	var out []string
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
-			if !roots[n.ID] && n.Group+":"+n.Artifact == coordinate && !seen[n.Version] {
+			if !roots[n.ID] && isCoordinate(n, coordinate) && !seen[n.Version] {
 				seen[n.Version] = true
 				out = append(out, n.Version)
 			}
@@ -392,7 +462,7 @@ func BlindSpotTargets(g *buildgraph.Graph, coordinate string) []string {
 	for _, m := range g.Modules {
 		holds := false
 		for _, n := range m.Nodes {
-			if n.ID != m.Root && n.Group+":"+n.Artifact == coordinate {
+			if n.ID != m.Root && isCoordinate(n, coordinate) {
 				holds = true
 				break
 			}

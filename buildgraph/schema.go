@@ -31,6 +31,14 @@ type Graph struct {
 	Modules    []Module   `json:"modules"`
 	Commands   []Command  `json:"commands"`
 	Sidecars   []Sidecar  `json:"sidecars,omitempty"`
+	// Complete is set only by a producer that observed every way its build installs a dependency
+	// and found each one listed in Modules: every build file of the tool is a module's, every
+	// resolvable configuration was collected, and every Maven plugin goal or Gradle task the build
+	// binds is one whose installs dependency resolution lists. A graph without it lists what the
+	// build resolved, but not that nothing else is installed.
+	Complete bool `json:"complete,omitempty"`
+	// Incomplete names what kept the producer from setting Complete.
+	Incomplete []string `json:"incomplete,omitempty"`
 }
 
 // Producer identifies the build of the code that wrote the graph.
@@ -73,8 +81,12 @@ type Subject struct {
 	// UnbindableIncludedBuilds are included builds outside the checkout, by absolute path. Nothing
 	// binds their files, so only the run that resolved the graph may use it.
 	UnbindableIncludedBuilds []string `json:"unbindable_included_builds,omitempty"`
-	Inputs                   []Input  `json:"inputs"`
-	InputsDigest             string   `json:"inputs_digest"`
+	// Outputs are the directories inside the checkout the build writes or caches into, by slash
+	// path from the repository root: build directories, the tool's cache, a local repository.
+	// The checks that walk the checkout skip them, and only them.
+	Outputs      []string `json:"outputs,omitempty"`
+	Inputs       []Input  `json:"inputs"`
+	InputsDigest string   `json:"inputs_digest"`
 }
 
 // Input is one build file the tool read, by its slash-separated path from the repository root.
@@ -101,6 +113,13 @@ type Module struct {
 	JDKToolchainsKnown bool     `json:"jdk_toolchains_known,omitempty"`
 	Nodes              []Node   `json:"nodes"`
 	Edges              []Edge   `json:"edges"`
+	// Unlisted names what the module's build resolves or installs that Nodes does not list: a
+	// Gradle configuration that failed to resolve, a dependency-plugin execution's artifactItems.
+	// A coordinate's absence from such a graph is not its absence from the build.
+	Unlisted []string `json:"unlisted,omitempty"`
+	// Aliases are other group:artifact coordinates the module publishes under: a Gradle project's
+	// archives name or a publication's own artifactId.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // ClasspathCopyID is the ID of project's copy for classpath.
@@ -189,6 +208,7 @@ func InputsDigest(inputs []Input) string {
 func (g *Graph) Normalize() {
 	sort.Strings(g.Subject.IncludedBuilds)
 	sort.Strings(g.Subject.UnbindableIncludedBuilds)
+	g.Subject.Outputs = sortedUnique(g.Subject.Outputs)
 	sort.Slice(g.Subject.Inputs, func(i, j int) bool { return g.Subject.Inputs[i].Path < g.Subject.Inputs[j].Path })
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}

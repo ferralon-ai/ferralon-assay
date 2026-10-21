@@ -88,10 +88,11 @@ func fileSHA256(path string) string {
 func graphOption(t *testing.T, tool string, modules ...buildgraph.Module) Option {
 	t.Helper()
 	return writeGraph(t, buildgraph.Graph{
-		Schema:  buildgraph.Schema,
-		Tool:    buildgraph.Tool{Name: tool, Version: "test"},
-		JVM:     buildgraph.JVM{Version: "21.0.4"},
-		Modules: modules,
+		Schema:   buildgraph.Schema,
+		Tool:     buildgraph.Tool{Name: tool, Version: "test"},
+		JVM:      buildgraph.JVM{Version: "21.0.4"},
+		Modules:  modules,
+		Complete: true,
 	})
 }
 

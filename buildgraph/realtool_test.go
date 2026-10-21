@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -70,6 +71,9 @@ func TestMavenRoundTrip(t *testing.T) {
 			if len(g.Modules) != 5 {
 				t.Fatalf("modules %d", len(g.Modules))
 			}
+			if !g.Complete {
+				t.Errorf("not Complete: %q", g.Incomplete)
+			}
 			// Whether the log named the POMs (3.8.8 and later) or reactor_paths asked for them,
 			// each module sits in its own directory.
 			for _, m := range g.Modules {
@@ -110,6 +114,71 @@ func TestMavenRoundTrip(t *testing.T) {
 				if !equalMaps(got, want) {
 					t.Errorf("%s: producer %v\nreal list %v", id, got, want)
 				}
+			}
+		})
+	}
+}
+
+// TestMavenComplete runs the real Maven over edits of maven-reactor that each install something
+// dependency:tree does not list, and checks that the producer withholds Complete for it.
+func TestMavenComplete(t *testing.T) {
+	env := realToolEnv(t, "ASSAY_BUILDGRAPH_MAVEN_BIN")
+	plugin := func(xml string) map[string]string {
+		return map[string]string{"module-a/pom.xml": "<build><plugins>" + xml + "</plugins></build>"}
+	}
+	for _, tc := range []struct {
+		name string
+		edit map[string]string // file -> XML inserted before its closing </project>
+		add  map[string]string // files written as is
+		want string
+	}{
+		{
+			name: "bound antrun execution",
+			edit: plugin(`<plugin><artifactId>maven-antrun-plugin</artifactId><version>3.1.0</version><executions><execution><id>fetch</id><phase>package</phase><goals><goal>run</goal></goals></execution></executions></plugin>`),
+			want: "maven-antrun-plugin execution fetch is not a plugin whose installs the graph lists",
+		},
+		{
+			name: "dependency copy",
+			edit: plugin(`<plugin><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version><executions><execution><id>agent</id><phase>package</phase><goals><goal>copy</goal></goals><configuration><artifactItems><artifactItem><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.16</version></artifactItem></artifactItems></configuration></execution></executions></plugin>`),
+			want: "maven-dependency-plugin",
+		},
+		{
+			name: "execution disabled by phase none",
+			edit: plugin(`<plugin><artifactId>maven-antrun-plugin</artifactId><version>3.1.0</version><executions><execution><id>fetch</id><phase>none</phase><goals><goal>run</goal></goals></execution></executions></plugin>`),
+		},
+		{
+			name: "POM the reactor does not read",
+			add:  map[string]string{"tools/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>x</groupId><artifactId>tools</artifactId><version>1</version></project>\n"},
+			want: "tools/pom.xml is a POM the reactor does not read",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := copyFixture(t, "maven-reactor")
+			for name, xml := range tc.edit {
+				p := filepath.Join(dir, name)
+				b, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				i := bytes.LastIndex(b, []byte("</project>"))
+				if i < 0 || bytes.Contains(b, []byte("<build>")) {
+					t.Fatalf("%s: no </project>, or a <build> already", name)
+				}
+				if err := os.WriteFile(p, append(append(b[:i:i], xml...), b[i:]...), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeFiles(t, dir, tc.add)
+			g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolMaven, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
+			if err != nil {
+				t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
+			}
+			t.Logf("maven %s: incomplete %q", g.Tool.Version, g.Incomplete)
+			switch {
+			case tc.want == "" && !g.Complete:
+				t.Errorf("not Complete: %q", g.Incomplete)
+			case tc.want != "" && (g.Complete || len(g.Incomplete) == 0 || slices.ContainsFunc(g.Incomplete, func(r string) bool { return !strings.Contains(r, tc.want) })):
+				t.Errorf("incomplete %q, want only reasons with %q", g.Incomplete, tc.want)
 			}
 		})
 	}
@@ -174,7 +243,7 @@ func TestGradleRoundTrip(t *testing.T) {
 				want["test"][k] = ""
 			}
 		}
-		got := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}}
+		got := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}, "other": {}}
 		for _, n := range m.Nodes {
 			if n.ID != m.Root {
 				got[n.Scope][n.Group+":"+n.Artifact+":"+n.Version] = ""
@@ -185,7 +254,13 @@ func TestGradleRoundTrip(t *testing.T) {
 				t.Errorf("%s %s: producer %v\nreal dependencies %v", p, scope, keys(got[scope]), keys(want[scope]))
 			}
 		}
-		t.Logf("%s: %d compile, %d runtime, %d provided, %d test", p, len(got["compile"]), len(got["runtime"]), len(got["provided"]), len(got["test"]))
+		if _, ok := got["other"]["org.slf4j:slf4j-api:2.0.16"]; ok != (p == ":app") {
+			t.Errorf("%s: agent configuration at other scope = %v, producer %v", p, ok, keys(got["other"]))
+		}
+		if len(m.Unlisted) > 0 {
+			t.Errorf("%s: unlisted %v", p, m.Unlisted)
+		}
+		t.Logf("%s: %d compile, %d runtime, %d provided, %d test, %d other", p, len(got["compile"]), len(got["runtime"]), len(got["provided"]), len(got["test"]), len(got["other"]))
 	}
 }
 
@@ -430,5 +505,207 @@ func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 		if !m.JDKToolchainsKnown {
 			t.Errorf("%s toolchains unknown", m.ID)
 		}
+	}
+}
+
+// TestGradleComplete runs the real Gradle over edits of gradle-multi, each adding one way a build
+// can install what its configurations do not list, and checks that the producer withholds
+// Complete for it and only for it.
+func TestGradleComplete(t *testing.T) {
+	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
+	simple := "configurations.detachedConfiguration(dependencies.create('org.slf4j:slf4j-simple:2.0.16'))"
+	for _, tc := range []struct {
+		name       string
+		append     map[string]string
+		homeInside bool   // GRADLE_USER_HOME inside the checkout, as CI caches set it
+		want       string // a substring of every reason expected; empty means Complete
+		check      func(t *testing.T, g *Graph)
+	}{
+		{name: "fixture as is"},
+		{name: "fixture with the user home inside the checkout", homeInside: true},
+		{
+			name:   "Exec another task must run after",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { mustRunAfter gen }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "Exec another task should run after",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { shouldRunAfter gen }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name: "Zip of the build script classpath",
+			append: map[string]string{
+				"settings.gradle": "include 'bz'\n",
+				"bz/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-simple:2.0.16' } }\n" +
+					"plugins.apply('base')\ntasks.register('z', Zip) { from buildscript.configurations.classpath; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+			},
+			want: "slf4j-simple-2.0.16.jar, outside the build",
+		},
+		{
+			name: "Zip of the build script classpath with the user home inside the checkout",
+			append: map[string]string{
+				"settings.gradle": "include 'bz'\n",
+				"bz/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-simple:2.0.16' } }\n" +
+					"plugins.apply('base')\ntasks.register('z', Zip) { from buildscript.configurations.classpath; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+			},
+			homeInside: true,
+			want:       "slf4j-simple-2.0.16.jar, outside the build",
+		},
+		{
+			name: "detached configuration with an unresolved project selector",
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.project(path: ':lib', configuration: 'nope'), " +
+				"dependencies.create('org.slf4j:slf4j-api:2.0.16')).incoming.artifactView { lenient(true) }.files.files\n"},
+		},
+		{
+			name: "detached configuration with an unresolved project selector and a file that does not download",
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.project(path: ':lib', configuration: 'nope'), " +
+				"dependencies.create('org.slf4j:slf4j-api:2.0.16:nope')).incoming.artifactView { lenient(true) }.files.files\n"},
+			want: "resolution of :app:detachedConfiguration1 failed",
+		},
+		{
+			name:   "script action on an ad-hoc task",
+			append: map[string]string{"app/build.gradle": "tasks.register('hello') { doLast { println 'hello' } }\n"},
+			want:   "task :app:hello has an action added by",
+		},
+		{
+			name:   "script action on jar",
+			append: map[string]string{"app/build.gradle": "jar { doLast { println 'packed' } }\n"},
+			want:   "task :app:jar has an action added by",
+		},
+		{
+			name:   "script action on jar, Kotlin DSL",
+			append: map[string]string{"kt/build.gradle.kts": "tasks.named(\"jar\") { doLast { println(\"packed\") } }\n"},
+			want:   "task :kt:jar has an action added by",
+		},
+		{
+			name:   "script-defined task type",
+			append: map[string]string{"app/build.gradle": "class Fetch extends DefaultTask { @TaskAction void go() {} }\ntasks.register('fetch', Fetch)\n"},
+			want:   "task :app:fetch has type Fetch",
+		},
+		{
+			name:   "Exec another task depends on",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('compileJava') { dependsOn gen }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "JavaExec leaf",
+			append: map[string]string{"app/build.gradle": "tasks.register('runIt', JavaExec) { mainClass = 'Main'; classpath = sourceSets.main.runtimeClasspath }\n"},
+		},
+		{
+			name: "JavaExec finalized by a packaging task",
+			append: map[string]string{"app/build.gradle": "tasks.register('runIt', JavaExec) { mainClass = 'Main'; classpath = sourceSets.main.runtimeClasspath; finalizedBy 'pack' }\n" +
+				"tasks.register('pack', Zip) { from layout.buildDirectory.dir('gen'); archiveFileName = 'p.zip'; destinationDirectory = layout.buildDirectory }\n"},
+			want: "task :app:runIt runs a program (org.gradle.api.tasks.JavaExec) finalized by :app:pack",
+		},
+		{
+			name: "Exec whose outputs a task reads",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true'; outputs.dir(layout.buildDirectory.dir('gen')) }\n" +
+				"tasks.register('pack', Zip) { from gen; archiveFileName = 'p.zip'; destinationDirectory = layout.buildDirectory }\n"},
+			want: "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "Zip of a file outside the checkout",
+			append: map[string]string{"app/build.gradle": "tasks.register('z', Zip) { from '/etc/hostname'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n"},
+			want:   "task :app:z reads /etc/hostname, outside the build",
+		},
+		{
+			name:   "detached configuration resolved at configuration",
+			append: map[string]string{"app/build.gradle": simple + ".resolve()\n"},
+			want:   "slf4j-simple-2.0.16.jar, which no collected configuration lists",
+		},
+		{
+			name:   "detached configuration resolved lazily by a Copy",
+			append: map[string]string{"app/build.gradle": "tasks.register('c', Copy) { from { " + simple + ".files }; into layout.buildDirectory.dir('c') }\n"},
+			want:   "slf4j-simple-2.0.16.jar",
+		},
+		{
+			name:   "detached configuration with a module that does not resolve",
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.create('com.ferralon.missing:nope:1.0')).incoming.artifactView { lenient(true) }.files.files\n"},
+			want:   "resolution of :app:detachedConfiguration1 failed",
+		},
+		{
+			name: "distribution-only project with an agent configuration",
+			append: map[string]string{
+				"settings.gradle":   "include 'dist'\n",
+				"dist/build.gradle": "plugins { id 'base' }\nconfigurations { agent { canBeConsumed = false; canBeResolved = true } }\ndependencies { agent 'org.slf4j:slf4j-api:2.0.16' }\n",
+			},
+			check: func(t *testing.T, g *Graph) {
+				m := module(t, g, ":dist")
+				for _, n := range m.Nodes {
+					if n.Group+":"+n.Artifact+":"+n.Version == "org.slf4j:slf4j-api:2.0.16" {
+						return
+					}
+				}
+				t.Errorf(":dist: agent configuration not collected: %v", nodeIDs(m))
+			},
+		},
+		{
+			name: "dependency-management plugin importing a BOM",
+			append: map[string]string{
+				"settings.gradle": "include 'dm'\n",
+				"dm/build.gradle": "plugins { id 'java'; id 'io.spring.dependency-management' version '1.1.6' }\n" +
+					"dependencyManagement { imports { mavenBom 'org.springframework.boot:spring-boot-dependencies:3.3.5' } }\n" +
+					"dependencies { implementation 'org.slf4j:slf4j-api' }\n",
+			},
+		},
+		{
+			name: "project build script classpath",
+			append: map[string]string{
+				"settings.gradle": "include 'bs'\n",
+				"bs/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-api:2.0.16' } }\n" +
+					"apply plugin: 'java'\n",
+			},
+		},
+		{
+			name:   "build script no project reads",
+			append: map[string]string{"tools/build.gradle": "plugins { id 'java' }\n"},
+			want:   "tools/build.gradle is a Gradle build file no project of the build reads",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := copyFixture(t, "gradle-multi")
+			for name, text := range tc.append {
+				p := filepath.Join(dir, name)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = f.WriteString("\n" + text)
+				if cerr := f.Close(); err == nil {
+					err = cerr
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := env
+			if tc.homeInside {
+				env = environ(env, map[string]string{"GRADLE_USER_HOME": filepath.Join(dir, ".gradle-home")})
+			}
+			g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
+			if err != nil {
+				t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
+			}
+			t.Logf("gradle %s: incomplete %q", g.Tool.Version, g.Incomplete)
+			if tc.homeInside && !slices.Contains(g.Subject.Outputs, ".gradle-home") {
+				t.Errorf("outputs %q, want the user home", g.Subject.Outputs)
+			}
+			switch {
+			case tc.want == "" && !g.Complete:
+				t.Errorf("not Complete: %q", g.Incomplete)
+			case tc.want != "" && (g.Complete || len(g.Incomplete) == 0 || slices.ContainsFunc(g.Incomplete, func(r string) bool { return !strings.Contains(r, tc.want) })):
+				t.Errorf("incomplete %q, want only reasons with %q", g.Incomplete, tc.want)
+			}
+			if g.Complete != (len(g.Incomplete) == 0) {
+				t.Errorf("Complete %v beside incomplete %q", g.Complete, g.Incomplete)
+			}
+			if tc.check != nil {
+				tc.check(t, g)
+			}
+		})
 	}
 }

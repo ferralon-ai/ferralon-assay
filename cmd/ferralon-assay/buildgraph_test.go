@@ -218,7 +218,7 @@ func TestCVEWatchRequestHoldsCursor(t *testing.T) {
 		{name: "graph accepted", graph: &jvmGraph{source: "build_tool"}, want: false},
 		{name: "graph failed", graph: &jvmGraph{source: "build_tool", failure: &buildgraph.Failure{Kind: buildgraph.KindToolFailed}}, want: true},
 	} {
-		if got := cveWatchRequest(&runConfig{graph: tc.graph}).HoldCursor; got != tc.want {
+		if got := cveWatchRequest(&runConfig{graph: tc.graph}, nil).HoldCursor; got != tc.want {
 			t.Errorf("%s: HoldCursor = %v, want %v", tc.name, got, tc.want)
 		}
 	}

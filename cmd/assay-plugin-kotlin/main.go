@@ -6,12 +6,12 @@
 //
 // This binary deliberately mirrors cmd/assay-plugin-java / cmd/assay-plugin-dotnet: same
 // one-shot protocol, same hard-error-vs-declared-partiality contract. Several ops are LIVE,
-// backed by the shared JVM-bytecode substrate (index_symbols, call_graph, find_ingresses,
-// reachability, compute_taint); capability_manifest publishes the lane's honest capability
+// backed by the shared JVM-bytecode substrate (index_symbols, resolve_symbols,
+// resolve_versions, call_graph, find_ingresses, reachability, compute_taint, build_manifest,
+// resolve_inventory); capability_manifest publishes the lane's honest capability
 // manifest. compute_taint reports call-graph path presence over the Kotlin call graph (see
-// kotlinanalysis/taint.go). The remaining ops (build_manifest, generate_harness) are
-// CONTRACT-PRESENT and return their result type
-// carrying declared partiality (honest absence), never an empty-but-complete result. Every
+// kotlinanalysis/taint.go). generate_harness returns its result type carrying declared
+// partiality (honest absence), never an empty-but-complete result. Every
 // op keeps the nil-payload hard-error guard (inv.4).
 //
 // The client (internal/plugin.kotlinPlugin) owns the timeout via exec.CommandContext; this

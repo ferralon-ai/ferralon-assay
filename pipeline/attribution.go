@@ -2,15 +2,16 @@
 //
 // PLAN-220 — the advisory attribution sidecar. The supported-ness marking for each corpus record
 // lives here, in a committed sidecar store (corpus/testdata/advisories/attribution.json) keyed by
-// vuln_id — NOT on the evidence record (§4.4.8 / stages.go:540-543) and NOT a PLAN-024 type. It
+// vuln_id — NOT on the evidence record (§4.4.8 / resolveVulnClass in stages.go) and NOT a PLAN-024 type. It
 // USES the PLAN-024 AttributionStatus enum + attributionStatusRecognized validator; it does not
 // fork them.
 //
 // Absence is the honest zero: a vuln_id with no entry is `unreviewed` (nobody looked). This is the
-// 38/38 state today — attribution.json ships as `{}`. The store exists to keep three outcomes
+// state today — attribution.json ships as `{}`. The store exists to keep three outcomes
 // DISTINCT that a single boolean would collapse: absent (unreviewed), present-with-no-symbol
 // (reviewed-none-found), and present-with-attribution (reviewed). Collapsing any pair is the §3.1
 // violation PLAN-024's schema exists to prevent.
+
 package pipeline
 
 import (

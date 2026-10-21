@@ -21,7 +21,8 @@ release workflow, which is the only thing that can attest them).
 it stays that way. The BUSL Change Date is **minted by the release workflow**, not written
 by a person: when a tag is pushed, `.github/workflows/release.yml` computes the date
 (today + 4 years, the BUSL "fourth anniversary"), writes it onto a single leaf commit that
-changes only that one line of `LICENSE`, and re-points the tag at that leaf. The leaf is the
+changes only `LICENSE`'s Change Date and Change License lines and the `scanner-version` default line
+of `action.yml`, and re-points the tag at that leaf. The leaf is the
 released source — pinning the tag gets a `LICENSE` with a real date — but it is reachable
 only through the tag and never merges back to a branch.
 

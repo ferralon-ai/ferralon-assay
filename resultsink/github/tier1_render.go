@@ -3,9 +3,10 @@
 // with an HTML-comment marker so they can find-or-update their single artifact on a
 // re-run rather than spamming a new one per push.
 //
-// The body renders only the four deterministic verdicts (inv. 5) via the same
-// tally/headline/candidates helpers Tier 0 uses; it can never surface
-// affected/error/exploitable or any Case/Assessment/living-verdict concept.
+// The body renders only the five deterministic verdicts (disqualified /
+// not_exploitable / reachable_candidate / undetermined / malicious_package_present)
+// (inv. 5) via the same tally/headline/candidates helpers Tier 0 uses; it can never
+// surface exploitable or any Case/Assessment/living-verdict concept.
 package github
 
 import (

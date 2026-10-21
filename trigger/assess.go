@@ -170,13 +170,17 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 		// step to have run: a run that loads code from outside the build list (plugin_load) can
 		// hold the advisory's code with no module declaring it.
 		if !undetermined {
-			if detail, ok := outsideBuildGrounds(store, assessmentID, pkg, mods); ok {
+			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
+			if ok {
 				f = report.AdvisoryFinding{
 					Advisory: adv,
 					Verdict:  report.VerdictNotExploitable,
 					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
 				}
 				break
+			}
+			if unvetted != "" {
+				reason, undetermined = unvetted, true
 			}
 		}
 		detail, groundsReason, grounded := "", "", false
@@ -274,8 +278,9 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 // advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
 // from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
 // the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
-// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
-// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed as a
+// candidate-scoped strength signal (symbolConfidenceFor); the not_exploitable grounds read the same
+// tag through vettedSymbols.
 func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -298,6 +303,7 @@ func advisorySymbolProvenance(store artifact.Store, assessmentID string) string 
 //   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
 //   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
 //   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - "cna-declared"         ⇒ ""         declared by the CNA, completeness unmeasured: no label.
 //   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
 //
 // No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
@@ -1106,7 +1112,7 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 	}
 	switch f.UndeterminedReason {
 	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
-		report.ReasonAdvisoryRangeAbsent:
+		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem
@@ -1255,8 +1261,11 @@ const assessErrorLimit = 200
 // secretREs match the credentials a tool error can echo, each with what replaces them: the
 // userinfo of a URL (with or without a scheme, up to the authority's last '@', since a password
 // may hold one), a user:password@host without one (a proxy setting), query-string values, an
-// Authorization header and a bearer token. A Go module@version has no ':' before its '@', so it
-// is kept.
+// Authorization header, a bearer token and a GitLab PRIVATE-TOKEN header; a token= or npm
+// _authToken= setting outside a query string; a .netrc entry's password; and a bare GitHub, GitLab
+// or npm token, by its prefix and a body of a token's length (the prefix is kept). A Go
+// module@version has no ':' before its '@', so it is kept; a word that only contains "token" or
+// "password" (tokenizer, password-reset) has no value to redact, so it is kept.
 var secretREs = []struct {
 	re   *regexp.Regexp
 	repl string
@@ -1266,6 +1275,14 @@ var secretREs = []struct {
 	{regexp.MustCompile(`([?&][^\s?&#=]+=)[^\s&#]*`), "${1}REDACTED"},
 	{regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+`), "${1}: REDACTED"},
 	{regexp.MustCompile(`(?i)\b(bearer)\s+[^\s,;]+`), "${1} REDACTED"},
+	{regexp.MustCompile(`(?i)\b(private-token)\s*[:=]\s*[^\s,;]+`), "${1}: REDACTED"},
+	{regexp.MustCompile(`(?i)(_authToken)\s*=\s*[^\s,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*token)=[^\s&#,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b((?:machine\s+\S+(?:\s+(?:login|account)\s+\S+)*|default(?:\s+(?:login|account)\s+\S+)+)\s+password)\s+\S+`), "${1} REDACTED"},
+	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
 }
 
 // assessErrorText renders err for a report row: one line, credentials redacted, at most

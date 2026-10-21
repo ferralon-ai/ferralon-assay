@@ -10,8 +10,8 @@ package telemetry
 // is cheap; the SDK Views built from this catalog decide what actually aggregates and
 // exports. The emit sites land with the instruments they meter; the tier for each name is
 // already fixed here, so no later change re-decides gating and the tier lever is complete
-// from the start. `tegron.telemetry.up` is the only instrument with a live emit site today;
-// the rest are catalogued ahead of their emitters so a lower level provably drops a
+// from the start. `tegron.telemetry.up`, `tegron.scan.count` and `tegron.plugin.call.*` (count and
+// duration) are the instruments with a live emit site today; the rest are catalogued ahead of their emitters so a lower level provably drops a
 // higher-tier stream now.
 //
 // No entry carries owner_id — per-tenant identity is never a metric dimension; it lives on

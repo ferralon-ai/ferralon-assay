@@ -13,7 +13,7 @@
 //   - Only Major is required; missing segments default to 0, so "1", "1.0", "1.0.0", and
 //     "1.0.0.0" are ALL EQUAL. A zero 4th segment is omitted on normalization but that is
 //     purely cosmetic here — equality falls out of the padded compare.
-//   - Leading zeroes are insignificant ("1.01.1" == "1.1.1"); "+build" metadata never
+//   - Leading zeroes are insignificant ("1.01.1" == "1.1.1"); build metadata (the "+" suffix) never
 //     affects ordering and is dropped.
 //   - Pre-release is CASE-INSENSITIVE ("1.0-Alpha" == "1.0-alpha"); a release sorts ABOVE
 //     any pre-release; among pre-releases SemVer 2.0.0 identifier rules apply.
@@ -32,6 +32,7 @@
 // The prerelease identifiers are lowercased at parse time, so this file reuses the
 // package-level comparePrerelease / atoiNonNeg / cmpInt helpers (from npm_version.go) to
 // get NuGet's case-insensitive SemVer2 prerelease ordering for free.
+
 package pipeline
 
 import "strings"

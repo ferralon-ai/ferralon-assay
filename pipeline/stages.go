@@ -11,6 +11,7 @@
 // (PutArtifact, InventoryBuildDir, HarnessArtifact, DisqualResult + reason constants, AdvisoryTable,
 // AdvisoryFacts) because the Prove stages build on the same artifact contracts. They are neutral
 // plumbing, not proof.
+
 package pipeline
 
 import (
@@ -34,7 +35,7 @@ import (
 )
 
 // AssessConfig holds the free-stage seams an AssessStages caller may inject. It is the OSS half of
-// the former stageConfig; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
+// the stage configuration; the Prove options (model/sandbox/dispatch/recall/fuzz/critic) live in the
 // Service prove package, which builds its own stages and appends them after AssessStages.
 type AssessConfig struct {
 	Plugin   plugin.LanguagePlugin
@@ -257,11 +258,11 @@ type AdvisoryFacts struct {
 	Symbols []string
 	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for Symbols — a single scalar
 	// per record naming how the whole set was obtained (open set: "osv-declared" | "curated" |
-	// "diff-lexed"; "reasoning" reserved). STORE-ONLY (A2): it is decoded and carried, but NO
-	// consumer reads it — it feeds no admission, reachability, or refute path this cycle. Absent →
-	// "" → UNKNOWN derivation, which is NOT low-confidence and NOT untrusted: a symbol with no
-	// provenance tag resolves and is walked exactly as one with it (honest-absent, inv.5). A future
-	// provenance-as-confidence consumer is a separate (B) change, gated on review. Carries no verdict.
+	// "cna-declared" | "diff-lexed"; "reasoning" reserved). It feeds no admission or reachability
+	// path: a symbol resolves and is walked the same under every tag, and absent → "" → UNKNOWN
+	// derivation. Two consumers read it: the candidate's SymbolConfidence label, and the
+	// not_exploitable grounds, where only an osv-declared or curated set (or an untagged set the
+	// built-in table answered, BuiltIn) may ground on the listed symbols' absence. Carries no verdict.
 	//
 	// omitempty (like SymbolsTyped, unlike the other facts fields): symbol_provenance is a
 	// PUBLISHED/enrichment-corpus tag. The built-in AdvisoryTable floor fixtures are this module's own
@@ -303,6 +304,10 @@ type AdvisoryFacts struct {
 	// (branch-aware backports). Empty ⇒ the version axis falls back to UpperExclusive
 	// (or fails open when both are empty).
 	AffectedRanges []Range
+	// BuiltIn marks a fact the built-in AdvisoryTable answered. Only tableSource sets it, and it has
+	// no JSON form, so no corpus document can claim it. It is what vouches for an untagged symbol
+	// set: the table's own symbols are curated in this module.
+	BuiltIn bool `json:"-"`
 	// Provenance records where this fact was read from and how far it may be trusted.
 	// TrustTier gates refute eligibility: low-trust facts (byo/third_party) MAY narrow
 	// toward candidate but MAY NEVER refute — no laundering a false negative through an
@@ -1439,11 +1444,12 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		PURL             string                    `json:"purl,omitempty"`
 		AdvisorySymbols  []string                  `json:"advisory_symbols,omitempty"`
 		Conditional      []string                  `json:"target_conditional_symbols,omitempty"`
-		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag, read as a candidate-only STRENGTH signal (never admission/refute)
+		SymbolProvenance string                    `json:"symbol_provenance,omitempty"` // B1: record-scoped derivation tag: a candidate STRENGTH signal, and the gate on symbol-absence grounds (never admission)
 		AdvisoryGuards   []string                  `json:"advisory_guards,omitempty"`
 		CWEs             []string                  `json:"cwes,omitempty"`
 		VulnClass        string                    `json:"vuln_class,omitempty"`        // "" ⇒ class not assessed (honest)
 		TrustTier        string                    `json:"trust_tier,omitempty"`        // gates refute eligibility (inv.5); "" ⇒ untrusted
+		BuiltIn          bool                      `json:"built_in,omitempty"`          // the built-in AdvisoryTable answered (AdvisoryFacts.BuiltIn)
 		Trigger          *advisoryTrigger          `json:"trigger,omitempty"`           // v3 per-CVE reach descriptor (row 1)
 		TriggerCondition string                    `json:"trigger_condition,omitempty"` // B3: advisory-declared exploit precondition, read as candidate-only PoE qualifier context (never admission/refute)
 		Prerequisite     string                    `json:"prerequisite,omitempty"`      // B3: advisory-declared mechanism precondition, read alongside TriggerCondition
@@ -1467,6 +1473,7 @@ func (s advisoryIntake) Run(ctx context.Context, c *assessment.Assessment, store
 		CWEs:             facts.CWEs,
 		VulnClass:        string(vulnClass),
 		TrustTier:        string(facts.Provenance.TrustTier),
+		BuiltIn:          facts.BuiltIn,
 		Trigger:          advTrigger,
 		TriggerCondition: facts.TriggerCondition,
 		Prerequisite:     facts.Prerequisite,

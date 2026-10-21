@@ -1,0 +1,7 @@
+subprojects {
+    group = 'com.ferralon.fixture'
+    version = '1.0.0'
+    repositories {
+        mavenCentral()
+    }
+}

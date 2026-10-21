@@ -57,9 +57,9 @@ var ProbeRefBase64 = artifactcache.Ref{
 // it does not replace — the static layer-1 guarantee (see artifactcache/noexec_test.go)
 // that the Store and Handle method sets expose no execution capability in the first place.
 //
-// PLAN-200 impls call this against their real Store; Phase-1 fakes (which return
+// Store implementations call this against their real Store; fakes (which return
 // ErrDeclaredAbsent or serve inert in-memory bytes) pass trivially, which is the point:
-// the harness is exercised now so the impl merely plugs in later.
+// the harness is exercised everywhere so a real implementation merely plugs in.
 func ConformanceTest(t *testing.T, newStore func() artifactcache.Store) {
 	t.Helper()
 

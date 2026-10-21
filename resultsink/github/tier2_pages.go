@@ -32,8 +32,8 @@
 // # Invariant 5 (deterministic verdicts only)
 //
 // The staged HTML is the output of projection.MarshalReportHTML, which renders
-// only the four deterministic verdicts (disqualified / not_exploitable /
-// reachable_candidate / undetermined). No Case/Assessment/living-verdict concept can appear —
+// only the five deterministic verdicts (disqualified / not_exploitable /
+// reachable_candidate / undetermined / malicious_package_present). No Case/Assessment/living-verdict concept can appear —
 // the Report type enforces this boundary structurally.
 package github
 

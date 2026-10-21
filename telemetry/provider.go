@@ -15,8 +15,9 @@
 // New builds a MeterProvider + TracerProvider over an OTLP/gRPC exporter with a delta
 // temporality selector, installing one of three View sets (essential | standard | full) from
 // Config.Level. It no-ops cleanly when no OTLP endpoint is configured, so
-// boot never blocks or fails on a missing collector. No business instrument emits here — the
-// only live signal is the tegron.telemetry.up health counter, which proves the pipe.
+// boot never blocks or fails on a missing collector. This package emits only the
+// tegron.telemetry.up health counter, which proves the pipe; tegron.scan.count (pipeline) and
+// tegron.plugin.call.* (plugin) emit from their own packages.
 package telemetry
 
 import (

@@ -45,11 +45,12 @@ func TestBootOnly(t *testing.T) {
 		{"com/sun/net/httpserver/ext/X", 28, true},
 		{"org/ietf/jgss/ext/X", 0, true},
 		{"org/jcp/xml/dsig/ext/X", 0, true},
-		{"javax/servlet/GenericServlet", 0, false},
 		{"javax/servlet/GenericServlet", 28, false},
 		{"javax/servlet/http/HttpServlet", 28, false},
 		{"com/sun/jna/Native", 0, false},
 		{"org/w3c/css/sac/Parser", 0, false},
+		{"org/graalvm/polyglot/Context", 0, false}, // parent a prefix of a JDK package, too shallow under org/
+		{"com/sun/foo/Bar", 0, false},              // the same under com/
 		{"com/acme/Foo", 28, false},
 		{"javaxx/Foo", 28, false},
 		{"Unpackaged", 0, false},

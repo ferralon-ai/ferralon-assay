@@ -723,6 +723,17 @@ func TestGradleComplete(t *testing.T) {
 			want: "agent-1.0.jar, which no collected configuration lists",
 		},
 		{
+			// The repository's URL is outside the build directory; its extra artifact pattern is under it,
+			// and no recorded root holds it.
+			name: "detached configuration resolved from an Ivy artifact pattern under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { ivy { url = file('ivymeta'); artifactPattern \"${projectDir}/build/ivy/[module]-[revision].[ext]\"; metadataSources { artifact() } } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/ivy/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
 			name: "Zip of a file under a Maven artifact URL under the build directory",
 			append: map[string]string{
 				"app/build.gradle": "repositories { maven { url = file('m2meta'); artifactUrls file('build/arts') } }\n" +

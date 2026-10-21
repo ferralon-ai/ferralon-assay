@@ -471,12 +471,12 @@ func TestGradleComplete(t *testing.T) {
 		},
 		{
 			name: "detached configuration with an unresolved project selector",
-			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.create(project(path: ':lib', configuration: 'nope')), " +
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.project(path: ':lib', configuration: 'nope'), " +
 				"dependencies.create('org.slf4j:slf4j-api:2.0.16')).incoming.artifactView { lenient(true) }.files.files\n"},
 		},
 		{
 			name: "detached configuration with an unresolved project selector and a file that does not download",
-			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.create(project(path: ':lib', configuration: 'nope')), " +
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.project(path: ':lib', configuration: 'nope'), " +
 				"dependencies.create('org.slf4j:slf4j-api:2.0.16:nope')).incoming.artifactView { lenient(true) }.files.files\n"},
 			want: "resolution of :app:detachedConfiguration1 failed",
 		},

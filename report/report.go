@@ -53,11 +53,11 @@ import (
 // into every Report so future readers can detect and migrate older documents.
 // Bump it on any breaking change to the field set or semantics.
 //
-// v3 is the per-value-stamped Priority: the report-wide priority.snapshot is gone,
-// every EPSS/KEV value carries its own stamp (epss_as_of, kev_catalog_version +
-// kev_date_released), kev_listed and the EPSS fields are omitted when there is no
-// value, a stamped not-listed KEV observation exists, and the signals file is named
-// once as provenance.intel.signals_digest.
+// v3 is the per-value-stamped Priority: every EPSS/KEV value carries its own stamp
+// (epss_as_of; kev_catalog_version + kev_date_released), each field is present exactly
+// when it has a value (a sourced EPSS score or percentile of 0 included), a stamped
+// KEV observation without kev_listed means "not in that catalog", and the signals file
+// is named once as provenance.intel.signals_digest. upgradeV2 records how v2 differs.
 const SchemaVersion = "tegron.report.v3"
 
 // SchemaVersionV2 is the schema before per-value priority stamps. Documents carrying
@@ -536,8 +536,12 @@ type Priority struct {
 	// whenever EPSSAsOf does (MarshalJSON); a Priority with no EPSS value omits it.
 	EPSSScore float64 `json:"epss_score"`
 	// EPSSPercentile is the score's percentile rank among all CVEs scored by the same model run
-	// (0..1). Omitted when the signals file did not source one.
-	EPSSPercentile float64 `json:"epss_percentile,omitempty"`
+	// (0..1). Not omitempty: 0 is a real percentile, so it serializes whenever HasPercentile is set
+	// (MarshalJSON); a percentile the signals file did not source is omitted.
+	EPSSPercentile float64 `json:"epss_percentile"`
+	// HasPercentile is whether the signals file sourced EPSSPercentile, zero included. It is not a
+	// field of its own on the wire: epss_percentile's presence carries it both ways.
+	HasPercentile bool `json:"-"`
 	// EPSSAsOf is the EPSS model date (YYYY-MM-DD) the score and percentile come from. Set iff the
 	// finding carries an EPSS value.
 	EPSSAsOf string `json:"epss_as_of,omitempty"`
@@ -557,22 +561,51 @@ type Priority struct {
 
 // MarshalJSON writes epss_score whenever the Priority carries an EPSS value, so a genuine score of 0
 // is never read as an as-of with no score, and omits it from a block with no EPSS value at all (a
-// KEV-only observation). A score with no stamp is written too: Validate refuses it, and the encoder
-// never hides a value it was given.
+// KEV-only observation). It writes epss_percentile whenever the signals file sourced one, so a
+// genuine percentile of 0 is never read as an unsourced one. A value with no stamp is written too
+// (Validate refuses it), and so is a nonzero percentile without HasPercentile: the encoder never
+// hides a value it was given.
 func (p Priority) MarshalJSON() ([]byte, error) {
 	type plain Priority // the same fields without this method
 	w := struct {
-		EPSSScore *float64 `json:"epss_score,omitempty"`
+		EPSSScore      *float64 `json:"epss_score,omitempty"`
+		EPSSPercentile *float64 `json:"epss_percentile,omitempty"`
 		plain
 	}{plain: plain(p)}
 	if p.EPSSAsOf != "" || p.EPSSScore != 0 {
 		w.EPSSScore = &p.EPSSScore
 	}
+	if p.HasPercentile || p.EPSSPercentile != 0 {
+		w.EPSSPercentile = &p.EPSSPercentile
+	}
 	return json.Marshal(w)
+}
+
+// UnmarshalJSON reads a priority block, setting HasPercentile exactly when epss_percentile is
+// present, so a sourced percentile of 0 reads back as sourced.
+func (p *Priority) UnmarshalJSON(b []byte) error {
+	type plain Priority // the same fields without this method
+	w := struct {
+		EPSSPercentile *float64 `json:"epss_percentile"`
+		*plain
+	}{plain: (*plain)(p)}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	if w.EPSSPercentile != nil {
+		p.EPSSPercentile, p.HasPercentile = *w.EPSSPercentile, true
+	}
+	return nil
 }
 
 // HasEPSS reports whether the Priority carries a (stamped) EPSS value.
 func (p *Priority) HasEPSS() bool { return p != nil && p.EPSSAsOf != "" }
+
+// HasEPSSPercentile reports whether the Priority carries a (stamped) EPSS percentile: one the
+// signals file sourced, zero included, or any nonzero one.
+func (p *Priority) HasEPSSPercentile() bool {
+	return p.HasEPSS() && (p.HasPercentile || p.EPSSPercentile != 0)
+}
 
 // HasKEV reports whether the Priority carries a (stamped) KEV observation, listed or not.
 func (p *Priority) HasKEV() bool { return p != nil && p.KEVCatalogVersion != "" }
@@ -580,7 +613,7 @@ func (p *Priority) HasKEV() bool { return p != nil && p.KEVCatalogVersion != "" 
 // validate enforces that no priority value is set without its stamp, and that an empty Priority is
 // nil rather than present-and-empty.
 func (p *Priority) validate() error {
-	if p.EPSSAsOf == "" && (p.EPSSScore != 0 || p.EPSSPercentile != 0) {
+	if p.EPSSAsOf == "" && (p.EPSSScore != 0 || p.EPSSPercentile != 0 || p.HasPercentile) {
 		return fmt.Errorf("an EPSS value without its epss_as_of stamp")
 	}
 	if (p.KEVCatalogVersion == "") != (p.KEVDateReleased == "") {

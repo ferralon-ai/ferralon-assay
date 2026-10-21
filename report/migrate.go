@@ -128,9 +128,11 @@ func UndeterminedDetail(reason string) string {
 	}
 }
 
-// upgradeV2 is the v2 → v3 step: v3 stamps every priority value itself, so a v2 Priority dated only
-// by the removed report-wide snapshot is dropped (dropUnstampedPriority). Every other v2 field reads
-// unchanged in v3.
+// upgradeV2 is the v2 → v3 step. v2 dated its priority values by one report-wide priority.snapshot,
+// wrote kev_listed and the EPSS fields even with no value, and had no stamped not-listed KEV
+// observation or provenance.intel.signals_digest; v3 removed the snapshot and stamps every priority
+// value itself. So a v2 Priority dated only by the snapshot is dropped (dropUnstampedPriority).
+// Every other v2 field reads unchanged in v3.
 func upgradeV2(r Report) Report {
 	out := dropUnstampedPriority(r)
 	out.SchemaVersion = SchemaVersion

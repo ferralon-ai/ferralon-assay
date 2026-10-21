@@ -78,6 +78,7 @@ func TestValidateRejectsUnstampedPriority(t *testing.T) {
 	for name, p := range map[string]*Priority{
 		"epss score, no as_of":        {EPSSScore: 0.5},
 		"epss percentile, no as_of":   {EPSSPercentile: 0.5, KEVCatalogVersion: cat, KEVDateReleased: rel},
+		"zero percentile, no as_of":   {HasPercentile: true, KEVCatalogVersion: cat, KEVDateReleased: rel},
 		"kev listed, no stamp":        {KEVListed: true, EPSSAsOf: "2026-10-19", EPSSScore: 0.1},
 		"kev date_added, no stamp":    {KEVDateAdded: "2025-01-01", EPSSAsOf: "2026-10-19", EPSSScore: 0.1},
 		"half a catalog stamp":        {KEVListed: true, KEVCatalogVersion: cat},
@@ -291,41 +292,132 @@ func TestV3ReportRoundTrips(t *testing.T) {
 
 // TestEPSSScoreZeroSerializes: a genuine EPSS score of 0 sits beside its epss_as_of on the wire (an
 // as-of with no score would read as a missing value), while a priority block with no EPSS value — a
-// KEV-only observation — carries no epss_score at all.
+// KEV-only observation — carries no epss_score at all. A score with no stamp is written too, never
+// hidden, and the decoded document fails Validate for it.
 func TestEPSSScoreZeroSerializes(t *testing.T) {
 	for name, tc := range map[string]struct {
-		p         Priority
-		wantScore bool
+		p                    Priority
+		wantScore, unstamped bool
 	}{
-		"zero score with its as_of": {Priority{EPSSAsOf: "2026-10-18"}, true},
-		"nonzero score":             {Priority{EPSSScore: 0.3, EPSSAsOf: "2026-10-18"}, true},
-		"kev only, listed":          {Priority{KEVListed: true, KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}, false},
-		"kev only, not listed":      {Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}, false},
+		"zero score with its as_of": {Priority{EPSSAsOf: "2026-10-18"}, true, false},
+		"nonzero score":             {Priority{EPSSScore: 0.3, EPSSAsOf: "2026-10-18"}, true, false},
+		"unstamped score":           {Priority{EPSSScore: 0.3}, true, true},
+		"kev only, listed":          {Priority{KEVListed: true, KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}, false, false},
+		"kev only, not listed":      {Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}, false, false},
 	} {
-		b, err := json.Marshal(gradedCandidate("CVE-1", GradeControlFlowOnly, &tc.p))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		var doc struct {
-			Priority map[string]any `json:"priority"`
-		}
-		if err := json.Unmarshal(b, &doc); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		score, ok := doc.Priority["epss_score"]
+		b, back := priorityRoundTrip(t, name, tc.p)
+		score, ok := b["epss_score"]
 		if ok != tc.wantScore {
-			t.Errorf("%s: epss_score present = %v, want %v: %s", name, ok, tc.wantScore, b)
+			t.Errorf("%s: epss_score present = %v, want %v: %v", name, ok, tc.wantScore, b)
 			continue
 		}
 		if ok && score != tc.p.EPSSScore {
 			t.Errorf("%s: epss_score = %v, want %v", name, score, tc.p.EPSSScore)
 		}
-		var back AdvisoryFinding
-		if err := json.Unmarshal(b, &back); err != nil {
-			t.Fatalf("%s: %v", name, err)
+		if p := back.Advisories[0].Priority; p == nil || *p != tc.p {
+			t.Errorf("%s: decoded %+v, want %+v", name, p, tc.p)
 		}
-		if back.Priority == nil || *back.Priority != tc.p {
-			t.Errorf("%s: decoded %+v, want %+v", name, back.Priority, tc.p)
+		if err := back.Validate(); (err != nil) != tc.unstamped {
+			t.Errorf("%s: Validate of the decoded document = %v, want an error %v", name, err, tc.unstamped)
 		}
 	}
+}
+
+// TestEPSSPercentileZeroSerializes: epss_percentile is on the wire whenever the signals file sourced
+// one, zero included, and reads back as sourced; an unsourced percentile is omitted and reads back
+// as unsourced. A nonzero percentile is never hidden, flagged or not.
+func TestEPSSPercentileZeroSerializes(t *testing.T) {
+	const asOf = "2026-08-02"
+	for name, tc := range map[string]struct {
+		p, back Priority
+		wantPct bool
+	}{
+		// CVE-2026-50268's real signals record: {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}.
+		"sourced zero percentile": {
+			p:       Priority{EPSSScore: 0.00047, HasPercentile: true, EPSSAsOf: asOf},
+			back:    Priority{EPSSScore: 0.00047, HasPercentile: true, EPSSAsOf: asOf},
+			wantPct: true,
+		},
+		"sourced nonzero percentile": {
+			p:       Priority{EPSSScore: 0.2, EPSSPercentile: 0.5, HasPercentile: true, EPSSAsOf: asOf},
+			back:    Priority{EPSSScore: 0.2, EPSSPercentile: 0.5, HasPercentile: true, EPSSAsOf: asOf},
+			wantPct: true,
+		},
+		"nonzero percentile, flag unset": {
+			p:       Priority{EPSSScore: 0.2, EPSSPercentile: 0.5, EPSSAsOf: asOf},
+			back:    Priority{EPSSScore: 0.2, EPSSPercentile: 0.5, HasPercentile: true, EPSSAsOf: asOf},
+			wantPct: true,
+		},
+		"unsourced percentile": {
+			p:    Priority{EPSSScore: 0.2, EPSSAsOf: asOf},
+			back: Priority{EPSSScore: 0.2, EPSSAsOf: asOf},
+		},
+		"kev only": {
+			p:    Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"},
+			back: Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"},
+		},
+	} {
+		b, back := priorityRoundTrip(t, name, tc.p)
+		pct, ok := b["epss_percentile"]
+		if ok != tc.wantPct {
+			t.Errorf("%s: epss_percentile present = %v, want %v: %v", name, ok, tc.wantPct, b)
+			continue
+		}
+		if ok && pct != tc.p.EPSSPercentile {
+			t.Errorf("%s: epss_percentile = %v, want %v", name, pct, tc.p.EPSSPercentile)
+		}
+		p := back.Advisories[0].Priority
+		if p == nil || *p != tc.back {
+			t.Errorf("%s: decoded %+v, want %+v", name, p, tc.back)
+		}
+		if p.HasEPSSPercentile() != tc.wantPct {
+			t.Errorf("%s: decoded HasEPSSPercentile = %v, want %v", name, p.HasEPSSPercentile(), tc.wantPct)
+		}
+		if err := back.Validate(); err != nil {
+			t.Errorf("%s: decoded document does not validate: %v", name, err)
+		}
+	}
+}
+
+// TestV3DecodesSourcedZeroPercentile: a stored v3 document whose priority carries
+// "epss_percentile": 0 reads back, through Upgrade, as a sourced percentile of 0.
+func TestV3DecodesSourcedZeroPercentile(t *testing.T) {
+	r := storedPriorityReport(t, SchemaVersion,
+		`{"epss_score": 0.00047, "epss_percentile": 0, "epss_as_of": "2026-08-02"}`,
+		`{"epss_score": 0.2, "epss_as_of": "2026-10-19"}`)
+	up, err := Upgrade(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := up.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range up.Advisories {
+		if want := f.Advisory.ID == "CVE-OLD"; f.Priority.HasPercentile != want || f.Priority.HasEPSSPercentile() != want {
+			t.Errorf("%s: HasPercentile = %v, HasEPSSPercentile = %v, want %v", f.Advisory.ID, f.Priority.HasPercentile, f.Priority.HasEPSSPercentile(), want)
+		}
+	}
+}
+
+// priorityRoundTrip encodes a one-finding Report carrying p, and returns the encoded priority block
+// and the document decoded back.
+func priorityRoundTrip(t *testing.T, name string, p Priority) (map[string]any, Report) {
+	t.Helper()
+	b, err := json.Marshal(NewBuilder(Subject{ResolvedCommit: "c"}).AddFinding(gradedCandidate("CVE-1", GradeControlFlowOnly, &p)).Build())
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	var doc struct {
+		Advisories []struct {
+			Priority map[string]any `json:"priority"`
+		} `json:"advisories"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	var back Report
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return doc.Advisories[0].Priority, back
 }

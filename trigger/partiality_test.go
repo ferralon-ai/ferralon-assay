@@ -82,7 +82,7 @@ func TestInheritBaseline_CarriesPartiality(t *testing.T) {
 
 	got := inheritBaseline(&baseline, PRInheritRequest{
 		Subject: Subject{Repo: "github.com/example/widget", ResolvedCommit: "head"},
-	}, &statestore.State{})
+	}, &statestore.State{}, nil, nil)
 
 	// The baseline's coverage limit must be carried (the property this test guards).
 	// PLAN-104 additionally attaches a standing build-context-not-compared note on the

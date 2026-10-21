@@ -1108,6 +1108,9 @@ func runPRInherit(args []string) error {
 	fmt.Fprintf(os.Stdout, "%s pr-inherit complete\n", brand.Name)
 	if res.Inherited {
 		fmt.Fprintf(os.Stdout, "  path:       inherited baseline (dependency set unchanged)\n")
+		if len(res.AssessedAdvisories) > 0 {
+			fmt.Fprintf(os.Stdout, "  assessed:   %s (no baseline row)\n", strings.Join(res.AssessedAdvisories, ", "))
+		}
 	} else {
 		fmt.Fprintf(os.Stdout, "  path:       re-analyzed affected slice\n")
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))

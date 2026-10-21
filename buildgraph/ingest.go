@@ -137,9 +137,7 @@ func checkInputs(g *Graph, dir string) error {
 		match = mavenInput(nil)
 	case "gradle":
 		for _, d := range g.Subject.IncludedBuilds {
-			if !cleanRel(d) {
-				return reject(CheckSubjectInputs, "included build path "+d)
-			}
+			// A path that is not clean and slash-relative resolves to some other path than itself.
 			p := filepath.Join(dir, filepath.FromSlash(d))
 			if rel, ok := realRel(dir, p); !ok || rel != d {
 				return reject(CheckSubjectInputs, "included build outside the checkout: "+d)

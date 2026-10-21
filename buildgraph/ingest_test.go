@@ -246,10 +246,11 @@ func TestGradleIncludedBuilds(t *testing.T) {
 		t.Fatalf("inputs %v", in)
 	}
 
-	out := t.TempDir()
-	r = newFakeGradleIncluded(t, out+"\n")
-	if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != "tool_failed:graph" {
-		t.Fatalf("included build outside the checkout: %v", cause(err))
+	for name, included := range map[string]string{"outside the checkout": t.TempDir() + "\n", "the root": "@ROOT@\n"} {
+		r = newFakeGradleIncluded(t, included)
+		if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != "tool_failed:graph" {
+			t.Errorf("included build %s: %v", name, cause(err))
+		}
 	}
 }
 
@@ -269,6 +270,12 @@ func TestLoadIncludedBuilds(t *testing.T) {
 		{name: "included build output ignored", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			writeFiles(t, r.dir, map[string]string{"build-logic/build/classes/More.class": "out"})
 		}},
+		{name: "sibling of an included build ignored", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			writeFiles(t, r.dir, map[string]string{"build-logic-docs/notes.kt": "notes"})
+		}},
+		{name: "included build path absolute", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Subject.IncludedBuilds = []string{filepath.ToSlash(filepath.Join(r.dir, "build-logic"))}
+		}, want: "graph_rejected:subject_inputs"},
 		{name: "included build gone", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			g.Subject.IncludedBuilds = []string{"gone"}
 		}, want: "graph_rejected:subject_inputs"},

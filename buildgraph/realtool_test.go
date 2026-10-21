@@ -289,13 +289,13 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 	})
 	writeFiles(t, dir, map[string]string{
 		"settings.gradle":                              "pluginManagement { includeBuild('build-logic') }\nrootProject.name = 'root'\nincludeBuild('libs/core')\nincludeBuild('../outside')\n",
-		"build.gradle":                                 "plugins { id 'java' }\n",
+		"build.gradle":                                 "plugins {\n    id 'java'\n    id 'acme.conv'\n}\n",
 		"build-logic/settings.gradle":                  "rootProject.name = 'build-logic'\n",
-		"build-logic/src/main/groovy/A.groovy":         "class A {}\n",
+		"build-logic/build.gradle":                     "plugins { id 'groovy-gradle-plugin' }\n",
+		"build-logic/src/main/groovy/acme.conv.gradle": "// a convention plugin the root build applies, so Gradle compiles build-logic\n",
 		"libs/core/settings.gradle":                    "rootProject.name = 'core'\nincludeBuild('../../nested')\n",
 		"nested/settings.gradle":                       "rootProject.name = 'nested'\n",
 		"nested/src/main/java/N.java":                  "class N {}\n",
-		"buildSrc/build.gradle":                        "plugins { id 'groovy' }\n",
 		"buildSrc/src/main/groovy/acme/build/B.groovy": "package acme.build\nclass B {}\n",
 	})
 	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
@@ -304,6 +304,17 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 	}
 	if want := []string{"build-logic", "buildSrc", "libs/core", "nested"}; !reflect.DeepEqual(g.Subject.IncludedBuilds, want) {
 		t.Fatalf("included builds %v, want %v", g.Subject.IncludedBuilds, want)
+	}
+	// Real output beside build logic, including a buildSrc with no build script, is not an input.
+	for _, out := range []string{"build-logic/build", "buildSrc/build"} {
+		if fi, err := os.Stat(filepath.Join(dir, out)); err != nil || !fi.IsDir() {
+			t.Fatalf("%s: Gradle produced no build output: %v", out, err)
+		}
+	}
+	for _, in := range g.Subject.Inputs {
+		if strings.HasPrefix(in.Path, "build-logic/build/") || strings.HasPrefix(in.Path, "buildSrc/build/") {
+			t.Fatalf("build output recorded as an input: %s", in.Path)
+		}
 	}
 	outside, err := filepath.EvalSymlinks(filepath.Join(root, "outside"))
 	if err != nil {

@@ -2,6 +2,7 @@ package statestore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -113,12 +114,10 @@ func TestStore_V1ReportRoundTripsPostBump(t *testing.T) {
 }
 
 // TestStore_V2ReportReadsAsV3: a tegron.report.v2 document committed before per-value priority
-// stamps loads as the current schema, its snapshot-era priority dropped by the v2 → v3 step and its
-// stamped one kept. Without the drop the read would fail Validate and brick the baseline.
+// stamps decodes as the current schema, its snapshot-era priority dropped by the v2 → v3 step and its
+// stamped one kept. Without the drop the read would fail Validate and brick the baseline. It drives
+// decodeReport — the boundary every Read decodes report.json through — so it spawns no git.
 func TestStore_V2ReportReadsAsV3(t *testing.T) {
-	s := newTempStore(t)
-	ctx := context.Background()
-
 	stored := v1StoredReport(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
 	stored.SchemaVersion = report.SchemaVersionV2
 	stored.Partiality = nil
@@ -127,18 +126,19 @@ func TestStore_V2ReportReadsAsV3(t *testing.T) {
 	stamped.Advisory = report.Advisory{ID: "GO-2022-0001", Source: "osv"}
 	stamped.Priority = &report.Priority{EPSSScore: 0, EPSSAsOf: "2026-10-19"}
 	stored.Advisories = append(stored.Advisories, stamped)
-	if _, err := s.Write(ctx, &State{Report: stored}); err != nil {
-		t.Fatalf("write v2 state: %v", err)
+	b, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	got, err := s.Read(ctx)
+	got, err := decodeReport(b)
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("decode: %v", err)
 	}
-	if got.Report.SchemaVersion != report.SchemaVersion {
-		t.Errorf("schema_version = %q, want %q — Read must upgrade", got.Report.SchemaVersion, report.SchemaVersion)
+	if got.SchemaVersion != report.SchemaVersion {
+		t.Errorf("schema_version = %q, want %q — Read must upgrade", got.SchemaVersion, report.SchemaVersion)
 	}
-	for _, f := range got.Report.Advisories {
+	for _, f := range got.Advisories {
 		switch f.Advisory.ID {
 		case "GO-2021-0113":
 			if f.Priority != nil {

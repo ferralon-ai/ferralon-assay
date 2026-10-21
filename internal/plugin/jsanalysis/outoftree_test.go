@@ -504,6 +504,12 @@ var f = Function("x", "return x" // ` + "\u2028" + ` + process.argv[2]
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function argument spliced in behind a comment ended by a carriage return", map[string]string{"app.js": `
+var f = Function("x", "return x" // ` + "\r" + ` + process.argv[2]
+); f(1);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"new Function argument spliced in behind a comment ended by a paragraph separator", map[string]string{"app.js": `
 var f = new Function("x", "return x" // ` + "\u2029" + ` + process.argv[2]
 ); f(1);

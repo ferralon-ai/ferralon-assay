@@ -586,6 +586,8 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			".npmrc": "//npm.acme.dev/:tokenHelper=./css-hook.sh\n"}, unresolved: true},
 		{name: "an .npmrc setting a key scoped to a registry with no setting", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			".npmrc": "//npm.acme.dev/\n"}, unresolved: true},
+		{name: "an .npmrc setting an unscoped key ending in :registry", spec: "./index.css", files: map[string]string{"src/index.css": css,
+			".npmrc": "node-options:registry=--require ./css-hook.js\n"}, unresolved: true},
 		{name: "an .npmrc setting a key scoped to a package scope other than its registry", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			".npmrc": "@acme:node-options=--require ./css-hook.js\n"}, unresolved: true},
 		{name: "a script running node on a declaration file", spec: "./index.css", files: map[string]string{"src/index.css": css,

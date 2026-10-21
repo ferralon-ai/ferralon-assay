@@ -119,8 +119,8 @@ type SARIFResult struct {
 	Locations []SARIFLocation `json:"locations,omitempty"`
 	// Rank is the SARIF 2.1.0 "rank" property (0.0–100.0): a numeric score that
 	// code-scanning tools may use to order results for triage. Set from the EPSS
-	// percentile when intel is available (EPSSPercentile * 100). Omitted (−1 sentinel
-	// serialized as omitempty) when no intel snapshot matched this finding.
+	// percentile when intel is available (EPSSPercentile * 100). Omitted (nil, serialized
+	// as omitempty) when the run's signals carry no EPSS percentile for this finding.
 	// A positive rank is ONLY a likelihood-of-wild-exploitation signal from public
 	// feeds — never a claim about this codebase (inv. 5).
 	Rank       *float64         `json:"rank,omitempty"`

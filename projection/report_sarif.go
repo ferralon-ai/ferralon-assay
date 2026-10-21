@@ -86,27 +86,31 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 			props["attacker_controllable"] = f.Evidence.EntryPoint.AttackerControllable
 		}
 
-		// Priority: EPSS/KEV exploitation-likelihood context from public feeds.
-		// These are wild-exploitation likelihood signals — NOT exploitability claims
-		// for this codebase (inv. 5). Set rank and intel properties when present.
+		// Priority: EPSS/KEV exploitation-likelihood context from public feeds, each value written
+		// with its own stamp. These are wild-exploitation likelihood signals — NOT exploitability
+		// claims for this codebase (inv. 5). Set rank and intel properties when present.
 		var rank *float64
-		if f.Priority != nil {
-			props["epss_score"] = f.Priority.EPSSScore
-			props["epss_percentile"] = f.Priority.EPSSPercentile
-			props["kev_listed"] = f.Priority.KEVListed
-			if f.Priority.KEVDateAdded != "" {
-				props["kev_date_added"] = f.Priority.KEVDateAdded
+		if p := f.Priority; p.HasEPSS() {
+			props["epss_score"] = p.EPSSScore
+			props["epss_as_of"] = p.EPSSAsOf
+			if p.EPSSPercentile != 0 {
+				props["epss_percentile"] = p.EPSSPercentile
+				// rank is 0.0–100.0 per SARIF spec; scale from 0..1 percentile.
+				rv := p.EPSSPercentile * 100.0
+				rank = &rv
 			}
-			if f.Priority.Snapshot != "" {
-				props["intel_snapshot"] = f.Priority.Snapshot
+		}
+		if p := f.Priority; p.HasKEV() {
+			props["kev_listed"] = p.KEVListed
+			props["kev_catalog_version"] = p.KEVCatalogVersion
+			props["kev_date_released"] = p.KEVDateReleased
+			if p.KEVDateAdded != "" {
+				props["kev_date_added"] = p.KEVDateAdded
 			}
-			if f.Priority.KEVListed {
+			if p.KEVListed {
 				existing, _ := props["tags"].([]string)
 				props["tags"] = append(existing, "CISA-KEV")
 			}
-			// rank is 0.0–100.0 per SARIF spec; scale from 0..1 percentile.
-			rv := f.Priority.EPSSPercentile * 100.0
-			rank = &rv
 		}
 
 		results = append(results, SARIFResult{

@@ -202,8 +202,18 @@ func TestReportSARIF_Priority_SetsRankAndProperties(t *testing.T) {
 	if v, ok := props["kev_date_added"]; !ok || v != "2024-01-15" {
 		t.Errorf("kev_date_added: got %v (ok=%v), want 2024-01-15", v, ok)
 	}
-	if v, ok := props["intel_snapshot"]; !ok || v != "2026-06-15" {
-		t.Errorf("intel_snapshot: got %v (ok=%v), want 2026-06-15", v, ok)
+	// Each value is written with its own stamp; the report-wide snapshot is gone.
+	for k, want := range map[string]any{
+		"epss_as_of":          "2026-06-15",
+		"kev_catalog_version": "2026.06.14",
+		"kev_date_released":   "2026-06-14T17:00:00Z",
+	} {
+		if v, ok := props[k]; !ok || v != want {
+			t.Errorf("%s: got %v (ok=%v), want %v", k, v, ok, want)
+		}
+	}
+	if _, ok := props["intel_snapshot"]; ok {
+		t.Error("intel_snapshot must be gone: each value carries its own stamp")
 	}
 	if v, ok := props["reachability_grade"]; !ok || v != "attacker_tainted" {
 		t.Errorf("reachability_grade: got %v (ok=%v), want attacker_tainted", v, ok)

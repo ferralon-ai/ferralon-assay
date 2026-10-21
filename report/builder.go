@@ -23,6 +23,7 @@ type Builder struct {
 	partiality    []PartialityNote
 	provenance    Provenance
 	baseline      *BaselineRef
+	priority      func(Advisory) *Priority
 }
 
 // NewBuilder starts a Report for the given scanned subject. CommitSHA in provenance
@@ -246,6 +247,18 @@ func sortFindings(adv []AdvisoryFinding) {
 	})
 }
 
+// WithPriority makes Build set every finding's Priority to fn(finding.Advisory) — replacing whatever
+// it was added with — before ordering the findings. A run sets it once so that every row, fresh or
+// inherited from a stored Report, is ranked by THIS run's signals and none keeps a value from a
+// signals file the run did not read. fn returns nil for "no signal". Without WithPriority, findings
+// keep the Priority they were added with.
+//
+// Priority only ranks: Build applies it after every verdict is final, and nothing reads it back.
+func (b *Builder) WithPriority(fn func(Advisory) *Priority) *Builder {
+	b.priority = fn
+	return b
+}
+
 // Build assembles the Report. It sets SchemaVersion, defaults the provenance
 // timestamp to now (UTC) when unset, and sorts the SBOM and findings into a stable
 // order so the serialized Report is deterministic.
@@ -267,6 +280,11 @@ func (b *Builder) Build() Report {
 	})
 
 	adv := append([]AdvisoryFinding(nil), b.advisories...)
+	if b.priority != nil {
+		for i := range adv {
+			adv[i].Priority = b.priority(adv[i].Advisory)
+		}
+	}
 	sortFindings(adv)
 
 	return Report{

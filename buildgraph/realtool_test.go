@@ -468,6 +468,18 @@ func TestGradleComplete(t *testing.T) {
 			append: map[string]string{"app/build.gradle": "tasks.register('runIt', JavaExec) { mainClass = 'Main'; classpath = sourceSets.main.runtimeClasspath }\n"},
 		},
 		{
+			name: "JavaExec finalized by a packaging task",
+			append: map[string]string{"app/build.gradle": "tasks.register('runIt', JavaExec) { mainClass = 'Main'; classpath = sourceSets.main.runtimeClasspath; finalizedBy 'pack' }\n" +
+				"tasks.register('pack', Zip) { from layout.buildDirectory.dir('gen'); archiveFileName = 'p.zip'; destinationDirectory = layout.buildDirectory }\n"},
+			want: "task :app:runIt runs a program (org.gradle.api.tasks.JavaExec) finalized by :app:pack",
+		},
+		{
+			name: "Exec whose outputs a task reads",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true'; outputs.dir(layout.buildDirectory.dir('gen')) }\n" +
+				"tasks.register('pack', Zip) { from gen; archiveFileName = 'p.zip'; destinationDirectory = layout.buildDirectory }\n"},
+			want: "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
 			name:   "Zip of a file outside the checkout",
 			append: map[string]string{"app/build.gradle": "tasks.register('z', Zip) { from '/etc/hostname'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n"},
 			want:   "task :app:z reads /etc/hostname, outside the build",

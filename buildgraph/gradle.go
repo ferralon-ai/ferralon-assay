@@ -56,8 +56,10 @@ type gradleTask struct {
 	Type    string   `json:"type"`
 	Actions []string `json:"actions"`
 	Depends []string `json:"depends"`
-	Outside []string `json:"outside"`
-	Failure string   `json:"failure"`
+	// FinalizedBy are the tasks that run after this one whenever it runs.
+	FinalizedBy []string `json:"finalized_by"`
+	Outside     []string `json:"outside"`
+	Failure     string   `json:"failure"`
 }
 
 // gradleClasspath is one configuration as Gradle resolved it.

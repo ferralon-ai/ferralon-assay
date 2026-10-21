@@ -147,7 +147,8 @@ def observeTasks = { p ->
             def t = [path: k.path, type: k.getClass().name.replace('_Decorated', '')]
             try {
                 t.actions = k.actions.collect(actionOrigin).findAll { it != null }
-                t.depends = (k.taskDependencies.getDependencies(k) + k.finalizedBy.getDependencies(k)).collect { it.path }.sort()
+                t.finalized_by = k.finalizedBy.getDependencies(k).collect { it.path }.sort()
+                t.depends = (k.taskDependencies.getDependencies(k).collect { it.path } + t.finalized_by).sort()
                 t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) }.collect { it.absolutePath }.sort()
             } catch (Exception e) {
                 t.failure = String.valueOf(e.message)

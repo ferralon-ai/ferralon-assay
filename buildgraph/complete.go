@@ -137,13 +137,13 @@ type gradleResolution struct {
 
 // gradleIncomplete lists what keeps g from being Complete: a Gradle build file no project reads;
 // a runtime classpath left uncollected; a task of a type off the list, an exec task another
-// depends on (beside a run alias), an action added from outside the listed packages, or an input
-// file from outside the build that the graph does not hold; and a resolution (a detached
-// configuration, say) that resolved a file the graph does not hold. A build script's own
-// classpath is build logic, a POM file carries no code, a project's build directory holds what
-// the build made from its own sources (a sibling's classes, say), and Gradle's transforms cache
-// holds what it derived from an artifact some resolution resolved (the Kotlin compiler's
-// classpath snapshots).
+// depends on (beside a run alias) or that a task finalizes, an action added from outside the
+// listed packages, or an input file from outside the build that the graph does not hold; and a
+// resolution (a detached configuration, say) that resolved a file the graph does not hold. A
+// build script's own classpath is build logic, a POM file carries no code, a project's build
+// directory holds what the build made from its own sources (a sibling's classes, say), and
+// Gradle's transforms cache holds what it derived from an artifact some resolution resolved (the
+// Kotlin compiler's classpath snapshots).
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
@@ -203,6 +203,10 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			case gradleLeafTaskTypes[t.Type]:
 				if depended(t.Path) {
 					reasons = append(reasons, "task "+t.Path+" runs a program ("+t.Type+") that another task depends on")
+				}
+				// A finalizer runs after the program whenever it runs, and can package what it wrote.
+				if len(t.FinalizedBy) > 0 {
+					reasons = append(reasons, "task "+t.Path+" runs a program ("+t.Type+") finalized by "+strings.Join(t.FinalizedBy, ", "))
 				}
 			default:
 				reasons = append(reasons, "task "+t.Path+" has type "+t.Type+", which is not one whose installs the graph lists")

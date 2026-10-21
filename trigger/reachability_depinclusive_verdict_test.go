@@ -6,6 +6,7 @@ import (
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -110,18 +111,26 @@ func TestFinding_EmptyGraphYieldsUndetermined(t *testing.T) {
 
 // A step that did not run holds the row wherever the lane declares it, including only on a call
 // graph that has edges. The footprint is built by the real stage, so a footprint that stops
-// harvesting the call graph fails here.
+// harvesting the call graph fails here. A coordinate a complete build graph lacks is bounded to
+// that package: it leaves the row for a package the build does ship alone, while the same
+// coordinate missing beside an incomplete graph still holds it.
 func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
 	unbounded := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/com.example/urlkit", Path: "lib"}}}
 	tests := []struct {
 		name        string
 		cg          plugin.Partiality
+		sym         plugin.Partiality
 		wantVerdict report.Verdict
 	}{
-		{"an inherent limit on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch), report.VerdictNotExploitable},
-		{"a did-not-run reason on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch, plugin.PartialReasonToolFailure), report.VerdictUndetermined},
-		{"an unbounded scoped did-not-run limit on the graph", unbounded, report.VerdictUndetermined},
+		{"an inherent limit on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch), plugin.Partiality{}, report.VerdictNotExploitable},
+		{"a did-not-run reason on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch, plugin.PartialReasonToolFailure), plugin.Partiality{}, report.VerdictUndetermined},
+		{"an unbounded scoped did-not-run limit on the graph", unbounded, plugin.Partiality{}, report.VerdictUndetermined},
+		{"another coordinate absent from a complete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
+			javaanalysis.NotInBuild("com.evil:netkit"), report.VerdictNotExploitable},
+		{"another coordinate absent beside an incomplete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
+			plugin.Partiality{Reasons: []string{"no_dependency_artifact"}, Scoped: []plugin.ScopedReason{{Reason: "no_dependency_artifact", Package: "pkg:maven/com.evil/netkit", Path: "com.evil:netkit"}}},
+			report.VerdictUndetermined},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,8 +143,12 @@ func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 				"module": "com.example:urlkit", "purl": "pkg:maven/com.example/urlkit@1.0.0",
 				"advisory_symbols": []string{"com.example.net.UrlKit.get"}, "built_in": true,
 			})
+			sym := tt.sym
+			if sym.Reasons == nil && sym.Scoped == nil {
+				sym = plugin.Complete()
+			}
 			putJSON(t, store, a.ID, artifact.TypeVulnerableSymbol, plugin.SymbolResolutionResult{
-				Partiality: plugin.Complete(),
+				Partiality: sym,
 				Resolved:   []plugin.Symbol{{SCIP: sink}},
 				Origins:    map[string]string{sink: "pkg:maven/com.example/urlkit"},
 				Matched:    map[string][]string{"com.example.net.UrlKit.get": {sink}},

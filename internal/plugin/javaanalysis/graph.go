@@ -38,6 +38,25 @@ func OtherToolBuild(g *buildgraph.Graph, buildDir string) bool {
 	return err != nil || len(in) > 0
 }
 
+// PartialReasonDependencyNotInBuild marks an advisory on a package the build resolves no version
+// of, by a graph that holds every package the build can install: a known absence of this
+// advisory's package, bounded to it, never a tool failure.
+const PartialReasonDependencyNotInBuild = "dependency_not_in_build"
+
+// AbsentFromBuild reports whether g proves the build resolves no version of coordinate. g lists
+// every package its build resolved, so a coordinate it lacks is not a dependency, unless a build
+// of the other tool beside it could resolve one.
+func AbsentFromBuild(g *buildgraph.Graph, buildDir, coordinate string) bool {
+	return g != nil && len(graphVersionsOf(g, coordinate)) == 0 && !OtherToolBuild(g, buildDir)
+}
+
+// NotInBuild is the Partiality of an advisory on a package AbsentFromBuild: it holds only that
+// package's own advisories.
+func NotInBuild(coordinate string) plugin.Partiality {
+	purl := mavenPURLNoVersion(coordinate)
+	return plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: PartialReasonDependencyNotInBuild, Package: purl, Path: coordinate, Targets: []string{purl}}}}
+}
+
 // coverage is the Partiality of facts read from g: Complete, unless the checkout also holds a
 // build of the other tool.
 func coverage(uncovered bool) plugin.Partiality {
@@ -186,9 +205,11 @@ func graphInventory(g *buildgraph.Graph, uncovered bool) plugin.DependencyInvent
 // Match candidate, one per module that resolved it, whatever its scope; the Match is resolved
 // only when they all agree, since one patched module beside an affected one must not rule the
 // build not-affected. The graph holds every version the build resolved, so the copies are
-// complete, unless uncovered: a build of the other tool beside it can resolve another.
+// complete, unless uncovered: a build of the other tool beside it can resolve another. For the same
+// reason All lists every package the build can install, so a coordinate absent from it is not a
+// dependency (Exhaustive).
 func graphVersions(g *buildgraph.Graph, coordinate string, uncovered bool) plugin.DependencyVersionResult {
-	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered)}
+	res := plugin.DependencyVersionResult{Partiality: coverage(uncovered), Exhaustive: !uncovered}
 	roots := moduleRoots(g)
 	want := strings.ToLower(strings.TrimSpace(coordinate))
 	seen := map[string]bool{}

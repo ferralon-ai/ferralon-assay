@@ -12,7 +12,8 @@ import (
 )
 
 // The version answer is every copy the build resolved: resolved only when the copies agree,
-// complete only when nothing beside the graph's own build can resolve another.
+// complete only when nothing beside the graph's own build can resolve another. Under the same
+// condition the answer is exhaustive, so a coordinate absent from the graph is not a dependency.
 func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 	const widget = "com.example.lib:widget"
 	dep := func(v, scope string) graphDep {
@@ -54,6 +55,8 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 			copies: [][]graphDep{{dep("1.4.0", "")}}, wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, wantReason: PartialReasonOtherToolBuild},
 		{name: "a pom beside a gradle graph", tool: "gradle", files: map[string]string{"pom.xml": "<project/>"},
 			copies: [][]graphDep{{dep("1.4.0", "")}}, wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, wantReason: PartialReasonOtherToolBuild},
+		{name: "not in the graph beside a gradle build", tool: "maven", files: map[string]string{"svc/build.gradle": "dependencies {}\n"},
+			copies: [][]graphDep{{}}, wantReason: PartialReasonOtherToolBuild},
 		{name: "no graph", noGraph: true, wantFound: true, wantReason: PartialReasonBuildGraphAbsent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -91,6 +94,9 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 			}
 			if tc.wantReason == "" != res.Partiality.Complete || (tc.wantReason != "" && !hasStr(res.Partiality.Reasons, tc.wantReason)) {
 				t.Errorf("Partiality = %+v, want reason %q", res.Partiality, tc.wantReason)
+			}
+			if want := tc.wantReason == ""; res.Exhaustive != want {
+				t.Errorf("Exhaustive = %v, want %v", res.Exhaustive, want)
 			}
 		})
 	}

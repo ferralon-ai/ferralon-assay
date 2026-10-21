@@ -121,7 +121,7 @@ func ingressPartiality(prog *program) plugin.Partiality {
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest, opts ...Option) (plugin.SymbolResolutionResult, error) {
 	g := BuildGraph(opts...)
 	if coordinate, version, ok := coordinateOfPURL(req.PURL); ok && !isRootCoordinate(g, coordinate) {
-		dep := resolveDependencyJarSymbols(g, coordinate, version, req.AdvisorySymbols)
+		dep := resolveDependencyJarSymbols(g, req.BuildDir, coordinate, version, req.AdvisorySymbols)
 		part := dep.part
 		if multi, why := multipleProjects(req.BuildDir, opts...); multi {
 			part = withMultipleProjects(part, why)

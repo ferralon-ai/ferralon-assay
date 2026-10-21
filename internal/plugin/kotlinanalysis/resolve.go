@@ -21,6 +21,8 @@ import (
 //
 // Honest-absent on every gap (inv.5), never a fabricated match:
 //   - no build graph → build_graph_absent, empty resolution.
+//   - a complete graph resolves no version of the coordinate → dependency_not_in_build, bounded
+//     to the coordinate's own PURL: a known absence, never a tool failure.
 //   - coordinate underivable, or the graph names no JAR for it → declared tool-unavailable
 //     partiality (no_dependency_artifact), empty resolution.
 //   - the JAR present but unreadable/partly unparseable → tool_failure partiality (a class
@@ -64,6 +66,9 @@ func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsReques
 	g := javaanalysis.BuildGraph(opts...)
 	if g == nil {
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(javaanalysis.PartialReasonBuildGraphAbsent)}, nil
+	}
+	if coordinate, _, ok := parseMavenPURL(req.PURL); ok && javaanalysis.AbsentFromBuild(g, req.BuildDir, coordinate) {
+		return plugin.SymbolResolutionResult{Partiality: javaanalysis.NotInBuild(coordinate)}, nil
 	}
 	jars, reasons, ok := dependencyJars(g, req.PURL)
 	if !ok {

@@ -20,9 +20,12 @@ import (
 //
 // Each resolved method carries the same id the dependency call graph uses
 // ("jvmref Owner#NameDesc"), Symbol.Package is the Maven coordinate, and Origins maps it to
-// the coordinate's versionless PURL. Every gap is scoped to the coordinate, bounded by what
+// the coordinate's versionless PURL. A coordinate a complete graph lacks is not a dependency:
+// dependency_not_in_build, bounded to the coordinate's own PURL (intake already settles that
+// advisory as no_manifest_entry). Every gap is scoped to the coordinate, bounded by what
 // the JAR's code could call, callbacks into first-party code included (depclosure.go):
-//   - the graph resolved no version of it, or no JAR for a version → tool_failure:no_dependency_artifact;
+//   - a graph that could be missing a build resolved no version of it, or no JAR for a version →
+//     tool_failure:no_dependency_artifact;
 //   - a JAR is unreadable, no longer has the digest the graph recorded, or some classes in it
 //     fail to parse → tool_failure.
 // Each scoped reason is also listed run-wide in Reasons. An advisory symbol that matches
@@ -53,7 +56,7 @@ func isRootCoordinate(g *buildgraph.Graph, coordinate string) bool {
 // coordinate. purlVersion, when the request PURL pins one the build resolved, is the only
 // version searched; otherwise every one is. Without a graph nothing is known about the
 // coordinate's code, and the result says so run-wide.
-func resolveDependencyJarSymbols(g *buildgraph.Graph, coordinate, purlVersion string, wanted []string) depSymbolResolution {
+func resolveDependencyJarSymbols(g *buildgraph.Graph, buildDir, coordinate, purlVersion string, wanted []string) depSymbolResolution {
 	out := depSymbolResolution{origins: map[string]string{}, matched: map[string][]string{}, part: plugin.Complete()}
 	if len(wanted) == 0 {
 		return out
@@ -64,6 +67,10 @@ func resolveDependencyJarSymbols(g *buildgraph.Graph, coordinate, purlVersion st
 	}
 
 	purl := mavenPURLNoVersion(coordinate)
+	if AbsentFromBuild(g, buildDir, coordinate) {
+		out.part = NotInBuild(coordinate)
+		return out
+	}
 	targets := BlindSpotTargets(g, coordinate)
 	scoped := func(reason, path string) plugin.ScopedReason {
 		return plugin.ScopedReason{Reason: reason, Package: purl, Path: path, Targets: targets}

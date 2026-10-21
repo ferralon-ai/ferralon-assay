@@ -139,27 +139,38 @@ func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 
 // netkit's JAR is the advisory package's code. Present, it is read and costs nothing. Named by
 // the graph but gone, it is a tool_failure scoped to netkit and bounded by everything the build
-// resolved beside it and first-party code, which netkit can call back into. A coordinate the
-// build never resolved has no JAR to read: no_dependency_artifact, unbounded. Until the gate
-// reads Scoped, every scoped reason is carried run-wide too, or the gate never sees it.
+// resolved beside it and first-party code, which netkit can call back into. A coordinate a
+// complete graph lacks is not a dependency: dependency_not_in_build, bounded to netkit alone and
+// never run-wide, so it holds no other advisory. Beside a build of the other tool the graph is not
+// complete, and the coordinate stays an unbounded no_dependency_artifact. Until the gate reads
+// Scoped, every other scoped reason is carried run-wide too, or the gate never sees it.
 func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		jar, inGraph bool
-		wantReason   string
-		wantPath     string
-		wantTargets  []string
+		name                    string
+		jar, inGraph, otherTool bool
+		wantReason              string
+		wantRunWide             []string
+		wantPath                string
+		wantTargets             []string
 	}{
 		{name: "jar present", jar: true, inGraph: true},
-		{name: "jar gone", inGraph: true, wantReason: plugin.PartialReasonToolFailure,
+		{name: "jar gone", inGraph: true, wantReason: plugin.PartialReasonToolFailure, wantRunWide: []string{plugin.PartialReasonToolFailure},
 			wantPath: "com.evil:netkit:1.0.0: netkit-1.0.0.jar unreadable or changed since the build resolved it", wantTargets: []string{"", netkitPURL}},
-		{name: "not resolved by the build", jar: true, wantReason: reasonNoDependencyArtifact, wantPath: "com.evil:netkit"},
+		{name: "not resolved by the build", jar: true, wantReason: PartialReasonDependencyNotInBuild,
+			wantPath: "com.evil:netkit", wantTargets: []string{netkitPURL}},
+		{name: "not resolved beside a build of the other tool", jar: true, otherTool: true, wantReason: reasonNoDependencyArtifact,
+			wantRunWide: []string{reasonNoDependencyArtifact}, wantPath: "com.evil:netkit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			build := buildNetkitFixture(t, !tc.jar)
 			graph := netkitGraph(t, build)
 			if !tc.inGraph {
 				graph = graphOption(t, "maven", testModule(t, ".", "app"))
+			}
+			if tc.otherTool {
+				if err := os.WriteFile(filepath.Join(build, "build.gradle"), []byte("plugins { id 'java' }\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			res := resolveUnder(t, build, netkitPURL, graph, "com.evil.netkit.UrlFetcher.fetch")
 			if tc.wantReason == "" {
@@ -171,8 +182,8 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 			if len(res.Resolved) != 0 || res.Partiality.Complete {
 				t.Fatalf("want unresolved and partial, got %+v", res)
 			}
-			if !reflect.DeepEqual(res.Partiality.Reasons, []string{tc.wantReason}) {
-				t.Errorf("run-wide mirror = %v, want [%s]", res.Partiality.Reasons, tc.wantReason)
+			if !reflect.DeepEqual(res.Partiality.Reasons, tc.wantRunWide) {
+				t.Errorf("run-wide mirror = %v, want %v", res.Partiality.Reasons, tc.wantRunWide)
 			}
 			if len(res.Partiality.Scoped) != 1 {
 				t.Fatalf("want one scoped reason, got %+v", res.Partiality.Scoped)
@@ -202,11 +213,13 @@ func TestResolveDependencySymbols_NoGraph(t *testing.T) {
 	}
 }
 
-// A coordinate the build never resolved has no JAR to read: scoped, unbounded.
+// A coordinate a complete graph lacks is a known absence of that package alone, never a tool
+// failure.
 func TestResolveDependencySymbols_UnknownCoordinate(t *testing.T) {
 	build := buildNetkitFixture(t, false)
 	res := resolveUnder(t, build, "pkg:maven/org.yaml/snakeyaml", netkitGraph(t, build), "org.yaml.snakeyaml.Yaml.load")
-	if len(res.Resolved) != 0 || len(res.Partiality.Scoped) != 1 || res.Partiality.Scoped[0].Package != "pkg:maven/org.yaml/snakeyaml" || res.Partiality.Scoped[0].Targets != nil {
+	want := []plugin.ScopedReason{{Reason: PartialReasonDependencyNotInBuild, Package: "pkg:maven/org.yaml/snakeyaml", Path: "org.yaml:snakeyaml", Targets: []string{"pkg:maven/org.yaml/snakeyaml"}}}
+	if len(res.Resolved) != 0 || res.Partiality.Complete || len(res.Partiality.Reasons) != 0 || !reflect.DeepEqual(res.Partiality.Scoped, want) {
 		t.Errorf("got %+v", res)
 	}
 }

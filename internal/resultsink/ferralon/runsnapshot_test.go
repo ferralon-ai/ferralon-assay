@@ -49,7 +49,7 @@ func sampleResult() resultsink.Result {
 }
 
 // TestPublishRequestShape asserts the on-the-wire contract the backend /runs handler
-// expects: POST, application/json, Bearer OIDC token, body = verbatim tegron.report.v2
+// expects: POST, application/json, Bearer OIDC token, body = verbatim tegron.report.v3
 // JSON (identity is taken by the backend from the token, so the body carries ONLY the
 // report).
 func TestPublishRequestShape(t *testing.T) {
@@ -85,7 +85,7 @@ func TestPublishRequestShape(t *testing.T) {
 	if gotAuth != "Bearer oidc-token" {
 		t.Errorf("authorization = %q, want Bearer oidc-token", gotAuth)
 	}
-	// Body must be the verbatim tegron.report.v2 report — decodable, schema-versioned,
+	// Body must be the verbatim tegron.report.v3 report — decodable, schema-versioned,
 	// carrying no run-identity envelope.
 	var rep report.Report
 	if err := json.Unmarshal(gotBody, &rep); err != nil {

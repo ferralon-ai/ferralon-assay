@@ -191,9 +191,6 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 			return
 		}
 	default:
-		if p < len(clean) && clean[p] == ')' && functionChainReaches(clean, p) {
-			break
-		}
 		w, _ := wordBefore(clean, b)
 		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
 		if w != "new" && !assigned && !escapesAsValue(clean, b, p) {
@@ -204,39 +201,36 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 }
 
 // functionChainReaches reports whether the member chain that starts at p after a Function
-// token may reach the constructor. It walks `.call`, `.apply` and `.bind` members and exempts
-// only the continuations it knows call something else: a member other than those three
-// directly on Function (`Function.prototype`); a chain of two or more called, whose result
-// is then called again or used as a value (`Function.call.bind(f)`, `new (Function.bind.apply(P,
-// a))()`), since that runs the last method on the one before it; and a chain left as a value
-// with no call, index or member after it (`Function.bind || polyfill`, `ctx(Function.call, f)`).
-// Every other continuation counts: a computed key; `.constructor` or any other member of the
-// chain, all functions whose constructor is Function; one method called; a TypeScript
-// `!`, type argument list, `as` or `satisfies`; and any of these after closing parentheses,
-// or a parenthesised chain (Function's own included) then called.
+// token may reach the constructor. It walks `.call`, `.apply` and `.bind` members and denies
+// by default: the chain is exempt in exactly three shapes, and every other continuation counts.
+//   - A named member other than call, apply, bind or constructor read directly on Function
+//     (`Function.prototype`).
+//   - A chain of two or more methods called, then called again or ending as a value
+//     (`Function.call.bind(f)`, `new (Function.bind.apply(P, a))()`): that runs the last method
+//     on the one before it, and Function handed on as its receiver is a value use of its own.
+//   - A chain ending as a value (`Function.bind || polyfill`, `ctx(Function.call, f)`), as
+//     chainValueEnds lists the ends.
+//
+// Closing parentheses around the chain change nothing but that a call after them counts.
 func functionChainReaches(clean []rune, p int) bool {
 	n := len(clean)
 	for steps := 0; ; steps++ {
 		switch {
-		case p < n && clean[p] == '[', optionalIndex(clean, p):
-			return true
-		case p < n && clean[p] == '.', optionalDot(clean, p) && !optionalCall(clean, p):
+		case p < n && clean[p] == '.', optionalDot(clean, p) && !optionalCall(clean, p) && !optionalIndex(clean, p):
 			q := p + 1
 			if clean[p] == '?' {
 				q = p + 2
 			}
-			switch w, e := peekWord(clean, skipSpace(clean, q)); {
+			w, e := peekWord(clean, skipSpace(clean, q))
+			switch {
 			case w == "call" || w == "apply" || w == "bind":
 				p = skipSpace(clean, e)
 				continue
-			case w == "constructor":
-				return true
+			case steps == 0 && w != "" && w != "constructor":
+				return false
 			}
-			return steps > 0
-		case p < n && clean[p] == '(', optionalCall(clean, p):
-			if steps == 1 {
-				return true
-			}
+			return true
+		case steps >= 2 && (p < n && clean[p] == '(' || optionalCall(clean, p)):
 			o := p
 			if clean[p] == '?' {
 				o = skipSpace(clean, p+2)
@@ -244,12 +238,8 @@ func functionChainReaches(clean []rune, p int) bool {
 			r := closeParen(clean, o) + 1
 			for r = skipSpace(clean, r); r < n && clean[r] == ')'; r = skipSpace(clean, r+1) {
 			}
-			return r < n && (clean[r] == '.' || clean[r] == '[' || optionalDot(clean, r))
-		case p < n && (clean[p] == '<' || clean[p] == '!' && (p+1 >= n || clean[p+1] != '=')):
-			return true
+			return !(r < n && clean[r] == '(' || chainValueEnds(clean, r))
 		case p < n && clean[p] == ')':
-			// A parenthesised chain called is the chain called; anything else after the
-			// parentheses continues the chain at the same depth.
 			for ; p < n && clean[p] == ')'; p = skipSpace(clean, p+1) {
 			}
 			if p < n && clean[p] == '(' || optionalCall(clean, p) {
@@ -258,9 +248,32 @@ func functionChainReaches(clean []rune, p int) bool {
 			steps--
 			continue
 		}
-		w, _ := peekWord(clean, p)
-		return w == "as" || w == "satisfies"
+		return !chainValueEnds(clean, p)
 	}
+}
+
+// chainValueEnds reports whether an expression ends as a value at p: p ends the source or
+// starts a separator, a closing bracket, a ternary or nullish operator, a logical or bitwise
+// operator, an assignment or a comparison other than `<`, or a word on a later line, where a
+// statement without a semicolon ends. Nothing that may call, index, tag or assert the value
+// (`(`, `[`, `.`, `?.`, a template, `!`, `<`, `as`, `satisfies`) is listed; a template reads
+// as the word `_`, which tags across a line break, so `_` is not an end either.
+func chainValueEnds(clean []rune, p int) bool {
+	if p >= len(clean) {
+		return true
+	}
+	if w, _ := peekWord(clean, p); w != "" && w != "_" && w != "as" && w != "satisfies" {
+		return !sameLine(clean, skipSpaceBack(clean, p-1), p)
+	}
+	switch clean[p] {
+	case ',', ';', '}', ']', ':', '|', '&', '=', '>':
+		return true
+	case '?':
+		return !optionalDot(clean, p)
+	case '!':
+		return p+1 < len(clean) && clean[p+1] == '='
+	}
+	return false
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens

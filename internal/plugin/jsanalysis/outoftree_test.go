@@ -676,6 +676,34 @@ load(process.argv);
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call tagged after a space", map[string]string{"app.js": `
+Function.call ` + "`return process`" + `;
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"a called Function.bind.apply chain tagged after a space", map[string]string{"app.js": `
+Function.bind.apply(null, [null]) ` + "`x`" + `;
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call followed by an unlisted token", map[string]string{"app.js": `
+var f = Function.call
++process.argv[2];
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call tagged on the next line", map[string]string{"app.js": `
+var f = Function.call
+` + "`return process`" + `;
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call cast on the next line", map[string]string{"app.ts": `
+var f = (Function.call
+as any)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"constructor of Function", map[string]string{"app.js": `
 Function.constructor(process.argv[2])();
 function load(s) { return s; }
@@ -1777,6 +1805,11 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
 		{"Function.call compared", "if (Function.call !== undefined) { load(); }"},
 		{"Function.call handed on in parentheses", "function ctx(fn) { return fn; }\nconst c = ctx((Function.call));"},
+		{"Function.call in an array and an object", "const fns = [Function.call];\nconst o = { c: Function.call };"},
+		{"Function.call in nullish, ternary, logical and comparison operators", "const a = Function.call ?? null;\nconst b = a ? Function.call : null;\nconst c = Function.call === a, d = Function.call !== b, e = Function.call >= 0, f = Function.call & 1;"},
+		{"Function.call as the last token", "let f;\nf = Function.call"},
+		{"Function.call ending a statement with no semicolon", "const f = Function.call\nconst g = Function.bind\nmodule.exports = { f, g }"},
+		{"a called Function.call.bind chain in a logical operator", "function f() {}\nconst ok = Function.call.bind(f) && true;"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
 		{"imported names of global names", "import { top, left } from './util';\nimport * as parent from './util';\nimport self from './util';\nexport const placements = [top, left, parent, self];"},

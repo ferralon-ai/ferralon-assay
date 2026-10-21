@@ -672,6 +672,17 @@ func TestGradleComplete(t *testing.T) {
 			want: "agent-1.0.jar, which no collected configuration lists",
 		},
 		{
+			// The root project declares no repositories, so it resolves from the settings' ones.
+			name: "detached configuration resolved from a settings repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "dependencyResolutionManagement { repositories { maven { url = file('build/m2s') } } }\n",
+				"build.gradle":    "configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"build/m2s/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"build/m2s/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
 			name: "detached configuration resolved from mavenLocal under the build directory",
 			append: map[string]string{
 				"app/build.gradle": "System.setProperty('maven.repo.local', file('build/m2local').absolutePath)\nrepositories { mavenLocal() }\n" +

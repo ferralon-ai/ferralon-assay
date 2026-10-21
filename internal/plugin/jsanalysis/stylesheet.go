@@ -247,8 +247,9 @@ func (p *program) styleToolingPresent() bool {
 // craNodeEntries are the module base names, extension stripped, of the files in a Create React
 // App's src that react-scripts loads under node rather than compiling for the browser:
 // setupProxy.js, which start loads into the dev server, and setupTests with any of react-scripts'
-// module extensions (web.js, ts, …), which test hands jest as a setup file.
-var craNodeEntries = map[string]bool{"setupProxy": true, "setupTests": true, "setupTests.web": true}
+// module extensions (web.js, ts, …), which test hands jest as a setup file. Names are matched
+// lower-cased, since a case-insensitive filesystem loads them in any case.
+var craNodeEntries = map[string]bool{"setupproxy": true, "setuptests": true, "setuptests.web": true}
 
 // importsUnlisted reports whether a first-party module outside every stock Create React App's
 // src loads anything but a Node builtin, a relative file outside those src directories, or a
@@ -262,7 +263,7 @@ func (p *program) importsUnlisted() bool {
 	craSrc := func(module string) bool {
 		v, ok := inSrc[module]
 		if !ok {
-			v = stockCRAPackage(p.root, module) && !(craNodeEntries[path.Base(module)] && path.Base(path.Dir(module)) == "src")
+			v = stockCRAPackage(p.root, module) && !(craNodeEntries[strings.ToLower(path.Base(module))] && strings.EqualFold(path.Base(path.Dir(module)), "src"))
 			inSrc[module] = v
 		}
 		return v
@@ -347,9 +348,9 @@ func styleToolingIn(root string) bool {
 				walked[filepath.Join(realRoot, rel)] = true
 			}
 			return nil
-		case e.D.Name() == "package.json":
+		case strings.EqualFold(e.D.Name(), "package.json"):
 			present = styleToolingManifest(root, e.Path)
-		case e.D.Name() == ".npmrc":
+		case strings.EqualFold(e.D.Name(), ".npmrc"):
 			present = npmrcHooks(root, e.Path)
 		}
 		if present {
@@ -811,8 +812,8 @@ func styleToolingAbove(realRoot string) bool {
 			return true
 		}
 		for _, e := range entries {
-			if e.Name() == "package.json" || styleToolingName(e.Name()) ||
-				(e.Name() == ".npmrc" && npmrcHooks(dir, filepath.Join(dir, e.Name()))) {
+			if strings.EqualFold(e.Name(), "package.json") || styleToolingName(e.Name()) ||
+				(strings.EqualFold(e.Name(), ".npmrc") && npmrcHooks(dir, filepath.Join(dir, e.Name()))) {
 				return true
 			}
 		}

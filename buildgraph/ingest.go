@@ -64,7 +64,7 @@ func Load(file, dir string, stated Conditions, opts ...LoadOption) (*Graph, erro
 	if err := checkInputs(g, dir); err != nil {
 		return nil, err
 	}
-	if len(g.Subject.UnbindableIncludedBuilds) > 0 && (!o.fresh || g.Tool.Name != "gradle") {
+	if len(g.Subject.UnbindableIncludedBuilds) > 0 && !o.fresh {
 		return nil, reject(CheckSubjectInputs, "included build outside the checkout ("+g.Subject.UnbindableIncludedBuilds[0]+"); use build-graph auto")
 	}
 	siblings := map[string]bool{}

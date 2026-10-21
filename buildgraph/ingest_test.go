@@ -264,14 +264,15 @@ func TestGradleIncludedBuilds(t *testing.T) {
 		files   map[string]string
 		link    [2]string // a symlink written into the checkout: name, target
 		want    string
+		log     string
 	}{
 		{name: "the root", answers: included("@ROOT@\n"), want: "tool_failed:graph"},
-		{name: "an empty path", answers: included("\n"), want: "tool_failed:graph"},
+		{name: "an empty path", answers: included("\n"), want: "tool_failed:graph", log: "without an absolute path"},
 		{name: "a relative path", answers: included("build-logic\n"), want: "tool_failed:graph"},
 		{name: "a direct include the init script missed", answers: map[string]string{"included.txt": "@ROOT@/build-logic\n", "direct.txt": "@ROOT@/other\n"}, want: "tool_failed:graph"},
 		{name: "an included build holding nothing", answers: included("@ROOT@/empty\n"), files: map[string]string{"empty/.gradle/cache": ""}, want: "tool_failed:inputs"},
-		{name: "a symlink out of the checkout", answers: included("@ROOT@/build-logic\n"), link: [2]string{"build-logic/src/Out.kt", "@OUT@/src/Plugin.kt"}, want: "tool_failed:inputs"},
-		{name: "a symlinked directory", answers: included("@ROOT@/build-logic\n"), files: map[string]string{"shared/A.kt": ""}, link: [2]string{"build-logic/src/shared", "@ROOT@/shared"}, want: "tool_failed:inputs"},
+		{name: "a symlink out of the checkout", answers: included("@ROOT@/build-logic\n"), link: [2]string{"build-logic/src/Out.kt", "@OUT@/src/Plugin.kt"}, want: "tool_failed:inputs", log: "points outside the checkout"},
+		{name: "a symlinked directory", answers: included("@ROOT@/build-logic\n"), files: map[string]string{"shared/A.kt": ""}, link: [2]string{"build-logic/src/shared", "@ROOT@/shared"}, want: "tool_failed:inputs", log: "is not to a file"},
 	} {
 		r := newFakeGradleIncluded(t, tc.answers, tc.files)
 		if tc.link[0] != "" {
@@ -280,8 +281,8 @@ func TestGradleIncludedBuilds(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != tc.want {
-			t.Errorf("%s: %v, want %s", tc.name, cause(err), tc.want)
+		if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != tc.want || !strings.Contains(failureLog(err), tc.log) {
+			t.Errorf("%s: %v (%s), want %s (%s)", tc.name, cause(err), failureLog(err), tc.want, tc.log)
 		}
 	}
 }
@@ -326,6 +327,7 @@ func TestLoadIncludedBuilds(t *testing.T) {
 		fresh   bool
 		edit    func(t *testing.T, g *Graph, r fakeRepo)
 		want    string
+		log     string
 	}{
 		{name: "loads"},
 		{name: "included source edited since", edit: func(t *testing.T, g *Graph, r fakeRepo) {
@@ -360,10 +362,10 @@ func TestLoadIncludedBuilds(t *testing.T) {
 				t.Fatal(err)
 			}
 			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "bl")
-		}, want: "graph_rejected:subject_inputs"},
+		}, want: "graph_rejected:subject_inputs", log: "included build outside the checkout: bl"},
 		{name: "included build is a file", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "settings.gradle")
-		}, want: "graph_rejected:subject_inputs"},
+		}, want: "graph_rejected:subject_inputs", log: "is not a directory"},
 		{name: "included builds dropped", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			g.Subject.IncludedBuilds = nil
 		}, want: "graph_rejected:subject_inputs"},
@@ -385,7 +387,7 @@ func TestLoadIncludedBuilds(t *testing.T) {
 		{name: "included build outside the checkout", answers: included("@ROOT@/build-logic\n@OUT@\n"), want: "graph_rejected:subject_inputs"},
 		{name: "included build outside the checkout, resolved in this run", answers: included("@ROOT@/build-logic\n@OUT@\n"), fresh: true},
 		{name: "maven graph with an unbindable included build, resolved in this run", answers: included("@OUT@\n"), fresh: true,
-			edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Tool.Name = "maven" }, want: "graph_rejected:subject_inputs"},
+			edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Tool.Name = "maven" }, want: "graph_rejected:subject_inputs", log: "included builds in a maven graph"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -410,8 +412,8 @@ func TestLoadIncludedBuilds(t *testing.T) {
 			if tc.fresh {
 				opts = append(opts, Fresh())
 			}
-			if _, err := Load(writeGraphFile(t, g), r.dir, Conditions{}, opts...); cause(err) != tc.want {
-				t.Fatalf("Load = %q, want %q", cause(err), tc.want)
+			if _, err := Load(writeGraphFile(t, g), r.dir, Conditions{}, opts...); cause(err) != tc.want || !strings.Contains(failureLog(err), tc.log) {
+				t.Fatalf("Load = %q (%s), want %q (%s)", cause(err), failureLog(err), tc.want, tc.log)
 			}
 		})
 	}

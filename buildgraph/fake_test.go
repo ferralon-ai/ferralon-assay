@@ -258,6 +258,16 @@ func (r fakeRepo) resolve(t *testing.T, tool string, c Conditions) (*Graph, erro
 	return Resolve(context.Background(), Request{Dir: r.dir, Tool: tool, Conditions: c, WorkDir: r.work, Env: r.env, Producer: Producer{Name: "test", Version: "0"}})
 }
 
+// failureLog is the log of err's Failure, which names the check that failed where two checks share
+// a cause.
+func failureLog(err error) string {
+	var f *Failure
+	if errors.As(err, &f) {
+		return f.Log
+	}
+	return ""
+}
+
 func cause(err error) string {
 	var f *Failure
 	if errors.As(err, &f) {

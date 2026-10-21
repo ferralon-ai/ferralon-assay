@@ -378,7 +378,7 @@ func styleToolingName(name string) bool {
 		strings.HasPrefix(name, ".pnpmfile."), strings.HasPrefix(name, ".yarnrc"),
 		strings.HasPrefix(name, ".pnp."), name == ".parcelrc", name == ".storybook",
 		name == "bunfig.toml", name == "nodemon.json", name == "pnpm-workspace.yaml",
-		name == "patches", name == "config-overrides.js", name == "angular.json":
+		name == "patches", name == "config-overrides.js", name == "angular.json", name == "binding.gyp":
 		return true
 	}
 	for _, c := range styleToolingConfigs {
@@ -813,20 +813,25 @@ func styleToolingAbove(realRoot string) bool {
 	}
 }
 
-// npmrcHookKeys are the .npmrc settings that make a package manager load code of the project's
-// choosing into a script (node-options), run a hook file or another shell, or read further config.
-var npmrcHookKeys = map[string]bool{
-	"node-options": true, "pnpmfile": true, "global-pnpmfile": true, "script-shell": true,
-	"shell": true, "onload-script": true, "userconfig": true, "globalconfig": true,
+// npmrcPlainKeys are the .npmrc settings that only choose a registry, its credentials, proxy
+// and TLS, or how a package manager resolves peers, saves, audits or prints: none loads code, runs
+// a hook or a shell, or reads further config. A scoped registry (@scope:registry) and a key scoped
+// to one registry (//host/path:_authToken) are plain too.
+var npmrcPlainKeys = map[string]bool{
+	"registry": true, "always-auth": true, "strict-ssl": true, "ca": true, "cafile": true,
+	"proxy": true, "https-proxy": true, "noproxy": true, "email": true, "save-exact": true,
+	"save-prefix": true, "engine-strict": true, "legacy-peer-deps": true, "strict-peer-deps": true,
+	"strict-peer-dependencies": true, "auto-install-peers": true, "package-lock": true,
+	"fund": true, "audit": true, "loglevel": true, "progress": true, "prefer-offline": true,
+	"update-notifier": true, "ignore-scripts": true, "fetch-retries": true, "fetch-timeout": true,
 }
 
-// npmrcHooks reports whether the .npmrc at file sets an npmrcHookKeys key, may set one through a
-// key npm rewrites, or cannot be read. npm, pnpm and yarn classic all read a project .npmrc. Lines
-// end at \n or \r, and a line starting with '#' or ';' is a comment. A key loses one pair of
-// enclosing quotes, as npm's ini parser removes them, and is then compared more loosely than npm
-// does: case-insensitively, with _ as -. A key npm may rewrite to another (a quote, escape or
-// ${…} substitution left in it, or any non-ASCII character such as a byte-order mark) counts as a
-// hook key, whatever it spells.
+// npmrcHooks reports whether the .npmrc at file sets anything but npmrcPlainKeys, or cannot be
+// read. npm, pnpm and yarn classic all read a project .npmrc. Lines end at \n or \r, a line
+// starting with '#' or ';' is a comment, and a line with no key sets nothing. A key loses one pair
+// of enclosing quotes, as npm's ini parser removes them, and is then compared case-insensitively,
+// with _ as -. A key npm may rewrite (a quote, escape, ${…} substitution, '#' or ';' left in it,
+// or any non-ASCII character such as a byte-order mark) counts, whatever it spells.
 func npmrcHooks(root, file string) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
 	if !ok {
@@ -844,11 +849,15 @@ func npmrcHooks(root, file string) bool {
 		if len(key) >= 2 && (key[0] == '"' || key[0] == '\'') && key[len(key)-1] == key[0] {
 			key = key[1 : len(key)-1]
 		}
-		if strings.ContainsAny(key, "\"'\\$") {
+		if key == "" {
+			continue
+		}
+		if strings.ContainsAny(key, "\"'\\$#;") {
 			return true
 		}
 		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
-		if npmrcHookKeys[key] {
+		scoped := strings.HasPrefix(key, "//") || strings.HasPrefix(key, "@") && strings.HasSuffix(key, ":registry")
+		if !scoped && !npmrcPlainKeys[key] {
 			return true
 		}
 	}

@@ -1851,7 +1851,7 @@ load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
 		{"Function called optionally on any receiver", map[string]string{"app.js": `
 function run(o) { return o.Function?.(process.argv[2])(); }
-run(globalThis);
+module.exports = run;
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},

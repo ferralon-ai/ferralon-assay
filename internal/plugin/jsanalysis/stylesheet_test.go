@@ -590,9 +590,18 @@ func TestCallGraph_StylesheetImport(t *testing.T) {
 			".NPMRC": "node-options=--require ./css-hook.js\n"}, unresolved: true},
 		{name: "an .Npmrc in mixed case in the app's directory setting a hook", spec: "./index.css", from: "frontend/src/index.js",
 			files: map[string]string{"frontend/src/index.css": css, "frontend/package.json": craManifest, "frontend/.Npmrc": "node-options=--require ./css-hook.js\n"}, unresolved: true},
-		{name: "a workspace member's PACKAGE.JSON in upper case with an install script", spec: "./index.css", files: map[string]string{"src/index.css": css,
-			"package.json":       `{"name":"app","workspaces":["tools"],"scripts":{"start":"react-scripts start"},"dependencies":{"react-scripts":"5.0.1"}}`,
+		{name: "a workspace member's PACKAGE.JSON in upper case with an install script", spec: "./index.css", from: "frontend/src/index.js", files: map[string]string{
+			"frontend/src/index.css": css, "frontend/package.json": craManifest,
+			"package.json":       `{"name":"shop","private":true,"workspaces":["frontend","tools"]}`,
 			"tools/PACKAGE.JSON": `{"name":"t","version":"1.0.0","scripts":{"postinstall":"sh patch.sh"}}`, "tools/patch.sh": "true\n"}, unresolved: true},
+		{name: "a PACKAGE.JSON in upper case above the build root", spec: "./index.css", files: map[string]string{"src/index.css": css}, unresolved: true,
+			setup: func(t *testing.T, root string) {
+				treeWrite(t, filepath.Join(filepath.Dir(root), "PACKAGE.JSON"), `{"name":"workspace"}`)
+			}},
+		{name: "an .NPMRC in upper case above the build root setting node-options", spec: "./index.css", files: map[string]string{"src/index.css": css}, unresolved: true,
+			setup: func(t *testing.T, root string) {
+				treeWrite(t, filepath.Join(filepath.Dir(root), ".NPMRC"), "node-options=--require ./hook.js\n")
+			}},
 		{name: "the app's src/SetupProxy.js in mixed case loading an unlisted package", spec: "./index.css", files: map[string]string{"src/index.css": css,
 			"src/SetupProxy.js": "require('css-require-hook');\n"}, unresolved: true},
 		{name: "the app's src/SETUPTESTS.js in upper case loading an unlisted package", spec: "./index.css", files: map[string]string{"src/index.css": css,

@@ -263,7 +263,7 @@ func (p *program) importsUnlisted() bool {
 	craSrc := func(module string) bool {
 		v, ok := inSrc[module]
 		if !ok {
-			v = stockCRAPackage(p.root, module) && !(craNodeEntries[strings.ToLower(path.Base(module))] && strings.EqualFold(path.Base(path.Dir(module)), "src"))
+			v = stockCRAPackage(p.root, module) && !(craNodeEntries[strings.ToLower(path.Base(module))] && path.Base(path.Dir(module)) == "src")
 			inSrc[module] = v
 		}
 		return v

@@ -320,6 +320,9 @@ type projectEval struct {
 	identity  bool              // sets a property that names it as a reference
 	pinning   bool              // CentralPackageTransitivePinningEnabled is true
 	generated bool              // obj/ holds restore-generated imports for it
+
+	opaque       bool     // a file it reads could bring code in outside restore (msbuildFile.opaque)
+	assemblyRefs []string // normalized simple names of its Reference and FrameworkReference items
 }
 
 type projectRef struct {
@@ -491,6 +494,10 @@ func (e *evaluator) evaluate(real string) *projectEval {
 	}
 	if r := e.finalize(pe, reads); r != "" {
 		return fail(r)
+	}
+	for _, r := range reads {
+		pe.opaque = pe.opaque || r.mf.opaque
+		pe.assemblyRefs = append(pe.assemblyRefs, r.mf.assemblyRefs...)
 	}
 	return pe
 }

@@ -1,0 +1,217 @@
+package dotnetanalysis
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/report"
+)
+
+func writeFixtureFile(t *testing.T, dir, rel, data string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// closedBuild is a build restore settles on a trusted assets file that records only Other,
+// with nothing else in the tree that could bring a package in. edit, when set, changes it.
+func closedBuild(t *testing.T, edit func(t *testing.T, dir string)) string {
+	t.Helper()
+	f := newDepFixture(t, `"Other/1.0.0":{"type":"package"}`, `"Other/1.0.0":{"type":"package","path":"other/1.0.0"}`)
+	if edit != nil {
+		edit(t, f.buildDir)
+	}
+	return f.buildDir
+}
+
+// withFile adds one file to the build.
+func withFile(rel, data string) func(*testing.T, string) {
+	return func(t *testing.T, dir string) { writeFixtureFile(t, dir, rel, data) }
+}
+
+// withItems rewrites App.csproj to hold items beside what its restore was made from.
+func withItems(items string) func(*testing.T, string) {
+	return withFile("App.csproj", projectDeclaring([]string{"net8.0"}, nil, items))
+}
+
+func exhaustiveFor(t *testing.T, dir, coordinate string) plugin.DependencyVersionResult {
+	t.Helper()
+	res, err := ResolveDependencyVersions(t.Context(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: coordinate})
+	if err != nil {
+		t.Fatalf("ResolveDependencyVersions: %v", err)
+	}
+	return res
+}
+
+// TestNotInBuild_ClosedBuild: in a closed build a package restore didn't record is not present
+// in the build. The symbol lookup says so for that package alone, with no run-wide reason, and
+// the version read vouches for the absence. A package restore did record is present.
+func TestNotInBuild_ClosedBuild(t *testing.T) {
+	dir := closedBuild(t, nil)
+	res := resolveNewtonsoft(t, depFixture{buildDir: dir}, "Newtonsoft.Json.JsonConvert.DeserializeObject")
+	want := plugin.Partiality{Scoped: []plugin.ScopedReason{{
+		Reason:  partialReasonDependencyNotInBuild,
+		Package: "pkg:nuget/newtonsoft.json",
+		Path:    "Newtonsoft.Json is not present in the build",
+		Targets: []string{"pkg:nuget/newtonsoft.json"},
+	}}}
+	if len(res.Resolved) != 0 || len(res.Matched) != 0 || res.Partiality.Complete ||
+		len(res.Partiality.Reasons) != 0 || !slices.EqualFunc(res.Partiality.Scoped, want.Scoped, scopedEqual) {
+		t.Fatalf("result = %+v, want only %+v", res, want)
+	}
+	if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); !v.Exhaustive || v.Found {
+		t.Fatalf("absent package: Exhaustive=%v Found=%v, want true/false", v.Exhaustive, v.Found)
+	}
+	if v := exhaustiveFor(t, dir, "Other"); !v.Found {
+		t.Fatalf("recorded package: Found=false, want true")
+	}
+	if got := report.ClassifyPartialityReason(partialReasonDependencyNotInBuild); got != report.PartialityDidNotRun {
+		t.Fatalf("ClassifyPartialityReason = %q, want did-not-run: intake, not the lane's word, settles the advisory", got)
+	}
+}
+
+func scopedEqual(a, b plugin.ScopedReason) bool {
+	return a.Reason == b.Reason && a.Package == b.Package && a.Path == b.Path && slices.Equal(a.Targets, b.Targets)
+}
+
+// TestNotInBuild_OpenBuildKeepsMainsAnswer: anything this lane does not positively close leaves
+// the answer as it was: no_dependency_artifact, unbounded, scoped and run-wide, and no
+// Exhaustive.
+func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*testing.T, string)
+	}{
+		{"vendored assembly", withFile("lib/Newtonsoft.Json.dll", "MZ")},
+		{"vendored executable", withFile("tools/run.exe", "MZ")},
+		{"windows metadata", withFile("lib/Api.winmd", "MZ")},
+		{"package file in the tree", withFile("feed/newtonsoft.json.13.0.1.nupkg", "PK")},
+		{"paket dependencies", withFile("paket.dependencies", "nuget Newtonsoft.Json\n")},
+		{"paket lock", withFile("paket.lock", "NUGET\n")},
+		{"paket references", withFile("src/paket.references", "Newtonsoft.Json\n")},
+		{"F# script", withFile("build.fsx", "#r \"nuget: Newtonsoft.Json\"\n")},
+		{"C# script", withFile("tool.csx", "#r \"nuget: Newtonsoft.Json, 13.0.1\"\n")},
+		{"cake script", withFile("build.cake", "#addin nuget:?package=Newtonsoft.Json\n")},
+		{"shared project", withFile("Shared/Shared.shproj", "<Project/>")},
+		{"shared project items", withFile("Shared/Shared.projitems", "<Project/>")},
+		{"another project kind", withFile("Db/Db.sqlproj", "<Project/>")},
+		{"traversal project", withFile("build.proj", "<Project/>")},
+		{"solution naming a project outside the tree", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"Lib\", \"..\\Lib\\Lib.csproj\", \"{1}\"\nEndProject\n")},
+		{"solution naming a project in a skipped directory", withFile("App.slnx", `<Solution><Project Path=".tools/Tool.csproj" /></Solution>`)},
+		{"lockfile without a project", withFile("orphan/packages.lock.json", `{"version":1,"dependencies":{}}`)},
+		{"a project with no restore record", withFile("Lib/Lib.csproj", projectDeclaring([]string{"net8.0"}, nil, ""))},
+		{"stale restore record", withItems(`<ItemGroup><PackageReference Include="Serilog" Version="3.0.0" /></ItemGroup>`)},
+		{"reference with a hint path", withItems(`<ItemGroup><Reference Include="Vendor"><HintPath>vendor/Vendor.dll</HintPath></Reference></ItemGroup>`)},
+		{"reference to an assembly file", withItems(`<ItemGroup><Reference Include="vendor\Vendor.dll" /></ItemGroup>`)},
+		{"reference with unknown metadata", withItems(`<ItemGroup><Reference Include="Vendor"><Foo>x</Foo></Reference></ItemGroup>`)},
+		{"package download", withItems(`<ItemGroup><PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup>`)},
+		{"analyzer item", withItems(`<ItemGroup><Analyzer Include="tools/Gen.dll" /></ItemGroup>`)},
+		{"target", withItems(`<Target Name="Fetch" BeforeTargets="Build"><Exec Command="curl -o x https://example.invalid/x" /></Target>`)},
+		{"using task", withItems(`<UsingTask TaskName="Fetch" AssemblyFile="tasks.dll" />`)},
+		{"item definition group", withItems(`<ItemDefinitionGroup><Reference><Private>true</Private></Reference></ItemDefinitionGroup>`)},
+		{"content copied from outside the tree", withItems(`<ItemGroup><Content Include="..\vendor\**" CopyToOutputDirectory="Always" /></ItemGroup>`)},
+		{"content from a property", withItems(`<ItemGroup><None Include="$(VendorDir)/x" /></ItemGroup>`)},
+		{"none naming an assembly", withItems(`<ItemGroup><None Include="Newtonsoft.Json.dll" CopyToOutputDirectory="Always" /></ItemGroup>`)},
+		{"embedded resource from a rooted path", withItems(`<ItemGroup><EmbeddedResource Include="/opt/vendor/x.bin" /></ItemGroup>`)},
+		{"link metadata outside the tree", withItems(`<ItemGroup><None Include="x.txt"><Link>..\x.txt</Link></None></ItemGroup>`)},
+		{"a project's PackageId", withItems(`<PropertyGroup><PackageId>Newtonsoft.Json</PackageId></PropertyGroup>`)},
+		{"a project's AssemblyName", withItems(`<PropertyGroup><AssemblyName>App.Web</AssemblyName></PropertyGroup>`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := closedBuild(t, tc.edit)
+			res := resolveNewtonsoft(t, depFixture{buildDir: dir}, "Newtonsoft.Json.JsonConvert.DeserializeObject")
+			if res.Partiality.Complete || len(res.Partiality.Scoped) != 1 ||
+				res.Partiality.Scoped[0].Reason != partialReasonNoDependencyArtifact ||
+				res.Partiality.Scoped[0].Targets != nil ||
+				!hasILReason(res.Partiality, partialReasonNoDependencyArtifact) {
+				t.Fatalf("partiality = %+v, want no_dependency_artifact unbounded, scoped and run-wide", res.Partiality)
+			}
+			if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); v.Exhaustive {
+				t.Fatalf("Exhaustive = true for a build that is not closed")
+			}
+		})
+	}
+}
+
+// TestNotInBuild_WantSpecific: a package the build could hold other than through restore's
+// record is never proven absent, though the build is closed for every other package.
+func TestNotInBuild_WantSpecific(t *testing.T) {
+	for _, tc := range []struct {
+		name, coordinate string
+		edit             func(*testing.T, string)
+	}{
+		{"the build's own project", "App", nil},
+		{"a framework reference by name", "Newtonsoft.Json", withItems(`<ItemGroup><Reference Include="Newtonsoft.Json" /></ItemGroup>`)},
+		{"a strong-named framework reference", "System.Net.Http", withItems(`<ItemGroup><Reference Include="System.Net.Http, Version=4.0.0.0, Culture=neutral" /></ItemGroup>`)},
+		{"a shared framework", "Microsoft.AspNetCore.App", withItems(`<ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>`)},
+		{"a runtime pack", "Microsoft.NETCore.App.Runtime.linux-x64", nil},
+		{"an ASP.NET Core runtime pack", "Microsoft.AspNetCore.App.Runtime.win-x64", nil},
+		{"a desktop runtime pack", "Microsoft.WindowsDesktop.App.Runtime.win-x64", nil},
+		{"an AOT compiler pack", "Microsoft.DotNet.ILCompiler", nil},
+		{"a runtime-specific package", "runtime.linux-x64.Microsoft.DotNet.ILCompiler", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := closedBuild(t, tc.edit)
+			if v := exhaustiveFor(t, dir, tc.coordinate); v.Exhaustive {
+				t.Fatalf("Exhaustive = true for %s", tc.coordinate)
+			}
+			if v := exhaustiveFor(t, dir, "Serilog"); !v.Exhaustive || v.Found {
+				t.Fatalf("an unrelated package: Exhaustive=%v Found=%v, want true/false", v.Exhaustive, v.Found)
+			}
+		})
+	}
+}
+
+// TestNotInBuild_ClosedControls: what brings no package in leaves the build closed.
+func TestNotInBuild_ClosedControls(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*testing.T, string)
+	}{
+		{"linked source from outside the project", withItems(`<ItemGroup><Compile Include="..\Shared\Util.cs" /></ItemGroup>`)},
+		{"framework reference", withItems(`<ItemGroup><Reference Include="System.Xml" /></ItemGroup>`)},
+		{"framework reference with metadata", withItems(`<ItemGroup><Reference Include="System.Data, Version=4.0.0.0"><Private>False</Private><RequiredTargetFramework>3.5</RequiredTargetFramework></Reference></ItemGroup>`)},
+		{"shared framework", withItems(`<ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>`)},
+		{"content copied to output", withItems(`<ItemGroup><None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
+		{"conditioned content", withItems(`<ItemGroup><Content Include="wwwroot\**" Condition="'$(Configuration)' == 'Debug'" /></ItemGroup>`)},
+		{"project extensions", withItems(`<ProjectExtensions><VisualStudio><Ref Path="..\x.dll" /></VisualStudio></ProjectExtensions>`)},
+		{"solution naming the project", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"App\", \"App.csproj\", \"{1}\"\nEndProject\n")},
+		{"build output assembly", withFile("bin/Debug/net8.0/App.dll", "MZ")},
+		{"assembly in a dot directory", withFile(".tools/x.dll", "MZ")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := closedBuild(t, tc.edit)
+			if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); !v.Exhaustive || v.Found {
+				t.Fatalf("Exhaustive=%v Found=%v, want true/false", v.Exhaustive, v.Found)
+			}
+		})
+	}
+}
+
+// TestNotInBuild_CurrentLockfileSettles: a current packages.lock.json is restore's record too.
+// A package it doesn't list is not present in the build; one it lists, transitive included, is.
+func TestNotInBuild_CurrentLockfileSettles(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"App.csproj": `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><PackageReference Include="DotNetZip" Version="[1.0,2.0)" /></ItemGroup>
+</Project>`,
+		"packages.lock.json": `{"version": 1, "dependencies": {"net8.0": {
+  "DotNetZip": {"type": "Direct", "requested": "[1.0,2.0)", "resolved": "1.16.0"},
+  "System.Text.Json": {"type": "Transitive", "resolved": "8.0.4"}}}}`,
+	})
+	if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); !v.Exhaustive || v.Found {
+		t.Fatalf("absent: Exhaustive=%v Found=%v, want true/false", v.Exhaustive, v.Found)
+	}
+	if v := exhaustiveFor(t, dir, "System.Text.Json"); !v.Found {
+		t.Fatalf("transitive: Found=false, want true")
+	}
+}

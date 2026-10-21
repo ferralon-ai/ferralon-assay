@@ -5,11 +5,16 @@ package depreach
 // each as its name and parameter descriptor ("add(ILjava/lang/Object;)"), space-separated.
 type platformType struct{ supers, methods string }
 
+// platformMethodsJDK is the feature release platformMethods was generated from, the only
+// runtime it describes.
+const platformMethodsJDK = 21
+
 // platformMethods lists every java.base type a class-path class can extend or implement,
 // and every supertype of one, with the methods each declares that a class-path class can
 // override: what the JDK can name on an object it holds under that type (jdkCallable).
 // java/lang/Object is left out; objectOverridable has its methods. A platform type not
-// listed here (any other module's, or a later JDK's) has unknown methods.
+// listed here (any other module's, or a later JDK's) has unknown methods, and so has every
+// type when the runtime is not known to be platformMethodsJDK (Classpath.JDK).
 //
 // Generated from the java.base classes of Temurin 21.0.12.1+1 (macOS aarch64), extracted
 // from lib/modules with jimage, reading only access flags, super_class, interfaces, the

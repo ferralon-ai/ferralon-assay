@@ -84,6 +84,10 @@ func checkJDK(want, have string) *Failure {
 	return nil
 }
 
+// JDKMajor is the feature release of the JDK the run conditions state, or 0 when they state none
+// or one javaMajor cannot read.
+func (c Conditions) JDKMajor() int { return javaMajor(c.JDK) }
+
 // javaMajor reads the feature release from a Java version string: "21.0.12" is 21, "1.8.0_392"
 // is 8, "17" is 17. Anything else is 0.
 func javaMajor(v string) int {

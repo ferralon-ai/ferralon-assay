@@ -274,7 +274,8 @@ func TestReach_ProviderRoots(t *testing.T) {
 }
 
 // TestReach_SignatureRoots: of a JDK-loadable class's overridable methods, only those
-// the JDK can name through a supertype it holds the object under are roots.
+// the JDK can name through a supertype it holds the object under are roots. Rows run on
+// the platformMethods release unless they state another runtime.
 func TestReach_SignatureRoots(t *testing.T) {
 	const (
 		d    = "com/acme/D"
@@ -284,17 +285,37 @@ func TestReach_SignatureRoots(t *testing.T) {
 	)
 	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
 	uncaught := "(Ljava/lang/Thread;Ljava/lang/Throwable;)V"
-	runHoleCases(t, []holeCase{
+	const unknownJDK = -1 // a row's runtime left unstated (Classpath.JDK 0)
+	undeclared := []classfile.Class{
+		mainCalls(touch),
+		{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
+			callsSink(d, "snapshot", "()Ljava/lang/Object;"),
+			callsSink(d, "cursor", "()Ljava/util/Iterator;"),
+		}},
+	}
+	cases := []holeCase{
 		{
-			name: "a method no platform supertype declares is no root, and no re-entry hazard",
-			classes: []classfile.Class{
-				mainCalls(touch),
-				{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
-					callsSink(d, "snapshot", "()Ljava/lang/Object;"),
-					callsSink(d, "cursor", "()Ljava/util/Iterator;"),
-				}},
-			},
-			want: NotExploitable,
+			name:    "a method no platform supertype declares is no root, and no re-entry hazard",
+			classes: undeclared,
+			want:    NotExploitable,
+		},
+		{
+			name:    "the same method on a later JDK, which can declare it, is a root",
+			classes: undeclared,
+			cp:      Classpath{JDK: platformMethodsJDK + 4},
+			want:    ReachableCandidate, via: "D.snapshot",
+		},
+		{
+			name:    "the same on an earlier JDK, which can declare a method since removed",
+			classes: undeclared,
+			cp:      Classpath{JDK: 8},
+			want:    ReachableCandidate, via: "D.snapshot",
+		},
+		{
+			name:    "the same on an unknown JDK",
+			classes: undeclared,
+			cp:      Classpath{JDK: unknownJDK},
+			want:    ReachableCandidate, via: "D.snapshot",
 		},
 		{
 			name: "the same on a platform interface's implementor",
@@ -381,7 +402,7 @@ func TestReach_SignatureRoots(t *testing.T) {
 					callsSink(d, "start", "()V"),
 				}},
 			},
-			cp:   Classpath{Packages: map[string]bool{"javax/net": true}},
+			cp:   Classpath{Packages: map[string]bool{"javax/net": true}, JDK: platformMethodsJDK},
 			want: ReachableCandidate, via: "D.start",
 		},
 		{
@@ -404,7 +425,16 @@ func TestReach_SignatureRoots(t *testing.T) {
 			},
 			want: ReachableCandidate, via: "D.hashCode",
 		},
-	})
+	}
+	for i := range cases {
+		switch cases[i].cp.JDK {
+		case 0:
+			cases[i].cp.JDK = platformMethodsJDK
+		case unknownJDK:
+			cases[i].cp.JDK = 0
+		}
+	}
+	runHoleCases(t, cases)
 }
 
 // TestReach_PlatformBodyOnThis: a JDK body running with an application object as

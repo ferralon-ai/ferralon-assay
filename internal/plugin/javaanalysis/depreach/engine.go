@@ -30,6 +30,7 @@ type Engine struct {
 	held        map[string]heldTypes         // heldAs cache
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
+	methodsHold bool                         // platformMethods lists the runtime's methods
 }
 
 // Classpath is what the analysed classpath defines beyond the classes handed to the engine.
@@ -39,6 +40,9 @@ type Classpath struct {
 	Packages map[string]bool
 	// Unlisted is set when some entry could not be listed: it may define any package.
 	Unlisted bool
+	// JDK is the feature release of the JDK the program runs on, or 0 when unknown.
+	// platformMethods holds only on the release it was generated from (platformMethodsJDK).
+	JDK int
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
@@ -59,6 +63,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		held:        map[string]heldTypes{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
+		methodsHold: cp.JDK == platformMethodsJDK,
 	}
 	for p := range cp.Packages {
 		e.defined[p] = true
@@ -844,7 +849,9 @@ type heldTypes struct {
 // merged: a method owner declares runs on an object of each that does not override it.
 // A supertype is unseen when it is neither loaded, java/lang/Object, nor a platform type
 // platformMethods lists: an unopened dependency type, whose own supertypes are unknown,
-// or a platform type outside the list.
+// or a platform type outside the list. Every platform type is unseen when the runtime is
+// not the list's release: a later JDK can add a method to a listed type, and an earlier one
+// can declare a method since removed (JDK 8's SecurityManager.checkMemberAccess).
 func (e *Engine) heldAs(owner string) heldTypes {
 	if h, ok := e.held[owner]; ok {
 		return h
@@ -867,7 +874,7 @@ func (e *Engine) heldAs(owner string) heldTypes {
 			continue
 		}
 		pt, listed := platformMethods[cur]
-		if !listed || !e.platform(cur) {
+		if !listed || !e.methodsHold || !e.platform(cur) {
 			h.unseen = true
 			break
 		}
@@ -1290,7 +1297,14 @@ func (cp *Classpath) Add(pkgs map[string]bool, listed bool) {
 }
 
 // Merge adds everything other records.
+// A JDK only one side records is kept, and two that differ leave it unknown.
 func (cp *Classpath) Merge(other Classpath) {
 	cp.Add(other.Packages, true)
 	cp.Unlisted = cp.Unlisted || other.Unlisted
+	switch {
+	case cp.JDK == 0:
+		cp.JDK = other.JDK
+	case other.JDK != 0 && other.JDK != cp.JDK:
+		cp.JDK = 0
+	}
 }

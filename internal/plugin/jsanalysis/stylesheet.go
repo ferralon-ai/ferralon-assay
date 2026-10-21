@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -419,6 +420,7 @@ var scriptPreloadFlags = []string{"--config", "-c", "-r", "--require", "--loader
 type scriptSite struct {
 	root, dir string
 	scripts   map[string]bool
+	walk      *sourceWalk
 }
 
 // declares reports whether the manifest a package-manager command runs against (the site's own,
@@ -442,11 +444,13 @@ func (site scriptSite) declares(prefix, script string) bool {
 	return ok
 }
 
-// runsParsed reports whether file, run by node from the site's directory, is a module the source
-// walk parses, so that importsUnlisted reads what it loads: a regular in-tree file (realInTree)
-// with a jsExtensions extension, or named without one and found as such a .js file, under no
-// directory the walk skips, and outside every stock Create React App's src.
-func (site scriptSite) runsParsed(file string) bool {
+// runsParsed reports whether file, run from the site's directory by a runner that hands files
+// with exts extensions to node, is a module the source walk parses, so that importsUnlisted reads
+// what it loads: a regular in-tree file (realInTree) with such an extension, or named without one
+// and found as such a .js file, under no directory the walk skips, outside every stock Create
+// React App's src, and at a real path the walk itself lists (sourceWalk), which drops a .d.ts file
+// and a name spelled in another case than the one on disk.
+func (site scriptSite) runsParsed(file string, exts map[string]bool) bool {
 	rel, err := filepath.Rel(site.root, filepath.Join(site.dir, filepath.FromSlash(file)))
 	if err != nil {
 		return false
@@ -459,7 +463,7 @@ func (site scriptSite) runsParsed(file string) bool {
 		rel += ".js"
 	}
 	under, ok := realInTree(site.root, rel)
-	if !ok || !jsExtensions[path.Ext(rel)] || !jsExtensions[path.Ext(under)] ||
+	if !ok || !exts[path.Ext(rel)] || !exts[path.Ext(under)] ||
 		stockCRAPackage(site.root, rel) || stockCRAPackage(site.root, under) {
 		return false
 	}
@@ -468,14 +472,39 @@ func (site scriptSite) runsParsed(file string) bool {
 			return false
 		}
 	}
-	return true
+	return site.walk.lists(site.root, under)
+}
+
+// nodemonExtensions are the extensions nodemon hands to node; it runs a .ts file through ts-node,
+// which loads what tsconfig.json names first.
+var nodemonExtensions = map[string]bool{".js": true, ".mjs": true, ".cjs": true}
+
+// sourceWalk holds the files the source walk (jsFiles) lists under a build root, computed once.
+type sourceWalk struct {
+	files map[string]bool
+	done  bool
+}
+
+// lists reports whether the walk of root lists the root-relative path rel.
+func (w *sourceWalk) lists(root, rel string) bool {
+	if !w.done {
+		w.done = true
+		if files, err := jsFiles(root); err == nil {
+			w.files = map[string]bool{}
+			for _, f := range files {
+				w.files[f] = true
+			}
+		}
+	}
+	return w.files[filepath.Join(root, filepath.FromSlash(rel))]
 }
 
 // allowedScript reports whether every command in a package.json script, joined only by &&, is
 // one this lane knows loads no stylesheet through other tooling:
 //   - a reactScriptsCommand;
 //   - node running a file the source walk parses (runsParsed) with no flag before it, or nodemon
-//     running one with nothing else (nodemon reads its own options after the file);
+//     running a .js, .mjs or .cjs one with nothing else (nodemon reads its own options after the
+//     file);
 //   - npm, yarn or pnpm running, starting or testing a script that the manifest it runs against
 //     declares (and which is itself checked there), or installing, with packageManagerFlags only
 //     and no --prefix/--cwd into node_modules;
@@ -531,9 +560,9 @@ func allowedCommand(w []string, top bool, site scriptSite) bool {
 	case "react-scripts":
 		return reactScriptsArgs(w[1:])
 	case "node":
-		return len(w) > 1 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1])
+		return len(w) > 1 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1], jsExtensions)
 	case "nodemon":
-		return len(w) == 2 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1])
+		return len(w) == 2 && !strings.HasPrefix(w[1], "-") && site.runsParsed(w[1], nodemonExtensions)
 	case "npm", "yarn", "pnpm":
 		script, prefix, ok := packageManagerArgs(w[1:])
 		if !ok {
@@ -717,7 +746,7 @@ func styleToolingManifestData(root, dir string, data []byte) bool {
 			}
 		}
 	}
-	site := scriptSite{root: root, dir: dir, scripts: map[string]bool{}}
+	site := scriptSite{root: root, dir: dir, scripts: map[string]bool{}, walk: &sourceWalk{}}
 	if raw, ok := m["scripts"]; ok {
 		var scripts map[string]json.RawMessage
 		if json.Unmarshal(raw, &scripts) != nil {
@@ -788,21 +817,32 @@ var npmrcHookKeys = map[string]bool{
 	"shell": true, "onload-script": true, "userconfig": true, "globalconfig": true,
 }
 
-// npmrcHooks reports whether the .npmrc at file sets an npmrcHookKeys key, or cannot be read.
-// npm, pnpm and yarn classic all read a project .npmrc. A key loses one pair of enclosing quotes,
-// as npm's ini parser removes them, and is then compared more loosely than npm does:
-// case-insensitively, with _ as -.
+// npmrcHooks reports whether the .npmrc at file sets an npmrcHookKeys key, may set one through a
+// key npm rewrites, or cannot be read. npm, pnpm and yarn classic all read a project .npmrc. Lines
+// end at \n or \r, and a line starting with '#' or ';' is a comment. A key loses one pair of
+// enclosing quotes, as npm's ini parser removes them, and is then compared more loosely than npm
+// does: case-insensitively, with _ as -. A key npm may rewrite to another (a quote, escape or
+// ${…} substitution left in it, or any non-ASCII character such as a byte-order mark) counts as a
+// hook key, whatever it spells.
 func npmrcHooks(root, file string) bool {
 	data, ok := readInRoot(root, file, maxStyleManifest)
 	if !ok {
 		return true
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.FieldsFunc(string(data), func(r rune) bool { return r == '\n' || r == '\r' }) {
 		key, _, _ := strings.Cut(line, "=")
-		// A commented line's key keeps its '#' or ';', so it matches no hook key.
+		if t := strings.TrimLeft(key, " \t"); strings.HasPrefix(t, "#") || strings.HasPrefix(t, ";") {
+			continue
+		}
+		if strings.ContainsFunc(key, func(r rune) bool { return r > unicode.MaxASCII }) {
+			return true
+		}
 		key = strings.TrimSpace(key)
 		if len(key) >= 2 && (key[0] == '"' || key[0] == '\'') && key[len(key)-1] == key[0] {
 			key = key[1 : len(key)-1]
+		}
+		if strings.ContainsAny(key, "\"'\\$") {
+			return true
 		}
 		key = strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(key, "[]")), "_", "-")
 		if npmrcHookKeys[key] {

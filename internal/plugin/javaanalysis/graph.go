@@ -34,8 +34,8 @@ const PartialReasonOtherToolBuild = "other_tool_build"
 // that fails leaves that unknown, which counts as there being one. Every fact read from g is then
 // partial: the version answer, the inventory and the runtime closure alike.
 func OtherToolBuild(g *buildgraph.Graph, buildDir string) bool {
-	in, err := buildgraph.OtherToolInputs(buildDir, g.Tool.Name)
-	return err != nil || len(in) > 0
+	files, err := buildgraph.OtherToolBuildFiles(buildDir, g)
+	return err != nil || len(files) > 0
 }
 
 // PartialReasonUnlistedInstall marks a dependency inventory of a build that installs something

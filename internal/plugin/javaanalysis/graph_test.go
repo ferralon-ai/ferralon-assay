@@ -194,6 +194,40 @@ func TestCheckBuildGraph(t *testing.T) {
 	}
 }
 
+// The other tool's build is found wherever it lies outside the graph's recorded outputs, a
+// directory merely named target or build included.
+func TestOtherToolBuild_SkipsOnlyRecordedOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tool    string
+		outputs []string
+		file    string
+		want    bool
+	}{
+		{name: "POM under a target no build writes", tool: "gradle", outputs: []string{"build"}, file: "deploy/target/pom.xml", want: true},
+		{name: "POM under a recorded output", tool: "gradle", outputs: []string{"deploy/target"}, file: "deploy/target/pom.xml"},
+		{name: "Gradle build under a build no build writes", tool: "maven", outputs: []string{"target"}, file: "tools/build/build.gradle", want: true},
+		{name: "Gradle build under a recorded output", tool: "maven", outputs: []string{"tools/build"}, file: "tools/build/build.gradle"},
+		{name: "own build file only", tool: "maven", outputs: []string{"target"}, file: "pom.xml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, filepath.FromSlash(tc.file))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			g := &buildgraph.Graph{Tool: buildgraph.Tool{Name: tc.tool}}
+			g.Subject.Outputs = tc.outputs
+			if got := OtherToolBuild(g, dir); got != tc.want {
+				t.Errorf("OtherToolBuild = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // A checkout the other-tool walk cannot finish may hold the other build, so it counts as one.
 func TestOtherToolBuild_UnreadableDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {

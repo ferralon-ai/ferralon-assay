@@ -3,6 +3,7 @@ package jsanalysis
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Node's module loader can be reached under other names than a direct require('x') call:
@@ -195,6 +196,13 @@ func literalFunction(clean, src []rune, p int) (ok, open bool) {
 		lit, ok := plainLiteral(src, a)
 		if !ok {
 			return false, false
+		}
+		// JS names admit non-ASCII runes readWord does not (Nl letters, combining marks,
+		// ZWNJ), so a literal holding one may read a name the scan never sees.
+		for _, r := range lit {
+			if r >= utf8.RuneSelf {
+				return false, false
+			}
 		}
 		lits = append(lits, lit)
 		a = skipSpace(clean, a+1)

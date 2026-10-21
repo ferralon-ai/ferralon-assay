@@ -1861,6 +1861,22 @@ call(Function, 'return 1');
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"literal Function reading a name the scan cannot spell", map[string]string{"app.js": `
+const k = 'ev' + 'al';
+Ⅰ = globalThis;
+const g = Function('return Ⅰ');
+setTimeout(() => g()[k](process.argv[2]));
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"literal Function reading a parameter name joined to a ZWNJ", map[string]string{"app.js": `
+const k = 'ev' + 'al';
+x‌ = globalThis;
+const g = Function('x', 'return x‌');
+g()[k](process.argv[2]);
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

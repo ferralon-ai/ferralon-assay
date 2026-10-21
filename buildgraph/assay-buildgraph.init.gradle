@@ -159,14 +159,14 @@ def actionOrigin = { a ->
     x.getClass().name
 }
 
-// The repositories the settings declare: for every project, for plugins, and for the settings
-// script's own classpath, read once the settings are evaluated.
+// The settings' repository handlers: for every project, for plugins, and for the settings script's
+// own classpath. Each is kept live, so a repository a settings plugin adds later is still read.
 def settingsRepositories = []
 gradle.settingsEvaluated { s ->
     if (s.hasProperty('dependencyResolutionManagement')) {
-        settingsRepositories += s.dependencyResolutionManagement.repositories.toList()
+        settingsRepositories << s.dependencyResolutionManagement.repositories
     }
-    settingsRepositories += s.pluginManagement.repositories.toList() + s.buildscript.repositories.toList()
+    settingsRepositories << s.pluginManagement.repositories << s.buildscript.repositories
 }
 
 // foreignRoots are the directories p's resolutions fetch files into or from: the Gradle user home
@@ -177,7 +177,7 @@ gradle.settingsEvaluated { s ->
 def foreignRoots = { p ->
     def dirs = [p.gradle.gradleUserHomeDir]
     def opaque = []
-    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories).each { r ->
+    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories.collectMany { it.toList() }).each { r ->
         if (r instanceof FlatDirectoryArtifactRepository) {
             dirs.addAll(r.dirs)
         } else if (r instanceof UrlArtifactRepository) {
@@ -205,7 +205,7 @@ def observeTasks = { p, List<String> foreign ->
     def fetched = foreign.collect { new File(it).toPath() }
     def tasks = []
     try {
-        // assayBuildGraph is the task being configured, and only writes the graph.
+        // assayBuildGraph only writes the graph.
         def names = p.tasks.names.toList() - ['assayBuildGraph']
         names.each { n ->
             def k = p.tasks.named(n).get()
@@ -230,11 +230,6 @@ def observeTasks = { p, List<String> foreign ->
     }
     tasks
 }
-
-// A build script that configures every task as it is added (tasks.all) configures this one
-// before the rest of the script declares its repositories, tasks and configurations.
-def evaluated = false
-gradle.projectsEvaluated { evaluated = true }
 
 allprojects { p ->
     p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
@@ -295,8 +290,18 @@ allprojects { p ->
         }
         def repos = foreignRoots(p)
         def tasks = observeTasks(p, repos.roots)
-        if (!evaluated) {
-            tasks << [path: p.path, failure: 'assayBuildGraph was configured before the projects were evaluated']
+        // This task can be configured before the build has declared every repository, task and
+        // configuration: by a script's tasks.all, by a later projectsEvaluated callback, or under
+        // configure on demand. Once the task graph is ready, no task it runs can change, so the
+        // repositories and tasks are read again then, and a configuration added since is recorded.
+        def resolvable = { p.configurations.findAll { it.canBeResolved }.collect { it.name }.sort() }
+        def configured = resolvable()
+        p.gradle.taskGraph.whenReady {
+            repos = foreignRoots(p)
+            tasks = observeTasks(p, repos.roots)
+            if (resolvable() != configured) {
+                tasks << [path: p.path, failure: 'configurations were added after assayBuildGraph was configured']
+            }
         }
         def capture = { name ->
             def cfg = p.configurations.findByName(name)

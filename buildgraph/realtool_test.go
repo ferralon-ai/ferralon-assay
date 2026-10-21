@@ -797,9 +797,42 @@ func TestGradleComplete(t *testing.T) {
 			want:   "project :app: Ivy repository patterns has no URL to place the files it resolves by",
 		},
 		{
-			name:   "every task configured as it is added",
-			append: map[string]string{"app/build.gradle": "tasks.all { }\n"},
-			want:   "assayBuildGraph was configured before the projects were evaluated",
+			name: "Exec registered after a script configures every task",
+			append: map[string]string{"app/build.gradle": "tasks.all { }\n" +
+				"def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { dependsOn gen }\n"},
+			want: "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "Exec registered by a later projectsEvaluated callback",
+			append: map[string]string{"app/build.gradle": "gradle.projectsEvaluated { project(':app') { tasks.all { }; def gen = tasks.register('gen', Exec) { commandLine 'true' }; tasks.named('jar') { dependsOn gen } } }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "configuration added by a later projectsEvaluated callback",
+			append: map[string]string{"app/build.gradle": "gradle.projectsEvaluated { project(':app') { tasks.all { }; configurations.create('late') } }\n"},
+			want:   "configurations were added after assayBuildGraph was configured",
+		},
+		{
+			name: "Zip of a file in a repository a later projectsEvaluated callback adds",
+			append: map[string]string{
+				"app/build.gradle": "tasks.register('z', Zip) { from 'build/late/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n" +
+					"gradle.projectsEvaluated { project(':app') { tasks.all { }; repositories { flatDir { dirs 'build/late' } } } }\n",
+				"app/build/late/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a repository a later settingsEvaluated callback adds",
+			append: map[string]string{
+				"settings.gradle": "gradle.settingsEvaluated { s -> s.dependencyResolutionManagement.repositories.flatDir { dirs file('build/sl') } }\n",
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/sl/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/sl/x.txt":  "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name:   "configure on demand",
+			append: map[string]string{"gradle.properties": "org.gradle.configureondemand=true\n"},
 		},
 		{
 			name:   "flat directory in the checkout nothing unlisted resolves from",

@@ -27,17 +27,15 @@ const (
 
 // gradleProject is one project's assayBuildGraph output.
 type gradleProject struct {
-	Gradle     string `json:"gradle"`
-	Java       string `json:"java"`
-	JavaVendor string `json:"java_vendor"`
-	Path       string `json:"path"`
-	Dir        string `json:"dir"`
-	BuildFile  string `json:"build_file"`
-	BuildDir   string `json:"build_dir"`
-	UserHome   string `json:"user_home"`
-	// ForeignRoots are the user home and every file repository root, each as given and canonical.
-	ForeignRoots []string `json:"foreign_roots"`
-	// OpaqueRepos are the Ivy repositories with no URL, whose files have no root to place them by.
+	Gradle            string                     `json:"gradle"`
+	Java              string                     `json:"java"`
+	JavaVendor        string                     `json:"java_vendor"`
+	Path              string                     `json:"path"`
+	Dir               string                     `json:"dir"`
+	BuildFile         string                     `json:"build_file"`
+	BuildDir          string                     `json:"build_dir"`
+	UserHome          string                     `json:"user_home"`
+	ForeignRoots      []string                   `json:"foreign_roots"`
 	OpaqueRepos       []string                   `json:"opaque_repositories"`
 	RootDir           string                     `json:"root_dir"`
 	Group             string                     `json:"group"`

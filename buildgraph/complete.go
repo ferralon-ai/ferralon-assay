@@ -143,8 +143,8 @@ type gradleResolution struct {
 // resolution (a detached configuration, say) that resolved a file the graph does not hold. A
 // build script's own classpath is build logic, a POM file carries no code, a project's build
 // directory holds what the build made from its own sources (a sibling's classes, say) outside any
-// user home or file repository, and Gradle's transforms cache holds what it derived from an artifact some resolution
-// resolved (the Kotlin compiler's classpath snapshots).
+// user home or file repository, and Gradle's transforms cache holds what it derived from an
+// artifact some resolution resolved (the Kotlin compiler's classpath snapshots).
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)

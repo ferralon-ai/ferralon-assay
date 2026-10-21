@@ -905,7 +905,9 @@ func (e *Engine) heldAs(owner string) heldTypes {
 // and parameter types: a covariant override's bridge and the override itself both
 // match. Any other JDK call into m is reflective (deserialization hooks, java/beans,
 // JMX, method handles), and the search meets its JDK entry point as a hazard instead
-// (isReflection).
+// (isReflection). That holds only for reflection the searched code starts: an endpoint
+// launch flags enable, such as JMX remote or an RMI registry, deserializes into
+// readResolve and writeReplace with no call in the code, and is outside the search.
 func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
 	i := strings.IndexByte(m.Descriptor, ')')
 	if i < 0 {

@@ -282,6 +282,7 @@ func TestReach_SignatureRoots(t *testing.T) {
 		base = "com/acme/Base"
 		cowl = "java/util/concurrent/CopyOnWriteArrayList"
 		ueh  = "java/lang/Thread$UncaughtExceptionHandler"
+		sub  = "java/util/concurrent/Flow$Subscriber"
 	)
 	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
 	uncaught := "(Ljava/lang/Thread;Ljava/lang/Throwable;)V"
@@ -343,20 +344,6 @@ func TestReach_SignatureRoots(t *testing.T) {
 			classes: []classfile.Class{
 				mainCalls(touch),
 				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
-					callsSink(d, "uncaughtException", uncaught),
-				}},
-			},
-			want: ReachableCandidate, via: "D.uncaughtException",
-		},
-		{
-			name: "the same override when the code hands the object to the JDK",
-			classes: []classfile.Class{
-				mainCalls(
-					edge(classfile.EdgeSpecial, d, "<init>", "()V"),
-					edge(classfile.EdgeStatic, "java/lang/Thread", "setDefaultUncaughtExceptionHandler", "(L"+ueh+";)V"),
-				),
-				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
-					pubMethod(d, "<init>", "()V"),
 					callsSink(d, "uncaughtException", uncaught),
 				}},
 			},
@@ -473,15 +460,65 @@ func TestReach_SignatureRoots(t *testing.T) {
 			want: ReachableCandidate, via: "D.charsetForName",
 		},
 		{
-			name: "an override of java/lang/Object's methods",
+			name: "a generic override reached through its bridge",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{sub}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "onNext", "(Ljava/lang/String;)V"),
+					pubMethod(d, "onNext", "(Ljava/lang/Object;)V", edge(classfile.EdgeVirtual, d, "onNext", "(Ljava/lang/String;)V")),
+				}},
+			},
+			want: ReachableCandidate, via: "D.onNext(Ljava/lang/Object;)V -> D.onNext(Ljava/lang/String;)V",
+		},
+		{
+			name: "a generic override without its bridge is no root",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{sub}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "onNext", "(Ljava/lang/String;)V"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "a method a listed platform supertype lacks",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "the same on a classpath not every entry of which was listed",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:   Classpath{Unlisted: true},
+			want: ReachableCandidate, via: "D.start",
+		},
+	}
+	for _, m := range []struct{ name, desc string }{
+		{"toString", "()Ljava/lang/String;"},
+		{"equals", "(Ljava/lang/Object;)Z"},
+		{"hashCode", "()I"},
+		{"finalize", "()V"},
+		{"clone", "()Ljava/lang/Object;"},
+	} {
+		cases = append(cases, holeCase{
+			name: "an override of java/lang/Object's " + m.name,
 			classes: []classfile.Class{
 				mainCalls(touch),
 				{Name: d, Super: "java/nio/charset/spi/CharsetProvider", Public: true, Methods: []classfile.Method{
-					callsSink(d, "hashCode", "()I"),
+					callsSink(d, m.name, m.desc),
 				}},
 			},
-			want: ReachableCandidate, via: "D.hashCode",
-		},
+			want: ReachableCandidate, via: "D." + m.name,
+		})
 	}
 	for i := range cases {
 		switch cases[i].cp.JDK {

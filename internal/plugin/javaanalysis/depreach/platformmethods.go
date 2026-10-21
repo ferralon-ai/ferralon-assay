@@ -24,8 +24,9 @@ const platformMethodsJDK = 21
 // the roots plus the transitive closure of their supertypes (1100 types). A method is kept
 // when it is public or protected and neither static, final, private, <init> nor <clinit>:
 // a class-path class is in another runtime package, so it cannot override a
-// package-private method (JVMS §5.4.5). The key drops the return type so that a covariant
-// override matches the method it overrides.
+// package-private method (JVMS §5.4.5). A bridge is kept even when the method it calls is
+// final (Enum's compareTo(Ljava/lang/Object;)), which only adds a root. The key drops the
+// return type so that a covariant override matches the method it overrides.
 var platformMethods = map[string]platformType{
 	"java/io/BufferedInputStream": {
 		supers:  "java/io/FilterInputStream",

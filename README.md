@@ -142,7 +142,7 @@ against a filesystem corpus instead of the built-in table, and `-subject-java-ve
 `./ferralon-assay resolve-graph -dir /path/to/repo -out "$RUNNER_TEMP/graph"` runs the repository's own Maven or
 Gradle and writes its resolved dependency graph as `assay.buildgraph/v1` JSON (`buildgraph.json`) into
 `-out`, which must be an empty directory outside the repository; the command rejects any other path.
-It takes `-tool auto|maven|gradle`, `-profiles`, `-java-version`, `-D` and `-env`. The build
+It takes `-tool auto|maven|gradle`, `-profiles` and `-java-version`. The build
 tool fetches from the repositories your build configures. See the
 [operator guide](docs/operator-guide.md#resolving-the-jvm-build-graph).
 

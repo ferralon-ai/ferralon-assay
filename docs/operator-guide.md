@@ -188,11 +188,10 @@ ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
 | `-tool` | `auto` (default), `maven` or `gradle`. |
 | `-profiles` | Comma-separated Maven profiles to activate. |
 | `-java-version` | The JDK the job states; a different major version fails. |
-| `-D key=value` | Build property, repeatable: Maven `-D`, Gradle `-P`. |
-| `-env key=value` | Environment variable overlaid on the job's, repeatable. |
 
-A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan does not
-read this graph. This command runs your build's scripts and plugins, and the build tool fetches from
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan reads the
+graph with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK
+and profiles (`-subject-java-version`, `-subject-maven-profiles`). This command runs your build's scripts and plugins, and the build tool fetches from
 the repositories your build configures; see [threat-model.md](threat-model.md).
 
 ## State and run modes

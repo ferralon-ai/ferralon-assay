@@ -85,6 +85,8 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "input from a user home inside the checkout", userHome: "$ROOT/.gradle", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"$ROOT/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-simple/2.0.16/x/slf4j-simple-2.0.16.jar"}}}, want: "slf4j-simple-2.0.16.jar, outside the build"},
 		{name: "transforms cache in a user home inside the checkout", userHome: "$ROOT/.gradle", tasks: []gradleTask{{Path: ":compileKotlin", Type: "org.jetbrains.kotlin.gradle.tasks.KotlinCompile", Outside: []string{"$ROOT/.gradle/caches/8.14.6/transforms/1c35/transformed/guava_jar-snapshot.bin"}}}},
 		{name: "build file under a user home inside the checkout", userHome: "$ROOT/ci-cache/gradle", files: map[string]string{"ci-cache/gradle/caches/x/build.gradle": ""}},
+		{name: "outside input under a transforms directory below another cache", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/journal-1/transforms/agent.jar"}}}, want: "journal-1/transforms/agent.jar, outside the build"},
+		{name: "outside input from a cache named like transforms-<n>", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/transforms-backup/agent.jar"}}}, want: "transforms-backup/agent.jar, outside the build"},
 		{name: "outside input under transforms outside the caches", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/transforms/agent.jar"}}}, want: "reads /home/u/transforms/agent.jar"},
 		{name: "failed resolution", resolved: []gradleResolution{{Path: ":detachedConfiguration3", Failure: "Could not resolve\nmore"}}, want: "resolution of :detachedConfiguration3 failed: Could not resolve"},
 		{name: "no resolution recorded", noRecords: true, want: "recorded no resolution"},
@@ -281,6 +283,7 @@ func TestCheckedInArchives(t *testing.T) {
 		"vendor/opt":         outside,
 		"vendor/inside":      filepath.Join(dir, "lib"),
 		"vendor/built":       filepath.Join(dir, "target"),
+		"vendor/self":        dir,
 		"sub/build":          outside,
 		"app/node_modules":   outside,
 		"cache":              outside,
@@ -297,6 +300,13 @@ func TestCheckedInArchives(t *testing.T) {
 	nodes := []Node{
 		{ID: "h", File: &File{Path: filepath.Join(dir, "lib", "held.jar")}},
 		{ID: "a", Group: "g", Artifact: "a", Version: "1", File: &File{Path: filepath.Join(dir, ".m2", "repository", "g", "a", "1", "a-1.jar")}},
+		// None of these is laid out under its coordinates, or it is system-scoped, so none names
+		// a repository; the last is laid out from the checkout root, which is never an output.
+		{ID: "s", Group: "g", Artifact: "s", Version: "1", Scope: "system", File: &File{Path: filepath.Join(dir, "x0", "g", "s", "1", "s-1.jar")}},
+		{ID: "v", Group: "g", Artifact: "v", Version: "9", File: &File{Path: filepath.Join(dir, "x1", "g", "v", "2", "v-2.jar")}},
+		{ID: "r", Group: "g", Artifact: "r", Version: "1", File: &File{Path: filepath.Join(dir, "x2", "g", "z", "1", "r-1.jar")}},
+		{ID: "q", Group: "g.h", Artifact: "q", Version: "1", File: &File{Path: filepath.Join(dir, "x3", "g", "x", "q", "1", "q-1.jar")}},
+		{ID: "o", Group: "g", Artifact: "o", Version: "1", File: &File{Path: filepath.Join(dir, "g", "o", "1", "o-1.jar")}},
 	}
 	g := &Graph{Modules: []Module{{Nodes: nodes}}}
 	g.Subject.Outputs = append(mavenOutputs(dir, []reactorProject{{key: "g:app", file: "pom.xml"}}, nil, g.Modules), "build", "cache")
@@ -307,7 +317,7 @@ func TestCheckedInArchives(t *testing.T) {
 		"app/.gradle/agent.jar", "app/node_modules", "libs/agent.jar", "libs/gone.jar", "libs/linked.jar", "libs/m2-tools.jar",
 		"sub/build", "sub/gradle/wrapper/gradle-wrapper.jar", "tools/build/vendor/ojdbc8.jar", "tools/target/agent.jar",
 		"vendor/.m2/ojdbc8.jar", "vendor/built", "vendor/classes/A.class", "vendor/conn.rar", "vendor/java.sql.jmod",
-		"vendor/lib.aar", "vendor/m2/a.jar", "vendor/opt", "vendor/sdk.zip", "web/app.WAR", "web/node_modules/agent.jar",
+		"vendor/lib.aar", "vendor/m2/a.jar", "vendor/opt", "vendor/sdk.zip", "vendor/self", "web/app.WAR", "web/node_modules/agent.jar",
 	}
 	for _, root := range []string{dir, via} {
 		got, err := CheckedInArchives(root, g)
@@ -329,6 +339,16 @@ func TestCheckedInArchives(t *testing.T) {
 		if !slices.Contains(got, "target/app.jar") || !slices.Contains(got, "build/libs/app.jar") || !slices.Contains(got, "cache") {
 			t.Errorf("outputs %q: archives = %q, want build output and the cache link listed", outputs, got)
 		}
+	}
+}
+
+// A build directory or user home at the checkout root is never an output, or the whole
+// checkout would go unwalked.
+func TestGradleOutputsNeverHoldTheRoot(t *testing.T) {
+	dir := t.TempDir()
+	out := gradleOutputs(dir, []gradleProject{{Path: ":", Dir: dir, BuildDir: dir, UserHome: dir}}, nil)
+	if slices.Contains(out, ".") {
+		t.Errorf("outputs = %q", out)
 	}
 }
 
@@ -376,5 +396,18 @@ func checkOrphanLinks(t *testing.T, dir string) {
 		if !hasReason(maven, want) {
 			t.Errorf("maven: want a reason with %q, got %q", want, maven)
 		}
+	}
+}
+
+// A project without a group records its aliases as ":name" or "null:name"; neither names a
+// coordinate, so neither is kept.
+func TestGradleModuleAliases(t *testing.T) {
+	ms, err := gradleModule(gradleProject{Path: ":app", RootDir: "/r", Dir: "/r/app", Group: "com.acme", Name: "app", Version: "1",
+		Aliases: []string{"com.acme:app", "com.acme:app-core", ":app-core", "null:app-core", "com.acme:", "com.acme:app-core"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ms[0].Aliases; !slices.Equal(got, []string{"com.acme:app-core"}) {
+		t.Errorf("aliases = %q", got)
 	}
 }

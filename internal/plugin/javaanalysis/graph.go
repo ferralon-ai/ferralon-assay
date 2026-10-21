@@ -162,17 +162,17 @@ func isCoordinate(n buildgraph.Node, coordinate string) bool {
 }
 
 // moduleCoordinates returns the group:artifact of every module, and every alias it publishes
-// under.
+// under, lower-cased, since graph lookups compare coordinates case-insensitively.
 func moduleCoordinates(g *buildgraph.Graph) map[string]bool {
 	out := make(map[string]bool, len(g.Modules))
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {
 			if n.ID == m.Root {
-				out[n.Group+":"+n.Artifact] = true
+				out[strings.ToLower(n.Group+":"+n.Artifact)] = true
 			}
 		}
 		for _, a := range m.Aliases {
-			out[a] = true
+			out[strings.ToLower(a)] = true
 		}
 	}
 	return out
@@ -362,7 +362,7 @@ func RuntimeSelection(g *buildgraph.Graph) (load []RuntimeJar, miss []RuntimeMis
 		}
 		for _, n := range m.Nodes {
 			c := n.Group + ":" + n.Artifact
-			if roots[n.ID] || reactor[c] || !runtimeScope(n.Scope) {
+			if roots[n.ID] || reactor[strings.ToLower(c)] || !runtimeScope(n.Scope) {
 				continue
 			}
 			byCoord[c] = append(byCoord[c], n)

@@ -337,6 +337,10 @@ func gradleModule(p gradleProject) ([]Module, error) {
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
 	for _, a := range p.Aliases {
+		// A project without a group records ":name" or "null:name", which no artifact carries.
+		if group, artifact, _ := strings.Cut(a, ":"); group == "" || group == "null" || artifact == "" {
+			continue
+		}
 		if a != self.Group+":"+self.Name && !slices.Contains(m.Aliases, a) {
 			m.Aliases = append(m.Aliases, a)
 		}

@@ -80,6 +80,11 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "settings file no project reads", files: map[string]string{"sample/settings.gradle.kts": ""}, want: "sample/settings.gradle.kts"},
 		{name: "build files in buildSrc and an included build", files: map[string]string{"buildSrc/build.gradle.kts": "", "logic/build.gradle": "", "logic/settings.gradle": ""}},
 		{name: "build file under build output", files: map[string]string{"build/tmp/build.gradle": ""}},
+		{name: "build file in a directory named like buildSrc", files: map[string]string{"buildSrcOld/build.gradle": ""}, want: "buildSrcOld/build.gradle is a Gradle build file"},
+		{name: "outside input under a build directory outside the checkout", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/repo/app/build/libs/agent.jar"}}}, want: "reads /repo/app/build/libs/agent.jar"},
+		{name: "resolution from the transforms cache", resolved: []gradleResolution{resolution(":detachedConfiguration4", "/home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar")}, want: "resolved /home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar"},
+		{name: "resolution of a file named like a POM", resolved: []gradleResolution{resolution(":detachedConfiguration5", "/cache/agent-1.0.pom.jar")}, want: "resolved /cache/agent-1.0.pom.jar"},
+		{name: "run alias not observed", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec"), {Path: ":go", Type: "org.gradle.api.DefaultTask", Depends: []string{":run"}, Failure: "boom"}}, want: "task :run runs a program"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -211,14 +216,68 @@ func TestCheckedInArchives(t *testing.T) {
 		"build/libs/app.jar":                    "x",
 		"src/main/resources/notes.txt":          "x",
 		"sub/gradle/wrapper/gradle-wrapper.jar": "x",
+		"vendor/m2/a.jar":                       "x",
+		"libs/m2-tools.jar":                     "x",
+		"store/agent.bin":                       "x",
 	})
+	outside := t.TempDir()
+	writeFiles(t, outside, map[string]string{"agent.jar": "x"})
+	links := map[string]string{
+		"libs/linked.jar":    filepath.Join(dir, "store", "agent.bin"),
+		"libs/held-link.jar": filepath.Join(dir, "lib", "held.jar"),
+		"libs/gone.jar":      filepath.Join(dir, "missing.jar"),
+		"vendor/opt":         outside,
+		"vendor/inside":      filepath.Join(dir, "lib"),
+		"sub/build":          outside,
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	g := &Graph{Modules: []Module{{Nodes: []Node{{ID: "h", File: &File{Path: filepath.Join(dir, "lib", "held.jar")}}}}}}
 	got, err := CheckedInArchives(dir, g)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"libs/agent.jar", "sub/gradle/wrapper/gradle-wrapper.jar", "web/app.WAR"}
+	want := []string{"libs/agent.jar", "libs/gone.jar", "libs/linked.jar", "libs/m2-tools.jar", "sub/gradle/wrapper/gradle-wrapper.jar", "vendor/m2/a.jar", "vendor/opt", "web/app.WAR"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("archives = %q, want %q", got, want)
+	}
+}
+
+func TestOrphanBuildFileLinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	writeFiles(t, dir, map[string]string{"settings.gradle": "", "store/tools.gradle": "", "store/tools.xml": ""})
+	for name, target := range map[string]string{
+		"tools/build.gradle": filepath.Join(dir, "store", "tools.gradle"),
+		"tools/pom.xml":      filepath.Join(dir, "store", "tools.xml"),
+		"shared":             outside,
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gradle, err := gradleOrphanBuildFiles(dir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maven, err := mavenOrphanPOMs(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tools/build.gradle is a Gradle build file", "shared links to a directory outside the checkout"} {
+		if !hasReason(gradle, want) {
+			t.Errorf("gradle: want a reason with %q, got %q", want, gradle)
+		}
+	}
+	for _, want := range []string{"tools/pom.xml is a POM the reactor does not read", "shared links to a directory outside the checkout"} {
+		if !hasReason(maven, want) {
+			t.Errorf("maven: want a reason with %q, got %q", want, maven)
+		}
 	}
 }

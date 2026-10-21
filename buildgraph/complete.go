@@ -287,7 +287,7 @@ func gradleOrphanBuildFiles(dir string, projects []gradleProject, included []str
 			read[rel] = true
 		}
 	}
-	scripts, err := collectInputs(dir, func(rel, name string) bool {
+	scripts, err := treeFiles(dir, func(rel, name string) bool {
 		return name == "build.gradle" || name == "build.gradle.kts" || name == "settings.gradle" || name == "settings.gradle.kts"
 	})
 	if err != nil {
@@ -296,10 +296,13 @@ func gradleOrphanBuildFiles(dir string, projects []gradleProject, included []str
 	trees := append(slices.Clone(included), "buildSrc")
 	var out []string
 	for _, s := range scripts {
-		if read[s.Path] || slices.ContainsFunc(trees, func(t string) bool { return strings.HasPrefix(s.Path, t+"/") }) {
-			continue
+		switch {
+		case s.Escapes:
+			out = append(out, s.Path+" links to a directory outside the checkout")
+		case read[s.Path] || slices.ContainsFunc(trees, func(t string) bool { return strings.HasPrefix(s.Path, t+"/") }):
+		default:
+			out = append(out, s.Path+" is a Gradle build file no project of the build reads")
 		}
-		out = append(out, s.Path+" is a Gradle build file no project of the build reads")
 	}
 	return out, nil
 }
@@ -560,16 +563,75 @@ func mavenOrphanPOMs(dir string, reactor []reactorProject) ([]string, error) {
 		read[target] = true
 		queue = append(queue, target)
 	}
-	poms, err := collectInputs(dir, func(rel, name string) bool { return name == "pom.xml" })
+	poms, err := treeFiles(dir, func(rel, name string) bool { return name == "pom.xml" })
 	if err != nil {
 		return nil, err
 	}
 	var out []string
 	for _, p := range poms {
-		if !read[p.Path] {
+		switch {
+		case p.Escapes:
+			out = append(out, p.Path+" links to a directory outside the checkout")
+		case !read[p.Path]:
 			out = append(out, p.Path+" is a POM the reactor does not read")
 		}
 	}
+	return out, nil
+}
+
+// treeEntry is a file treeFiles lists, or a directory link leaving the tree (Escapes).
+type treeEntry struct {
+	Path    string
+	Escapes bool
+}
+
+// treeFiles lists the files under dir that match accepts, by slash path from dir, skipping what
+// collectInputs skips. A build follows symlinks, so a link is listed by its own name whatever it
+// points at. A directory link is walked through its target when that lies inside dir; one that
+// leaves dir hides what it holds and is listed as Escapes whatever its name, unless it is named
+// as build output or a tool cache.
+func treeFiles(dir string, match func(rel, name string) bool) ([]treeEntry, error) {
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, &Failure{Kind: KindToolFailed, Detail: "inputs", Log: err.Error()}
+	}
+	var out []treeEntry
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != dir && skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.Type()&fs.ModeSymlink != 0 {
+			if t, err := filepath.EvalSymlinks(p); err == nil {
+				if fi, err := os.Stat(t); err == nil && fi.IsDir() {
+					if _, inside := relPath(root, t); !inside && !skipDirs[d.Name()] {
+						out = append(out, treeEntry{Path: rel, Escapes: true})
+					}
+					return nil
+				}
+			}
+		} else if !d.Type().IsRegular() {
+			return nil
+		}
+		if match(rel, d.Name()) {
+			out = append(out, treeEntry{Path: rel})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, &Failure{Kind: KindToolFailed, Detail: "inputs", Log: err.Error()}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
 
@@ -620,7 +682,7 @@ func CheckedInArchives(dir string, g *Graph) ([]string, error) {
 			held[r] = true
 		}
 	}
-	archives, err := collectInputs(dir, func(rel, name string) bool {
+	archives, err := treeFiles(dir, func(rel, name string) bool {
 		switch strings.ToLower(path.Ext(name)) {
 		case ".jar", ".war", ".ear":
 			return !wrapperJars[rel] && !slices.Contains(strings.Split(path.Dir(rel), "/"), ".m2")
@@ -633,7 +695,7 @@ func CheckedInArchives(dir string, g *Graph) ([]string, error) {
 	var out []string
 	for _, a := range archives {
 		r, err := evalExisting(filepath.Join(dir, filepath.FromSlash(a.Path)))
-		if err != nil || !held[r] {
+		if a.Escapes || err != nil || !held[r] {
 			out = append(out, a.Path)
 		}
 	}

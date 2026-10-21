@@ -229,6 +229,7 @@ func TestListsEveryInstall(t *testing.T) {
 		{name: "checked-in archive", files: map[string]string{"libs/agent.jar": "x"}},
 		{name: "wrapper jar only", files: map[string]string{"gradle/wrapper/gradle-wrapper.jar": "x"}, absent: true},
 		{name: "advisory on a module's alias", coord: "com.example:app-core", edit: func(g *buildgraph.Graph) { g.Modules[0].Aliases = []string{"com.example:app-core"} }, wantRoot: true},
+		{name: "advisory on a coordinate an alias prefixes", coord: "com.example:app-core-extras", edit: func(g *buildgraph.Graph) { g.Modules[0].Aliases = []string{"com.example:app-core"} }, absent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

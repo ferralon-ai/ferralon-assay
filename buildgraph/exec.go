@@ -173,9 +173,8 @@ func collectInputs(dir string, match func(rel, name string) bool) ([]Input, erro
 }
 
 // treeSkipDirs are never walked inside an included build, wherever they sit: VCS metadata and
-// tool caches, none a source package name can take. IDE state (.idea) is skipped only outside a
-// src directory, since a resource directory inside one can take the name; build output only
-// where it lives.
+// tool caches, none a source package name can take; build output only where it lives. IDE state
+// (.idea) is walked, since a resource directory can take the name.
 var treeSkipDirs = map[string]bool{".git": true, ".gradle": true, ".kotlin": true, "node_modules": true}
 
 // collectTree digests every file under root/sub, an included build, by slash path from root. It
@@ -193,7 +192,7 @@ func collectTree(root, sub string, required bool) ([]Input, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != base && (treeSkipDirs[d.Name()] || d.Name() == ".idea" && !inSource(base, filepath.Dir(p)) || d.Name() == "build" && buildOutput(base, filepath.Dir(p))) {
+			if p != base && (treeSkipDirs[d.Name()] || d.Name() == "build" && buildOutput(base, filepath.Dir(p))) {
 				return filepath.SkipDir
 			}
 			return nil

@@ -174,7 +174,7 @@ func runBaseline(args []string) error {
 
 	ctx := context.Background()
 
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries)
+	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return err
 	}
@@ -225,14 +225,14 @@ func runBaseline(args []string) error {
 	}
 
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph); err != nil {
 		return err
 	}
 
 	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
-	return nil
+	return acq.graph.err()
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store

@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -12,14 +14,15 @@ import (
 // resolve.go — ResolveDependencySymbols (P2, §8 row 4): map the advisory's GIVEN vulnerable
 // symbol(s) onto concrete symbols in the DEPENDENCY artifact the advisory names. Unlike the
 // Java/.NET lanes (which resolve advisory symbols against FIRST-PARTY build output), the
-// Kotlin lane resolves them against the dependency JAR itself: it locates the artifact in the
-// build's local caches (LocateDependencyJar — zero-egress, never fetches), indexes it through
-// the shared classfile reader, and matches the advisory symbol to a bytecode-canonical
+// Kotlin lane resolves them against the dependency JAR itself: the JAR the build graph names for
+// it (javaanalysis.CoordinateJars, digest-checked on read), indexed through the shared classfile
+// reader, and matches the advisory symbol to a bytecode-canonical
 // plugin.Symbol. This is the sound reuse of the JVM substrate row 4 asks for.
 //
 // Honest-absent on every gap (inv.5), never a fabricated match:
-//   - coordinate/version underivable, or the JAR absent from every local cache → declared
-//     tool-unavailable partiality (no_dependency_artifact), empty resolution.
+//   - no build graph → build_graph_absent, empty resolution.
+//   - coordinate underivable, or the graph names no JAR for it → declared tool-unavailable
+//     partiality (no_dependency_artifact), empty resolution.
 //   - the JAR present but unreadable/partly unparseable → tool_failure partiality (a class
 //     the analyzer could not read is a place a symbol could hide).
 //   - the JAR fully read but no advisory symbol found in it → declared
@@ -27,9 +30,8 @@ import (
 //     result stays non-Complete so no consumer reads the empty set as "not affected".
 
 // partialReasonNoDependencyArtifact localizes the shared tool_failure base for the
-// dependency-artifact-unavailable frontier: the advisory's dependency JAR could not be
-// located in (or read from) the build's local caches — its version was UNRESOLVED, its
-// coordinate underivable, or no cache held it. Operational (artifact availability), not a
+// dependency-artifact-unavailable frontier: the build graph names no JAR for the advisory's
+// coordinate, or the coordinate is underivable. Operational (artifact availability), not a
 // language capability boundary.
 const partialReasonNoDependencyArtifact = plugin.PartialReasonToolFailure + ":no_dependency_artifact"
 
@@ -45,7 +47,7 @@ const partialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
 // from the dependency JAR, so each carries an Origin: the dependency's PURL without version.
 // Matched maps each advisory symbol, verbatim as the request carried it, to the SCIPs it
 // resolved to; an advisory symbol that resolved to nothing is absent from it.
-func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest) (plugin.SymbolResolutionResult, error) {
+func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsRequest, opts ...javaanalysis.Option) (plugin.SymbolResolutionResult, error) {
 	seen := map[string]bool{}
 	wanted := make([]string, 0, len(req.AdvisorySymbols))
 	for _, s := range req.AdvisorySymbols {
@@ -59,13 +61,21 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 		return plugin.SymbolResolutionResult{Partiality: plugin.Complete()}, nil
 	}
 
-	jarPaths, reasons, ok := dependencyJars(ctx, req)
+	g := javaanalysis.BuildGraph(opts...)
+	if g == nil {
+		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(javaanalysis.PartialReasonBuildGraphAbsent)}, nil
+	}
+	jars, reasons, ok := dependencyJars(g, req.PURL)
 	if !ok {
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(partialReasonNoDependencyArtifact)}, nil
 	}
 	var classes []classfile.Class
-	for _, jarPath := range jarPaths {
-		jr, err := classfile.LoadJar(jarPath)
+	for _, j := range jars {
+		data, ok := javaanalysis.ReadRuntimeJar(j)
+		if !ok {
+			return plugin.SymbolResolutionResult{Partiality: plugin.Partial(plugin.PartialReasonToolFailure)}, nil
+		}
+		jr, err := classfile.LoadJarBytes(data)
 		if err != nil {
 			// A located-but-unreadable artifact is a declared tool_failure partiality (V2's
 			// "artifact unreadable" mode), NOT a hard error — a corrupt cached JAR must not
@@ -86,8 +96,7 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 
 	var origins map[string]string
 	if len(resolved) > 0 {
-		group, artifact, _ := splitCoordinate(coordinate)
-		origin := "pkg:maven/" + group + "/" + artifact
+		origin := "pkg:maven/" + strings.Replace(coordinate, ":", "/", 1)
 		origins = make(map[string]string, len(resolved))
 		for _, sym := range resolved {
 			origins[sym.SCIP] = origin
@@ -101,96 +110,30 @@ func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequ
 	return plugin.SymbolResolutionResult{Partiality: part, Resolved: resolved, Origins: origins, Matched: matched}, nil
 }
 
-// dependencyJars returns the JAR(s) holding the bytes the build runs for the advisory's
-// package. When the build's start scripts name the coordinate on a runtime classpath, those
-// JARs are it (Gradle conflict resolution may have picked a version other than the declared
-// one); a version the PURL pins that differs from them is declared. Otherwise, when the
-// Gradle lockfile locks the coordinate, the version is the one runtimeClasspath locks (the same
-// selection the dependency closure loads), and a differing pinned version is declared. Otherwise
-// the version comes from the PURL or the build files. The JAR comes from the local caches. ok
-// is false when no JAR can be located, or when the lockfile selects no single runtime version.
-func dependencyJars(ctx context.Context, req plugin.ResolveSymbolsRequest) (paths []string, reasons map[string]bool, ok bool) {
+// dependencyJars returns the JARs the build graph resolved for the advisory's package, at the
+// version the PURL pins when the build resolved that one. A pinned version the build did not
+// resolve is declared, and every version the build did resolve is searched instead: those are
+// the bytes that run. ok is false when the PURL is not a Maven package or the graph names no JAR
+// for it.
+func dependencyJars(g *buildgraph.Graph, purl string) (jars []javaanalysis.RuntimeJar, reasons map[string]bool, ok bool) {
 	reasons = map[string]bool{}
-	coordinate, pinned, ok := parseMavenPURL(req.PURL)
+	coordinate, pinned, ok := parseMavenPURL(purl)
 	if !ok {
 		return nil, nil, false
 	}
-	if jars := runtimeClasspathJars(req.BuildDir, coordinate); len(jars) > 0 {
-		for _, j := range jars {
-			paths = append(paths, j.path)
-			if pinned != "" && j.version != pinned {
-				reasons[partialReasonNoDependencyArtifact] = true
-			}
+	all := javaanalysis.CoordinateJars(g, coordinate, "")
+	for _, j := range all {
+		if j.Version == pinned {
+			jars = append(jars, j)
 		}
-		return paths, reasons, true
 	}
-	if locks, ok := readRuntimeLocks(req.BuildDir); ok && locks.locked[coordinate] {
-		version, _, _ := locks.selection(coordinate)
-		if version == "" {
-			return nil, nil, false
-		}
-		if pinned != "" && version != pinned {
+	if len(jars) == 0 {
+		if pinned != "" && len(all) > 0 {
 			reasons[partialReasonNoDependencyArtifact] = true
 		}
-		jarPath, ok := LocateDependencyJar(req.BuildDir, coordinate, version)
-		if !ok {
-			return nil, nil, false
-		}
-		return []string{jarPath}, reasons, true
+		jars = all
 	}
-	coordinate, version, ok := coordinateAndVersion(ctx, req)
-	if !ok {
-		return nil, nil, false
-	}
-	jarPath, ok := LocateDependencyJar(req.BuildDir, coordinate, version)
-	if !ok {
-		return nil, nil, false
-	}
-	return []string{jarPath}, reasons, true
-}
-
-// runtimeClasspathJars returns the distinct JARs for coordinate ("group:artifact") on the
-// build's start-script classpath.
-func runtimeClasspathJars(buildDir, coordinate string) []classpathJar {
-	rc, ok := findRuntimeClasspath(buildDir)
-	if !ok {
-		return nil
-	}
-	index := gradleCacheIndex(buildDir)
-	seen := map[string]bool{}
-	var out []classpathJar
-	for _, name := range rc.entries {
-		j, ok := locateClasspathJar(buildDir, rc, index, name)
-		if ok && j.group+":"+j.artifact == coordinate && !seen[j.path] {
-			seen[j.path] = true
-			out = append(out, j)
-		}
-	}
-	return out
-}
-
-// coordinateAndVersion derives the dependency coordinate ("group:artifact") and a concrete
-// version from the request. The coordinate comes from the advisory PURL; the version comes
-// from the PURL when it pins one (`@version`), otherwise from the build files via
-// ResolveDependencyVersions (P1). ok is false when the coordinate cannot be parsed from a
-// Maven PURL or no concrete version can be determined — either way the JAR cannot be located
-// and the caller declares a tool-unavailable partiality.
-func coordinateAndVersion(ctx context.Context, req plugin.ResolveSymbolsRequest) (coordinate, version string, ok bool) {
-	coordinate, version, ok = parseMavenPURL(req.PURL)
-	if !ok {
-		return "", "", false
-	}
-	if version != "" {
-		return coordinate, version, true
-	}
-	vres, err := ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{
-		BuildDir:   req.BuildDir,
-		Coordinate: coordinate,
-	})
-	if err != nil || !vres.Found || !vres.Match.Resolved || vres.Match.Version == "" {
-		return "", "", false
-	}
-	return coordinate, vres.Match.Version, true
+	return jars, reasons, len(jars) > 0
 }
 
 // parseMavenPURL parses "pkg:maven/<group>/<artifact>[@version][?qualifiers]" into a

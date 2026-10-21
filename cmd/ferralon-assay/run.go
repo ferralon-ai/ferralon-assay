@@ -60,6 +60,8 @@ const (
 	envSubjectJavaVersion = brand.EnvPrefix + "_SUBJECT_JAVA_VERSION"
 	// envSubjectMavenProfiles is the env channel for -subject-maven-profiles.
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
+	// envBuildGraphTool is the env channel for -build-graph-tool.
+	envBuildGraphTool = brand.EnvPrefix + "_BUILD_GRAPH_TOOL"
 )
 
 // envTrustObservedGo carries the caller's assertion, set in the env of the step that runs the Action,
@@ -256,8 +258,9 @@ func composeSinks(env github.Env, outDir, runsURL string, refs deliveryRefs, tok
 // in this same binary, so nothing about the analyzed ref needs to travel through the environment.
 // It is the ONLY thing it is used for here: it selects the delivery channel and changes neither
 // what was analyzed nor what is published on any other sink.
-func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string) error {
+func publishResult(ctx context.Context, outDir string, rep *report.Report, intel report.IntelProvenance, analyzeRef string, graph *jvmGraph) error {
 	rep.Provenance.Intel = &intel
+	rep.BuildGraph = graph.record()
 	res, err := buildResult(rep)
 	if err != nil {
 		return err
@@ -440,6 +443,8 @@ type runConfig struct {
 	// analyzeRef is the resolved .github/ferralon.yml analyze.ref (empty on the default path),
 	// carried from acquireTarget so publishResult can gate delivery on the canonical ref.
 	analyzeRef string
+	// graph is the JVM scan's build graph; nil for every other language.
+	graph *jvmGraph
 }
 
 // runFlags registers the flags common to the pr-inherit / cve-watch modes. It reuses
@@ -462,6 +467,8 @@ type runFlags struct {
 	subjectGo        *string
 	subjectJava      *string
 	subjectMvnProf   *string
+	buildGraph       *string
+	buildGraphTool   *string
 	resolvedFacts    string // FactSource* — set by advisoryCorpusOption
 	resolvedCorpus   pipeline.CorpusInfo
 	resolvedCorpusOK bool
@@ -534,11 +541,17 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
 		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
-		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
-		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
+		// subjectJava is the JDK the build graph must be resolved on; a caller statement, never looked up.
+		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's build (what `mvn -v` or `gradle -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK). With -build-graph auto, a build tool running on another major version fails the run; with a graph file, the file must record the same statement; with off it is unused. Overrides "+envSubjectJavaVersion+" (default: unstated, and the graph records the JVM the tool ran on)"),
 
 		// subjectMvnProf is the build's explicit Maven profile selection; a caller statement, never looked up.
-		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax: its -P list together with settings.xml <activeProfiles>, e.g. \"release,!docs\", or \",\" for none; overrides "+envSubjectMavenProfiles+" (default: unstated, and every profile of the reactor and its parents is reported as undecided)"),
+		// buildGraph is where a Java or Kotlin scan's dependency graph comes from (D7: no static fallback).
+		buildGraph: fs.String("build-graph", buildGraphAuto, "where a Java or Kotlin scan's dependency graph comes from: auto runs the repository's own Maven or Gradle with this job's environment and JDK; a path reads a graph resolved ahead of the scan (`"+brand.Name+" resolve-graph`); off scans without one and records that. A graph that cannot be had fails the run once the Report is published"),
+
+		// buildGraphTool is which build the graph is resolved from; a caller statement, never guessed.
+		buildGraphTool: fs.String("build-graph-tool", "", "which build tool the build graph comes from: auto, maven or gradle. auto takes the one whose build files are at the repository root, and fails the run when both are; with a graph file, a stated tool must be the one that resolved it; with off it is unused. Overrides "+envBuildGraphTool+" (default: auto)"),
+
+		subjectMvnProf: fs.String("subject-maven-profiles", "", "the explicit Maven profile selection of the SCANNED repository's build, in -P syntax, e.g. \"release,!docs\". With -build-graph auto it is passed to Maven as -P, and stating one for a Gradle build fails the run; with a graph file, the file must record the same selection; with off it is unused. Overrides "+envSubjectMavenProfiles+" (default: unstated, and Maven activates profiles as the build does)"),
 	}
 }
 
@@ -893,47 +906,24 @@ func (f *runFlags) subjectToolchainOption() pipeline.AssessOption {
 	return pipeline.WithSubjectToolchain(declared, observed, trustObservedGo())
 }
 
-// subjectJavaOption passes the subject's Java version (-subject-java-version, then
-// envSubjectJavaVersion) to inventory resolution, or returns nil when neither is set.
-func (f *runFlags) subjectJavaOption() pipeline.AssessOption {
-	v := strings.TrimSpace(*f.subjectJava)
-	if v == "" {
-		v = strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
+// subjectJavaVersion is -subject-java-version, then envSubjectJavaVersion.
+func (f *runFlags) subjectJavaVersion() string {
+	if v := strings.TrimSpace(*f.subjectJava); v != "" {
+		return v
 	}
-	if v == "" {
-		return nil
-	}
-	return pipeline.WithSubjectJavaVersion(v)
+	return strings.TrimSpace(os.Getenv(envSubjectJavaVersion))
 }
 
-// subjectMavenProfilesOption passes the subject build's explicit Maven profile selection
-// (-subject-maven-profiles, then envSubjectMavenProfiles) to inventory resolution, or returns nil
-// when neither is set.
-func (f *runFlags) subjectMavenProfilesOption() pipeline.AssessOption {
-	v := strings.TrimSpace(*f.subjectMvnProf)
-	if v == "" {
-		v = strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
+// subjectMavenProfiles is -subject-maven-profiles, then envSubjectMavenProfiles.
+func (f *runFlags) subjectMavenProfiles() string {
+	if v := strings.TrimSpace(*f.subjectMvnProf); v != "" {
+		return v
 	}
-	if v == "" {
-		return nil
-	}
-	return pipeline.WithSubjectMavenProfiles(v)
-}
-
-// subjectOptions returns the subject conditions run and baseline both take: the Java version and
-// the Maven profile selection. A condition added here reaches both commands.
-func (f *runFlags) subjectOptions() []pipeline.AssessOption {
-	var opts []pipeline.AssessOption
-	for _, opt := range []pipeline.AssessOption{f.subjectJavaOption(), f.subjectMavenProfilesOption()} {
-		if opt != nil {
-			opts = append(opts, opt)
-		}
-	}
-	return opts
+	return strings.TrimSpace(os.Getenv(envSubjectMavenProfiles))
 }
 
 // baselineAssessOptions assembles baseline's Assess options after the plugin seam: the advisory
-// corpus and the shared subject conditions. The subject Go toolchain and its reachability gate
+// corpus. The subject Go toolchain and its reachability gate
 // stay out of baseline, deliberately: changing what baseline measures for Go is its own change.
 func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
@@ -944,11 +934,11 @@ func (f *runFlags) baselineAssessOptions(withPlugin pipeline.AssessOption) ([]pi
 	if opt != nil {
 		opts = append(opts, opt)
 	}
-	return append(opts, f.subjectOptions()...), nil
+	return opts, nil
 }
 
 // runAssessOptions assembles the run path's Assess options after the plugin seam: the advisory
-// corpus, the subject Go toolchain, the shared subject conditions, and the subject-toolchain
+// corpus, the subject Go toolchain, and the subject-toolchain
 // reachability gate.
 func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipeline.AssessOption, error) {
 	opts := []pipeline.AssessOption{withPlugin}
@@ -962,7 +952,6 @@ func (f *runFlags) runAssessOptions(withPlugin pipeline.AssessOption) ([]pipelin
 	if opt := f.subjectToolchainOption(); opt != nil {
 		opts = append(opts, opt)
 	}
-	opts = append(opts, f.subjectOptions()...)
 	if opt := subjectToolchainReachOption(); opt != nil {
 		opts = append(opts, opt)
 	}
@@ -1019,7 +1008,7 @@ func envEnabled(v string) bool {
 // dependencies (the scan path) or is the compiled-in floor alone (cve-watch, which drives its own
 // OSV query against the stored SBOM and must be left alone).
 func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) {
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries)
+	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -1066,6 +1055,7 @@ func (f *runFlags) resolve(ctx context.Context, widen bool) (*runConfig, error) 
 		outDir:        *f.outDir,
 		cleanup:       acq.cleanup,
 		analyzeRef:    acq.analyzeRef,
+		graph:         acq.graph,
 	}, nil
 }
 
@@ -1140,13 +1130,13 @@ func runPRInherit(args []string) error {
 		fmt.Fprintf(os.Stdout, "  changed:    %s\n", strings.Join(res.ChangedPackages, ", "))
 	}
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
+	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
 		return err
 	}
 	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return nil
+	return cfg.graph.err()
 }
 
 // runCVEWatch runs the scheduled `cve-watch` mode: it queries OSV.dev for advisories
@@ -1183,12 +1173,7 @@ func runCVEWatch(args []string) error {
 
 	osv := &trigger.HTTPOSVClient{}
 
-	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		Signals:       f.resolvedSignals,
-	})
+	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, cveWatchRequest(cfg, f.resolvedSignals))
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
 	}
@@ -1204,17 +1189,29 @@ func runCVEWatch(args []string) error {
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
 		postScan(ctx, cfg.store, cfg.subject, rescan)
-		return nil
+	} else {
+		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
+		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
+		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
+			return err
+		}
+		printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
+		printRescanContext(rescan)
+		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}
+	// Heartbeat or earnest, a run without its build graph exits red.
+	return cfg.graph.err()
+}
 
-	fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
-	fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
-	fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef); err != nil {
-		return err
+// cveWatchRequest is the run's cve-watch request. A failed build graph holds the cursor, so the
+// advisories this run assessed without it are assessed again on the next.
+func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
+	return trigger.CVEWatchRequest{
+		Subject:       cfg.subject,
+		Codebase:      cfg.codebase,
+		AssessOptions: cfg.assessOptions,
+		Signals:       signals,
+		HoldCursor:    cfg.graph.err() != nil,
 	}
-	printSummary(cfg.outDir, res.Report, f.signalsSummary(time.Now()))
-	printRescanContext(rescan)
-	postScan(ctx, cfg.store, cfg.subject, rescan)
-	return nil
 }

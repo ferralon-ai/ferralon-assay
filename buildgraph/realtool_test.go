@@ -142,16 +142,48 @@ func TestGradleRoundTrip(t *testing.T) {
 	}
 	for _, p := range []string{":app", ":kt", ":lib"} {
 		m := module(t, g, p)
-		got := map[string]string{}
-		for _, n := range m.Nodes {
-			if n.ID != m.Root {
-				got[n.Group+":"+n.Artifact+":"+n.Version] = ""
+		// Each classpath as the real tool reports it, by g:a:v.
+		runtime := realGradleDependencies(t, env, dir, p, gradleRuntime, g.Modules)
+		compile := realGradleDependencies(t, env, dir, p, gradleCompile, g.Modules)
+		test := realGradleDependencies(t, env, dir, p, gradleTest, g.Modules)
+		ga := func(set map[string]string) map[string]bool {
+			out := map[string]bool{}
+			for k := range set {
+				out[k[:strings.LastIndex(k, ":")]] = true
+			}
+			return out
+		}
+		onRuntime, onCompile := ga(runtime), ga(compile)
+		want := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}}
+		for k := range runtime {
+			if onCompile[k[:strings.LastIndex(k, ":")]] {
+				want["compile"][k] = ""
+			} else {
+				want["runtime"][k] = ""
 			}
 		}
-		want := realGradleDependencies(t, env, dir, p, g.Modules)
-		if !equalMaps(got, want) {
-			t.Errorf("%s: producer %v\nreal dependencies %v", p, keys(got), keys(want))
+		for k := range compile {
+			if !onRuntime[k[:strings.LastIndex(k, ":")]] {
+				want["provided"][k] = ""
+			}
 		}
+		for k := range test {
+			if g := k[:strings.LastIndex(k, ":")]; !onRuntime[g] && !onCompile[g] {
+				want["test"][k] = ""
+			}
+		}
+		got := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}}
+		for _, n := range m.Nodes {
+			if n.ID != m.Root {
+				got[n.Scope][n.Group+":"+n.Artifact+":"+n.Version] = ""
+			}
+		}
+		for scope := range want {
+			if !equalMaps(got[scope], want[scope]) {
+				t.Errorf("%s %s: producer %v\nreal dependencies %v", p, scope, keys(got[scope]), keys(want[scope]))
+			}
+		}
+		t.Logf("%s: %d compile, %d runtime, %d provided, %d test", p, len(got["compile"]), len(got["runtime"]), len(got["provided"]), len(got["test"]))
 	}
 }
 
@@ -162,11 +194,11 @@ var (
 	gradleProjDep = regexp.MustCompile(`^project '?([^'\s]+)'?(?: \(\*\))?$`)
 )
 
-// realGradleDependencies reads `gradle <p>:dependencies --configuration runtimeClasspath` into
-// the g:a:v set it selects, with sibling projects by their coordinates.
-func realGradleDependencies(t *testing.T, env []string, dir, project string, modules []Module) map[string]string {
+// realGradleDependencies reads `gradle <p>:dependencies --configuration <config>` into the g:a:v
+// set it selects, with sibling projects by their coordinates.
+func realGradleDependencies(t *testing.T, env []string, dir, project, config string, modules []Module) map[string]string {
 	t.Helper()
-	cmd := exec.Command(toolPath(t, "gradle", env), "-q", "--no-configuration-cache", "--project-cache-dir", filepath.Join(t.TempDir(), "pc"), project+":dependencies", "--configuration", "runtimeClasspath")
+	cmd := exec.Command(toolPath(t, "gradle", env), "-q", "--no-configuration-cache", "--project-cache-dir", filepath.Join(t.TempDir(), "pc"), project+":dependencies", "--configuration", config)
 	cmd.Dir, cmd.Env = dir, env
 	b, err := cmd.CombinedOutput()
 	if err != nil {

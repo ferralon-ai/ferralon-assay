@@ -116,7 +116,7 @@ func TestAcquireTarget_AnalyzeRefRedirectsTreeAndProvenance(t *testing.T) {
 				t.Fatal("fixture precondition: docs-only main must not be a recognized source tree")
 			}
 
-			acq, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false)
+			acq, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 			if err != nil {
 				t.Fatalf("acquireTarget with analyze.ref %q: %v", ref, err)
 			}
@@ -188,7 +188,7 @@ func TestAcquireTarget_NoAnalyzeRefIsDefaultPreserving(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantDir, wantLang := plan.Primary().Root, plan.Primary().Language
-			acq, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false)
+			acq, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 			if err != nil {
 				t.Fatalf("acquireTarget: %v", err)
 			}
@@ -221,7 +221,7 @@ func TestAcquireTarget_NoAnalyzeRefIsDefaultPreserving(t *testing.T) {
 func TestAcquireTarget_NoConfigNonGitDirUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	writeT(t, filepath.Join(dir, "go.mod"), "module example.com/vendored\n\ngo 1.26\n")
-	acq, err := acquireTarget(context.Background(), dir, "r", "", "/fake/analyzer-bin", false)
+	acq, err := acquireTarget(context.Background(), dir, "r", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 	if err != nil {
 		t.Fatalf("acquireTarget: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestAcquireTarget_NoConfigNonGitDirUnchanged(t *testing.T) {
 // worktree behind.
 func TestAcquireTarget_AnalyzeRefNonexistentFailsLoud(t *testing.T) {
 	fx := newRefFixture(t, configBody("no-such-branch"), false)
-	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false)
+	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 	if err == nil {
 		t.Fatal("a nonexistent analyze.ref must fail")
 	}
@@ -256,7 +256,7 @@ func TestAcquireTarget_AnalyzeRefNonexistentFailsLoud(t *testing.T) {
 // A ref that exists but carries no source fails with the analyze.ref named, and cleans up.
 func TestAcquireTarget_AnalyzeRefWithoutSourceFailsAndCleansUp(t *testing.T) {
 	fx := newRefFixture(t, configBody("main"), false)
-	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false)
+	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 	if err == nil || !strings.Contains(err.Error(), `analyze.ref "main"`) || !strings.Contains(err.Error(), "not a recognized source tree") {
 		t.Fatalf("want a not-a-source-tree error naming analyze.ref, got %v", err)
 	}
@@ -269,7 +269,7 @@ func TestAcquireTarget_AnalyzeRefWithoutSourceFailsAndCleansUp(t *testing.T) {
 // skipped in favor of scanning the checked-out tree.
 func TestAcquireTarget_MalformedConfigFailsClosed(t *testing.T) {
 	fx := newRefFixture(t, map[string]string{".github/ferralon.yml": "version: 1\nanalyze: {ref: baseline\n"}, true)
-	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false)
+	_, err := acquireTarget(context.Background(), fx.clone, "main", "", "/fake/analyzer-bin", false, graphRequest{mode: buildGraphOff})
 	if err == nil || !strings.Contains(err.Error(), "malformed YAML") {
 		t.Fatalf("malformed config must fail closed, got %v", err)
 	}

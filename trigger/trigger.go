@@ -285,6 +285,10 @@ type CVEWatchRequest struct {
 	AssessOptions []pipeline.AssessOption
 	// Signals mirrors PRInheritRequest.Signals.
 	Signals *intel.Signals
+	// HoldCursor keeps the stored cursor on an earnest run, so its new advisories are assessed
+	// again next run. Set it when this run's analysis inputs could not be had (a failed build
+	// graph): the Report is still written, but the advisories it could not assess stay new.
+	HoldCursor bool
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -352,13 +356,19 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		return &CVEWatchResult{Heartbeat: true, Cursor: committed.Cursor}, nil
 	}
 
-	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, newCursor)
+	// The Report's provenance carries the cursor too, and a conflicting write merges the
+	// cursor from it, so a held cursor is the one both record.
+	cursor := newCursor
+	if req.HoldCursor {
+		cursor = state.Cursor
+	}
+	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, cursor)
 	if err != nil {
 		return nil, err
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	state.Cursor = newCursor
+	state.Cursor = cursor
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

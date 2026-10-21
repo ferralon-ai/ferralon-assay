@@ -50,6 +50,13 @@ func WithJavaAnalyzerDocker(bin string) JavaOption {
 	return withJavaEnv(javaAnalyzerDockerEnv, bin)
 }
 
+// WithJavaBuildGraph hands the subprocess the build graph file the scan accepted, or "" for
+// none. It always sets the variable, so a value in this process's environment never reaches the
+// subprocess as a graph the scan did not check.
+func WithJavaBuildGraph(file string) JavaOption {
+	return func(p *javaPlugin) { p.env = append(p.env, BuildGraphEnv+"="+file) }
+}
+
 // The subprocess reads the analyzer settings from these env vars (see
 // cmd/assay-plugin-java), so the options travel on the child's environment
 // rather than on the plugin protocol.
@@ -57,6 +64,9 @@ const (
 	javaAnalyzerImageEnv  = brand.EnvPrefix + "_JAVA_ANALYZER_IMAGE"
 	javaAnalyzerDockerEnv = brand.EnvPrefix + "_JAVA_ANALYZER_DOCKER"
 )
+
+// BuildGraphEnv carries the accepted build graph file to the Java and Kotlin subprocesses.
+const BuildGraphEnv = brand.EnvPrefix + "_BUILD_GRAPH"
 
 func withJavaEnv(key, value string) JavaOption {
 	return func(p *javaPlugin) {

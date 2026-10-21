@@ -62,7 +62,11 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 		return writeError(stdout, fmt.Sprintf("protocol mismatch: got %q, want %q", req.Protocol, plugin.ProtocolVersion))
 	}
 
-	resp, opErr := dispatch(ctx, req, analyzerOptions()...)
+	opts := analyzerOptions()
+	if err := javaanalysis.CheckBuildGraph(opts...); err != nil {
+		return writeError(stdout, err.Error())
+	}
+	resp, opErr := dispatch(ctx, req, opts...)
 	if opErr != nil {
 		return writeError(stdout, opErr.Error())
 	}
@@ -70,14 +74,16 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 	return writeResponse(stdout, resp)
 }
 
-// analyzerOptions opens the javaanalysis Prove-path gate when envAnalyzerImage is set, with the
-// docker binary override from envAnalyzerDocker. Unset, the gate stays closed (pure-Go only).
+// analyzerOptions hands the ops the build graph the host accepted (plugin.BuildGraphEnv), and
+// opens the javaanalysis Prove-path gate when envAnalyzerImage is set, with the docker binary
+// override from envAnalyzerDocker. Without the image the gate stays closed (pure-Go only).
 func analyzerOptions() []javaanalysis.Option {
+	opts := []javaanalysis.Option{javaanalysis.WithBuildGraph(os.Getenv(plugin.BuildGraphEnv))}
 	image := os.Getenv(envAnalyzerImage)
 	if image == "" {
-		return nil
+		return opts
 	}
-	opts := []javaanalysis.Option{javaanalysis.WithAnalyzerImage(image)}
+	opts = append(opts, javaanalysis.WithAnalyzerImage(image))
 	if bin := os.Getenv(envAnalyzerDocker); bin != "" {
 		opts = append(opts, javaanalysis.WithAnalyzerDocker(bin))
 	}
@@ -86,8 +92,7 @@ func analyzerOptions() []javaanalysis.Option {
 
 // dispatch runs the requested operation. index_symbols, resolve_symbols,
 // call_graph, and find_ingresses call the real source-level Java analysis (Java
-// Increment 1); resolve_versions reads pom.xml/build.gradle dependency versions
-// pure-Go (Java Increment 2); reachability and compute_taint compute first-party
+// Increment 1); resolve_versions and resolve_inventory read the build graph; reachability and compute_taint compute first-party
 // call-graph reachability / path-presence taint over that same graph (Assess
 // parity). generate_harness and build_manifest remain contract-present stubs:
 // Java's effect proof rides the repro-runtime sandbox, not a plugin-generated
@@ -108,7 +113,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.ResolveSymbols == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_symbols request", req.Op)
 		}
-		res, err := javaanalysis.ResolveDependencySymbols(ctx, *req.ResolveSymbols)
+		res, err := javaanalysis.ResolveDependencySymbols(ctx, *req.ResolveSymbols, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -118,7 +123,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.ResolveVersions == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_versions request", req.Op)
 		}
-		res, err := javaanalysis.ResolveDependencyVersions(ctx, *req.ResolveVersions)
+		res, err := javaanalysis.ResolveDependencyVersions(ctx, *req.ResolveVersions, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -174,7 +179,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.BuildManifest == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing build_manifest request", req.Op)
 		}
-		res, err := javaanalysis.BuildManifest(ctx, *req.BuildManifest, "java")
+		res, err := javaanalysis.BuildManifest(ctx, *req.BuildManifest, "java", opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}
@@ -184,7 +189,7 @@ func dispatch(ctx context.Context, req plugin.Request, opts ...javaanalysis.Opti
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		res, err := javaanalysis.ResolveInventory(ctx, *req.ResolveInventory)
+		res, err := javaanalysis.ResolveInventory(ctx, *req.ResolveInventory, opts...)
 		if err != nil {
 			return plugin.Response{}, err
 		}

@@ -121,7 +121,8 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 		return nil, err
 	}
 	g.Modules = modules
-	if g.Incomplete, err = mavenIncomplete(r.dir, reactor, effective); err != nil {
+	g.Subject.Outputs = mavenOutputs(r.dir, reactor, effective, modules)
+	if g.Incomplete, err = mavenIncomplete(r.dir, g.Subject.Outputs, reactor, effective); err != nil {
 		return nil, err
 	}
 	g.Complete = len(g.Incomplete) == 0
@@ -363,6 +364,7 @@ type effectiveProject struct {
 	ArtifactID string      `xml:"artifactId"`
 	Properties xmlChildren `xml:"properties"`
 	Build      struct {
+		Directory  string `xml:"directory"`
 		Extensions struct {
 			Extension []struct {
 				GroupID    string `xml:"groupId"`

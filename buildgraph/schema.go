@@ -81,8 +81,12 @@ type Subject struct {
 	// UnbindableIncludedBuilds are included builds outside the checkout, by absolute path. Nothing
 	// binds their files, so only the run that resolved the graph may use it.
 	UnbindableIncludedBuilds []string `json:"unbindable_included_builds,omitempty"`
-	Inputs                   []Input  `json:"inputs"`
-	InputsDigest             string   `json:"inputs_digest"`
+	// Outputs are the directories inside the checkout the build writes or caches into, by slash
+	// path from the repository root: build directories, the tool's cache, a local repository.
+	// The checks that walk the checkout skip them, and only them.
+	Outputs      []string `json:"outputs,omitempty"`
+	Inputs       []Input  `json:"inputs"`
+	InputsDigest string   `json:"inputs_digest"`
 }
 
 // Input is one build file the tool read, by its slash-separated path from the repository root.
@@ -197,6 +201,7 @@ func InputsDigest(inputs []Input) string {
 func (g *Graph) Normalize() {
 	sort.Strings(g.Subject.IncludedBuilds)
 	sort.Strings(g.Subject.UnbindableIncludedBuilds)
+	g.Subject.Outputs = sortedUnique(g.Subject.Outputs)
 	sort.Slice(g.Subject.Inputs, func(i, j int) bool { return g.Subject.Inputs[i].Path < g.Subject.Inputs[j].Path })
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}

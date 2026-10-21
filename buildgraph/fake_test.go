@@ -250,7 +250,7 @@ func newFakeMavenRepo(t *testing.T, fail, failOut string, edit, repo map[string]
 	writeFiles(t, r.m2, map[string]string{
 		"guava-32.jar": "g32", "guava-33.jar": "g33", "failureaccess.jar": "fa", "lwjgl-natives.jar": "nat", "sys.jar": "sys",
 	})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -690,7 +690,7 @@ func newFakeGradle(t *testing.T, fail string, edit map[string]string) fakeRepo {
 	}
 	writeFiles(t, r.fake, answers)
 	writeFiles(t, r.m2, map[string]string{"lwjgl-3.3.4.jar": "l", "lwjgl-3.3.4-natives-linux.jar": "n", "lwjgl-3.3.5.jar": "l5", "lwjgl-3.3.6.jar": "l6", "jakarta.servlet-api-6.0.0.jar": "s", "junit-4.13.2.jar": "j"})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -940,4 +940,15 @@ func TestGradleProducerFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// realDir is dir with its links resolved: the checkout path a real build tool, run from the
+// resolved checkout, reports.
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }

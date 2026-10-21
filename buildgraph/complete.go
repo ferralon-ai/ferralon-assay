@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -149,7 +150,8 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 	files := graphFiles(g)
 	var buildDirs, homes []string
 	for _, p := range projects {
-		if p.BuildDir != "" {
+		// A build directory at or above the root would hold the checkout and the caches with it.
+		if rel, ok := realRel(dir, p.BuildDir); p.BuildDir != "" && ok && rel != "." {
 			buildDirs = append(buildDirs, p.BuildDir)
 		}
 		if p.UserHome != "" {
@@ -162,9 +164,12 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 	transformed := func(f string) bool {
 		return slices.ContainsFunc(homes, func(c string) bool {
 			rel, ok := relPath(c, f)
-			return ok && slices.ContainsFunc(strings.Split(rel, "/"), func(s string) bool {
-				return s == "transforms" || strings.HasPrefix(s, "transforms-")
-			})
+			if !ok {
+				return false
+			}
+			segs := strings.Split(rel, "/")
+			return len(segs) > 1 && gradleTransformsV7.MatchString(segs[0]) ||
+				len(segs) > 2 && gradleVersionDir.MatchString(segs[0]) && segs[1] == "transforms"
 		})
 	}
 	// A run alias (an action-less DefaultTask no task depends on, whose every dependency runs a
@@ -244,12 +249,44 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			}
 		}
 	}
-	orphans, err := gradleOrphanBuildFiles(dir, projects, g.Subject.IncludedBuilds)
+	orphans, err := gradleOrphanBuildFiles(dir, g.Subject.Outputs, projects, g.Subject.IncludedBuilds)
 	if err != nil {
 		return nil, err
 	}
 	reasons = append(reasons, orphans...)
 	return sortedUnique(reasons), nil
+}
+
+// Gradle's transforms cache below <user home>/caches: transforms-<n> up to Gradle 7, and
+// <gradle version>/transforms from Gradle 8.
+var (
+	gradleTransformsV7 = regexp.MustCompile(`^transforms-[0-9]+$`)
+	gradleVersionDir   = regexp.MustCompile(`^[0-9]+\.[0-9]+[0-9A-Za-z.\-]*$`)
+)
+
+// gradleOutputs are the directories inside the checkout a Gradle build writes or caches into:
+// each project's build directory and Kotlin cache, the root's project cache (.gradle), an
+// included build's or buildSrc's build directory and project cache, and the Gradle user home.
+func gradleOutputs(dir string, projects []gradleProject, included []string) []string {
+	var out []string
+	add := func(p string) {
+		if rel, ok := realRel(dir, p); p != "" && ok && rel != "." {
+			out = append(out, rel)
+		}
+	}
+	add(filepath.Join(dir, ".gradle"))
+	for _, p := range projects {
+		add(p.BuildDir)
+		add(p.UserHome)
+		if p.Dir != "" {
+			add(filepath.Join(p.Dir, ".kotlin"))
+		}
+	}
+	for _, b := range append(slices.Clone(included), "buildSrc") {
+		add(filepath.Join(dir, filepath.FromSlash(b), "build"))
+		add(filepath.Join(dir, filepath.FromSlash(b), ".gradle"))
+	}
+	return sortedUnique(out)
 }
 
 // gradleResolutions reads the listener's records; false when it recorded none.
@@ -280,14 +317,14 @@ func gradleResolutions(dir string) ([]gradleResolution, bool, error) {
 // gradleOrphanBuildFiles lists the build and settings scripts under dir that no project of the
 // build reads: a separate build, whose dependencies the graph never resolved. Included builds and
 // buildSrc are build logic, bound as inputs.
-func gradleOrphanBuildFiles(dir string, projects []gradleProject, included []string) ([]string, error) {
+func gradleOrphanBuildFiles(dir string, outputs []string, projects []gradleProject, included []string) ([]string, error) {
 	read := map[string]bool{"settings.gradle": true, "settings.gradle.kts": true}
 	for _, p := range projects {
 		if rel, ok := relPath(p.RootDir, p.BuildFile); ok {
 			read[rel] = true
 		}
 	}
-	scripts, err := treeFiles(dir, func(rel, name string) bool {
+	scripts, err := treeFiles(dir, outputs, func(rel, name string) bool {
 		return name == "build.gradle" || name == "build.gradle.kts" || name == "settings.gradle" || name == "settings.gradle.kts"
 	})
 	if err != nil {
@@ -298,7 +335,7 @@ func gradleOrphanBuildFiles(dir string, projects []gradleProject, included []str
 	for _, s := range scripts {
 		switch {
 		case s.Escapes:
-			out = append(out, s.Path+" links to a directory outside the checkout")
+			out = append(out, s.Path+" links to a directory outside the checkout or into build output")
 		case read[s.Path] || slices.ContainsFunc(trees, func(t string) bool { return strings.HasPrefix(s.Path, t+"/") }):
 		default:
 			out = append(out, s.Path+" is a Gradle build file no project of the build reads")
@@ -364,9 +401,9 @@ var mavenSourceDirs = setOf("directory", "warSourceDirectory", "classesDirectory
 // read; a build extension; a bound execution of a plugin or goal off mavenPlugins; dependency
 // plugin configuration naming artifacts outside the tree; and a resource or source directory
 // outside the checkout.
-func mavenIncomplete(dir string, reactor []reactorProject, effective []effectiveProject) ([]string, error) {
+func mavenIncomplete(dir string, outputs []string, reactor []reactorProject, effective []effectiveProject) ([]string, error) {
 	var reasons []string
-	orphans, err := mavenOrphanPOMs(dir, reactor)
+	orphans, err := mavenOrphanPOMs(dir, outputs, reactor)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +556,7 @@ func readRawPOM(file string) (rawPOM, error) {
 
 // mavenOrphanPOMs lists the POMs under dir that are neither a reactor module's nor a parent one
 // reaches through its relativePath: a separate build, whose dependencies the graph never resolved.
-func mavenOrphanPOMs(dir string, reactor []reactorProject) ([]string, error) {
+func mavenOrphanPOMs(dir string, outputs []string, reactor []reactorProject) ([]string, error) {
 	read := map[string]bool{}
 	var queue []string
 	for _, rp := range reactor {
@@ -563,7 +600,7 @@ func mavenOrphanPOMs(dir string, reactor []reactorProject) ([]string, error) {
 		read[target] = true
 		queue = append(queue, target)
 	}
-	poms, err := treeFiles(dir, func(rel, name string) bool { return name == "pom.xml" })
+	poms, err := treeFiles(dir, outputs, func(rel, name string) bool { return name == "pom.xml" })
 	if err != nil {
 		return nil, err
 	}
@@ -571,12 +608,69 @@ func mavenOrphanPOMs(dir string, reactor []reactorProject) ([]string, error) {
 	for _, p := range poms {
 		switch {
 		case p.Escapes:
-			out = append(out, p.Path+" links to a directory outside the checkout")
+			out = append(out, p.Path+" links to a directory outside the checkout or into build output")
 		case !read[p.Path]:
 			out = append(out, p.Path+" is a POM the reactor does not read")
 		}
 	}
 	return out, nil
+}
+
+// mavenOutputs are the directories inside the checkout a Maven build writes or caches into: each
+// module's build directory (target unless the effective POM says otherwise) and the local
+// repository, when the graph's artifacts show it is inside the checkout.
+func mavenOutputs(dir string, reactor []reactorProject, effective []effectiveProject, modules []Module) []string {
+	var out []string
+	add := func(p string) {
+		if rel, ok := realRel(dir, p); p != "" && ok && rel != "." {
+			out = append(out, rel)
+		}
+	}
+	buildDir := map[string]string{}
+	for _, e := range effective {
+		buildDir[strings.TrimSpace(e.GroupID)+":"+strings.TrimSpace(e.ArtifactID)] = strings.TrimSpace(e.Build.Directory)
+	}
+	for _, rp := range reactor {
+		d := buildDir[rp.key]
+		if d == "" {
+			d = filepath.Join(dir, filepath.FromSlash(path.Dir(rp.file)), "target")
+		}
+		add(d)
+	}
+	for _, m := range modules {
+		for _, n := range m.Nodes {
+			if repo, ok := mavenRepoOf(n); ok {
+				add(repo)
+			}
+		}
+	}
+	return sortedUnique(out)
+}
+
+// mavenRepoOf is the repository directory n's file lies in, laid out
+// <group>/<artifact>/<version>/<file>; false for a file not so laid out, and for a system-scoped
+// one, whose path the POM names.
+func mavenRepoOf(n Node) (string, bool) {
+	if n.File == nil || n.Scope == "system" || n.Group == "" || n.Artifact == "" || n.Version == "" {
+		return "", false
+	}
+	d := filepath.Dir(filepath.Clean(n.File.Path))
+	if filepath.Base(d) != n.Version {
+		return "", false
+	}
+	d = filepath.Dir(d)
+	if filepath.Base(d) != n.Artifact {
+		return "", false
+	}
+	d = filepath.Dir(d)
+	group := strings.Split(n.Group, ".")
+	for i := len(group) - 1; i >= 0; i-- {
+		if filepath.Base(d) != group[i] {
+			return "", false
+		}
+		d = filepath.Dir(d)
+	}
+	return d, true
 }
 
 // treeEntry is a file treeFiles lists, or a directory link leaving the tree (Escapes).
@@ -585,37 +679,72 @@ type treeEntry struct {
 	Escapes bool
 }
 
-// treeFiles lists the files under dir that match accepts, by slash path from dir, skipping what
-// collectInputs skips. A build follows symlinks, so a link is listed by its own name whatever it
-// points at. A directory link is walked through its target when that lies inside dir; one that
-// leaves dir hides what it holds and is listed as Escapes whatever its name, unless it is named
-// as build output or a tool cache.
-func treeFiles(dir string, match func(rel, name string) bool) ([]treeEntry, error) {
+// treeFiles lists the files under dir that match accepts, by slash path from dir once symlinks in
+// dir are resolved. It skips the outputs (slash paths from dir; any that is not a clean relative
+// path counts for nothing), .git, and a node_modules beside a package.json: nothing else, whatever
+// its name. A build follows symlinks, so a link is listed by its own name whatever it points at.
+// A directory link is not walked: its target is walked where it lies when that is inside dir and
+// not skipped, and otherwise the link hides what it holds and is listed as Escapes, unless the
+// link itself is an output.
+func treeFiles(dir string, outputs []string, match func(rel, name string) bool) ([]treeEntry, error) {
 	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "inputs", Log: err.Error()}
 	}
+	prune := map[string]bool{}
+	for _, o := range outputs {
+		if cleanRel(o) {
+			prune[o] = true
+		}
+	}
+	skipped := func(rel string) bool {
+		if prune[rel] {
+			return true
+		}
+		switch path.Base(rel) {
+		case ".git":
+			return true
+		case "node_modules":
+			_, err := os.Stat(filepath.Join(root, filepath.FromSlash(path.Dir(rel)), "package.json"))
+			return err == nil
+		}
+		return false
+	}
+	// under reports whether rel is a skipped directory or inside one.
+	under := func(rel string) bool {
+		for p := rel; p != "." && p != "/"; p = path.Dir(p) {
+			if skipped(p) {
+				return true
+			}
+		}
+		return false
+	}
 	var out []treeEntry
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if p != dir && skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
+		if p == root {
 			return nil
 		}
-		rel, err := filepath.Rel(dir, p)
+		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			if skipped(rel) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			if t, err := filepath.EvalSymlinks(p); err == nil {
 				if fi, err := os.Stat(t); err == nil && fi.IsDir() {
-					if _, inside := relPath(root, t); !inside && !skipDirs[d.Name()] {
-						out = append(out, treeEntry{Path: rel, Escapes: true})
+					if !prune[rel] {
+						if trel, inside := relPath(root, t); !inside || trel == "." || under(trel) {
+							out = append(out, treeEntry{Path: rel, Escapes: true})
+						}
 					}
 					return nil
 				}
@@ -670,11 +799,16 @@ func firstLine(s string) string {
 // what it builds.
 var wrapperJars = setOf("gradle/wrapper/gradle-wrapper.jar", ".mvn/wrapper/maven-wrapper.jar")
 
-// CheckedInArchives lists the JAR, WAR and EAR files in dir, outside build output, that g holds as
-// no node's file: an archive the build can package or load without resolving it, which g would
-// then not list. A system-scoped dependency or a files() dependency is a node, and the build
-// tool's wrapper JAR installs nothing. A Maven local repository kept in the checkout (.m2, as CI
-// caches set it) is resolution's cache: what the build takes from it, it resolved and g lists.
+// archiveExts are the files a build can package, unpack or load classes from as they stand.
+var archiveExts = setOf(".jar", ".war", ".ear", ".zip", ".aar", ".jmod", ".rar", ".class")
+
+// CheckedInArchives lists the archives and class files in dir, outside the directories g records
+// as the build's outputs, that g holds as no node's file: what the build can package or load
+// without resolving it, which g would then not list. A system-scoped dependency or a files()
+// dependency is a node, and the build tool's wrapper JAR installs nothing. A local repository
+// kept in the checkout (CI caches set one) is an output when g's artifacts lie in it: what the
+// build takes from it, it resolved and g lists. A graph recording no outputs has every directory
+// walked, build output too.
 func CheckedInArchives(dir string, g *Graph) ([]string, error) {
 	held := map[string]bool{}
 	for f := range graphFiles(g) {
@@ -682,12 +816,8 @@ func CheckedInArchives(dir string, g *Graph) ([]string, error) {
 			held[r] = true
 		}
 	}
-	archives, err := treeFiles(dir, func(rel, name string) bool {
-		switch strings.ToLower(path.Ext(name)) {
-		case ".jar", ".war", ".ear":
-			return !wrapperJars[rel] && !slices.Contains(strings.Split(path.Dir(rel), "/"), ".m2")
-		}
-		return false
+	archives, err := treeFiles(dir, g.Subject.Outputs, func(rel, name string) bool {
+		return archiveExts[strings.ToLower(path.Ext(name))] && !wrapperJars[rel]
 	})
 	if err != nil {
 		return nil, err

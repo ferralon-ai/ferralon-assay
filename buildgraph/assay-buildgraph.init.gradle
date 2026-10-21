@@ -69,8 +69,8 @@ def failureText = { Throwable top ->
 // configuration's own unspecified root (the dependency-management plugin's, on Gradle 9, declare
 // unspecified:unspecified:unspecified, and that root has no variants), is read leniently: neither
 // carries a third-party file, and every module file it did resolve is still recorded. A project
-// whose own coordinate is an external one gets no such exemption. Any other failure is recorded
-// as one.
+// whose own coordinate is an external one gets no such exemption, and neither does a file that
+// failed to download beside them. Any other failure is recorded as one.
 // A project's build script classpath records as :path:classpath, the path a project's own
 // configuration named classpath would have, so each is told apart by identity.
 def scriptResolutions = Collections.newSetFromMap(new IdentityHashMap())
@@ -98,8 +98,26 @@ if (gradle.parent == null) {
                             (detachedRoot && r instanceof ModuleComponentSelector && unspecified(r.group, r.module, r.version))
                     }
                     if (!unresolved.isEmpty() && unresolved.every { own(it.requested) }) {
-                        doc.artifacts = files(d.artifactView { lenient(true) }.artifacts.artifacts)
-                        doc.remove('failure')
+                        // A lenient view also drops a file that failed to download; only the
+                        // unresolved selectors themselves may fail.
+                        def view = d.artifactView { lenient(true) }.artifacts
+                        def leaves
+                        leaves = { Throwable x ->
+                            if (x.metaClass.respondsTo(x, 'getSelector')) {
+                                return [x]
+                            }
+                            def causes = x.metaClass.respondsTo(x, 'getCauses') ? x.causes : (x.cause == null ? [] : [x.cause])
+                            causes.isEmpty() ? [x] : causes.collectMany { leaves(it) }
+                        }
+                        def stray = view.failures.collectMany { leaves(it) }.findAll {
+                            !(it.metaClass.respondsTo(it, 'getSelector') && own(it.selector))
+                        }
+                        if (stray.isEmpty()) {
+                            doc.artifacts = files(view.artifacts)
+                            doc.remove('failure')
+                        } else {
+                            doc.failure = failureText(stray[0])
+                        }
                     }
                 } catch (Exception ignored) {
                 }
@@ -138,6 +156,9 @@ def actionOrigin = { a ->
 // input would at execution, so the listener sees that resolution too.
 def observeTasks = { p ->
     def root = p.rootDir.toPath()
+    // A Gradle user home inside the checkout (CI caches set one) holds what resolution downloaded,
+    // so a file under it is outside the build however the paths nest.
+    def home = p.gradle.gradleUserHomeDir.canonicalFile.toPath()
     def tasks = []
     try {
         // assayBuildGraph is the task being configured, and only writes the graph.
@@ -148,8 +169,10 @@ def observeTasks = { p ->
             try {
                 t.actions = k.actions.collect(actionOrigin).findAll { it != null }
                 t.finalized_by = k.finalizedBy.getDependencies(k).collect { it.path }.sort()
-                t.depends = (k.taskDependencies.getDependencies(k).collect { it.path } + t.finalized_by).sort()
-                t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) }.collect { it.absolutePath }.sort()
+                // A task ordered after another can package what it wrote, as a dependent can.
+                def ordered = (k.mustRunAfter.getDependencies(k) + k.shouldRunAfter.getDependencies(k)).collect { it.path }
+                t.depends = (k.taskDependencies.getDependencies(k).collect { it.path } + t.finalized_by + ordered).unique().sort()
+                t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) || it.toPath().startsWith(home) }.collect { it.absolutePath }.sort()
             } catch (Exception e) {
                 t.failure = String.valueOf(e.message)
             }

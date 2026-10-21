@@ -189,7 +189,16 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 					}
 					mods = append(mods, testModule(t, "lib", "lib"))
 				}
-				graph = graphOption(t, "maven", mods...)
+				// The build's other resolutions put its local repository at .m2/repository, so
+				// netkit's JAR there is resolution cache, not a checked-in archive.
+				graph = writeGraph(t, buildgraph.Graph{
+					Schema:   buildgraph.Schema,
+					Tool:     buildgraph.Tool{Name: "maven", Version: "test"},
+					JVM:      buildgraph.JVM{Version: "21.0.4"},
+					Subject:  buildgraph.Subject{Outputs: []string{".m2/repository"}},
+					Modules:  mods,
+					Complete: true,
+				})
 			}
 			if tc.otherTool {
 				if err := os.WriteFile(filepath.Join(build, "build.gradle"), []byte("plugins { id 'java' }\n"), 0o644); err != nil {

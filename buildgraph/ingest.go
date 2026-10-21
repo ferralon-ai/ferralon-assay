@@ -62,6 +62,9 @@ func Load(file, dir string, stated Conditions, opts ...LoadOption) (*Graph, erro
 		return nil, reject(CheckConditions, "graph resolved under other conditions than the scan states")
 	}
 	dir, err = filepath.Abs(dir)
+	if err == nil {
+		dir, err = filepath.EvalSymlinks(dir)
+	}
 	if err != nil {
 		return nil, reject(CheckSubjectInputs, err.Error())
 	}

@@ -1,9 +1,11 @@
 package buildgraph
 
 import (
+	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -39,7 +41,9 @@ func TestGradleIncomplete(t *testing.T) {
 		resolved    []gradleResolution
 		noRecords   bool
 		files       map[string]string
-		want        string // a reason fragment; "" wants Complete
+		buildDir    string // :app's; $ROOT/app/build when empty
+		userHome    string // :app's; /home/u/.gradle when empty
+		want        string // a reason fragment; "" wants Complete. $ROOT in paths is the checkout.
 	}{
 		{name: "listed tasks", tasks: []gradleTask{task(":jar", "org.gradle.api.tasks.bundling.Jar"), task(":bootJar", "org.springframework.boot.gradle.tasks.bundling.BootJar")}},
 		{name: "unknown task type", tasks: []gradleTask{task(":fetch", "build_abc.FetchTask")}, want: "task :fetch has type build_abc.FetchTask"},
@@ -69,17 +73,29 @@ func TestGradleIncomplete(t *testing.T) {
 			File    string `json:"file"`
 			Project bool   `json:"project"`
 		}{{File: "/repo/lib/build/libs/lib.jar", Project: true}}}}},
-		{name: "detached resolution of a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/build/classes/java/main")}},
-		{name: "detached resolution beside a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/libs/agent.jar")}, want: "resolved /repo/app/libs/agent.jar"},
+		{name: "detached resolution of a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
+		{name: "detached resolution beside a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/libs/agent.jar")}, want: "app/libs/agent.jar, which no collected configuration lists"},
+		{name: "build directory at the checkout root", buildDir: "$ROOT", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
+		{name: "build directory above the checkout", buildDir: "$ROOT/..", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
+		{name: "build directory outside the checkout", buildDir: "/repo/app/build", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/build/classes/java/main")}, want: "resolved /repo/app/build/classes/java/main"},
 		{name: "outside input from the transforms cache", tasks: []gradleTask{{Path: ":compileKotlin", Type: "org.jetbrains.kotlin.gradle.tasks.KotlinCompile", Outside: []string{"/home/u/.gradle/caches/8.14.6/transforms/1c35/transformed/guava_jar-snapshot.bin", "/home/u/.gradle/caches/transforms-3/9a/transformed/lib.jar"}}}},
 		{name: "outside input from the module cache", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-simple/2.0.16/x/slf4j-simple-2.0.16.jar"}}}, want: "slf4j-simple-2.0.16.jar, outside the build"},
+		{name: "outside input from a module named like the transforms cache", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/modules-2/files-2.1/com.acme/transforms-api/1.0/x/transforms-api-1.0.jar"}}}, want: "transforms-api-1.0.jar, outside the build"},
+		{name: "outside input from a transforms directory below the version's", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/8.14.6/kotlin-dsl/transforms/agent.jar"}}}, want: "kotlin-dsl/transforms/agent.jar, outside the build"},
+		{name: "input from a user home inside the checkout", userHome: "$ROOT/.gradle", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"$ROOT/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-simple/2.0.16/x/slf4j-simple-2.0.16.jar"}}}, want: "slf4j-simple-2.0.16.jar, outside the build"},
+		{name: "transforms cache in a user home inside the checkout", userHome: "$ROOT/.gradle", tasks: []gradleTask{{Path: ":compileKotlin", Type: "org.jetbrains.kotlin.gradle.tasks.KotlinCompile", Outside: []string{"$ROOT/.gradle/caches/8.14.6/transforms/1c35/transformed/guava_jar-snapshot.bin"}}}},
+		{name: "build file under a user home inside the checkout", userHome: "$ROOT/ci-cache/gradle", files: map[string]string{"ci-cache/gradle/caches/x/build.gradle": ""}},
 		{name: "outside input under transforms outside the caches", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/transforms/agent.jar"}}}, want: "reads /home/u/transforms/agent.jar"},
 		{name: "failed resolution", resolved: []gradleResolution{{Path: ":detachedConfiguration3", Failure: "Could not resolve\nmore"}}, want: "resolution of :detachedConfiguration3 failed: Could not resolve"},
 		{name: "no resolution recorded", noRecords: true, want: "recorded no resolution"},
 		{name: "build file no project reads", files: map[string]string{"tools/build.gradle": ""}, want: "tools/build.gradle is a Gradle build file"},
 		{name: "settings file no project reads", files: map[string]string{"sample/settings.gradle.kts": ""}, want: "sample/settings.gradle.kts"},
 		{name: "build files in buildSrc and an included build", files: map[string]string{"buildSrc/build.gradle.kts": "", "logic/build.gradle": "", "logic/settings.gradle": ""}},
-		{name: "build file under build output", files: map[string]string{"build/tmp/build.gradle": ""}},
+		{name: "build file under build output", files: map[string]string{"build/tmp/build.gradle": "", "app/build/tmp/build.gradle": "", "logic/build/tmp/build.gradle": "", ".gradle/x/build.gradle": "", "app/.kotlin/build.gradle": ""}},
+		{name: "build file under a directory named build that no project builds into", files: map[string]string{"tools/build/build.gradle": ""}, want: "tools/build/build.gradle is a Gradle build file"},
+		{name: "build file under a nested .gradle", files: map[string]string{"app/.gradle/build.gradle": ""}, want: "app/.gradle/build.gradle is a Gradle build file"},
+		{name: "build file beside node_modules without a package.json", files: map[string]string{"web/node_modules/x/build.gradle": ""}, want: "web/node_modules/x/build.gradle is a Gradle build file"},
+		{name: "build file under node_modules beside a package.json", files: map[string]string{"web/package.json": "{}", "web/node_modules/x/build.gradle": ""}},
 		{name: "build file in a directory named like buildSrc", files: map[string]string{"buildSrcOld/build.gradle": ""}, want: "buildSrcOld/build.gradle is a Gradle build file"},
 		{name: "outside input under a build directory outside the checkout", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/repo/app/build/libs/agent.jar"}}}, want: "reads /repo/app/build/libs/agent.jar"},
 		{name: "resolution from the transforms cache", resolved: []gradleResolution{resolution(":detachedConfiguration4", "/home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar")}, want: "resolved /home/u/.gradle/caches/transforms-3/9a/transformed/agent.jar"},
@@ -90,13 +106,31 @@ func TestGradleIncomplete(t *testing.T) {
 			dir := t.TempDir()
 			writeFiles(t, dir, map[string]string{"settings.gradle": "", "build.gradle": "", "app/build.gradle": ""})
 			writeFiles(t, dir, tc.files)
+			sub := func(s string) string { return strings.ReplaceAll(s, "$ROOT", dir) }
+			tasks := make([]gradleTask, len(tc.tasks))
+			for i, tk := range tc.tasks {
+				tk.Outside = append([]string(nil), tk.Outside...)
+				for j := range tk.Outside {
+					tk.Outside[j] = sub(tk.Outside[j])
+				}
+				tasks[i] = tk
+			}
+			resolved := make([]gradleResolution, len(tc.resolved))
+			for i, r := range tc.resolved {
+				r.Artifacts = slices.Clone(r.Artifacts)
+				for j := range r.Artifacts {
+					r.Artifacts[j].File = sub(r.Artifacts[j].File)
+				}
+				resolved[i] = r
+			}
+			buildDir, userHome := cmp.Or(tc.buildDir, "$ROOT/app/build"), cmp.Or(tc.userHome, "/home/u/.gradle")
 			out := t.TempDir()
 			if !tc.noRecords {
 				rec := filepath.Join(out, "resolved")
 				if err := os.MkdirAll(rec, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				for i, r := range append([]gradleResolution{resolution(":runtimeClasspath", jar)}, tc.resolved...) {
+				for i, r := range append([]gradleResolution{resolution(":runtimeClasspath", jar)}, resolved...) {
 					b, err := json.Marshal(r)
 					if err != nil {
 						t.Fatal(err)
@@ -107,11 +141,12 @@ func TestGradleIncomplete(t *testing.T) {
 				}
 			}
 			projects := []gradleProject{
-				{Path: ":", RootDir: dir, BuildFile: filepath.Join(dir, "build.gradle"), Tasks: tc.tasks, Uncollected: tc.uncollected},
-				{Path: ":app", RootDir: dir, BuildFile: filepath.Join(dir, "app", "build.gradle"), BuildDir: "/repo/app/build", UserHome: "/home/u/.gradle"},
+				{Path: ":", RootDir: dir, Dir: dir, BuildFile: filepath.Join(dir, "build.gradle"), BuildDir: filepath.Join(dir, "build"), Tasks: tasks, Uncollected: tc.uncollected},
+				{Path: ":app", RootDir: dir, Dir: filepath.Join(dir, "app"), BuildFile: filepath.Join(dir, "app", "build.gradle"), BuildDir: filepath.Clean(sub(buildDir)), UserHome: sub(userHome)},
 			}
 			g := *graph
 			g.Subject.IncludedBuilds = []string{"logic"}
+			g.Subject.Outputs = gradleOutputs(dir, projects, g.Subject.IncludedBuilds)
 			reasons, err := gradleIncomplete(out, dir, projects, &g)
 			if err != nil {
 				t.Fatal(err)
@@ -176,12 +211,15 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "default relativePath naming the parent", reactor: "app/pom.xml", files: map[string]string{"app/pom.xml": `<project><parent><groupId>com.example</groupId><artifactId>app</artifactId></parent><artifactId>app</artifactId></project>`}},
 		{name: "empty relativePath", reactor: "app/pom.xml", files: map[string]string{"app/pom.xml": `<project><parent><groupId>com.example</groupId><artifactId>app</artifactId><relativePath/></parent><artifactId>app</artifactId></project>`}, want: "pom.xml is a POM the reactor does not read"},
 		{name: "POM under build output", files: map[string]string{"target/classes/META-INF/maven/pom.xml": pom}},
+		{name: "POM under a directory named target that no module builds into", files: map[string]string{"tools/target/pom.xml": pom}, want: "tools/target/pom.xml is a POM the reactor does not read"},
+		{name: "POM under a build directory the effective POM names", build: `<directory>$ROOT/out</directory>`, files: map[string]string{"out/classes/META-INF/maven/pom.xml": pom}},
+		{name: "POM under target beside a build directory the effective POM names", build: `<directory>$ROOT/out</directory>`, files: map[string]string{"target/classes/META-INF/maven/pom.xml": pom}, want: "target/classes/META-INF/maven/pom.xml is a POM"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFiles(t, dir, map[string]string{"pom.xml": pom})
 			writeFiles(t, dir, tc.files)
-			eff, err := parseEffectivePOM([]byte(effective(tc.build)))
+			eff, err := parseEffectivePOM([]byte(effective(strings.ReplaceAll(tc.build, "$ROOT", dir))))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,7 +227,8 @@ func TestMavenIncomplete(t *testing.T) {
 			if file == "" {
 				file = "pom.xml"
 			}
-			reasons, err := mavenIncomplete(dir, []reactorProject{{key: "com.example:app", file: file}}, eff)
+			reactor := []reactorProject{{key: "com.example:app", file: file}}
+			reasons, err := mavenIncomplete(dir, mavenOutputs(dir, reactor, eff, nil), reactor, eff)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,11 +251,24 @@ func TestCheckedInArchives(t *testing.T) {
 		"gradle/wrapper/gradle-wrapper.jar":     "x",
 		".mvn/wrapper/maven-wrapper.jar":        "x",
 		".m2/repository/g/a/1/a-1.jar":          "x",
+		".m2/repository/g/b/2/b-2.jar":          "x",
 		"target/app.jar":                        "x",
 		"build/libs/app.jar":                    "x",
 		"src/main/resources/notes.txt":          "x",
 		"sub/gradle/wrapper/gradle-wrapper.jar": "x",
 		"vendor/m2/a.jar":                       "x",
+		"vendor/.m2/ojdbc8.jar":                 "x",
+		"tools/build/vendor/ojdbc8.jar":         "x",
+		"tools/target/agent.jar":                "x",
+		"app/.gradle/agent.jar":                 "x",
+		"web/node_modules/agent.jar":            "x",
+		"ui/package.json":                       "{}",
+		"ui/node_modules/dep/dep.jar":           "x",
+		"vendor/sdk.zip":                        "x",
+		"vendor/lib.aar":                        "x",
+		"vendor/java.sql.jmod":                  "x",
+		"vendor/conn.rar":                       "x",
+		"vendor/classes/A.class":                "x",
 		"libs/m2-tools.jar":                     "x",
 		"store/agent.bin":                       "x",
 	})
@@ -228,21 +280,55 @@ func TestCheckedInArchives(t *testing.T) {
 		"libs/gone.jar":      filepath.Join(dir, "missing.jar"),
 		"vendor/opt":         outside,
 		"vendor/inside":      filepath.Join(dir, "lib"),
+		"vendor/built":       filepath.Join(dir, "target"),
 		"sub/build":          outside,
+		"app/node_modules":   outside,
+		"cache":              outside,
 	}
 	for name, target := range links {
 		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	g := &Graph{Modules: []Module{{Nodes: []Node{{ID: "h", File: &File{Path: filepath.Join(dir, "lib", "held.jar")}}}}}}
-	got, err := CheckedInArchives(dir, g)
-	if err != nil {
+	via := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(dir, via); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"libs/agent.jar", "libs/gone.jar", "libs/linked.jar", "libs/m2-tools.jar", "sub/gradle/wrapper/gradle-wrapper.jar", "vendor/m2/a.jar", "vendor/opt", "web/app.WAR"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("archives = %q, want %q", got, want)
+	nodes := []Node{
+		{ID: "h", File: &File{Path: filepath.Join(dir, "lib", "held.jar")}},
+		{ID: "a", Group: "g", Artifact: "a", Version: "1", File: &File{Path: filepath.Join(dir, ".m2", "repository", "g", "a", "1", "a-1.jar")}},
+	}
+	g := &Graph{Modules: []Module{{Nodes: nodes}}}
+	g.Subject.Outputs = append(mavenOutputs(dir, []reactorProject{{key: "g:app", file: "pom.xml"}}, nil, g.Modules), "build", "cache")
+	if want := ".m2/repository,build,cache,target"; strings.Join(sortedUnique(g.Subject.Outputs), ",") != want {
+		t.Fatalf("outputs = %q, want %s", g.Subject.Outputs, want)
+	}
+	want := []string{
+		"app/.gradle/agent.jar", "app/node_modules", "libs/agent.jar", "libs/gone.jar", "libs/linked.jar", "libs/m2-tools.jar",
+		"sub/build", "sub/gradle/wrapper/gradle-wrapper.jar", "tools/build/vendor/ojdbc8.jar", "tools/target/agent.jar",
+		"vendor/.m2/ojdbc8.jar", "vendor/built", "vendor/classes/A.class", "vendor/conn.rar", "vendor/java.sql.jmod",
+		"vendor/lib.aar", "vendor/m2/a.jar", "vendor/opt", "vendor/sdk.zip", "web/app.WAR", "web/node_modules/agent.jar",
+	}
+	for _, root := range []string{dir, via} {
+		got, err := CheckedInArchives(root, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: archives = %q, want %q", root, got, want)
+		}
+	}
+	// A graph recording no outputs, or outputs that are not paths in the checkout, has build
+	// output walked.
+	for _, outputs := range [][]string{nil, {"", ".", "..", "/", "../" + filepath.Base(dir), "target/../target"}} {
+		g.Subject.Outputs = outputs
+		got, err := CheckedInArchives(dir, g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(got, "target/app.jar") || !slices.Contains(got, "build/libs/app.jar") || !slices.Contains(got, "cache") {
+			t.Errorf("outputs %q: archives = %q, want build output and the cache link listed", outputs, got)
+		}
 	}
 }
 
@@ -262,11 +348,22 @@ func TestOrphanBuildFileLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gradle, err := gradleOrphanBuildFiles(dir, nil, nil)
+	via := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(dir, via); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{dir, via} {
+		checkOrphanLinks(t, root)
+	}
+}
+
+func checkOrphanLinks(t *testing.T, dir string) {
+	t.Helper()
+	gradle, err := gradleOrphanBuildFiles(dir, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	maven, err := mavenOrphanPOMs(dir, nil)
+	maven, err := mavenOrphanPOMs(dir, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,8 +49,8 @@ type gradleProject struct {
 }
 
 // gradleTask is one task as the init script observed it: its type, the origin of each action
-// added beside its type's own, the tasks it depends on or is finalized by, and the input files
-// it reads from outside the build's root.
+// added beside its type's own, the tasks it depends on, is finalized by or is ordered after, and
+// the input files it reads from outside the build's root or from the Gradle user home.
 type gradleTask struct {
 	Path    string   `json:"path"`
 	Type    string   `json:"type"`
@@ -163,6 +163,7 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 	if g.Subject.IncludedBuilds, g.Subject.UnbindableIncludedBuilds, err = gradleIncludedBuilds(out, r.dir); err != nil {
 		return nil, err
 	}
+	g.Subject.Outputs = gradleOutputs(r.dir, projects, g.Subject.IncludedBuilds)
 	g.Subject.Inputs, err = gradleBuildInputs(r.dir, g.Subject.IncludedBuilds)
 	if err != nil {
 		return nil, err

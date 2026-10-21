@@ -432,12 +432,54 @@ func TestGradleComplete(t *testing.T) {
 	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
 	simple := "configurations.detachedConfiguration(dependencies.create('org.slf4j:slf4j-simple:2.0.16'))"
 	for _, tc := range []struct {
-		name   string
-		append map[string]string
-		want   string // a substring of every reason expected; empty means Complete
-		check  func(t *testing.T, g *Graph)
+		name       string
+		append     map[string]string
+		homeInside bool   // GRADLE_USER_HOME inside the checkout, as CI caches set it
+		want       string // a substring of every reason expected; empty means Complete
+		check      func(t *testing.T, g *Graph)
 	}{
 		{name: "fixture as is"},
+		{name: "fixture with the user home inside the checkout", homeInside: true},
+		{
+			name:   "Exec another task must run after",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { mustRunAfter gen }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "Exec another task should run after",
+			append: map[string]string{"app/build.gradle": "def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { shouldRunAfter gen }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name: "Zip of the build script classpath",
+			append: map[string]string{
+				"settings.gradle": "include 'bz'\n",
+				"bz/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-simple:2.0.16' } }\n" +
+					"plugins.apply('base')\ntasks.register('z', Zip) { from buildscript.configurations.classpath; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+			},
+			want: "slf4j-simple-2.0.16.jar, outside the build",
+		},
+		{
+			name: "Zip of the build script classpath with the user home inside the checkout",
+			append: map[string]string{
+				"settings.gradle": "include 'bz'\n",
+				"bz/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-simple:2.0.16' } }\n" +
+					"plugins.apply('base')\ntasks.register('z', Zip) { from buildscript.configurations.classpath; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+			},
+			homeInside: true,
+			want:       "slf4j-simple-2.0.16.jar, outside the build",
+		},
+		{
+			name: "detached configuration with an unresolved project selector",
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.create(project(path: ':lib', configuration: 'nope')), " +
+				"dependencies.create('org.slf4j:slf4j-api:2.0.16')).incoming.artifactView { lenient(true) }.files.files\n"},
+		},
+		{
+			name: "detached configuration with an unresolved project selector and a file that does not download",
+			append: map[string]string{"app/build.gradle": "configurations.detachedConfiguration(dependencies.create(project(path: ':lib', configuration: 'nope')), " +
+				"dependencies.create('org.slf4j:slf4j-api:2.0.16:nope')).incoming.artifactView { lenient(true) }.files.files\n"},
+			want: "resolution of :app:detachedConfiguration1 failed",
+		},
 		{
 			name:   "script action on an ad-hoc task",
 			append: map[string]string{"app/build.gradle": "tasks.register('hello') { doLast { println 'hello' } }\n"},
@@ -557,11 +599,18 @@ func TestGradleComplete(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			env := env
+			if tc.homeInside {
+				env = environ(env, map[string]string{"GRADLE_USER_HOME": filepath.Join(dir, ".gradle-home")})
+			}
 			g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
 			if err != nil {
 				t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
 			}
 			t.Logf("gradle %s: incomplete %q", g.Tool.Version, g.Incomplete)
+			if tc.homeInside && !slices.Contains(g.Subject.Outputs, ".gradle-home") {
+				t.Errorf("outputs %q, want the user home", g.Subject.Outputs)
+			}
 			switch {
 			case tc.want == "" && !g.Complete:
 				t.Errorf("not Complete: %q", g.Incomplete)

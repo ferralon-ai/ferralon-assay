@@ -249,13 +249,14 @@ func (p *program) styleToolingPresent() bool {
 // serverRuntimePackages package. Such a module runs under node, not react-scripts, and a package
 // off that list may compile the app's source with its own stylesheet rule, whatever script starts
 // it. Every other package counts, so one missing from the list costs the exemption, never
-// soundness. A module under a stock app's src is compiled for the browser and runs no bundler.
+// soundness. A module under a stock app's src is compiled for the browser and runs no bundler,
+// except src/setupProxy, which react-scripts start loads under node in the dev server.
 func (p *program) importsUnlisted() bool {
 	inSrc := map[string]bool{}
 	craSrc := func(module string) bool {
 		v, ok := inSrc[module]
 		if !ok {
-			v = stockCRAPackage(p.root, module)
+			v = stockCRAPackage(p.root, module) && !(path.Base(module) == "setupProxy" && path.Base(path.Dir(module)) == "src")
 			inSrc[module] = v
 		}
 		return v

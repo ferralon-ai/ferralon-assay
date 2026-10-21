@@ -897,6 +897,7 @@ func TestJDKToolchains(t *testing.T) {
 			plugin                        string // "" is maven-toolchains-plugin
 			stated                        string // toolchain.jdk.version among the stated properties
 			config                        string // .mvn/maven.config
+			env                           string // a variable of Maven's environment
 			want                          []string
 		}{
 			{name: "execution version", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
@@ -908,6 +909,7 @@ func TestJDKToolchains(t *testing.T) {
 			{name: "execution over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "stated property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", stated: "17", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "maven.config property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", config: "-ntp\n-Dtoolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Xmx1g -Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
 			{name: "execution over a maven.config property", config: "-Dtoolchain.jdk.version=21\n", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "another plugin's toolchains", plugin: "toolchains-maven-plugin", wide: "<toolchains><jdk><version>17</version></jdk></toolchains>", goal: "toolchain", want: []string{"17"}},
 		} {
@@ -927,6 +929,9 @@ func TestJDKToolchains(t *testing.T) {
 					c.Properties = map[string]string{"toolchain.jdk.version": tc.stated}
 				}
 				r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+				if tc.env != "" {
+					r.env = append(r.env, tc.env)
+				}
 				g, err := r.resolve(t, ToolMaven, c)
 				if err != nil {
 					t.Fatalf("resolve: %v", cause(err))

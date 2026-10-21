@@ -70,7 +70,7 @@ func loadDependencyClosure(buildDir string, firstParty map[string]bool, opts ...
 		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonBuildGraphAbsent)
 		return dc
 	}
-	dc.cp.JDK = g.Conditions.JDKMajor()
+	dc.cp.JDK = g.RuntimeJDK()
 	if javaanalysis.OtherToolBuild(g, buildDir) {
 		dc.reasons = append(dc.reasons, javaanalysis.PartialReasonOtherToolBuild)
 	}

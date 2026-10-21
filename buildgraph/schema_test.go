@@ -162,3 +162,27 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeJDK(t *testing.T) {
+	for _, tc := range []struct {
+		jdk        string
+		toolchains [][]string
+		want       int
+	}{
+		{"21.0.4", nil, 21},
+		{"21.0.4", [][]string{nil, {"21"}}, 21},
+		{"21.0.4", [][]string{{"21"}, {"17"}}, 0},
+		{"21.0.4", [][]string{{"21", toolchainUnstated}}, 0},
+		{"21.0.4", [][]string{{"[21,22)"}}, 0},
+		{"17", [][]string{{"17"}}, 17},
+		{"", [][]string{{"21"}}, 0},
+	} {
+		g := Graph{Conditions: Conditions{JDK: tc.jdk}}
+		for _, ts := range tc.toolchains {
+			g.Modules = append(g.Modules, Module{JDKToolchains: ts})
+		}
+		if got := g.RuntimeJDK(); got != tc.want {
+			t.Errorf("JDK %q, toolchains %q: RuntimeJDK() = %d, want %d", tc.jdk, tc.toolchains, got, tc.want)
+		}
+	}
+}

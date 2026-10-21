@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -116,6 +117,13 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
 		return nil, err
 	}
+	toolchains, err := mavenToolchains(effective)
+	if err != nil {
+		return nil, err
+	}
+	for i := range modules {
+		modules[i].JDKToolchains = toolchains[modules[i].ID]
+	}
 	g.Modules = modules
 
 	sum, err := sha256File(epFile)
@@ -215,6 +223,62 @@ func treeShapingInPOM(effective []effectiveProject) error {
 	return nil
 }
 
+// toolchainConfig is the part of a plugin's configuration that selects a JDK toolchain: the
+// maven-toolchains-plugin's <toolchains><jdk>, or a toolchain-aware plugin's own <jdkToolchain>.
+type toolchainConfig struct {
+	Toolchains struct {
+		JDK []struct {
+			Version string `xml:"version"`
+		} `xml:"jdk"`
+	} `xml:"toolchains"`
+	JDKToolchain *struct {
+		Version string `xml:"version"`
+	} `xml:"jdkToolchain"`
+}
+
+// toolchainUnstated stands for a toolchain selected by vendor or other requirements alone, whose
+// version the build does not state.
+const toolchainUnstated = "unstated"
+
+// mavenToolchains reads the JDK toolchains each module's build plugins select, by
+// groupId:artifactId, from the plugin-wide and every execution's configuration.
+func mavenToolchains(effective []effectiveProject) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, p := range effective {
+		key := p.GroupID + ":" + p.ArtifactID
+		for _, pl := range p.Build.Plugins.Plugin {
+			configs := []xmlChildren{pl.Configuration}
+			for _, ex := range pl.Executions.Execution {
+				configs = append(configs, ex.Configuration)
+			}
+			for _, c := range configs {
+				var tc toolchainConfig
+				if err := xml.Unmarshal([]byte("<configuration>"+c.Inner+"</configuration>"), &tc); err != nil {
+					return nil, &Failure{Kind: KindToolFailed, Detail: stepEffectivePOM, Log: key + " " + pl.ArtifactID + " configuration: " + err.Error()}
+				}
+				var versions []string
+				if pl.ArtifactID == "maven-toolchains-plugin" {
+					for _, j := range tc.Toolchains.JDK {
+						versions = append(versions, j.Version)
+					}
+				}
+				if tc.JDKToolchain != nil {
+					versions = append(versions, tc.JDKToolchain.Version)
+				}
+				for _, v := range versions {
+					if v = strings.TrimSpace(v); v == "" {
+						v = toolchainUnstated
+					}
+					if !slices.Contains(out[key], v) {
+						out[key] = append(out[key], v)
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
 // readOutput parses a step's output file; a missing or unparseable file fails that step.
 func readOutput[T any](step, file string, parse func([]byte) (T, error)) (T, error) {
 	var zero T
@@ -277,11 +341,12 @@ func parseActiveProfiles(b []byte) (map[string][]string, error) {
 	return out, sc.Err()
 }
 
-// xmlChildren holds an element's child element names.
+// xmlChildren holds an element's child element names, and its content verbatim.
 type xmlChildren struct {
 	Any []struct {
 		XMLName xml.Name
 	} `xml:",any"`
+	Inner string `xml:",innerxml"`
 }
 
 // effectivePlugin is a plugin's configuration as an effective POM gives it.

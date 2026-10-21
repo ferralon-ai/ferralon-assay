@@ -275,7 +275,7 @@ func TestReach_ProviderRoots(t *testing.T) {
 
 // TestReach_SignatureRoots: of a JDK-loadable class's overridable methods, only those
 // the JDK can name through a supertype it holds the object under are roots. Rows run on
-// the platformMethods release unless they state another runtime.
+// the platformMethods release unless they state another runtime, except the last, which states none.
 func TestReach_SignatureRoots(t *testing.T) {
 	const (
 		d    = "com/acme/D"
@@ -286,7 +286,6 @@ func TestReach_SignatureRoots(t *testing.T) {
 	)
 	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
 	uncaught := "(Ljava/lang/Thread;Ljava/lang/Throwable;)V"
-	const unknownJDK = -1 // a row's runtime left unstated (Classpath.JDK 0)
 	undeclared := []classfile.Class{
 		mainCalls(touch),
 		{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
@@ -310,12 +309,6 @@ func TestReach_SignatureRoots(t *testing.T) {
 			name:    "the same on an earlier JDK, which can declare a method since removed",
 			classes: undeclared,
 			cp:      Classpath{JDK: 8},
-			want:    ReachableCandidate, via: "D.snapshot",
-		},
-		{
-			name:    "the same on an unknown JDK",
-			classes: undeclared,
-			cp:      Classpath{JDK: unknownJDK},
 			want:    ReachableCandidate, via: "D.snapshot",
 		},
 		{
@@ -384,6 +377,18 @@ func TestReach_SignatureRoots(t *testing.T) {
 			want: ReachableCandidate, via: "Handler.uncaughtException",
 		},
 		{
+			name: "a default method of a superinterface's superinterface",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: "com/acme/Handler", Super: objectClass, Abstract: true, Public: true, Methods: []classfile.Method{
+					callsSink("com/acme/Handler", "uncaughtException", uncaught),
+				}},
+				{Name: "com/acme/Logging", Super: objectClass, Interfaces: []string{"com/acme/Handler"}, Abstract: true, Public: true},
+				{Name: d, Super: objectClass, Interfaces: []string{"com/acme/Logging", ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Handler.uncaughtException",
+		},
+		{
 			name: "an inherited method no loadable subclass names is no root",
 			classes: []classfile.Class{
 				mainCalls(touch),
@@ -423,7 +428,7 @@ func TestReach_SignatureRoots(t *testing.T) {
 					callsSink(d, "start", "()V"),
 				}},
 			},
-			cp:   Classpath{Packages: map[string]bool{"javax/net": true}, JDK: platformMethodsJDK},
+			cp:   Classpath{Packages: map[string]bool{"javax/net": true}, },
 			want: ReachableCandidate, via: "D.start",
 		},
 		{
@@ -521,13 +526,15 @@ func TestReach_SignatureRoots(t *testing.T) {
 		})
 	}
 	for i := range cases {
-		switch cases[i].cp.JDK {
-		case 0:
+		if cases[i].cp.JDK == 0 {
 			cases[i].cp.JDK = platformMethodsJDK
-		case unknownJDK:
-			cases[i].cp.JDK = 0
 		}
 	}
+	cases = append(cases, holeCase{
+		name:    "the same undeclared method on an unstated JDK",
+		classes: undeclared,
+		want:    ReachableCandidate, via: "D.snapshot",
+	})
 	runHoleCases(t, cases)
 }
 
@@ -677,6 +684,29 @@ func TestReach_ReentryAnyReferenceArgument(t *testing.T) {
 			name:    "array of references",
 			classes: []classfile.Class{mainCalls(edge(classfile.EdgeStatic, "java/util/Arrays", "sort", "([Ljava/lang/Object;)V"))},
 			want:    Undetermined, kind: HazardKindReentry, why: "java/lang/Object",
+		},
+		{
+			// The JVM defines java/ classes only from the boot loader, so the JDK's put runs and
+			// calls K.hashCode, not the stub's empty body.
+			name: "a JAR's own java/util/Hashtable does not stand in for the JDK's",
+			classes: []classfile.Class{
+				mainCalls(
+					edge(classfile.EdgeSpecial, "java/util/Hashtable", "<init>", "()V"),
+					edge(classfile.EdgeSpecial, "com/acme/K", "<init>", "()V"),
+					edge(classfile.EdgeVirtual, "java/util/Hashtable", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+				),
+				{Name: "java/util/Hashtable", Super: "java/util/Dictionary", Public: true, Methods: []classfile.Method{
+					pubMethod("java/util/Hashtable", "<init>", "()V"),
+					emptyFinalize("java/util/Hashtable"),
+					pubMethod("java/util/Hashtable", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+				{Name: "com/acme/K", Super: objectClass, Public: true, Methods: []classfile.Method{
+					pubMethod("com/acme/K", "<init>", "()V"),
+					emptyFinalize("com/acme/K"),
+					callsSink("com/acme/K", "hashCode", "()I"),
+				}},
+			},
+			want: Undetermined,
 		},
 		{
 			name: "value-class and primitive arguments are leaves",

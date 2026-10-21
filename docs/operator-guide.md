@@ -185,13 +185,22 @@ scan does not look up. State them:
 
 | What you state | CLI flag | Environment variable |
 |---|---|---|
-| The `java.version` of the JVM that runs your Maven build, as `mvn -v` reports it (for example `17.0.12` or `1.8.0_382`) | `-subject-java-version` | `ASSAY_SUBJECT_JAVA_VERSION` |
+| The `java.version` of the JDK your program runs on, the same major version as the JVM that runs your build, as `mvn -v` reports it (for example `17.0.12` or `1.8.0_382`) | `-subject-java-version` | `ASSAY_SUBJECT_JAVA_VERSION` |
 | The build's explicit profile selection in `-P` syntax: its `-P` list together with `settings.xml` `<activeProfiles>` (for example `release,!docs`, or `,` for none) | `-subject-maven-profiles` | `ASSAY_SUBJECT_MAVEN_PROFILES` |
 
 The flag wins over the environment variable. The Action has no inputs for these; set the variables in
 the `env:` of the step that runs it, as for `ASSAY_SUBJECT_GO_VERSION`. Profiles activated by `<jdk>`
 stay undecided until you state the Java version, and every profile of the reactor and its parents stays
 undecided until you state the selection.
+
+The Java version you state is also the JDK your program runs on. It must be the same major version
+as the JVM that runs the build, or the run fails. When your program runs on another JDK than the build,
+including a runtime image newer than the build JDK, stating that JDK correctly is yours: the scan
+checks it against the build's JVM and the build's toolchains, never against the image you deploy.
+Bytecode reachability uses its table of the JDK's own methods only when the stated JDK is the release
+that table describes, so on any other release, or none, more methods count as possible entry points.
+When a module's Maven or Gradle toolchain selects a JDK other than the stated one, the scan does the
+same for the whole build.
 
 ## Resolving the JVM build graph
 
@@ -209,7 +218,7 @@ ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
 | `-out` | Output directory for `buildgraph.json` and its sidecars (required). It must be empty and outside the repository; the command rejects any other path, so a previous run's files are never read as this one's. |
 | `-tool` | `auto` (default), `maven` or `gradle`. |
 | `-profiles` | Comma-separated Maven profiles to activate. |
-| `-java-version` | The JDK the job states; a different major version fails. |
+| `-java-version` | The JDK the job states, which the program runs on; a build tool on a different major version fails. |
 
 A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan reads the
 graph with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK

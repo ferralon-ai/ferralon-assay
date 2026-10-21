@@ -100,10 +100,11 @@ type closureEntry struct {
 }
 
 // loadReachClosure loads every runtime JAR the build graph names. firstParty is the build's
-// compiled output: it goes into the engine, and a dependency class with the same binary name is
-// skipped, since the build output is what the build packaged. Without a graph only firstParty
-// is loaded, and the closure says so run-wide.
-func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Option) (*reachClosure, error) {
+// compiled output and fpClasspath what its directories define: it goes into the engine, and a
+// dependency class with the same binary name is skipped, since the build output is what the
+// build packaged. Without a graph only firstParty is loaded, and the closure says so run-wide.
+// The engine runs on the JDK the graph's run conditions state.
+func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath depreach.Classpath, opts ...Option) (*reachClosure, error) {
 	g := BuildGraph(opts...)
 	reasons := LaunchOptionReasons(buildDir)
 
@@ -129,15 +130,20 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Opt
 		jar artifactJar
 	}
 	var jars []opened
+	var cp depreach.Classpath
+	cp.Merge(fpClasspath)
 	fp := sha256.New()
 	if g == nil {
+		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
 	} else {
+		cp.JDK = g.RuntimeJDK()
 		if OtherToolBuild(g, buildDir) {
 			reasons = append([]string{PartialReasonOtherToolBuild}, reasons...)
 		}
 		load, miss := RuntimeSelection(g)
 		for _, m := range miss {
+			cp.Unlisted = true // no JAR is listed for it
 			reason := reasonNoDependencyArtifact
 			if m.Ambiguous {
 				reason = reasonDependencyVersionAmbiguous
@@ -148,14 +154,18 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Opt
 			n := gav{coordinate: j.Coordinate, version: j.Version, classifier: j.Classifier}
 			jar, found := readJar(j)
 			if found != jarFound {
+				cp.Unlisted = true
 				rc.Scoped = append(rc.Scoped, scoped(plugin.PartialReasonToolFailure, n.coordinate, n.String()+": "+filepath.Base(j.Path)+" unreadable or changed since the build resolved it"))
 				continue
 			}
+			pkgs, listed, closed := classfile.JarBytesPackages(jar.data)
+			cp.Add(pkgs, listed && closed)
 			fmt.Fprintln(fp, j.Path, j.SHA256)
 			jars = append(jars, opened{n, jar})
 		}
 	}
 	fmt.Fprintln(fp, firstPartyFingerprint(firstParty))
+	fmt.Fprintln(fp, classpathFingerprint(cp))
 	fingerprint := hex.EncodeToString(fp.Sum(nil))
 
 	closureCache.Lock()
@@ -208,7 +218,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, opts ...Opt
 		gavs[i] = j.gav
 	}
 	all = mergeReleases(built, all, gavs, versioned, definedBy, isFirstParty, scoped)
-	built.Engine = depreach.NewEngine(all)
+	built.Engine = depreach.NewEngineOn(all, cp)
 	built.methods = make(map[string]classfile.Method)
 	built.classes = make(map[string]*classfile.Class, len(all))
 	for i := range all {
@@ -370,4 +380,15 @@ func parseDepEdgeSymbol(s string) (classfile.MethodRef, bool) {
 		return classfile.MethodRef{}, false
 	}
 	return classfile.MethodRef{Owner: owner, Name: nameDesc[:paren], Descriptor: nameDesc[paren:]}, true
+}
+
+// classpathFingerprint renders what cp records, for the closure cache key: the engine's roots
+// depend on it beyond the loaded classes.
+func classpathFingerprint(cp depreach.Classpath) string {
+	pkgs := make([]string, 0, len(cp.Packages))
+	for p := range cp.Packages {
+		pkgs = append(pkgs, p)
+	}
+	sort.Strings(pkgs)
+	return fmt.Sprintf("jdk=%d unlisted=%t packages=%s", cp.JDK, cp.Unlisted, strings.Join(pkgs, ","))
 }

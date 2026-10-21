@@ -40,7 +40,7 @@ type Classpath struct {
 	Packages map[string]bool
 	// Unlisted is set when some entry could not be listed: it may define any package.
 	Unlisted bool
-	// JDK is the feature release of the JDK the program runs on, or 0 when unknown.
+	// JDK is the feature release of the JDK the program runs on, or 0 when not recorded.
 	// platformMethods holds only on the release it was generated from (platformMethodsJDK).
 	JDK int
 }
@@ -70,6 +70,11 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 	}
 	for i := range classes {
 		c := &classes[i]
+		if strings.HasPrefix(c.Name, "java/") {
+			// The JVM defines java/ classes only from the boot loader, so a classpath copy
+			// never runs; the JDK's own body is what a call reaches.
+			continue
+		}
 		e.classes[c.Name] = c
 		if j := strings.LastIndexByte(c.Name, '/'); j > 0 {
 			e.defined[c.Name[:j]] = true
@@ -791,7 +796,7 @@ func (e *Engine) platformLoadable(c string) bool {
 	}
 	e.loadable[c] = false // cycle guard
 	found := false
-	if cls := e.runtimeClass(c); cls != nil {
+	if cls := e.classes[c]; cls != nil {
 		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
 			if s != "" && e.loadableType(s) {
 				found = true
@@ -803,23 +808,13 @@ func (e *Engine) platformLoadable(c string) bool {
 	return found
 }
 
-// runtimeClass returns the loaded class the JVM runs under name: none for a java/ name,
-// which the JVM refuses to define from any loader but the boot loader, so a JAR's own
-// copy never shadows the JDK's.
-func (e *Engine) runtimeClass(name string) *classfile.Class {
-	if strings.HasPrefix(name, "java/") {
-		return nil
-	}
-	return e.classes[name]
-}
-
 // loadableType reports whether type t can be the static type under which the JDK
 // holds an object it may call: a loaded class that is platformLoadable, an unopened
 // dependency type, or a platform type outside deniedLoadable and the Throwables.
 // A Throwable needs no roots: every instance ran Throwable's constructor on itself,
 // which the search already treats as a platform body running on that receiver.
 func (e *Engine) loadableType(t string) bool {
-	if e.runtimeClass(t) != nil {
+	if e.classes[t] != nil {
 		return e.platformLoadable(t)
 	}
 	if !e.platform(t) {
@@ -879,7 +874,7 @@ func (e *Engine) heldAs(owner string) heldTypes {
 			continue
 		}
 		seen[cur] = true
-		if cls := e.runtimeClass(cur); cls != nil {
+		if cls := e.classes[cur]; cls != nil {
 			if cls.Super != "" {
 				stack = append(stack, cls.Super)
 			}
@@ -987,7 +982,7 @@ func (e *Engine) loadableSupertypes() map[string]bool {
 	out := map[string]bool{}
 	var stack []string
 	for n, cls := range e.classes {
-		if e.runtimeClass(n) != nil && e.platformLoadable(n) {
+		if e.platformLoadable(n) {
 			stack = append(stack, cls.Super)
 			stack = append(stack, cls.Interfaces...)
 		}
@@ -995,7 +990,7 @@ func (e *Engine) loadableSupertypes() map[string]bool {
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		cls := e.runtimeClass(cur)
+		cls := e.classes[cur]
 		if cls == nil || out[cur] {
 			continue
 		}
@@ -1341,7 +1336,7 @@ func (cp *Classpath) Add(pkgs map[string]bool, listed bool) {
 }
 
 // Merge adds everything other records.
-// A JDK only one side records is kept, and two that differ leave it unknown.
+// A JDK only one side records is kept, and two that differ leave it 0.
 func (cp *Classpath) Merge(other Classpath) {
 	cp.Add(other.Packages, true)
 	cp.Unlisted = cp.Unlisted || other.Unlisted

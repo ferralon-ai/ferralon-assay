@@ -36,6 +36,7 @@ type gradleProject struct {
 	Group        string                     `json:"group"`
 	Name         string                     `json:"name"`
 	Version      string                     `json:"version"`
+	JDKToolchain string                     `json:"jdk_toolchain"`
 	OtherRuntime []string                   `json:"other_runtime_classpaths"`
 	Projects     map[string]gradleCoord     `json:"projects"`
 	Classpaths   map[string]gradleClasspath `json:"classpaths"`
@@ -135,6 +136,11 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		ms, err := gradleModule(p)
 		if err != nil {
 			return nil, err
+		}
+		if p.JDKToolchain != "" {
+			for i := range ms {
+				ms[i].JDKToolchains = []string{p.JDKToolchain}
+			}
 		}
 		g.Modules = append(g.Modules, ms...)
 	}

@@ -52,6 +52,9 @@ def failureText = { Throwable top ->
 allprojects { p ->
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
+        // The JDK the project's toolchain selects, which Kotlin's jvmToolchain sets too.
+        def javaExt = p.extensions.findByName('java')
+        def toolchain = javaExt != null && javaExt.hasProperty('toolchain') ? javaExt.toolchain.languageVersion.getOrNull() : null
         def doc = [
             gradle     : gradleVersion,
             java       : javaVersion,
@@ -63,6 +66,7 @@ allprojects { p ->
             group      : String.valueOf(p.group),
             name       : p.name,
             version    : String.valueOf(p.version),
+            jdk_toolchain: toolchain == null ? '' : String.valueOf(toolchain.asInt()),
         ]
         // Other runtime classpaths: beside runtimeClasspath, ones such as
         // integrationTestRuntimeClasspath, resolved too; without it, Android variants or KMP

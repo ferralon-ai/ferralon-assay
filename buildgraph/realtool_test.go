@@ -349,3 +349,65 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 		writeFiles(t, dir, map[string]string{edit: string(was)})
 	}
 }
+
+// The graph records the JDK a project's toolchain selects, set through the java extension or
+// Kotlin's jvmToolchain, and none for a project that runs on the build's own JVM.
+func TestGradleJDKToolchainRoundTrip(t *testing.T) {
+	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
+	dir := copyFixture(t, "gradle-multi")
+	appendFile := func(rel, text string) {
+		f, err := os.OpenFile(filepath.Join(dir, rel), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString(text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendFile("app/build.gradle", "\njava { toolchain { languageVersion = JavaLanguageVersion.of(17) } }\n")
+	appendFile("kt/build.gradle.kts", "\nkotlin { jvmToolchain(11) }\n")
+	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
+	if err != nil {
+		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
+	}
+	for id, want := range map[string][]string{":app": {"17"}, ":kt": {"11"}, ":lib": nil, ":": nil} {
+		if got := module(t, g, id).JDKToolchains; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s toolchains %q, want %q", id, got, want)
+		}
+	}
+}
+
+// The graph records the JDK toolchains a module's bound plugins select, from the
+// maven-toolchains-plugin and a plugin's own jdkToolchain, as the effective POM gives them.
+func TestMavenJDKToolchainRoundTrip(t *testing.T) {
+	env := realToolEnv(t, "ASSAY_BUILDGRAPH_MAVEN_BIN")
+	dir := copyFixture(t, "maven-reactor")
+	addBuild := func(module, plugin string) {
+		p := filepath.Join(dir, module, "pom.xml")
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pom := strings.Replace(string(b), "</project>", "  <build><plugins>"+plugin+"</plugins></build>\n</project>", 1)
+		if err := os.WriteFile(p, []byte(pom), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addBuild("module-a", "<plugin><artifactId>maven-toolchains-plugin</artifactId><version>3.2.0</version>"+
+		"<executions><execution><goals><goal>toolchain</goal></goals></execution></executions>"+
+		"<configuration><toolchains><jdk><version>17</version></jdk></toolchains></configuration></plugin>")
+	addBuild("module-b", "<plugin><artifactId>maven-compiler-plugin</artifactId>"+
+		"<configuration><jdkToolchain><version>[11,12)</version></jdkToolchain></configuration></plugin>")
+	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolMaven, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
+	if err != nil {
+		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
+	}
+	want := map[string][]string{"module-a": {"17"}, "module-b": {"[11,12)"}}
+	for _, m := range g.Modules {
+		name := m.ID[strings.LastIndex(m.ID, ":")+1:]
+		if got := m.JDKToolchains; !reflect.DeepEqual(got, want[name]) {
+			t.Errorf("%s toolchains %q, want %q", m.ID, got, want[name])
+		}
+	}
+}

@@ -80,7 +80,7 @@ func buildDependencyGraph(buildDir string, opts ...Option) (*dependencyGraph, er
 		return dg, nil
 	}
 
-	cp.JDK = g.Conditions.JDKMajor()
+	cp.JDK = g.RuntimeJDK()
 	var classes []classfile.Class
 	for _, d := range graphJars(g) {
 		jar, found := readJar(d)

@@ -86,12 +86,15 @@ type Input struct {
 // Module is one Maven reactor module or Gradle project, or a classpath copy of a Gradle project:
 // CopyOf the project's ID, ID "<project>#<classpath>", the project's Path and Root, holding the
 // components that classpath resolved at a version other than the one the project kept.
+// JDKToolchains are the JDK versions, as the build states them, that a toolchain selects for the
+// module's compiling, testing or running; absent when the module uses the build's own JVM.
 type Module struct {
 	ID             string   `json:"id"`
 	CopyOf         string   `json:"copy_of,omitempty"`
 	Path           string   `json:"path"`
 	Root           string   `json:"root"`
 	ActiveProfiles []string `json:"active_profiles,omitempty"`
+	JDKToolchains  []string `json:"jdk_toolchains,omitempty"`
 	Nodes          []Node   `json:"nodes"`
 	Edges          []Edge   `json:"edges"`
 }

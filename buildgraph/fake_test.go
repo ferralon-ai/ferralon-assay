@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -846,4 +847,55 @@ func TestGradleProducerFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJDKToolchains(t *testing.T) {
+	t.Run("maven", func(t *testing.T) {
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", `<artifactId>module-a</artifactId>
+    <build>
+      <plugins>
+        <plugin>
+          <artifactId>maven-toolchains-plugin</artifactId>
+          <configuration><toolchains><jdk><version>17</version><vendor>temurin</vendor></jdk></toolchains></configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <executions><execution><id>it</id><configuration><jdkToolchain><vendor>temurin</vendor></jdkToolchain></configuration></execution></executions>
+        </plugin>
+      </plugins>
+      <pluginManagement><plugins><plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration><jdkToolchain><version>11</version></jdkToolchain></configuration>
+      </plugin></plugins></pluginManagement>
+    </build>`, 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{JDK: "21"})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		// A managed plugin no module binds selects nothing; a toolchain chosen by vendor alone
+		// has no version the stated JDK can be checked against.
+		if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, []string{"17", toolchainUnstated}) {
+			t.Errorf("module-a toolchains %q", got)
+		}
+		if got := module(t, g, "com.example:module-c").JDKToolchains; got != nil {
+			t.Errorf("module-c toolchains %q", got)
+		}
+	})
+	t.Run("gradle", func(t *testing.T) {
+		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17",`, 1)
+		r := newFakeGradle(t, "", map[string]string{"project_app.json": app})
+		g, err := r.resolve(t, ToolGradle, Conditions{})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		for _, id := range []string{":app", ":app#testRuntimeClasspath"} {
+			if got := module(t, g, id).JDKToolchains; !slices.Equal(got, []string{"17"}) {
+				t.Errorf("%s toolchains %q", id, got)
+			}
+		}
+		if got := module(t, g, ":lib").JDKToolchains; got != nil {
+			t.Errorf(":lib toolchains %q", got)
+		}
+	})
 }

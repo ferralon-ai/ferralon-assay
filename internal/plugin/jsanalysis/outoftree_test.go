@@ -565,6 +565,16 @@ Function.call[process.argv[3]](process.argv[2])();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call indexed optionally", map[string]string{"app.js": `
+Function.call?.['constructor'](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call called optionally", map[string]string{"app.js": `
+Function.call?.(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"constructor of Function.call aliased", map[string]string{"app.js": `
 var C = Function.call.constructor; C(process.argv[2])();
 function load(s) { return s; }

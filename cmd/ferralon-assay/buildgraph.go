@@ -163,10 +163,18 @@ func (f *runFlags) graphRequest() graphRequest {
 		}
 	}
 	req.conditions.JDK = f.subjectJavaVersion()
-	for _, p := range strings.Split(f.subjectMavenProfiles(), ",") {
+	req.conditions.Profiles = splitProfiles(f.subjectMavenProfiles())
+	return req
+}
+
+// splitProfiles is a comma-separated profile list as both resolve-graph and the scan state it:
+// trimmed, empty entries dropped.
+func splitProfiles(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			req.conditions.Profiles = append(req.conditions.Profiles, p)
+			out = append(out, p)
 		}
 	}
-	return req
+	return out
 }

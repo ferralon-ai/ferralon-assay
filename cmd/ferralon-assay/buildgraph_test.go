@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
@@ -174,5 +175,34 @@ func TestGraphRequestTool(t *testing.T) {
 				t.Errorf("tool = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// resolve-graph and the scan state profiles alike, so a graph resolved under " ci, ,release"
+// meets a scan stating "ci,release".
+func TestSplitProfiles(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{" , ", nil},
+		{"ci", []string{"ci"}},
+		{" ci, ,release ", []string{"ci", "release"}},
+	} {
+		if got := splitProfiles(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("splitProfiles(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// resolve-graph takes only conditions a scan can state; a graph under any other is one every
+// scan rejects.
+func TestResolveGraphRejectsUnstatableConditions(t *testing.T) {
+	out := t.TempDir()
+	for _, args := range [][]string{{"-D", "k=v"}, {"-env", "K=v"}} {
+		if err := runResolveGraph(append(args, "-out", out)); err == nil {
+			t.Errorf("resolve-graph %v accepted", args)
+		}
 	}
 }

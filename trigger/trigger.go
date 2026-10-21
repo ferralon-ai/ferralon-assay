@@ -165,7 +165,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		AdvisoryCursor:  req.Cursor,
 		Timestamp:       time.Now().UTC(),
 	})
-	b.WithPriority(rankBy(req.Signals))
+	rankWith(b, req.Signals)
 
 	rep, err := b.BuildValidated()
 	if err != nil {

@@ -526,7 +526,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// signalsPath is the EPSS/KEV signals file findings are ranked with. The scanner holds no
 		// signals of its own and fetches none: without one, no finding carries a priority.
 		signalsPath:   fs.String("advisory-signals", "", "path to an EPSS/KEV signals file (signals.json or signals.json.gz, signals_version 1.x) used to rank findings; each value is reported with its own date. Default: the signals.json of an -advisory-corpus directory, when it has one. Without signals no finding carries EPSS/KEV priority; overrides "+envAdvisorySignals),
-		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file is older than this (the file still loads)"),
+		signalsMaxAge: fs.Duration("advisory-signals-max-age", defaultSignalsMaxAge, "warn in the run summary when the newest EPSS value in the signals file, or over half of its EPSS values, are older than this (the file still loads)"),
 		// requireCorpus declares that this run EXPECTS a corpus. Without it, an absent corpus
 		// path is indistinguishable from a corpus fetch that failed and left the path empty.
 		requireCorpus: fs.Bool("require-advisory-corpus", false, "fail the run when no advisory corpus resolves, instead of falling back to the built-in advisory table; overrides "+envAdvisoryCorpusRequired),

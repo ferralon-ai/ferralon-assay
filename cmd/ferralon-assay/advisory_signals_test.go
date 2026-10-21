@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -228,5 +229,50 @@ func TestAdvisorySignals_StaleWarnsButLoads(t *testing.T) {
 	}
 	if line := f.signalsSummary(time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)); strings.Contains(line, "WARNING") {
 		t.Errorf("2 days old under the default bound: summary %q warns", line)
+	}
+}
+
+// staleShareDoc is a signals 1.x file whose newest EPSS value is fresh and whose other values are
+// from the as_of dates given, so the share of old values varies while the newest does not.
+func staleShareDoc(older ...string) string {
+	recs := `{"identifier": "CVE-2025-8110", "epss": {"score": 0.91, "as_of": "2026-10-19"}}`
+	for i, asOf := range older {
+		recs += fmt.Sprintf(`, {"identifier": "CVE-2026-%04d", "epss": {"score": 0.01, "as_of": %q}}`, i+1, asOf)
+	}
+	return fmt.Sprintf(`{"signals_version": "1.0.0", "record_count": %d, "signals_digest": %q, "records": [%s]}`,
+		len(older)+1, signalsDigest, recs)
+}
+
+// TestAdvisorySignals_StaleShareWarns: the line counts the EPSS values older than the bound, and
+// warns when over half of them are, even though the newest value is a day old; at half or under it
+// counts them and does not warn.
+func TestAdvisorySignals_StaleShareWarns(t *testing.T) {
+	clearSignalsEnv(t)
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name  string
+		older []string
+		share string
+		warn  bool
+	}{
+		{"most old", []string{"2026-08-02", "2026-08-02"}, "EPSS: 2/3 (67%) older than 7d", true},
+		{"exactly half old", []string{"2026-08-02", "2026-08-02", "2026-10-18"}, "EPSS: 2/4 (50%) older than 7d", false},
+		{"a third old", []string{"2026-08-02", "2026-10-18"}, "EPSS: 1/3 (33%) older than 7d", false},
+		{"none old", []string{"2026-10-18"}, "EPSS: 0/2 (0%) older than 7d", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeSignalsFile(t, filepath.Join(t.TempDir(), "signals.json"), []byte(staleShareDoc(c.older...)))
+			f, err := resolvedFor(t, "-advisory-signals", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := f.signalsSummary(now)
+			if !strings.Contains(line, "newest EPSS as_of 2026-10-19 (1 day(s) old); "+c.share) {
+				t.Errorf("summary %q lacks the newest date followed by %q", line, c.share)
+			}
+			if warned := strings.Contains(line, "WARNING: stale, over half the EPSS values are older than the 7d bound"); warned != c.warn {
+				t.Errorf("summary %q: share warning = %v, want %v", line, warned, c.warn)
+			}
+		})
 	}
 }

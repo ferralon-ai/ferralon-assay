@@ -841,7 +841,7 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// that Assess never refutes on.
 	//
 	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// CISA's KEV catalog lists only CVE-2025-8110, and trigger's priorityFor joins the run's signals
+	// CISA's KEV catalog lists only CVE-2025-8110, and trigger's priorityFor joined the run's signals
 	// on ID + Aliases, so the successor sitting in the predecessor's alias array reported
 	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
 	// not decoration: they are the key govulncheck reports dependency findings under

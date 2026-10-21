@@ -3,6 +3,7 @@ package intel
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,16 +101,15 @@ func TestLoadValid1x(t *testing.T) {
 	}
 }
 
-// TestLookupFollowsIDOrder: the first id the file has a value for wins, ids are normalised, and any
-// identifier form joins (a GHSA-keyed record matches its own id).
-func TestLookupFollowsIDOrder(t *testing.T) {
+// TestLookupIsOneRecord: a lookup reads the one record keyed by its id, normalised, whatever the
+// identifier form (a GHSA-keyed record matches its own id).
+func TestLookupIsOneRecord(t *testing.T) {
 	s, err := Parse(strings.NewReader(validDoc))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.EPSS("GO-2021-0113", " cve-2021-38561 ", "CVE-2025-8110")
-	if !ok || e.Identifier != "CVE-2021-38561" {
-		t.Errorf("EPSS lookup = %+v, %v; want the first matching id CVE-2021-38561", e, ok)
+	if e, ok := s.EPSS(" cve-2021-38561 "); !ok || e.Identifier != "CVE-2021-38561" {
+		t.Errorf("EPSS lookup = %+v, %v; want CVE-2021-38561's value", e, ok)
 	}
 	if e, ok := s.EPSS("ghsa-aaaa-bbbb-cccc"); !ok || e.Percentile != 0 || e.AsOf != "2026-10-01" {
 		t.Errorf("EPSS(GHSA) = %+v, %v; want a score with no percentile", e, ok)
@@ -124,8 +124,109 @@ func TestLookupFollowsIDOrder(t *testing.T) {
 	if _, ok := none.KEV("CVE-2025-8110"); ok {
 		t.Error("a nil *Signals must miss every lookup")
 	}
+	if _, ok := none.Attribute("CVE-2025-8110", nil, nil); ok {
+		t.Error("a nil *Signals must attribute nothing")
+	}
 	if _, ok := none.NewestEPSSAsOf(); ok || none.Records() != 0 {
 		t.Error("a nil *Signals holds nothing")
+	}
+	if stale, total := none.StaleEPSS(time.Now(), time.Hour); stale != 0 || total != 0 {
+		t.Error("a nil *Signals holds nothing")
+	}
+}
+
+// attributionDoc holds a CVE record with EPSS only, a KEV-listed sibling CVE, and a GO roll-up
+// standing for both CVEs that carries the sibling's listing.
+const attributionDoc = `{"signals_version": "1.0.0", "record_count": 3, "signals_digest": "` + testDigest + `",
+  "records": [
+    {"identifier": "CVE-2023-39325", "epss": {"score": 0.03, "as_of": "2026-08-01"}},
+    {"identifier": "CVE-2023-44487", "epss": {"score": 0.99, "as_of": "2026-08-11"},
+     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}},
+    {"identifier": "GO-2023-2102", "epss": {"score": 0.99, "as_of": "2026-08-11"},
+     "kev": {"listed": true, "date_added": "2023-10-10", "catalog_version": "2026.08.11", "date_released": "2026-08-11T18:59:43Z"}}]}`
+
+// TestAttribute pins the join's three rules: the advisory's own record and only it; nothing through
+// an alias for a CVE-keyed advisory; otherwise the first CVE alias with a record that no other
+// advisory of the run names.
+func TestAttribute(t *testing.T) {
+	s, err := Parse(strings.NewReader(attributionDoc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := func(id string, aliases []string, claims *Claims) string {
+		m, ok := s.Attribute(id, aliases, claims)
+		if !ok {
+			return "none"
+		}
+		return fmt.Sprintf("%s epss=%v kev=%v", m.Identifier, m.HasEPSS, m.HasKEV)
+	}
+	both := new(Claims)
+	both.Add("GHSA-4374-p667-p6c8", "CVE-2023-39325", "GO-2023-2102")
+	both.Add("CVE-2023-39325", "GO-2023-2102")
+	for _, c := range []struct {
+		name, id string
+		aliases  []string
+		claims   *Claims
+		want     string
+	}{
+		// Rule 1: its own record, and only it — the KEV it lacks is not filled in from the GO alias.
+		{"own record only", "cve-2023-39325", []string{"GO-2023-2102"}, nil, "CVE-2023-39325 epss=true kev=false"},
+		{"own GO record", "GO-2023-2102", []string{"CVE-2023-39325", "CVE-2023-44487"}, nil, "GO-2023-2102 epss=true kev=true"},
+		// Rule 2: a CVE with no record of its own takes nothing — not the GO roll-up, not a CVE alias.
+		{"CVE, GO roll-up alias", "CVE-2099-0001", []string{"GO-2023-2102"}, nil, "none"},
+		{"CVE, CVE alias", "CVE-2099-0001", []string{"CVE-2023-44487"}, nil, "none"},
+		// Rule 3: a non-CVE advisory takes its first CVE alias with a record, never a roll-up alias.
+		{"GHSA, CVE alias", "GHSA-4374-p667-p6c8", []string{"GO-2023-2102", "CVE-2099-0002", "CVE-2023-39325"}, nil, "CVE-2023-39325 epss=true kev=false"},
+		{"GHSA, roll-up alias only", "GHSA-4374-p667-p6c8", []string{"GO-2023-2102"}, nil, "none"},
+		{"GHSA, alias another advisory names", "GHSA-4374-p667-p6c8", []string{"CVE-2023-39325", "GO-2023-2102"}, both, "none"},
+		{"house id, no alias", "FERRALON-APP-SSRF-0001", nil, nil, "none"},
+	} {
+		if g := got(c.id, c.aliases, c.claims); g != c.want {
+			t.Errorf("%s: Attribute(%s, %v) = %s, want %s", c.name, c.id, c.aliases, g, c.want)
+		}
+	}
+}
+
+// TestClaims: an identifier is claimed by another advisory when one names it as its id or an alias;
+// an advisory never claims against itself, and ids are normalised.
+func TestClaims(t *testing.T) {
+	c := new(Claims)
+	c.Add("CVE-2023-39325", "GO-2023-2102")
+	c.Add(" cve-2023-39325 ", "ghsa-4374-p667-p6c8")
+	if c.ClaimedByOther("GO-2023-2102", "CVE-2023-39325") || c.ClaimedByOther("GHSA-4374-P667-P6C8", "CVE-2023-39325") {
+		t.Error("an advisory's own identifiers are not claimed by another")
+	}
+	c.Add("CVE-2023-44487", "go-2023-2102")
+	if !c.ClaimedByOther("GO-2023-2102", "CVE-2023-39325") || !c.ClaimedByOther("CVE-2023-39325", "CVE-2023-44487") {
+		t.Error("an identifier another advisory names, as an alias or as its id, is claimed by it")
+	}
+	var none *Claims
+	if none.ClaimedByOther("GO-2023-2102", "CVE-2023-39325") {
+		t.Error("a nil *Claims names nothing")
+	}
+}
+
+// TestStaleEPSS counts the values more than the bound older than now, out of all EPSS values; KEV
+// observations are not counted, and a value exactly at the bound is not stale.
+func TestStaleEPSS(t *testing.T) {
+	s, err := Parse(strings.NewReader(validDoc)) // EPSS as_of 2026-10-18, 2026-10-19, 2026-10-01
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		maxAge       time.Duration
+		stale, total int
+	}{
+		{7 * 24 * time.Hour, 1, 3},
+		{2 * 24 * time.Hour, 1, 3}, // 2026-10-18 is exactly 2 days old: at the bound, not past it
+		{36 * time.Hour, 2, 3},
+		{12 * time.Hour, 3, 3},
+		{30 * 24 * time.Hour, 0, 3},
+	} {
+		if stale, total := s.StaleEPSS(now, c.maxAge); stale != c.stale || total != c.total {
+			t.Errorf("StaleEPSS(%s) = %d/%d, want %d/%d", c.maxAge, stale, total, c.stale, c.total)
+		}
 	}
 }
 

@@ -210,7 +210,7 @@ func findingInBuild(store artifact.Store, assessmentID string, adv report.Adviso
 			},
 		}
 	}
-	// No Priority here: EPSS/KEV context is attached by the report Builder (rankBy), after every
+	// No Priority here: EPSS/KEV context is attached by the report Builder (rankWith), after every
 	// verdict is final, so nothing on this path can read it (inv. 5).
 	return f
 }
@@ -507,23 +507,28 @@ func maliciousPresentDetail(matchedVersion string) string {
 	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
 }
 
-// priorityFor looks the advisory up in the run's signals file by its id and then its aliases (a GO-
-// or GHSA-keyed advisory matches through its CVE alias), and returns each value with its own stamp.
-// It returns nil when the run has no signals, or the file has no stamped value for any of the ids —
-// most synthetic corpus ids have no CVE and so no likelihood signal, which is correct.
+// priorityFor attributes the run's signals to one advisory through intel's Attribute join and
+// returns each value with its own stamp. It returns nil when the run has no signals, or the join
+// attributes no record to the advisory — most synthetic corpus ids have no CVE and so no likelihood
+// signal, which is correct.
 //
-// The join is only sound because an advisory's alias set names the SAME vulnerability its id does
-// (pipeline's TestKEVAttributionFollowsListedCVE): an alias naming a different CVE would hand this
-// advisory another vulnerability's KEV listing.
+// The join takes the record under the advisory's own id, or — for an advisory not keyed by a CVE —
+// the record of a CVE alias that no other advisory in the run's table (claims) also names. It never
+// hands a CVE-keyed advisory a GO/PYSEC/RUSTSEC/GHSA roll-up record through an alias: that record
+// may carry a sibling CVE's KEV listing (GO-2023-2102 stands for CVE-2023-39325 AND KEV-listed
+// CVE-2023-44487). pipeline's TestKEVAttributionFollowsListedCVE guards the rule.
 //
 // Ranking context only (inv. 5): it is read by Builder.WithPriority after every verdict is final.
-func priorityFor(adv report.Advisory, sig *intel.Signals) *report.Priority {
-	ids := append([]string{adv.ID}, adv.Aliases...)
+func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) *report.Priority {
+	m, ok := sig.Attribute(adv.ID, adv.Aliases, claims)
+	if !ok {
+		return nil
+	}
 	var p report.Priority
-	if e, ok := sig.EPSS(ids...); ok {
+	if e := m.EPSS; m.HasEPSS {
 		p.EPSSScore, p.EPSSPercentile, p.EPSSAsOf = e.Score, e.Percentile, e.AsOf
 	}
-	if k, ok := sig.KEV(ids...); ok {
+	if k := m.KEV; m.HasKEV {
 		p.KEVListed, p.KEVDateAdded = k.Listed, k.DateAdded
 		p.KEVCatalogVersion, p.KEVDateReleased = k.CatalogVersion, k.DateReleased
 	}
@@ -533,9 +538,17 @@ func priorityFor(adv report.Advisory, sig *intel.Signals) *report.Priority {
 	return &p
 }
 
-// rankBy is the Builder.WithPriority function for a run with signals sig (nil for none).
-func rankBy(sig *intel.Signals) func(report.Advisory) *report.Priority {
-	return func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig) }
+// rankWith makes b rank every finding by the run's signals sig (nil for none). The run's advisory
+// table the join refuses a shared alias against is every advisory b's report holds, fresh or
+// inherited, so it is read from b itself — Build has no side effects — once every finding is added.
+func rankWith(b *report.Builder, sig *intel.Signals) {
+	claims := new(intel.Claims)
+	if sig != nil {
+		for _, f := range b.Build().Advisories {
+			claims.Add(f.Advisory.ID, f.Advisory.Aliases...)
+		}
+	}
+	b.WithPriority(func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig, claims) })
 }
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate

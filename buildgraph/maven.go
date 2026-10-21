@@ -118,7 +118,8 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
 		return nil, err
 	}
-	toolchains, err := mavenToolchains(effective)
+	override, overridden := toolchainVersionOverride(c, r.env, r.dir)
+	toolchains, err := mavenToolchains(effective, override, overridden)
 	if err != nil {
 		return nil, err
 	}
@@ -244,9 +245,36 @@ type toolchainConfig struct {
 // version the build does not state.
 const toolchainUnstated = "unstated"
 
+// toolchainVersion finds toolchain.jdk.version set as a property on a command or JVM option line.
+var toolchainVersion = regexp.MustCompile(`(?:^|\s)(?:-D\s*|--define[=\s]\s*)toolchain\.jdk\.version(?:[=\s]|$)`)
+
+// toolchainVersionOverride is the toolchain.jdk.version set outside the POM, which
+// select-jdk-toolchain reads over the POM's property: the stated value, or "" when Maven or JVM
+// options or .mvn configuration set it; false when nothing the resolution sees sets it.
+func toolchainVersionOverride(c Conditions, env []string, dir string) (string, bool) {
+	if v, ok := c.Properties["toolchain.jdk.version"]; ok {
+		return v, true
+	}
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		if treeShapingEnv[k] && toolchainVersion.MatchString(v) {
+			return "", true
+		}
+	}
+	for _, name := range []string{"maven.config", "jvm.config"} {
+		if b, err := os.ReadFile(filepath.Join(dir, ".mvn", name)); err == nil && toolchainVersion.Match(b) {
+			return "", true
+		}
+	}
+	return "", false
+}
+
 // mavenToolchains reads the JDK toolchains each module's build plugins select, by
-// groupId:artifactId, from the plugin-wide and every execution's configuration.
-func mavenToolchains(effective []effectiveProject) (map[string][]string, error) {
+// groupId:artifactId, from the plugin-wide and every execution's configuration. Any plugin's
+// <toolchains><jdk> or <jdkToolchain> counts: a plugin that selects a JDK that way runs on it, and
+// one that doesn't only switches the table off. override is toolchain.jdk.version set outside the
+// POM, when overridden.
+func mavenToolchains(effective []effectiveProject, override string, overridden bool) (map[string][]string, error) {
 	out := map[string][]string{}
 	for _, p := range effective {
 		key := p.GroupID + ":" + p.ArtifactID
@@ -271,18 +299,21 @@ func mavenToolchains(effective []effectiveProject) (map[string][]string, error) 
 				}
 				tcs = append(tcs, tc)
 				// select-jdk-toolchain takes its version from the execution, the plugin, or the
-				// toolchain.jdk.version property. Stated in none of them, it may come from the command
-				// line, so it is unstated.
+				// toolchain.jdk.version property, which a value set outside the POM overrides. Stated in
+				// none of them, it may come from the command line, so it is unstated.
 				if pl.ArtifactID == "maven-toolchains-plugin" && slices.Contains(ex.Goals.Goal, "select-jdk-toolchain") {
-					v := cmp.Or(strings.TrimSpace(tc.Version), strings.TrimSpace(wide.Version), property(p.Properties, "toolchain.jdk.version"))
+					v := cmp.Or(strings.TrimSpace(tc.Version), strings.TrimSpace(wide.Version))
+					if v == "" && overridden {
+						v = override
+					} else if v == "" {
+						v = property(p.Properties, "toolchain.jdk.version")
+					}
 					versions = append(versions, v)
 				}
 			}
 			for _, tc := range tcs {
-				if pl.ArtifactID == "maven-toolchains-plugin" {
-					for _, j := range tc.Toolchains.JDK {
-						versions = append(versions, j.Version)
-					}
+				for _, j := range tc.Toolchains.JDK {
+					versions = append(versions, j.Version)
 				}
 				if tc.JDKToolchain != nil {
 					versions = append(versions, tc.JDKToolchain.Version)

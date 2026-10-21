@@ -51,8 +51,9 @@ func NewEngine(classes []classfile.Class) *Engine {
 	return NewEngineOn(classes, Classpath{})
 }
 
-// BootOnly reports whether the JVM defines the class named name only from the boot loader: a
-// java/ class. A classpath copy of one never runs; the JDK's own body is what a call reaches.
+// BootOnly reports whether the class named name is one the JVM defines only from the JDK: a
+// java/ class, which it refuses from any loader but the boot and platform loaders. A classpath
+// copy of one never runs; the JDK's own body is what a call reaches.
 func BootOnly(name string) bool { return strings.HasPrefix(name, "java/") }
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The

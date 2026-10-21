@@ -1,6 +1,7 @@
 package buildgraph
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -888,10 +889,14 @@ func TestJDKToolchains(t *testing.T) {
 		}
 	})
 	// maven-toolchains-plugin 3.2's select-jdk-toolchain goal states its version as a top-level
-	// parameter, or through the toolchain.jdk.version property.
+	// parameter, or through the toolchain.jdk.version property, which a value set outside the POM
+	// overrides. Another plugin's <toolchains><jdk> is read like the toolchain goal's.
 	t.Run("maven select-jdk-toolchain", func(t *testing.T) {
 		for _, tc := range []struct {
 			name, props, wide, exec, goal string
+			plugin                        string // "" is maven-toolchains-plugin
+			stated                        string // toolchain.jdk.version among the stated properties
+			config                        string // .mvn/maven.config
 			want                          []string
 		}{
 			{name: "execution version", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
@@ -900,16 +905,29 @@ func TestJDKToolchains(t *testing.T) {
 			{name: "property", props: "<properties><toolchain.jdk.version>17</toolchain.jdk.version></properties>", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "stated nowhere in the POM", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
 			{name: "another goal", exec: "<version>17</version>", goal: "display-discovered-jdk-toolchains"},
+			{name: "execution over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", stated: "17", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "maven.config property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", config: "-ntp\n-Dtoolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "execution over a maven.config property", config: "-Dtoolchain.jdk.version=21\n", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "another plugin's toolchains", plugin: "toolchains-maven-plugin", wide: "<toolchains><jdk><version>17</version></jdk></toolchains>", goal: "toolchain", want: []string{"17"}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>"+tc.props+`
     <build><plugins><plugin>
-      <artifactId>maven-toolchains-plugin</artifactId>
+      <artifactId>`+cmp.Or(tc.plugin, "maven-toolchains-plugin")+`</artifactId>
       <configuration>`+tc.wide+`</configuration>
       <executions><execution><id>jdk</id><goals><goal>`+tc.goal+`</goal></goals><configuration>`+tc.exec+`</configuration></execution></executions>
     </plugin></plugins></build>`, 1)
-				r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
-				g, err := r.resolve(t, ToolMaven, Conditions{JDK: "21"})
+				var repo map[string]string
+				if tc.config != "" {
+					repo = map[string]string{".mvn/maven.config": tc.config}
+				}
+				c := Conditions{JDK: "21"}
+				if tc.stated != "" {
+					c.Properties = map[string]string{"toolchain.jdk.version": tc.stated}
+				}
+				r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+				g, err := r.resolve(t, ToolMaven, c)
 				if err != nil {
 					t.Fatalf("resolve: %v", cause(err))
 				}

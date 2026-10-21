@@ -881,9 +881,14 @@ func TestJDKToolchains(t *testing.T) {
 		if got := module(t, g, "com.example:module-c").JDKToolchains; got != nil {
 			t.Errorf("module-c toolchains %q", got)
 		}
+		for _, m := range g.Modules {
+			if !m.JDKToolchainsKnown {
+				t.Errorf("%s toolchains unknown", m.ID)
+			}
+		}
 	})
 	t.Run("gradle", func(t *testing.T) {
-		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17",`, 1)
+		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17","jdk_toolchain_known":true,`, 1)
 		r := newFakeGradle(t, "", map[string]string{"project_app.json": app})
 		g, err := r.resolve(t, ToolGradle, Conditions{})
 		if err != nil {
@@ -896,6 +901,12 @@ func TestJDKToolchains(t *testing.T) {
 		}
 		if got := module(t, g, ":lib").JDKToolchains; got != nil {
 			t.Errorf(":lib toolchains %q", got)
+		}
+		// :lib's producer record does not say its toolchain was read.
+		for id, want := range map[string]bool{":app": true, ":app#testRuntimeClasspath": true, ":lib": false} {
+			if got := module(t, g, id).JDKToolchainsKnown; got != want {
+				t.Errorf("%s toolchains known = %t, want %t", id, got, want)
+			}
 		}
 	})
 }

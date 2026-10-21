@@ -89,11 +89,14 @@ func checkJDK(want, have string) *Failure {
 func (c Conditions) JDKMajor() int { return javaMajor(c.JDK) }
 
 // RuntimeJDK is the feature release of the JDK the program runs on: the one the run conditions
-// state, or 0 when they state none or a module's toolchain selects another, since the stated JDK
-// then does not describe the platform that module's code meets.
+// state, or 0 when they state none, or a module's toolchain selects another or went unread, since
+// the stated JDK then does not describe the platform that module's code meets.
 func (g *Graph) RuntimeJDK() int {
 	jdk := g.Conditions.JDKMajor()
 	for _, m := range g.Modules {
+		if !m.JDKToolchainsKnown {
+			return 0
+		}
 		for _, t := range m.JDKToolchains {
 			if javaMajor(t) != jdk {
 				return 0

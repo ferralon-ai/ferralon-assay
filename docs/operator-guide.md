@@ -199,8 +199,9 @@ including a runtime image newer than the build JDK, stating that JDK correctly i
 checks it against the build's JVM and the build's toolchains, never against the image you deploy.
 Bytecode reachability uses its table of the JDK's own methods only when the stated JDK is the release
 that table describes, so on any other release, or none, more methods count as possible entry points.
-When a module's Maven or Gradle toolchain selects a JDK other than the stated one, the scan does the
-same for the whole build.
+The scan does the same for the whole build when a module's Maven or Gradle toolchain selects a JDK
+other than the stated one, or when the graph cannot say which JDK a module uses: an Android project,
+or a graph file written before toolchains were recorded.
 
 ## Resolving the JVM build graph
 

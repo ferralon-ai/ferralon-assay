@@ -123,6 +123,7 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	}
 	for i := range modules {
 		modules[i].JDKToolchains = toolchains[modules[i].ID]
+		modules[i].JDKToolchainsKnown = true
 	}
 	g.Modules = modules
 

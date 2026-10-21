@@ -141,8 +141,9 @@ func TestBytecodeReach_LambdaOnlyIngressPathIsNeverClean(t *testing.T) {
 
 // The closure engine runs on the JDK the graph's run conditions state: on the platformMethods
 // release, a loadable class's method no platform supertype declares is no root, and on any
-// other release or none, or when a module's toolchain selects another, it stays one. The rows share one build dir, so a cached engine built for
-// one JDK is never reused for another.
+// other release or none, or when a module's toolchain selects another or went unread, as in a
+// graph written before toolchains were recorded, it stays one. The rows share one build dir, so a
+// cached engine built for one JDK is never reused for another.
 func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 	a := newApp(t, "", false)
 	a.source("src/main/java/com/acme/App.java", appSource)
@@ -156,6 +157,7 @@ func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 	for _, tc := range []struct {
 		jdk        string
 		toolchains []string
+		unread     bool
 		wantPath   bool
 	}{
 		{jdk: "21.0.4", wantPath: false},
@@ -163,10 +165,12 @@ func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 		{jdk: "21.0.4", wantPath: false},
 		{jdk: "21.0.4", toolchains: []string{"17"}, wantPath: true},
 		{jdk: "21.0.4", toolchains: []string{"21"}, wantPath: false},
+		{jdk: "21.0.4", unread: true, wantPath: true},
 		{jdk: "", wantPath: true},
 	} {
 		m := testModule(t, ".", "app", a.deps...)
 		m.JDKToolchains = tc.toolchains
+		m.JDKToolchainsKnown = !tc.unread
 		a.graph = writeGraph(t, buildgraph.Graph{
 			Schema:     buildgraph.Schema,
 			Tool:       buildgraph.Tool{Name: "maven", Version: "test"},
@@ -176,7 +180,7 @@ func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 		})
 		res := a.reach(netkitSinkID)
 		if got := len(res.Paths) > 0; got != tc.wantPath {
-			t.Errorf("JDK %q, toolchains %q: path found = %t, want %t: Paths %v, partiality %+v", tc.jdk, tc.toolchains, got, tc.wantPath, res.Paths, res.Partiality)
+			t.Errorf("JDK %q, toolchains %q, unread %t: path found = %t, want %t: Paths %v, partiality %+v", tc.jdk, tc.toolchains, tc.unread, got, tc.wantPath, res.Paths, res.Partiality)
 		}
 	}
 }

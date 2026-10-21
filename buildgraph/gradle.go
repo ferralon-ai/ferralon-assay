@@ -27,19 +27,20 @@ const (
 
 // gradleProject is one project's assayBuildGraph output.
 type gradleProject struct {
-	Gradle       string                     `json:"gradle"`
-	Java         string                     `json:"java"`
-	JavaVendor   string                     `json:"java_vendor"`
-	Path         string                     `json:"path"`
-	Dir          string                     `json:"dir"`
-	RootDir      string                     `json:"root_dir"`
-	Group        string                     `json:"group"`
-	Name         string                     `json:"name"`
-	Version      string                     `json:"version"`
-	JDKToolchain string                     `json:"jdk_toolchain"`
-	OtherRuntime []string                   `json:"other_runtime_classpaths"`
-	Projects     map[string]gradleCoord     `json:"projects"`
-	Classpaths   map[string]gradleClasspath `json:"classpaths"`
+	Gradle            string                     `json:"gradle"`
+	Java              string                     `json:"java"`
+	JavaVendor        string                     `json:"java_vendor"`
+	Path              string                     `json:"path"`
+	Dir               string                     `json:"dir"`
+	RootDir           string                     `json:"root_dir"`
+	Group             string                     `json:"group"`
+	Name              string                     `json:"name"`
+	Version           string                     `json:"version"`
+	JDKToolchain      string                     `json:"jdk_toolchain"`
+	JDKToolchainKnown bool                       `json:"jdk_toolchain_known"`
+	OtherRuntime      []string                   `json:"other_runtime_classpaths"`
+	Projects          map[string]gradleCoord     `json:"projects"`
+	Classpaths        map[string]gradleClasspath `json:"classpaths"`
 }
 
 // gradleClasspath is one configuration as Gradle resolved it.
@@ -137,8 +138,9 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		if err != nil {
 			return nil, err
 		}
-		if p.JDKToolchain != "" {
-			for i := range ms {
+		for i := range ms {
+			ms[i].JDKToolchainsKnown = p.JDKToolchainKnown
+			if p.JDKToolchain != "" {
 				ms[i].JDKToolchains = []string{p.JDKToolchain}
 			}
 		}

@@ -378,6 +378,11 @@ func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 			t.Errorf("%s toolchains %q, want %q", id, got, want)
 		}
 	}
+	for _, m := range g.Modules {
+		if !m.JDKToolchainsKnown {
+			t.Errorf("%s toolchains unknown", m.ID)
+		}
+	}
 }
 
 // The graph records the JDK toolchains a module's bound plugins select, from the
@@ -410,6 +415,9 @@ func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 		name := m.ID[strings.LastIndex(m.ID, ":")+1:]
 		if got := m.JDKToolchains; !reflect.DeepEqual(got, want[name]) {
 			t.Errorf("%s toolchains %q, want %q", m.ID, got, want[name])
+		}
+		if !m.JDKToolchainsKnown {
+			t.Errorf("%s toolchains unknown", m.ID)
 		}
 	}
 }

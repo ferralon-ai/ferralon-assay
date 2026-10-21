@@ -87,16 +87,20 @@ type Input struct {
 // CopyOf the project's ID, ID "<project>#<classpath>", the project's Path and Root, holding the
 // components that classpath resolved at a version other than the one the project kept.
 // JDKToolchains are the JDK versions, as the build states them, that a toolchain selects for the
-// module's compiling, testing or running; absent when the module uses the build's own JVM.
+// module's compiling, testing or running. JDKToolchainsKnown is set when the producer could read
+// them: then an absent JDKToolchains means the module uses the build's own JVM. Unset, as in a
+// graph written before toolchains were recorded or for an Android project, the module's JDK is
+// unknown.
 type Module struct {
-	ID             string   `json:"id"`
-	CopyOf         string   `json:"copy_of,omitempty"`
-	Path           string   `json:"path"`
-	Root           string   `json:"root"`
-	ActiveProfiles []string `json:"active_profiles,omitempty"`
-	JDKToolchains  []string `json:"jdk_toolchains,omitempty"`
-	Nodes          []Node   `json:"nodes"`
-	Edges          []Edge   `json:"edges"`
+	ID                 string   `json:"id"`
+	CopyOf             string   `json:"copy_of,omitempty"`
+	Path               string   `json:"path"`
+	Root               string   `json:"root"`
+	ActiveProfiles     []string `json:"active_profiles,omitempty"`
+	JDKToolchains      []string `json:"jdk_toolchains,omitempty"`
+	JDKToolchainsKnown bool     `json:"jdk_toolchains_known,omitempty"`
+	Nodes              []Node   `json:"nodes"`
+	Edges              []Edge   `json:"edges"`
 }
 
 // ClasspathCopyID is the ID of project's copy for classpath.

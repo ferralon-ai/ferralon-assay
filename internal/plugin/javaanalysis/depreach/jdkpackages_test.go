@@ -37,7 +37,7 @@ func TestBootOnly(t *testing.T) {
 		{"sun/foo/Bar", 0, true},
 		{"jdk/newmod/X", 28, true},
 		{"javax/crypto/spec/ext/X", 0, true}, // parent a JDK package with none below it
-		{"javax/sound/X", 0, true},           // a prefix of javax/sound/midi
+		{"org/w3c/X", 0, true},               // a prefix of org/w3c/dom
 		{"javax/sound/foo/X", 28, true},      // parent a prefix of a JDK package
 		{"javax/xml/stream/ext/X", 0, true},  // parent a JDK package
 		{"org/w3c/dom/svg/SVGDocument", 21, false},

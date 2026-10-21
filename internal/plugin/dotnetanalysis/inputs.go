@@ -498,6 +498,11 @@ func (e *evaluator) evaluate(real string) *projectEval {
 	for _, r := range reads {
 		pe.opaque = pe.opaque || r.mf.opaque
 		pe.assemblyRefs = append(pe.assemblyRefs, r.mf.assemblyRefs...)
+		for _, p := range r.mf.props {
+			if searchPathProperty(p.name) {
+				pe.opaque = true
+			}
+		}
 	}
 	return pe
 }

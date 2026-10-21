@@ -385,8 +385,9 @@ type DependencyVersionResult struct {
 	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
 	// declaration in All, but what the build backend pulls in transitively is not enumerated.
 	// The .NET lane, whose All lists declarations only, sets it for the request's coordinate
-	// alone: every project is settled on restore's own record and nothing else can bring a
-	// package in, so a coordinate that is not Found is provably not a dependency.
+	// alone: every project is settled on a trusted project.assets.json, the coordinate is not
+	// one the SDK delivers outside it, and nothing else can bring a package in, so a coordinate
+	// that is not Found is provably not a dependency.
 	// False (the default, and every plugin that does not set it) means absence from All proves
 	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`

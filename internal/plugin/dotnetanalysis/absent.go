@@ -2,8 +2,8 @@ package dotnetanalysis
 
 // absent.go — proving a NuGet package is not present in the build. The claim is made only
 // when this lane positively saw every way a package can reach the build and none of them
-// carries it: every project's installed set is restore's own record (a trusted
-// project.assets.json or a current packages.lock.json), every MSBuild file read is modeled
+// carries it: every project's installed set is restore's own trusted project.assets.json,
+// which also names the packs the SDK downloads beside it, every MSBuild file read is modeled
 // down to the items restore never sees, and the tree holds no assembly, script, foreign
 // project or package manager restore does not govern. Anything outside that closed list
 // leaves the claim unmade, and the lane answers as it always has. What a deploy step adds
@@ -36,16 +36,33 @@ var inertItems = []string{
 	"resource", "applicationdefinition", "service", "bootstrapperpackage", "supportedplatform",
 }
 
+// frameworkAssemblies are the simple names, besides System and System.*, a bare Reference
+// may carry and still resolve from the framework. A Reference to any other name resolves
+// from files and search paths this lane does not follow, so it is opaque.
+var frameworkAssemblies = []string{
+	"mscorlib", "netstandard", "microsoft.csharp", "microsoft.visualbasic", "windowsbase",
+	"presentationcore", "presentationframework",
+}
+
+// searchPathProperties are properties that add places a Reference resolves from, or add
+// References themselves. Setting any of them is opaque.
+var searchPathProperties = []string{
+	"assemblysearchpaths", "referencepath", "additionalexplicitassemblyreferences",
+}
+
 // referenceMetadata is the metadata a Reference or FrameworkReference may carry. A HintPath,
 // or anything else, is opaque.
 var referenceMetadata = []string{"specificversion", "private", "requiredtargetframework", "embedinteroptypes", "aliases"}
 
-// sdkDeliveredPrefixes name the packs the SDK downloads without recording them as a package
-// restore installs (shared-framework, runtime, host and AOT packs). Their absence from the
-// restore record proves nothing.
+// sdkDeliveredPrefixes name the packs the SDK can deliver without recording them as a
+// package restore installs (shared-framework, runtime, host, AOT, workload and SDK packs).
+// Their absence from the restore record proves nothing. Targeting packs (a ".ref" suffix) and
+// the downloads restore does record (downloadDependencies) are excluded as well.
 var sdkDeliveredPrefixes = []string{
 	"microsoft.netcore.app", "microsoft.aspnetcore.app", "microsoft.windowsdesktop.app",
-	"microsoft.dotnet.ilcompiler", "runtime.",
+	"microsoft.dotnet.ilcompiler", "microsoft.net.runtime.", "microsoft.net.workload.",
+	"microsoft.net.sdk.", "microsoft.netframework.referenceassemblies", "netstandard.library",
+	"runtime.",
 }
 
 // solutionProject matches a quoted project path in a .sln, .slnx or .slnf.
@@ -54,6 +71,19 @@ var solutionProject = regexp.MustCompile(`(?i)["']([^"'\r\n]*\.[a-z]*proj)["']`)
 // assemblyItem reports whether a lowercased item type references an assembly by name.
 func assemblyItem(name string) bool {
 	return name == "reference" || name == "frameworkreference"
+}
+
+// frameworkAssembly reports whether a Reference's Include (its first comma-separated part)
+// names an assembly the framework provides.
+func frameworkAssembly(include string) bool {
+	n := normalizeNuGetCoordinate(include)
+	return n == "system" || strings.HasPrefix(n, "system.") || slices.Contains(frameworkAssemblies, n)
+}
+
+// searchPathProperty reports whether a property (lowercased) is one of searchPathProperties
+// or an AssemblySearchPath_* toggle.
+func searchPathProperty(name string) bool {
+	return slices.Contains(searchPathProperties, name) || strings.HasPrefix(name, "assemblysearchpath_")
 }
 
 // attrValue returns the value of the unprefixed attribute key, matched without case.
@@ -81,9 +111,10 @@ func simpleAssemblyName(s string) bool {
 }
 
 // inertOpaque reports whether a value inside the skipped subtree rooted at item (lowercased)
-// could name code outside the tree or an assembly file: a parent or rooted path, a property,
-// item or metadata reference, or an assembly or package file name. Compile items name
-// source, and ProjectExtensions is tooling metadata; neither is opaque.
+// could name code outside the tree or an assembly file: a parent or rooted path, a path
+// through a bin or obj directory (which treeClosed does not walk), a property, item or
+// metadata reference, or an assembly or package file name. Compile items name source, and
+// ProjectExtensions is tooling metadata; neither is opaque.
 func inertOpaque(item, value string) bool {
 	if item == "compile" || item == "projectextensions" {
 		return false
@@ -94,19 +125,31 @@ func inertOpaque(item, value string) bool {
 			return true
 		}
 	}
+	for seg := range strings.FieldsFuncSeq(v, func(r rune) bool { return r == '/' || r == '\\' || r == ';' }) {
+		if seg = strings.TrimSpace(seg); seg == "bin" || seg == "obj" {
+			return true
+		}
+	}
 	return strings.HasPrefix(v, "/") || strings.HasPrefix(v, `\`) || len(v) > 1 && v[1] == ':'
 }
 
 // completeBuild reports whether want (normalized) is provably not present in the build once
 // installedCopies has settled every project on restore's own record. It is false when:
 //
-//   - want is a pack the SDK delivers outside the restore record (sdkDeliveredPrefixes);
+//   - want is a pack the SDK delivers outside the restore record (sdkDeliveredPrefixes, a
+//     ".ref" targeting pack, or a project's recorded downloadDependencies);
+//   - a project is not settled on a trusted project.assets.json (a current lockfile alone
+//     doesn't record the SDK's downloads), or a target framework names a platform, whose
+//     workload packs restore never records;
 //   - a lockfile or packages.config has no project file beside it;
 //   - a project read anything opaque, or names want as a Reference or FrameworkReference;
 //   - want names one of the build's projects by file name (a project that sets PackageId or
 //     AssemblyName is never settled on restore's record, so it never gets here);
 //   - the tree is not closed (treeClosed).
 func completeBuild(ev *evaluator, manifests []string, projects map[string]*projectDir, want string) bool {
+	if strings.HasSuffix(want, ".ref") {
+		return false
+	}
 	for _, p := range sdkDeliveredPrefixes {
 		if strings.HasPrefix(want, p) {
 			return false
@@ -125,6 +168,13 @@ func completeBuild(ev *evaluator, manifests []string, projects map[string]*proje
 		if pe.reason != "" || pe.opaque || slices.Contains(pe.assemblyRefs, want) {
 			return false
 		}
+		if pe.tfms == nil || slices.ContainsFunc(pe.tfms, func(t string) bool { return strings.Contains(t, "#") }) {
+			return false
+		}
+		ac := ev.checkAssets(pe)
+		if ac.status != assetsTrusted || !ac.graph.downloadsRead || slices.Contains(ac.graph.downloads, want) {
+			return false
+		}
 	}
 	return treeClosed(ev.rootReal, ev.projects)
 }
@@ -132,9 +182,14 @@ func completeBuild(ev *evaluator, manifests []string, projects map[string]*proje
 // treeClosed reports whether the tree holds nothing that brings code into the build outside
 // the projects' restore: no symlink, no assembly or package file, no script that references
 // packages itself, no project of another kind, no Paket, and no solution naming a project
-// outside the tree's project files. Directories skipDir skips hold build output and restored
-// packages.
+// outside the tree's project files. Only .git and each project's own bin and obj directories,
+// which hold its build output and restore output, are not walked.
 func treeClosed(rootReal string, projects map[string]bool) bool {
+	output := make(map[string]bool)
+	for p := range projects {
+		output[filepath.Join(filepath.Dir(p), "bin")] = true
+		output[filepath.Join(filepath.Dir(p), "obj")] = true
+	}
 	closed := true
 	err := filepath.WalkDir(rootReal, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -146,7 +201,7 @@ func treeClosed(rootReal string, projects map[string]bool) bool {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
-			if path != rootReal && skipDir(d.Name()) {
+			if d.Name() == ".git" || output[path] {
 				return filepath.SkipDir
 			}
 			return nil

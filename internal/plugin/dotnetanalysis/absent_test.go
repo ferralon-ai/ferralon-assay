@@ -1,6 +1,7 @@
 package dotnetanalysis
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -114,6 +115,17 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"assembly in a dot directory", withFile(".vendor/Newtonsoft.Json.dll", "MZ")},
+		{"assembly under packages", withFile("packages/Newtonsoft.Json.13.0.1/lib/netstandard2.0/Newtonsoft.Json.dll", "MZ")},
+		{"assembly under node_modules", withFile("node_modules/x/x.dll", "MZ")},
+		{"assembly in a nested bin directory", withFile("tools/bin/Vendor.dll", "MZ")},
+		{"item reaching into build output", withItems(`<ItemGroup><None Include="bin/vendor/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
+		{"item reaching into restore output", withItems(`<ItemGroup><Content Include="obj\vendor\**" /></ItemGroup>`)},
+		{"reference to an assembly a package ships under another name", withItems(`<ItemGroup><Reference Include="ICSharpCode.SharpZipLib" /></ItemGroup>`)},
+		{"assembly search paths", withItems(`<PropertyGroup><AssemblySearchPaths>{CandidateAssemblyFiles};vendor</AssemblySearchPaths></PropertyGroup>`)},
+		{"an assembly search path toggle", withItems(`<PropertyGroup><AssemblySearchPath_UseGAC>true</AssemblySearchPath_UseGAC></PropertyGroup>`)},
+		{"reference path", withItems(`<PropertyGroup><ReferencePath>vendor</ReferencePath></PropertyGroup>`)},
+		{"references added by property", withItems(`<PropertyGroup><AdditionalExplicitAssemblyReferences>Vendor</AdditionalExplicitAssemblyReferences></PropertyGroup>`)},
 		{"lockfile without a project", withFile("orphan/packages.lock.json", `{"version":1,"dependencies":{}}`)},
 		{"a project with no restore record", withFile("Lib/Lib.csproj", projectDeclaring([]string{"net8.0"}, nil, ""))},
 		{"stale restore record", withItems(`<ItemGroup><PackageReference Include="Serilog" Version="3.0.0" /></ItemGroup>`)},
@@ -159,7 +171,7 @@ func TestNotInBuild_WantSpecific(t *testing.T) {
 		edit             func(*testing.T, string)
 	}{
 		{"the build's own project", "App", nil},
-		{"a framework reference by name", "Newtonsoft.Json", withItems(`<ItemGroup><Reference Include="Newtonsoft.Json" /></ItemGroup>`)},
+		{"a framework reference by name", "System.Text.Json", withItems(`<ItemGroup><Reference Include="System.Text.Json" /></ItemGroup>`)},
 		{"a strong-named framework reference", "System.Net.Http", withItems(`<ItemGroup><Reference Include="System.Net.Http, Version=4.0.0.0, Culture=neutral" /></ItemGroup>`)},
 		{"a shared framework", "Microsoft.AspNetCore.App", withItems(`<ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>`)},
 		{"a runtime pack", "Microsoft.NETCore.App.Runtime.linux-x64", nil},
@@ -167,6 +179,13 @@ func TestNotInBuild_WantSpecific(t *testing.T) {
 		{"a desktop runtime pack", "Microsoft.WindowsDesktop.App.Runtime.win-x64", nil},
 		{"an AOT compiler pack", "Microsoft.DotNet.ILCompiler", nil},
 		{"a runtime-specific package", "runtime.linux-x64.Microsoft.DotNet.ILCompiler", nil},
+		{"a targeting pack", "Microsoft.Windows.SDK.NET.Ref", nil},
+		{"the .NET Standard targeting pack", "NETStandard.Library.Ref", nil},
+		{"a workload runtime pack", "Microsoft.NET.Runtime.WebAssembly.Sdk", nil},
+		{"a workload manifest", "Microsoft.NET.Workload.Mono.ToolChain.Current.Manifest-8.0.100", nil},
+		{"an SDK pack", "Microsoft.NET.Sdk.Android.Manifest-8.0.100", nil},
+		{"framework reference assemblies", "Microsoft.NETFramework.ReferenceAssemblies.net48", nil},
+		{"a download restore records", "Contoso.Pack", withDownload("net8.0", "Contoso.Pack")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := closedBuild(t, tc.edit)
@@ -195,7 +214,9 @@ func TestNotInBuild_ClosedControls(t *testing.T) {
 		{"project extensions", withItems(`<ProjectExtensions><VisualStudio><Ref Path="..\x.dll" /></VisualStudio></ProjectExtensions>`)},
 		{"solution naming the project", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"App\", \"App.csproj\", \"{1}\"\nEndProject\n")},
 		{"build output assembly", withFile("bin/Debug/net8.0/App.dll", "MZ")},
-		{"assembly in a dot directory", withFile(".tools/x.dll", "MZ")},
+		{"restore output", withFile("obj/Debug/net8.0/App.dll", "MZ")},
+		{"git metadata", withFile(".git/objects/x.dll", "MZ")},
+		{"content under a folder named like output", withItems(`<ItemGroup><Content Include="wwwroot\binary.js" /></ItemGroup>`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := closedBuild(t, tc.edit)
@@ -206,9 +227,10 @@ func TestNotInBuild_ClosedControls(t *testing.T) {
 	}
 }
 
-// TestNotInBuild_CurrentLockfileSettles: a current packages.lock.json is restore's record too.
-// A package it doesn't list is not present in the build; one it lists, transitive included, is.
-func TestNotInBuild_CurrentLockfileSettles(t *testing.T) {
+// TestNotInBuild_CurrentLockfileAloneOpen: a current packages.lock.json settles what restore
+// installs but not the packs the SDK downloads beside it, so it alone never proves absence.
+// A package it lists, transitive included, is still found.
+func TestNotInBuild_CurrentLockfileAloneOpen(t *testing.T) {
 	dir := writeTree(t, map[string]string{
 		"App.csproj": `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
@@ -218,24 +240,55 @@ func TestNotInBuild_CurrentLockfileSettles(t *testing.T) {
   "DotNetZip": {"type": "Direct", "requested": "[1.0,2.0)", "resolved": "1.16.0"},
   "System.Text.Json": {"type": "Transitive", "resolved": "8.0.4"}}}}`,
 	})
-	if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); !v.Exhaustive || v.Found {
-		t.Fatalf("absent: Exhaustive=%v Found=%v, want true/false", v.Exhaustive, v.Found)
+	if v := exhaustiveFor(t, dir, "Newtonsoft.Json"); v.Exhaustive {
+		t.Fatalf("absent: Exhaustive = true on a lockfile alone")
 	}
 	if v := exhaustiveFor(t, dir, "System.Text.Json"); !v.Found {
 		t.Fatalf("transitive: Found=false, want true")
 	}
 }
 
-// TestTreeClosed_RootIsWalked: a build whose own directory has a name skipDir skips is still
-// walked.
-func TestTreeClosed_RootIsWalked(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "bin")
-	writeFixtureFile(t, root, "lib/Vendor.dll", "MZ")
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatal(err)
+// TestNotInBuild_PlatformTargetOpen: a target framework that names a platform pulls in
+// workload packs restore never records, so the build is open for every package.
+func TestNotInBuild_PlatformTargetOpen(t *testing.T) {
+	for _, tfm := range []string{"net8.0-android", "net10.0-windows10.0.19041.0"} {
+		t.Run(tfm, func(t *testing.T) {
+			dir := composeILBuildDir(t, map[string][]byte{
+				"App.csproj":              restoredProject,
+				"obj/project.assets.json": []byte(`{"version":3,"targets":{"` + tfm + `":{"Other/1.0.0":{"type":"package"}}},"libraries":{"Other/1.0.0":{"type":"package","path":"other/1.0.0"}}}`),
+			})
+			if v := exhaustiveFor(t, dir, "Other"); !v.Found || !v.Partiality.Complete {
+				t.Fatalf("restore output not trusted for %s: %+v", tfm, v)
+			}
+			if v := exhaustiveFor(t, dir, "Serilog"); v.Exhaustive {
+				t.Fatalf("Exhaustive = true for a %s build", tfm)
+			}
+		})
 	}
-	if treeClosed(real, nil) {
-		t.Fatal("treeClosed = true for a tree holding an assembly")
+}
+
+// withDownload records a download dependency for alias in the build's trusted assets file, as
+// restore does for a pack the SDK downloads.
+func withDownload(alias, id string) func(*testing.T, string) {
+	return func(t *testing.T, dir string) {
+		t.Helper()
+		path := filepath.Join(dir, "obj", "project.assets.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var assets map[string]any
+		if err := json.Unmarshal(data, &assets); err != nil {
+			t.Fatal(err)
+		}
+		fw := assets["project"].(map[string]any)["frameworks"].(map[string]any)[alias].(map[string]any)
+		fw["downloadDependencies"] = []any{map[string]any{"name": id, "version": "[1.0.0, 1.0.0]"}}
+		out, err := json.Marshal(assets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

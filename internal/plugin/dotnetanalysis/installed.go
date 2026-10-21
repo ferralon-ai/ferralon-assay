@@ -415,7 +415,7 @@ func parseMSBuild(data []byte, role msbuildRole, source string) (msbuildFile, bo
 						mf.opaque = true
 					case assemblyItem(inert):
 						include, _, _ := strings.Cut(attrValue(t.Attr, "include"), ",")
-						if !simpleAssemblyName(include) {
+						if !simpleAssemblyName(include) || inert == "reference" && !frameworkAssembly(include) {
 							mf.opaque = true
 						}
 						mf.assemblyRefs = append(mf.assemblyRefs, normalizeNuGetCoordinate(include))

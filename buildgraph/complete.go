@@ -142,25 +142,29 @@ type gradleResolution struct {
 // listed packages, or an input file from outside the build that the graph does not hold; and a
 // resolution (a detached configuration, say) that resolved a file the graph does not hold. A
 // build script's own classpath is build logic, a POM file carries no code, a project's build
-// directory holds what the build made from its own sources (a sibling's classes, say), and
+// directory holds what the build made from its own sources (a sibling's classes, say) outside any
+// user home, and
 // Gradle's transforms cache holds what it derived from an artifact some resolution resolved (the
 // Kotlin compiler's classpath snapshots).
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
-	var buildDirs, homes []string
+	var buildDirs, userHomes, homes []string
 	for _, p := range projects {
 		// A build directory at or above the root would hold the checkout and the caches with it.
 		if rel, ok := realRel(dir, p.BuildDir); p.BuildDir != "" && ok && rel != "." {
 			buildDirs = append(buildDirs, p.BuildDir)
 		}
 		if p.UserHome != "" {
+			userHomes = append(userHomes, p.UserHome)
 			homes = append(homes, filepath.Join(p.UserHome, "caches"))
 		}
 	}
-	built := func(f string) bool {
-		return slices.ContainsFunc(buildDirs, func(d string) bool { _, ok := relPath(d, f); return ok })
+	// A user home inside a build directory holds what Gradle fetched, not what the build made.
+	under := func(dirs []string, f string) bool {
+		return slices.ContainsFunc(dirs, func(d string) bool { _, ok := relPath(d, f); return ok })
 	}
+	built := func(f string) bool { return under(buildDirs, f) && !under(userHomes, f) }
 	transformed := func(f string) bool {
 		return slices.ContainsFunc(homes, func(c string) bool {
 			rel, ok := relPath(c, f)
@@ -395,13 +399,13 @@ var mavenPlugins = map[string]map[string]bool{
 
 // mavenSourceDirs are the configuration elements naming a directory a plugin copies into what the
 // build installs; each must be inside the checkout.
-var mavenSourceDirs = setOf("directory", "warSourceDirectory", "classesDirectory")
+var mavenSourceDirs = setOf("directory", "warSourceDirectory", "classesDirectory", "earSourceDirectory")
 
 // mavenIncomplete lists what keeps a Maven graph from being Complete: a POM the reactor does not
 // read; a build extension; a bound execution of a plugin or goal off mavenPlugins; dependency
 // plugin configuration naming artifacts outside the tree; and a resource or source directory
-// outside the checkout.
-func mavenIncomplete(dir string, outputs []string, reactor []reactorProject, effective []effectiveProject) ([]string, error) {
+// outside the checkout or in a local repository.
+func mavenIncomplete(dir string, outputs []string, modules []Module, reactor []reactorProject, effective []effectiveProject) ([]string, error) {
 	var reasons []string
 	orphans, err := mavenOrphanPOMs(dir, outputs, reactor)
 	if err != nil {
@@ -411,6 +415,7 @@ func mavenIncomplete(dir string, outputs []string, reactor []reactorProject, eff
 	if _, err := os.Stat(filepath.Join(dir, ".mvn", "extensions.xml")); err == nil {
 		reasons = append(reasons, ".mvn/extensions.xml loads build extensions")
 	}
+	repos := mavenRepos(modules)
 	moduleDir := map[string]string{}
 	for _, rp := range reactor {
 		moduleDir[rp.key] = filepath.Join(dir, filepath.FromSlash(path.Dir(rp.file)))
@@ -435,6 +440,11 @@ func mavenIncomplete(dir string, outputs []string, reactor []reactorProject, eff
 			}
 			if !within(dir, v) {
 				reasons = append(reasons, who+": "+what+" "+v+" is outside the checkout")
+				return
+			}
+			// A local repository inside the checkout holds what Maven fetched, not the checkout's.
+			if slices.ContainsFunc(repos, func(r string) bool { return within(r, v) }) {
+				reasons = append(reasons, who+": "+what+" "+v+" is in the local repository")
 			}
 		}
 		for _, e := range p.Build.Extensions.Extension {
@@ -637,10 +647,19 @@ func mavenOutputs(dir string, reactor []reactorProject, effective []effectivePro
 		}
 		add(d)
 	}
+	for _, repo := range mavenRepos(modules) {
+		add(repo)
+	}
+	return sortedUnique(out)
+}
+
+// mavenRepos are the local repository directories the graph's artifacts lie in.
+func mavenRepos(modules []Module) []string {
+	var out []string
 	for _, m := range modules {
 		for _, n := range m.Nodes {
 			if repo, ok := mavenRepoOf(n); ok {
-				add(repo)
+				out = append(out, repo)
 			}
 		}
 	}

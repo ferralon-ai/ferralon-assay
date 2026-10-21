@@ -122,7 +122,7 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	}
 	g.Modules = modules
 	g.Subject.Outputs = mavenOutputs(r.dir, reactor, effective, modules)
-	if g.Incomplete, err = mavenIncomplete(r.dir, g.Subject.Outputs, reactor, effective); err != nil {
+	if g.Incomplete, err = mavenIncomplete(r.dir, g.Subject.Outputs, modules, reactor, effective); err != nil {
 		return nil, err
 	}
 	g.Complete = len(g.Incomplete) == 0

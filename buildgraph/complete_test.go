@@ -77,6 +77,8 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "detached resolution beside a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/libs/agent.jar")}, want: "app/libs/agent.jar, which no collected configuration lists"},
 		{name: "build directory at the checkout root", buildDir: "$ROOT", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
 		{name: "build directory above the checkout", buildDir: "$ROOT/..", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
+		{name: "resolution under a user home inside a build directory", buildDir: "$ROOT/app/build", userHome: "$ROOT/app/build/gh", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/gh/caches/modules-2/files-2.1/com.example/agent/1.0/x/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
+		{name: "resolution under a build directory beside a user home inside it", buildDir: "$ROOT/app/build", userHome: "$ROOT/app/build/gh", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
 		{name: "build directory outside the checkout", buildDir: "/repo/app/build", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/build/classes/java/main")}, want: "resolved /repo/app/build/classes/java/main"},
 		{name: "outside input from the transforms cache", tasks: []gradleTask{{Path: ":compileKotlin", Type: "org.jetbrains.kotlin.gradle.tasks.KotlinCompile", Outside: []string{"/home/u/.gradle/caches/8.14.6/transforms/1c35/transformed/guava_jar-snapshot.bin", "/home/u/.gradle/caches/transforms-3/9a/transformed/lib.jar"}}}},
 		{name: "outside input from the module cache", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-simple/2.0.16/x/slf4j-simple-2.0.16.jar"}}}, want: "slf4j-simple-2.0.16.jar, outside the build"},
@@ -189,6 +191,7 @@ func TestMavenIncomplete(t *testing.T) {
 		build   string
 		files   map[string]string
 		reactor string // the module's POM; "" is the root's
+		repo    bool   // the graph holds an artifact from a local repository at .m2/repository
 		want    string
 	}{
 		{name: "core lifecycle", build: plugin("org.apache.maven.plugins:maven-compiler-plugin", exec("default-compile", "compile", "compile"))},
@@ -208,6 +211,10 @@ func TestMavenIncomplete(t *testing.T) {
 		{name: "resource directory uninterpolated", build: `<testResources><testResource><directory>${agent.dir}</directory></testResource></testResources>`, want: "is not interpolated"},
 		{name: "war source outside", build: plugin("org.apache.maven.plugins:maven-war-plugin", `<configuration><warSourceDirectory>../../web</warSourceDirectory></configuration>`), want: "is outside the checkout"},
 		{name: "copy-resources directory outside", build: plugin("org.apache.maven.plugins:maven-resources-plugin", `<executions><execution><id>c</id><phase>process-resources</phase><goals><goal>copy-resources</goal></goals><configuration><resources><resource><directory>/srv/x</directory></resource></resources></configuration></execution></executions>`), want: "/srv/x is outside the checkout"},
+		{name: "resource directory in the local repository", repo: true, build: `<resources><resource><directory>.m2/repository/com/oracle/ojdbc8/19.3</directory></resource></resources>`, want: "is in the local repository"},
+		{name: "resource directory beside the local repository", repo: true, build: `<resources><resource><directory>src/main/resources</directory></resource></resources>`},
+		{name: "war resources in the local repository", repo: true, build: plugin("org.apache.maven.plugins:maven-war-plugin", `<configuration><webResources><resource><directory>$ROOT/.m2/repository/com/oracle</directory></resource></webResources></configuration>`), want: "is in the local repository"},
+		{name: "ear source outside", build: plugin("org.apache.maven.plugins:maven-ear-plugin", `<configuration><earSourceDirectory>/opt/ear-extras</earSourceDirectory></configuration>`), want: "/opt/ear-extras is outside the checkout"},
 		{name: "POM outside the reactor", files: map[string]string{"samples/pom.xml": pom}, want: "samples/pom.xml is a POM the reactor does not read"},
 		{name: "parent through relativePath", files: map[string]string{"pom.xml": `<project><parent><groupId>com.example</groupId><artifactId>parent</artifactId><relativePath>build-parent</relativePath></parent><artifactId>app</artifactId></project>`, "build-parent/pom.xml": `<project><groupId>com.example</groupId><artifactId>parent</artifactId></project>`}},
 		{name: "default relativePath naming another project", reactor: "app/pom.xml", files: map[string]string{"app/pom.xml": `<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId></parent><artifactId>app</artifactId></project>`}, want: "pom.xml is a POM the reactor does not read"},
@@ -231,7 +238,13 @@ func TestMavenIncomplete(t *testing.T) {
 				file = "pom.xml"
 			}
 			reactor := []reactorProject{{key: "com.example:app", file: file}}
-			reasons, err := mavenIncomplete(dir, mavenOutputs(dir, reactor, eff, nil), reactor, eff)
+			var modules []Module
+			if tc.repo {
+				jar := filepath.Join(dir, ".m2", "repository", "com", "oracle", "ojdbc8", "19.3", "ojdbc8-19.3.jar")
+				modules = []Module{{Nodes: []Node{{Group: "com.oracle", Artifact: "ojdbc8", Version: "19.3", File: &File{Path: jar}}}}}
+				writeFiles(t, dir, map[string]string{".m2/repository/com/oracle/ojdbc8/19.3/ojdbc8-19.3.jar": ""})
+			}
+			reasons, err := mavenIncomplete(dir, mavenOutputs(dir, reactor, eff, modules), modules, reactor, eff)
 			if err != nil {
 				t.Fatal(err)
 			}

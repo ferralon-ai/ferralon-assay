@@ -4,7 +4,9 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -135,11 +137,46 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		}
 		g.Modules = append(g.Modules, ms...)
 	}
-	g.Subject.Inputs, err = collectInputs(r.dir, gradleInput)
+	if g.Subject.IncludedBuilds, err = gradleIncludedBuilds(filepath.Join(out, "included"), r.dir); err != nil {
+		return nil, err
+	}
+	g.Subject.Inputs, err = collectInputs(r.dir, gradleInputs(g.Subject.IncludedBuilds))
 	if err != nil {
 		return nil, err
 	}
 	return g, nil
+}
+
+// gradleIncludedBuilds reads the directories the init script recorded for the included builds,
+// by slash path from the checkout once symlinks are resolved. One outside the checkout fails the
+// graph: its build logic could change with nothing in the checkout to show it.
+func gradleIncludedBuilds(dir, root string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: err.Error()}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: err.Error()}
+		}
+		p := strings.TrimSpace(string(b))
+		rel, ok := realRel(root, p)
+		if !ok || rel == "." {
+			return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "included build " + p + " is outside the checkout, so its build logic cannot be bound to the graph"}
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // readGradleProjects reads every project's output. All of them must agree on the root, the
@@ -448,6 +485,21 @@ func gradleArtifact(name, version, file string) (typ, classifier string) {
 		classifier = strings.TrimPrefix(rest, "-")
 	}
 	return typ, classifier
+}
+
+// gradleInputs is gradleInput, and every file under one of the included builds.
+func gradleInputs(included []string) func(rel, name string) bool {
+	return func(rel, name string) bool {
+		if gradleInput(rel, name) {
+			return true
+		}
+		for _, d := range included {
+			if strings.HasPrefix(rel, d+"/") {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // gradleInput accepts the build scripts, properties, version catalogs, lockfiles and wrapper

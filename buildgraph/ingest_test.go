@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -212,5 +213,105 @@ func TestLoadMissingFile(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "absent.json"), t.TempDir(), Conditions{})
 	if got := cause(err); got != "graph_rejected:decode" {
 		t.Fatalf("Load = %q", got)
+	}
+}
+
+// newFakeGradleIncluded is newFakeGradle over a checkout whose settings include build-logic, a
+// convention-plugin build whose Kotlin sources no build-script rule names.
+func newFakeGradleIncluded(t *testing.T, included string) fakeRepo {
+	t.Helper()
+	r := newFakeGradle(t, "", map[string]string{"included.txt": included})
+	writeFiles(t, r.dir, map[string]string{
+		"build-logic/settings.gradle.kts":             "",
+		"build-logic/src/main/kotlin/Conventions.kt":  "class Conventions",
+		"build-logic/build/classes/Conventions.class": "out",
+	})
+	return r
+}
+
+func TestGradleIncludedBuilds(t *testing.T) {
+	r := newFakeGradleIncluded(t, "@ROOT@/build-logic\n@ROOT@/build-logic\n")
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	if !reflect.DeepEqual(g.Subject.IncludedBuilds, []string{"build-logic"}) {
+		t.Fatalf("included builds %v", g.Subject.IncludedBuilds)
+	}
+	in := map[string]bool{}
+	for _, i := range g.Subject.Inputs {
+		in[i.Path] = true
+	}
+	if !in["build-logic/src/main/kotlin/Conventions.kt"] || !in["build-logic/settings.gradle.kts"] || in["build-logic/build/classes/Conventions.class"] {
+		t.Fatalf("inputs %v", in)
+	}
+
+	out := t.TempDir()
+	r = newFakeGradleIncluded(t, out+"\n")
+	if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != "tool_failed:graph" {
+		t.Fatalf("included build outside the checkout: %v", cause(err))
+	}
+}
+
+func TestLoadIncludedBuilds(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(t *testing.T, g *Graph, r fakeRepo)
+		want string
+	}{
+		{name: "loads"},
+		{name: "included source edited since", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			writeFiles(t, r.dir, map[string]string{"build-logic/src/main/kotlin/Conventions.kt": "class Conventions { val foo = 1 }"})
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included source added", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			writeFiles(t, r.dir, map[string]string{"build-logic/src/main/kotlin/More.kt": "class More"})
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build output ignored", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			writeFiles(t, r.dir, map[string]string{"build-logic/build/classes/More.class": "out"})
+		}},
+		{name: "included build gone", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Subject.IncludedBuilds = []string{"gone"}
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build path unclean", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Subject.IncludedBuilds = []string{"../elsewhere"}
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build through a symlink out", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			if err := os.Symlink(t.TempDir(), filepath.Join(r.dir, "linked")); err != nil {
+				t.Fatal(err)
+			}
+			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "linked")
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build is a file", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "settings.gradle")
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "included builds dropped", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Subject.IncludedBuilds = nil
+		}, want: "graph_rejected:subject_inputs"},
+		{name: "maven graph with included builds", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			g.Tool.Name = "maven"
+		}, want: "graph_rejected:subject_inputs"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFakeGradleIncluded(t, "@ROOT@/build-logic\n")
+			g, err := r.resolve(t, ToolGradle, Conditions{})
+			if err != nil {
+				t.Fatalf("resolve: %v", cause(err))
+			}
+			if tc.edit != nil {
+				tc.edit(t, g, r)
+			}
+			b, err := json.Marshal(g)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(t.TempDir(), "graph.json")
+			if err := os.WriteFile(file, b, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(file, r.dir, Conditions{}); cause(err) != tc.want {
+				t.Fatalf("Load = %q, want %q", cause(err), tc.want)
+			}
+		})
 	}
 }

@@ -127,13 +127,40 @@ func checkInputs(g *Graph, dir string) error {
 		}
 		recorded[in.Path] = true
 	}
-	match := gradleInput
+	var match func(rel, name string) bool
+	exact := false
 	switch g.Tool.Name {
 	case "maven":
+		if len(g.Subject.IncludedBuilds) > 0 {
+			return reject(CheckSubjectInputs, "included builds in a maven graph")
+		}
 		match = mavenInput(nil)
 	case "gradle":
+		for _, d := range g.Subject.IncludedBuilds {
+			if !cleanRel(d) {
+				return reject(CheckSubjectInputs, "included build path "+d)
+			}
+			p := filepath.Join(dir, filepath.FromSlash(d))
+			if rel, ok := realRel(dir, p); !ok || rel != d {
+				return reject(CheckSubjectInputs, "included build outside the checkout: "+d)
+			}
+			if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+				return reject(CheckSubjectInputs, "included build "+d+" is not a directory")
+			}
+		}
+		match = gradleInputs(g.Subject.IncludedBuilds)
+		// A Gradle graph records exactly the files match accepts, so one it does not accept means
+		// the included builds were edited out from under their inputs.
+		exact = true
 	default:
 		return reject(CheckSubjectInputs, "unknown tool "+g.Tool.Name)
+	}
+	if exact {
+		for _, in := range g.Subject.Inputs {
+			if !match(in.Path, path.Base(in.Path)) {
+				return reject(CheckSubjectInputs, in.Path+" is not a build input of the graph's builds")
+			}
+		}
 	}
 	found, err := collectInputs(dir, match)
 	if err != nil {

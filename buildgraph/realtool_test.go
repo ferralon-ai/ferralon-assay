@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -273,4 +275,42 @@ func keys(m map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestGradleIncludedBuildsRoundTrip resolves a build that includes a plugin build, a library
+// build, and a build only the library build includes, which the root build never lists.
+func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
+	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"settings.gradle":                      "pluginManagement { includeBuild('build-logic') }\nrootProject.name = 'root'\nincludeBuild('libs/core')\n",
+		"build.gradle":                         "plugins { id 'java' }\n",
+		"build-logic/settings.gradle":          "rootProject.name = 'build-logic'\n",
+		"build-logic/src/main/groovy/A.groovy": "class A {}\n",
+		"libs/core/settings.gradle":            "rootProject.name = 'core'\nincludeBuild('../../nested')\n",
+		"nested/settings.gradle":               "rootProject.name = 'nested'\n",
+		"nested/src/main/java/N.java":          "class N {}\n",
+	})
+	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
+	if err != nil {
+		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
+	}
+	if want := []string{"build-logic", "libs/core", "nested"}; !reflect.DeepEqual(g.Subject.IncludedBuilds, want) {
+		t.Fatalf("included builds %v, want %v", g.Subject.IncludedBuilds, want)
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(file, dir, Conditions{}); err != nil {
+		t.Fatalf("Load: %v", cause(err))
+	}
+	writeFiles(t, dir, map[string]string{"nested/src/main/java/N.java": "class N { int x; }\n"})
+	if _, err := Load(file, dir, Conditions{}); cause(err) != "graph_rejected:subject_inputs" {
+		t.Fatalf("Load after a nested edit: %q", cause(err))
+	}
 }

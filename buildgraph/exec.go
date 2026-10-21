@@ -172,10 +172,11 @@ func collectInputs(dir string, match func(rel, name string) bool) ([]Input, erro
 	return inputs, nil
 }
 
-// treeSkipDirs are never walked inside an included build, wherever they sit: VCS metadata, IDE
-// state and tool caches, none a source package name can take. Build output is skipped only where
-// it lives.
-var treeSkipDirs = map[string]bool{".git": true, ".gradle": true, ".idea": true, ".kotlin": true, "node_modules": true}
+// treeSkipDirs are never walked inside an included build, wherever they sit: VCS metadata and
+// tool caches, none a source package name can take. IDE state (.idea) is skipped only outside a
+// src directory, since a resource directory inside one can take the name; build output only
+// where it lives.
+var treeSkipDirs = map[string]bool{".git": true, ".gradle": true, ".kotlin": true, "node_modules": true}
 
 // collectTree digests every file under root/sub, an included build, by slash path from root. It
 // walks from sub itself, so no ancestor's name keeps it out, and skips only a build directory that
@@ -192,7 +193,7 @@ func collectTree(root, sub string, required bool) ([]Input, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != base && (treeSkipDirs[d.Name()] || d.Name() == "build" && buildOutput(base, filepath.Dir(p))) {
+			if p != base && (treeSkipDirs[d.Name()] || d.Name() == ".idea" && !inSource(base, filepath.Dir(p)) || d.Name() == "build" && buildOutput(base, filepath.Dir(p))) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -248,11 +249,14 @@ func buildOutput(base, dir string) bool {
 	if dir == base {
 		return true
 	}
+	return !inSource(base, dir) && gradleProjectDir(dir)
+}
+
+// inSource reports whether dir, under the included build at base, lies in a src directory, or
+// can't be placed relative to base.
+func inSource(base, dir string) bool {
 	rel, err := filepath.Rel(base, dir)
-	if err != nil || slices.Contains(strings.Split(filepath.ToSlash(rel), "/"), "src") {
-		return false
-	}
-	return gradleProjectDir(dir)
+	return err != nil || slices.Contains(strings.Split(filepath.ToSlash(rel), "/"), "src")
 }
 
 // gradleProjectDir reports whether dir holds a Gradle build or settings file.

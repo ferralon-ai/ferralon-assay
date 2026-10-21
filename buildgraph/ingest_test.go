@@ -387,6 +387,8 @@ func TestLoadIncludedBuilds(t *testing.T) {
 			files: map[string]string{"build-logic/src/main/kotlin/acme/build.gradle.kts": "", "build-logic/src/main/kotlin/acme/build/Helper.kt": "class Helper"},
 			edit:  edited("build-logic/src/main/kotlin/acme/build/Helper.kt"), want: "graph_rejected:subject_inputs"},
 		{name: "IDE state in an included build ignored", edit: edited("build-logic/.idea/workspace.xml")},
+		{name: "resource directory named like IDE state edited", files: map[string]string{"build-logic/src/main/resources/.idea/x.properties": "a=1"},
+			edit: edited("build-logic/src/main/resources/.idea/x.properties"), want: "graph_rejected:subject_inputs"},
 		{name: "Finder metadata in an included build ignored", edit: edited("build-logic/src/.DS_Store")},
 		{name: "symlinked source target edited", files: map[string]string{"shared/Shared.kt": "class Shared"},
 			link: [2]string{"build-logic/src/Shared.kt", "../../shared/Shared.kt"},

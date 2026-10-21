@@ -846,6 +846,12 @@ func TestBytecodeReach_RuntimeArtifactsWithholdSearched(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := newApp(t, "", false)
 			a.tool = tt.tool
+			if a.tool == "gradle" { // a Gradle graph beside a pom is other_tool_build
+				if err := os.Remove(filepath.Join(a.build, "pom.xml")); err != nil {
+					t.Fatal(err)
+				}
+				writeFileT(t, filepath.Join(a.build, "build.gradle"), "plugins { id 'application' }\napplication { mainClass = 'com.acme.App' }\n")
+			}
 			jar := filepath.Join(a.build, ".m2", "repository", "com", "dep", "lib", "1", "lib-1.jar")
 			writeJarEntries(t, jar, libJar())
 			writeJarEntries(t, strings.TrimSuffix(jar, ".jar")+".aar", libJar())

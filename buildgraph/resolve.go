@@ -27,7 +27,11 @@ type Request struct {
 // Resolve runs the repository's build tool and returns its graph, normalized and validated. Any
 // failure is a *Failure carrying the typed cause.
 func Resolve(ctx context.Context, req Request) (*Graph, error) {
+	// The checks that walk the checkout walk it where it lies, as the build tool sees it.
 	dir, err := filepath.Abs(req.Dir)
+	if err == nil {
+		dir, err = filepath.EvalSymlinks(dir)
+	}
 	if err != nil {
 		return nil, &Failure{Kind: KindToolFailed, Detail: "select", Log: err.Error()}
 	}

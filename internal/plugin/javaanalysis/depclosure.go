@@ -15,9 +15,9 @@ func mavenPURLNoVersion(coordinate string) string {
 	return "pkg:maven/" + group + "/" + artifact
 }
 
-// coordinateOfPURL returns the "group:artifact" coordinate and version of a Maven PURL
+// CoordinateOfPURL returns the "group:artifact" coordinate and version of a Maven PURL
 // ("pkg:maven/<group>/<artifact>[@version][?qualifiers]"). ok is false for any other PURL.
-func coordinateOfPURL(purl string) (coordinate, version string, ok bool) {
+func CoordinateOfPURL(purl string) (coordinate, version string, ok bool) {
 	const prefix = "pkg:maven/"
 	if !strings.HasPrefix(purl, prefix) {
 		return "", "", false

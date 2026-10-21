@@ -108,10 +108,11 @@ func fileSHA256(path string) string {
 func graphOption(t *testing.T, modules ...buildgraph.Module) javaanalysis.Option {
 	t.Helper()
 	b, err := json.Marshal(buildgraph.Graph{
-		Schema:  buildgraph.Schema,
-		Tool:    buildgraph.Tool{Name: "gradle", Version: "test"},
-		JVM:     buildgraph.JVM{Version: "21.0.4"},
-		Modules: modules,
+		Schema:   buildgraph.Schema,
+		Tool:     buildgraph.Tool{Name: "gradle", Version: "test"},
+		JVM:      buildgraph.JVM{Version: "21.0.4"},
+		Modules:  modules,
+		Complete: true,
 	})
 	if err != nil {
 		t.Fatal(err)

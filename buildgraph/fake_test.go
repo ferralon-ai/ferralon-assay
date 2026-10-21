@@ -2,6 +2,7 @@ package buildgraph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -249,7 +250,7 @@ func newFakeMavenRepo(t *testing.T, fail, failOut string, edit, repo map[string]
 	writeFiles(t, r.m2, map[string]string{
 		"guava-32.jar": "g32", "guava-33.jar": "g33", "failureaccess.jar": "fa", "lwjgl-natives.jar": "nat", "sys.jar": "sys",
 	})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -489,6 +490,44 @@ func TestMavenProducerFailures(t *testing.T) {
 
 // TestMavenReactorPaths: a Maven that prints no "from" lines gets its module POMs from
 // help:evaluate, one index at a time with the tree step's arguments, plus one probe past the end.
+// A maven-dependency-plugin copy or unpack execution with artifactItems installs artifacts
+// dependency:tree never lists, so the module records it as unlisted.
+func TestMavenDependencyPluginArtifactItems(t *testing.T) {
+	const items = "<artifactItems><artifactItem><groupId>io.opentelemetry.javaagent</groupId><artifactId>opentelemetry-javaagent</artifactId><version>2.10.0</version></artifactItem></artifactItems>"
+	plugin := func(config, id, goal, execConfig string) string {
+		return "<plugin><artifactId>maven-dependency-plugin</artifactId>" + config + "<executions><execution><id>" + id + "</id><goals><goal>" + goal + "</goal></goals>" + execConfig + "</execution></executions></plugin>"
+	}
+	for _, tc := range []struct {
+		name  string
+		build string
+		want  []string
+	}{
+		{name: "copy with artifactItems", build: "<plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins>", want: []string{"maven-dependency-plugin execution copy-agent"}},
+		{name: "unpack with plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "unpack-ui", "unpack", "") + "</plugins>", want: []string{"maven-dependency-plugin execution unpack-ui"}},
+		{name: "copy-dependencies", build: "<plugins>" + plugin("", "deps", "copy-dependencies", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
+		{name: "copy-dependencies under plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "deps", "copy-dependencies", "") + "</plugins>"},
+		{name: "copy without artifactItems", build: "<plugins>" + plugin("", "copy-none", "copy", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
+		{name: "only managed", build: "<pluginManagement><plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins></pluginManagement>"},
+		{name: "another plugin", build: "<plugins><plugin><artifactId>maven-assembly-plugin</artifactId><executions><execution><id>copy-agent</id><goals><goal>copy</goal></goals><configuration>" + items + "</configuration></execution></executions></plugin></plugins>"},
+	} {
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build>"+tc.build+"</build>", 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{})
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
+		}
+		for _, m := range g.Modules {
+			want := []string(nil)
+			if m.ID == "com.example:module-a" {
+				want = tc.want
+			}
+			if !reflect.DeepEqual(m.Unlisted, want) {
+				t.Errorf("%s: %s unlisted %q, want %q", tc.name, m.ID, m.Unlisted, want)
+			}
+		}
+	}
+}
+
 func TestMavenReactorPaths(t *testing.T) {
 	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388})
 	g, err := r.resolve(t, ToolMaven, Conditions{Profiles: []string{"extra"}})
@@ -651,7 +690,7 @@ func newFakeGradle(t *testing.T, fail string, edit map[string]string) fakeRepo {
 	}
 	writeFiles(t, r.fake, answers)
 	writeFiles(t, r.m2, map[string]string{"lwjgl-3.3.4.jar": "l", "lwjgl-3.3.4-natives-linux.jar": "n", "lwjgl-3.3.5.jar": "l5", "lwjgl-3.3.6.jar": "l6", "jakarta.servlet-api-6.0.0.jar": "s", "junit-4.13.2.jar": "j"})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -806,6 +845,61 @@ func TestGradleOtherRuntimeClasspath(t *testing.T) {
 	node(t, module(t, g, ":lib#integrationTestRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
 }
 
+// Every other configuration that declares a dependency folds in at ScopeOther, so a package a
+// distribution copies in from one is in the graph. One that fails to resolve is recorded as
+// unlisted rather than failing the graph.
+func TestGradleExtraConfigurations(t *testing.T) {
+	lib := strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","extra_classpaths":{
+"agent":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0","id":{"group":"io.opentelemetry.javaagent","name":"opentelemetry-javaagent","version":"2.10.0"}},{"key":"org.lwjgl:lwjgl:3.3.4","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.4"}}],
+"edges":[{"from":"project :lib","to":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0"},{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.4"}],
+"unresolved":[],
+"files":[{"component":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0","file":"@M2@/opentelemetry-javaagent-2.10.0.jar"},{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"}]},
+"distLibs":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.5"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"}]},
+"drivers":{"components":[{"key":"project :lib","id":{"project":":lib","build":":"}}],"edges":[],"unresolved":[{"requested":"org.postgresql:postgresql:42.7.4","failure":"Could not find org.postgresql:postgresql:42.7.4."}],"files":[]},
+"lint":{"failure":"Cannot choose between the available variants"}},
+"projects"`, 1)
+	r := newFakeGradle(t, "", map[string]string{"project_lib.json": lib})
+	writeFiles(t, r.m2, map[string]string{"opentelemetry-javaagent-2.10.0.jar": "o"})
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	m := module(t, g, ":lib")
+	if n := node(t, m, "io.opentelemetry.javaagent:opentelemetry-javaagent:jar:2.10.0"); n.Scope != ScopeOther || n.File == nil {
+		t.Errorf("agent %+v, want scope other with its file", n)
+	}
+	// A classpath's node keeps its scope.
+	if n := node(t, m, "org.lwjgl:lwjgl:jar:3.3.4"); n.Scope != "runtime" {
+		t.Errorf("lwjgl scope %q, want runtime", n.Scope)
+	}
+	if !hasEdge(m, m.Root, "io.opentelemetry.javaagent:opentelemetry-javaagent:jar:2.10.0") {
+		t.Errorf("edges %+v", m.Edges)
+	}
+	if !reflect.DeepEqual(m.Unlisted, []string{"gradle configuration drivers", "gradle configuration lint"}) {
+		t.Errorf("unlisted %q", m.Unlisted)
+	}
+	if n := node(t, module(t, g, ":lib#distLibs"), "org.lwjgl:lwjgl:jar:3.3.5"); n.Scope != ScopeOther {
+		t.Errorf("copy lwjgl scope %q, want other", n.Scope)
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(file, r.dir, Conditions{}); err != nil {
+		t.Fatalf("Load: %v", cause(err))
+	}
+}
+
 func TestGradleProducerFailures(t *testing.T) {
 	// The init script joins the failure's cause chain one message per line, as Gradle 9 words it.
 	unresolved := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not resolve corp:x:1.\nCould not get resource 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nCould not GET 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nReceived status code 401 from server: Unauthorized"}]`, 1)
@@ -846,4 +940,15 @@ func TestGradleProducerFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// realDir is dir with its links resolved: the checkout path a real build tool, run from the
+// resolved checkout, reports.
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }

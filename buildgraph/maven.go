@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -113,10 +114,18 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := unlistedInPOM(modules, effective); err != nil {
+		return nil, err
+	}
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
 		return nil, err
 	}
 	g.Modules = modules
+	g.Subject.Outputs = mavenOutputs(r.dir, reactor, effective, modules)
+	if g.Incomplete, err = mavenIncomplete(r.dir, g.Subject.Outputs, modules, reactor, effective); err != nil {
+		return nil, err
+	}
+	g.Complete = len(g.Incomplete) == 0
 
 	sum, err := sha256File(epFile)
 	if err != nil {
@@ -282,18 +291,69 @@ type xmlChildren struct {
 	Any []struct {
 		XMLName xml.Name
 	} `xml:",any"`
+	Inner string `xml:",innerxml"`
+}
+
+func (c xmlChildren) has(local string) bool {
+	for _, e := range c.Any {
+		if e.XMLName.Local == local {
+			return true
+		}
+	}
+	return false
+}
+
+// unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
+// effective POM binds with artifactItems: they install artifacts dependency:tree never lists.
+func unlistedInPOM(modules []Module, effective []effectiveProject) error {
+	byCoord := map[string]*Module{}
+	for i := range modules {
+		for _, n := range modules[i].Nodes {
+			if n.ID == modules[i].Root {
+				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+			}
+		}
+	}
+	for _, p := range effective {
+		for _, pl := range p.Build.Plugins.Plugin {
+			if pl.ArtifactID != "maven-dependency-plugin" {
+				continue
+			}
+			for _, ex := range pl.Executions.Execution {
+				if !slices.ContainsFunc(ex.Goals.Goal, func(g string) bool { g = strings.TrimSpace(g); return g == "copy" || g == "unpack" }) {
+					continue
+				}
+				if !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
+					continue
+				}
+				m := byCoord[p.GroupID+":"+p.ArtifactID]
+				if m == nil {
+					return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "effective POM of " + p.GroupID + ":" + p.ArtifactID + " matches no module"}
+				}
+				m.Unlisted = append(m.Unlisted, "maven-dependency-plugin execution "+ex.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // effectivePlugin is a plugin's configuration as an effective POM gives it.
 type effectivePlugin struct {
+	GroupID       string      `xml:"groupId"`
 	ArtifactID    string      `xml:"artifactId"`
 	Configuration xmlChildren `xml:"configuration"`
 	Executions    struct {
-		Execution []struct {
-			ID            string      `xml:"id"`
-			Configuration xmlChildren `xml:"configuration"`
-		} `xml:"execution"`
+		Execution []effectiveExecution `xml:"execution"`
 	} `xml:"executions"`
+}
+
+type effectiveExecution struct {
+	ID    string `xml:"id"`
+	Phase string `xml:"phase"`
+	Goals struct {
+		Goal []string `xml:"goal"`
+	} `xml:"goals"`
+	Configuration xmlChildren `xml:"configuration"`
 }
 
 // effectiveProject is what the producer reads from one effective POM: its identity, its
@@ -304,6 +364,19 @@ type effectiveProject struct {
 	ArtifactID string      `xml:"artifactId"`
 	Properties xmlChildren `xml:"properties"`
 	Build      struct {
+		Directory  string `xml:"directory"`
+		Extensions struct {
+			Extension []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+			} `xml:"extension"`
+		} `xml:"extensions"`
+		Resources struct {
+			Resource []effectiveResource `xml:"resource"`
+		} `xml:"resources"`
+		TestResources struct {
+			Resource []effectiveResource `xml:"testResource"`
+		} `xml:"testResources"`
 		Plugins struct {
 			Plugin []effectivePlugin `xml:"plugin"`
 		} `xml:"plugins"`
@@ -327,6 +400,10 @@ type effectiveProject struct {
 			SystemPath string `xml:"systemPath"`
 		} `xml:"dependency"`
 	} `xml:"dependencies"`
+}
+
+type effectiveResource struct {
+	Directory string `xml:"directory"`
 }
 
 // parseEffectivePOM reads help:effective-pom output: a <projects> list for a reactor, a single

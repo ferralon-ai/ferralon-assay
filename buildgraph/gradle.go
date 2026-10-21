@@ -32,6 +32,9 @@ type gradleProject struct {
 	JavaVendor   string                     `json:"java_vendor"`
 	Path         string                     `json:"path"`
 	Dir          string                     `json:"dir"`
+	BuildFile    string                     `json:"build_file"`
+	BuildDir     string                     `json:"build_dir"`
+	UserHome     string                     `json:"user_home"`
 	RootDir      string                     `json:"root_dir"`
 	Group        string                     `json:"group"`
 	Name         string                     `json:"name"`
@@ -39,6 +42,24 @@ type gradleProject struct {
 	OtherRuntime []string                   `json:"other_runtime_classpaths"`
 	Projects     map[string]gradleCoord     `json:"projects"`
 	Classpaths   map[string]gradleClasspath `json:"classpaths"`
+	Extra        map[string]gradleClasspath `json:"extra_classpaths"`
+	Uncollected  []string                   `json:"uncollected"`
+	Aliases      []string                   `json:"aliases"`
+	Tasks        []gradleTask               `json:"tasks"`
+}
+
+// gradleTask is one task as the init script observed it: its type, the origin of each action
+// added beside its type's own, the tasks it depends on, is finalized by or is ordered after, and
+// the input files it reads from outside the build's root or from the Gradle user home.
+type gradleTask struct {
+	Path    string   `json:"path"`
+	Type    string   `json:"type"`
+	Actions []string `json:"actions"`
+	Depends []string `json:"depends"`
+	// FinalizedBy are the tasks that run after this one whenever it runs.
+	FinalizedBy []string `json:"finalized_by"`
+	Outside     []string `json:"outside"`
+	Failure     string   `json:"failure"`
 }
 
 // gradleClasspath is one configuration as Gradle resolved it.
@@ -47,6 +68,7 @@ type gradleClasspath struct {
 	Edges      []Edge                                `json:"edges"`
 	Unresolved []struct{ Requested, Failure string } `json:"unresolved"`
 	Files      []gradleFile                          `json:"files"`
+	Failure    string                                `json:"failure"`
 }
 
 // The classpaths the producer reads, in precedence order, and the scope each contributes.
@@ -141,10 +163,15 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 	if g.Subject.IncludedBuilds, g.Subject.UnbindableIncludedBuilds, err = gradleIncludedBuilds(out, r.dir); err != nil {
 		return nil, err
 	}
+	g.Subject.Outputs = gradleOutputs(r.dir, projects, g.Subject.IncludedBuilds)
 	g.Subject.Inputs, err = gradleBuildInputs(r.dir, g.Subject.IncludedBuilds)
 	if err != nil {
 		return nil, err
 	}
+	if g.Incomplete, err = gradleIncomplete(out, r.dir, projects, g); err != nil {
+		return nil, err
+	}
+	g.Complete = len(g.Incomplete) == 0
 	return g, nil
 }
 
@@ -309,6 +336,15 @@ func gradleModule(p gradleProject) ([]Module, error) {
 	self := gradleCoord{Group: p.Group, Name: p.Name, Version: p.Version}
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
+	for _, a := range p.Aliases {
+		// A project without a group records ":name" or "null:name", which no artifact carries.
+		if group, artifact, _ := strings.Cut(a, ":"); group == "" || group == "null" || artifact == "" {
+			continue
+		}
+		if a != self.Group+":"+self.Name && !slices.Contains(m.Aliases, a) {
+			m.Aliases = append(m.Aliases, a)
+		}
+	}
 	var others []string
 	for _, c := range p.OtherRuntime {
 		if c != gradleRuntime && c != gradleTest {
@@ -333,30 +369,34 @@ func gradleModule(p gradleProject) ([]Module, error) {
 		if !ok {
 			continue
 		}
-		nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
+		t, err := gradleTranslate(p, name, cp, root)
 		if err != nil {
 			return nil, err
 		}
 		if name == gradleCompile {
-			for _, n := range nodes {
+			for _, n := range t.nodes {
 				onCompile[n.Key()] = true
 			}
 		}
-		var edges []Edge
-		for _, e := range cp.Edges {
-			from, to := ids[e.From], ids[e.To]
-			if len(from) == 0 || len(to) == 0 {
-				return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
-			}
-			for _, f := range from {
-				for _, t := range to {
-					if f != t {
-						edges = append(edges, Edge{From: f, To: t})
-					}
-				}
-			}
+		cps = append(cps, t)
+	}
+	// Every other configuration that declares a dependency folds in last, at ScopeOther: a
+	// distribution can copy one into what it ships. One that does not translate cleanly is
+	// recorded as unlisted rather than failing the graph.
+	extras := make([]string, 0, len(p.Extra))
+	for name := range p.Extra {
+		extras = append(extras, name)
+	}
+	sort.Strings(extras)
+	for _, name := range extras {
+		cp := p.Extra[name]
+		t, err := gradleTranslate(p, name, cp, root)
+		if cp.Failure != "" || err != nil {
+			m.Unlisted = append(m.Unlisted, "gradle configuration "+name)
+			continue
 		}
-		cps = append(cps, gradleTranslated{name: name, nodes: nodes, ids: ids, edges: edges})
+		t.extra = true
+		cps = append(cps, t)
 	}
 
 	kept := map[string]string{root.Key(): root.ID}
@@ -366,7 +406,7 @@ func gradleModule(p gradleProject) ([]Module, error) {
 				continue
 			}
 			kept[n.Key()] = n.ID
-			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			n.Scope = cp.scope(onCompile[n.Key()])
 			m.Nodes = append(m.Nodes, n)
 		}
 	}
@@ -390,12 +430,48 @@ func gradleModule(p gradleProject) ([]Module, error) {
 	return append([]Module{m}, classpathCopies(m, cps, onCompile)...), nil
 }
 
-// gradleTranslated is one classpath translated onto node IDs.
+// gradleTranslated is one classpath translated onto node IDs. extra marks a configuration that is
+// no classpath.
 type gradleTranslated struct {
 	name  string
+	extra bool
 	nodes []Node
 	ids   map[string][]string
 	edges []Edge
+}
+
+// scope is the scope of a node kept from t.
+func (t gradleTranslated) scope(onCompile bool) string {
+	if t.extra {
+		return ScopeOther
+	}
+	return gradleScope(t.name, onCompile)
+}
+
+// gradleTranslate translates one classpath's components and edges onto node IDs.
+func gradleTranslate(p gradleProject, name string, cp gradleClasspath, root Node) (gradleTranslated, error) {
+	if cp.Failure != "" {
+		return gradleTranslated{}, &Failure{Kind: KindToolFailed, Detail: stepResolve, Log: name + ": " + cp.Failure}
+	}
+	nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
+	if err != nil {
+		return gradleTranslated{}, err
+	}
+	var edges []Edge
+	for _, e := range cp.Edges {
+		from, to := ids[e.From], ids[e.To]
+		if len(from) == 0 || len(to) == 0 {
+			return gradleTranslated{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
+		}
+		for _, f := range from {
+			for _, t := range to {
+				if f != t {
+					edges = append(edges, Edge{From: f, To: t})
+				}
+			}
+		}
+	}
+	return gradleTranslated{name: name, nodes: nodes, ids: ids, edges: edges}, nil
 }
 
 // classpathCopies keeps what the fold into m drops: a component a later classpath resolved at a
@@ -424,7 +500,7 @@ func classpathCopies(m Module, cps []gradleTranslated, onCompile map[string]bool
 			}
 			held[n.ID] = true
 			in[n.ID] = true
-			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			n.Scope = cp.scope(onCompile[n.Key()])
 			c.Nodes = append(c.Nodes, n)
 		}
 		if len(c.Nodes) == 1 {

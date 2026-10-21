@@ -191,6 +191,9 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 			return
 		}
 	default:
+		if p < len(clean) && clean[p] == ')' && functionChainReaches(clean, p) {
+			break
+		}
 		w, _ := wordBefore(clean, b)
 		assigned := b >= 1 && clean[b] == '=' && !strings.ContainsRune("=!<>", clean[b-1])
 		if w != "new" && !assigned && !escapesAsValue(clean, b, p) {
@@ -201,32 +204,62 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int, gs *global
 }
 
 // functionChainReaches reports whether the member chain that starts at p after a Function
-// token reaches the constructor: zero or more of `.call`, `.apply` and `.bind`, then a
-// computed key or `.constructor`; or exactly one of them, called. A longer chain that is
-// called runs the last method on the one before it (`Function.call.bind(f)` binds call to
-// f), and Function handed on as that receiver is a value use of its own.
+// token may reach the constructor. It walks `.call`, `.apply` and `.bind` members and exempts
+// only the continuations it knows call something else: a member other than those three
+// directly on Function (`Function.prototype`); a chain of two or more called, whose result
+// is then called again or used as a value (`Function.call.bind(f)`, `new (Function.bind.apply(P,
+// a))()`), since that runs the last method on the one before it; and a chain left as a value
+// with no call, index or member after it (`Function.bind || polyfill`, `ctx(Function.call, f)`).
+// Every other continuation counts: a computed key; `.constructor` or any other member of the
+// chain, all functions whose constructor is Function; one method called; a TypeScript
+// `!`, type argument list, `as` or `satisfies`; and any of these after closing parentheses,
+// or a parenthesised chain (Function's own included) then called.
 func functionChainReaches(clean []rune, p int) bool {
+	n := len(clean)
 	for steps := 0; ; steps++ {
 		switch {
-		case p < len(clean) && clean[p] == '[', optionalIndex(clean, p):
+		case p < n && clean[p] == '[', optionalIndex(clean, p):
 			return true
-		case steps == 1 && (p < len(clean) && clean[p] == '(' || optionalCall(clean, p)):
-			return true
-		case p < len(clean) && clean[p] == '.', optionalDot(clean, p):
+		case p < n && clean[p] == '.', optionalDot(clean, p) && !optionalCall(clean, p):
 			q := p + 1
 			if clean[p] == '?' {
 				q = p + 2
 			}
-			w, e := peekWord(clean, skipSpace(clean, q))
-			switch w {
-			case "constructor":
-				return true
-			case "call", "apply", "bind":
+			switch w, e := peekWord(clean, skipSpace(clean, q)); {
+			case w == "call" || w == "apply" || w == "bind":
 				p = skipSpace(clean, e)
 				continue
+			case w == "constructor":
+				return true
 			}
+			return steps > 0
+		case p < n && clean[p] == '(', optionalCall(clean, p):
+			if steps == 1 {
+				return true
+			}
+			o := p
+			if clean[p] == '?' {
+				o = skipSpace(clean, p+2)
+			}
+			r := closeParen(clean, o) + 1
+			for r = skipSpace(clean, r); r < n && clean[r] == ')'; r = skipSpace(clean, r+1) {
+			}
+			return r < n && (clean[r] == '.' || clean[r] == '[' || optionalDot(clean, r))
+		case p < n && (clean[p] == '<' || clean[p] == '!' && (p+1 >= n || clean[p+1] != '=')):
+			return true
+		case p < n && clean[p] == ')':
+			// A parenthesised chain called is the chain called; anything else after the
+			// parentheses continues the chain at the same depth.
+			for ; p < n && clean[p] == ')'; p = skipSpace(clean, p+1) {
+			}
+			if p < n && clean[p] == '(' || optionalCall(clean, p) {
+				return true
+			}
+			steps--
+			continue
 		}
-		return false
+		w, _ := peekWord(clean, p)
+		return w == "as" || w == "satisfies"
 	}
 }
 
@@ -356,14 +389,16 @@ func plainLiteral(src []rune, a int) (string, bool) {
 	return "", false
 }
 
-// optionalCall reports whether `?.(` starts at p.
+// optionalCall reports whether `?.(` starts at p, with any space after the `?.`.
 func optionalCall(clean []rune, p int) bool {
-	return optionalDot(clean, p) && p+2 < len(clean) && clean[p+2] == '('
+	q := skipSpace(clean, p+2)
+	return optionalDot(clean, p) && q < len(clean) && clean[q] == '('
 }
 
-// optionalIndex reports whether `?.[` starts at p.
+// optionalIndex reports whether `?.[` starts at p, with any space after the `?.`.
 func optionalIndex(clean []rune, p int) bool {
-	return optionalDot(clean, p) && p+2 < len(clean) && clean[p+2] == '['
+	q := skipSpace(clean, p+2)
+	return optionalDot(clean, p) && q < len(clean) && clean[q] == '['
 }
 
 // optionalDot reports whether `?.` starts at p.

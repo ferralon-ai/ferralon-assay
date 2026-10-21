@@ -580,6 +580,102 @@ var C = Function.call.constructor; C(process.argv[2])();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call parenthesised then called", map[string]string{"app.js": `
+(Function.call)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call parenthesised twice then called", map[string]string{"app.js": `
+((Function.call))(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.apply parenthesised then called", map[string]string{"app.js": `
+(Function.apply)(null, [process.argv[2]])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.bind parenthesised then called", map[string]string{"app.js": `
+(Function.bind)(null, process.argv[2])()();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call parenthesised then indexed", map[string]string{"app.js": `
+(Function.call)['constructor'](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call non-null asserted then called", map[string]string{"app.ts": `
+Function.call!(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call called with a type argument", map[string]string{"app.ts": `
+Function.call<any>(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call cast then called", map[string]string{"app.ts": `
+(Function.call as any)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call called optionally after a space", map[string]string{"app.js": `
+Function.call?. (null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call called optionally across a line break", map[string]string{"app.js": `
+Function. call?.
+(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call indexed optionally after a space", map[string]string{"app.js": `
+Function.call?. [process.argv[3]](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call indexed optionally by a literal key after a space", map[string]string{"app.js": `
+Function.call?. ['constructor'](process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function called optionally after a space", map[string]string{"app.js": `
+Function?. (process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of a member of Function.call", map[string]string{"app.js": `
+Function.call.toString.constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"constructor of a bound Function.call", map[string]string{"app.js": `
+Function.call.bind(null).constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function parenthesised then called", map[string]string{"app.js": `
+(Function)(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call parenthesised, cast, then called", map[string]string{"app.ts": `
+((Function.call) as any)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call checked with satisfies then called", map[string]string{"app.ts": `
+(Function.call satisfies any)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call parenthesised then read for its constructor", map[string]string{"app.js": `
+(Function.call).constructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"constructor of Function", map[string]string{"app.js": `
 Function.constructor(process.argv[2])();
 function load(s) { return s; }
@@ -1679,6 +1775,8 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call applied", "function push() { return Function.call.apply(Array.prototype.push, arguments); }"},
 		{"Function.bind as a polyfill fallback", "const bind = Function.bind || function bind(that) { return that; };"},
 		{"Function.call handed on", "function ctx(fn, that) { return fn; }\nconst c = ctx(Function.call, load);"},
+		{"Function.call compared", "if (Function.call !== undefined) { load(); }"},
+		{"Function.call handed on in parentheses", "function ctx(fn) { return fn; }\nconst c = ctx((Function.call));"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
 		{"imported names of global names", "import { top, left } from './util';\nimport * as parent from './util';\nimport self from './util';\nexport const placements = [top, left, parent, self];"},

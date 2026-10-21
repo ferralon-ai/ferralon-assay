@@ -6,13 +6,15 @@
 // gin's API uses with a stand-in (nethttpstub) so a load fits the per-test time limit.
 //
 // They prove every gin registration form — the verb methods, Any, Handle, Match, a
-// route's handler chain, handlers registered through Group and the IRoutes interface,
-// and net/http handlers adapted by WrapF and WrapH — surfaces its handler as an
-// Ingress{Kind:"http_route"} with the route pattern as its selector, heading the taint
-// trace to that form's sink from the *gin.Context parameter; and that the detector
-// does not over-fire: an unregistered handler-shaped func, Use and Group middleware,
-// gin's own Engine.ServeHTTP and wrapper closures, the HandlerFunc adapter, and every
-// handler registered on a look-alike router are no ingress at all.
+// route's handler chain, handlers registered through Group (nested, and in a helper)
+// and the IRoutes interface, NoRoute and NoMethod, and net/http handlers adapted by
+// WrapF and WrapH — surfaces its handler as an Ingress{Kind:"http_route"} with the
+// full composed route pattern as its selector, heading the taint trace to that form's
+// sink from the *gin.Context parameter; that every modeled accessor and binder carries
+// that taint; and that the detector does not over-fire: an unregistered
+// handler-shaped func, Use and Group middleware, the Static* registrars, gin's own
+// Engine.ServeHTTP and wrapper closures, the HandlerFunc adapter, and every handler
+// registered on a look-alike router are no ingress at all.
 package goanalysis
 
 import (
@@ -48,11 +50,24 @@ var ginForms = []struct {
 	{"Match", "server#matchForm().", "/y", "sinkMatch"},
 	{"chain (first handler)", "server#chainAuth().", "/chain/:id", "sinkChainAuth"},
 	{"chain (last handler)", "server#chainForm().", "/chain/:id", "sinkChain"},
-	{"Group", "main$1().", "/users/:id", "sinkGroup"}, // a closure registered on the Group
-	{"nested Group", "server#nestedForm().", "/:id", "sinkNested"},
-	{"IRouter interface", "server#iroutesForm().", "/iroutes", "sinkIRoutes"},
+	{"Group", "main$1().", "/v1/users/:id", "sinkGroup"}, // a closure registered on the Group
+	{"nested Group", "server#nestedForm().", "/v1/admin/:id", "sinkNested"},
+	{"IRouter interface", "server#iroutesForm().", "/api/iroutes", "sinkIRoutes"},
 	{"WrapF", "server#netForm().", "/wrapf", "sinkWrapF"},
 	{"WrapH", "wrappedHandler#ServeHTTP().", "/wraph", "sinkWrapH"},
+	{"NoRoute", "server#noRouteForm().", "*", "sinkNoRoute"},
+	{"NoMethod", "server#noMethodForm().", "*", "sinkNoMethod"},
+	{"non-constant Group prefix", "server#dynamicForm().", "/dynamic/:id", "sinkDynamic"},
+}
+
+// ginAccessors lists each modeled *gin.Context accessor and binder with the sink only
+// its result (or, for a binder, its bound target) reaches from accessorsForm.
+var ginAccessors = []string{
+	"DefaultQuery", "GetQuery", "QueryArray", "QueryMap", "GetPostForm", "PostFormArray",
+	"GetHeader", "Cookie", "GetRawData", "FullPath",
+	"Bind", "BindJSON", "BindQuery", "BindUri", "MustBindWith",
+	"ShouldBind", "ShouldBindJSON", "ShouldBindQuery", "ShouldBindUri", "ShouldBindHeader",
+	"ShouldBindWith", "ShouldBindBodyWith",
 }
 
 func ginIngresses(t *testing.T) []plugin.Ingress {
@@ -65,10 +80,13 @@ func ginIngresses(t *testing.T) []plugin.Ingress {
 }
 
 // TestGin_RegistrationFormsAreRouteIngresses proves each gin registration form's
-// handler surfaces as an http_route ingress whose selector is the route pattern — the
-// kind the net/http, macaron and chi registrars emit, which attackerControllableKinds
-// already covers. Handle and Match report "/x" and "/y", never the HTTP method(s)
-// they take ahead of the pattern.
+// handler surfaces as an http_route ingress whose selector is the full route pattern —
+// the kind the net/http, macaron and chi registrars emit, which
+// attackerControllableKinds already covers. Handle and Match report "/x" and "/y",
+// never the HTTP method(s) they take ahead of the pattern; a route on a Group, a
+// nested Group, or a Group passed to a helper is composed under the group prefixes;
+// NoRoute and NoMethod register under the catch-all "*"; and a route under a Group
+// whose prefix is no constant keeps its local pattern.
 func TestGin_RegistrationFormsAreRouteIngresses(t *testing.T) {
 	selectors := map[string][]string{}
 	for _, in := range ginIngresses(t) {
@@ -125,6 +143,68 @@ func TestGin_RouteIngressHeadsTaintTrace(t *testing.T) {
 	for _, s := range negSinks {
 		if p, ok := bySink[s]; ok {
 			t.Errorf("no gin-registered handler reaches %s, yet a path exists from %q", s, p.Ingress.SCIP)
+		}
+	}
+}
+
+// TestGin_ContextAccessorsCarryTaint proves every modeled *gin.Context accessor taints
+// its result, and every Bind / ShouldBind* binder the target it decodes into, when
+// called on the handler's tainted context: each reaches its own sink from
+// accessorsForm. HandlerName, which reads no request data, does not.
+func TestGin_ContextAccessorsCarryTaint(t *testing.T) {
+	var sinks []string
+	for _, a := range ginAccessors {
+		sinks = append(sinks, ginFixtureSCIP+"sink"+a+"().")
+	}
+	neg := ginFixtureSCIP + "sinkNotRequestData()."
+	res, err := ComputeTaint(context.Background(), plugin.ComputeTaintRequest{
+		BuildDir: ginFixtureDir,
+		Sinks:    append(sinks, neg),
+	})
+	if err != nil {
+		t.Fatalf("ComputeTaint: %v", err)
+	}
+	bySink := map[string]string{}
+	for _, p := range res.Paths {
+		bySink[p.Sink.SCIP] = p.Ingress.SCIP
+	}
+	want := ginFixtureSCIP + "server#accessorsForm()."
+	for i, a := range ginAccessors {
+		if got, ok := bySink[sinks[i]]; !ok || got != want {
+			t.Errorf("gin %s: path to sink%s from %q (found %v), want from %q", a, a, got, ok, want)
+		}
+	}
+	if got, ok := bySink[neg]; ok {
+		t.Errorf("HandlerName reads no request data, yet sinkNotRequestData is reached from %q", got)
+	}
+}
+
+// TestGin_HelperCalledTwiceRegistersUnderEachPrefix proves a route registered in a
+// helper is composed under the prefix of every group a caller passes it — here a
+// top-level group and one nested in /v1.
+func TestGin_HelperCalledTwiceRegistersUnderEachPrefix(t *testing.T) {
+	var got []string
+	for _, in := range ginIngresses(t) {
+		if in.Kind == "http_route" && in.Symbol.SCIP == ginFixtureSCIP+"server#twiceForm()." {
+			got = append(got, in.Selector)
+		}
+	}
+	if len(got) != 2 || got[0] != "/a/twice/:id" || got[1] != "/v1/b/twice/:id" {
+		t.Errorf("twiceForm selectors = %q, want [/a/twice/:id /v1/b/twice/:id]", got)
+	}
+}
+
+// TestGin_StaticIsNoIngress proves the file-serving registrars register no ingress:
+// Static, StaticFile and StaticFS take no first-party handler, so neither the file
+// system StaticFS serves (handler-shaped as it is) nor any selector they name
+// surfaces.
+func TestGin_StaticIsNoIngress(t *testing.T) {
+	ingresses := ginIngresses(t)
+	assertNoGinIngress(t, ingresses, "assetFS#ServeHTTP().")
+	for _, in := range ingresses {
+		switch in.Selector {
+		case "/assets", "/favicon.ico", "/fs":
+			t.Errorf("a Static* path is an ingress: %s (selector %q)", in.Symbol.SCIP, in.Selector)
 		}
 	}
 }

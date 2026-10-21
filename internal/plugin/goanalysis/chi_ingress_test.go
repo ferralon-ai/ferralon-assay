@@ -61,6 +61,9 @@ var chiForms = []struct {
 	{"Mount", "mountedHandler#ServeHTTP().", "sinkMount"},
 	{"Mount sub-router", "server#mountSubForm().", "sinkMountSub"},
 	{"chi v1 path", "server#v1Form().", "sinkV1"},
+	{"nested Route in a named func", "server#nestedRouteForm().", "sinkNestedRoute"},
+	{"Route on a method value", "server#methodRouteForm().", "sinkMethodRoute"},
+	{"non-constant Route pattern", "server#dynRouteForm().", "sinkDynRoute"},
 }
 
 func chiIngresses(t *testing.T) []plugin.Ingress {
@@ -239,6 +242,34 @@ func TestChi_MethodSelectorIsPattern(t *testing.T) {
 	for h := range want {
 		if !seen[h] {
 			t.Errorf("%s: no http_route ingress found", h)
+		}
+	}
+}
+
+// TestChi_RoutePrefixIsComposed proves a route registered inside a Route closure has
+// the full composed pattern as its selector: one Route deep, Routes nested through a
+// named func and a Group and on a With result, and a method value handed to Route.
+// A route on the root router, or directly in a Group (which adds no prefix), keeps its
+// own pattern, and so does one under a Route whose pattern is no constant — never a
+// guessed prefix.
+func TestChi_RoutePrefixIsComposed(t *testing.T) {
+	want := map[string]string{
+		"server#getForm().":         "/get/{id}",
+		"main$2$1().":               "/group",
+		"server#routeForm().":       "/route/{id}",
+		"server#nestedRouteForm().": "/admin/users/{id}",
+		"server#methodRouteForm().": "/m/{id}",
+		"server#dynRouteForm().":    "/dyn",
+	}
+	got := map[string][]string{}
+	for _, in := range chiIngresses(t) {
+		if in.Kind == "http_route" {
+			got[in.Symbol.SCIP] = append(got[in.Symbol.SCIP], in.Selector)
+		}
+	}
+	for h, sel := range want {
+		if g := got[chiFixtureSCIP+h]; len(g) != 1 || g[0] != sel {
+			t.Errorf("%s selectors = %q, want [%q]", h, g, sel)
 		}
 	}
 }

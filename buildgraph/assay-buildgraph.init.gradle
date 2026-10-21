@@ -59,10 +59,9 @@ allprojects { p ->
         if (p.configurations.findByName('runtimeClasspath') != null) {
             names += otherRuntime.findAll { !names.contains(it) }
         }
-        def extraNames = []
-        if (p.configurations.findByName('runtimeClasspath') != null) {
-            extraNames = p.configurations.findAll { it.canBeResolved && !names.contains(it.name) && !otherRuntime.contains(it.name) && !it.allDependencies.isEmpty() }.collect { it.name }.sort()
-        }
+        // Every other resolvable configuration, on every project: a distribution-only project with no
+        // runtimeClasspath is where an agent or driver configuration is usually declared.
+        def extraNames = p.configurations.findAll { it.canBeResolved && !names.contains(it.name) && !otherRuntime.contains(it.name) && !it.allDependencies.isEmpty() }.collect { it.name }.sort()
         def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {

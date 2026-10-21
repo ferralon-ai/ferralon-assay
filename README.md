@@ -248,7 +248,14 @@ from the corpus's own consumer documentation. Then the bundle's sha256 is checke
 `bundles.json`, and its member set against the policy manifest at the release's git tag. A missing
 signer input, a missing or failing signature, or any mismatch fails the run; there is no unverified
 mode. The `Report` records the verified signer as `corpus_signer` (`identity`, `issuer`), and has no
-`corpus_signer` when no signature was verified. What stays trusted rather than verified is the
+`corpus_signer` when no signature was verified. The EPSS/KEV signals findings are ranked with come
+from the same verified release: after the signature check the Action downloads the release's
+`signals.json.gz`, checks its sha256 against the `signals` object in that `bundles.json`, and passes
+it to the scanner as `-advisory-signals`. This holds whenever a release is read, including for a policy
+with no bundle. A release that cannot supply verified signals fails the run: a `bundles.json` older
+than `bundle_version` 1.1.0 (which predates the signals asset), a missing `signals` object or asset,
+or a sha256 mismatch. A corpus directory handed to `advisory-corpus` is ranked with its own root
+`signals.json`, when it has one ([operator guide](docs/operator-guide.md#epss-and-kev)). What stays trusted rather than verified is the
 Sigstore trust root and the identity you supply. A policy with no bundle, or a ref that names no
 release, is read through the git fetch, which is not signature-checked. On the CLI, `-advisory-corpus` takes either a corpus directory or a bundle
 file; for a bundle the `Report`'s corpus digest is the sha256 of the `.gz`, the value `bundles.json`

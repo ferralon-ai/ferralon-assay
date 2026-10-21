@@ -30,6 +30,8 @@ const (
 	fakeSignerID     = "publisher@acme.iam.example.com"
 	fakeSignerIssuer = "https://accounts.example.com"
 	fakeSigstore     = `{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`
+
+	fakeSignalsDigest = "sha256:5d1e000000000000000000000000000000000000000000000000000000000001"
 )
 
 func sha(b []byte) string {
@@ -48,11 +50,16 @@ type fakeCorpus struct {
 	assetName       string
 	omitPolicy      bool // bundles.json lists no bundle for the policy (manifest-only)
 	omitSigstore    bool // the release carries no bundles.json.sigstore.json
+	bundleVersion   string
+	omitSignals     bool // bundles.json carries no `signals` object
+	omitSignalsGz   bool // the release carries no signals.json.gz
+	signalsAsset    string
 	// looseGit writes the bare repository's tag and commit as loose objects instead of running git,
 	// which keeps a case that needs only `git ls-remote` fast.
 	looseGit       bool
 	gzDigest       func(real string) string
 	manifestDigest func(real string) string
+	signalsSHA     func(real string) string // bare hex, as bundles.json's signals object carries it
 }
 
 func defaultCorpus() fakeCorpus {
@@ -68,7 +75,25 @@ func defaultCorpus() fakeCorpus {
 		assetName:       fakePolicy + ".jsonl.gz",
 		gzDigest:        func(real string) string { return real },
 		manifestDigest:  func(real string) string { return real },
+		bundleVersion:   "1.1.0",
+		signalsAsset:    "signals.json.gz",
+		signalsSHA:      func(real string) string { return real },
 	}
+}
+
+// fakeSignalsGz is the release's signals.json.gz. The script pins its bytes and never decompresses
+// it, so a small stand-in for the corpus's signals.json is enough.
+func fakeSignalsGz(t *testing.T) []byte {
+	t.Helper()
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write([]byte(`{"signals_version":"1.0.0","signals_digest":"` + fakeSignalsDigest + `","records":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return gz.Bytes()
 }
 
 func run(t *testing.T, dir string, name string, args ...string) {
@@ -193,7 +218,16 @@ func (c fakeCorpus) writeAssets(t *testing.T, gh string, manifest []byte) {
 			"manifest_digest": c.manifestDigest(sha(manifest)),
 		})
 	}
-	sidecar, err := json.Marshal(map[string]any{"bundle_version": "1.0.0", "format": "jsonl+gzip", "bundles": bundles})
+	signalsGz := fakeSignalsGz(t)
+	index := map[string]any{"bundle_version": c.bundleVersion, "format": "jsonl+gzip", "bundles": bundles}
+	if !c.omitSignals {
+		index["signals"] = map[string]any{
+			"asset":          c.signalsAsset,
+			"sha256":         c.signalsSHA(strings.TrimPrefix(sha(signalsGz), "sha256:")),
+			"signals_digest": fakeSignalsDigest,
+		}
+	}
+	sidecar, err := json.Marshal(index)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +243,11 @@ func (c fakeCorpus) writeAssets(t *testing.T, gh string, manifest []byte) {
 	}
 	if !c.omitSigstore {
 		if err := os.WriteFile(filepath.Join(rel, "bundles.json.sigstore.json"), []byte(fakeSigstore), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !c.omitSignalsGz {
+		if err := os.WriteFile(filepath.Join(rel, "signals.json.gz"), signalsGz, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -291,12 +330,13 @@ func TestFetchCorpusBundle(t *testing.T) {
 		wantRoute string // "" = the script must fail
 		wantRef   string
 		wantErr   string
+		noSignals bool // a successful run that read no release, so has no signals to hand over
 	}{
 		{name: "verified bundle", ref: fakeTag, wantRoute: "bundle", wantRef: fakeTag},
 		{name: "manifest-only policy falls back to git at the tag", ref: fakeTag,
 			mutate: func(c *fakeCorpus) { c.omitPolicy = true }, wantRoute: "git", wantRef: fakeTag},
 		{name: "branch or SHA ref names no release", ref: "0123456789abcdef0123456789abcdef01234567",
-			wantRoute: "git", wantRef: "0123456789abcdef0123456789abcdef01234567"},
+			wantRoute: "git", wantRef: "0123456789abcdef0123456789abcdef01234567", noSignals: true},
 		{name: "gz does not match its bundles.json digest", ref: fakeTag,
 			mutate:  func(c *fakeCorpus) { c.gzDigest = func(string) string { return "sha256:" + strings.Repeat("a", 64) } },
 			wantErr: "but bundles.json says"},
@@ -351,6 +391,9 @@ func TestFetchCorpusBundle(t *testing.T) {
 			out, err := cmd.CombinedOutput()
 			bundle := filepath.Join(dest, fakePolicy+".jsonl.gz")
 			_, statErr := os.Stat(bundle)
+			signals := filepath.Join(dest, "signals.json.gz")
+			_, sigErr := os.Stat(signals)
+			got, _ := os.ReadFile(outFile)
 
 			if tc.wantRoute == "" {
 				if err == nil {
@@ -362,17 +405,24 @@ func TestFetchCorpusBundle(t *testing.T) {
 				if statErr == nil {
 					t.Fatal("a failed pin left a bundle where the scan step would pick it up")
 				}
+				if strings.Contains(string(got), "signals-path=") {
+					t.Fatalf("a failed pin emitted a signals path: %q", got)
+				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("script failed: %v\n%s", err, out)
 			}
-			got, _ := os.ReadFile(outFile)
 			if !strings.Contains(string(got), "route="+tc.wantRoute+"\n") || !strings.Contains(string(got), "git-ref="+tc.wantRef+"\n") {
 				t.Fatalf("GITHUB_OUTPUT = %q, want route=%s git-ref=%s", got, tc.wantRoute, tc.wantRef)
 			}
 			if (statErr == nil) != (tc.wantRoute == "bundle") {
 				t.Fatalf("bundle present = %v, want %v (route=%s)", statErr == nil, tc.wantRoute == "bundle", tc.wantRoute)
+			}
+			hasPath := strings.Contains(string(got), "signals-path="+signals+"\n")
+			if hasPath != !tc.noSignals || (sigErr == nil) != !tc.noSignals {
+				t.Fatalf("signals-path emitted = %v, file present = %v, want both %v\nGITHUB_OUTPUT = %q",
+					hasPath, sigErr == nil, !tc.noSignals, got)
 			}
 		})
 	}
@@ -386,6 +436,8 @@ type signedRun struct {
 	outputs string // what the script appended to $GITHUB_OUTPUT
 	cosign  string // what the stub recorded; "" when it never ran
 	bundle  bool   // a bundle was left where the scan step would pick it up
+	signals string // the signals.json.gz left in DEST, "" when none was
+	dest    string
 }
 
 func runSigned(t *testing.T, c *fakeCorpus, env ...string) signedRun {
@@ -426,11 +478,15 @@ func runSigned(t *testing.T, c *fakeCorpus, env ...string) signedRun {
 	r.cosign = string(got)
 	_, statErr := os.Stat(filepath.Join(dest, fakePolicy+".jsonl.gz"))
 	r.bundle = statErr == nil
+	if _, err := os.Stat(filepath.Join(dest, "signals.json.gz")); err == nil {
+		r.signals = filepath.Join(dest, "signals.json.gz")
+	}
+	r.dest = dest
 	return r
 }
 
-// failedClosed asserts a run failed with wantErr in its output and accepted nothing: no bundle on
-// disk, and neither a bundle route nor a signer in the step outputs.
+// failedClosed asserts a run failed with wantErr in its output and accepted nothing: no bundle or
+// signals on disk, and no bundle route, signer or signals path in the step outputs.
 func (r signedRun) failedClosed(t *testing.T, wantErr string) {
 	t.Helper()
 	if r.err == nil {
@@ -442,8 +498,11 @@ func (r signedRun) failedClosed(t *testing.T, wantErr string) {
 	if r.bundle {
 		t.Fatal("a failed signature check left a bundle where the scan step would pick it up")
 	}
-	if strings.Contains(r.outputs, "route=bundle") || strings.Contains(r.outputs, "corpus-signer") {
-		t.Fatalf("a failed signature check emitted %q", r.outputs)
+	if r.signals != "" {
+		t.Fatal("a failed run left signals.json.gz where the scan step would be handed it")
+	}
+	if strings.Contains(r.outputs, "route=bundle") || strings.Contains(r.outputs, "corpus-signer") || strings.Contains(r.outputs, "signals-path") {
+		t.Fatalf("a failed run emitted %q", r.outputs)
 	}
 }
 
@@ -466,8 +525,8 @@ func pathWithout(t *testing.T) string {
 
 // TestFetchCorpusBundleSignature_Verified: on a release, cosign verifies bundles.json with exactly the
 // caller's identity and issuer while bundles.json and its signature are the only release files on
-// disk (no bundle downloaded, no digest compared yet), and only then is the bundle accepted and the
-// verified signer emitted.
+// disk (no bundle or signals.json.gz downloaded, no digest compared yet), and only then is the bundle
+// accepted and the verified signer emitted.
 func TestFetchCorpusBundleSignature_Verified(t *testing.T) {
 	c := defaultCorpus()
 	r := runSigned(t, &c)
@@ -567,6 +626,81 @@ func TestFetchCorpusBundleSignature_RejectedBeforeDigest(t *testing.T) {
 // release with a signature that verifies fails on its digest.
 func TestFetchCorpusBundleSignature_DigestControl(t *testing.T) {
 	runSigned(t, badDigestCorpus()).failedClosed(t, digestErr)
+}
+
+// TestFetchCorpusBundleSignals_Verified: the release's signals.json.gz is downloaded after the
+// signature check, matches the sha256 the signed bundles.json names, and its path is emitted for the
+// scan step.
+func TestFetchCorpusBundleSignals_Verified(t *testing.T) {
+	c := defaultCorpus()
+	r := runSigned(t, &c)
+	if r.err != nil {
+		t.Fatalf("script failed: %v\n%s", r.err, r.out)
+	}
+	if r.signals == "" {
+		t.Fatalf("verified run left no signals.json.gz in DEST\n%s", r.out)
+	}
+	if !strings.Contains(r.outputs, "signals-path="+r.signals+"\n") || !filepath.IsAbs(r.signals) {
+		t.Fatalf("GITHUB_OUTPUT = %q, want signals-path=%s", r.outputs, r.signals)
+	}
+	got, err := os.ReadFile(r.signals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, fakeSignalsGz(t)) {
+		t.Fatal("signals.json.gz in DEST is not the release's asset")
+	}
+	if r.cosign == "" || !strings.Contains(r.out, "signals_digest "+fakeSignalsDigest) {
+		t.Fatalf("cosign ran = %v; output lacks the verified signals_digest:\n%s", r.cosign != "", r.out)
+	}
+}
+
+// TestFetchCorpusBundleSignals_FailClosed: a release that cannot hand over verified signals fails
+// the run, with no signals path emitted and nothing accepted.
+func TestFetchCorpusBundleSignals_FailClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*fakeCorpus)
+		wantErr string
+	}{
+		{"no signals object at 1.1.0", func(c *fakeCorpus) { c.omitSignals = true },
+			"(bundle_version 1.1.0) has no signals object"},
+		{"signals asset missing from the release", func(c *fakeCorpus) { c.omitSignalsGz = true },
+			"could not download signals.json.gz from release " + fakeTag},
+		{"signals sha256 mismatch", func(c *fakeCorpus) { c.signalsSHA = func(string) string { return strings.Repeat("c", 64) } },
+			"but bundles.json's signals object says " + strings.Repeat("c", 64)},
+		{"pre-signals bundle_version 1.0.x", func(c *fakeCorpus) { c.bundleVersion, c.omitSignals = "1.0.3", true },
+			"is bundle_version 1.0.3, which predates the signals asset (1.1.0)"},
+		{"pre-signals release for a manifest-only policy", func(c *fakeCorpus) {
+			c.omitPolicy, c.bundleVersion, c.omitSignals = true, "1.0.0", true
+		}, "is bundle_version 1.0.0, which predates the signals asset (1.1.0)"},
+		{"sidecar steers the signals download to another asset", func(c *fakeCorpus) { c.signalsAsset = "../evil.json.gz" },
+			"names '../evil.json.gz' as the signals asset, want 'signals.json.gz'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := defaultCorpus()
+			tc.mutate(&c)
+			r := runSigned(t, &c)
+			r.failedClosed(t, tc.wantErr)
+			if r.cosign == "" {
+				t.Fatal("the signals check ran without the signature check before it")
+			}
+		})
+	}
+}
+
+// TestFetchCorpusBundleSignals_SignatureFirst: when the signature does not verify, the signals are
+// never checked or trusted: a release whose signals.json.gz would fail its sha256 reports the
+// signature error and no signals error.
+func TestFetchCorpusBundleSignals_SignatureFirst(t *testing.T) {
+	c := defaultCorpus()
+	c.signalsSHA = func(string) string { return strings.Repeat("c", 64) }
+	r := runSigned(t, &c, "COSIGN_STUB_EXIT=1")
+	r.failedClosed(t, "bundles.json of "+fakeTag+" is not signed by")
+	if strings.Contains(r.out, "signals") {
+		t.Fatalf("the signals were looked at after the signature failed:\n%s", r.out)
+	}
 }
 
 // TestInstallCosign_RefusesUnpinnedBytes: install-cosign.sh installs nothing unless the downloaded

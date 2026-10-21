@@ -710,6 +710,36 @@ func TestGradleProducer(t *testing.T) {
 	}
 }
 
+// Beside runtimeClasspath, another runtime classpath folds in at test scope, so a copy only it
+// resolves is in the graph.
+func TestGradleOtherRuntimeClasspath(t *testing.T) {
+	lib := strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","other_runtime_classpaths":["integrationTestRuntimeClasspath","runtimeClasspath","testRuntimeClasspath"],
+"projects"`, 1)
+	lib = strings.TrimSuffix(lib, "}}") + `,
+"integrationTestRuntimeClasspath":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}},{"key":"junit:junit:4.13.2","id":{"group":"junit","name":"junit","version":"4.13.2"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.5"},{"from":"project :lib","to":"junit:junit:4.13.2"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"},{"component":"junit:junit:4.13.2","file":"@M2@/junit-4.13.2.jar"}]}}}`
+	r := newFakeGradle(t, "", map[string]string{"project_lib.json": lib})
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	m := module(t, g, ":lib")
+	if n := node(t, m, "junit:junit:jar:4.13.2"); n.Scope != "test" {
+		t.Errorf("junit scope %q, want test", n.Scope)
+	}
+	// runtimeClasspath's version wins.
+	if n := node(t, m, "org.lwjgl:lwjgl:jar:3.3.4"); n.Scope != "runtime" {
+		t.Errorf("lwjgl scope %q, want runtime", n.Scope)
+	}
+	if len(m.Nodes) != 3 {
+		t.Errorf("nodes %+v", m.Nodes)
+	}
+}
+
 func TestGradleProducerFailures(t *testing.T) {
 	// The init script joins the failure's cause chain one message per line, as Gradle 9 words it.
 	unresolved := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not resolve corp:x:1.\nCould not get resource 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nCould not GET 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nReceived status code 401 from server: Unauthorized"}]`, 1)
@@ -736,6 +766,9 @@ func TestGradleProducerFailures(t *testing.T) {
 "files":[{"component":"org.lwjgl:lwjgl:3.3.5"`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not find corp:x:1."}],
 "files":[{"component":"org.lwjgl:lwjgl:3.3.5"`, 1)}, want: "tool_failed:resolve"},
 		{name: "file dependency on the compile classpath", edit: map[string]string{"project_app.json": strings.Replace(gradleApp, `"files":[{"component":"project :lib"`, `"files":[{"component":"lib/local.jar","file":"@ROOT@/lib/local.jar"},{"component":"project :lib"`, 1)}, want: "tool_failed:graph"},
+		{name: "other runtime classpath not written", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","other_runtime_classpaths":["integrationTestRuntimeClasspath","runtimeClasspath"],
+"projects"`, 1)}, want: "tool_failed:graph"},
 		{name: "other runtime classpaths only", edit: map[string]string{"project_.json": strings.Replace(gradleRoot, `"version":"unspecified",`, `"version":"unspecified","other_runtime_classpaths":["debugRuntimeClasspath","testRuntimeClasspath"],`, 1)}, want: "tool_failed:graph"},
 		{name: "included build", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"key":"project :lib","id":{"project":":lib","build":":"}},`, `"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"project :inc:x","id":{"project":":x","build":":inc"}},`, 1)}, want: "tool_failed:graph"},
 	} {

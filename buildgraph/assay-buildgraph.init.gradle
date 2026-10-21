@@ -1,6 +1,7 @@
 // Registers assayBuildGraph on every project. The task writes the project's runtimeClasspath,
-// compileClasspath and testRuntimeClasspath as Gradle resolved each: components, the edges
-// between them, and each artifact's file. Everything the action reads is captured while the task
+// compileClasspath and testRuntimeClasspath, and beside runtimeClasspath every other resolvable
+// *RuntimeClasspath, as Gradle resolved each: components, the edges between them, and each
+// artifact's file. Everything the action reads is captured while the task
 // is configured, so it never reaches back into the project at execution time.
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
@@ -48,7 +49,15 @@ allprojects { p ->
             name       : p.name,
             version    : String.valueOf(p.version),
         ]
-        def classpaths = ['runtimeClasspath', 'compileClasspath', 'testRuntimeClasspath'].collectEntries { name ->
+        // Other runtime classpaths: beside runtimeClasspath, ones such as
+        // integrationTestRuntimeClasspath, resolved too; without it, Android variants or KMP
+        // targets, which this producer does not choose between.
+        def otherRuntime = p.configurations.findAll { it.canBeResolved && it.name.endsWith('RuntimeClasspath') }.collect { it.name }.sort()
+        def names = ['runtimeClasspath', 'compileClasspath', 'testRuntimeClasspath']
+        if (p.configurations.findByName('runtimeClasspath') != null) {
+            names += otherRuntime.findAll { !names.contains(it) }
+        }
+        def classpaths = names.collectEntries { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {
                 return [:]
@@ -58,9 +67,6 @@ allprojects { p ->
                 artifacts: cfg.incoming.artifactView { lenient(false) }.artifacts.resolvedArtifacts,
             ]]
         }
-        // Other runtime classpaths (Android variants, KMP targets) this producer does not choose
-        // between.
-        def otherRuntime = p.configurations.findAll { it.canBeResolved && it.name.endsWith('RuntimeClasspath') }.collect { it.name }.sort()
         def projects = [:]
         p.rootProject.allprojects { q ->
             projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]

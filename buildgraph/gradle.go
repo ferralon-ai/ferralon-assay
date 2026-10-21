@@ -50,7 +50,7 @@ type gradleClasspath struct {
 // Gradle mediates each configuration on its own, so one coordinate can resolve to different
 // versions on each; the runtime classpath's version is the one the application runs, and wins.
 // A key on runtimeClasspath and compileClasspath is compile scope; compile-only is provided, as
-// a container supplies it at run time; test-only is test. This is the Maven tree's shape: one
+// a container supplies it at run time; test-only, or only on another runtime classpath, is test. This is the Maven tree's shape: one
 // version per key per module, at the strongest scope.
 const (
 	gradleRuntime = "runtimeClasspath"
@@ -180,7 +180,8 @@ func readGradleProjects(dir string) ([]gradleProject, error) {
 	return out, nil
 }
 
-// gradleModule folds one project's three classpaths into a module. Each classpath is
+// gradleModule folds one project's classpaths into a module: the three, then any other runtime
+// classpath beside runtimeClasspath. Each classpath is
 // translated on its own (gradleClasspathNodes); then each g:a:type:classifier keeps the node of
 // the first classpath in precedence order that has it, at the scope gradleScope gives, and every
 // classpath's edges are joined onto the kept nodes.
@@ -195,15 +196,20 @@ func gradleModule(p gradleProject) (Module, error) {
 	self := gradleCoord{Group: p.Group, Name: p.Name, Version: p.Version}
 	root := Node{ID: NodeID(self.Group, self.Name, "jar", "", self.Version), Group: self.Group, Artifact: self.Name, Version: self.Version, Type: "jar"}
 	m := Module{ID: p.Path, Path: rel, Root: root.ID, Nodes: []Node{root}}
-	if _, ok := p.Classpaths[gradleRuntime]; !ok {
-		var others []string
-		for _, c := range p.OtherRuntime {
-			if c != gradleTest {
-				others = append(others, c)
-			}
+	var others []string
+	for _, c := range p.OtherRuntime {
+		if c != gradleRuntime && c != gradleTest {
+			others = append(others, c)
 		}
-		if len(others) > 0 {
-			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
+	}
+	if _, ok := p.Classpaths[gradleRuntime]; !ok && len(others) > 0 {
+		return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
+	}
+	// Beside runtimeClasspath, every other runtime classpath folds in at test scope: a copy only
+	// one of them resolves is still in the build, so leaving it out would claim it absent.
+	for _, c := range others {
+		if _, ok := p.Classpaths[c]; !ok {
+			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + ": " + c + " was not resolved"}
 		}
 	}
 
@@ -215,7 +221,7 @@ func gradleModule(p gradleProject) (Module, error) {
 	}
 	var cps []translated
 	onCompile := map[string]bool{}
-	for _, name := range []string{gradleRuntime, gradleCompile, gradleTest} {
+	for _, name := range append([]string{gradleRuntime, gradleCompile, gradleTest}, others...) {
 		cp, ok := p.Classpaths[name]
 		if !ok {
 			continue

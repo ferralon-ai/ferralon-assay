@@ -173,3 +173,22 @@ func TestAnalyzerGate_ReadsBrandEnv(t *testing.T) {
 		t.Error("image set, docker unrunnable: want tool_failure (gate open, analyzer failed)")
 	}
 }
+
+// A graph the host accepted that no longer decodes fails the request; it is never an absent
+// graph.
+func TestRun_UndecodableGraphIsAnError(t *testing.T) {
+	graph := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(graph, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(plugin.BuildGraphEnv, graph)
+	line, _ := json.Marshal(plugin.Request{Protocol: plugin.ProtocolVersion, Op: plugin.OpResolveInventory,
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()}})
+	in, _ := os.CreateTemp(t.TempDir(), "in")
+	_, _ = in.Write(append(line, '\n'))
+	_, _ = in.Seek(0, 0)
+	out, _ := os.CreateTemp(t.TempDir(), "out")
+	if err := run(context.Background(), in, out); err == nil {
+		t.Fatal("an undecodable build graph must be a hard error")
+	}
+}

@@ -206,3 +206,20 @@ func TestResolveGraphRejectsUnstatableConditions(t *testing.T) {
 		}
 	}
 }
+
+// A cve-watch run whose build graph failed holds the cursor.
+func TestCVEWatchRequestHoldsCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		graph *jvmGraph
+		want  bool
+	}{
+		{name: "no jvm graph", want: false},
+		{name: "graph accepted", graph: &jvmGraph{source: "build_tool"}, want: false},
+		{name: "graph failed", graph: &jvmGraph{source: "build_tool", failure: &buildgraph.Failure{Kind: buildgraph.KindToolFailed}}, want: true},
+	} {
+		if got := cveWatchRequest(&runConfig{graph: tc.graph}).HoldCursor; got != tc.want {
+			t.Errorf("%s: HoldCursor = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

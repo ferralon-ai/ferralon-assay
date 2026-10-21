@@ -1146,12 +1146,7 @@ func runCVEWatch(args []string) error {
 
 	osv := &trigger.HTTPOSVClient{}
 
-	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, trigger.CVEWatchRequest{
-		Subject:       cfg.subject,
-		Codebase:      cfg.codebase,
-		AssessOptions: cfg.assessOptions,
-		HoldCursor:    cfg.graph.err() != nil,
-	})
+	res, err := trigger.RunCVEWatch(ctx, cfg.store, osv, cveWatchRequest(cfg))
 	if errors.Is(err, trigger.ErrNoBaseline) {
 		return fmt.Errorf("no baseline in state at the selected StateStore — run `%s baseline` against the default branch first", brand.Name)
 	}
@@ -1167,17 +1162,28 @@ func runCVEWatch(args []string) error {
 		// A scheduled heartbeat still beacons: an uninstall must be detected even when
 		// no advisory moved, since a dormant repo may only ever run on this cadence.
 		postScan(ctx, cfg.store, cfg.subject, rescan)
-		return cfg.graph.err()
+	} else {
+		fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
+		fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
+		fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
+		if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
+			return err
+		}
+		printSummary(cfg.outDir, res.Report)
+		printRescanContext(rescan)
+		postScan(ctx, cfg.store, cfg.subject, rescan)
 	}
-
-	fmt.Fprintf(os.Stdout, "%s cve-watch — new advisories, earnest re-analysis\n", brand.Name)
-	fmt.Fprintf(os.Stdout, "  new:        %s\n", strings.Join(res.NewAdvisories, ", "))
-	fmt.Fprintf(os.Stdout, "  cursor:     %s\n", res.Cursor)
-	if err := publishResult(ctx, cfg.outDir, res.Report, f.intelProvenance(cfg.workSet), cfg.analyzeRef, cfg.graph); err != nil {
-		return err
-	}
-	printSummary(cfg.outDir, res.Report)
-	printRescanContext(rescan)
-	postScan(ctx, cfg.store, cfg.subject, rescan)
+	// Heartbeat or earnest, a run without its build graph exits red.
 	return cfg.graph.err()
+}
+
+// cveWatchRequest is the run's cve-watch request. A failed build graph holds the cursor, so the
+// advisories this run assessed without it are assessed again on the next.
+func cveWatchRequest(cfg *runConfig) trigger.CVEWatchRequest {
+	return trigger.CVEWatchRequest{
+		Subject:       cfg.subject,
+		Codebase:      cfg.codebase,
+		AssessOptions: cfg.assessOptions,
+		HoldCursor:    cfg.graph.err() != nil,
+	}
 }

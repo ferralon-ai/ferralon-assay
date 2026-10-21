@@ -499,7 +499,12 @@ func (e *evaluator) evaluate(real string) *projectEval {
 		pe.opaque = pe.opaque || r.mf.opaque
 		pe.assemblyRefs = append(pe.assemblyRefs, r.mf.assemblyRefs...)
 		for _, p := range r.mf.props {
-			if searchPathProperty(p.name) {
+			if opaqueProperty(p.name) {
+				pe.opaque = true
+			}
+		}
+		for _, imp := range r.mf.imports {
+			if strings.Contains(imp.project, "%") || strings.Contains(imp.condition, "%") {
 				pe.opaque = true
 			}
 		}

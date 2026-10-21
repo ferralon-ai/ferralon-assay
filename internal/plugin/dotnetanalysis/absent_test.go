@@ -149,6 +149,20 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"none naming an assembly", withItems(`<ItemGroup><None Include="Newtonsoft.Json.dll" CopyToOutputDirectory="Always" /></ItemGroup>`)},
 		{"embedded resource from a rooted path", withItems(`<ItemGroup><EmbeddedResource Include="/opt/vendor/x.bin" /></ItemGroup>`)},
 		{"link metadata outside the tree", withItems(`<ItemGroup><None Include="x.txt"><Link>..\x.txt</Link></None></ItemGroup>`)},
+		{"escaped parent path", withItems(`<ItemGroup><None Include="%2E%2E/vendor/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
+		{"escaped rooted path", withItems(`<ItemGroup><None Include="%2Fopt/vendor/Newtonsoft*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
+		{"escaped import", withItems(`<Import Project="%2E%2E/outside.props" Condition="Exists('%2E%2E/outside.props')" />`)},
+		{"item reaching into git metadata", withItems(`<ItemGroup><None Include=".git/vendor/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
+		{"vendored shared library", withFile("native/libSkiaSharp.so", "\x7fELF")},
+		{"vendored versioned shared library", withFile("native/libSkiaSharp.so.1", "\x7fELF")},
+		{"vendored dynamic library", withFile("native/libSkiaSharp.dylib", "\xcf\xfa")},
+		{"vendored static library", withFile("native/libSkiaSharp.a", "!<arch>")},
+		{"file named as a framework reference", func(t *testing.T, dir string) {
+			withItems(`<ItemGroup><Reference Include="System.Net.Http.Formatting" /></ItemGroup>`)(t, dir)
+			writeFixtureFile(t, dir, "System.Net.Http.Formatting", "MZ")
+		}},
+		{"an explicit target platform", withItems(`<PropertyGroup><TargetPlatformIdentifier>Windows</TargetPlatformIdentifier></PropertyGroup>`)},
+		{"an explicit target platform version", withItems(`<PropertyGroup><TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion></PropertyGroup>`)},
 		{"a project's PackageId", withItems(`<PropertyGroup><PackageId>Newtonsoft.Json</PackageId></PropertyGroup>`)},
 		{"a project's AssemblyName", withItems(`<PropertyGroup><AssemblyName>App.Web</AssemblyName></PropertyGroup>`)},
 	} {
@@ -250,6 +264,21 @@ func TestNotInBuild_CurrentLockfileAloneOpen(t *testing.T) {
 	}
 	if v := exhaustiveFor(t, dir, "System.Text.Json"); !v.Found {
 		t.Fatalf("transitive: Found=false, want true")
+	}
+}
+
+// TestNotInBuild_NoProjectOpen: a tree with no project settles nothing, so it proves no
+// package absent, however closed the rest of it is.
+func TestNotInBuild_NoProjectOpen(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"empty":       {},
+		"source only": {"C.cs": "class C {}\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if v := exhaustiveFor(t, writeTree(t, files), "Newtonsoft.Json"); v.Exhaustive {
+				t.Fatalf("Exhaustive = true with no project")
+			}
+		})
 	}
 }
 

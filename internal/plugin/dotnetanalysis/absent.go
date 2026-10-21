@@ -44,10 +44,12 @@ var frameworkAssemblies = []string{
 	"presentationcore", "presentationframework",
 }
 
-// searchPathProperties are properties that add places a Reference resolves from, or add
-// References themselves. Setting any of them is opaque.
-var searchPathProperties = []string{
+// opaqueProperties are properties that add places a Reference resolves from, add References
+// themselves, or name a target platform whose packs restore never records. Setting any of
+// them is opaque.
+var opaqueProperties = []string{
 	"assemblysearchpaths", "referencepath", "additionalexplicitassemblyreferences",
+	"targetplatformidentifier", "targetplatformversion",
 }
 
 // referenceMetadata is the metadata a Reference or FrameworkReference may carry. A HintPath,
@@ -80,10 +82,10 @@ func frameworkAssembly(include string) bool {
 	return n == "system" || strings.HasPrefix(n, "system.") || slices.Contains(frameworkAssemblies, n)
 }
 
-// searchPathProperty reports whether a property (lowercased) is one of searchPathProperties
-// or an AssemblySearchPath_* toggle.
-func searchPathProperty(name string) bool {
-	return slices.Contains(searchPathProperties, name) || strings.HasPrefix(name, "assemblysearchpath_")
+// opaqueProperty reports whether a property (lowercased) is one of opaqueProperties or an
+// AssemblySearchPath_* toggle.
+func opaqueProperty(name string) bool {
+	return slices.Contains(opaqueProperties, name) || strings.HasPrefix(name, "assemblysearchpath_")
 }
 
 // attrValue returns the value of the unprefixed attribute key, matched without case.
@@ -112,21 +114,22 @@ func simpleAssemblyName(s string) bool {
 
 // inertOpaque reports whether a value inside the skipped subtree rooted at item (lowercased)
 // could name code outside the tree or an assembly file: a parent or rooted path, a path
-// through a bin or obj directory (which treeClosed does not walk), a property, item or
-// metadata reference, or an assembly or package file name. Compile items name source, and
+// through a bin, obj or .git directory (which treeClosed does not walk), a property, item or
+// metadata reference, an escape (MSBuild unescapes %XX before it touches a path), or an
+// assembly or package file name. Compile items name source, and
 // ProjectExtensions is tooling metadata; neither is opaque.
 func inertOpaque(item, value string) bool {
 	if item == "compile" || item == "projectextensions" {
 		return false
 	}
 	v := strings.ToLower(strings.TrimSpace(value))
-	for _, s := range []string{"..", "$(", "@(", "%(", ".dll", ".exe", ".winmd", ".nupkg"} {
+	for _, s := range []string{"..", "$(", "@(", "%", ".dll", ".exe", ".winmd", ".nupkg"} {
 		if strings.Contains(v, s) {
 			return true
 		}
 	}
 	for seg := range strings.FieldsFuncSeq(v, func(r rune) bool { return r == '/' || r == '\\' || r == ';' }) {
-		if seg = strings.TrimSpace(seg); seg == "bin" || seg == "obj" {
+		if seg = strings.TrimSpace(seg); seg == "bin" || seg == "obj" || seg == ".git" {
 			return true
 		}
 	}
@@ -142,7 +145,8 @@ func inertOpaque(item, value string) bool {
 //     doesn't record the SDK's downloads), or a target framework names a platform, whose
 //     workload packs restore never records;
 //   - a lockfile or packages.config has no project file beside it;
-//   - a project read anything opaque, or names want as a Reference or FrameworkReference;
+//   - a project read anything opaque, including an Import path holding an escape, or names
+//     want as a Reference or FrameworkReference;
 //   - want names one of the build's projects by file name (a project that sets PackageId or
 //     AssemblyName is never settled on restore's record, so it never gets here);
 //   - the tree is not closed (treeClosed).
@@ -176,15 +180,22 @@ func completeBuild(ev *evaluator, manifests []string, projects map[string]*proje
 			return false
 		}
 	}
-	return treeClosed(ev.rootReal, ev.projects)
+	refs := make(map[string]bool)
+	for real := range ev.projects {
+		for _, r := range ev.eval(real).assemblyRefs {
+			refs[r] = true
+		}
+	}
+	return treeClosed(ev.rootReal, ev.projects, refs)
 }
 
 // treeClosed reports whether the tree holds nothing that brings code into the build outside
-// the projects' restore: no symlink, no assembly or package file, no script that references
-// packages itself, no project of another kind, no Paket, and no solution naming a project
-// outside the tree's project files. Only .git and each project's own bin and obj directories,
-// which hold its build output and restore output, are not walked.
-func treeClosed(rootReal string, projects map[string]bool) bool {
+// the projects' restore: no symlink, no assembly, native library or package file, no file named
+// exactly as a Reference (refs, normalized), which MSBuild resolves as a raw file name, no
+// script that references packages itself, no project of another kind, no Paket, and no
+// solution naming a project outside the tree's project files. Only .git and each project's own
+// bin and obj directories, which hold its build output and restore output, are not walked.
+func treeClosed(rootReal string, projects, refs map[string]bool) bool {
 	output := make(map[string]bool)
 	for p := range projects {
 		output[filepath.Join(filepath.Dir(p), "bin")] = true
@@ -211,7 +222,9 @@ func treeClosed(rootReal string, projects map[string]bool) bool {
 		switch {
 		case name == "paket.dependencies", name == "paket.lock", name == "paket.references":
 			closed = false
-		case slices.Contains([]string{".dll", ".exe", ".winmd", ".nupkg", ".fsx", ".csx", ".cake", ".projitems", ".shproj"}, ext):
+		case slices.Contains([]string{".dll", ".exe", ".winmd", ".nupkg", ".so", ".dylib", ".a", ".fsx", ".csx", ".cake", ".projitems", ".shproj"}, ext):
+			closed = false
+		case strings.Contains(name, ".so."), refs[name]:
 			closed = false
 		case strings.HasSuffix(ext, "proj") && !isProjectFile(name):
 			closed = false

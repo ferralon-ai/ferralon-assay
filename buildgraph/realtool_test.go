@@ -513,6 +513,14 @@ func TestGradleComplete(t *testing.T) {
 			},
 		},
 		{
+			name: "project build script classpath",
+			append: map[string]string{
+				"settings.gradle": "include 'bs'\n",
+				"bs/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-api:2.0.16' } }\n" +
+					"apply plugin: 'java'\n",
+			},
+		},
+		{
 			name:   "build script no project reads",
 			append: map[string]string{"tools/build.gradle": "plugins { id 'java' }\n"},
 			want:   "tools/build.gradle is a Gradle build file no project of the build reads",

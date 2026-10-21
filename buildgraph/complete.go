@@ -127,6 +127,7 @@ var gradleActionOrigins = []string{
 // recorded it.
 type gradleResolution struct {
 	Path      string `json:"path"`
+	Script    bool   `json:"script"` // a project's build script classpath
 	Failure   string `json:"failure"`
 	Artifacts []struct {
 		File    string `json:"file"`
@@ -136,12 +137,13 @@ type gradleResolution struct {
 
 // gradleIncomplete lists what keeps g from being Complete: a Gradle build file no project reads;
 // a runtime classpath left uncollected; a task of a type off the list, an exec task another
-// depends on, an action added from outside the listed packages, or an input file from outside the
-// build that the graph does not hold; and a resolution (a detached configuration, say) that
-// resolved a file the graph does not hold. A build script's own classpath is build logic, a POM
-// file carries no code, a project's build directory holds what the build made from its own
-// sources (a sibling's classes, say), and Gradle's transforms cache holds what it derived from an
-// artifact some resolution resolved (the Kotlin compiler's classpath snapshots).
+// depends on (beside a run alias), an action added from outside the listed packages, or an input
+// file from outside the build that the graph does not hold; and a resolution (a detached
+// configuration, say) that resolved a file the graph does not hold. A build script's own
+// classpath is build logic, a POM file carries no code, a project's build directory holds what
+// the build made from its own sources (a sibling's classes, say), and Gradle's transforms cache
+// holds what it derived from an artifact some resolution resolved (the Kotlin compiler's
+// classpath snapshots).
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
@@ -165,13 +167,27 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			})
 		})
 	}
-	depended := map[string]bool{}
+	// A run alias (an action-less DefaultTask no task depends on, whose every dependency runs a
+	// program) only runs programs, so a program it depends on is still a leaf.
+	types := map[string]string{}
+	dependents := map[string][]string{}
 	for _, p := range projects {
 		for _, t := range p.Tasks {
+			types[t.Path] = t.Type
 			for _, d := range t.Depends {
-				depended[d] = true
+				dependents[d] = append(dependents[d], t.Path)
 			}
 		}
+	}
+	alias := map[string]bool{}
+	for _, p := range projects {
+		for _, t := range p.Tasks {
+			alias[t.Path] = t.Failure == "" && t.Type == "org.gradle.api.DefaultTask" && len(t.Actions) == 0 && len(t.Depends) > 0 &&
+				len(dependents[t.Path]) == 0 && !slices.ContainsFunc(t.Depends, func(d string) bool { return !gradleLeafTaskTypes[types[d]] })
+		}
+	}
+	depended := func(path string) bool {
+		return slices.ContainsFunc(dependents[path], func(d string) bool { return !alias[d] })
 	}
 	for _, p := range projects {
 		for _, c := range p.Uncollected {
@@ -185,7 +201,7 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			switch {
 			case gradleTaskTypes[t.Type]:
 			case gradleLeafTaskTypes[t.Type]:
-				if depended[t.Path] {
+				if depended(t.Path) {
 					reasons = append(reasons, "task "+t.Path+" runs a program ("+t.Type+") that another task depends on")
 				}
 			default:
@@ -211,7 +227,7 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 		reasons = append(reasons, "the build recorded no resolution")
 	}
 	for _, r := range resolved {
-		if r.Path == "classpath" {
+		if r.Script || r.Path == "classpath" {
 			continue
 		}
 		if r.Failure != "" {

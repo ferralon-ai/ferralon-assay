@@ -44,6 +44,10 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "listed tasks", tasks: []gradleTask{task(":jar", "org.gradle.api.tasks.bundling.Jar"), task(":bootJar", "org.springframework.boot.gradle.tasks.bundling.BootJar")}},
 		{name: "unknown task type", tasks: []gradleTask{task(":fetch", "build_abc.FetchTask")}, want: "task :fetch has type build_abc.FetchTask"},
 		{name: "exec task as a leaf", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec")}},
+		{name: "exec task behind a run alias", tasks: []gradleTask{task(":runShadow", "com.github.jengelman.gradle.plugins.shadow.internal.JavaJarExec"), {Path: ":runFatJar", Type: "org.gradle.api.DefaultTask", Depends: []string{":runShadow"}}}},
+		{name: "run alias with an action", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec"), {Path: ":go", Type: "org.gradle.api.DefaultTask", Depends: []string{":run"}, Actions: []string{"org.gradle.api.internal.AbstractTask$ClosureTaskAction"}}}, want: "task :run runs a program"},
+		{name: "run alias depending on more than programs", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec"), task(":jar", "org.gradle.api.tasks.bundling.Jar"), {Path: ":go", Type: "org.gradle.api.DefaultTask", Depends: []string{":run", ":jar"}}}, want: "task :run runs a program"},
+		{name: "run alias something depends on", tasks: []gradleTask{task(":run", "org.gradle.api.tasks.JavaExec"), {Path: ":go", Type: "org.gradle.api.DefaultTask", Depends: []string{":run"}}, {Path: ":assemble", Type: "org.gradle.api.DefaultTask", Depends: []string{":go"}}}, want: "task :run runs a program"},
 		{name: "exec task depended on", tasks: []gradleTask{task(":gen", "org.gradle.api.tasks.Exec"), {Path: ":jar", Type: "org.gradle.api.tasks.bundling.Jar", Depends: []string{":gen"}}}, want: "task :gen runs a program"},
 		{name: "action from a plugin on the list", tasks: []gradleTask{{Path: ":test", Type: "org.gradle.api.tasks.testing.Test", Actions: []string{"org.gradle.testing.jacoco.plugins.JacocoPluginExtension$JacocoOutputCleanupTestTaskAction"}}}},
 		{name: "action from a build script", tasks: []gradleTask{{Path: ":jar", Type: "org.gradle.api.tasks.bundling.Jar", Actions: []string{"Build_gradle$$$result$1$1"}}}, want: "has an action added by Build_gradle"},
@@ -54,6 +58,12 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "detached resolution of a listed file", resolved: []gradleResolution{resolution(":detachedConfiguration1", jar, "/cache/lib-1.0.pom")}},
 		{name: "detached resolution of an unlisted file", resolved: []gradleResolution{resolution(":detachedConfiguration2", "/cache/agent-1.0.jar")}, want: "resolved /cache/agent-1.0.jar"},
 		{name: "build script classpath", resolved: []gradleResolution{resolution("classpath", "/cache/plugin.jar")}},
+		{name: "project build script classpath", resolved: []gradleResolution{func() gradleResolution {
+			r := resolution(":app:classpath", "/cache/plugin.jar")
+			r.Script = true
+			return r
+		}()}},
+		{name: "project configuration named classpath", resolved: []gradleResolution{resolution(":app:classpath", "/cache/agent-1.0.jar")}, want: "resolved /cache/agent-1.0.jar"},
 		{name: "project artifact", resolved: []gradleResolution{{Path: ":app:runtimeClasspath", Artifacts: []struct {
 			File    string `json:"file"`
 			Project bool   `json:"project"`

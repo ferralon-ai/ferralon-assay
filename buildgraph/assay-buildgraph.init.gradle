@@ -59,7 +59,8 @@ def failureText = { Throwable top ->
 }
 
 // Every resolution the root build makes, with the files it resolved: a configuration's, a build
-// script classpath's (path "classpath"), and a detached configuration's, which no project lists.
+// script classpath's (marked script, or path "classpath" when no project's), and a detached
+// configuration's, which no project lists.
 // The producer finds each file it resolved among the graph's own; one that is not was installed
 // from outside the configurations it collected. An included build's resolutions are its build
 // logic's, and its own listener never records them.
@@ -70,11 +71,14 @@ def failureText = { Throwable top ->
 // carries a third-party file, and every module file it did resolve is still recorded. A project
 // whose own coordinate is an external one gets no such exemption. Any other failure is recorded
 // as one.
+// A project's build script classpath records as :path:classpath, the path a project's own
+// configuration named classpath would have, so each is told apart by identity.
+def scriptResolutions = Collections.newSetFromMap(new IdentityHashMap())
 if (gradle.parent == null) {
     gradle.addListener(new DependencyResolutionListener() {
         void beforeResolve(ResolvableDependencies d) {}
         void afterResolve(ResolvableDependencies d) {
-            def doc = [path: d.path]
+            def doc = [path: d.path, script: scriptResolutions.contains(d)]
             def files = { set ->
                 set.collect { a -> [file: a.file.absolutePath, project: a.id.componentIdentifier instanceof ProjectComponentIdentifier] }
             }
@@ -160,6 +164,7 @@ def observeTasks = { p ->
 }
 
 allprojects { p ->
+    p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
         def doc = [

@@ -29,13 +29,29 @@ func TestBootOnly(t *testing.T) {
 		{"javax/annotation/PostConstruct", 23, false},
 		{"javax/annotation/PostConstruct", 12, true}, // a release the table does not cover
 		{"javax/servlet/GenericServlet", 12, false},
-		// A release after the newest covered one may have added any package under the JDK's namespaces.
-		{"javax/servlet/GenericServlet", 99, true},
-		{"org/w3c/dom/svg/SVGDocument", 99, true},
-		{"jdk/incubator/foo/Bar", 99, true},
-		{"javax/xml/parsers/SAXParser", 99, true},
-		{"com/acme/Foo", 99, false},
-		{"javaxx/Foo", 99, false},
+		// An unrecorded release, or one after the newest covered, may have added a package where
+		// the JDK has its own.
+		{"jdk/incubator/foo/Bar", 27, false},
+		{"jdk/incubator/foo/Bar", 28, true},
+		{"jdk/incubator/foo/Bar", 0, true},
+		{"sun/foo/Bar", 0, true},
+		{"jdk/newmod/X", 28, true},
+		{"javax/crypto/spec/ext/X", 0, true}, // parent a JDK package with none below it
+		{"javax/sound/X", 0, true},           // a prefix of javax/sound/midi
+		{"javax/sound/foo/X", 28, true},      // parent a prefix of a JDK package
+		{"javax/xml/stream/ext/X", 0, true},  // parent a JDK package
+		{"org/w3c/dom/svg/SVGDocument", 21, false},
+		{"org/w3c/dom/svg/SVGDocument", 0, true},
+		{"com/sun/net/httpserver/ext/X", 28, true},
+		{"org/ietf/jgss/ext/X", 0, true},
+		{"org/jcp/xml/dsig/ext/X", 0, true},
+		{"javax/servlet/GenericServlet", 0, false},
+		{"javax/servlet/GenericServlet", 28, false},
+		{"javax/servlet/http/HttpServlet", 28, false},
+		{"com/sun/jna/Native", 0, false},
+		{"org/w3c/css/sac/Parser", 0, false},
+		{"com/acme/Foo", 28, false},
+		{"javaxx/Foo", 28, false},
 		{"Unpackaged", 0, false},
 	} {
 		if got := BootOnly(tc.name, tc.jdk); got != tc.want {
@@ -96,7 +112,7 @@ func TestReach_JDKPackageCopies(t *testing.T) {
 	callsRun := func(owner string) classfile.Class {
 		return mainCalls(edge(classfile.EdgeStatic, owner, "run", "()V"))
 	}
-	const servlet, annotation, parsers = "javax/servlet/Lib", "javax/annotation/Lib", "javax/xml/parsers/Lib"
+	const servlet, annotation, parsers, stream = "javax/servlet/Lib", "javax/annotation/Lib", "javax/xml/parsers/Lib", "javax/xml/stream/ext/Lib"
 	runHoleCases(t, []holeCase{
 		{
 			// Nothing else on the classpath lists the package: the copy itself defines it, so a call
@@ -140,10 +156,21 @@ func TestReach_JDKPackageCopies(t *testing.T) {
 			want:    Undetermined, why: annotation,
 		},
 		{
-			name:    "a JAR's javax/servlet class is unopened on a JDK newer than the table",
+			name:    "a JAR's javax/servlet class is walked on a JDK newer than the table",
 			classes: []classfile.Class{callsRun(servlet), staticSink(servlet)},
-			cp:      Classpath{JDK: 99},
-			want:    Undetermined, why: servlet,
+			cp:      Classpath{JDK: 28},
+			want:    ReachableCandidate, via: "Lib.run",
+		},
+		{
+			name:    "a JAR's class where the JDK could add a package is unopened on a JDK newer than the table",
+			classes: []classfile.Class{callsRun(stream), staticSink(stream)},
+			cp:      Classpath{JDK: 28},
+			want:    Undetermined, why: stream,
+		},
+		{
+			name:    "the same on an unrecorded JDK",
+			classes: []classfile.Class{callsRun(stream), staticSink(stream)},
+			want:    Undetermined, why: stream,
 		},
 	})
 }

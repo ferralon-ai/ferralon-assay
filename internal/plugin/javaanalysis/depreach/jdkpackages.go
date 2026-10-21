@@ -11,6 +11,7 @@ package depreach
 //	11: Temurin 11.0.32.1+1 mac-aarch64
 //	11: Temurin 11.0.32.1+1 windows-x64
 //	16: Temurin 16.0.2+7 linux-x64
+//	16: Temurin 16.0.2+7 mac-x64
 //	16: Temurin 16.0.2+7 windows-x64
 //	17: Temurin 17.0.20.1+1 linux-x64
 //	17: Temurin 17.0.20.1+1 mac-aarch64
@@ -52,15 +53,15 @@ var jdkReleases = [...]int{8, 11, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27
 // for jdkReleases[i].
 var jdkPackages = map[string]uint16{
 	"apple/applescript":                   0b00000000000001,
-	"apple/laf":                           0b11111111111011,
+	"apple/laf":                           0b11111111111111,
 	"apple/launcher":                      0b00000000000001,
-	"apple/security":                      0b11111111111011,
+	"apple/security":                      0b11111111111111,
 	"com/apple/concurrent":                0b00000000000001,
-	"com/apple/eawt":                      0b11111111111011,
-	"com/apple/eawt/event":                0b11111111111011,
-	"com/apple/eio":                       0b11111111111011,
-	"com/apple/laf":                       0b11111111111011,
-	"com/apple/laf/resources":             0b11111111111011,
+	"com/apple/eawt":                      0b11111111111111,
+	"com/apple/eawt/event":                0b11111111111111,
+	"com/apple/eio":                       0b11111111111111,
+	"com/apple/laf":                       0b11111111111111,
+	"com/apple/laf/resources":             0b11111111111111,
 	"com/oracle/net":                      0b00000000000001,
 	"com/oracle/webservices/internal/api": 0b00000000000001,
 	"com/oracle/webservices/internal/api/databinding":                           0b00000000000001,
@@ -1467,8 +1468,8 @@ var jdkPackages = map[string]uint16{
 	"sun/jvmstat/perfdata/resources":                                             0b11111111111110,
 	"sun/launcher":                                                               0b11111111111111,
 	"sun/launcher/resources":                                                     0b11111111111111,
-	"sun/lwawt":                                                                  0b11111111111011,
-	"sun/lwawt/macosx":                                                           0b11111111111011,
+	"sun/lwawt":                                                                  0b11111111111111,
+	"sun/lwawt/macosx":                                                           0b11111111111111,
 	"sun/management":                                                             0b11111111111111,
 	"sun/management/counter":                                                     0b11111111111111,
 	"sun/management/counter/perf":                                                0b11111111111111,

@@ -61,10 +61,10 @@ func NewEngine(classes []classfile.Class) *Engine {
 //
 // jdkPackages is read from Temurin images, so a vendor's additions (a JavaFX or GraalVM build) are
 // not in it. jdk is the release of the JVM that ran the build, which the deployed runtime need not
-// match: a copy of a package that only the deployed release has is still walked. An unrecorded
-// release, or one jdkPackages does not cover, counts a package any covered release has; a release
-// after the newest covered one also counts every package under a namespace the JDK adds packages
-// in, since it may have added one no covered release has.
+// match: a copy of a package that only the deployed release has is still walked. A release
+// jdkPackages does not cover counts a package any covered release has. So does an unrecorded
+// one, which is also a release after the newest covered one when a module's toolchain picks it,
+// and so does a newer one; both also count a package where the JDK could add one (jdkSubtree).
 func BootOnly(name string, jdk int) bool {
 	if strings.HasPrefix(name, "java/") {
 		return true
@@ -73,9 +73,10 @@ func BootOnly(name string, jdk int) bool {
 	if i <= 0 {
 		return false
 	}
-	mask, ok := jdkPackages[name[:i]]
-	if jdk > jdkReleases[len(jdkReleases)-1] {
-		return ok || jdkNamespace(name)
+	pkg := name[:i]
+	mask, ok := jdkPackages[pkg]
+	if jdk == 0 || jdk > jdkReleases[len(jdkReleases)-1] {
+		return ok || jdkSubtree(pkg)
 	}
 	if !ok {
 		return false
@@ -88,14 +89,40 @@ func BootOnly(name string, jdk int) bool {
 	return true
 }
 
-// jdkNamespace reports whether name lies under a prefix the JDK defines packages in.
-func jdkNamespace(name string) bool {
-	for _, p := range []string{"javax/", "jdk/", "sun/", "com/sun/", "org/w3c/", "org/xml/", "org/ietf/"} {
-		if strings.HasPrefix(name, p) {
-			return true
+// jdkPrefixes holds every proper prefix of a package in jdkPackages: javax/sound for
+// javax/sound/midi.
+var jdkPrefixes = func() map[string]bool {
+	m := map[string]bool{}
+	for p := range jdkPackages {
+		for i := strings.LastIndexByte(p, '/'); i > 0; i = strings.LastIndexByte(p[:i], '/') {
+			m[p[:i]] = true
 		}
 	}
-	return false
+	return m
+}()
+
+// jdkSubtree reports whether a release jdkPackages does not hold could add pkg: a package under
+// jdk/ or sun/, one that is a prefix of a JDK package, or one whose parent is a JDK package or a
+// prefix of one, at least two segments deep (so not javax/servlet) and three under com/ and org/
+// (so not com/sun/jna). Every package Temurin added from 16 to 27 is one.
+func jdkSubtree(pkg string) bool {
+	if strings.HasPrefix(pkg, "jdk/") || strings.HasPrefix(pkg, "sun/") || jdkPrefixes[pkg] {
+		return true
+	}
+	i := strings.LastIndexByte(pkg, '/')
+	if i <= 0 {
+		return false
+	}
+	parent := pkg[:i]
+	least := 2
+	if strings.HasPrefix(parent, "com/") || strings.HasPrefix(parent, "org/") {
+		least = 3
+	}
+	if strings.Count(parent, "/")+1 < least {
+		return false
+	}
+	_, jdkParent := jdkPackages[parent]
+	return jdkParent || jdkPrefixes[parent]
 }
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The

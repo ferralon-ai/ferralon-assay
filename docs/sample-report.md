@@ -55,8 +55,9 @@ inside are invented for illustration and correspond to no real advisory or codeb
       "priority": {
         "epss_score": 0.12,
         "epss_percentile": 0.61,
-        "kev_listed": false,
-        "snapshot": "2026-08-01"
+        "epss_as_of": "2026-07-31",
+        "kev_catalog_version": "2026.07.30",
+        "kev_date_released": "2026-07-30T18:00:00.000Z"
       }
     },
     {
@@ -78,7 +79,13 @@ inside are invented for illustration and correspond to no real advisory or codeb
     "commit_sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3",
     "analyzer_version": "v0.5.0",
     "advisory_cursor": "2026-08-01",
-    "timestamp": "2026-08-01T00:00:00Z"
+    "timestamp": "2026-08-01T00:00:00Z",
+    "intel": {
+      "work_set_source": "builtin_language_set",
+      "work_set_size": 2,
+      "fact_source": "builtin_table",
+      "signals_digest": "sha256:5d1e…"
+    }
   }
 }
 ```
@@ -100,6 +107,8 @@ These fields appear only when the scan has something to say:
 | `go_build_list`, `go_main_module` | `sbom` | The resolver output a Go SBOM was taken from, and the module it was resolved for. |
 | `advisory_bounds` | finding `evidence` | The affected ranges an advisory records, on an `advisory_range_absent` finding only. |
 | `package`, `path` | `partiality` note | The package and location inside it that a limit is bounded to. |
+| `priority` | finding | EPSS/KEV context, only when the run was given a signals file that has a stamped value for the advisory. Each value carries its own date: `epss_as_of` for the EPSS fields, `kev_catalog_version` and `kev_date_released` for the KEV ones. `kev_listed` appears only when `true`; a KEV stamp without it, as above, means "not in that catalog". |
+| `signals_digest` | `provenance.intel` | The `signals_digest` of the signals file the findings were ranked with. |
 
 Partiality reasons a scan can carry include `work_set_dependency_unresolved` and the JavaScript
 `relationship_unexpressed:uninspectable_package` and `relationship_unexpressed:computed_require`;

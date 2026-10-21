@@ -232,7 +232,7 @@ func CallGraph(ctx context.Context, req plugin.CallGraphRequest, opts ...Option)
 	// augmentation. A resolution failure is swallowed here exactly as before — the
 	// depreach completeness account surfaces unopened dependencies through reachability
 	// partiality, never a fabricated edge (inv.5).
-	dg, _ := buildDependencyGraph(ctx, req.BuildDir)
+	dg, _ := buildDependencyGraph(req.BuildDir, opts...)
 
 	// H2 seam (edge-seam.md §5): resolve the unresolved interface-dispatch call sites
 	// through the DI bean model and fold the resolved interface→impl edges into the

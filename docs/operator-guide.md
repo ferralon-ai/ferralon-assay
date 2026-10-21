@@ -58,21 +58,43 @@ exploited.
 
 ### EPSS and KEV
 
-A finding whose advisory has a CVE identifier (as its id or one of its aliases) may carry a `priority`
-block:
+A finding may carry a `priority` block when the run was given an EPSS/KEV **signals file** and that
+file has a value for the advisory's id or one of its aliases:
 
-- **EPSS** — FIRST.org's probability-of-exploitation score and percentile for the CVE.
-- **KEV** — whether the CVE is in CISA's Known Exploited Vulnerabilities catalog, and the date it was
-  added.
-- **Snapshot** — the date of the data the values came from.
+- **EPSS** — FIRST.org's probability-of-exploitation score and percentile, with `epss_as_of`, the
+  EPSS model date they come from.
+- **KEV** — whether the CVE was in CISA's Known Exploited Vulnerabilities catalog (and the date it was
+  added), with `kev_catalog_version` and `kev_date_released`, the catalog it was read from. A KEV stamp
+  without `kev_listed` means the CVE was not in **that** catalog, released at that time — not that it
+  is unlisted today.
 
-The values come from EPSS and KEV snapshots embedded in the scanner binary
-([`internal/intel`](../internal/intel)), so the lookup is offline and a given scanner release always
-returns the same values. The snapshot moves when a release refreshes it. A finding with no match in
-either feed carries no `priority` block at all.
+Every value carries its own date because the values are captures of different ages; there is no
+report-wide "as of" date. `provenance.intel.signals_digest` names the signals file once.
+
+The scanner holds no EPSS or KEV data of its own and never contacts FIRST or CISA. Signals are a
+provided input, read from, in order:
+
+1. `-advisory-signals <path>` — a `signals.json` or `signals.json.gz` (gzip is detected from the
+   content);
+2. the `ASSAY_ADVISORY_SIGNALS` environment variable;
+3. the `signals.json` at the root of an `-advisory-corpus` **directory**, when it has one.
+
+The file is the corpus's signals sidecar (`signals_version` 1.x — see the vulnerability corpus's
+`CONSUMING.md`, "The signals sidecar"). Any other `signals_version`, or a file that is malformed or
+carries a value without its stamp, fails the run: a broken signals file never turns silently into no
+priority. A corpus directory without a `signals.json` is not an error.
+
+Every run summary has a `signals:` line. With no signals source it says so, and **no finding carries a
+`priority` block**: a run without signals reports no priority rather than an old one. When the newest
+EPSS `as_of` in the file is older than `-advisory-signals-max-age` (default `168h`, 7 days), the line
+carries a warning naming its age; the file still loads.
+
+Every run re-ranks every finding with its own signals, including findings a PR run inherits from the
+baseline, so no row keeps a value from a signals file this run did not read.
 
 EPSS and KEV describe how often a CVE is exploited in the wild, across all software. They say nothing
 about whether this codebase calls the vulnerable code — that is what the verdict and grade are for.
+Nothing that decides a verdict reads them; they only order the findings.
 
 ### Ordering
 
@@ -90,9 +112,9 @@ Findings are sorted most-actionable first, and every projection keeps that order
 | Output | What it carries |
 |---|---|
 | `report.json` | The full `evidence` block (grade, entry point, call path) and the `priority` block. See [sample-report.md](sample-report.md) for the shape. |
-| `report.sarif.json` | Under each result's `properties.scanner`: `reachability_grade`, `entry_point`, `attacker_controllable`, `epss_score`, `epss_percentile`, `kev_listed`, `kev_date_added`, `intel_snapshot`. The SARIF `rank` is the EPSS percentile × 100, and KEV-listed findings get a `CISA-KEV` tag. |
-| `report.html` | Grade and EPSS/KEV badges, the call path, and a note on where the intel came from. |
-| PR comment and pinned Issue | The grade and EPSS/KEV columns, with a one-line reminder that neither is an exploitability claim. |
+| `report.sarif.json` | Under each result's `properties.scanner`: `reachability_grade`, `entry_point`, `attacker_controllable`, `epss_score`, `epss_percentile` and `epss_as_of` when there is an EPSS value, and `kev_listed`, `kev_date_added`, `kev_catalog_version` and `kev_date_released` when there is a KEV observation. The SARIF `rank` is the EPSS percentile × 100, and KEV-listed findings get a `CISA-KEV` tag. |
+| `report.html` | Grade and EPSS/KEV badges, each with its own date, the call path, and a note on where the intel came from. |
+| PR comment and pinned Issue | The grade and EPSS/KEV columns, each value with its own date, and a one-line reminder that neither is an exploitability claim. |
 | `openvex.json` | No priority data. OpenVEX has no field for it, so none is projected. |
 
 ## The Go toolchain your repository builds with
@@ -174,7 +196,7 @@ undecided until you state the selection.
 ## Resolving the JVM build graph
 
 `resolve-graph` runs your repository's own Maven or Gradle and writes the resolved dependency graph as
-`assay.buildgraph/v1` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
+`assay.buildgraph/v2` JSON, with the sha256 of each build file in the repository the tool read (POMs, Gradle scripts, properties,
 version catalogs and lockfiles):
 
 ```sh
@@ -188,11 +210,10 @@ ferralon-assay resolve-graph -dir . -out "$RUNNER_TEMP/graph"
 | `-tool` | `auto` (default), `maven` or `gradle`. |
 | `-profiles` | Comma-separated Maven profiles to activate. |
 | `-java-version` | The JDK the job states; a different major version fails. |
-| `-D key=value` | Build property, repeatable: Maven `-D`, Gradle `-P`. |
-| `-env key=value` | Environment variable overlaid on the job's, repeatable. |
 
-A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan does not
-read this graph. This command runs your build's scripts and plugins, and the build tool fetches from
+A resolution that fails prints a typed cause, exits non-zero and writes no graph. A scan reads the
+graph with `-build-graph <out>/buildgraph.json`, and accepts it only when the scan states the same JDK
+and profiles (`-subject-java-version`, `-subject-maven-profiles`). This command runs your build's scripts and plugins, and the build tool fetches from
 the repositories your build configures; see [threat-model.md](threat-model.md).
 
 ## State and run modes

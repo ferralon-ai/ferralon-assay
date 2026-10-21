@@ -47,14 +47,6 @@ type AssessConfig struct {
 	SubjectGoVersion string
 	CIGoVersion      string
 	TrustCIGoVersion bool
-	// SubjectJavaVersion is the java.version of the JVM running the subject's Maven build, as the
-	// caller states it. It reaches the language plugin's inventory resolution as TargetEnv
-	// "java.version". See WithSubjectJavaVersion.
-	SubjectJavaVersion string
-	// SubjectMavenProfiles is the subject build's explicit Maven profile selection in -P syntax, as
-	// the caller states it. It reaches inventory resolution as TargetEnv "maven.profiles". See
-	// WithSubjectMavenProfiles.
-	SubjectMavenProfiles string
 	// SubjectToolchainReachability opts reachability_ingress into running the Go analysis under the
 	// SUBJECT's toolchain when that toolchain resolved to an exact version. Off by default. See
 	// WithSubjectToolchainReachability.
@@ -152,8 +144,8 @@ func AssessStages(opts ...AssessOption) []Stage {
 		codebaseInventory{checkout: cfg.Checkout, plugin: cfg.Plugin, src: cfg.Source, subjectGoVersion: cfg.SubjectGoVersion, ciGoVersion: cfg.CIGoVersion, trustCIGoVersion: cfg.TrustCIGoVersion},
 		maliciousPresence{},
 		disqualificationDiscovery{},
-		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
-		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis, targetEnv: cfg.targetEnv()},
+		symbolMapping{plugin: cfg.Plugin, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
+		reachabilityIngress{plugin: cfg.Plugin, subjectToolchain: cfg.SubjectToolchainReachability, skipDisqualified: cfg.SkipDisqualifiedAnalysis},
 		exposureFootprintStage{},
 	}
 }
@@ -849,8 +841,8 @@ var AdvisoryTable = map[string]AdvisoryFacts{
 	// that Assess never refutes on.
 	//
 	// Each entry carries ONLY its own OSV aliases. Merging them was customer-visible wrong:
-	// internal/intel/data/kev.json lists only CVE-2025-8110, and trigger's priorityFor joins on
-	// ID + Aliases, so the successor sitting in the predecessor's alias array reported
+	// CISA's KEV catalog lists only CVE-2025-8110, and trigger's priorityFor joins the run's signals
+	// on ID + Aliases, so the successor sitting in the predecessor's alias array reported
 	// KEVListed against CVE-2024-55947 — which CISA does not list. The GO- ids are load-bearing,
 	// not decoration: they are the key govulncheck reports dependency findings under
 	// (reachcandidate.govulnMatchID, which takes the FIRST GO- alias — with one GO- id per entry
@@ -3015,8 +3007,6 @@ func settledByDisqualification(store artifact.Store, assessmentID string) (bool,
 type symbolMapping struct {
 	plugin           plugin.LanguagePlugin
 	skipDisqualified bool
-	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
-	targetEnv map[string]string
 }
 
 func (symbolMapping) Name() string              { return "symbol_mapping" }
@@ -3038,7 +3028,6 @@ func (s symbolMapping) Run(ctx context.Context, c *assessment.Assessment, store 
 			VulnID:          c.Request.Vulnerability.ID,
 			PURL:            purl,
 			AdvisorySymbols: advisorySymbols,
-			TargetEnv:       s.targetEnv,
 		})
 		if err != nil {
 			return err
@@ -3117,8 +3106,6 @@ type reachabilityIngress struct {
 	// WithSubjectToolchainReachability.
 	subjectToolchain bool
 	skipDisqualified bool
-	// targetEnv is the run's stated subject conditions, handed to the analyzer on the request.
-	targetEnv map[string]string
 }
 
 func (reachabilityIngress) Name() string              { return "reachability_ingress" }
@@ -3225,7 +3212,6 @@ func (s reachabilityIngress) runWithPlugin(ctx context.Context, c *assessment.As
 		Symbols:     sinks,
 		GoToolchain: requestedToolchain,
 		Package:     admittedPackagePURL(store, c.ID),
-		TargetEnv:   s.targetEnv,
 	})
 	if err != nil {
 		return err

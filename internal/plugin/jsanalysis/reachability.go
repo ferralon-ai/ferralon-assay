@@ -46,7 +46,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	for _, r := range cg.Partiality.Reasons {
 		reasons[r] = true
 	}
-	if !cg.Partiality.Complete && len(cg.Partiality.Reasons) == 0 {
+	if !cg.Partiality.Complete && len(cg.Partiality.Reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		reasons[plugin.PartialReasonDynamicDispatch] = true
 	}
 
@@ -75,10 +75,12 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		})
 	}
 
-	if len(reasons) == 0 {
+	if len(reasons) == 0 && len(cg.Partiality.Scoped) == 0 {
 		return plugin.ReachabilityResult{Partiality: plugin.Complete(), Paths: paths}, nil
 	}
-	return plugin.ReachabilityResult{Partiality: plugin.Partial(sortedReasons(reasons)...), Paths: paths}, nil
+	part := plugin.Partial(sortedReasons(reasons)...)
+	part.Scoped = cg.Partiality.Scoped
+	return plugin.ReachabilityResult{Partiality: part, Paths: paths}, nil
 }
 
 // entrySymbols is the set of static-reachability entry points: every discovered ingress

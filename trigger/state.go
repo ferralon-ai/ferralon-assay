@@ -217,6 +217,7 @@ func inheritBaseline(baseline *report.Report, req PRInheritRequest, state *state
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
+	b.WithPriority(rankBy(req.Signals))
 	rep := b.Build()
 	return &rep
 }
@@ -326,6 +327,7 @@ func reanalyzeSlice(ctx context.Context, baseline *report.Report, req PRInheritR
 		Timestamp:       time.Now().UTC(),
 	})
 	b.WithBaseline(baselinePointer(baseline, state))
+	b.WithPriority(rankBy(req.Signals))
 
 	rep, err := b.BuildValidated()
 	if err != nil {
@@ -494,6 +496,7 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	if prior.Baseline != nil {
 		b.WithBaseline(*prior.Baseline)
 	}
+	b.WithPriority(rankBy(req.Signals))
 
 	rep, err := b.BuildValidated()
 	if err != nil {

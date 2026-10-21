@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/assessment"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/statestore"
@@ -49,6 +50,9 @@ type BaselineRequest struct {
 	// AssessOptions are the pipeline seams (WithPlugin / WithCheckout) the Assess
 	// stages run with. Empty = the hermetic stub path.
 	AssessOptions []pipeline.AssessOption
+	// Signals is the EPSS/KEV signals file the run was given; nil for none, in which case no
+	// finding carries a Priority. Ranking context only: it is applied after every verdict is final.
+	Signals *intel.Signals
 	// Bands is the OPTIONAL scheduler-only prioritization hint: advisory id → Band. It is
 	// read ONLY by the admission gate (admitAdvisories), above S1, to decide whether/when a
 	// case is admitted this pass. It is dropped before an Assessment is constructed and NEVER
@@ -161,6 +165,7 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		AdvisoryCursor:  req.Cursor,
 		Timestamp:       time.Now().UTC(),
 	})
+	b.WithPriority(rankBy(req.Signals))
 
 	rep, err := b.BuildValidated()
 	if err != nil {
@@ -203,6 +208,9 @@ type PRInheritRequest struct {
 	Cursor          string
 	// AssessOptions are the pipeline seams for any re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// Signals mirrors BaselineRequest.Signals. Every row is ranked by it — inherited rows too, so
+	// none keeps a value from the signals file the baseline run read.
+	Signals *intel.Signals
 }
 
 // PRInheritResult reports the outcome of a PR-inherit run.
@@ -275,6 +283,12 @@ type CVEWatchRequest struct {
 	AnalyzerVersion string
 	// AssessOptions are the pipeline seams for an earnest re-analysis.
 	AssessOptions []pipeline.AssessOption
+	// Signals mirrors PRInheritRequest.Signals.
+	Signals *intel.Signals
+	// HoldCursor keeps the stored cursor on an earnest run, so its new advisories are assessed
+	// again next run. Set it when this run's analysis inputs could not be had (a failed build
+	// graph): the Report is still written, but the advisories it could not assess stay new.
+	HoldCursor bool
 }
 
 // CVEWatchResult reports the outcome of one scheduled CVE-watch run.
@@ -342,13 +356,19 @@ func RunCVEWatch(ctx context.Context, store statestore.StateStore, osv OSVClient
 		return &CVEWatchResult{Heartbeat: true, Cursor: committed.Cursor}, nil
 	}
 
-	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, newCursor)
+	// The Report's provenance carries the cursor too, and a conflicting write merges the
+	// cursor from it, so a held cursor is the one both record.
+	cursor := newCursor
+	if req.HoldCursor {
+		cursor = state.Cursor
+	}
+	rep, err := earnestRun(ctx, state, req, osvResult, newIDs, cursor)
 	if err != nil {
 		return nil, err
 	}
 	state.Report = rep
 	state.SBOM = rep.SBOM
-	state.Cursor = newCursor
+	state.Cursor = cursor
 	committed, err := store.Write(ctx, state)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: cve-watch earnest write: %w", err)

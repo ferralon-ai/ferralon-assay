@@ -80,7 +80,7 @@ func TestReachability_SpringIngressReachesDependency(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/dep/UrlFetcher.fetch()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}

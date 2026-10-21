@@ -76,7 +76,7 @@ func TestSelectPlugin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.lang, func(t *testing.T) {
-			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin")
+			p, err := selectPlugin(tc.lang, "/fake/analyzer-bin", nil)
 			if err != nil {
 				t.Fatalf("selectPlugin(%q): %v", tc.lang, err)
 			}
@@ -86,7 +86,7 @@ func TestSelectPlugin(t *testing.T) {
 		})
 	}
 
-	if _, err := selectPlugin(checkout.LangUnknown, ""); err == nil {
+	if _, err := selectPlugin(checkout.LangUnknown, "", nil); err == nil {
 		t.Fatal("selectPlugin(unknown): expected error, got nil")
 	}
 }
@@ -193,7 +193,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/x\n\ngo 1.22\n")
 
-		acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false)
+		acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget: %v", err)
 		}
@@ -224,7 +224,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		// canary among them. Emptiness is still judged later, on the resolved work set
 		// (scanWorkSet), because the OSV widening runs off this acquisition — acquisition itself
 		// never refuses a scan.
-		bare, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", false)
+		bare, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget (canaries off): %v", err)
 		}
@@ -233,7 +233,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 			t.Fatalf("default java floor = %d advisories, want 3 (the real Maven corpus)", len(bare.advisories))
 		}
 
-		acq, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", true)
+		acq, err := acquireTarget(context.Background(), dir, "", "acme/app", "/fake/bin", true, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget (canaries on): %v", err)
 		}
@@ -258,7 +258,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 		writeFile(t, filepath.Join(dir, "main.c"), "int main(void){return 0;}\n")
 		writeFile(t, filepath.Join(dir, "util.h"), "#pragma once\n")
 
-		acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false)
+		acq, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget: %v", err)
 		}
@@ -281,7 +281,7 @@ func TestAcquireTargetLocalPath(t *testing.T) {
 	t.Run("unrecognized tree errors", func(t *testing.T) {
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "README.txt"), "nothing to analyze\n")
-		if _, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false); err == nil {
+		if _, err := acquireTarget(context.Background(), dir, "", "", "/fake/bin", false, graphRequest{mode: buildGraphOff}); err == nil {
 			t.Fatal("expected error for unrecognized source tree, got nil")
 		}
 	})
@@ -323,7 +323,7 @@ func TestAcquireTarget_CFamilyWasmCacheDir(t *testing.T) {
 	t.Run("per-scan dir, private, removed at scan end", func(t *testing.T) {
 		t.Setenv(envCFamilyWasmCacheDir, "")
 		dir, bin, out := setup(t)
-		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false)
+		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget: %v", err)
 		}
@@ -347,7 +347,7 @@ func TestAcquireTarget_CFamilyWasmCacheDir(t *testing.T) {
 		mine := t.TempDir()
 		t.Setenv(envCFamilyWasmCacheDir, mine)
 		dir, bin, out := setup(t)
-		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false)
+		acq, err := acquireTarget(context.Background(), dir, "", "", bin, false, graphRequest{mode: buildGraphOff})
 		if err != nil {
 			t.Fatalf("acquireTarget: %v", err)
 		}

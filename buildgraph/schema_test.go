@@ -24,6 +24,18 @@ func validGraph() *Graph {
 	return g
 }
 
+// addCopy adds of's testRuntimeClasspath copy holding g:dep at another version.
+func addCopy(g *Graph, of, path, root string) *Module {
+	g.Modules = append(g.Modules, Module{
+		ID: of + "#testRuntimeClasspath", CopyOf: of, Path: path, Root: root,
+		Nodes: []Node{
+			{ID: "g:root:jar:1", Group: "g", Artifact: "root", Version: "1", Type: "jar"},
+			{ID: "g:dep:jar:x:1", Group: "g", Artifact: "dep", Version: "1", Type: "jar", Classifier: "x"},
+		},
+	})
+	return &g.Modules[len(g.Modules)-1]
+}
+
 func TestValidate(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -31,7 +43,8 @@ func TestValidate(t *testing.T) {
 		want string
 	}{
 		{name: "valid", edit: func(*Graph) {}, want: ""},
-		{name: "unknown schema", edit: func(g *Graph) { g.Schema = "assay.buildgraph/v2" }, want: "schema"},
+		{name: "unknown schema", edit: func(g *Graph) { g.Schema = "assay.buildgraph/v3" }, want: "schema"},
+		{name: "older schema", edit: func(g *Graph) { g.Schema = schemaV1 }, want: "schema"},
 		{name: "no tool version", edit: func(g *Graph) { g.Tool.Version = " " }, want: "tool_version"},
 		{name: "no tool name", edit: func(g *Graph) { g.Tool.Name = "" }, want: "tool_version"},
 		{name: "no jvm", edit: func(g *Graph) { g.JVM.Version = "" }, want: "jvm"},
@@ -45,6 +58,19 @@ func TestValidate(t *testing.T) {
 		{name: "root not a node", edit: func(g *Graph) { g.Modules[0].Root = "g:other:jar:1" }, want: "missing_node"},
 		{name: "edge to a missing node", edit: func(g *Graph) { g.Modules[0].Edges[0].To = "g:gone:jar:1" }, want: "missing_node"},
 		{name: "edge from a missing node", edit: func(g *Graph) { g.Modules[0].Edges[0].From = "g:gone:jar:1" }, want: "missing_node"},
+		{name: "classpath copy", edit: func(g *Graph) { addCopy(g, "g:root", ".", "g:root:jar:1") }, want: ""},
+		{name: "classpath copy of no project", edit: func(g *Graph) { addCopy(g, "g:other", ".", "g:root:jar:1") }, want: "classpath_copy"},
+		{name: "classpath copy at another path", edit: func(g *Graph) { addCopy(g, "g:root", "sub", "g:root:jar:1") }, want: "classpath_copy"},
+		{name: "classpath copy with another root", edit: func(g *Graph) { addCopy(g, "g:root", ".", "g:dep:jar:x:1") }, want: "classpath_copy"},
+		{name: "classpath copy named for another project", edit: func(g *Graph) { addCopy(g, "g:root", ".", "g:root:jar:1").ID = "g:x#testRuntimeClasspath" }, want: "classpath_copy"},
+		{name: "classpath copy of a copy", edit: func(g *Graph) {
+			c := addCopy(g, "g:root", ".", "g:root:jar:1")
+			addCopy(g, c.ID, ".", "g:root:jar:1")
+		}, want: "classpath_copy"},
+		// Gradle allows '#' in a project name: only copy_of marks a copy.
+		{name: "project named with #", edit: func(g *Graph) {
+			addCopy(g, "g:root", "v2", "g:root:jar:1").CopyOf = ""
+		}, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := validGraph()

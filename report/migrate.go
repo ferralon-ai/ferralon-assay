@@ -19,9 +19,9 @@ import "fmt"
 func Upgrade(r Report) (Report, error) {
 	switch r.SchemaVersion {
 	case SchemaVersion:
-		return r, nil
+		return dropUnstampedPriority(r), nil
 	case SchemaVersionV1:
-		return upgradeV1(r), nil
+		return dropUnstampedPriority(upgradeV1(r)), nil
 	case "":
 		return Report{}, fmt.Errorf("report: document carries no schema_version (uninterpretable)")
 	default:
@@ -121,4 +121,28 @@ func UndeterminedDetail(reason string) string {
 	default:
 		return "no verdict was established for this advisory (" + reason + ")"
 	}
+}
+
+// dropUnstampedPriority removes every Priority that does not carry its stamps. A Report written
+// before priority values carried their own stamps holds EPSS/KEV values dated only by a report-wide
+// snapshot field that no longer exists; read today, those values would claim no age at all. They
+// are dropped rather than refused: priority is ranking context, never part of a verdict, and every
+// run that re-emits a stored finding re-derives its Priority from that run's own signals
+// (Builder.WithPriority), so nothing is lost.
+func dropUnstampedPriority(r Report) Report {
+	var out []AdvisoryFinding
+	for i := range r.Advisories {
+		p := r.Advisories[i].Priority
+		if p == nil || p.validate() == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]AdvisoryFinding(nil), r.Advisories...)
+		}
+		out[i].Priority = nil
+	}
+	if out != nil {
+		r.Advisories = out
+	}
+	return r
 }

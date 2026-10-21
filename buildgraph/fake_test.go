@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -586,23 +587,35 @@ func TestMavenReactorPathsKeepsLinkedPath(t *testing.T) {
 	}
 }
 
-const gradleApp = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":app","dir":"@ROOT@/app","build_file":"@ROOT@/app/build.gradle","root_dir":"@ROOT@","group":"com.example","name":"app","version":"1.0.0","has_runtime_classpath":true,
+const gradleApp = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":app","dir":"@ROOT@/app","build_file":"@ROOT@/app/build.gradle","root_dir":"@ROOT@","group":"com.example","name":"app","version":"1.0.0",
 "projects":{":":{"group":"","name":"multi","version":"unspecified"},":app":{"group":"com.example","name":"app","version":"1.0.0"},":lib":{"group":"com.example","name":"lib","version":"1.0.0"}},
+"classpaths":{"runtimeClasspath":{
 "components":[{"key":"project :app","id":{"project":":app","build":":"}},{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.4","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.4"}},{"key":"com.example:bom:1","id":{"group":"com.example","name":"bom","version":"1"}}],
 "edges":[{"from":"project :app","to":"project :lib"},{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.4"},{"from":"project :app","to":"com.example:bom:1"}],
 "unresolved":[],
-"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"},{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4-natives-linux.jar"}]}`
+"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"},{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4-natives-linux.jar"}]},
+"compileClasspath":{
+"components":[{"key":"project :app","id":{"project":":app","build":":"}},{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.4","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.4"}},{"key":"jakarta.servlet:jakarta.servlet-api:6.0.0","id":{"group":"jakarta.servlet","name":"jakarta.servlet-api","version":"6.0.0"}}],
+"edges":[{"from":"project :app","to":"project :lib"},{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.4"},{"from":"project :app","to":"jakarta.servlet:jakarta.servlet-api:6.0.0"}],
+"unresolved":[],
+"files":[{"component":"project :lib","file":"@ROOT@/lib/build/classes"},{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"},{"component":"jakarta.servlet:jakarta.servlet-api:6.0.0","file":"@M2@/jakarta.servlet-api-6.0.0.jar"}]},
+"testRuntimeClasspath":{
+"components":[{"key":"project :app","id":{"project":":app","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}},{"key":"junit:junit:4.13.2","id":{"group":"junit","name":"junit","version":"4.13.2"}}],
+"edges":[{"from":"project :app","to":"org.lwjgl:lwjgl:3.3.5"},{"from":"project :app","to":"junit:junit:4.13.2"},{"from":"junit:junit:4.13.2","to":"org.lwjgl:lwjgl:3.3.5"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"},{"component":"junit:junit:4.13.2","file":"@M2@/junit-4.13.2.jar"}]}}}`
 
-const gradleLib = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":lib","dir":"@ROOT@/lib","build_file":"@ROOT@/lib/build.gradle","root_dir":"@ROOT@","group":"com.example","name":"lib","version":"1.0.0","has_runtime_classpath":true,
+const gradleLib = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":lib","dir":"@ROOT@/lib","build_file":"@ROOT@/lib/build.gradle","root_dir":"@ROOT@","group":"com.example","name":"lib","version":"1.0.0",
 "projects":{":":{"group":"","name":"multi","version":"unspecified"},":app":{"group":"com.example","name":"app","version":"1.0.0"},":lib":{"group":"com.example","name":"lib","version":"1.0.0"}},
+"classpaths":{"runtimeClasspath":{
 "components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.4","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.4"}}],
 "edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.4"}],
 "unresolved":[],
-"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"}]}`
+"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"}]}}}`
 
-const gradleRoot = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":","dir":"@ROOT@","build_file":"@ROOT@/build.gradle","root_dir":"@ROOT@","group":"","name":"multi","version":"unspecified","has_runtime_classpath":false,
+const gradleRoot = `{"gradle":"8.14.6","java":"21.0.12.1","java_vendor":"Eclipse Adoptium","path":":","dir":"@ROOT@","build_file":"@ROOT@/build.gradle","root_dir":"@ROOT@","group":"","name":"multi","version":"unspecified",
 "projects":{":":{"group":"","name":"multi","version":"unspecified"},":app":{"group":"com.example","name":"app","version":"1.0.0"},":lib":{"group":"com.example","name":"lib","version":"1.0.0"}},
-"components":[],"edges":[],"unresolved":[],"files":[]}`
+"classpaths":{}}`
 
 func newFakeGradle(t *testing.T, fail string, edit map[string]string) fakeRepo {
 	t.Helper()
@@ -617,7 +630,7 @@ func newFakeGradle(t *testing.T, fail string, edit map[string]string) fakeRepo {
 		answers[k] = v
 	}
 	writeFiles(t, r.fake, answers)
-	writeFiles(t, r.m2, map[string]string{"lwjgl-3.3.4.jar": "l", "lwjgl-3.3.4-natives-linux.jar": "n"})
+	writeFiles(t, r.m2, map[string]string{"lwjgl-3.3.4.jar": "l", "lwjgl-3.3.4-natives-linux.jar": "n", "lwjgl-3.3.5.jar": "l5", "lwjgl-3.3.6.jar": "l6", "jakarta.servlet-api-6.0.0.jar": "s", "junit-4.13.2.jar": "j"})
 	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
 	return r
 }
@@ -631,9 +644,12 @@ func TestGradleProducer(t *testing.T) {
 	if g.Tool != (Tool{Name: "gradle", Version: "8.14.6", Wrapper: true}) {
 		t.Fatalf("tool %+v", g.Tool)
 	}
-	if len(g.Modules) != 3 {
+	// The three projects, and :app's test classpath copy of the lwjgl its runtime classpath
+	// resolves at another version.
+	if len(g.Modules) != 4 {
 		t.Fatalf("modules %+v", g.Modules)
 	}
+	node(t, module(t, g, ":app#testRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
 	if m := module(t, g, ":"); m.Path != "." || len(m.Nodes) != 1 {
 		t.Errorf("root module %+v", m)
 	}
@@ -647,8 +663,22 @@ func TestGradleProducer(t *testing.T) {
 	if n := node(t, app, "org.lwjgl:lwjgl:jar:natives-linux:3.3.4"); n.Classifier != "natives-linux" || n.File == nil || n.File.Path != filepath.Join(r.m2, "lwjgl-3.3.4-natives-linux.jar") {
 		t.Errorf("classified node %+v", n)
 	}
-	node(t, app, "org.lwjgl:lwjgl:jar:3.3.4")
-	node(t, app, "com.example:bom:pom:1")
+	// runtimeClasspath's version wins; compile-only is provided and test-only is test.
+	for id, scope := range map[string]string{
+		"com.example:lib:jar:1.0.0":                     "compile",
+		"org.lwjgl:lwjgl:jar:3.3.4":                     "compile",
+		"org.lwjgl:lwjgl:jar:natives-linux:3.3.4":       "runtime",
+		"com.example:bom:pom:1":                         "runtime",
+		"jakarta.servlet:jakarta.servlet-api:jar:6.0.0": "provided",
+		"junit:junit:jar:4.13.2":                        "test",
+	} {
+		if n := node(t, app, id); n.Scope != scope {
+			t.Errorf("%s scope %q, want %q", id, n.Scope, scope)
+		}
+	}
+	if len(app.Nodes) != 7 {
+		t.Errorf("nodes %+v", app.Nodes)
+	}
 	edges := map[Edge]bool{}
 	for _, e := range app.Edges {
 		edges[e] = true
@@ -658,12 +688,17 @@ func TestGradleProducer(t *testing.T) {
 		{From: "com.example:lib:jar:1.0.0", To: "org.lwjgl:lwjgl:jar:3.3.4"},
 		{From: "com.example:lib:jar:1.0.0", To: "org.lwjgl:lwjgl:jar:natives-linux:3.3.4"},
 		{From: "com.example:app:jar:1.0.0", To: "com.example:bom:pom:1"},
+		{From: "com.example:app:jar:1.0.0", To: "jakarta.servlet:jakarta.servlet-api:jar:6.0.0"},
+		{From: "com.example:app:jar:1.0.0", To: "junit:junit:jar:4.13.2"},
+		// The test classpath's lwjgl 3.3.5 edges land on the runtime node.
+		{From: "com.example:app:jar:1.0.0", To: "org.lwjgl:lwjgl:jar:3.3.4"},
+		{From: "junit:junit:jar:4.13.2", To: "org.lwjgl:lwjgl:jar:3.3.4"},
 	} {
 		if !edges[e] {
 			t.Errorf("missing edge %+v", e)
 		}
 	}
-	if len(app.Edges) != 4 {
+	if len(app.Edges) != 8 {
 		t.Errorf("edges %+v", app.Edges)
 	}
 	argv := strings.Join(g.Commands[0].Argv, " ")
@@ -677,6 +712,78 @@ func TestGradleProducer(t *testing.T) {
 	if strings.Join(inputs, ",") != "app/build.gradle,build.gradle,gradle/libs.versions.toml,gradle/wrapper/gradle-wrapper.properties,lib/build.gradle,settings.gradle" {
 		t.Errorf("inputs %v", inputs)
 	}
+}
+
+// Beside runtimeClasspath, another runtime classpath folds in at test scope, so a copy only it
+// resolves is in the graph.
+func TestGradleOtherRuntimeClasspath(t *testing.T) {
+	lib := strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","other_runtime_classpaths":["integrationTestRuntimeClasspath","runtimeClasspath","testRuntimeClasspath"],
+"projects"`, 1)
+	lib = strings.TrimSuffix(lib, "}}") + `,
+"integrationTestRuntimeClasspath":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}},{"key":"junit:junit:4.13.2","id":{"group":"junit","name":"junit","version":"4.13.2"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.5"},{"from":"project :lib","to":"junit:junit:4.13.2"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"},{"component":"junit:junit:4.13.2","file":"@M2@/junit-4.13.2.jar"}]}}}`
+	r := newFakeGradle(t, "", map[string]string{"project_lib.json": lib})
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	m := module(t, g, ":lib")
+	if n := node(t, m, "junit:junit:jar:4.13.2"); n.Scope != "test" {
+		t.Errorf("junit scope %q, want test", n.Scope)
+	}
+	// runtimeClasspath's version wins the project.
+	if n := node(t, m, "org.lwjgl:lwjgl:jar:3.3.4"); n.Scope != "runtime" {
+		t.Errorf("lwjgl scope %q, want runtime", n.Scope)
+	}
+	if len(m.Nodes) != 3 {
+		t.Errorf("nodes %+v", m.Nodes)
+	}
+	// The other version is kept in the classpath's copy, beside the project's root.
+	c := module(t, g, ":lib#integrationTestRuntimeClasspath")
+	if c.CopyOf != ":lib" || c.Path != m.Path || c.Root != m.Root {
+		t.Errorf("copy at %s rooted %s, want %s rooted %s", c.Path, c.Root, m.Path, m.Root)
+	}
+	if n := node(t, c, "org.lwjgl:lwjgl:jar:3.3.5"); n.Scope != "test" || n.File == nil {
+		t.Errorf("copy lwjgl %+v, want test scope with its file", n)
+	}
+	if len(c.Nodes) != 2 || !reflect.DeepEqual(c.Edges, []Edge{{From: m.Root, To: "org.lwjgl:lwjgl:jar:3.3.5"}}) {
+		t.Errorf("copy nodes %+v edges %+v", c.Nodes, c.Edges)
+	}
+	if len(g.Modules) != 5 {
+		t.Errorf("modules %d, want the three projects and a copy each for :app and :lib", len(g.Modules))
+	}
+
+	// An earlier classpath holding the same version keeps it; the later one adds no copy.
+	withTest := func(v string) string {
+		return strings.TrimSuffix(lib, "}}") + strings.ReplaceAll(`,
+"testRuntimeClasspath":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:V","id":{"group":"org.lwjgl","name":"lwjgl","version":"V"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:V"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:V","file":"@M2@/lwjgl-V.jar"}]}}}`, "V", v)
+	}
+	r = newFakeGradle(t, "", map[string]string{"project_lib.json": withTest("3.3.5")})
+	if g, err = r.resolve(t, ToolGradle, Conditions{}); err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	node(t, module(t, g, ":lib#testRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
+	for _, m := range g.Modules {
+		if m.ID == ":lib#integrationTestRuntimeClasspath" {
+			t.Errorf("integrationTestRuntimeClasspath repeats the copy: %+v", m.Nodes)
+		}
+	}
+
+	// Two later classpaths at two other versions each keep their own.
+	r = newFakeGradle(t, "", map[string]string{"project_lib.json": withTest("3.3.6")})
+	if g, err = r.resolve(t, ToolGradle, Conditions{}); err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	node(t, module(t, g, ":lib#testRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.6")
+	node(t, module(t, g, ":lib#integrationTestRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
 }
 
 func TestGradleProducerFailures(t *testing.T) {
@@ -701,7 +808,14 @@ func TestGradleProducerFailures(t *testing.T) {
 		{name: "file dependency", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"files":[`, `"files":[{"component":"lib/local.jar","file":"@ROOT@/lib/local.jar"},`, 1)}, want: "tool_failed:graph"},
 		{name: "two files at one node", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"files":[`, `"files":[{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4-natives-linux.jar","name":"lwjgl-3.3.4.jar"},`, 1)}, want: "tool_failed:graph"},
 		{name: "build rooted elsewhere", edit: map[string]string{"project_.json": otherRoot(gradleRoot), "project_app.json": otherRoot(gradleApp), "project_lib.json": otherRoot(gradleLib)}, want: "tool_failed:graph"},
-		{name: "other runtime classpaths only", edit: map[string]string{"project_.json": strings.Replace(gradleRoot, `"has_runtime_classpath":false`, `"has_runtime_classpath":false,"other_runtime_classpaths":["debugRuntimeClasspath","testRuntimeClasspath"]`, 1)}, want: "tool_failed:graph"},
+		{name: "unresolved on the test classpath", edit: map[string]string{"project_app.json": strings.Replace(gradleApp, `"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5"`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not find corp:x:1."}],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5"`, 1)}, want: "tool_failed:resolve"},
+		{name: "file dependency on the compile classpath", edit: map[string]string{"project_app.json": strings.Replace(gradleApp, `"files":[{"component":"project :lib"`, `"files":[{"component":"lib/local.jar","file":"@ROOT@/lib/local.jar"},{"component":"project :lib"`, 1)}, want: "tool_failed:graph"},
+		{name: "other runtime classpath not written", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","other_runtime_classpaths":["integrationTestRuntimeClasspath","runtimeClasspath"],
+"projects"`, 1)}, want: "tool_failed:graph"},
+		{name: "other runtime classpaths only", edit: map[string]string{"project_.json": strings.Replace(gradleRoot, `"version":"unspecified",`, `"version":"unspecified","other_runtime_classpaths":["debugRuntimeClasspath","testRuntimeClasspath"],`, 1)}, want: "tool_failed:graph"},
 		{name: "included build", edit: map[string]string{"project_lib.json": strings.Replace(gradleLib, `"key":"project :lib","id":{"project":":lib","build":":"}},`, `"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"project :inc:x","id":{"project":":x","build":":inc"}},`, 1)}, want: "tool_failed:graph"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

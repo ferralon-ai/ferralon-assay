@@ -17,11 +17,14 @@ func TestBuildRanksActionableFindingsFirst(t *testing.T) {
 	// Intentionally added out of priority order; Build must sort them.
 	b := NewBuilder(Subject{Repo: "r", ResolvedCommit: "c"})
 	b.AddFinding(AdvisoryFinding{Advisory: Advisory{ID: "DISQ-1", Source: "osv"}, Verdict: VerdictDisqualified})
-	b.AddFinding(gradedCandidate("CAND-cfo", GradeControlFlowOnly, &Priority{EPSSScore: 0.10}))
-	b.AddFinding(gradedCandidate("CAND-kev", GradeControlFlowOnly, &Priority{KEVListed: true, EPSSScore: 0.01}))
-	b.AddFinding(gradedCandidate("CAND-tainted", GradeAttackerTainted, &Priority{EPSSScore: 0.20}))
+	b.AddFinding(gradedCandidate("CAND-cfo", GradeControlFlowOnly, epssPriority(0.10)))
+	b.AddFinding(gradedCandidate("CAND-kev", GradeControlFlowOnly, &Priority{
+		EPSSScore: 0.01, EPSSAsOf: "2026-10-19",
+		KEVListed: true, KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z",
+	}))
+	b.AddFinding(gradedCandidate("CAND-tainted", GradeAttackerTainted, epssPriority(0.20)))
 	b.AddFinding(AdvisoryFinding{Advisory: Advisory{ID: "NE-1", Source: "osv"}, Verdict: VerdictNotExploitable})
-	b.AddFinding(gradedCandidate("CAND-highepss", GradeControlFlowOnly, &Priority{EPSSScore: 0.90}))
+	b.AddFinding(gradedCandidate("CAND-highepss", GradeControlFlowOnly, epssPriority(0.90)))
 
 	got := b.Build().Advisories
 	want := []string{

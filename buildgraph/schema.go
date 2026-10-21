@@ -1,7 +1,7 @@
 // Package buildgraph produces and checks a JVM project's dependency graph as the project's own
 // build tool resolves it. The repository's Maven or Gradle runs with the job's environment and
 // JDK; the run conditions it is handed are recorded, never inferred. The result is an
-// assay.buildgraph/v1 document bound to the checkout by the sha256 of every build input the
+// assay.buildgraph/v2 document bound to the checkout by the sha256 of every build input the
 // tool read.
 package buildgraph
 
@@ -14,9 +14,13 @@ import (
 )
 
 // Schema is the only schema identifier this package writes or accepts.
-const Schema = "assay.buildgraph/v1"
+const Schema = "assay.buildgraph/v2"
 
-// Graph is one assay.buildgraph/v1 document.
+// schemaV1 is what v0.5.x's resolve-graph wrote: no classpath copies, and none of a Gradle
+// project's other *RuntimeClasspath configurations. Load rejects it with the fix in the log.
+const schemaV1 = "assay.buildgraph/v1"
+
+// Graph is one assay.buildgraph/v2 document.
 type Graph struct {
 	Schema     string     `json:"schema"`
 	Producer   Producer   `json:"producer"`
@@ -71,14 +75,30 @@ type Input struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Module is one Maven reactor module or Gradle project.
+// Module is one Maven reactor module or Gradle project, or a classpath copy of a Gradle project:
+// CopyOf the project's ID, ID "<project>#<classpath>", the project's Path and Root, holding the
+// components that classpath resolved at a version other than the one the project kept.
 type Module struct {
 	ID             string   `json:"id"`
+	CopyOf         string   `json:"copy_of,omitempty"`
 	Path           string   `json:"path"`
 	Root           string   `json:"root"`
 	ActiveProfiles []string `json:"active_profiles,omitempty"`
 	Nodes          []Node   `json:"nodes"`
 	Edges          []Edge   `json:"edges"`
+}
+
+// ClasspathCopyID is the ID of project's copy for classpath.
+func ClasspathCopyID(project, classpath string) string { return project + "#" + classpath }
+
+// Project returns the ID of the project m belongs to, and whether m is a classpath copy rather
+// than the project itself. A consumer counting projects or their directories skips the copies.
+// Gradle allows '#' in a project name, so only CopyOf marks a copy.
+func (m Module) Project() (id string, isCopy bool) {
+	if m.CopyOf != "" {
+		return m.CopyOf, true
+	}
+	return m.ID, false
 }
 
 // Node is one resolved component. Root is the module itself. File is absent for the module
@@ -132,6 +152,12 @@ func NodeID(group, artifact, typ, classifier, version string) string {
 	return group + ":" + artifact + ":" + typ + ":" + classifier + ":" + version
 }
 
+// Key is the node's coordinate without its version, group:artifact:type:classifier: a module
+// holds at most one node per key.
+func (n Node) Key() string {
+	return n.Group + ":" + n.Artifact + ":" + n.Type + ":" + n.Classifier
+}
+
 // InputsDigest is the sha256 over the inputs sorted by path, one "path\x00sha256\n" line each.
 func InputsDigest(inputs []Input) string {
 	sorted := append([]Input(nil), inputs...)
@@ -150,7 +176,12 @@ func (g *Graph) Normalize() {
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}
 	}
-	sort.Slice(g.Modules, func(i, j int) bool { return g.Modules[i].Path < g.Modules[j].Path })
+	sort.Slice(g.Modules, func(i, j int) bool {
+		if g.Modules[i].Path != g.Modules[j].Path {
+			return g.Modules[i].Path < g.Modules[j].Path
+		}
+		return g.Modules[i].ID < g.Modules[j].ID
+	})
 	for i := range g.Modules {
 		m := &g.Modules[i]
 		if m.Nodes == nil {
@@ -209,6 +240,18 @@ func (g *Graph) Validate() string {
 		for _, e := range m.Edges {
 			if !nodes[e.From] || !nodes[e.To] {
 				return "missing_node"
+			}
+		}
+	}
+	byID := make(map[string]Module, len(g.Modules))
+	for _, m := range g.Modules {
+		byID[m.ID] = m
+	}
+	for _, m := range g.Modules {
+		if id, isCopy := m.Project(); isCopy {
+			p, ok := byID[id]
+			if !ok || p.CopyOf != "" || p.Path != m.Path || p.Root != m.Root || !strings.HasPrefix(m.ID, id+"#") {
+				return "classpath_copy"
 			}
 		}
 	}

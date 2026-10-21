@@ -160,6 +160,11 @@ load(process.argv, 'json5');
 function load(s, n) { const J = { ...import(` + "`./${n}`" + `) }; return J; }
 load(process.argv, 'json5');
 `}, plugin.PartialReasonDynamicImportSpecifier},
+		{"dynamic import after a number ending in a dot", map[string]string{"app.js": `
+function load(s, n) { var x = 1.
+import(` + "`./${n}`" + `); return x; }
+load(process.argv, 'json5');
+`}, plugin.PartialReasonDynamicImportSpecifier},
 		{"native addon", map[string]string{"app.js": `
 const addon = require('./build/Release/x.node');
 function load(s) { return addon.parse(s); }

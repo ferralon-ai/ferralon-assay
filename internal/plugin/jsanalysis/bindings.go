@@ -143,10 +143,18 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 }
 
 // memberName reports whether the word at i is read as a property (`x.import`, `x?.export`),
-// not a keyword, so what follows it is still scanned. A spread (`...import(x)`) is not one.
+// not a keyword, so what follows it is still scanned. A spread (`...import(x)`) is not one,
+// nor a dot that may end a number (`1.` then a line break, where ASI makes import a keyword).
 func memberName(clean []rune, i int) bool {
 	b := skipSpaceBack(clean, i-1)
-	return b >= 0 && clean[b] == '.' && (b == 0 || clean[b-1] != '.')
+	if b < 0 || clean[b] != '.' || b > 0 && clean[b-1] == '.' {
+		return false
+	}
+	t := b
+	for t > 0 && isIdentPart(clean[t-1]) {
+		t--
+	}
+	return t == b || clean[t] < '0' || clean[t] > '9'
 }
 
 // importPair is one (local, imported) name pair collected while parsing an import clause

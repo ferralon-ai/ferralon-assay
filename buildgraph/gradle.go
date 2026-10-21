@@ -288,8 +288,9 @@ type gradleTranslated struct {
 
 // classpathCopies keeps what the fold into m drops: a component a later classpath resolved at a
 // version other than the one m kept. Each such classpath gets a copy module holding m's root and
-// those copies at that classpath's scope, so a version question sees every version the build
-// resolved. A copy an earlier module already holds is not repeated.
+// those copies at that classpath's scope, so a version question sees every version the classpaths
+// resolved for a component other than the project itself. A copy an earlier module already holds
+// is not repeated.
 func classpathCopies(m Module, cps []gradleTranslated, onCompile map[string]bool) []Module {
 	held := map[string]bool{}
 	for _, n := range m.Nodes {
@@ -303,7 +304,7 @@ func classpathCopies(m Module, cps []gradleTranslated, onCompile map[string]bool
 	}
 	var out []Module
 	for _, cp := range cps {
-		c := Module{ID: ClasspathCopyID(m.ID, cp.name), Path: m.Path, Root: m.Root, Nodes: []Node{root}}
+		c := Module{ID: ClasspathCopyID(m.ID, cp.name), CopyOf: m.ID, Path: m.Path, Root: m.Root, Nodes: []Node{root}}
 		in := map[string]bool{m.Root: true}
 		for _, n := range cp.nodes {
 			if held[n.ID] || n.Key() == root.Key() {

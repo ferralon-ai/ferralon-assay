@@ -72,10 +72,11 @@ type Input struct {
 }
 
 // Module is one Maven reactor module or Gradle project, or a classpath copy of a Gradle project:
-// ID "<project>#<classpath>", the project's Path and Root, holding the components that classpath
-// resolved at a version other than the one the project kept.
+// CopyOf the project's ID, ID "<project>#<classpath>", the project's Path and Root, holding the
+// components that classpath resolved at a version other than the one the project kept.
 type Module struct {
 	ID             string   `json:"id"`
+	CopyOf         string   `json:"copy_of,omitempty"`
 	Path           string   `json:"path"`
 	Root           string   `json:"root"`
 	ActiveProfiles []string `json:"active_profiles,omitempty"`
@@ -83,17 +84,15 @@ type Module struct {
 	Edges          []Edge   `json:"edges"`
 }
 
-// classpathSep separates a classpath copy's project ID from its classpath name.
-const classpathSep = "#"
-
 // ClasspathCopyID is the ID of project's copy for classpath.
-func ClasspathCopyID(project, classpath string) string { return project + classpathSep + classpath }
+func ClasspathCopyID(project, classpath string) string { return project + "#" + classpath }
 
 // Project returns the ID of the project m belongs to, and whether m is a classpath copy rather
 // than the project itself. A consumer counting projects or their directories skips the copies.
+// Gradle allows '#' in a project name, so only CopyOf marks a copy.
 func (m Module) Project() (id string, isCopy bool) {
-	if i := strings.Index(m.ID, classpathSep); i >= 0 {
-		return m.ID[:i], true
+	if m.CopyOf != "" {
+		return m.CopyOf, true
 	}
 	return m.ID, false
 }
@@ -246,7 +245,8 @@ func (g *Graph) Validate() string {
 	}
 	for _, m := range g.Modules {
 		if id, isCopy := m.Project(); isCopy {
-			if p, ok := byID[id]; !ok || p.Path != m.Path || p.Root != m.Root {
+			p, ok := byID[id]
+			if !ok || p.CopyOf != "" || p.Path != m.Path || p.Root != m.Root || !strings.HasPrefix(m.ID, id+"#") {
 				return "classpath_copy"
 			}
 		}

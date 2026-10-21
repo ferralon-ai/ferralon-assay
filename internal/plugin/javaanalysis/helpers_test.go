@@ -70,6 +70,7 @@ func classpathCopy(t *testing.T, project buildgraph.Module, cp string, deps ...g
 	t.Helper()
 	c := testModule(t, project.Path, strings.TrimPrefix(project.ID, "com.example:"), deps...)
 	c.ID = buildgraph.ClasspathCopyID(project.ID, cp)
+	c.CopyOf = project.ID
 	return c
 }
 

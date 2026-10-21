@@ -172,7 +172,7 @@ func TestGradleRoundTrip(t *testing.T) {
 				want["test"][k] = ""
 			}
 		}
-		got := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}}
+		got := map[string]map[string]string{"runtime": {}, "compile": {}, "provided": {}, "test": {}, "other": {}}
 		for _, n := range m.Nodes {
 			if n.ID != m.Root {
 				got[n.Scope][n.Group+":"+n.Artifact+":"+n.Version] = ""
@@ -183,7 +183,13 @@ func TestGradleRoundTrip(t *testing.T) {
 				t.Errorf("%s %s: producer %v\nreal dependencies %v", p, scope, keys(got[scope]), keys(want[scope]))
 			}
 		}
-		t.Logf("%s: %d compile, %d runtime, %d provided, %d test", p, len(got["compile"]), len(got["runtime"]), len(got["provided"]), len(got["test"]))
+		if _, ok := got["other"]["org.slf4j:slf4j-api:2.0.16"]; ok != (p == ":app") {
+			t.Errorf("%s: agent configuration at other scope = %v, producer %v", p, ok, keys(got["other"]))
+		}
+		if len(m.Unlisted) > 0 {
+			t.Errorf("%s: unlisted %v", p, m.Unlisted)
+		}
+		t.Logf("%s: %d compile, %d runtime, %d provided, %d test, %d other", p, len(got["compile"]), len(got["runtime"]), len(got["provided"]), len(got["test"]), len(got["other"]))
 	}
 }
 

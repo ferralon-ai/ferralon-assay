@@ -36,6 +36,7 @@ type gradleProject struct {
 	OtherRuntime []string                   `json:"other_runtime_classpaths"`
 	Projects     map[string]gradleCoord     `json:"projects"`
 	Classpaths   map[string]gradleClasspath `json:"classpaths"`
+	Extra        map[string]gradleClasspath `json:"extra_classpaths"`
 }
 
 // gradleClasspath is one configuration as Gradle resolved it.
@@ -44,6 +45,7 @@ type gradleClasspath struct {
 	Edges      []Edge                                `json:"edges"`
 	Unresolved []struct{ Requested, Failure string } `json:"unresolved"`
 	Files      []gradleFile                          `json:"files"`
+	Failure    string                                `json:"failure"`
 }
 
 // The classpaths the producer reads, in precedence order, and the scope each contributes.
@@ -221,30 +223,34 @@ func gradleModule(p gradleProject) ([]Module, error) {
 		if !ok {
 			continue
 		}
-		nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
+		t, err := gradleTranslate(p, name, cp, root)
 		if err != nil {
 			return nil, err
 		}
 		if name == gradleCompile {
-			for _, n := range nodes {
+			for _, n := range t.nodes {
 				onCompile[n.Key()] = true
 			}
 		}
-		var edges []Edge
-		for _, e := range cp.Edges {
-			from, to := ids[e.From], ids[e.To]
-			if len(from) == 0 || len(to) == 0 {
-				return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
-			}
-			for _, f := range from {
-				for _, t := range to {
-					if f != t {
-						edges = append(edges, Edge{From: f, To: t})
-					}
-				}
-			}
+		cps = append(cps, t)
+	}
+	// Every other configuration that declares a dependency folds in last, at ScopeOther: a
+	// distribution can copy one into what it ships. One that does not translate cleanly is
+	// recorded as unlisted rather than failing the graph.
+	extras := make([]string, 0, len(p.Extra))
+	for name := range p.Extra {
+		extras = append(extras, name)
+	}
+	sort.Strings(extras)
+	for _, name := range extras {
+		cp := p.Extra[name]
+		t, err := gradleTranslate(p, name, cp, root)
+		if cp.Failure != "" || err != nil {
+			m.Unlisted = append(m.Unlisted, "gradle configuration "+name)
+			continue
 		}
-		cps = append(cps, gradleTranslated{name: name, nodes: nodes, ids: ids, edges: edges})
+		t.extra = true
+		cps = append(cps, t)
 	}
 
 	kept := map[string]string{root.Key(): root.ID}
@@ -254,7 +260,7 @@ func gradleModule(p gradleProject) ([]Module, error) {
 				continue
 			}
 			kept[n.Key()] = n.ID
-			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			n.Scope = cp.scope(onCompile[n.Key()])
 			m.Nodes = append(m.Nodes, n)
 		}
 	}
@@ -278,12 +284,48 @@ func gradleModule(p gradleProject) ([]Module, error) {
 	return append([]Module{m}, classpathCopies(m, cps, onCompile)...), nil
 }
 
-// gradleTranslated is one classpath translated onto node IDs.
+// gradleTranslated is one classpath translated onto node IDs. extra marks a configuration that is
+// no classpath.
 type gradleTranslated struct {
 	name  string
+	extra bool
 	nodes []Node
 	ids   map[string][]string
 	edges []Edge
+}
+
+// scope is the scope of a node kept from t.
+func (t gradleTranslated) scope(onCompile bool) string {
+	if t.extra {
+		return ScopeOther
+	}
+	return gradleScope(t.name, onCompile)
+}
+
+// gradleTranslate translates one classpath's components and edges onto node IDs.
+func gradleTranslate(p gradleProject, name string, cp gradleClasspath, root Node) (gradleTranslated, error) {
+	if cp.Failure != "" {
+		return gradleTranslated{}, &Failure{Kind: KindToolFailed, Detail: stepResolve, Log: name + ": " + cp.Failure}
+	}
+	nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
+	if err != nil {
+		return gradleTranslated{}, err
+	}
+	var edges []Edge
+	for _, e := range cp.Edges {
+		from, to := ids[e.From], ids[e.To]
+		if len(from) == 0 || len(to) == 0 {
+			return gradleTranslated{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
+		}
+		for _, f := range from {
+			for _, t := range to {
+				if f != t {
+					edges = append(edges, Edge{From: f, To: t})
+				}
+			}
+		}
+	}
+	return gradleTranslated{name: name, nodes: nodes, ids: ids, edges: edges}, nil
 }
 
 // classpathCopies keeps what the fold into m drops: a component a later classpath resolved at a
@@ -312,7 +354,7 @@ func classpathCopies(m Module, cps []gradleTranslated, onCompile map[string]bool
 			}
 			held[n.ID] = true
 			in[n.ID] = true
-			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			n.Scope = cp.scope(onCompile[n.Key()])
 			c.Nodes = append(c.Nodes, n)
 		}
 		if len(c.Nodes) == 1 {

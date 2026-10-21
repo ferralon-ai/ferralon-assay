@@ -19,18 +19,32 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 	dep := func(v, scope string) graphDep {
 		return graphDep{group: "com.example.lib", artifact: "widget", version: v, scope: scope}
 	}
+	// reactor is a module app depending on its reactor sibling core, which a graph lists as a
+	// file-less node with the sibling's root ID.
+	reactor := func(t *testing.T) []buildgraph.Module {
+		app := testModule(t, "app", "app")
+		core := testModule(t, "core", "core")
+		app.Nodes = append(app.Nodes, buildgraph.Node{ID: core.Root, Group: "com.example", Artifact: "core", Version: "1", Type: "jar", Scope: "compile"})
+		app.Edges = append(app.Edges, buildgraph.Edge{From: app.Root, To: core.Root})
+		return []buildgraph.Module{app, core}
+	}
 	for _, tc := range []struct {
 		name         string
 		tool         string
-		files        map[string]string // written into the checkout
-		copies       [][]graphDep      // one per module
-		cpCopy       []graphDep        // the first module's integrationTestRuntimeClasspath copy
+		coordinate   string                                 // "" ⇒ widget
+		files        map[string]string                      // written into the checkout
+		copies       [][]graphDep                           // one per module
+		modules      func(t *testing.T) []buildgraph.Module // in place of copies
+		cpCopy       []graphDep                             // the first module's integrationTestRuntimeClasspath copy
+		unlisted     []string                               // on the first module
 		noGraph      bool
 		wantFound    bool
 		wantVersion  string // "" ⇒ unresolved
 		wantVersions []string
 		wantComplete bool
 		wantReason   string
+		// notExhaustive withholds Exhaustive and MatchesComplete on a complete graph.
+		notExhaustive bool
 	}{
 		{name: "one copy", tool: "maven", copies: [][]graphDep{{dep("1.3.9", "")}},
 			wantFound: true, wantVersion: "1.3.9", wantVersions: []string{"1.3.9"}, wantComplete: true},
@@ -58,6 +72,21 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 		{name: "not in the graph beside a gradle build", tool: "maven", files: map[string]string{"svc/build.gradle": "dependencies {}\n"},
 			copies: [][]graphDep{{}}, wantReason: PartialReasonOtherToolBuild},
 		{name: "no graph", noGraph: true, wantFound: true, wantReason: PartialReasonBuildGraphAbsent},
+		// A coordinate the build is, not one it resolves: first-party, never a known absence.
+		{name: "a reactor sibling", tool: "maven", coordinate: "com.example:core", modules: reactor, notExhaustive: true},
+		{name: "the project's own coordinate", tool: "gradle", coordinate: "com.example:a", copies: [][]graphDep{{dep("1.4.0", "")}}, notExhaustive: true},
+		{name: "the project's own coordinate in another case", tool: "gradle", coordinate: " Com.Example:A ", copies: [][]graphDep{{dep("1.4.0", "")}}, notExhaustive: true},
+		{name: "another case", tool: "maven", coordinate: "Com.Example.Lib:Widget", copies: [][]graphDep{{dep("1.3.9", "")}},
+			wantFound: true, wantVersion: "1.3.9", wantVersions: []string{"1.3.9"}, wantComplete: true},
+		// A configuration that is no classpath, such as an agent a distribution copies in.
+		{name: "a gradle extra-config dep is found", tool: "gradle", copies: [][]graphDep{{dep("1.4.0", buildgraph.ScopeOther)}},
+			wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, wantComplete: true},
+		// The build installs something the graph does not list: neither absence nor the copies
+		// are known.
+		{name: "a withheld maven build", tool: "maven", copies: [][]graphDep{{}}, unlisted: []string{"maven-dependency-plugin execution copy-agent"}, notExhaustive: true},
+		{name: "found in a withheld maven build", tool: "maven", copies: [][]graphDep{{dep("1.4.0", "")}}, unlisted: []string{"maven-dependency-plugin execution copy-agent"},
+			wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, notExhaustive: true},
+		{name: "a gradle configuration that did not resolve", tool: "gradle", copies: [][]graphDep{{}}, unlisted: []string{"gradle configuration drivers"}, notExhaustive: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -70,12 +99,20 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 				for i, deps := range tc.copies {
 					ms = append(ms, testModule(t, string(rune('a'+i)), string(rune('a'+i)), deps...))
 				}
+				if tc.modules != nil {
+					ms = tc.modules(t)
+				}
+				ms[0].Unlisted = tc.unlisted
 				if tc.cpCopy != nil {
 					ms = append(ms, classpathCopy(t, ms[0], "integrationTestRuntimeClasspath", tc.cpCopy...))
 				}
 				opts = append(opts, graphOption(t, tc.tool, ms...))
 			}
-			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: widget}, opts...)
+			coordinate := tc.coordinate
+			if coordinate == "" {
+				coordinate = widget
+			}
+			res, err := ResolveDependencyVersions(context.Background(), plugin.ResolveVersionsRequest{BuildDir: dir, Coordinate: coordinate}, opts...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,13 +126,13 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 			if !reflect.DeepEqual(versions, tc.wantVersions) {
 				t.Errorf("Matches = %v, want %v", versions, tc.wantVersions)
 			}
-			if tc.wantFound && res.MatchesComplete != (tc.wantReason == "") {
-				t.Errorf("MatchesComplete = %v, want %v", res.MatchesComplete, tc.wantReason == "")
+			if want := tc.wantReason == "" && !tc.notExhaustive; tc.wantFound && res.MatchesComplete != want {
+				t.Errorf("MatchesComplete = %v, want %v", res.MatchesComplete, want)
 			}
 			if tc.wantReason == "" != res.Partiality.Complete || (tc.wantReason != "" && !hasStr(res.Partiality.Reasons, tc.wantReason)) {
 				t.Errorf("Partiality = %+v, want reason %q", res.Partiality, tc.wantReason)
 			}
-			if want := tc.wantReason == ""; res.Exhaustive != want {
+			if want := tc.wantReason == "" && !tc.notExhaustive; res.Exhaustive != want {
 				t.Errorf("Exhaustive = %v, want %v", res.Exhaustive, want)
 			}
 		})

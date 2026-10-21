@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -111,6 +112,9 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 
 	modules, err := mavenModules(reactor, trees, profiles)
 	if err != nil {
+		return nil, err
+	}
+	if err := unlistedInPOM(modules, effective); err != nil {
 		return nil, err
 	}
 	if err := resolveMavenFiles(ctx, r, base, modules, effective); err != nil {
@@ -284,13 +288,59 @@ type xmlChildren struct {
 	} `xml:",any"`
 }
 
+func (c xmlChildren) has(local string) bool {
+	for _, e := range c.Any {
+		if e.XMLName.Local == local {
+			return true
+		}
+	}
+	return false
+}
+
+// unlistedInPOM records on each module the maven-dependency-plugin copy and unpack executions its
+// effective POM binds with artifactItems: they install artifacts dependency:tree never lists.
+func unlistedInPOM(modules []Module, effective []effectiveProject) error {
+	byCoord := map[string]*Module{}
+	for i := range modules {
+		for _, n := range modules[i].Nodes {
+			if n.ID == modules[i].Root {
+				byCoord[n.Group+":"+n.Artifact] = &modules[i]
+			}
+		}
+	}
+	for _, p := range effective {
+		for _, pl := range p.Build.Plugins.Plugin {
+			if pl.ArtifactID != "maven-dependency-plugin" {
+				continue
+			}
+			for _, ex := range pl.Executions.Execution {
+				if !slices.ContainsFunc(ex.Goals.Goal, func(g string) bool { g = strings.TrimSpace(g); return g == "copy" || g == "unpack" }) {
+					continue
+				}
+				if !ex.Configuration.has("artifactItems") && !pl.Configuration.has("artifactItems") {
+					continue
+				}
+				m := byCoord[p.GroupID+":"+p.ArtifactID]
+				if m == nil {
+					return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "effective POM of " + p.GroupID + ":" + p.ArtifactID + " matches no module"}
+				}
+				m.Unlisted = append(m.Unlisted, "maven-dependency-plugin execution "+ex.ID)
+			}
+		}
+	}
+	return nil
+}
+
 // effectivePlugin is a plugin's configuration as an effective POM gives it.
 type effectivePlugin struct {
 	ArtifactID    string      `xml:"artifactId"`
 	Configuration xmlChildren `xml:"configuration"`
 	Executions    struct {
 		Execution []struct {
-			ID            string      `xml:"id"`
+			ID    string `xml:"id"`
+			Goals struct {
+				Goal []string `xml:"goal"`
+			} `xml:"goals"`
 			Configuration xmlChildren `xml:"configuration"`
 		} `xml:"execution"`
 	} `xml:"executions"`

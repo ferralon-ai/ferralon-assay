@@ -86,6 +86,10 @@ type Module struct {
 	ActiveProfiles []string `json:"active_profiles,omitempty"`
 	Nodes          []Node   `json:"nodes"`
 	Edges          []Edge   `json:"edges"`
+	// Unlisted names what the module's build resolves or installs that Nodes does not list: a
+	// Gradle configuration that failed to resolve, a dependency-plugin execution's artifactItems.
+	// A coordinate's absence from such a graph is not its absence from the build.
+	Unlisted []string `json:"unlisted,omitempty"`
 }
 
 // ClasspathCopyID is the ID of project's copy for classpath.

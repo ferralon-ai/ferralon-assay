@@ -259,8 +259,11 @@ func TestResolveDependencySymbols_JarAbsentIsHonestPartiality(t *testing.T) {
 	const purl = "pkg:maven/com.example/vuln"
 	for _, tc := range []struct {
 		name        string
+		purl        string // "" ⇒ vuln's
 		otherTool   bool
 		inGraph     bool
+		goneJar     bool // the graph names a JAR no longer on disk
+		unlisted    bool // the graph's module installs something it does not list
 		wantRunWide []string
 		wantScoped  []plugin.ScopedReason
 	}{
@@ -268,6 +271,10 @@ func TestResolveDependencySymbols_JarAbsentIsHonestPartiality(t *testing.T) {
 			wantScoped: []plugin.ScopedReason{{Reason: javaanalysis.PartialReasonDependencyNotInBuild, Package: purl, Path: "com.example:vuln", Targets: []string{purl}}}},
 		{name: "absent beside a build of the other tool", otherTool: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
 		{name: "in the graph without a JAR", inGraph: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
+		{name: "in the graph with its JAR gone", goneJar: true, wantRunWide: []string{plugin.PartialReasonToolFailure}},
+		// The build's own module is first-party, not a dependency the build lacks.
+		{name: "the project's own coordinate", purl: "pkg:maven/com.example/app", wantRunWide: []string{partialReasonNoDependencyArtifact}},
+		{name: "absent from a build installing what its graph does not list", unlisted: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			build := t.TempDir()
@@ -280,11 +287,24 @@ func TestResolveDependencySymbols_JarAbsentIsHonestPartiality(t *testing.T) {
 			if tc.inGraph {
 				extra = append(extra, graphDep{group: "com.example", artifact: "vuln", version: "1.0.0", jar: filepath.Join(build, "vuln-1.0.0.pom")})
 			}
+			if tc.goneJar {
+				extra = append(extra, graphDep{group: "com.example", artifact: "vuln", version: "1.0.0", jar: filepath.Join(build, "vuln-1.0.0.jar")})
+			}
+			graph := cacheGraph(t, build, extra...)
+			if tc.unlisted {
+				m := graphModule(".", "app")
+				m.Unlisted = []string{"maven-dependency-plugin execution copy-agent"}
+				graph = graphOption(t, m)
+			}
+			p := tc.purl
+			if p == "" {
+				p = purl
+			}
 			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
 				BuildDir:        build,
-				PURL:            purl,
+				PURL:            p,
 				AdvisorySymbols: []string{"com.example.net.UrlFetcher.fetch"},
-			}, cacheGraph(t, build, extra...))
+			}, graph)
 			if err != nil {
 				t.Fatal(err)
 			}

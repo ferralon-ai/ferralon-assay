@@ -22,8 +22,12 @@ const (
 )
 
 // scopes are the scopes a non-root node may carry: Maven's, and the ones the Gradle producer folds
-// its classpaths into.
-var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true, "system": true, "test": true}
+// its classpaths into. ScopeOther is a dependency the build resolves on no classpath: one a
+// distribution copies in, or a tool's.
+var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true, "system": true, "test": true, ScopeOther: true}
+
+// ScopeOther is the scope of a node the build resolves on a configuration that is no classpath.
+const ScopeOther = "other"
 
 // Load reads the graph at file and checks it against the checkout at dir and the conditions the
 // scan states. On top of Validate it requires that:

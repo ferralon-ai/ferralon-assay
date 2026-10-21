@@ -11,6 +11,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
@@ -147,7 +148,9 @@ func TestResolveDependencySymbols_ClassAdvisoryExpandsToMethods(t *testing.T) {
 func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 	for _, tc := range []struct {
 		name                    string
+		purl                    string // "" ⇒ netkit's
 		jar, inGraph, otherTool bool
+		unlisted                bool // the graph's module installs something it does not list
 		wantReason              string
 		wantRunWide             []string
 		wantPath                string
@@ -160,19 +163,32 @@ func TestResolveDependencySymbols_ScopedMisses(t *testing.T) {
 			wantPath: "com.evil:netkit", wantTargets: []string{netkitPURL}},
 		{name: "not resolved beside a build of the other tool", jar: true, otherTool: true, wantReason: reasonNoDependencyArtifact,
 			wantRunWide: []string{reasonNoDependencyArtifact}, wantPath: "com.evil:netkit"},
+		{name: "not resolved by a build installing what its graph does not list", jar: true, unlisted: true, wantReason: reasonNoDependencyArtifact,
+			wantRunWide: []string{reasonNoDependencyArtifact}, wantPath: "com.evil:netkit"},
+		// The version lane matches either way, so the symbol lane must too.
+		{name: "another case", purl: "pkg:maven/com.Evil/NetKit@1.0.0", jar: true, inGraph: true},
+		{name: "a subpath", purl: "pkg:maven/com.evil/netkit@1.0.0#sub", jar: true, inGraph: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			build := buildNetkitFixture(t, !tc.jar)
 			graph := netkitGraph(t, build)
 			if !tc.inGraph {
-				graph = graphOption(t, "maven", testModule(t, ".", "app"))
+				m := testModule(t, ".", "app")
+				if tc.unlisted {
+					m.Unlisted = []string{"maven-dependency-plugin execution copy-agent"}
+				}
+				graph = graphOption(t, "maven", m)
 			}
 			if tc.otherTool {
 				if err := os.WriteFile(filepath.Join(build, "build.gradle"), []byte("plugins { id 'java' }\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			res := resolveUnder(t, build, netkitPURL, graph, "com.evil.netkit.UrlFetcher.fetch")
+			purl := tc.purl
+			if purl == "" {
+				purl = netkitPURL
+			}
+			res := resolveUnder(t, build, purl, graph, "com.evil.netkit.UrlFetcher.fetch")
 			if tc.wantReason == "" {
 				if !res.Partiality.Complete || len(res.Partiality.Scoped) != 0 || len(res.Resolved) != 1 {
 					t.Fatalf("want one resolved symbol and complete partiality, got %+v", res)
@@ -390,9 +406,9 @@ func TestCoordinateOfPURL(t *testing.T) {
 		{"pkg:maven/snakeyaml", "", "", false},
 		{"", "", "", false},
 	} {
-		c, v, ok := coordinateOfPURL(tc.purl)
+		c, v, ok := CoordinateOfPURL(tc.purl)
 		if c != tc.coord || v != tc.version || ok != tc.ok {
-			t.Errorf("coordinateOfPURL(%q) = %q, %q, %v", tc.purl, c, v, ok)
+			t.Errorf("CoordinateOfPURL(%q) = %q, %q, %v", tc.purl, c, v, ok)
 		}
 	}
 }
@@ -424,5 +440,27 @@ func writeJarEntries(t *testing.T, path string, entries map[string][]byte) {
 	}
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A reactor sibling is a module the build is, so the symbol lane never calls it absent.
+func TestResolveDependencySymbols_ReactorCoordinate(t *testing.T) {
+	build := buildNetkitFixture(t, false)
+	src := filepath.Join(build, "src", "main", "java", "com", "example", "core")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "Core.java"), []byte("package com.example.core;\n\npublic class Core {\n    public void run() {}\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := testModule(t, ".", "app")
+	core := testModule(t, ".", "core")
+	app.Nodes = append(app.Nodes, buildgraph.Node{ID: core.Root, Group: "com.example", Artifact: "core", Version: "1", Type: "jar", Scope: "compile"})
+	app.Edges = append(app.Edges, buildgraph.Edge{From: app.Root, To: core.Root})
+	res := resolveUnder(t, build, "pkg:maven/com.example/core", graphOption(t, "maven", app, core), "com.example.core.Core.run")
+	for _, sr := range res.Partiality.Scoped {
+		if sr.Reason == PartialReasonDependencyNotInBuild {
+			t.Fatalf("reactor sibling declared not in the build: %+v", res.Partiality)
+		}
 	}
 }

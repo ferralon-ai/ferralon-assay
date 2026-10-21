@@ -49,7 +49,17 @@ type depSymbolResolution struct {
 // advisory against the project itself, whose code is first-party source. Without a graph no
 // coordinate is known to be one.
 func isRootCoordinate(g *buildgraph.Graph, coordinate string) bool {
-	return g != nil && moduleCoordinates(g)[coordinate]
+	if g == nil {
+		return false
+	}
+	for _, m := range g.Modules {
+		for _, n := range m.Nodes {
+			if n.ID == m.Root && isCoordinate(n, coordinate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveDependencyJarSymbols resolves wanted inside the JAR(s) the build graph resolved for

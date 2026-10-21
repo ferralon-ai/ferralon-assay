@@ -167,3 +167,36 @@ func TestIntakeManifestMembership_PersistedFact(t *testing.T) {
 		})
 	}
 }
+
+// Membership through the real Java resolver and a complete Maven build graph: a dependency the
+// build resolves is present, one it lacks is a known absence, and a reactor module's own
+// coordinate is never declared absent.
+func TestResolveManifestMembership_JavaBuildGraph(t *testing.T) {
+	build := writeTreeFixture(t, map[string]string{"pom.xml": "<project/>\n", "mb/pom.xml": "<project/>\n"})
+	p := realResolverPlugin{lang: "java", java: mavenGraph(t,
+		graphModule{path: ".", deps: map[string]string{"org.yaml:snakeyaml": "2.0"}},
+		graphModule{path: "mb"},
+	)}
+	tests := []struct {
+		name, coordinate string
+		wantPresent      bool
+		wantKnown        bool
+	}{
+		{"resolved by the build", "org.yaml:snakeyaml", true, true},
+		{"not resolved by the build", "com.fasterxml.jackson.core:jackson-databind", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: tt.coordinate}})
+			if m == nil || m.Present != tt.wantPresent || m.Known != tt.wantKnown {
+				t.Fatalf("membership = %+v, want present=%v known=%v", m, tt.wantPresent, tt.wantKnown)
+			}
+		})
+	}
+	t.Run("a reactor module", func(t *testing.T) {
+		m := resolveManifestMembership(context.Background(), p, build, "java", []PackageKey{{Ecosystem: "maven", Name: "com.example:mb"}})
+		if m != nil && !m.Present && m.Known {
+			t.Fatalf("reactor module declared absent: %+v", m)
+		}
+	})
+}

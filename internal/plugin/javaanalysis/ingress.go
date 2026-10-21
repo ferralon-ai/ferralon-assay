@@ -120,10 +120,11 @@ func ingressPartiality(prog *program) plugin.Partiality {
 // matched against the first-party source.
 func ResolveDependencySymbols(ctx context.Context, req plugin.ResolveSymbolsRequest, opts ...Option) (plugin.SymbolResolutionResult, error) {
 	g := BuildGraph(opts...)
-	if coordinate, version, ok := coordinateOfPURL(req.PURL); ok && !isRootCoordinate(g, coordinate) {
+	if coordinate, version, ok := CoordinateOfPURL(req.PURL); ok && !isRootCoordinate(g, coordinate) {
 		dep := resolveDependencyJarSymbols(g, req.BuildDir, coordinate, version, req.AdvisorySymbols)
 		part := dep.part
-		if multi, why := multipleProjects(req.BuildDir, opts...); multi {
+		// An absent package's reason is bounded to its own advisory; nothing about it is run-wide.
+		if multi, why := multipleProjects(req.BuildDir, opts...); multi && !notInBuild(part) {
 			part = withMultipleProjects(part, why)
 		}
 		return plugin.SymbolResolutionResult{Partiality: part, Resolved: dep.resolved, Origins: dep.origins, Matched: dep.matched}, nil

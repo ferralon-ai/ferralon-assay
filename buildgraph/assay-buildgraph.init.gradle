@@ -1,7 +1,9 @@
 // Registers assayBuildGraph on every project. The task writes the project's runtimeClasspath,
 // compileClasspath and testRuntimeClasspath, and beside runtimeClasspath every other resolvable
 // *RuntimeClasspath, as Gradle resolved each: components, the edges between them, and each
-// artifact's file. Everything the action reads is captured while the task
+// artifact's file. Beside runtimeClasspath it also resolves every other resolvable configuration
+// that declares a dependency (an agent or a driver a distribution copies in, say), each leniently:
+// one that fails records its failure rather than failing the task. Everything the action reads is captured while the task
 // is configured, so it never reaches back into the project at execution time.
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
@@ -57,7 +59,11 @@ allprojects { p ->
         if (p.configurations.findByName('runtimeClasspath') != null) {
             names += otherRuntime.findAll { !names.contains(it) }
         }
-        def classpaths = names.collectEntries { name ->
+        def extraNames = []
+        if (p.configurations.findByName('runtimeClasspath') != null) {
+            extraNames = p.configurations.findAll { it.canBeResolved && !names.contains(it.name) && !otherRuntime.contains(it.name) && !it.allDependencies.isEmpty() }.collect { it.name }.sort()
+        }
+        def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {
                 return [:]
@@ -67,6 +73,8 @@ allprojects { p ->
                 artifacts: cfg.incoming.artifactView { lenient(false) }.artifacts.resolvedArtifacts,
             ]]
         }
+        def classpaths = names.collectEntries(capture)
+        def extras = extraNames.collectEntries(capture)
         def projects = [:]
         p.rootProject.allprojects { q ->
             projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]
@@ -86,7 +94,7 @@ allprojects { p ->
                 }
                 return [other: c.displayName]
             }
-            doc.classpaths = classpaths.collectEntries { name, cp ->
+            def walk = { cp ->
                 def components = []
                 def edges = []
                 def unresolved = []
@@ -116,7 +124,15 @@ allprojects { p ->
                         files << [component: a.id.componentIdentifier.displayName, file: a.file.absolutePath, name: fileName]
                     }
                 }
-                [(name): [components: components, edges: edges, unresolved: unresolved, files: files]]
+                [components: components, edges: edges, unresolved: unresolved, files: files]
+            }
+            doc.classpaths = classpaths.collectEntries { name, cp -> [(name): walk(cp)] }
+            doc.extra_classpaths = extras.collectEntries { name, cp ->
+                try {
+                    [(name): walk(cp)]
+                } catch (Exception e) {
+                    [(name): [failure: failureText(e)]]
+                }
             }
             out.text = JsonOutput.toJson(doc)
         }

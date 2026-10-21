@@ -47,6 +47,8 @@ func TestClassifyPartialityReason(t *testing.T) {
 		plugin.PartialReasonExcludedFiles:     report.PartialityDidNotRun,
 		plugin.PartialReasonUnsearchedMethods: report.PartialityDidNotRun,
 		plugin.PartialReasonLibraryEscape:     report.PartialityDidNotRun,
+		// The JVM lanes' known absence holds its own row: intake, not the verdict, settles it.
+		"dependency_not_in_build": report.PartialityDidNotRun,
 	} {
 		if got := report.ClassifyPartialityReason(reason); got != want {
 			t.Errorf("ClassifyPartialityReason(%q) = %q, want %q", reason, got, want)

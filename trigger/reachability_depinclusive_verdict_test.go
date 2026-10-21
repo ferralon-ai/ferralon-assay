@@ -113,7 +113,10 @@ func TestFinding_EmptyGraphYieldsUndetermined(t *testing.T) {
 // graph that has edges. The footprint is built by the real stage, so a footprint that stops
 // harvesting the call graph fails here. A coordinate a complete build graph lacks is bounded to
 // that package: it leaves the row for a package the build does ship alone, while the same
-// coordinate missing beside an incomplete graph still holds it.
+// coordinate missing beside an incomplete graph still holds it. The single-PURL symbol stage only
+// emits its own package's reason, so the "another coordinate" rows are guards on the bounding
+// rule. On the package's own row the absence holds it: intake's membership check is what settles
+// that package, so a not-in-build reason reaching the verdict means intake did not.
 func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 	const sink = "jvmref com/example/net/UrlKit#get(Ljava/lang/String;)V"
 	unbounded := plugin.Partiality{Scoped: []plugin.ScopedReason{{Reason: plugin.PartialReasonToolFailure, Package: "pkg:maven/com.example/urlkit", Path: "lib"}}}
@@ -126,9 +129,11 @@ func TestFinding_CallGraphDidNotRunHoldsTheRow(t *testing.T) {
 		{"an inherent limit on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch), plugin.Partiality{}, report.VerdictNotExploitable},
 		{"a did-not-run reason on the graph", plugin.Partial(plugin.PartialReasonDynamicDispatch, plugin.PartialReasonToolFailure), plugin.Partiality{}, report.VerdictUndetermined},
 		{"an unbounded scoped did-not-run limit on the graph", unbounded, plugin.Partiality{}, report.VerdictUndetermined},
-		{"another coordinate absent from a complete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
+		{"another coordinate's reason: absent from a complete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
 			javaanalysis.NotInBuild("com.evil:netkit"), report.VerdictNotExploitable},
-		{"another coordinate absent beside an incomplete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
+		{"the row's own package absent from a complete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
+			javaanalysis.NotInBuild("com.example:urlkit"), report.VerdictUndetermined},
+		{"another coordinate's reason: absent beside an incomplete build graph", plugin.Partial(plugin.PartialReasonDynamicDispatch),
 			plugin.Partiality{Reasons: []string{"no_dependency_artifact"}, Scoped: []plugin.ScopedReason{{Reason: "no_dependency_artifact", Package: "pkg:maven/com.evil/netkit", Path: "com.evil:netkit"}}},
 			report.VerdictUndetermined},
 	}

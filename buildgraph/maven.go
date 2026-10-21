@@ -161,11 +161,12 @@ func resolveMaven(ctx context.Context, r *runner, c Conditions) (*Graph, error) 
 var treeShapingParams = map[string]bool{"verbose": true, "scope": true, "includes": true, "excludes": true}
 
 // treeShaping finds one of treeShapingParams set as a property on a command or JVM option line,
-// in any of Maven's spellings: -Dk, -D k, --define k, --define=k.
-var treeShaping = regexp.MustCompile(`(?:^|\s)(?:-D\s*|--define[=\s]\s*)(verbose|scope|includes|excludes)(?:[=\s]|$)`)
+// in any of Maven's spellings: -Dk, -D k, --define k, --define=k, quoted or not.
+var treeShaping = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)(verbose|scope|includes|excludes)(?:[=\s]|$)`)
 
-// treeShapingEnv are the variables whose options reach Maven's command line or its JVM.
-var treeShapingEnv = map[string]bool{"MAVEN_ARGS": true, "MAVEN_OPTS": true, "JAVA_TOOL_OPTIONS": true, "JDK_JAVA_OPTIONS": true}
+// treeShapingEnv are the variables whose options reach Maven's command line or its JVM. The Maven
+// wrapper's script passes MAVEN_CONFIG on Maven's command line.
+var treeShapingEnv = map[string]bool{"MAVEN_ARGS": true, "MAVEN_CONFIG": true, "MAVEN_OPTS": true, "JAVA_TOOL_OPTIONS": true, "JDK_JAVA_OPTIONS": true}
 
 // treeShapingOverride fails a resolution whose stated properties, Maven or JVM options, or .mvn
 // configuration would set one of treeShapingParams: the tree would then not be the build's graph.
@@ -234,9 +235,9 @@ func treeShapingInPOM(effective []effectiveProject) error {
 	return nil
 }
 
-// toolchainConfig is the part of a plugin's configuration that selects a JDK toolchain: the
-// maven-toolchains-plugin's <toolchains><jdk> or, for its select-jdk-toolchain goal, <version>, or a
-// toolchain-aware plugin's own <jdkToolchain>.
+// toolchainConfig is the part of a plugin's configuration that selects a JDK toolchain: any
+// plugin's <toolchains><jdk>, the maven-toolchains-plugin's <version> for its select-jdk-toolchain
+// goal, or a toolchain-aware plugin's own <jdkToolchain>.
 type toolchainConfig struct {
 	Version    string `xml:"version"`
 	Toolchains struct {
@@ -254,7 +255,7 @@ type toolchainConfig struct {
 const toolchainUnstated = "unstated"
 
 // toolchainVersion finds toolchain.jdk.version set as a property on a command or JVM option line.
-var toolchainVersion = regexp.MustCompile(`(?:^|\s)(?:-D\s*|--define[=\s]\s*)toolchain\.jdk\.version(?:[=\s]|$)`)
+var toolchainVersion = regexp.MustCompile(`(?:^|[\s'"])(?:-D\s*|--define[=\s]\s*)toolchain\.jdk\.version(?:[=\s]|$)`)
 
 // toolchainVersionOverride is the toolchain.jdk.version set outside the POM, which
 // select-jdk-toolchain reads over the POM's property: the stated value, or "" when Maven or JVM

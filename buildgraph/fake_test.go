@@ -463,6 +463,8 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "maven.config excludes", repo: map[string]string{".mvn/maven.config": "-ntp\n-Dexcludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "MAVEN_ARGS -D with a space", env: []string{"MAVEN_ARGS=-D verbose=true"}, want: "tool_failed:conditions"},
 		{name: "JAVA_TOOL_OPTIONS --define=", env: []string{"JAVA_TOOL_OPTIONS=--define=scope=compile"}, want: "tool_failed:conditions"},
+		{name: "MAVEN_CONFIG verbose", env: []string{"MAVEN_CONFIG=-Dverbose"}, want: "tool_failed:conditions"},
+		{name: "JDK_JAVA_OPTIONS quoted scope", env: []string{`JDK_JAVA_OPTIONS="-Dscope=compile"`}, want: "tool_failed:conditions"},
 		{name: "jvm.config includes", repo: map[string]string{".mvn/jvm.config": "-Xmx1g -Dincludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "POM property scope", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <properties><scope>compile</scope></properties>", 1)}, want: "tool_failed:conditions"},
 		{name: "dependency-plugin default-cli excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>default-cli</id><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
@@ -991,6 +993,7 @@ func TestJDKToolchains(t *testing.T) {
 			plugin                        string // "" is maven-toolchains-plugin
 			stated                        string // toolchain.jdk.version among the stated properties
 			config                        string // .mvn/maven.config
+			jvm                           string // .mvn/jvm.config
 			env                           string // a variable of Maven's environment
 			want                          []string
 		}{
@@ -1004,6 +1007,14 @@ func TestJDKToolchains(t *testing.T) {
 			{name: "stated property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", stated: "17", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "maven.config property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", config: "-ntp\n-Dtoolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
 			{name: "MAVEN_OPTS property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Xmx1g -Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "plugin-wide over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide over a stated property", stated: "21", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "MAVEN_CONFIG property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_CONFIG=-Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_ARGS --define= over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_ARGS=--define=toolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "JDK_JAVA_OPTIONS quoted over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: `JDK_JAVA_OPTIONS="-Dtoolchain.jdk.version=17"`, goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS without a value over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "jvm.config -D with a space over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", jvm: "-Xmx1g -D toolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another property's name", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version.x=17", goal: "select-jdk-toolchain", want: []string{"21"}},
 			{name: "execution over a maven.config property", config: "-Dtoolchain.jdk.version=21\n", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
 			{name: "another plugin's toolchains", plugin: "toolchains-maven-plugin", wide: "<toolchains><jdk><version>17</version></jdk></toolchains>", goal: "toolchain", want: []string{"17"}},
 		} {
@@ -1014,9 +1025,12 @@ func TestJDKToolchains(t *testing.T) {
       <configuration>`+tc.wide+`</configuration>
       <executions><execution><id>jdk</id><goals><goal>`+tc.goal+`</goal></goals><configuration>`+tc.exec+`</configuration></execution></executions>
     </plugin></plugins></build>`, 1)
-				var repo map[string]string
+				repo := map[string]string{}
 				if tc.config != "" {
-					repo = map[string]string{".mvn/maven.config": tc.config}
+					repo[".mvn/maven.config"] = tc.config
+				}
+				if tc.jvm != "" {
+					repo[".mvn/jvm.config"] = tc.jvm
 				}
 				c := Conditions{JDK: "21"}
 				if tc.stated != "" {

@@ -206,10 +206,14 @@ func searchSink(engine *depreach.Engine, mains, frameworks []classfile.MethodRef
 }
 
 // concreteMethods returns the set of method refs (MethodRef.String()) that have a body in the
-// loaded bytecode: not abstract, not native.
+// loaded bytecode: not abstract, not native, and not on a copy of a class the JVM loads only
+// from the JDK.
 func concreteMethods(classes []classfile.Class) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range classes {
+		if depreach.BootOnly(c.Name) {
+			continue
+		}
 		for _, m := range c.Methods {
 			if !m.Abstract && !m.Native {
 				out[m.Ref.String()] = true

@@ -127,13 +127,17 @@ var gradleActionOrigins = []string{
 // gradleResolution is one resolution the root build made, as the init script's listener
 // recorded it.
 type gradleResolution struct {
-	Path      string `json:"path"`
-	Script    bool   `json:"script"` // a project's build script classpath
-	Failure   string `json:"failure"`
-	Artifacts []struct {
-		File    string `json:"file"`
-		Project bool   `json:"project"`
-	} `json:"artifacts"`
+	Path      string           `json:"path"`
+	Script    bool             `json:"script"` // a project's build script classpath
+	Failure   string           `json:"failure"`
+	Artifacts []gradleResolved `json:"artifacts"`
+}
+
+// gradleResolved is one file a resolution resolved.
+type gradleResolved struct {
+	File    string `json:"file"`
+	Project bool   `json:"project"` // a project's
+	Module  bool   `json:"module"`  // a repository module's
 }
 
 // gradleIncomplete lists what keeps g from being Complete: a Gradle build file no project reads;
@@ -141,10 +145,12 @@ type gradleResolution struct {
 // depends on (beside a run alias) or that a task finalizes, an action added from outside the
 // listed packages, or an input file from outside the build that the graph does not hold; and a
 // resolution (a detached configuration, say) that resolved a file the graph does not hold. A
-// build script's own classpath is build logic, a POM file carries no code, a project's build
-// directory holds what the build made from its own sources (a sibling's classes, say) outside any
-// user home or file repository, and Gradle's transforms cache holds what it derived from an
-// artifact some resolution resolved (the Kotlin compiler's classpath snapshots).
+// build script's own classpath is build logic, a POM file carries no code, a file that is not a
+// repository module's and sits in a project's build directory, outside any user home or file
+// repository, is what the build made from its own sources (a sibling's classes, say), and
+// Gradle's transforms cache holds what it derived from an artifact some resolution resolved (the
+// Kotlin compiler's classpath snapshots). A repository module's file is never the build's own,
+// wherever the repository placed it.
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
@@ -252,7 +258,7 @@ func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]st
 			continue
 		}
 		for _, a := range r.Artifacts {
-			if !a.Project && !strings.HasSuffix(a.File, ".pom") && !files[a.File] && !built(a.File) {
+			if !a.Project && !strings.HasSuffix(a.File, ".pom") && !files[a.File] && (a.Module || !built(a.File)) {
 				reasons = append(reasons, "resolution of "+r.Path+" resolved "+a.File+", which no collected configuration lists")
 			}
 		}

@@ -521,8 +521,10 @@ func TestGradleComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		append     map[string]string
-		homeInside bool   // GRADLE_USER_HOME inside the checkout, as CI caches set it
-		want       string // a substring of every reason expected; empty means Complete
+		prepend    map[string]string // text to put first, for blocks that must precede the rest
+		links      map[string]string // symbolic links to make, path to target; $ROOT is the checkout, $OUT a directory outside it
+		homeInside bool              // GRADLE_USER_HOME inside the checkout, as CI caches set it
+		want       string            // a substring of every reason expected; empty means Complete
 		check      func(t *testing.T, g *Graph)
 	}{
 		{name: "fixture as is"},
@@ -710,6 +712,85 @@ func TestGradleComplete(t *testing.T) {
 			want: "agent-1.0.jar, outside the build",
 		},
 		{
+			// The repository's URL is outside the build directory; only its artifact URL is under it.
+			name: "detached configuration resolved from a Maven artifact URL under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('m2meta'); artifactUrls file('build/arts') } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/m2meta/com/acme/agent/1.0/agent-1.0.pom":     agentPOM,
+				"app/build/arts/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "Zip of a file under a Maven artifact URL under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('m2meta'); artifactUrls file('build/arts') } }\n" +
+					"tasks.register('z', Zip) { from 'build/arts/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/arts/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a build script repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "include 'bsr'\n",
+				"bsr/build.gradle": "buildscript { repositories { maven { url = file('build/bsm2') } } }\napply plugin: 'base'\n" +
+					"tasks.register('z', Zip) { from 'build/bsm2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"bsr/build/bsm2/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a settings dependency repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "dependencyResolutionManagement { repositories { maven { url = file('build/m2s') } } }\n",
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/m2s/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/m2s/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a plugin repository under the build directory",
+			append: map[string]string{
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/pm2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/pm2/x.txt": "x",
+			},
+			prepend: map[string]string{"settings.gradle": "pluginManagement { repositories { maven { url = file('build/pm2') }; gradlePluginPortal() } }\n"},
+			want:    "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a settings script repository under the build directory",
+			append: map[string]string{
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/sb2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/sb2/x.txt": "x",
+			},
+			prepend: map[string]string{"settings.gradle": "buildscript { repositories { maven { url = file('build/sb2') } } }\n"},
+			want:    "x.txt, outside the build",
+		},
+		{
+			// The repository is named through a link outside the checkout to a directory in the build
+			// directory.
+			name: "Zip of a file in a linked file repository under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('$OUT/m2link') } }\n" +
+					"tasks.register('z', Zip) { from 'build/real/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/real/x.txt": "x",
+			},
+			links: map[string]string{"$OUT/m2link": "$ROOT/app/build/real"},
+			want:  "x.txt, outside the build",
+		},
+		{
+			name:   "Ivy repository with no URL",
+			append: map[string]string{"app/build.gradle": "repositories { ivy { name = 'patterns'; artifactPattern '/opt/ivy/[module]-[revision].[ext]' } }\n"},
+			want:   "project :app: Ivy repository patterns has no URL to place the files it resolves by",
+		},
+		{
+			name:   "every task configured as it is added",
+			append: map[string]string{"app/build.gradle": "tasks.all { }\n"},
+			want:   "assayBuildGraph was configured before the projects were evaluated",
+		},
+		{
 			name:   "flat directory in the checkout nothing unlisted resolves from",
 			append: map[string]string{"app/build.gradle": "repositories { flatDir { dirs 'libs' } }\n", "app/libs/README": "jars"},
 		},
@@ -721,7 +802,9 @@ func TestGradleComplete(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := copyFixture(t, "gradle-multi")
+			expand := strings.NewReplacer("$ROOT", dir, "$OUT", t.TempDir()).Replace
 			for name, text := range tc.append {
+				text = expand(text)
 				p := filepath.Join(dir, name)
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 					t.Fatal(err)
@@ -735,6 +818,21 @@ func TestGradleComplete(t *testing.T) {
 					err = cerr
 				}
 				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, text := range tc.prepend {
+				p := filepath.Join(dir, name)
+				b, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, append([]byte(text), b...), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, target := range tc.links {
+				if err := os.Symlink(expand(target), expand(name)); err != nil {
 					t.Fatal(err)
 				}
 			}

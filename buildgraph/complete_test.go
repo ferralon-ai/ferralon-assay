@@ -27,12 +27,12 @@ func TestGradleIncomplete(t *testing.T) {
 	resolution := func(path string, files ...string) gradleResolution {
 		r := gradleResolution{Path: path}
 		for _, f := range files {
-			r.Artifacts = append(r.Artifacts, struct {
-				File    string `json:"file"`
-				Project bool   `json:"project"`
-			}{File: f})
+			r.Artifacts = append(r.Artifacts, gradleResolved{File: f})
 		}
 		return r
+	}
+	module := func(path, file string) gradleResolution {
+		return gradleResolution{Path: path, Artifacts: []gradleResolved{{File: file, Module: true}}}
 	}
 	for _, tc := range []struct {
 		name        string
@@ -71,10 +71,7 @@ func TestGradleIncomplete(t *testing.T) {
 			return r
 		}()}},
 		{name: "project configuration named classpath", resolved: []gradleResolution{resolution(":app:classpath", "/cache/agent-1.0.jar")}, want: "resolved /cache/agent-1.0.jar"},
-		{name: "project artifact", resolved: []gradleResolution{{Path: ":app:runtimeClasspath", Artifacts: []struct {
-			File    string `json:"file"`
-			Project bool   `json:"project"`
-		}{{File: "/repo/lib/build/libs/lib.jar", Project: true}}}}},
+		{name: "project artifact", resolved: []gradleResolution{{Path: ":app:runtimeClasspath", Artifacts: []gradleResolved{{File: "/repo/lib/build/libs/lib.jar", Project: true}}}}},
 		{name: "detached resolution of a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
 		{name: "detached resolution beside a project's build output", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/libs/agent.jar")}, want: "app/libs/agent.jar, which no collected configuration lists"},
 		{name: "build directory at the checkout root", buildDir: "$ROOT", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
@@ -83,6 +80,8 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "resolution under a build directory beside a user home inside it", buildDir: "$ROOT/app/build", userHome: "$ROOT/app/build/gh", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
 		{name: "resolution under a file repository inside a build directory", repoRoots: []string{"$ROOT/app/build/m2"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/m2/com/example/agent/1.0/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
 		{name: "resolution under a flat directory inside another project's build directory", repoRoots: []string{"$ROOT/build/flat"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/build/flat/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
+		{name: "repository module under a build directory with no file repository recorded", resolved: []gradleResolution{module(":kt:detachedConfiguration1", "$ROOT/app/build/m2/com/example/agent/1.0/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
+		{name: "repository module the graph holds", resolved: []gradleResolution{module(":kt:detachedConfiguration1", jar)}},
 		{name: "resolution under a build directory beside a file repository inside it", repoRoots: []string{"$ROOT/app/build/m2"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
 		{name: "Ivy repository with no URL", opaque: []string{"ivy"}, want: "project :app: Ivy repository ivy has no URL to place the files it resolves by"},
 		{name: "build directory outside the checkout", buildDir: "/repo/app/build", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/build/classes/java/main")}, want: "resolved /repo/app/build/classes/java/main"},

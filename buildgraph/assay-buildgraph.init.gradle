@@ -17,6 +17,7 @@ import org.gradle.api.artifacts.component.ProjectComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
 import org.gradle.api.artifacts.repositories.IvyArtifactRepository
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
 import org.gradle.api.artifacts.repositories.UrlArtifactRepository
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
@@ -83,7 +84,10 @@ if (gradle.parent == null) {
         void afterResolve(ResolvableDependencies d) {
             def doc = [path: d.path, script: scriptResolutions.contains(d)]
             def files = { set ->
-                set.collect { a -> [file: a.file.absolutePath, project: a.id.componentIdentifier instanceof ProjectComponentIdentifier] }
+                set.collect { a ->
+                    def c = a.id.componentIdentifier
+                    [file: a.file.absolutePath, project: c instanceof ProjectComponentIdentifier, module: c instanceof ModuleComponentIdentifier]
+                }
             }
             try {
                 doc.artifacts = files(d.artifacts.artifacts)
@@ -155,23 +159,25 @@ def actionOrigin = { a ->
     x.getClass().name
 }
 
-// The repositories the settings declare for every project, read once the settings are evaluated.
+// The repositories the settings declare: for every project, for plugins, and for the settings
+// script's own classpath, read once the settings are evaluated.
 def settingsRepositories = []
 gradle.settingsEvaluated { s ->
     if (s.hasProperty('dependencyResolutionManagement')) {
-        settingsRepositories = s.dependencyResolutionManagement.repositories
+        settingsRepositories += s.dependencyResolutionManagement.repositories.toList()
     }
+    settingsRepositories += s.pluginManagement.repositories.toList() + s.buildscript.repositories.toList()
 }
 
 // foreignRoots are the directories p's resolutions fetch files into or from: the Gradle user home
 // and the root of every file repository p, its build script or the settings declare (mavenLocal,
-// a file: URL, a flatDir), each as given and canonical. A file under one was fetched, not made,
-// however the paths nest. opaque names an Ivy repository with no URL, whose patterns alone say
-// where its files are.
+// a file: URL, a Maven repository's file artifact URLs, a flatDir), each as given and canonical.
+// A file under one was fetched, not made, however the paths nest. opaque names an Ivy repository
+// with no URL, whose patterns alone say where its files are.
 def foreignRoots = { p ->
     def dirs = [p.gradle.gradleUserHomeDir]
     def opaque = []
-    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories.toList()).each { r ->
+    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories).each { r ->
         if (r instanceof FlatDirectoryArtifactRepository) {
             dirs.addAll(r.dirs)
         } else if (r instanceof UrlArtifactRepository) {
@@ -181,6 +187,9 @@ def foreignRoots = { p ->
                 }
             } else if (r.url.scheme == 'file') {
                 dirs << new File(r.url)
+            }
+            if (r instanceof MavenArtifactRepository) {
+                dirs.addAll(r.artifactUrls.findAll { it.scheme == 'file' }.collect { new File(it) })
             }
         }
     }
@@ -221,6 +230,11 @@ def observeTasks = { p, List<String> foreign ->
     }
     tasks
 }
+
+// A build script that configures every task as it is added (tasks.all) configures this one
+// before the rest of the script declares its repositories, tasks and configurations.
+def evaluated = false
+gradle.projectsEvaluated { evaluated = true }
 
 allprojects { p ->
     p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
@@ -281,6 +295,9 @@ allprojects { p ->
         }
         def repos = foreignRoots(p)
         def tasks = observeTasks(p, repos.roots)
+        if (!evaluated) {
+            tasks << [path: p.path, failure: 'assayBuildGraph was configured before the projects were evaluated']
+        }
         def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {

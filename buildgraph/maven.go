@@ -3,6 +3,7 @@ package buildgraph
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -225,8 +226,10 @@ func treeShapingInPOM(effective []effectiveProject) error {
 }
 
 // toolchainConfig is the part of a plugin's configuration that selects a JDK toolchain: the
-// maven-toolchains-plugin's <toolchains><jdk>, or a toolchain-aware plugin's own <jdkToolchain>.
+// maven-toolchains-plugin's <toolchains><jdk> or, for its select-jdk-toolchain goal, <version>, or a
+// toolchain-aware plugin's own <jdkToolchain>.
 type toolchainConfig struct {
+	Version    string `xml:"version"`
 	Toolchains struct {
 		JDK []struct {
 			Version string `xml:"version"`
@@ -248,16 +251,34 @@ func mavenToolchains(effective []effectiveProject) (map[string][]string, error) 
 	for _, p := range effective {
 		key := p.GroupID + ":" + p.ArtifactID
 		for _, pl := range p.Build.Plugins.Plugin {
-			configs := []xmlChildren{pl.Configuration}
-			for _, ex := range pl.Executions.Execution {
-				configs = append(configs, ex.Configuration)
-			}
-			for _, c := range configs {
+			decode := func(c xmlChildren) (toolchainConfig, error) {
 				var tc toolchainConfig
 				if err := xml.Unmarshal([]byte("<configuration>"+c.Inner+"</configuration>"), &tc); err != nil {
-					return nil, &Failure{Kind: KindToolFailed, Detail: stepEffectivePOM, Log: key + " " + pl.ArtifactID + " configuration: " + err.Error()}
+					return tc, &Failure{Kind: KindToolFailed, Detail: stepEffectivePOM, Log: key + " " + pl.ArtifactID + " configuration: " + err.Error()}
 				}
-				var versions []string
+				return tc, nil
+			}
+			wide, err := decode(pl.Configuration)
+			if err != nil {
+				return nil, err
+			}
+			tcs := []toolchainConfig{wide}
+			var versions []string
+			for _, ex := range pl.Executions.Execution {
+				tc, err := decode(ex.Configuration)
+				if err != nil {
+					return nil, err
+				}
+				tcs = append(tcs, tc)
+				// select-jdk-toolchain takes its version from the execution, the plugin, or the
+				// toolchain.jdk.version property. Stated in none of them, it may come from the command
+				// line, so it is unstated.
+				if pl.ArtifactID == "maven-toolchains-plugin" && slices.Contains(ex.Goals.Goal, "select-jdk-toolchain") {
+					v := cmp.Or(strings.TrimSpace(tc.Version), strings.TrimSpace(wide.Version), property(p.Properties, "toolchain.jdk.version"))
+					versions = append(versions, v)
+				}
+			}
+			for _, tc := range tcs {
 				if pl.ArtifactID == "maven-toolchains-plugin" {
 					for _, j := range tc.Toolchains.JDK {
 						versions = append(versions, j.Version)
@@ -266,18 +287,37 @@ func mavenToolchains(effective []effectiveProject) (map[string][]string, error) 
 				if tc.JDKToolchain != nil {
 					versions = append(versions, tc.JDKToolchain.Version)
 				}
-				for _, v := range versions {
-					if v = strings.TrimSpace(v); v == "" {
-						v = toolchainUnstated
-					}
-					if !slices.Contains(out[key], v) {
-						out[key] = append(out[key], v)
-					}
+			}
+			for _, v := range versions {
+				if v = strings.TrimSpace(v); v == "" {
+					v = toolchainUnstated
+				}
+				if !slices.Contains(out[key], v) {
+					out[key] = append(out[key], v)
 				}
 			}
 		}
 	}
 	return out, nil
+}
+
+// property is the value of a project property, or "" when the project does not set it.
+func property(props xmlChildren, name string) string {
+	var ps struct {
+		Any []struct {
+			XMLName xml.Name
+			Value   string `xml:",chardata"`
+		} `xml:",any"`
+	}
+	if xml.Unmarshal([]byte("<properties>"+props.Inner+"</properties>"), &ps) != nil {
+		return ""
+	}
+	for _, e := range ps.Any {
+		if e.XMLName.Local == name {
+			return strings.TrimSpace(e.Value)
+		}
+	}
+	return ""
 }
 
 // readOutput parses a step's output file; a missing or unparseable file fails that step.
@@ -356,7 +396,10 @@ type effectivePlugin struct {
 	Configuration xmlChildren `xml:"configuration"`
 	Executions    struct {
 		Execution []struct {
-			ID            string      `xml:"id"`
+			ID    string `xml:"id"`
+			Goals struct {
+				Goal []string `xml:"goal"`
+			} `xml:"goals"`
 			Configuration xmlChildren `xml:"configuration"`
 		} `xml:"execution"`
 	} `xml:"executions"`

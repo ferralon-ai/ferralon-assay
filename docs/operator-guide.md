@@ -195,8 +195,9 @@ undecided until you state the selection.
 
 The Java version you state is also the JDK your program runs on. It must be the same major version
 as the JVM that runs the build, or the run fails. When your program runs on another JDK than the build,
-including a runtime image newer than the build JDK, stating that JDK correctly is yours: the scan
-checks it against the build's JVM and the build's toolchains, never against the image you deploy.
+including a runtime image newer than the build JDK, leave the version unstated. Don't state the build's
+JDK in its place: the scan checks the statement against the build's JVM and toolchains, never against
+the image you deploy, so a wrong statement goes unnoticed.
 Bytecode reachability uses its table of the JDK's own methods only when the stated JDK is the release
 that table describes, so on any other release, or none, more methods count as possible entry points.
 The scan does the same for the whole build when a module's Maven or Gradle toolchain selects a JDK

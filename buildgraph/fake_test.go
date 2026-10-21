@@ -887,6 +887,38 @@ func TestJDKToolchains(t *testing.T) {
 			}
 		}
 	})
+	// maven-toolchains-plugin 3.2's select-jdk-toolchain goal states its version as a top-level
+	// parameter, or through the toolchain.jdk.version property.
+	t.Run("maven select-jdk-toolchain", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, props, wide, exec, goal string
+			want                          []string
+		}{
+			{name: "execution version", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide version", wide: "<version>[17,18)</version>", goal: "select-jdk-toolchain", want: []string{"[17,18)"}},
+			{name: "execution over plugin-wide", wide: "<version>21</version>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "property", props: "<properties><toolchain.jdk.version>17</toolchain.jdk.version></properties>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated nowhere in the POM", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another goal", exec: "<version>17</version>", goal: "display-discovered-jdk-toolchains"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>"+tc.props+`
+    <build><plugins><plugin>
+      <artifactId>maven-toolchains-plugin</artifactId>
+      <configuration>`+tc.wide+`</configuration>
+      <executions><execution><id>jdk</id><goals><goal>`+tc.goal+`</goal></goals><configuration>`+tc.exec+`</configuration></execution></executions>
+    </plugin></plugins></build>`, 1)
+				r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+				g, err := r.resolve(t, ToolMaven, Conditions{JDK: "21"})
+				if err != nil {
+					t.Fatalf("resolve: %v", cause(err))
+				}
+				if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, tc.want) {
+					t.Errorf("module-a toolchains %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
 	t.Run("gradle", func(t *testing.T) {
 		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17","jdk_toolchain_known":true,`, 1)
 		r := newFakeGradle(t, "", map[string]string{"project_app.json": app})

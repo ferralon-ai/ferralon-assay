@@ -351,7 +351,8 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 }
 
 // The graph records the JDK a project's toolchain selects, set through the java extension or
-// Kotlin's jvmToolchain, and none for a project that runs on the build's own JVM. Gradle resolves
+// Kotlin's jvmToolchain, and none for a project that runs on the build's own JVM. A project with an
+// Android plugin is never read. Gradle resolves
 // a JVM project's classpaths only with its toolchain installed, so the rows select the JDK the
 // image has; RuntimeJDK's comparison is TestRuntimeJDK's.
 func TestGradleJDKToolchainRoundTrip(t *testing.T) {
@@ -369,6 +370,12 @@ func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 	}
 	appendFile("app/build.gradle", "\njava { toolchain { languageVersion = JavaLanguageVersion.of(21) } }\n")
 	appendFile("kt/build.gradle.kts", "\nkotlin { jvmToolchain(21) }\n")
+	// A plugin class under com.android stands in for the Android Gradle plugin, which needs an SDK.
+	writeFiles(t, dir, map[string]string{
+		"buildSrc/build.gradle": "plugins { id 'groovy-gradle-plugin' }\n",
+		"buildSrc/src/main/groovy/com/android/fixture/AndroidLike.groovy": "package com.android.fixture\nimport org.gradle.api.*\nclass AndroidLike implements Plugin<Project> { void apply(Project p) {} }\n",
+	})
+	appendFile("lib/build.gradle", "\napply plugin: com.android.fixture.AndroidLike\n")
 	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
 	if err != nil {
 		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
@@ -379,8 +386,8 @@ func TestGradleJDKToolchainRoundTrip(t *testing.T) {
 		}
 	}
 	for _, m := range g.Modules {
-		if !m.JDKToolchainsKnown {
-			t.Errorf("%s toolchains unknown", m.ID)
+		if want := !strings.HasPrefix(m.ID, ":lib"); m.JDKToolchainsKnown != want {
+			t.Errorf("%s toolchains known %t, want %t", m.ID, m.JDKToolchainsKnown, want)
 		}
 	}
 }

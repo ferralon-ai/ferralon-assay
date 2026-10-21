@@ -640,6 +640,21 @@ type IntelProvenance struct {
 	// (a bundle file, or a manifest published without the block). It is reported as the producer
 	// wrote it and is not checked against CorpusPolicy or CorpusDigest.
 	CorpusManifest *CorpusManifestProvenance `json:"corpus_manifest,omitempty"`
+	// CorpusSigner is the signer the corpus release was verified against before the pass read it:
+	// the Action's bundle route checks the release's bundles.json with cosign for this exact
+	// certificate identity and OIDC issuer, then pins the bundle to that bundles.json. Nil when no
+	// signature was verified for the corpus the pass read (no corpus, a corpus directory, or a
+	// bundle handed over without one). It records what was verified, not who should have signed.
+	CorpusSigner *CorpusSigner `json:"corpus_signer,omitempty"`
+}
+
+// CorpusSigner names the keyless signer a corpus release's signature verified against. Both fields
+// are always set on a non-nil value.
+type CorpusSigner struct {
+	// Identity is the signing certificate's identity (its SAN), e.g. a service account email.
+	Identity string `json:"identity"`
+	// Issuer is the OIDC issuer that certified Identity.
+	Issuer string `json:"issuer"`
 }
 
 // CorpusManifestProvenance mirrors a policy manifest's `provenance` block. It is audit metadata

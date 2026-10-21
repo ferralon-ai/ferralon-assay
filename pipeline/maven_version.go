@@ -8,6 +8,7 @@
 // disqualification decision. It returns ok=false on ANY input outside the modelled grammar so
 // the predicate fails OPEN (inv.5) — an exotic version never yields a confident, possibly-wrong
 // ordering that could fabricate a not-affected.
+
 package pipeline
 
 import (

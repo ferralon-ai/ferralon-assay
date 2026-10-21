@@ -7,7 +7,7 @@ import (
 )
 
 // Ref keys a cache lookup: the normalized PURL and the algorithm-prefixed integrity
-// digest of the selected artifact (both plain strings — the PLAN-000
+// digest of the selected artifact (both plain strings — the
 // DependencyNode.PURL / DependencyArtifact.Digest shapes). Ref owns its fields; it
 // deliberately does NOT embed a plugin type, so this package needs no plugin import.
 type Ref struct {
@@ -15,8 +15,8 @@ type Ref struct {
 	Digest string // "sha256:<hex>" — the load-bearing integrity anchor
 }
 
-// ErrDeclaredAbsent is the first-class "nothing has acquired this artifact" state — the
-// honest Phase-1 answer, NOT a failure. A lane's indexer branches on it to a
+// ErrDeclaredAbsent is the first-class "nothing has acquired this artifact" state,
+// NOT a failure. A lane's indexer branches on it to a
 // declared-partial result (mirrors plugin.Unsupported()). Do NOT overload
 // artifact.ErrNotFound: absent is a stage state, not a miss.
 var ErrDeclaredAbsent = errors.New("artifactcache: artifact declared absent (no acquisition in this phase)")
@@ -24,8 +24,8 @@ var ErrDeclaredAbsent = errors.New("artifactcache: artifact declared absent (no 
 // Store is a content-addressed, read-through view of locally-cached dependency
 // artifacts. It is ACQUISITION-AGNOSTIC: Lookup never blocks on the network and never
 // touches a credential — it returns ErrDeclaredAbsent on a miss. Network acquisition and
-// the customer registry credential are a separate seam that lands in PLAN-200 (see
-// threatmodel.md). This keeps the Phase-0 contract a pure leaf.
+// the customer registry credential are the separate seam in artifactcache/acquire (see
+// threatmodel.md). This keeps the Store contract a pure leaf.
 type Store interface {
 	// Lookup returns an inert read-only Handle to the local bytes for ref, whose
 	// content MUST match ref.Digest (the digest IS the integrity check — a cache

@@ -21,7 +21,8 @@ import (
 //
 //   - G1: the advisory was admitted on a package whose installed version resolved.
 //   - G2 arm A: every advisory symbol resolved to code inside that package, and the lane searched
-//     every such sink from its entry points.
+//     every such sink from its entry points. It grounds only on a vetted symbol set (vettedSymbols);
+//     an unvetted one leaves the advisory undetermined unless arm B grounds it.
 //   - G2 arm B: the lane refuted that package on positive evidence (ReachabilityResult.Refutation).
 //
 // Both arms speak for the admitted package only, so neither grounds an advisory that also names
@@ -44,17 +45,21 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 		return "", report.ReasonVulnerableSymbolUnresolved, false
 	}
 
+	unvetted := false
 	if len(symbols) > 0 {
 		res, err := pipeline.VulnerableSymbols(store, assessmentID)
 		absent := targetConditionalAbsent(symbols, pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)
 		if err == nil && searchedInPackage(symbols, absent, res, reach.Searched, admitted, root) {
-			if len(absent) == 0 {
+			if !vettedSymbols(store, assessmentID) {
+				unvetted = true
+			} else if len(absent) == 0 {
 				return fmt.Sprintf("no path from any entry point reaches %s in %s",
 					strings.Join(symbols, ", "), label), "", true
+			} else {
+				present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
+				return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
+					strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
 			}
-			present := slices.DeleteFunc(slices.Clone(symbols), func(s string) bool { return slices.Contains(absent, s) })
-			return fmt.Sprintf("no path from any entry point reaches %s in %s, whose build target does not define %s",
-				strings.Join(present, ", "), label, strings.Join(absent, ", ")), "", true
 		}
 	}
 	// package_not_loaded speaks for one package, so it grounds only an advisory whose record lists
@@ -68,37 +73,72 @@ func notExploitableGrounds(store artifact.Store, assessmentID string, pkg *repor
 			return fmt.Sprintf("%s: %s (%s)", label, r.Detail, r.Basis), "", true
 		}
 	}
+	if unvetted {
+		return "", report.ReasonAdvisorySymbolsUnvetted, false
+	}
 	if len(symbols) == 0 {
 		return "", report.ReasonAdvisorySymbolAbsent, false
 	}
 	return "", report.ReasonVulnerableSymbolUnresolved, false
 }
 
+// vettedSymbols reports whether the advisory's symbol set is complete enough for an absence of the
+// listed symbols to ground not_exploitable: no path reaching them (arm A), or no module declaring
+// them (outsideBuildGrounds). An osv-declared or curated set is; so is an untagged set the built-in
+// table answered, whose marker S1 sets from where the record came from, never from the record. A
+// diff-lexed set is a candidate list lexed from the fix, which can miss the vulnerable function; a
+// cna-declared set's completeness has not been measured; and an untagged corpus set, or a tag this
+// version does not know, says nothing about how the set was obtained. A record's own trust_tier
+// does not vouch for its symbol set.
+func vettedSymbols(store artifact.Store, assessmentID string) bool {
+	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
+	if err != nil || len(arts) == 0 {
+		return false
+	}
+	var adv struct {
+		SymbolProvenance string `json:"symbol_provenance"`
+		BuiltIn          bool   `json:"built_in"`
+	}
+	if err := json.Unmarshal(arts[0].Payload, &adv); err != nil {
+		return false
+	}
+	switch adv.SymbolProvenance {
+	case "osv-declared", "curated":
+		return true
+	case "":
+		return adv.BuiltIn
+	default:
+		return false
+	}
+}
+
 // outsideBuildGrounds grounds an advisory on a Go package that no module of the build holds, when
 // it resolved no package to assess. The advisory's code is absent from the build only if no module
 // carries it under another path, as a renamed fork would, so it grounds only when the lane read the
 // source of every module in the build's complete module list and found no declaration of an
-// advisory symbol. It returns the NE detail, or false when any of that is not shown: no module
+// advisory symbol. A fork is found only through the listed symbols, so the set must be vetted
+// (vettedSymbols). It returns the NE detail, or false when any of that is not shown: no module
 // list, no symbols, an advisory naming more than one package, a module the lane could not read, or
-// a module that declares a symbol.
-func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (string, bool) {
+// a module that declares a symbol. When everything else is shown but the set is unvetted, reason is
+// advisory_symbols_unvetted; otherwise it is "".
+func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.Package, mods goModules) (detail, reason string, ok bool) {
 	symbols := pipeline.AdvisorySymbols(store, assessmentID)
 	purls := pipeline.AdvisoryPackagePURLs(store, assessmentID)
 	if pkg != nil || mods == nil || len(symbols) == 0 || len(purls) == 0 {
-		return "", false
+		return "", "", false
 	}
 	key, ok := purlKey(purls[0])
 	if !ok || !outsideBuild(key, mods) {
-		return "", false
+		return "", "", false
 	}
 	for _, p := range purls[1:] {
 		if k, ok := purlKey(p); !ok || k != key {
-			return "", false
+			return "", "", false
 		}
 	}
 	res, err := pipeline.VulnerableSymbols(store, assessmentID)
 	if err != nil || res.ModuleSearch == nil || len(res.ModuleSearch.Declaring) > 0 {
-		return "", false
+		return "", "", false
 	}
 	searched := make(map[string]bool, len(res.ModuleSearch.Searched))
 	for _, m := range res.ModuleSearch.Searched {
@@ -106,11 +146,14 @@ func outsideBuildGrounds(store artifact.Store, assessmentID string, pkg *report.
 	}
 	for m := range mods {
 		if !searched[m] {
-			return "", false
+			return "", "", false
 		}
 	}
+	if !vettedSymbols(store, assessmentID) {
+		return "", report.ReasonAdvisorySymbolsUnvetted, false
+	}
 	return fmt.Sprintf("no module in the build holds %s, and none of the build's %d modules declares %s",
-		key.name, len(mods), strings.Join(symbols, ", ")), true
+		key.name, len(mods), strings.Join(symbols, ", ")), "", true
 }
 
 // namesOtherPackage reports whether the advisory names a package other than the admitted one that

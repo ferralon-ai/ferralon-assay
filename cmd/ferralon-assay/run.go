@@ -40,6 +40,11 @@ const (
 	// envAdvisoryCorpusPolicy declares the advisory policy the corpus was selected by — see
 	// advisoryCorpusPolicy. Declaring one is what makes the corpus define the work set.
 	envAdvisoryCorpusPolicy = brand.EnvPrefix + "_ADVISORY_CORPUS_POLICY"
+	// envAdvisoryCorpusSignerIdentity and envAdvisoryCorpusSignerIssuer carry the signer the
+	// Action's bundle route verified the corpus release against — see advisoryCorpusSigner. Env
+	// only: they report a check made before the scanner ran, not a knob.
+	envAdvisoryCorpusSignerIdentity = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_IDENTITY"
+	envAdvisoryCorpusSignerIssuer   = brand.EnvPrefix + "_ADVISORY_CORPUS_SIGNER_ISSUER"
 	// envOSVWorkSet is the second channel for the OSV work-set widening (see osvWorkSetEnabled).
 	// The widening is off by default, so this is normally an opt-IN; it also carries an explicit
 	// off for an operator whose orchestrator would otherwise turn it on.
@@ -52,8 +57,8 @@ const (
 	envSubjectMavenProfiles = brand.EnvPrefix + "_SUBJECT_MAVEN_PROFILES"
 )
 
-// envTrustObservedGo carries the action's `trust-observed-go` input: the caller's assertion that the
-// Go installed when the Action started is the toolchain the SCANNED repository builds with. True in a
+// envTrustObservedGo carries the caller's assertion, set in the env of the step that runs the Action,
+// that the Go installed when the Action started is the toolchain the SCANNED repository builds with. True in a
 // same-job setup that ran actions/setup-go (or otherwise provisioned its build toolchain) ahead of
 // the scan; false in a dedicated scan workflow, where the observed Go is the hosted runner image's
 // and says nothing about the subject. Brand-derived for the same reason as
@@ -458,6 +463,7 @@ type runFlags struct {
 	resolvedSource   pipeline.AdvisorySource // the chain the pass resolves facts through
 	corpusReader     pipeline.AdvisorySource // the configured corpus's own reader; nil when none
 	resolvedPolicy   string                  // the declared advisory policy id; "" when none
+	resolvedSigner   *report.CorpusSigner    // the verified corpus signer; nil when none
 }
 
 // osvWorkSetDefault is whether a scan-path run (baseline / pr-inherit) widens its work set by
@@ -512,7 +518,7 @@ func registerRunFlags(fs *flag.FlagSet) *runFlags {
 		// repository's real dependencies. OPT-IN — see osvWorkSetDefault for why, and
 		// envOSVWorkSet for the second channel that switches it on.
 		osvWorkSet: fs.Bool("osv-work-set", osvWorkSetDefault, "query OSV.dev over the repository's dependencies to widen the advisory work set beyond the built-in language set, unless -advisory-corpus-policy defines the work set (off by default: it sends this repository's dependency coordinates to a third party); overrides "+envOSVWorkSet),
-		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: resolved from the CI runner, then the target's go.mod directives)"),
+		subjectGo:  fs.String("subject-go-version", "", "the Go toolchain version the SCANNED repository builds with, e.g. go1.21.3 — an exact statement, not the scanner's own toolchain; overrides "+envSubjectGoVersion+" (default: the target's go.mod directives; an observed CI toolchain counts only when "+envCIGoVersion+" is set and "+envTrustObservedGo+"=true); pr-inherit and cve-watch only"),
 
 		// subjectJava decides Maven <jdk> profile activation; a caller statement, never looked up.
 		subjectJava: fs.String("subject-java-version", "", "the java.version of the JVM that runs the SCANNED repository's Maven build (what `mvn -v` reports, e.g. 17.0.12 or 1.8.0_382; not the compile target or a toolchains JDK), used to decide Maven profiles activated by <jdk>; overrides "+envSubjectJavaVersion+" (default: none, and such profiles are reported as undecided)"),
@@ -636,12 +642,17 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.resolvedSource = pipeline.NewTableSource()
 	f.corpusReader = nil
 	f.resolvedPolicy = ""
+	f.resolvedSigner = nil
 
 	required, err := f.advisoryCorpusRequired()
 	if err != nil {
 		return nil, err
 	}
 	policy, err := f.advisoryCorpusPolicy()
+	if err != nil {
+		return nil, err
+	}
+	signer, err := advisoryCorpusSigner()
 	if err != nil {
 		return nil, err
 	}
@@ -685,7 +696,32 @@ func (f *runFlags) advisoryCorpusOption() (pipeline.AssessOption, error) {
 	f.resolvedSource = chain
 	f.corpusReader = src
 	f.resolvedPolicy = policy
+	f.resolvedSigner = signer
 	return pipeline.WithAdvisorySource(chain), nil
+}
+
+// advisoryCorpusSigner returns the signer the corpus release was verified against, from
+// envAdvisoryCorpusSignerIdentity and envAdvisoryCorpusSignerIssuer, or nil when neither is set.
+//
+// action.yml sets the pair only from the bundle step's outputs, which scripts/fetch-corpus-bundle.sh
+// writes only after cosign verified the release's bundles.json for exactly that identity and issuer
+// and the bundle passed the digest chain. So a non-nil value is what was verified, never the
+// corpus-signer-* inputs echoed back; a route that verified nothing leaves both unset and the Report
+// carries no signer at all, rather than an empty one.
+//
+// Exactly one of the two set is an ERROR: a signer is an identity AS CERTIFIED BY an issuer, and
+// recording half of it would claim a verification that cannot have happened.
+func advisoryCorpusSigner() (*report.CorpusSigner, error) {
+	id := os.Getenv(envAdvisoryCorpusSignerIdentity)
+	issuer := os.Getenv(envAdvisoryCorpusSignerIssuer)
+	switch {
+	case id == "" && issuer == "":
+		return nil, nil
+	case id == "" || issuer == "":
+		return nil, fmt.Errorf("%s and %s must be set together (got identity %q, issuer %q): refusing to record half of a verified corpus signer",
+			envAdvisoryCorpusSignerIdentity, envAdvisoryCorpusSignerIssuer, id, issuer)
+	}
+	return &report.CorpusSigner{Identity: id, Issuer: issuer}, nil
 }
 
 // corpusSourceFor picks the reader for a resolved -advisory-corpus path. The path names one of two
@@ -801,6 +837,10 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 		}
 	}
 	p.CorpusPolicy = f.resolvedPolicy
+	if f.resolvedCorpusOK && f.resolvedSigner != nil {
+		signer := *f.resolvedSigner
+		p.CorpusSigner = &signer
+	}
 	return p
 }
 
@@ -810,13 +850,13 @@ func (f *runFlags) intelProvenance(ws workSet) report.IntelProvenance {
 //
 // The DECLARED value follows this CLI's usual flag > env precedence (-subject-go-version, then
 // envSubjectGoVersion). The OBSERVED value is env-only (envCIGoVersion) on purpose: it
-// is a measurement of the CI runner taken by the Action's pre-setup-go step, not a knob a human
+// is a measurement of the CI runner's installed Go that the caller supplies, not a knob a human
 // sets, and giving it a flag would invite passing the scanner's own toolchain as if it were the
 // subject's. Neither value is validated here — an unorderable version resolves nothing in the
 // pipeline rather than failing the scan.
 //
 // The observation's TRUST is env-only for the same reason and read from the same channel as the
-// measurement it qualifies (envTrustObservedGo, the Action's trust-observed-go input). It fails closed exactly
+// measurement it qualifies (envTrustObservedGo, the caller-set env var). It fails closed exactly
 // like FERRALON_LINK_TO_CONSOLE: anything but an explicit true leaves the observation out of
 // resolution, so a typo degrades to the go.mod floors rather than to a stronger claim than the
 // operator asserted.

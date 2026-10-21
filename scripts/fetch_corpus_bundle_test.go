@@ -7,9 +7,12 @@ package scripts
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +26,10 @@ const (
 	fakeRepo   = "acme/corpus"
 	fakeTag    = "corpus-0123456789ab"
 	fakePolicy = "published-7d"
+
+	fakeSignerID     = "publisher@acme.iam.example.com"
+	fakeSignerIssuer = "https://accounts.example.com"
+	fakeSigstore     = `{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`
 )
 
 func sha(b []byte) string {
@@ -40,8 +47,12 @@ type fakeCorpus struct {
 	policyID        string
 	assetName       string
 	omitPolicy      bool // bundles.json lists no bundle for the policy (manifest-only)
-	gzDigest        func(real string) string
-	manifestDigest  func(real string) string
+	omitSigstore    bool // the release carries no bundles.json.sigstore.json
+	// looseGit writes the bare repository's tag and commit as loose objects instead of running git,
+	// which keeps a case that needs only `git ls-remote` fast.
+	looseGit       bool
+	gzDigest       func(real string) string
+	manifestDigest func(real string) string
 }
 
 func defaultCorpus() fakeCorpus {
@@ -95,7 +106,31 @@ func (c fakeCorpus) write(t *testing.T, root string) (ghBase, rawBase string) {
 		t.Fatal(err)
 	}
 
-	// git: the tag the release is named by, pointing at a commit carrying the policy manifest.
+	gh := filepath.Join(root, "gh")
+	var commit string
+	if c.looseGit {
+		commit = writeLooseBareRepo(t, filepath.Join(gh, "acme", "corpus.git"), fakeTag)
+	} else {
+		commit = c.writeGit(t, root, manifest)
+	}
+
+	// raw: the manifest at the commit.
+	raw := filepath.Join(root, "raw")
+	rdir := filepath.Join(raw, fakeRepo, commit, "policies", fakePolicy)
+	if err := os.MkdirAll(rdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rdir, "manifest.json"), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.writeAssets(t, gh, manifest)
+	return "file://" + gh, "file://" + raw
+}
+
+// writeGit makes the bare repository with git itself: the tag the release is named by, pointing at a
+// commit carrying the policy manifest. It returns the commit.
+func (c fakeCorpus) writeGit(t *testing.T, root string, manifest []byte) string {
+	t.Helper()
 	src := filepath.Join(root, "src")
 	mdir := filepath.Join(src, "policies", fakePolicy)
 	if err := os.MkdirAll(mdir, 0o755); err != nil {
@@ -118,18 +153,12 @@ func (c fakeCorpus) write(t *testing.T, root string) (ghBase, rawBase string) {
 		t.Fatal(err)
 	}
 	run(t, root, "git", "clone", "-q", "--bare", src, filepath.Join(gh, "acme", "corpus.git"))
+	return commit
+}
 
-	// raw: the manifest at the commit.
-	raw := filepath.Join(root, "raw")
-	rdir := filepath.Join(raw, fakeRepo, commit, "policies", fakePolicy)
-	if err := os.MkdirAll(rdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rdir, "manifest.json"), manifest, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// release assets.
+// writeAssets lays out the release assets under the gh base.
+func (c fakeCorpus) writeAssets(t *testing.T, gh string, manifest []byte) {
+	t.Helper()
 	var body bytes.Buffer
 	enc := json.NewEncoder(&body)
 	enc.SetEscapeHTML(false)
@@ -178,7 +207,69 @@ func (c fakeCorpus) write(t *testing.T, root string) (ghBase, rawBase string) {
 	if err := os.WriteFile(filepath.Join(rel, c.assetName), gz.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return "file://" + gh, "file://" + raw
+	if !c.omitSigstore {
+		if err := os.WriteFile(filepath.Join(rel, "bundles.json.sigstore.json"), []byte(fakeSigstore), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeLooseBareRepo writes a bare repository holding one empty-tree commit and a lightweight tag on
+// it, as loose objects, without running git. The script only asks it for the tag (`git ls-remote`);
+// the manifest itself is served from the raw base. It returns the commit.
+func writeLooseBareRepo(t *testing.T, dir, tag string) string {
+	t.Helper()
+	put := func(kind string, body []byte) string {
+		obj := append([]byte(fmt.Sprintf("%s %d\x00", kind, len(body))), body...)
+		sum := sha1.Sum(obj)
+		id := hex.EncodeToString(sum[:])
+		var z bytes.Buffer
+		zw := zlib.NewWriter(&z)
+		if _, err := zw.Write(obj); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		odir := filepath.Join(dir, "objects", id[:2])
+		if err := os.MkdirAll(odir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odir, id[2:]), z.Bytes(), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	tree := put("tree", nil)
+	commit := put("commit", []byte("tree "+tree+"\nauthor a <a@example.com> 0 +0000\ncommitter a <a@example.com> 0 +0000\n\ncorpus\n"))
+	for _, d := range []string{"refs/heads", "refs/tags"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		"HEAD":             "ref: refs/heads/main\n",
+		"config":           "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+		"refs/tags/" + tag: commit + "\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return commit
+}
+
+// stubCosign returns the directory holding testdata/cosign-stub/cosign, for the front of PATH. The
+// stub records its arguments one per line in $COSIGN_STUB_LOG, then the files present beside its last
+// argument (the blob) when it ran, and exits with $COSIGN_STUB_EXIT (default 0).
+func stubCosign(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("testdata", "cosign-stub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func TestFetchCorpusBundle(t *testing.T) {
@@ -253,7 +344,10 @@ func TestFetchCorpusBundle(t *testing.T) {
 			cmd.Env = append(os.Environ(),
 				"CORPUS_REPO="+fakeRepo, "CORPUS_REF="+tc.ref, "CORPUS_POLICY="+policy, "DEST="+dest,
 				"CORPUS_GITHUB="+gh, "CORPUS_RAW="+raw, "GITHUB_OUTPUT="+outFile,
-				"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+				"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+				"CORPUS_SIGNER_IDENTITY="+fakeSignerID, "CORPUS_SIGNER_ISSUER="+fakeSignerIssuer,
+				"PATH="+stubCosign(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"COSIGN_STUB_LOG="+filepath.Join(root, "cosign.log"))
 			out, err := cmd.CombinedOutput()
 			bundle := filepath.Join(dest, fakePolicy+".jsonl.gz")
 			_, statErr := os.Stat(bundle)
@@ -279,6 +373,253 @@ func TestFetchCorpusBundle(t *testing.T) {
 			}
 			if (statErr == nil) != (tc.wantRoute == "bundle") {
 				t.Fatalf("bundle present = %v, want %v (route=%s)", statErr == nil, tc.wantRoute == "bundle", tc.wantRoute)
+			}
+		})
+	}
+}
+
+// signedRun is one fetch-corpus-bundle.sh run against a fake release for a corpus-<12hex> ref, with
+// the signer inputs set and the stub cosign first on PATH; env entries override those defaults.
+type signedRun struct {
+	out     string // combined stdout + stderr
+	err     error
+	outputs string // what the script appended to $GITHUB_OUTPUT
+	cosign  string // what the stub recorded; "" when it never ran
+	bundle  bool   // a bundle was left where the scan step would pick it up
+}
+
+func runSigned(t *testing.T, c *fakeCorpus, env ...string) signedRun {
+	t.Helper()
+	for _, tool := range []string{"bash", "curl", "git", "jq", "gzip"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not on PATH", tool)
+		}
+	}
+	script, err := filepath.Abs("fetch-corpus-bundle.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	gh, raw := "file://"+filepath.Join(root, "no-release"), "file://"+filepath.Join(root, "no-raw")
+	if c != nil {
+		c.looseGit = true
+		gh, raw = c.write(t, root)
+	}
+	dest := filepath.Join(root, "dest")
+	outFile := filepath.Join(root, "github_output")
+	logFile := filepath.Join(root, "cosign.log")
+
+	cmd := exec.Command("bash", script)
+	cmd.Env = append(os.Environ(),
+		"CORPUS_REPO="+fakeRepo, "CORPUS_REF="+fakeTag, "CORPUS_POLICY="+fakePolicy, "DEST="+dest,
+		"CORPUS_GITHUB="+gh, "CORPUS_RAW="+raw, "GITHUB_OUTPUT="+outFile,
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"CORPUS_SIGNER_IDENTITY="+fakeSignerID, "CORPUS_SIGNER_ISSUER="+fakeSignerIssuer,
+		"PATH="+stubCosign(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"COSIGN_STUB_LOG="+logFile)
+	cmd.Env = append(cmd.Env, env...)
+	out, err := cmd.CombinedOutput()
+	r := signedRun{out: string(out), err: err}
+	got, _ := os.ReadFile(outFile)
+	r.outputs = string(got)
+	got, _ = os.ReadFile(logFile)
+	r.cosign = string(got)
+	_, statErr := os.Stat(filepath.Join(dest, fakePolicy+".jsonl.gz"))
+	r.bundle = statErr == nil
+	return r
+}
+
+// failedClosed asserts a run failed with wantErr in its output and accepted nothing: no bundle on
+// disk, and neither a bundle route nor a signer in the step outputs.
+func (r signedRun) failedClosed(t *testing.T, wantErr string) {
+	t.Helper()
+	if r.err == nil {
+		t.Fatalf("script succeeded, want failure containing %q\n%s", wantErr, r.out)
+	}
+	if !strings.Contains(r.out, wantErr) {
+		t.Fatalf("output lacks %q:\n%s", wantErr, r.out)
+	}
+	if r.bundle {
+		t.Fatal("a failed signature check left a bundle where the scan step would pick it up")
+	}
+	if strings.Contains(r.outputs, "route=bundle") || strings.Contains(r.outputs, "corpus-signer") {
+		t.Fatalf("a failed signature check emitted %q", r.outputs)
+	}
+}
+
+// pathWithout returns a PATH directory holding links to the tools the script needs before it looks
+// for cosign, and no cosign: the runner's own PATH may carry one.
+func pathWithout(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, tool := range []string{"bash", "curl", "git", "jq", "gzip", "mktemp", "rm", "mkdir", "awk", "head", "tr", "cut"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			continue
+		}
+		if err := os.Symlink(p, filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// TestFetchCorpusBundleSignature_Verified: on a release, cosign verifies bundles.json with exactly the
+// caller's identity and issuer while bundles.json and its signature are the only release files on
+// disk (no bundle downloaded, no digest compared yet), and only then is the bundle accepted and the
+// verified signer emitted.
+func TestFetchCorpusBundleSignature_Verified(t *testing.T) {
+	c := defaultCorpus()
+	r := runSigned(t, &c)
+	if r.err != nil {
+		t.Fatalf("script failed: %v\n%s", r.err, r.out)
+	}
+	// The stub's log: its eight arguments, a marker, then the files beside the blob.
+	lines := strings.Split(strings.TrimSpace(r.cosign), "\n")
+	if len(lines) < 9 {
+		t.Fatalf("cosign stub log = %q, want its arguments and the work dir", r.cosign)
+	}
+	args := append([]string(nil), lines[:8]...)
+	if filepath.Dir(args[2]) != filepath.Dir(args[7]) {
+		t.Fatalf("signature %s and blob %s are not the downloaded pair", args[2], args[7])
+	}
+	args[2], args[7] = filepath.Base(args[2]), filepath.Base(args[7])
+	want := []string{"verify-blob", "--bundle", "bundles.json.sigstore.json", "--certificate-identity", fakeSignerID,
+		"--certificate-oidc-issuer", fakeSignerIssuer, "bundles.json"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("cosign args = %q, want %q", args, want)
+	}
+	if beside := strings.Join(lines[9:], " "); lines[8] != "--- beside the blob:" || beside != "bundles.json bundles.json.sigstore.json" {
+		t.Fatalf("when cosign ran the work dir held %q, want only bundles.json and its signature", lines[8:])
+	}
+	if !r.bundle {
+		t.Fatal("verified run left no bundle")
+	}
+	for _, kv := range []string{"route=bundle", "corpus-signer-identity=" + fakeSignerID, "corpus-signer-issuer=" + fakeSignerIssuer} {
+		if !strings.Contains(r.outputs, kv+"\n") {
+			t.Errorf("GITHUB_OUTPUT = %q, want %s", r.outputs, kv)
+		}
+	}
+}
+
+// TestFetchCorpusBundleSignature_RequiresSignerAndCosign: a release is never read without a signer
+// to verify it against and a cosign to verify with; each refusal comes before any download.
+func TestFetchCorpusBundleSignature_RequiresSignerAndCosign(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     []string
+		wantErr string
+	}{
+		{"identity unset", []string{"CORPUS_SIGNER_IDENTITY="}, "corpus-signer-identity is not set"},
+		{"issuer unset", []string{"CORPUS_SIGNER_ISSUER="}, "corpus-signer-issuer is not set"},
+		{"identity smuggles a second output line", []string{"CORPUS_SIGNER_IDENTITY=" + fakeSignerID + "\nroute=bundle"}, "must each be one line"},
+		{"cosign missing", []string{"PATH=" + pathWithout(t)}, "cosign is required to verify the corpus release signature and was not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := runSigned(t, nil, tc.env...)
+			r.failedClosed(t, tc.wantErr)
+			if r.cosign != "" {
+				t.Fatalf("cosign ran: %q", r.cosign)
+			}
+		})
+	}
+}
+
+// TestFetchCorpusBundleSignature_MissingSignature: a release without bundles.json.sigstore.json is
+// refused as unsigned, before cosign or any digest.
+func TestFetchCorpusBundleSignature_MissingSignature(t *testing.T) {
+	c := defaultCorpus()
+	c.omitSigstore = true
+	r := runSigned(t, &c)
+	r.failedClosed(t, "has no bundles.json.sigstore.json signature; refusing an unsigned corpus release")
+	if r.cosign != "" {
+		t.Fatalf("cosign ran without a signature: %q", r.cosign)
+	}
+}
+
+// badDigestCorpus is a release whose bundle disagrees with its bundles.json digest, so the digest
+// check fails whenever it is reached.
+func badDigestCorpus() *fakeCorpus {
+	c := defaultCorpus()
+	c.gzDigest = func(string) string { return "sha256:" + strings.Repeat("a", 64) }
+	return &c
+}
+
+const digestErr = "but bundles.json says"
+
+// TestFetchCorpusBundleSignature_RejectedBeforeDigest: when cosign does not verify (a bad signature,
+// the wrong identity or issuer, a tampered bundles.json all exit non-zero), the run fails closed on
+// the signature. The release's bundle also fails its digest check (the control below shows it), and
+// the signature error is the one reported, because the digest check never runs.
+func TestFetchCorpusBundleSignature_RejectedBeforeDigest(t *testing.T) {
+	r := runSigned(t, badDigestCorpus(), "COSIGN_STUB_EXIT=1")
+	r.failedClosed(t, "bundles.json of "+fakeTag+" is not signed by '"+fakeSignerID+"' (issuer '"+fakeSignerIssuer+"')")
+	if r.cosign == "" {
+		t.Fatal("cosign never ran")
+	}
+	if strings.Contains(r.out, digestErr) {
+		t.Fatalf("the digest check ran after the signature failed:\n%s", r.out)
+	}
+}
+
+// TestFetchCorpusBundleSignature_DigestControl is the positive control for the test above: the same
+// release with a signature that verifies fails on its digest.
+func TestFetchCorpusBundleSignature_DigestControl(t *testing.T) {
+	runSigned(t, badDigestCorpus()).failedClosed(t, digestErr)
+}
+
+// TestInstallCosign_RefusesUnpinnedBytes: install-cosign.sh installs nothing unless the downloaded
+// binary hashes to the pinned sha256, and nothing when there is no download; a cosign left in DEST
+// by an earlier run is removed first, so a failed install never leaves one to run.
+func TestInstallCosign_RefusesUnpinnedBytes(t *testing.T) {
+	for _, tool := range []string{"bash", "curl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not on PATH", tool)
+		}
+	}
+	script, err := filepath.Abs("install-cosign.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		serve   bool
+		wantErr string
+	}{
+		{"binary does not match the pinned sha256", true, "not the pinned 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71; refusing to run it"},
+		{"release asset missing", false, "could not download cosign v3.1.3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.serve {
+				rel := filepath.Join(root, "gh", "sigstore", "cosign", "releases", "download", "v3.1.3")
+				if err := os.MkdirAll(rel, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(rel, "cosign-linux-amd64"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dest := filepath.Join(root, "bin")
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dest, "cosign"), []byte("stale"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command("bash", script)
+			cmd.Env = append(os.Environ(), "DEST="+dest, "COSIGN_GITHUB=file://"+filepath.Join(root, "gh"))
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("install succeeded, want failure containing %q\n%s", tc.wantErr, out)
+			}
+			if !strings.Contains(string(out), tc.wantErr) {
+				t.Fatalf("output lacks %q:\n%s", tc.wantErr, out)
+			}
+			if _, err := os.Stat(filepath.Join(dest, "cosign")); err == nil {
+				t.Fatal("a failed install left a cosign in DEST")
 			}
 		})
 	}

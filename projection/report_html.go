@@ -306,6 +306,9 @@ func reportHTMLLimitLabel(reason string) string {
 	case report.ReasonVulnerableSymbolUnresolved:
 		return "Some advisories' vulnerable functions were not all located inside the affected package and " +
 			"searched, so no verdict is reported for them."
+	case report.ReasonAdvisorySymbolsUnvetted:
+		return "Some advisories list vulnerable functions that were not declared by the advisory database or " +
+			"curated, so finding no path to them is not reported as a verdict."
 	case report.ReasonAdvisoryUnknownToAnalyzer:
 		return "The call-tracing analyzer reported nothing about some advisories, so no verdict is reported for them."
 	case report.ReasonAdvisoryRangeAbsent:

@@ -1,4 +1,3 @@
-// internal/checkout/credential.go
 package checkout
 
 import (
@@ -40,8 +39,8 @@ func (c Credential) String() string {
 func (c Credential) GoString() string { return c.String() }
 
 // ApplyTo sets an `Authorization: Bearer <token>` header on req FROM the unexported token,
-// in place. It is the ONLY sanctioned egress of the token into a registry request (PLAN-200
-// artifact acquisition): it never returns the plaintext, never stores it in another struct,
+// in place. It is the ONLY sanctioned egress of the token into a registry request (artifact
+// acquisition): it never returns the plaintext, never stores it in another struct,
 // and never logs it — so the token's only exit stays inside this package (threat 3). A value
 // receiver, so it works on a Credential held in a map/struct without a pointer. The empty
 // credential and a nil req are no-ops, leaving the request unauthenticated (bare fetch).

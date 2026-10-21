@@ -29,48 +29,57 @@ func gogsOutsideBuild() groundsFixture {
 
 func TestFinding_OutsideBuildGrounds(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(*groundsFixture)
-		wantNE bool
+		name       string
+		mutate     func(*groundsFixture)
+		wantNE     bool
+		wantReason string // checked when set
 	}{
-		{"every module read, none declares the symbol", func(*groundsFixture) {}, true},
+		{"every module read, none declares the symbol", func(*groundsFixture) {}, true, ""},
 		{"a module the lane could not read", func(fx *groundsFixture) {
 			fx.resolution.ModuleSearch.Searched = []string{"example.com/app", "example.com/a", "example.com/fork"}
-		}, false},
+		}, false, ""},
 		{"a replacement module the lane could not read", func(fx *groundsFixture) {
 			fx.resolution.ModuleSearch.Searched = []string{"example.com/app", "example.com/a", "golang.org/x/net"}
-		}, false},
+		}, false, ""},
 		{"a module declares the symbol", func(fx *groundsFixture) {
 			fx.resolution.ModuleSearch.Declaring = []string{"example.com/a"}
-		}, false},
-		{"no module search", func(fx *groundsFixture) { fx.resolution.ModuleSearch = nil }, false},
-		{"no complete module list", func(fx *groundsFixture) { fx.mods = nil }, false},
+		}, false, ""},
+		{"no module search", func(fx *groundsFixture) { fx.resolution.ModuleSearch = nil }, false, ""},
+		{"no complete module list", func(fx *groundsFixture) { fx.mods = nil }, false, ""},
 		{"a module of the build holds the advisory's package", func(fx *groundsFixture) {
 			fx.mods["gogs.io/gogs"] = true
 			fx.resolution.ModuleSearch.Searched = append(fx.resolution.ModuleSearch.Searched, "gogs.io/gogs")
-		}, false},
-		{"no advisory symbols", func(fx *groundsFixture) { fx.advisorySymbols = nil }, false},
+		}, false, ""},
+		{"no advisory symbols", func(fx *groundsFixture) { fx.advisorySymbols = nil }, false, ""},
 		{"the advisory names another package", func(fx *groundsFixture) {
 			fx.affected = []string{"pkg:golang/gogs.io/gogs/internal/db", "pkg:golang/gogs.io/gogs/internal/route"}
-		}, false},
+		}, false, ""},
 		{"the advisory names the same package again", func(fx *groundsFixture) {
 			fx.affected = []string{"pkg:golang/gogs.io/gogs/internal/db@v0.13.0"}
-		}, true},
-		{"an advisory package that does not parse", func(fx *groundsFixture) { fx.dropped = []string{"gogs.io/gogs"} }, false},
-		{"a standard library advisory", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:golang/stdlib" }, false},
-		{"another ecosystem", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:npm/gogs" }, false},
+		}, true, ""},
+		{"an advisory package that does not parse", func(fx *groundsFixture) { fx.dropped = []string{"gogs.io/gogs"} }, false, ""},
+		{"a standard library advisory", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:golang/stdlib" }, false, ""},
+		{"another ecosystem", func(fx *groundsFixture) { fx.advisoryPURL = "pkg:npm/gogs" }, false, ""},
 		{"the run loads Go code the build never compiled", func(fx *groundsFixture) {
 			fx.footprint = []string{plugin.PartialReasonPluginLoad}
-		}, false},
+		}, false, ""},
 		{"another step did not run", func(fx *groundsFixture) {
 			fx.footprint = []string{plugin.PartialReasonToolFailure}
-		}, false},
+		}, false, ""},
 		{"a scoped limit on the build", func(fx *groundsFixture) {
 			fx.scoped = []artifact.ScopedPartialityFlag{{Reason: plugin.PartialReasonPluginLoad, Package: "pkg:golang/example.com/a"}}
-		}, false},
+		}, false, ""},
 		{"a package was resolved for the advisory", func(fx *groundsFixture) {
 			fx.pkg = &report.Package{Ecosystem: "Go", Name: "golang.org/x/net", Version: "v0.15.0", PURL: "pkg:golang/golang.org/x/net@v0.15.0"}
-		}, false},
+		}, false, ""},
+		{"a curated symbol set", func(fx *groundsFixture) { fx.provenance = "curated" }, true, ""},
+		{"an untagged built-in symbol set", func(fx *groundsFixture) { fx.untagged, fx.builtIn = true, true }, true, ""},
+		{"an untagged corpus symbol set", func(fx *groundsFixture) { fx.untagged = true },
+			false, report.ReasonAdvisorySymbolsUnvetted},
+		{"a diff-lexed symbol set", func(fx *groundsFixture) { fx.provenance = "diff-lexed" },
+			false, report.ReasonAdvisorySymbolsUnvetted},
+		{"a cna-declared symbol set", func(fx *groundsFixture) { fx.provenance = "cna-declared" },
+			false, report.ReasonAdvisorySymbolsUnvetted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,6 +89,9 @@ func TestFinding_OutsideBuildGrounds(t *testing.T) {
 			if !tc.wantNE {
 				if f.Verdict == report.VerdictNotExploitable {
 					t.Fatalf("got not_exploitable (%s), want it withheld", f.Evidence.Detail)
+				}
+				if tc.wantReason != "" && (f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != tc.wantReason) {
+					t.Fatalf("got %s/%q, want undetermined/%q", f.Verdict, f.UndeterminedReason, tc.wantReason)
 				}
 				return
 			}

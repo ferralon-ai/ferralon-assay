@@ -508,6 +508,10 @@ func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 	}
 }
 
+// agentPOM is a POM for com.acme:agent:1.0, which a file repository in a TestGradleComplete edit
+// serves.
+const agentPOM = "<project><modelVersion>4.0.0</modelVersion><groupId>com.acme</groupId><artifactId>agent</artifactId><version>1.0</version></project>\n"
+
 // TestGradleComplete runs the real Gradle over edits of gradle-multi, each adding one way a build
 // can install what its configurations do not list, and checks that the producer withholds
 // Complete for it and only for it.
@@ -656,6 +660,47 @@ func TestGradleComplete(t *testing.T) {
 				"bs/build.gradle": "buildscript { repositories { mavenCentral() }; dependencies { classpath 'org.slf4j:slf4j-api:2.0.16' } }\n" +
 					"apply plugin: 'java'\n",
 			},
+		},
+		{
+			name: "detached configuration resolved from a Maven repository under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('build/m2') } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/m2/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"app/build/m2/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "detached configuration resolved from mavenLocal under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "System.setProperty('maven.repo.local', file('build/m2local').absolutePath)\nrepositories { mavenLocal() }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/m2local/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"app/build/m2local/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "detached configuration resolved from a flat directory under the build directory",
+			append: map[string]string{
+				"app/build.gradle":             "repositories { flatDir { dirs 'build/flat' } }\nconfigurations.detachedConfiguration(dependencies.create(':agent:1.0')).resolve()\n",
+				"app/build/flat/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "Zip of a file in a flat directory under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { flatDir { dirs 'build/flat' } }\n" +
+					"tasks.register('z', Zip) { from 'build/flat/agent-1.0.jar'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/flat/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, outside the build",
+		},
+		{
+			name:   "flat directory in the checkout nothing unlisted resolves from",
+			append: map[string]string{"app/build.gradle": "repositories { flatDir { dirs 'libs' } }\n", "app/libs/README": "jars"},
 		},
 		{
 			name:   "build script no project reads",

@@ -143,27 +143,32 @@ type gradleResolution struct {
 // resolution (a detached configuration, say) that resolved a file the graph does not hold. A
 // build script's own classpath is build logic, a POM file carries no code, a project's build
 // directory holds what the build made from its own sources (a sibling's classes, say) outside any
-// user home, and Gradle's transforms cache holds what it derived from an artifact some resolution
+// user home or file repository, and Gradle's transforms cache holds what it derived from an artifact some resolution
 // resolved (the Kotlin compiler's classpath snapshots).
 func gradleIncomplete(out, dir string, projects []gradleProject, g *Graph) ([]string, error) {
 	var reasons []string
 	files := graphFiles(g)
-	var buildDirs, userHomes, homes []string
+	var buildDirs, foreign, homes []string
 	for _, p := range projects {
 		// A build directory at or above the root would hold the checkout and the caches with it.
 		if rel, ok := realRel(dir, p.BuildDir); p.BuildDir != "" && ok && rel != "." {
 			buildDirs = append(buildDirs, p.BuildDir)
 		}
 		if p.UserHome != "" {
-			userHomes = append(userHomes, p.UserHome)
+			foreign = append(foreign, p.UserHome)
 			homes = append(homes, filepath.Join(p.UserHome, "caches"))
 		}
+		foreign = append(foreign, p.ForeignRoots...)
+		for _, r := range p.OpaqueRepos {
+			reasons = append(reasons, "project "+p.Path+": Ivy repository "+r+" has no URL to place the files it resolves by")
+		}
 	}
-	// A user home inside a build directory holds what Gradle fetched, not what the build made.
+	// A user home or file repository inside a build directory holds what Gradle fetched, not what
+	// the build made.
 	under := func(dirs []string, f string) bool {
 		return slices.ContainsFunc(dirs, func(d string) bool { _, ok := relPath(d, f); return ok })
 	}
-	built := func(f string) bool { return under(buildDirs, f) && !under(userHomes, f) }
+	built := func(f string) bool { return under(buildDirs, f) && !under(foreign, f) }
 	transformed := func(f string) bool {
 		return slices.ContainsFunc(homes, func(c string) bool {
 			rel, ok := relPath(c, f)

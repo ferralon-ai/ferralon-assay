@@ -41,9 +41,11 @@ func TestGradleIncomplete(t *testing.T) {
 		resolved    []gradleResolution
 		noRecords   bool
 		files       map[string]string
-		buildDir    string // :app's; $ROOT/app/build when empty
-		userHome    string // :app's; /home/u/.gradle when empty
-		want        string // a reason fragment; "" wants Complete. $ROOT in paths is the checkout.
+		buildDir    string   // :app's; $ROOT/app/build when empty
+		userHome    string   // :app's; /home/u/.gradle when empty
+		repoRoots   []string // :app's file repository roots
+		opaque      []string // :app's Ivy repositories with no URL
+		want        string   // a reason fragment; "" wants Complete. $ROOT in paths is the checkout.
 	}{
 		{name: "listed tasks", tasks: []gradleTask{task(":jar", "org.gradle.api.tasks.bundling.Jar"), task(":bootJar", "org.springframework.boot.gradle.tasks.bundling.BootJar")}},
 		{name: "unknown task type", tasks: []gradleTask{task(":fetch", "build_abc.FetchTask")}, want: "task :fetch has type build_abc.FetchTask"},
@@ -79,6 +81,10 @@ func TestGradleIncomplete(t *testing.T) {
 		{name: "build directory above the checkout", buildDir: "$ROOT/..", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/libs/agent.jar")}, want: "libs/agent.jar, which no collected configuration lists"},
 		{name: "resolution under a user home inside a build directory", buildDir: "$ROOT/app/build", userHome: "$ROOT/app/build/gh", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/gh/caches/modules-2/files-2.1/com.example/agent/1.0/x/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
 		{name: "resolution under a build directory beside a user home inside it", buildDir: "$ROOT/app/build", userHome: "$ROOT/app/build/gh", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
+		{name: "resolution under a file repository inside a build directory", repoRoots: []string{"$ROOT/app/build/m2"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/m2/com/example/agent/1.0/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
+		{name: "resolution under a flat directory inside another project's build directory", repoRoots: []string{"$ROOT/build/flat"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/build/flat/agent-1.0.jar")}, want: "agent-1.0.jar, which no collected configuration lists"},
+		{name: "resolution under a build directory beside a file repository inside it", repoRoots: []string{"$ROOT/app/build/m2"}, resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "$ROOT/app/build/classes/java/main")}},
+		{name: "Ivy repository with no URL", opaque: []string{"ivy"}, want: "project :app: Ivy repository ivy has no URL to place the files it resolves by"},
 		{name: "build directory outside the checkout", buildDir: "/repo/app/build", resolved: []gradleResolution{resolution(":kt:detachedConfiguration1", "/repo/app/build/classes/java/main")}, want: "resolved /repo/app/build/classes/java/main"},
 		{name: "outside input from the transforms cache", tasks: []gradleTask{{Path: ":compileKotlin", Type: "org.jetbrains.kotlin.gradle.tasks.KotlinCompile", Outside: []string{"/home/u/.gradle/caches/8.14.6/transforms/1c35/transformed/guava_jar-snapshot.bin", "/home/u/.gradle/caches/transforms-3/9a/transformed/lib.jar"}}}},
 		{name: "outside input from the module cache", tasks: []gradleTask{{Path: ":zip", Type: "org.gradle.api.tasks.bundling.Zip", Outside: []string{"/home/u/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-simple/2.0.16/x/slf4j-simple-2.0.16.jar"}}}, want: "slf4j-simple-2.0.16.jar, outside the build"},
@@ -147,7 +153,10 @@ func TestGradleIncomplete(t *testing.T) {
 			}
 			projects := []gradleProject{
 				{Path: ":", RootDir: dir, Dir: dir, BuildFile: filepath.Join(dir, "build.gradle"), BuildDir: filepath.Join(dir, "build"), Tasks: tasks, Uncollected: tc.uncollected},
-				{Path: ":app", RootDir: dir, Dir: filepath.Join(dir, "app"), BuildFile: filepath.Join(dir, "app", "build.gradle"), BuildDir: filepath.Clean(sub(buildDir)), UserHome: sub(userHome)},
+				{Path: ":app", RootDir: dir, Dir: filepath.Join(dir, "app"), BuildFile: filepath.Join(dir, "app", "build.gradle"), BuildDir: filepath.Clean(sub(buildDir)), UserHome: sub(userHome), OpaqueRepos: tc.opaque},
+			}
+			for _, r := range tc.repoRoots {
+				projects[1].ForeignRoots = append(projects[1].ForeignRoots, sub(r))
 			}
 			g := *graph
 			g.Subject.IncludedBuilds = []string{"logic"}

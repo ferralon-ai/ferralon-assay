@@ -15,6 +15,9 @@ import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ModuleComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
+import org.gradle.api.artifacts.repositories.IvyArtifactRepository
+import org.gradle.api.artifacts.repositories.UrlArtifactRepository
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
 
@@ -152,13 +155,45 @@ def actionOrigin = { a ->
     x.getClass().name
 }
 
+// The repositories the settings declare for every project, read once the settings are evaluated.
+def settingsRepositories = []
+gradle.settingsEvaluated { s ->
+    if (s.hasProperty('dependencyResolutionManagement')) {
+        settingsRepositories = s.dependencyResolutionManagement.repositories
+    }
+}
+
+// foreignRoots are the directories p's resolutions fetch files into or from: the Gradle user home
+// and the root of every file repository p, its build script or the settings declare (mavenLocal,
+// a file: URL, a flatDir), each as given and canonical. A file under one was fetched, not made,
+// however the paths nest. opaque names an Ivy repository with no URL, whose patterns alone say
+// where its files are.
+def foreignRoots = { p ->
+    def dirs = [p.gradle.gradleUserHomeDir]
+    def opaque = []
+    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories.toList()).each { r ->
+        if (r instanceof FlatDirectoryArtifactRepository) {
+            dirs.addAll(r.dirs)
+        } else if (r instanceof UrlArtifactRepository) {
+            if (r.url == null) {
+                if (r instanceof IvyArtifactRepository) {
+                    opaque << r.name
+                }
+            } else if (r.url.scheme == 'file') {
+                dirs << new File(r.url)
+            }
+        }
+    }
+    [roots: dirs.collectMany { [it.absolutePath, it.canonicalPath] }.unique().sort(), opaque: opaque.unique().sort()]
+}
+
 // observeTasks records each of p's tasks. Reading a task's input files resolves whatever a lazy
 // input would at execution, so the listener sees that resolution too.
-def observeTasks = { p ->
+def observeTasks = { p, List<String> foreign ->
     def root = p.rootDir.toPath()
-    // A Gradle user home inside the checkout (CI caches set one) holds what resolution downloaded,
-    // so a file under it is outside the build however the paths nest.
-    def home = p.gradle.gradleUserHomeDir.canonicalFile.toPath()
+    // A Gradle user home or file repository inside the checkout (CI caches set one) holds what
+    // resolution fetched, so a file under it is outside the build however the paths nest.
+    def fetched = foreign.collect { new File(it).toPath() }
     def tasks = []
     try {
         // assayBuildGraph is the task being configured, and only writes the graph.
@@ -172,7 +207,7 @@ def observeTasks = { p ->
                 // A task ordered after another can package what it wrote, as a dependent can.
                 def ordered = (k.mustRunAfter.getDependencies(k) + k.shouldRunAfter.getDependencies(k)).collect { it.path }
                 t.depends = (k.taskDependencies.getDependencies(k).collect { it.path } + t.finalized_by + ordered).unique().sort()
-                t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) || it.toPath().startsWith(home) }.collect { it.absolutePath }.sort()
+                t.outside = k.inputs.files.files.findAll { f -> !f.toPath().startsWith(root) || fetched.any { f.toPath().startsWith(it) } }.collect { it.absolutePath }.sort()
             } catch (Exception e) {
                 t.failure = String.valueOf(e.message)
             }
@@ -244,7 +279,8 @@ allprojects { p ->
                 aliases << String.valueOf(pub.organisation) + ':' + pub.module
             }
         }
-        def tasks = observeTasks(p)
+        def repos = foreignRoots(p)
+        def tasks = observeTasks(p, repos.roots)
         def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {
@@ -267,6 +303,8 @@ allprojects { p ->
             doc.uncollected = uncollected
             doc.aliases = aliases.unique()
             doc.tasks = tasks
+            doc.foreign_roots = repos.roots
+            doc.opaque_repositories = repos.opaque
             doc.projects = projects
             def id = { c ->
                 if (c instanceof ModuleComponentIdentifier) {

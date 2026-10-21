@@ -105,7 +105,10 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"another project kind", withFile("Db/Db.sqlproj", "<Project/>")},
 		{"traversal project", withFile("build.proj", "<Project/>")},
 		{"solution naming a project outside the tree", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"Lib\", \"..\\Lib\\Lib.csproj\", \"{1}\"\nEndProject\n")},
-		{"solution naming a project in a skipped directory", withFile("App.slnx", `<Solution><Project Path=".tools/Tool.csproj" /></Solution>`)},
+		{"solution naming a project in a skipped directory", func(t *testing.T, dir string) {
+			writeFixtureFile(t, dir, ".tools/Tool.csproj", projectDeclaring([]string{"net8.0"}, nil, ""))
+			writeFixtureFile(t, dir, "App.slnx", `<Solution><Project Path=".tools/Tool.csproj" /></Solution>`)
+		}},
 		{"symlink", func(t *testing.T, dir string) {
 			if err := os.Symlink("Decoy.cs", filepath.Join(dir, "Link.cs")); err != nil {
 				t.Fatal(err)

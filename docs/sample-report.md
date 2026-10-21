@@ -3,14 +3,14 @@
 **Illustrative, shape only.** No golden `report.json` fixture ships in this repository yet — the
 excerpt below is hand-written from the `report` package's Go types
 ([`report/report.go`](../report/report.go)), to show the shape of the `Report` schema
-(`tegron.report.v2`), not a real scan's output. Field names, nesting, and the five permitted
+(`tegron.report.v3`), not a real scan's output. Field names, nesting, and the five permitted
 verdict values (`disqualified`, `not_exploitable`, `reachable_candidate`, `undetermined`,
 `malicious_package_present`) are taken directly from the types; the identifiers, paths, and scores
 inside are invented for illustration and correspond to no real advisory or codebase.
 
 ```json
 {
-  "schema_version": "tegron.report.v2",
+  "schema_version": "tegron.report.v3",
   "subject": {
     "repo": "github.com/example/widget",
     "revision": "main",

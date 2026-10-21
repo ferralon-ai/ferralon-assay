@@ -1,6 +1,6 @@
 // report_undetermined_test.go
 //
-// The tegron.report.v2 `undetermined` verdict must survive every projection, and must survive it as
+// The `undetermined` verdict (tegron.report.v2 onward) must survive every projection, and must survive it as
 // a NON-verdict. The v1 predecessor of this property is in report_partiality_test.go, where the
 // carrier was a scan-level note; here the carrier is the row, and the risk inverts. Withholding
 // risked an advisory rendering nowhere; a first-class row risks it rendering as something —
@@ -265,8 +265,8 @@ func TestReportJSON_UndeterminedSerializesAsTheContractDescribes(t *testing.T) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if doc.SchemaVersion != "tegron.report.v2" {
-		t.Errorf("schema_version = %q, want tegron.report.v2", doc.SchemaVersion)
+	if doc.SchemaVersion != "tegron.report.v3" {
+		t.Errorf("schema_version = %q, want tegron.report.v3", doc.SchemaVersion)
 	}
 	var checked int
 	for _, f := range doc.Advisories {

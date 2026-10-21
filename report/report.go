@@ -40,6 +40,7 @@
 package report
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -51,11 +52,21 @@ import (
 // SchemaVersion is the versioned identifier of the Report schema. It is written
 // into every Report so future readers can detect and migrate older documents.
 // Bump it on any breaking change to the field set or semantics.
-const SchemaVersion = "tegron.report.v2"
+//
+// v3 is the per-value-stamped Priority: the report-wide priority.snapshot is gone,
+// every EPSS/KEV value carries its own stamp (epss_as_of, kev_catalog_version +
+// kev_date_released), kev_listed and the EPSS fields are omitted when there is no
+// value, a stamped not-listed KEV observation exists, and the signals file is named
+// once as provenance.intel.signals_digest.
+const SchemaVersion = "tegron.report.v3"
 
-// SchemaVersionV1 is the predecessor schema. Documents carrying it are still read
-// (a StateStore written before the bump holds one) and are upgraded on read by
-// Upgrade; nothing produces it any more.
+// SchemaVersionV2 is the schema before per-value priority stamps. Documents carrying
+// it are still read and are upgraded on read by Upgrade; nothing produces it any more.
+const SchemaVersionV2 = "tegron.report.v2"
+
+// SchemaVersionV1 is the schema before first-class undetermined rows. Documents
+// carrying it are still read (a StateStore written before the v2 bump holds one) and
+// are upgraded on read by Upgrade; nothing produces it any more.
 const SchemaVersionV1 = "tegron.report.v1"
 
 // Verdict is the per-advisory deterministic verdict an OSS scan may assign. It is
@@ -521,8 +532,9 @@ type EvidenceSummary struct {
 // id or aliases. It never means "not exploited".
 type Priority struct {
 	// EPSSScore is FIRST.org's 0..1 probability the CVE is exploited in the wild in the 30 days
-	// after EPSSAsOf. Set only with EPSSAsOf.
-	EPSSScore float64 `json:"epss_score,omitempty"`
+	// after EPSSAsOf. Set only with EPSSAsOf. Not omitempty: 0 is a real score, so it serializes
+	// whenever EPSSAsOf does (MarshalJSON); a Priority with no EPSS value omits it.
+	EPSSScore float64 `json:"epss_score"`
 	// EPSSPercentile is the score's percentile rank among all CVEs scored by the same model run
 	// (0..1). Omitted when the signals file did not source one.
 	EPSSPercentile float64 `json:"epss_percentile,omitempty"`
@@ -541,6 +553,22 @@ type Priority struct {
 	KEVCatalogVersion string `json:"kev_catalog_version,omitempty"`
 	// KEVDateReleased is CISA's release timestamp for that catalog version.
 	KEVDateReleased string `json:"kev_date_released,omitempty"`
+}
+
+// MarshalJSON writes epss_score whenever the Priority carries an EPSS value, so a genuine score of 0
+// is never read as an as-of with no score, and omits it from a block with no EPSS value at all (a
+// KEV-only observation). A score with no stamp is written too: Validate refuses it, and the encoder
+// never hides a value it was given.
+func (p Priority) MarshalJSON() ([]byte, error) {
+	type plain Priority // the same fields without this method
+	w := struct {
+		EPSSScore *float64 `json:"epss_score,omitempty"`
+		plain
+	}{plain: plain(p)}
+	if p.EPSSAsOf != "" || p.EPSSScore != 0 {
+		w.EPSSScore = &p.EPSSScore
+	}
+	return json.Marshal(w)
 }
 
 // HasEPSS reports whether the Priority carries a (stamped) EPSS value.
@@ -611,9 +639,11 @@ type AdvisoryFinding struct {
 	UndeterminedReason string `json:"undetermined_reason,omitempty"`
 	// Evidence is the compact grounds behind the verdict (see EvidenceSummary).
 	Evidence EvidenceSummary `json:"evidence"`
-	// Priority is the offline EPSS/KEV prioritization signal for this advisory, from
-	// the pinned intel snapshot. Nil when no CVE record matched. Exploitation-
-	// likelihood context only — never an exploitability claim for this codebase.
+	// Priority is the EPSS/KEV prioritization context for this advisory, from the signals
+	// file the run was given, each value carrying its own stamp (see Priority). Nil when
+	// the run had no signals or the file had no stamped value for the advisory's id or
+	// aliases — never "not exploited". Exploitation-likelihood context only — never an
+	// exploitability claim for this codebase.
 	Priority *Priority `json:"priority,omitempty"`
 }
 

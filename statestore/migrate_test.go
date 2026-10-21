@@ -38,13 +38,13 @@ func v1StoredReport(ts time.Time) *report.Report {
 }
 
 // TestStore_V1ReportRoundTripsPostBump is the migration requirement stated end to end: a report
-// committed to the ref before the schema bump must still load, and must load as v2 with the withheld
-// advisories as first-class rows. No rewrite pass runs — Read upgrades, and a later Write persists
+// committed to the ref before the v2 bump must still load, and must load as the current schema with
+// the withheld advisories as first-class rows. No rewrite pass runs — Read upgrades, and a later Write persists
 // the upgraded form.
 //
 // This is the case that decides whether the bump is deployable. A v1 document that failed to load
 // would brick every repo whose baseline predates the release, and one that loaded with the withheld
-// ids still hidden in the note would leave those advisories invisible to every v2 consumer.
+// ids still hidden in the note would leave those advisories invisible to every v2+ consumer.
 func TestStore_V1ReportRoundTripsPostBump(t *testing.T) {
 	s := newTempStore(t)
 	ctx := context.Background()
@@ -95,7 +95,7 @@ func TestStore_V1ReportRoundTripsPostBump(t *testing.T) {
 		}
 	}
 
-	// A subsequent write persists the upgraded form, so the ref converges on v2 without a
+	// A subsequent write persists the upgraded form, so the ref converges on the current schema without a
 	// dedicated migration pass.
 	if _, err := s.Write(ctx, got); err != nil {
 		t.Fatalf("rewrite upgraded state: %v", err)
@@ -109,6 +109,46 @@ func TestStore_V1ReportRoundTripsPostBump(t *testing.T) {
 	}
 	if len(again.Report.Advisories) != 5 {
 		t.Errorf("after rewrite advisories = %d, want 5 — a second upgrade must not duplicate rows", len(again.Report.Advisories))
+	}
+}
+
+// TestStore_V2ReportReadsAsV3: a tegron.report.v2 document committed before per-value priority
+// stamps loads as the current schema, its snapshot-era priority dropped by the v2 → v3 step and its
+// stamped one kept. Without the drop the read would fail Validate and brick the baseline.
+func TestStore_V2ReportReadsAsV3(t *testing.T) {
+	s := newTempStore(t)
+	ctx := context.Background()
+
+	stored := v1StoredReport(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	stored.SchemaVersion = report.SchemaVersionV2
+	stored.Partiality = nil
+	stored.Advisories[0].Priority = &report.Priority{EPSSScore: 0.5, KEVListed: true} // dated only by the removed snapshot
+	stamped := stored.Advisories[0]
+	stamped.Advisory = report.Advisory{ID: "GO-2022-0001", Source: "osv"}
+	stamped.Priority = &report.Priority{EPSSScore: 0, EPSSAsOf: "2026-10-19"}
+	stored.Advisories = append(stored.Advisories, stamped)
+	if _, err := s.Write(ctx, &State{Report: stored}); err != nil {
+		t.Fatalf("write v2 state: %v", err)
+	}
+
+	got, err := s.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got.Report.SchemaVersion != report.SchemaVersion {
+		t.Errorf("schema_version = %q, want %q — Read must upgrade", got.Report.SchemaVersion, report.SchemaVersion)
+	}
+	for _, f := range got.Report.Advisories {
+		switch f.Advisory.ID {
+		case "GO-2021-0113":
+			if f.Priority != nil {
+				t.Errorf("%s kept its unstamped priority %+v", f.Advisory.ID, *f.Priority)
+			}
+		case "GO-2022-0001":
+			if f.Priority == nil || f.Priority.EPSSAsOf != "2026-10-19" {
+				t.Errorf("%s lost its stamped priority: %+v", f.Advisory.ID, f.Priority)
+			}
+		}
 	}
 }
 

@@ -24,6 +24,17 @@ func validGraph() *Graph {
 	return g
 }
 
+// addCopy adds a classpath copy holding g:dep at another version.
+func addCopy(g *Graph, id, path, root string) {
+	g.Modules = append(g.Modules, Module{
+		ID: id, Path: path, Root: root,
+		Nodes: []Node{
+			{ID: "g:root:jar:1", Group: "g", Artifact: "root", Version: "1", Type: "jar"},
+			{ID: "g:dep:jar:x:1", Group: "g", Artifact: "dep", Version: "1", Type: "jar", Classifier: "x"},
+		},
+	})
+}
+
 func TestValidate(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -45,6 +56,12 @@ func TestValidate(t *testing.T) {
 		{name: "root not a node", edit: func(g *Graph) { g.Modules[0].Root = "g:other:jar:1" }, want: "missing_node"},
 		{name: "edge to a missing node", edit: func(g *Graph) { g.Modules[0].Edges[0].To = "g:gone:jar:1" }, want: "missing_node"},
 		{name: "edge from a missing node", edit: func(g *Graph) { g.Modules[0].Edges[0].From = "g:gone:jar:1" }, want: "missing_node"},
+		{name: "classpath copy", edit: func(g *Graph) { addCopy(g, "g:root#testRuntimeClasspath", ".", "g:root:jar:1") }, want: ""},
+		{name: "classpath copy of no project", edit: func(g *Graph) { addCopy(g, "g:other#testRuntimeClasspath", ".", "g:root:jar:1") }, want: "classpath_copy"},
+		{name: "classpath copy at another path", edit: func(g *Graph) { addCopy(g, "g:root#testRuntimeClasspath", "sub", "g:root:jar:1") }, want: "classpath_copy"},
+		{name: "classpath copy with another root", edit: func(g *Graph) {
+			addCopy(g, "g:root#testRuntimeClasspath", ".", "g:dep:jar:x:1")
+		}, want: "classpath_copy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := validGraph()

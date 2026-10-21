@@ -107,15 +107,15 @@ func TestLoad(t *testing.T) {
 		}, want: "graph_rejected:subject_inputs"},
 		{name: "unknown tool", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Tool.Name = "ant" }, want: "graph_rejected:subject_inputs"},
 		{name: "module above checkout", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "../fake" }, want: "graph_rejected:module_path"},
-		{name: "absolute module", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = r.dir }, want: "graph_rejected:module_path"},
+		{name: "absolute module", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[len(g.Modules)-1].Path = r.dir }, want: "graph_rejected:module_path"},
 		{name: "unclean module path", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "./" + g.Modules[1].Path }, want: "graph_rejected:module_path"},
 		{name: "module not a directory", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "pom.xml" }, want: "graph_rejected:module_path"},
-		{name: "module missing", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[1].Path = "gone" }, want: "graph_rejected:module_path"},
+		{name: "module missing", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Modules[len(g.Modules)-1].Path = "gone" }, want: "graph_rejected:module_path"},
 		{name: "module through symlink out", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			if err := os.Symlink(r.fake, filepath.Join(r.dir, "out")); err != nil {
 				t.Fatal(err)
 			}
-			g.Modules[1].Path = "out"
+			g.Modules[len(g.Modules)-1].Path = "out"
 		}, want: "graph_rejected:module_path"},
 		{name: "two versions of one key", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			m, n := firstDep(g)

@@ -122,6 +122,21 @@ func TestBuildManifest_MultiModule(t *testing.T) {
 	}
 }
 
+// A classpath copy is the project it belongs to, not another module.
+func TestBuildManifest_ClasspathCopy(t *testing.T) {
+	dir := writeTree(t, map[string]string{})
+	app := testModule(t, ".", "app")
+	g := buildgraph.Graph{Schema: buildgraph.Schema, Tool: buildgraph.Tool{Name: "gradle", Version: "test"}, JVM: buildgraph.JVM{Version: "21.0.4"},
+		Modules: []buildgraph.Module{app, classpathCopy(t, app, "testRuntimeClasspath")}}
+	res := buildManifest(t, dir, "java", writeGraph(t, g))
+	if res.ProjectRoot != "com.example:app" {
+		t.Errorf("ProjectRoot = %q, want com.example:app", res.ProjectRoot)
+	}
+	if hasReason(res.Partiality, reasonMultiModule) {
+		t.Errorf("a classpath copy counted as a module: %v", res.Partiality.Reasons)
+	}
+}
+
 func TestBuildManifest_NoGraph(t *testing.T) {
 	dir := writeTree(t, map[string]string{"pom.xml": "<project><artifactId>a</artifactId></project>"})
 	res := buildManifest(t, dir, "java")

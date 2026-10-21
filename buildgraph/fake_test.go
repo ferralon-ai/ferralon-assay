@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -643,9 +644,12 @@ func TestGradleProducer(t *testing.T) {
 	if g.Tool != (Tool{Name: "gradle", Version: "8.14.6", Wrapper: true}) {
 		t.Fatalf("tool %+v", g.Tool)
 	}
-	if len(g.Modules) != 3 {
+	// The three projects, and :app's test classpath copy of the lwjgl its runtime classpath
+	// resolves at another version.
+	if len(g.Modules) != 4 {
 		t.Fatalf("modules %+v", g.Modules)
 	}
+	node(t, module(t, g, ":app#testRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
 	if m := module(t, g, ":"); m.Path != "." || len(m.Nodes) != 1 {
 		t.Errorf("root module %+v", m)
 	}
@@ -731,12 +735,44 @@ func TestGradleOtherRuntimeClasspath(t *testing.T) {
 	if n := node(t, m, "junit:junit:jar:4.13.2"); n.Scope != "test" {
 		t.Errorf("junit scope %q, want test", n.Scope)
 	}
-	// runtimeClasspath's version wins.
+	// runtimeClasspath's version wins the project.
 	if n := node(t, m, "org.lwjgl:lwjgl:jar:3.3.4"); n.Scope != "runtime" {
 		t.Errorf("lwjgl scope %q, want runtime", n.Scope)
 	}
 	if len(m.Nodes) != 3 {
 		t.Errorf("nodes %+v", m.Nodes)
+	}
+	// The other version is kept in the classpath's copy, beside the project's root.
+	c := module(t, g, ":lib#integrationTestRuntimeClasspath")
+	if c.Path != m.Path || c.Root != m.Root {
+		t.Errorf("copy at %s rooted %s, want %s rooted %s", c.Path, c.Root, m.Path, m.Root)
+	}
+	if n := node(t, c, "org.lwjgl:lwjgl:jar:3.3.5"); n.Scope != "test" || n.File == nil {
+		t.Errorf("copy lwjgl %+v, want test scope with its file", n)
+	}
+	if len(c.Nodes) != 2 || !reflect.DeepEqual(c.Edges, []Edge{{From: m.Root, To: "org.lwjgl:lwjgl:jar:3.3.5"}}) {
+		t.Errorf("copy nodes %+v edges %+v", c.Nodes, c.Edges)
+	}
+	if len(g.Modules) != 5 {
+		t.Errorf("modules %d, want the three projects and a copy each for :app and :lib", len(g.Modules))
+	}
+
+	// An earlier classpath holding the same version keeps it; the later one adds no copy.
+	withTest := strings.TrimSuffix(lib, "}}") + `,
+"testRuntimeClasspath":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.5"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"}]}}}`
+	r = newFakeGradle(t, "", map[string]string{"project_lib.json": withTest})
+	if g, err = r.resolve(t, ToolGradle, Conditions{}); err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	node(t, module(t, g, ":lib#testRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
+	for _, m := range g.Modules {
+		if m.ID == ":lib#integrationTestRuntimeClasspath" {
+			t.Errorf("integrationTestRuntimeClasspath repeats the copy: %+v", m.Nodes)
+		}
 	}
 }
 

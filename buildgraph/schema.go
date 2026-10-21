@@ -71,7 +71,9 @@ type Input struct {
 	SHA256 string `json:"sha256"`
 }
 
-// Module is one Maven reactor module or Gradle project.
+// Module is one Maven reactor module or Gradle project, or a classpath copy of a Gradle project:
+// ID "<project>#<classpath>", the project's Path and Root, holding the components that classpath
+// resolved at a version other than the one the project kept.
 type Module struct {
 	ID             string   `json:"id"`
 	Path           string   `json:"path"`
@@ -79,6 +81,21 @@ type Module struct {
 	ActiveProfiles []string `json:"active_profiles,omitempty"`
 	Nodes          []Node   `json:"nodes"`
 	Edges          []Edge   `json:"edges"`
+}
+
+// classpathSep separates a classpath copy's project ID from its classpath name.
+const classpathSep = "#"
+
+// ClasspathCopyID is the ID of project's copy for classpath.
+func ClasspathCopyID(project, classpath string) string { return project + classpathSep + classpath }
+
+// Project returns the ID of the project m belongs to, and whether m is a classpath copy rather
+// than the project itself. A consumer counting projects or their directories skips the copies.
+func (m Module) Project() (id string, isCopy bool) {
+	if i := strings.Index(m.ID, classpathSep); i >= 0 {
+		return m.ID[:i], true
+	}
+	return m.ID, false
 }
 
 // Node is one resolved component. Root is the module itself. File is absent for the module
@@ -156,7 +173,12 @@ func (g *Graph) Normalize() {
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}
 	}
-	sort.Slice(g.Modules, func(i, j int) bool { return g.Modules[i].Path < g.Modules[j].Path })
+	sort.Slice(g.Modules, func(i, j int) bool {
+		if g.Modules[i].Path != g.Modules[j].Path {
+			return g.Modules[i].Path < g.Modules[j].Path
+		}
+		return g.Modules[i].ID < g.Modules[j].ID
+	})
 	for i := range g.Modules {
 		m := &g.Modules[i]
 		if m.Nodes == nil {
@@ -215,6 +237,17 @@ func (g *Graph) Validate() string {
 		for _, e := range m.Edges {
 			if !nodes[e.From] || !nodes[e.To] {
 				return "missing_node"
+			}
+		}
+	}
+	byID := make(map[string]Module, len(g.Modules))
+	for _, m := range g.Modules {
+		byID[m.ID] = m
+	}
+	for _, m := range g.Modules {
+		if id, isCopy := m.Project(); isCopy {
+			if p, ok := byID[id]; !ok || p.Path != m.Path || p.Root != m.Root {
+				return "classpath_copy"
 			}
 		}
 	}

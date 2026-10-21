@@ -285,6 +285,11 @@ func RuntimeSelection(g *buildgraph.Graph) (load []RuntimeJar, miss []RuntimeMis
 	roots := moduleRoots(g)
 	byCoord := map[string][]buildgraph.Node{}
 	for _, m := range g.Modules {
+		// A classpath copy never comes from runtimeClasspath, whose copy the project keeps, so it
+		// is not what the project loads.
+		if _, isCopy := m.Project(); isCopy {
+			continue
+		}
 		for _, n := range m.Nodes {
 			c := n.Group + ":" + n.Artifact
 			if roots[n.ID] || reactor[c] || !runtimeScope(n.Scope) {
@@ -450,6 +455,9 @@ func readJar(j RuntimeJar) (artifactJar, jarLookup) {
 func multipleModules(g *buildgraph.Graph, buildDir string) (multi bool, why string) {
 	var withCode []string
 	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); isCopy {
+			continue
+		}
 		if info, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(m.Path), "src")); err == nil && info.IsDir() {
 			withCode = append(withCode, m.Path)
 		}

@@ -55,6 +55,14 @@ func TestRuntimeSelection(t *testing.T) {
 			wantMiss: []RuntimeMiss{{Coordinate: coord, Ambiguous: true, Detail: coord + ": runtime versions 2.9.8, 2.9.9"}},
 		},
 		{
+			name: "a classpath copy at another version is not loaded",
+			modules: func() []buildgraph.Module {
+				m := testModule(t, ".", "app", jd("2.9.9", "runtime"))
+				return []buildgraph.Module{m, classpathCopy(t, m, "compileClasspath", jd("2.9.8", "provided"))}
+			}(),
+			wantLoad: []RuntimeJar{jdJar("2.9.9")},
+		},
+		{
 			name: "a file that is not a JAR is a named miss",
 			modules: []buildgraph.Module{testModule(t, ".", "app",
 				graphDep{group: "com.dep", artifact: "ui", version: "1", jar: filepath.Join(dir, "ui-1.aar")})},

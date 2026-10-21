@@ -23,6 +23,7 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 		tool         string
 		files        map[string]string // written into the checkout
 		copies       [][]graphDep      // one per module
+		cpCopy       []graphDep        // the first module's integrationTestRuntimeClasspath copy
 		noGraph      bool
 		wantFound    bool
 		wantVersion  string // "" ⇒ unresolved
@@ -44,6 +45,10 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 		{name: "classifiers agree in one module", tool: "maven",
 			copies:    [][]graphDep{{dep("2.0", ""), {group: "com.example.lib", artifact: "widget", version: "2.0", scope: "test", classifier: "tests"}}},
 			wantFound: true, wantVersion: "2.0", wantVersions: []string{"2.0"}, wantComplete: true},
+		// Gradle resolves each classpath on its own: an affected version only a test classpath
+		// resolves is still in the build, so an advisory below 1.5 must not be ruled out by 2.0.
+		{name: "a classpath copy disagrees", tool: "gradle", copies: [][]graphDep{{dep("2.0", "runtime")}}, cpCopy: []graphDep{dep("1.2", "test")},
+			wantFound: true, wantVersions: []string{"2.0", "1.2"}, wantComplete: true},
 		{name: "not in the graph", tool: "maven", copies: [][]graphDep{{}}, wantComplete: false},
 		{name: "a gradle build beside a maven graph", tool: "maven", files: map[string]string{"svc/build.gradle": "dependencies {}\n"},
 			copies: [][]graphDep{{dep("1.4.0", "")}}, wantFound: true, wantVersion: "1.4.0", wantVersions: []string{"1.4.0"}, wantReason: PartialReasonOtherToolBuild},
@@ -61,6 +66,9 @@ func TestResolveDependencyVersions_FromGraph(t *testing.T) {
 				var ms []buildgraph.Module
 				for i, deps := range tc.copies {
 					ms = append(ms, testModule(t, string(rune('a'+i)), string(rune('a'+i)), deps...))
+				}
+				if tc.cpCopy != nil {
+					ms = append(ms, classpathCopy(t, ms[0], "integrationTestRuntimeClasspath", tc.cpCopy...))
 				}
 				opts = append(opts, graphOption(t, tc.tool, ms...))
 			}

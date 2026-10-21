@@ -13,6 +13,7 @@ func TestMultipleModules(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		modules []string // module paths
+		copyOf  int      // 1 + the index of the module given a classpath copy, or 0
 		src     []string // module paths holding a src directory
 		multi   bool
 		why     string
@@ -22,12 +23,16 @@ func TestMultipleModules(t *testing.T) {
 		{name: "two modules with code", modules: []string{".", "api", "core"}, src: []string{"api", "core"}, multi: true, why: "build graph modules api, core"},
 		{name: "root and a module with code", modules: []string{".", "app"}, src: []string{".", "app"}, multi: true, why: "build graph modules ., app"},
 		{name: "no module with code", modules: []string{".", "bom"}},
+		{name: "a classpath copy is not a second module", modules: []string{"."}, src: []string{"."}, copyOf: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			g := &buildgraph.Graph{Schema: buildgraph.Schema}
 			for i, p := range tc.modules {
 				g.Modules = append(g.Modules, testModule(t, p, string(rune('a'+i))))
+			}
+			if tc.copyOf > 0 {
+				g.Modules = append(g.Modules, classpathCopy(t, g.Modules[tc.copyOf-1], "testRuntimeClasspath"))
 			}
 			for _, p := range tc.src {
 				writeFile(t, filepath.Join(dir, filepath.FromSlash(p), "src", "A.java"), "class A {}")

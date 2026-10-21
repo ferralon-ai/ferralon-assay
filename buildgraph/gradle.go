@@ -129,11 +129,11 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		return nil, f
 	}
 	for _, p := range projects {
-		m, err := gradleModule(p)
+		ms, err := gradleModule(p)
 		if err != nil {
 			return nil, err
 		}
-		g.Modules = append(g.Modules, m)
+		g.Modules = append(g.Modules, ms...)
 	}
 	g.Subject.Inputs, err = collectInputs(r.dir, gradleInput)
 	if err != nil {
@@ -184,11 +184,12 @@ func readGradleProjects(dir string) ([]gradleProject, error) {
 // classpath beside runtimeClasspath. Each classpath is
 // translated on its own (gradleClasspathNodes); then each g:a:type:classifier keeps the node of
 // the first classpath in precedence order that has it, at the scope gradleScope gives, and every
-// classpath's edges are joined onto the kept nodes.
-func gradleModule(p gradleProject) (Module, error) {
+// classpath's edges are joined onto the kept nodes. A later classpath's copy at another version
+// goes to that classpath's copy module (classpathCopies), returned after the project's own.
+func gradleModule(p gradleProject) ([]Module, error) {
 	rel, ok := relPath(p.RootDir, p.Dir)
 	if !ok {
-		return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " outside the root"}
+		return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " outside the root"}
 	}
 	if rel == "" {
 		rel = "."
@@ -203,23 +204,17 @@ func gradleModule(p gradleProject) (Module, error) {
 		}
 	}
 	if _, ok := p.Classpaths[gradleRuntime]; !ok && len(others) > 0 {
-		return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
+		return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + " has no runtimeClasspath, only " + strings.Join(others, ", ")}
 	}
 	// Beside runtimeClasspath, every other runtime classpath folds in at test scope: a copy only
 	// one of them resolves is still in the build, so leaving it out would claim it absent.
 	for _, c := range others {
 		if _, ok := p.Classpaths[c]; !ok {
-			return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + ": " + c + " was not resolved"}
+			return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "project " + p.Path + ": " + c + " was not resolved"}
 		}
 	}
 
-	type translated struct {
-		name  string
-		nodes []Node
-		ids   map[string][]string
-		edges []Edge
-	}
-	var cps []translated
+	var cps []gradleTranslated
 	onCompile := map[string]bool{}
 	for _, name := range append([]string{gradleRuntime, gradleCompile, gradleTest}, others...) {
 		cp, ok := p.Classpaths[name]
@@ -228,7 +223,7 @@ func gradleModule(p gradleProject) (Module, error) {
 		}
 		nodes, ids, err := gradleClasspathNodes(p, name, cp, root)
 		if err != nil {
-			return Module{}, err
+			return nil, err
 		}
 		if name == gradleCompile {
 			for _, n := range nodes {
@@ -239,7 +234,7 @@ func gradleModule(p gradleProject) (Module, error) {
 		for _, e := range cp.Edges {
 			from, to := ids[e.From], ids[e.To]
 			if len(from) == 0 || len(to) == 0 {
-				return Module{}, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
+				return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: name + ": edge to an unlisted component: " + e.From + " -> " + e.To}
 			}
 			for _, f := range from {
 				for _, t := range to {
@@ -249,7 +244,7 @@ func gradleModule(p gradleProject) (Module, error) {
 				}
 			}
 		}
-		cps = append(cps, translated{name: name, nodes: nodes, ids: ids, edges: edges})
+		cps = append(cps, gradleTranslated{name: name, nodes: nodes, ids: ids, edges: edges})
 	}
 
 	kept := map[string]string{root.Key(): root.ID}
@@ -280,7 +275,56 @@ func gradleModule(p gradleProject) (Module, error) {
 			}
 		}
 	}
-	return m, nil
+	return append([]Module{m}, classpathCopies(m, cps, onCompile)...), nil
+}
+
+// gradleTranslated is one classpath translated onto node IDs.
+type gradleTranslated struct {
+	name  string
+	nodes []Node
+	ids   map[string][]string
+	edges []Edge
+}
+
+// classpathCopies keeps what the fold into m drops: a component a later classpath resolved at a
+// version other than the one m kept. Each such classpath gets a copy module holding m's root and
+// those copies at that classpath's scope, so a version question sees every version the build
+// resolved. A copy an earlier module already holds is not repeated.
+func classpathCopies(m Module, cps []gradleTranslated, onCompile map[string]bool) []Module {
+	held := map[string]bool{}
+	for _, n := range m.Nodes {
+		held[n.ID] = true
+	}
+	var root Node
+	for _, n := range m.Nodes {
+		if n.ID == m.Root {
+			root = n
+		}
+	}
+	var out []Module
+	for _, cp := range cps {
+		c := Module{ID: ClasspathCopyID(m.ID, cp.name), Path: m.Path, Root: m.Root, Nodes: []Node{root}}
+		in := map[string]bool{m.Root: true}
+		for _, n := range cp.nodes {
+			if held[n.ID] || n.Key() == root.Key() {
+				continue
+			}
+			held[n.ID] = true
+			in[n.ID] = true
+			n.Scope = gradleScope(cp.name, onCompile[n.Key()])
+			c.Nodes = append(c.Nodes, n)
+		}
+		if len(c.Nodes) == 1 {
+			continue
+		}
+		for _, e := range cp.edges {
+			if in[e.From] && in[e.To] {
+				c.Edges = append(c.Edges, e)
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // gradleScope is the scope of a node kept from classpath cp.

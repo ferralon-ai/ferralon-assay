@@ -85,6 +85,9 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	}
 	var members []string
 	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); isCopy {
+			continue
+		}
 		members = append(members, m.Path)
 		if m.Path == "." {
 			res.ProjectRoot = m.ID

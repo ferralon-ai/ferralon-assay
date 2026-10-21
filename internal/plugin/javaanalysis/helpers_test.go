@@ -65,6 +65,14 @@ func testModule(t *testing.T, path, name string, deps ...graphDep) buildgraph.Mo
 	return m
 }
 
+// classpathCopy is project's copy for classpath cp, holding deps.
+func classpathCopy(t *testing.T, project buildgraph.Module, cp string, deps ...graphDep) buildgraph.Module {
+	t.Helper()
+	c := testModule(t, project.Path, strings.TrimPrefix(project.ID, "com.example:"), deps...)
+	c.ID = buildgraph.ClasspathCopyID(project.ID, cp)
+	return c
+}
+
 // fileSHA256 is a file's digest, or a digest no file has when it cannot be read.
 func fileSHA256(path string) string {
 	data, err := os.ReadFile(path)

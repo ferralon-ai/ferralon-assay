@@ -133,6 +133,11 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"reference to an assembly file", withItems(`<ItemGroup><Reference Include="vendor\Vendor.dll" /></ItemGroup>`)},
 		{"reference to an assembly file by name", withItems(`<ItemGroup><Reference Include="Vendor.dll" /></ItemGroup>`)},
 		{"reference to an assembly by path", withItems(`<ItemGroup><Reference Include="lib/Vendor" /></ItemGroup>`)},
+		{"framework-named reference to an assembly file", withItems(`<ItemGroup><Reference Include="System.Vendor.dll" /></ItemGroup>`)},
+		{"framework-named reference by path", withItems(`<ItemGroup><Reference Include="System.Vendor/Lib" /></ItemGroup>`)},
+		{"framework reference with a hint path", withItems(`<ItemGroup><Reference Include="System.Xml"><HintPath>vendor\System.Xml</HintPath></Reference></ItemGroup>`)},
+		{"two projects in one directory", withFile("Lib.csproj", projectDeclaring([]string{"net8.0"}, nil, ""))},
+		{"download dependencies restore wrote in another shape", withDownloadValue("net8.0", "pending")},
 		{"reference with unknown metadata", withItems(`<ItemGroup><Reference Include="Vendor"><Foo>x</Foo></Reference></ItemGroup>`)},
 		{"package download", withItems(`<ItemGroup><PackageDownload Include="Newtonsoft.Json" Version="[13.0.1]" /></ItemGroup>`)},
 		{"analyzer item", withItems(`<ItemGroup><Analyzer Include="tools/Gen.dll" /></ItemGroup>`)},
@@ -267,28 +272,39 @@ func TestNotInBuild_PlatformTargetOpen(t *testing.T) {
 	}
 }
 
+// withDownloadValue sets alias's downloadDependencies in the build's trusted assets file to v.
+func withDownloadValue(alias string, v any) func(*testing.T, string) {
+	return func(t *testing.T, dir string) {
+		t.Helper()
+		editAssetsFramework(t, dir, alias, func(fw map[string]any) { fw["downloadDependencies"] = v })
+	}
+}
+
 // withDownload records a download dependency for alias in the build's trusted assets file, as
 // restore does for a pack the SDK downloads.
 func withDownload(alias, id string) func(*testing.T, string) {
-	return func(t *testing.T, dir string) {
-		t.Helper()
-		path := filepath.Join(dir, "obj", "project.assets.json")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var assets map[string]any
-		if err := json.Unmarshal(data, &assets); err != nil {
-			t.Fatal(err)
-		}
-		fw := assets["project"].(map[string]any)["frameworks"].(map[string]any)[alias].(map[string]any)
-		fw["downloadDependencies"] = []any{map[string]any{"name": id, "version": "[1.0.0, 1.0.0]"}}
-		out, err := json.Marshal(assets)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, out, 0o644); err != nil {
-			t.Fatal(err)
-		}
+	return withDownloadValue(alias, []any{map[string]any{"name": id, "version": "[1.0.0, 1.0.0]"}})
+}
+
+// editAssetsFramework applies edit to alias's entry under project.frameworks in the build's
+// assets file.
+func editAssetsFramework(t *testing.T, dir, alias string, edit func(map[string]any)) {
+	t.Helper()
+	path := filepath.Join(dir, "obj", "project.assets.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var assets map[string]any
+	if err := json.Unmarshal(data, &assets); err != nil {
+		t.Fatal(err)
+	}
+	edit(assets["project"].(map[string]any)["frameworks"].(map[string]any)[alias].(map[string]any))
+	out, err := json.Marshal(assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

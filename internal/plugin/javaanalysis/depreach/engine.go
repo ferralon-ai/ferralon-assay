@@ -51,10 +51,33 @@ func NewEngine(classes []classfile.Class) *Engine {
 	return NewEngineOn(classes, Classpath{})
 }
 
-// BootOnly reports whether the class named name is one the JVM defines only from the JDK: a
-// java/ class, which it refuses from any loader but the boot and platform loaders. A classpath
-// copy of one never runs; the JDK's own body is what a call reaches.
-func BootOnly(name string) bool { return strings.HasPrefix(name, "java/") }
+// BootOnly reports whether a classpath copy of the class named name may not be the body that runs
+// on feature release jdk (0 when not recorded): a java/ class, which the JVM refuses from any
+// loader but the boot and platform loaders, or a class in a package the JDK itself defines a class
+// in. On 9 and later the package of a system module in the boot layer hides a classpath copy, and
+// on 8 the boot and extension class paths are searched first. On a runtime image without the
+// module the copy does run, so outside java/ the copy is neither walked nor taken for the JDK's
+// leaf: the engine finds its package defined by the classpath and a call into it unopened. A
+// release jdkPackages does not cover counts a package any covered release defines.
+func BootOnly(name string, jdk int) bool {
+	if strings.HasPrefix(name, "java/") {
+		return true
+	}
+	i := strings.LastIndexByte(name, '/')
+	if i <= 0 {
+		return false
+	}
+	mask, ok := jdkPackages[name[:i]]
+	if !ok {
+		return false
+	}
+	for b, r := range jdkReleases {
+		if r == jdk {
+			return mask&(1<<b) != 0
+		}
+	}
+	return true
+}
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The
 // packages of the classes themselves always count as defined by the classpath.
@@ -75,13 +98,13 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 	}
 	for i := range classes {
 		c := &classes[i]
-		if BootOnly(c.Name) {
-			continue
-		}
-		e.classes[c.Name] = c
 		if j := strings.LastIndexByte(c.Name, '/'); j > 0 {
 			e.defined[c.Name[:j]] = true
 		}
+		if BootOnly(c.Name, cp.JDK) {
+			continue
+		}
+		e.classes[c.Name] = c
 		for j := range c.Methods {
 			e.declared[c.Methods[j].Ref.String()] = &c.Methods[j]
 		}

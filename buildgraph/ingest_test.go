@@ -288,6 +288,12 @@ func TestLoadIncludedBuilds(t *testing.T) {
 			}
 			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "linked")
 		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build through a symlink in", edit: func(t *testing.T, g *Graph, r fakeRepo) {
+			if err := os.Symlink("build-logic", filepath.Join(r.dir, "bl")); err != nil {
+				t.Fatal(err)
+			}
+			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "bl")
+		}, want: "graph_rejected:subject_inputs"},
 		{name: "included build is a file", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			g.Subject.IncludedBuilds = append(g.Subject.IncludedBuilds, "settings.gradle")
 		}, want: "graph_rejected:subject_inputs"},

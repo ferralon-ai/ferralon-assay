@@ -704,6 +704,23 @@ as any)(null, process.argv[2])();
 function load(s) { return s; }
 load(process.argv);
 `}, plugin.PartialReasonEvaluatedCode},
+		{"Function.call cast with satisfies on the next line", map[string]string{"app.ts": `
+var f = (Function.call
+satisfies any)(null, process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"Function member spelled with a unicode escape", map[string]string{"app.js": `
+Function.\u0063onstructor(process.argv[2])();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
+		{"parenthesised Function called once through call", map[string]string{"app.js": `
+var g = (Function).call(null, process.argv[2]);
+g();
+function load(s) { return s; }
+load(process.argv);
+`}, plugin.PartialReasonEvaluatedCode},
 		{"constructor of Function", map[string]string{"app.js": `
 Function.constructor(process.argv[2])();
 function load(s) { return s; }
@@ -1754,6 +1771,7 @@ func TestCallGraph_InTreeOnlyDeclaresNoDidNotRun(t *testing.T) {
 	dir := writeProgram(t, map[string]string{
 		"util.js":      "function trim(s) { return s.trim(); }\nmodule.exports = { trim };\n",
 		"fmt.ts":       "export function fmt(s: string, cb?: Function) { return s; }\nconst bind = Function.prototype.bind;\n",
+		"tail.js":      "module.exports.call = Function.call",
 		"config.json":  `{"a": 1}`,
 		"package.json": `{"name": "app", "imports": {"#u": {"import": "./util.js", "require": "./util.js", "types": "./util.d.ts"}}}`,
 		"app.js": `
@@ -1810,6 +1828,9 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function.call as the last token", "let f;\nf = Function.call"},
 		{"Function.call ending a statement with no semicolon", "const f = Function.call\nconst g = Function.bind\nmodule.exports = { f, g }"},
 		{"a called Function.call.bind chain in a logical operator", "function f() {}\nconst ok = Function.call.bind(f) && true;"},
+		{"Function member read optionally", "const n = Function?.length;"},
+		{"a Function.call.call chain called optionally", "function f() {}\nconst r = Function.call.call?.(f);"},
+		{"a Function.call.call chain called optionally after a space", "function f() {}\nconst r = Function.call.call?. (f);"},
 		{"Function compared", "function isCtor(f) { return f instanceof Function || (Function === f); }"},
 		{"global member read", "const enc = globalThis.TextEncoder;"},
 		{"imported names of global names", "import { top, left } from './util';\nimport * as parent from './util';\nimport self from './util';\nexport const placements = [top, left, parent, self];"},

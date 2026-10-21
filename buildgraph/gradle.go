@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -137,45 +138,119 @@ func resolveGradle(ctx context.Context, r *runner, c Conditions) (*Graph, error)
 		}
 		g.Modules = append(g.Modules, ms...)
 	}
-	if g.Subject.IncludedBuilds, err = gradleIncludedBuilds(filepath.Join(out, "included"), r.dir); err != nil {
+	if g.Subject.IncludedBuilds, g.Subject.UnbindableIncludedBuilds, err = gradleIncludedBuilds(out, r.dir); err != nil {
 		return nil, err
 	}
-	g.Subject.Inputs, err = collectInputs(r.dir, gradleInputs(g.Subject.IncludedBuilds))
+	g.Subject.Inputs, err = gradleBuildInputs(r.dir, g.Subject.IncludedBuilds)
 	if err != nil {
 		return nil, err
 	}
 	return g, nil
 }
 
-// gradleIncludedBuilds reads the directories the init script recorded for the included builds,
-// by slash path from the checkout once symlinks are resolved. One outside the checkout fails the
-// graph: its build logic could change with nothing in the checkout to show it.
-func gradleIncludedBuilds(dir, root string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+// gradleIncludedBuilds reads the directories the init script recorded for the included builds:
+// inside, by slash path from the checkout once symlinks are resolved, and outside, absolute. An
+// included build outside the checkout cannot be bound to the graph, so only the run that resolved
+// it may use the graph. The root build's own includes must all be among those recorded; one that
+// is not means the init script missed a nested build, whose build logic would go unbound.
+func gradleIncludedBuilds(out, root string) (inside, outside []string, err error) {
+	fail := func(log string) error { return &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: log} }
+	read := func(sub string) ([]string, error) {
+		entries, err := os.ReadDir(filepath.Join(out, sub))
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, fail(err.Error())
+		}
+		var paths []string
+		for _, e := range entries {
+			b, err := os.ReadFile(filepath.Join(out, sub, e.Name()))
+			if err != nil {
+				return nil, fail(err.Error())
+			}
+			p := strings.TrimSpace(string(b))
+			if p == "" || !filepath.IsAbs(p) {
+				return nil, fail("included build recorded without an absolute path: " + p)
+			}
+			paths = append(paths, p)
+		}
+		return paths, nil
 	}
+	recorded, err := read("included")
 	if err != nil {
-		return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: err.Error()}
+		return nil, nil, err
+	}
+	direct, err := read("direct")
+	if err != nil {
+		return nil, nil, err
 	}
 	seen := map[string]bool{}
-	var out []string
-	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: err.Error()}
-		}
-		p := strings.TrimSpace(string(b))
+	key := func(p string) (string, bool) {
 		rel, ok := realRel(root, p)
-		if !ok || rel == "." {
-			return nil, &Failure{Kind: KindToolFailed, Detail: stepGraph, Log: "included build " + p + " is outside the checkout, so its build logic cannot be bound to the graph"}
+		if !ok {
+			if r, err := evalExisting(p); err == nil {
+				return filepath.ToSlash(r), false
+			}
+			return filepath.ToSlash(filepath.Clean(p)), false
 		}
-		if !seen[rel] {
-			seen[rel] = true
-			out = append(out, rel)
+		return rel, true
+	}
+	for _, p := range recorded {
+		k, in := key(p)
+		if k == "." {
+			return nil, nil, fail("the root build includes itself, so every file in the checkout would be a build input")
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if in {
+			inside = append(inside, k)
+		} else {
+			outside = append(outside, k)
 		}
 	}
-	sort.Strings(out)
+	for _, p := range direct {
+		if k, _ := key(p); !seen[k] {
+			return nil, nil, fail("included build " + p + " was not recorded by the init script, so its build logic cannot be bound to the graph")
+		}
+	}
+	sort.Strings(inside)
+	sort.Strings(outside)
+	return inside, outside, nil
+}
+
+// gradleBuildInputs is every file gradleInput accepts under dir, and every file of buildSrc and of
+// each included build, each walked from its own directory.
+func gradleBuildInputs(dir string, included []string) ([]Input, error) {
+	inputs, err := collectInputs(dir, gradleInput)
+	if err != nil {
+		return nil, err
+	}
+	trees := included
+	if fi, err := os.Stat(filepath.Join(dir, "buildSrc")); err == nil && fi.IsDir() && !slices.Contains(included, "buildSrc") {
+		trees = append(slices.Clone(included), "buildSrc")
+	}
+	byPath := map[string]Input{}
+	for _, in := range inputs {
+		byPath[in.Path] = in
+	}
+	for _, d := range trees {
+		// Gradle builds a buildSrc no settings file names; an empty one holds nothing to bind.
+		tree, err := collectTree(dir, d, d != "buildSrc" || slices.Contains(included, d))
+		if err != nil {
+			return nil, err
+		}
+		for _, in := range tree {
+			byPath[in.Path] = in
+		}
+	}
+	out := make([]Input, 0, len(byPath))
+	for _, in := range byPath {
+		out = append(out, in)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
 
@@ -487,29 +562,13 @@ func gradleArtifact(name, version, file string) (typ, classifier string) {
 	return typ, classifier
 }
 
-// gradleInputs is gradleInput, and every file under one of the included builds.
-func gradleInputs(included []string) func(rel, name string) bool {
-	return func(rel, name string) bool {
-		if gradleInput(rel, name) {
-			return true
-		}
-		for _, d := range included {
-			if strings.HasPrefix(rel, d+"/") {
-				return true
-			}
-		}
-		return false
-	}
-}
-
 // gradleInput accepts the build scripts, properties, version catalogs, lockfiles and wrapper
-// properties Gradle reads, and everything under buildSrc.
+// properties Gradle reads.
 func gradleInput(rel, name string) bool {
 	switch {
 	case strings.HasSuffix(name, ".gradle"), strings.HasSuffix(name, ".gradle.kts"),
 		name == "gradle.properties", strings.HasSuffix(name, ".versions.toml"),
-		strings.HasSuffix(name, ".lockfile"), name == "gradle-wrapper.properties",
-		strings.HasPrefix(rel, "buildSrc/"):
+		strings.HasSuffix(name, ".lockfile"), name == "gradle-wrapper.properties":
 		return true
 	}
 	return false

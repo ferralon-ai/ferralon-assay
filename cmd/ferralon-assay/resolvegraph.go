@@ -51,9 +51,21 @@ func runResolveGraph(args []string) error {
 		}
 		return err
 	}
+	if err := writableGraph(g); err != nil {
+		return err
+	}
 	b, err := json.MarshalIndent(g, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(*out, graphFileName), append(b, '\n'), 0o644)
+}
+
+// writableGraph refuses a graph no scan could load from a file: one whose build logic lies
+// outside the checkout.
+func writableGraph(g *buildgraph.Graph) error {
+	if u := g.Subject.UnbindableIncludedBuilds; len(u) > 0 {
+		return fmt.Errorf("included build outside the checkout (%s): resolve the graph in the scan with -build-graph auto", u[0])
+	}
+	return nil
 }

@@ -70,8 +70,11 @@ type Subject struct {
 	// IncludedBuilds are the Gradle builds the build includes, nested ones too, by slash path
 	// from the repository root. Every file under each is a build input.
 	IncludedBuilds []string `json:"included_builds,omitempty"`
-	Inputs         []Input  `json:"inputs"`
-	InputsDigest   string   `json:"inputs_digest"`
+	// UnbindableIncludedBuilds are included builds outside the checkout, by absolute path. Nothing
+	// binds their files, so only the run that resolved the graph may use it.
+	UnbindableIncludedBuilds []string `json:"unbindable_included_builds,omitempty"`
+	Inputs                   []Input  `json:"inputs"`
+	InputsDigest             string   `json:"inputs_digest"`
 }
 
 // Input is one build file the tool read, by its slash-separated path from the repository root.
@@ -178,6 +181,7 @@ func InputsDigest(inputs []Input) string {
 // the same bytes.
 func (g *Graph) Normalize() {
 	sort.Strings(g.Subject.IncludedBuilds)
+	sort.Strings(g.Subject.UnbindableIncludedBuilds)
 	sort.Slice(g.Subject.Inputs, func(i, j int) bool { return g.Subject.Inputs[i].Path < g.Subject.Inputs[j].Path })
 	if g.Subject.Inputs == nil {
 		g.Subject.Inputs = []Input{}

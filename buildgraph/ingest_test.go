@@ -217,26 +217,38 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 // newFakeGradleIncluded is newFakeGradle over a checkout whose settings include build-logic, a
-// convention-plugin build whose Kotlin sources no build-script rule names.
-func newFakeGradleIncluded(t *testing.T, included string) fakeRepo {
+// convention-plugin build whose Kotlin sources no build-script rule names. answers adds to the
+// fake's: included.txt and direct.txt list the directories the init script records, with @ROOT@
+// the checkout and @OUT@ a build-logic outside it.
+func newFakeGradleIncluded(t *testing.T, answers map[string]string, files map[string]string) fakeRepo {
 	t.Helper()
-	r := newFakeGradle(t, "", map[string]string{"included.txt": included})
+	r := newFakeGradle(t, "", answers)
+	outside := filepath.Join(filepath.Dir(r.dir), "outside")
+	writeFiles(t, outside, map[string]string{"settings.gradle.kts": "", "src/Plugin.kt": "class Plugin"})
+	r.env = append(r.env, "FAKE_OUTSIDE="+outside)
 	writeFiles(t, r.dir, map[string]string{
 		"build-logic/settings.gradle.kts":             "",
 		"build-logic/src/main/kotlin/Conventions.kt":  "class Conventions",
 		"build-logic/build/classes/Conventions.class": "out",
 	})
+	writeFiles(t, r.dir, files)
 	return r
 }
 
+func included(paths string) map[string]string { return map[string]string{"included.txt": paths} }
+
 func TestGradleIncludedBuilds(t *testing.T) {
-	r := newFakeGradleIncluded(t, "@ROOT@/build-logic\n@ROOT@/build-logic\n")
+	r := newFakeGradleIncluded(t, map[string]string{"included.txt": "@ROOT@/build-logic\n@ROOT@/build-logic\n@OUT@\n", "direct.txt": "@ROOT@/build-logic\n"}, nil)
 	g, err := r.resolve(t, ToolGradle, Conditions{})
 	if err != nil {
 		t.Fatalf("resolve: %v", cause(err))
 	}
-	if !reflect.DeepEqual(g.Subject.IncludedBuilds, []string{"build-logic"}) {
-		t.Fatalf("included builds %v", g.Subject.IncludedBuilds)
+	outside, err := filepath.EvalSymlinks(filepath.Join(filepath.Dir(r.dir), "outside"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(g.Subject.IncludedBuilds, []string{"build-logic"}) || !reflect.DeepEqual(g.Subject.UnbindableIncludedBuilds, []string{filepath.ToSlash(outside)}) {
+		t.Fatalf("included builds %v, unbindable %v", g.Subject.IncludedBuilds, g.Subject.UnbindableIncludedBuilds)
 	}
 	in := map[string]bool{}
 	for _, i := range g.Subject.Inputs {
@@ -246,19 +258,74 @@ func TestGradleIncludedBuilds(t *testing.T) {
 		t.Fatalf("inputs %v", in)
 	}
 
-	for name, included := range map[string]string{"outside the checkout": t.TempDir() + "\n", "the root": "@ROOT@\n"} {
-		r = newFakeGradleIncluded(t, included)
-		if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != "tool_failed:graph" {
-			t.Errorf("included build %s: %v", name, cause(err))
+	for _, tc := range []struct {
+		name    string
+		answers map[string]string
+		files   map[string]string
+		link    [2]string // a symlink written into the checkout: name, target
+		want    string
+	}{
+		{name: "the root", answers: included("@ROOT@\n"), want: "tool_failed:graph"},
+		{name: "an empty path", answers: included("\n"), want: "tool_failed:graph"},
+		{name: "a relative path", answers: included("build-logic\n"), want: "tool_failed:graph"},
+		{name: "a direct include the init script missed", answers: map[string]string{"included.txt": "@ROOT@/build-logic\n", "direct.txt": "@ROOT@/other\n"}, want: "tool_failed:graph"},
+		{name: "an included build holding nothing", answers: included("@ROOT@/empty\n"), files: map[string]string{"empty/.gradle/cache": ""}, want: "tool_failed:inputs"},
+		{name: "a symlink out of the checkout", answers: included("@ROOT@/build-logic\n"), link: [2]string{"build-logic/src/Out.kt", "@OUT@/src/Plugin.kt"}, want: "tool_failed:inputs"},
+		{name: "a symlinked directory", answers: included("@ROOT@/build-logic\n"), files: map[string]string{"shared/A.kt": ""}, link: [2]string{"build-logic/src/shared", "@ROOT@/shared"}, want: "tool_failed:inputs"},
+	} {
+		r := newFakeGradleIncluded(t, tc.answers, tc.files)
+		if tc.link[0] != "" {
+			target := strings.NewReplacer("@ROOT@", r.dir, "@OUT@", filepath.Join(filepath.Dir(r.dir), "outside")).Replace(tc.link[1])
+			if err := os.Symlink(target, filepath.Join(r.dir, tc.link[0])); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := r.resolve(t, ToolGradle, Conditions{}); cause(err) != tc.want {
+			t.Errorf("%s: %v, want %s", tc.name, cause(err), tc.want)
 		}
 	}
 }
 
+// An included build recorded in another case than the checkout spells it binds its files under
+// that spelling, or fails: it never contributes nothing.
+func TestGradleIncludedBuildCase(t *testing.T) {
+	r := newFakeGradleIncluded(t, included("@ROOT@/Build-Logic\n"), nil)
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		return // a case-sensitive file system: the path is not there
+	}
+	file := writeGraphFile(t, g)
+	writeFiles(t, r.dir, map[string]string{"build-logic/src/main/kotlin/Conventions.kt": "class Conventions { val foo = 1 }"})
+	if _, err := Load(file, r.dir, Conditions{}); cause(err) != "graph_rejected:subject_inputs" {
+		t.Fatalf("Load = %q", cause(err))
+	}
+}
+
+func writeGraphFile(t *testing.T, g *Graph) string {
+	t.Helper()
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
 func TestLoadIncludedBuilds(t *testing.T) {
+	edited := func(rel string) func(t *testing.T, g *Graph, r fakeRepo) {
+		return func(t *testing.T, g *Graph, r fakeRepo) { writeFiles(t, r.dir, map[string]string{rel: "edited"}) }
+	}
 	tests := []struct {
-		name string
-		edit func(t *testing.T, g *Graph, r fakeRepo)
-		want string
+		name    string
+		answers map[string]string
+		files   map[string]string
+		link    [2]string
+		fresh   bool
+		edit    func(t *testing.T, g *Graph, r fakeRepo)
+		want    string
 	}{
 		{name: "loads"},
 		{name: "included source edited since", edit: func(t *testing.T, g *Graph, r fakeRepo) {
@@ -303,10 +370,35 @@ func TestLoadIncludedBuilds(t *testing.T) {
 		{name: "maven graph with included builds", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			g.Tool.Name = "maven"
 		}, want: "graph_rejected:subject_inputs"},
+		{name: "included build under a skipped name edited", answers: included("@ROOT@/node_modules/plug\n"),
+			files: map[string]string{"node_modules/plug/settings.gradle.kts": "", "node_modules/plug/src/P.kt": "class P"},
+			edit:  edited("node_modules/plug/src/P.kt"), want: "graph_rejected:subject_inputs"},
+		{name: "source package named build edited", files: map[string]string{"build-logic/src/main/kotlin/com/acme/build/Conv.kt": "class Conv"},
+			edit: edited("build-logic/src/main/kotlin/com/acme/build/Conv.kt"), want: "graph_rejected:subject_inputs"},
+		{name: "buildSrc source package named build edited", files: map[string]string{"buildSrc/build.gradle.kts": "", "buildSrc/src/main/kotlin/acme/build/B.kt": "class B"},
+			edit: edited("buildSrc/src/main/kotlin/acme/build/B.kt"), want: "graph_rejected:subject_inputs"},
+		{name: "buildSrc output ignored", files: map[string]string{"buildSrc/build.gradle.kts": "", "buildSrc/src/B.kt": "class B"},
+			edit: edited("buildSrc/build/classes/B.class")},
+		{name: "symlinked source target edited", files: map[string]string{"shared/Shared.kt": "class Shared"},
+			link: [2]string{"build-logic/src/Shared.kt", "../../shared/Shared.kt"},
+			edit: edited("shared/Shared.kt"), want: "graph_rejected:subject_inputs"},
+		{name: "included build outside the checkout", answers: included("@ROOT@/build-logic\n@OUT@\n"), want: "graph_rejected:subject_inputs"},
+		{name: "included build outside the checkout, resolved in this run", answers: included("@ROOT@/build-logic\n@OUT@\n"), fresh: true},
+		{name: "maven graph with an unbindable included build, resolved in this run", answers: included("@OUT@\n"), fresh: true,
+			edit: func(t *testing.T, g *Graph, r fakeRepo) { g.Tool.Name = "maven" }, want: "graph_rejected:subject_inputs"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newFakeGradleIncluded(t, "@ROOT@/build-logic\n")
+			answers := tc.answers
+			if answers == nil {
+				answers = included("@ROOT@/build-logic\n")
+			}
+			r := newFakeGradleIncluded(t, answers, tc.files)
+			if tc.link[0] != "" {
+				if err := os.Symlink(tc.link[1], filepath.Join(r.dir, tc.link[0])); err != nil {
+					t.Fatal(err)
+				}
+			}
 			g, err := r.resolve(t, ToolGradle, Conditions{})
 			if err != nil {
 				t.Fatalf("resolve: %v", cause(err))
@@ -314,15 +406,11 @@ func TestLoadIncludedBuilds(t *testing.T) {
 			if tc.edit != nil {
 				tc.edit(t, g, r)
 			}
-			b, err := json.Marshal(g)
-			if err != nil {
-				t.Fatal(err)
+			var opts []LoadOption
+			if tc.fresh {
+				opts = append(opts, Fresh())
 			}
-			file := filepath.Join(t.TempDir(), "graph.json")
-			if err := os.WriteFile(file, b, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := Load(file, r.dir, Conditions{}); cause(err) != tc.want {
+			if _, err := Load(writeGraphFile(t, g), r.dir, Conditions{}, opts...); cause(err) != tc.want {
 				t.Fatalf("Load = %q, want %q", cause(err), tc.want)
 			}
 		})

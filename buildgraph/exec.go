@@ -171,6 +171,81 @@ func collectInputs(dir string, match func(rel, name string) bool) ([]Input, erro
 	return inputs, nil
 }
 
+// treeSkipDirs are never walked inside an included build, wherever they sit: VCS metadata and tool
+// caches, none a source package name can take. Build output is skipped only where it lives.
+var treeSkipDirs = map[string]bool{".git": true, ".gradle": true, ".kotlin": true, "node_modules": true}
+
+// collectTree digests every file under root/sub, an included build, by slash path from root. It
+// walks from sub itself, so no ancestor's name keeps it out, and skips a build directory only
+// beside a Gradle build or settings file, so a source package named build is still read. A
+// symlinked file is hashed under its own path when its target is in the checkout; any other
+// symlink fails, since what it points to could change unseen. A required build must hold a file:
+// one that holds none was recorded under some other name than the walk can find.
+func collectTree(root, sub string, required bool) ([]Input, error) {
+	fail := func(log string) error { return &Failure{Kind: KindToolFailed, Detail: "inputs", Log: log} }
+	base := filepath.Join(root, filepath.FromSlash(sub))
+	var inputs []Input
+	err := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != base && (treeSkipDirs[d.Name()] || d.Name() == "build" && gradleProjectDir(filepath.Dir(p))) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(base, p)
+		if err != nil {
+			return err
+		}
+		rel = sub + "/" + filepath.ToSlash(rel)
+		file := p
+		switch {
+		case d.Type().IsRegular():
+		case d.Type()&fs.ModeSymlink != 0:
+			target, ok := realRel(root, p)
+			if !ok {
+				return fail("symlink " + rel + " in an included build points outside the checkout")
+			}
+			file = filepath.Join(root, filepath.FromSlash(target))
+			if fi, err := os.Stat(file); err != nil || !fi.Mode().IsRegular() {
+				return fail("symlink " + rel + " in an included build is not to a file")
+			}
+		default:
+			return nil
+		}
+		sum, err := sha256File(file)
+		if err != nil {
+			return err
+		}
+		inputs = append(inputs, Input{Path: rel, SHA256: sum})
+		return nil
+	})
+	if err != nil {
+		var f *Failure
+		if errors.As(err, &f) {
+			return nil, f
+		}
+		return nil, fail(err.Error())
+	}
+	if len(inputs) == 0 && required {
+		return nil, fail("included build " + sub + " holds no build input")
+	}
+	return inputs, nil
+}
+
+// gradleProjectDir reports whether dir holds a Gradle build or settings file, so a build directory
+// beside it is that project's output.
+func gradleProjectDir(dir string) bool {
+	for _, n := range []string{"build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"} {
+		if _, err := os.Lstat(filepath.Join(dir, n)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // gitSubject reads the checkout's commit and tree when dir is the top of a git work tree. In a
 // subdirectory of one, or outside one, both are empty and the inputs alone bind the graph.
 func gitSubject(ctx context.Context, dir string) (commit, tree string) {

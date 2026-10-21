@@ -281,22 +281,36 @@ func keys(m map[string]string) []string {
 // build, and a build only the library build includes, which the root build never lists.
 func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 	env := realToolEnv(t, "ASSAY_BUILDGRAPH_GRADLE_BIN")
-	dir := t.TempDir()
+	root := t.TempDir()
+	dir := filepath.Join(root, "repo")
+	writeFiles(t, root, map[string]string{
+		"outside/settings.gradle":      "rootProject.name = 'outside'\n",
+		"outside/src/main/java/O.java": "class O {}\n",
+	})
 	writeFiles(t, dir, map[string]string{
-		"settings.gradle":                      "pluginManagement { includeBuild('build-logic') }\nrootProject.name = 'root'\nincludeBuild('libs/core')\n",
-		"build.gradle":                         "plugins { id 'java' }\n",
-		"build-logic/settings.gradle":          "rootProject.name = 'build-logic'\n",
-		"build-logic/src/main/groovy/A.groovy": "class A {}\n",
-		"libs/core/settings.gradle":            "rootProject.name = 'core'\nincludeBuild('../../nested')\n",
-		"nested/settings.gradle":               "rootProject.name = 'nested'\n",
-		"nested/src/main/java/N.java":          "class N {}\n",
+		"settings.gradle":                              "pluginManagement { includeBuild('build-logic') }\nrootProject.name = 'root'\nincludeBuild('libs/core')\nincludeBuild('../outside')\n",
+		"build.gradle":                                 "plugins { id 'java' }\n",
+		"build-logic/settings.gradle":                  "rootProject.name = 'build-logic'\n",
+		"build-logic/src/main/groovy/A.groovy":         "class A {}\n",
+		"libs/core/settings.gradle":                    "rootProject.name = 'core'\nincludeBuild('../../nested')\n",
+		"nested/settings.gradle":                       "rootProject.name = 'nested'\n",
+		"nested/src/main/java/N.java":                  "class N {}\n",
+		"buildSrc/build.gradle":                        "plugins { id 'groovy' }\n",
+		"buildSrc/src/main/groovy/acme/build/B.groovy": "package acme.build\nclass B {}\n",
 	})
 	g, err := Resolve(context.Background(), Request{Dir: dir, Tool: ToolGradle, WorkDir: filepath.Join(t.TempDir(), "w"), Env: env})
 	if err != nil {
 		t.Fatalf("resolve: %v: %s", cause(err), err.(*Failure).Log)
 	}
-	if want := []string{"build-logic", "libs/core", "nested"}; !reflect.DeepEqual(g.Subject.IncludedBuilds, want) {
+	if want := []string{"build-logic", "buildSrc", "libs/core", "nested"}; !reflect.DeepEqual(g.Subject.IncludedBuilds, want) {
 		t.Fatalf("included builds %v, want %v", g.Subject.IncludedBuilds, want)
+	}
+	outside, err := filepath.EvalSymlinks(filepath.Join(root, "outside"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{filepath.ToSlash(outside)}; !reflect.DeepEqual(g.Subject.UnbindableIncludedBuilds, want) {
+		t.Fatalf("unbindable included builds %v, want %v", g.Subject.UnbindableIncludedBuilds, want)
 	}
 	b, err := json.Marshal(g)
 	if err != nil {
@@ -306,11 +320,21 @@ func TestGradleIncludedBuildsRoundTrip(t *testing.T) {
 	if err := os.WriteFile(file, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(file, dir, Conditions{}); err != nil {
-		t.Fatalf("Load: %v", cause(err))
-	}
-	writeFiles(t, dir, map[string]string{"nested/src/main/java/N.java": "class N { int x; }\n"})
 	if _, err := Load(file, dir, Conditions{}); cause(err) != "graph_rejected:subject_inputs" {
-		t.Fatalf("Load after a nested edit: %q", cause(err))
+		t.Fatalf("Load of a file with an outside included build: %q", cause(err))
+	}
+	if _, err := Load(file, dir, Conditions{}, Fresh()); err != nil {
+		t.Fatalf("Load fresh: %v", cause(err))
+	}
+	for _, edit := range []string{"nested/src/main/java/N.java", "buildSrc/src/main/groovy/acme/build/B.groovy"} {
+		was, err := os.ReadFile(filepath.Join(dir, edit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFiles(t, dir, map[string]string{edit: "class Edited {}\n"})
+		if _, err := Load(file, dir, Conditions{}, Fresh()); cause(err) != "graph_rejected:subject_inputs" {
+			t.Fatalf("Load after editing %s: %q", edit, cause(err))
+		}
+		writeFiles(t, dir, map[string]string{edit: string(was)})
 	}
 }

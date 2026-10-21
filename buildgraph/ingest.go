@@ -36,8 +36,13 @@ var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true,
 //   - every file is absolute and still has its recorded sha256, and a node without one is the
 //     module root, a reactor sibling, or a pom.
 //
-// Any failure is a *Failure of kind graph_rejected naming the check.
-func Load(file, dir string, stated Conditions) (*Graph, error) {
+// Any failure is a *Failure of kind graph_rejected naming the check. A graph with an included
+// build outside the checkout is rejected unless the caller resolved it in this run (Fresh).
+func Load(file, dir string, stated Conditions, opts ...LoadOption) (*Graph, error) {
+	var o loadOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	g, err := Decode(file)
 	if err != nil {
 		return nil, err
@@ -59,6 +64,9 @@ func Load(file, dir string, stated Conditions) (*Graph, error) {
 	if err := checkInputs(g, dir); err != nil {
 		return nil, err
 	}
+	if len(g.Subject.UnbindableIncludedBuilds) > 0 && (!o.fresh || g.Tool.Name != "gradle") {
+		return nil, reject(CheckSubjectInputs, "included build outside the checkout ("+g.Subject.UnbindableIncludedBuilds[0]+"); use build-graph auto")
+	}
 	siblings := map[string]bool{}
 	for _, m := range g.Modules {
 		siblings[m.Root] = true
@@ -70,6 +78,15 @@ func Load(file, dir string, stated Conditions) (*Graph, error) {
 	}
 	return g, nil
 }
+
+// LoadOption adjusts Load.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct{ fresh bool }
+
+// Fresh states that the caller resolved the graph in this run from the checkout Load reads, so an
+// included build outside the checkout, which nothing binds, cannot have changed since.
+func Fresh() LoadOption { return func(o *loadOptions) { o.fresh = true } }
 
 // Decode reads the graph at file without checking it. Only a reader handed a file that Load has
 // already accepted in this run uses it.
@@ -127,17 +144,18 @@ func checkInputs(g *Graph, dir string) error {
 		}
 		recorded[in.Path] = true
 	}
-	var match func(rel, name string) bool
-	exact := false
+	var found []Input
+	var err error
 	switch g.Tool.Name {
 	case "maven":
-		if len(g.Subject.IncludedBuilds) > 0 {
+		if len(g.Subject.IncludedBuilds) > 0 || len(g.Subject.UnbindableIncludedBuilds) > 0 {
 			return reject(CheckSubjectInputs, "included builds in a maven graph")
 		}
-		match = mavenInput(nil)
+		found, err = collectInputs(dir, mavenInput(nil))
 	case "gradle":
 		for _, d := range g.Subject.IncludedBuilds {
-			// A path that is not clean and slash-relative resolves to some other path than itself.
+			// realRel gives back d only for a clean slash path to d itself: not an unclean path,
+			// and not one through a symlink, whose files the walk would never reach.
 			p := filepath.Join(dir, filepath.FromSlash(d))
 			if rel, ok := realRel(dir, p); !ok || rel != d {
 				return reject(CheckSubjectInputs, "included build outside the checkout: "+d)
@@ -146,21 +164,23 @@ func checkInputs(g *Graph, dir string) error {
 				return reject(CheckSubjectInputs, "included build "+d+" is not a directory")
 			}
 		}
-		match = gradleInputs(g.Subject.IncludedBuilds)
-		// A Gradle graph records exactly the files match accepts, so one it does not accept means
-		// the included builds were edited out from under their inputs.
-		exact = true
+		found, err = gradleBuildInputs(dir, g.Subject.IncludedBuilds)
+		if err == nil {
+			// A Gradle graph records exactly the files its builds hold, so one the walk does not
+			// find means the included builds were edited out from under their inputs.
+			walked := map[string]bool{}
+			for _, in := range found {
+				walked[in.Path] = true
+			}
+			for _, in := range g.Subject.Inputs {
+				if !walked[in.Path] {
+					return reject(CheckSubjectInputs, in.Path+" is not a build input of the graph's builds")
+				}
+			}
+		}
 	default:
 		return reject(CheckSubjectInputs, "unknown tool "+g.Tool.Name)
 	}
-	if exact {
-		for _, in := range g.Subject.Inputs {
-			if !match(in.Path, path.Base(in.Path)) {
-				return reject(CheckSubjectInputs, in.Path+" is not a build input of the graph's builds")
-			}
-		}
-	}
-	found, err := collectInputs(dir, match)
 	if err != nil {
 		return reject(CheckSubjectInputs, err.Error())
 	}

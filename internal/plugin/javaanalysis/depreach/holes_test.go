@@ -366,12 +366,46 @@ func TestReach_SignatureRoots(t *testing.T) {
 			name: "an inherited method a subclass's platform interface names",
 			classes: []classfile.Class{
 				mainCalls(touch),
-				{Name: base, Super: cowl, Public: true, Methods: []classfile.Method{
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
 					callsSink(base, "uncaughtException", uncaught),
 				}},
 				{Name: d, Super: base, Interfaces: []string{ueh}, Public: true},
 			},
 			want: ReachableCandidate, via: "Base.uncaughtException",
+		},
+		{
+			name: "the same two levels up",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: "com/acme/Mid", Super: base, Public: true},
+				{Name: d, Super: "com/acme/Mid", Interfaces: []string{ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.uncaughtException",
+		},
+		{
+			name: "an inherited default method a subclass's platform interface names",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: "com/acme/Handler", Super: objectClass, Abstract: true, Public: true, Methods: []classfile.Method{
+					callsSink("com/acme/Handler", "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: objectClass, Interfaces: []string{"com/acme/Handler", ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Handler.uncaughtException",
+		},
+		{
+			name: "an inherited method no loadable subclass names is no root",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: base, Public: true},
+			},
+			want: NotExploitable,
 		},
 		{
 			name: "a method an unopened supertype may declare",
@@ -387,7 +421,7 @@ func TestReach_SignatureRoots(t *testing.T) {
 			name: "a method a subclass's unopened supertype may declare",
 			classes: []classfile.Class{
 				mainCalls(touch),
-				{Name: base, Super: cowl, Public: true, Methods: []classfile.Method{
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
 					callsSink(base, "start", "()V"),
 				}},
 				{Name: d, Super: base, Interfaces: []string{"org/unopened/Plugin"}, Public: true},

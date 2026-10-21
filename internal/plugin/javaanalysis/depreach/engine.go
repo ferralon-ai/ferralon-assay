@@ -916,9 +916,10 @@ func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
 }
 
 // providerRoots returns the methods the JDK itself can call on loaded classes it
-// finds or holds without the searched code handing them over: for each
-// platformLoadable class, its overridable methods the JDK can name (jdkCallable), and
-// when it is a public concrete class, its public constructors, public static
+// finds or holds without the searched code handing them over: the overridable methods
+// the JDK can name (jdkCallable) of each class that is platformLoadable or a supertype
+// of one, since a platformLoadable subclass inherits them, and for a platformLoadable
+// class that is public and concrete, its public constructors, public static
 // provider() and the static initializers instantiating it runs (ServiceLoader,
 // DriverManager and the factory lookups load providers named in META-INF/services).
 // A root method that returns an object the JDK then calls is a hazard when the
@@ -930,12 +931,14 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	inherited := e.loadableSupertypes()
 	for _, n := range names {
-		if !e.platformLoadable(n) {
+		loadable := e.platformLoadable(n)
+		if !loadable && !inherited[n] {
 			continue
 		}
 		cls := e.classes[n]
-		byName := cls.Public && !cls.Abstract
+		byName := loadable && cls.Public && !cls.Abstract
 		for i := range cls.Methods {
 			m := &cls.Methods[i]
 			switch {
@@ -960,6 +963,32 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 		}
 	}
 	return roots, hazard
+}
+
+// loadableSupertypes returns the loaded classes and interfaces a platformLoadable class
+// extends or implements, directly or not: the JDK holding that class runs the methods
+// it inherits from them.
+func (e *Engine) loadableSupertypes() map[string]bool {
+	out := map[string]bool{}
+	var stack []string
+	for n, cls := range e.classes {
+		if e.platformLoadable(n) {
+			stack = append(stack, cls.Super)
+			stack = append(stack, cls.Interfaces...)
+		}
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cls := e.classes[cur]
+		if cls == nil || out[cur] {
+			continue
+		}
+		out[cur] = true
+		stack = append(stack, cls.Super)
+		stack = append(stack, cls.Interfaces...)
+	}
+	return out
 }
 
 // touchesPlatform reports whether edge can run a JDK body other than

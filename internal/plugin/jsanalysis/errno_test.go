@@ -244,6 +244,32 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		return m
 	}
 
+	// shadowKeepsLimit checks uninspectable_package on a require of cfg, a bare specifier a
+	// tsconfig paths alias claims, which follows from what nodeModulesHas finds for cfg.
+	shadowKeepsLimit := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: dir})
+			if err != nil {
+				t.Fatalf("CallGraph: %v", err)
+			}
+			if got := hasReason(res.Partiality, plugin.PartialReasonUninspectablePackage); got != want {
+				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonUninspectablePackage, got, want, res.Partiality.Reasons)
+			}
+		}
+	}
+	shadowedCfg := func(extra map[string]string) map[string]string {
+		m := map[string]string{
+			"package.json":  `{"name":"app"}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+			"app.js":        "const m = require('cfg');\nfunction load(s) { return m.parse(s); }\nload(process.argv);\n",
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -278,6 +304,19 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			{"missing", importX(nil), func(t *testing.T, dir string) {
 				dangle(t, dir, "node_modules/x")
 			}, importKeepsLimit(false)},
+		}},
+		{"nodeModulesHas", []row{
+			{"EACCES", shadowedCfg(map[string]string{"node_modules/other/package.json": `{"name":"other"}`}), func(t *testing.T, dir string) {
+				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
+				wantErr(t, dir, "node_modules/cfg", os.ErrPermission, true)
+			}, shadowKeepsLimit(true)},
+			{"ELOOP", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, dir, "node_modules")
+				wantErr(t, dir, "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
+			{"missing", shadowedCfg(nil), func(t *testing.T, dir string) {
+				dangle(t, dir, "node_modules")
+			}, shadowKeepsLimit(false)},
 		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {

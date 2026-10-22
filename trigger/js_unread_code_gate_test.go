@@ -637,6 +637,152 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function constructor as the left operand of ??", `
+const a = function () {};
+const r = (a.constructor ?? 0)(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"constructor of a function expression read for a member", `
+const n = (function () {}).constructor.name;
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"get of a constructor property descriptor", `
+const P = Object.getPrototypeOf(function () {});
+const g = Object.getOwnPropertyDescriptors(P).constructor.get;
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructor called on the right of instanceof", `
+const a = function () {};
+const t = 0 instanceof a.constructor(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructor called through .apply", `
+const a = function () {};
+a.constructor.apply(null, [process.argv[3]])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructor bound through .bind", `
+const a = function () {};
+a.constructor.bind(null)(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructor called in an if condition", `
+const a = function () {};
+if (a.constructor(process.argv[3])()) a.n = 1;
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function read by an optional literal key", `
+function f(o) { const F = o?.['Function']; return F(process.argv[3])(); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function destructured as a shorthand constructor key before another key", `
+const { constructor, name } = function () {};
+constructor(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function destructured as a constructor key with a default", `
+const { constructor = null } = function () {};
+constructor(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function destructured as a constructor key in an assignment", `
+let F;
+({ constructor: F } = function () {});
+F(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"constructor key destructured in a for-in head", `
+let F;
+for ({ constructor: F } in { a: 1 }) F(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function destructured as a constructor key in a for-of head", `
+let F;
+for ({ constructor: F } of [function () {}]) F(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"constructor key passed as the only argument", `
+function prop(k) { return (o) => o[k]; }
+const get = prop('constructor');
+get(function () {})(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"constructor key passed as a middle argument", `
+function pluck(o, k, d) { return o[k] || d; }
+const F = pluck(function () {}, 'constructor', null);
+F(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module initialised from a parameter and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(a) { var module = a; return helper(module); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module initialised from a name in a declaration list and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f() { var module = globalThis.m, b = {}; return helper(module); }
+f();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"require called as a member of this", `
+function f() { return this.require(process.argv[3]); }
+f();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by two template-literal keys", `
+const o = function () {};
+const n = 'constructor';
+o[` + "`${n}`" + `][` + "`${n}`" + `](process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by two computed keys and called through .call", `
+const o = function () {};
+const k = 'constructor';
+o[k][k].call(null, process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

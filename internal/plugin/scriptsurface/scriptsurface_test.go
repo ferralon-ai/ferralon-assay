@@ -125,6 +125,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 
 		// Expansions, redirects and lines that do not tokenise.
 		{"$VAR argument", tree(map[string]string{"install.sh": "inst install -r $REQS\n"}), true, ""},
+		{"$VAR in place of a name an allowed form takes", tree(map[string]string{"install.sh": "inst run $X\n"}), true, ""},
+		{"redirect in place of a name an allowed form takes", tree(map[string]string{"install.sh": "inst run >log\n"}), true, ""},
 		{"variable installer", tree(map[string]string{"Makefile": "deps:\n\t$(VENV)/bin/inst sync\n"}), true, ""},
 		{"redirect", tree(map[string]string{"install.sh": "inst sync > /tmp/log\n"}), true, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},

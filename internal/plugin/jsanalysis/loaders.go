@@ -298,13 +298,17 @@ func endsOperand(clean []rune, p int) bool {
 
 // symbolPlain reports whether every Symbol in the module appears where it cannot be bound
 // or assigned, so that it is the global's. Each Symbol, bare or a member (whose object may
-// be the global), must be followed by `.` or `(` and not name a function, TS namespace or
-// module, or be read by a typeof on its own line. A with statement may put any object's
-// Symbol in scope; a literal 'Symbol' may key a write to the global; an escaped identifier
-// may spell Symbol unseen; and an HTML-like comment, which a script reads to the end of its
-// line, may hide a token the scan sees.
+// be the global), must be followed by `.` or `(` and not name a function, or a TS namespace
+// or module (dotted or not), or be read by a typeof on the same line. A with statement may
+// put any object's Symbol in scope; a literal 'Symbol' may key a write to the global; an
+// escaped identifier may spell Symbol unseen; and an HTML-like comment, which a script
+// reads to the end of its line, or a slash stripJS may lex otherwise than the runtime, may
+// hide a binding from the scan or a token from the runtime.
 func symbolPlain(clean, src []rune) bool {
 	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
+		return false
+	}
+	if slashAmbiguous(clean, src) {
 		return false
 	}
 	for i := 0; i < len(clean); {
@@ -338,11 +342,86 @@ func symbolRead(clean, src []rune, i, next int) bool {
 	if prev == "typeof" && !lineBreakAfter(clean, src, b) {
 		return true
 	}
-	if prev == "function" || prev == "namespace" || prev == "module" || b >= 0 && clean[b] == '*' {
+	if prev == "function" || b >= 0 && clean[b] == '*' {
+		return false
+	}
+	if head, _ := wordBefore(clean, skipSpaceBack(clean, chainHead(clean, i)-1)); head == "namespace" || head == "module" {
 		return false
 	}
 	q := skipSpace(clean, next)
 	return q < len(clean) && (clean[q] == '(' || clean[q] == '.')
+}
+
+// chainHead returns the start of the dotted name the word at i ends, so that the Symbol in
+// `namespace A.Symbol.x` is seen to be named by the namespace.
+func chainHead(clean []rune, i int) int {
+	for {
+		b := skipSpaceBack(clean, i-1)
+		if b < 1 || clean[b] != '.' || clean[b-1] == '.' {
+			return i
+		}
+		w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
+		if w == "" {
+			return i
+		}
+		i = s
+	}
+}
+
+// regexKeywords are the keywords a regex may follow, where stripJS, seeing a word, reads a
+// slash as division.
+var regexKeywords = map[string]bool{
+	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true, "of": true,
+	"instanceof": true, "new": true, "delete": true, "void": true, "throw": true, "yield": true,
+	"await": true, "default": true, "extends": true,
+}
+
+// slashAmbiguous reports whether stripJS may have lexed some slash otherwise than the
+// runtime: as division after `)`, `}` or a keyword, where a regex may start, or as a regex
+// after `++`, `--`, a postfix `!` or a `>` other than an arrow's, where a division may
+// follow. Up to its first such slash, stripJS lexes as the runtime does, so a module
+// without one is lexed faithfully throughout.
+func slashAmbiguous(clean, src []rune) bool {
+	for i, c := range src {
+		if c != '/' {
+			continue
+		}
+		j := skipSpaceBack(clean, i-1)
+		if j < 0 {
+			continue
+		}
+		if clean[i] == '/' {
+			if clean[j] == ')' || clean[j] == '}' {
+				return true
+			}
+			if w, s := wordBefore(clean, j); regexKeywords[w] && !memberName(clean, s) {
+				return true
+			}
+			continue
+		}
+		if i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*') || src[i-1] == '/' || src[i-1] == '*' {
+			continue
+		}
+		switch clean[j] {
+		case '+', '-':
+			if j > 0 && clean[j-1] == clean[j] {
+				return true
+			}
+		case '>':
+			if j == 0 || clean[j-1] != '=' {
+				return true
+			}
+		case '!':
+			k := skipSpaceBack(clean, j-1)
+			if k < 0 {
+				continue
+			}
+			if w, s := wordBefore(clean, k); w != "" && !(regexKeywords[w] && !memberName(clean, s)) || clean[k] == ')' || clean[k] == ']' || clean[k] == '_' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // symbolLiteral reports whether the string or template literal opening at i is exactly

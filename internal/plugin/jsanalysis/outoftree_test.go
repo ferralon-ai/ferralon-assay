@@ -2028,6 +2028,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"process members and destructuring", "const dev = process.env.NODE_ENV !== 'production';\nprocess.on('exit', () => {});\nconst { env, argv } = process;\nconst p = typeof process !== 'undefined' ? process.env : {};"},
 		{"module data members", "if (module.hot) { module.hot.accept(); }\nmodule.exports = { id: module.id, file: module['filename'] };"},
 		{"module re-exported under its name", "const m = 1;\nexport { m as module };"},
+		{"constructor of a value, of this and of a class", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nmodule.exports = [b.constructor, Object.getPrototypeOf(b).constructor, b?.constructor.name];"},
 		{"property named module on a plain object", "const cfg = {};\ncfg.module = 1;\nmodule.exports = cfg.module.rules;"},
 		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
 		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},

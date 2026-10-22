@@ -232,6 +232,43 @@ const j = _load('json5', module);
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function reached through constructor.constructor", `
+const j = [].constructor.constructor('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached through literal constructor keys", `
+const j = ({})['constructor']['constructor']('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"AsyncFunction through Object.getPrototypeOf", `
+const AF = Object.getPrototypeOf(async function () {}).constructor;
+const j = { parse: String };
+AF('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"GeneratorFunction through Reflect.getPrototypeOf and optional chaining", `
+const GF = Reflect.getPrototypeOf(function* () {})?.constructor;
+const j = { parse: String };
+GF('yield require("json5")')().next();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"AsyncFunction through __proto__", `
+const AF = (async () => {}).__proto__.constructor;
+const j = { parse: String };
+AF('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as the constructor of a function expression", `
+const F = (function () {}).constructor;
+const j = F('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -275,6 +312,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require as an object key", "const cfg = { require: ['./plugins'] };\nconst j = require('./plugins');", nil},
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
+		{"constructor of a value and of this", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nconst C = b.constructor;\nconst P = Object.getPrototypeOf(b).constructor;\nconst j = require('./plugins');", nil},
 		{"imports entry whose types branch is a declaration file", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"types":"./plugins/index.d.ts","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
 		}},

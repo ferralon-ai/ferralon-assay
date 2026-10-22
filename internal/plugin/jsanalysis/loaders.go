@@ -574,7 +574,88 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		mb.computedReq = true
 	case "eval", "Function":
 		mb.evaluated = true
+	case "constructor":
+		if b := skipSpaceBack(clean, a-1); constructorReachesFunction(clean, src, b) {
+			mb.evaluated = true
+		}
 	}
+}
+
+// constructorUse records `.constructor` (or `?.constructor`) at i when it reaches a function
+// constructor (constructorReachesFunction).
+func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
+	b := skipSpaceBack(clean, i-1)
+	if b >= 0 && clean[b] == '.' && !(b >= 1 && clean[b-1] == '.') && constructorReachesFunction(clean, src, memberDot(clean, b)) {
+		mb.evaluated = true
+	}
+}
+
+// constructorReachesFunction reports whether a constructor member, accessed by the operator
+// starting at op ('.', the '?' of `?.`, or the '[' of a literal key), reads the constructor
+// of a function, which is Function or AsyncFunction/GeneratorFunction and runs source built
+// at run time: a `.constructor.constructor` chain on any receiver (`[].constructor.constructor`),
+// or the constructor of a function, async function, generator or arrow expression, directly
+// or through Object.getPrototypeOf, Reflect.getPrototypeOf or `__proto__`. A single
+// `x.constructor` on any other receiver is the class of a value and is not judged.
+func constructorReachesFunction(clean, src []rune, op int) bool {
+	if op >= 1 && clean[op] == '[' && clean[op-1] == '.' && op >= 2 && clean[op-2] == '?' {
+		op -= 2
+	}
+	k := skipSpaceBack(clean, op-1)
+	if k < 0 {
+		return false
+	}
+	switch {
+	case clean[k] == ']':
+		a := skipSpaceBack(clean, k-1)
+		if a >= 0 && clean[a] == '_' && src[a] != '_' && specifierAt(src, a) == "constructor" {
+			return true // `x['constructor'].constructor`
+		}
+		return false
+	case clean[k] == ')':
+		return functionGroup(clean, k)
+	case !isIdentPart(clean[k]):
+		return false
+	}
+	w, s := wordBefore(clean, k)
+	d := skipSpaceBack(clean, s-1)
+	if d < 0 || clean[d] != '.' || d >= 1 && clean[d-1] == '.' {
+		return false
+	}
+	switch w {
+	case "constructor":
+		return true
+	case "__proto__":
+		r := skipSpaceBack(clean, memberDot(clean, d)-1)
+		return r >= 0 && clean[r] == ')' && functionGroup(clean, r)
+	}
+	return false
+}
+
+// functionGroup reports whether the parenthesised group or argument list closing at close
+// holds a function expression at its top level: a `function` or `async` keyword or an arrow,
+// as in `(async () => {})` or `Object.getPrototypeOf(function* () {})`.
+func functionGroup(clean []rune, close int) bool {
+	depth := 0
+	for k := close - 1; k >= 0; k-- {
+		switch r := clean[k]; {
+		case r == ')' || r == ']' || r == '}':
+			depth++
+		case r == '(' || r == '[' || r == '{':
+			if depth == 0 {
+				return false // the group's own opening bracket
+			}
+			depth--
+		case depth > 0:
+		case r == '>' && k >= 1 && clean[k-1] == '=':
+			return true
+		case isIdentStart(r) && (k == 0 || !isIdentPart(clean[k-1])):
+			if w, _ := readWord(clean, k); w == "function" || w == "async" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // loaderCall records the argument of a require() (viaRequire) or import() call whose '(' is

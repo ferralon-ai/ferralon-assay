@@ -117,6 +117,9 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "_load", word == "dlopen", word == "eval":
 			mb.memberUse(clean, i, word)
 			i = next
+		case word == "arguments":
+			mb.argumentsUse(clean, i, next, frames)
+			i = next
 		case word == "constructor":
 			mb.constructorUse(clean, src, i)
 			i = next

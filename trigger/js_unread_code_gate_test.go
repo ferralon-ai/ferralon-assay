@@ -418,6 +418,18 @@ const j = r(process.argv[3]);
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"the module wrapper's require read through top-level arguments", `
+const r = arguments[1];
+const j = r(process.argv[3]);
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"the module wrapper's require read through arguments in a top-level arrow", `
+const pick = () => arguments[1];
+const j = pick()(process.argv[3]);
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };
@@ -476,6 +488,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
 		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"webpack's runtime require of an in-tree module", "const j = __non_webpack_require__('./plugins');", nil},
+		{"arguments inside a function, as a member and as a key", "function first() { return arguments[0]; }\nconst info = { arguments: first.arguments };\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,

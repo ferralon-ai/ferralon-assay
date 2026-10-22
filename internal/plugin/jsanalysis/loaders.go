@@ -599,7 +599,8 @@ func operandEnds(clean []rune, p int) bool {
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of
 // a bracket access, `x['require']`, or the key of a reflective read (reflectiveKey), naming
 // a loader entry point. A reflective read hands the member's value on, so a constructor
-// key there flags whatever the receiver. A key on the module object
+// key there flags whatever the receiver, and so does a quoted or computed constructor key
+// in a destructuring pattern (destructuredLiteralKey). A key on the module object
 // or process is judged by objectUse whatever it is.
 func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	if reflectiveKey(clean, a) {
@@ -611,6 +612,10 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		case "eval", "Function", "constructor":
 			mb.evaluated = true
 		}
+		return
+	}
+	if specifierAt(src, a) == "constructor" && destructuredLiteralKey(clean, a) {
+		mb.evaluated = true
 		return
 	}
 	if b := skipSpaceBack(clean, a-1); b < 0 || clean[b] != '[' {
@@ -638,6 +643,25 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 			mb.evaluated = true
 		}
 	}
+}
+
+// destructuredLiteralKey reports whether the string literal at a is a quoted key
+// (`{ 'k': x } =`) or a computed key (`{ ['k']: x } =`) of an object destructuring pattern
+// (destructuredKey), which takes the member under a local name.
+func destructuredLiteralKey(clean []rune, a int) bool {
+	i, next := a, a+1
+	if b := skipSpaceBack(clean, a-1); b >= 0 && clean[b] == '[' {
+		e := skipSpace(clean, a+1)
+		if e >= len(clean) || clean[e] != ']' {
+			return false
+		}
+		i, next = b, e+1
+	}
+	p := skipSpace(clean, next)
+	if p >= len(clean) || clean[p] != ':' || p+1 < len(clean) && clean[p+1] == ':' {
+		return false
+	}
+	return destructuredKey(clean, i, next)
 }
 
 // reflectiveKey reports whether the string literal at a is the whole second argument of

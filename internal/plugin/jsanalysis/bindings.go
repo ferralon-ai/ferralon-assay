@@ -73,11 +73,19 @@ type prefixLoad struct {
 }
 
 // addLoads records the loads o found (its literal specifiers and runtime-computed, native
-// and evaluated loads) without its bindings.
+// and evaluated loads) without its bindings. A prefix load in o counts as runtime-computed,
+// since nothing judges it against the files its prefix names.
 func (mb *moduleBindings) addLoads(o moduleBindings) {
 	mb.specifiers = append(mb.specifiers, o.specifiers...)
 	mb.dynImport = mb.dynImport || o.dynImport
 	mb.computedReq = mb.computedReq || o.computedReq
+	for _, pl := range o.prefixLoads {
+		if pl.dyn {
+			mb.dynImport = true
+		} else {
+			mb.computedReq = true
+		}
+	}
 	mb.nativeLoad = mb.nativeLoad || o.nativeLoad
 	mb.evaluated = mb.evaluated || o.evaluated
 }

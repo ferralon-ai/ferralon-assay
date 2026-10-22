@@ -173,7 +173,8 @@ func (errPlugin) ResolveDependencySymbols(context.Context, plugin.ResolveSymbols
 }
 
 // A failing advisory must not discard the whole scan. The advisories that resolved keep
-// their verdicts and the failure is disclosed by name — "failed scan is not no results".
+// their verdicts, the failed one gets an undetermined row, and the failure is disclosed by
+// name — "failed scan is not no results".
 func TestBuildBaselineReport_FailedAdvisoryDisclosedNotFatal(t *testing.T) {
 	rep, err := buildBaselineReport(context.Background(), BaselineRequest{
 		Subject: Subject{Repo: "github.com/example/widget", ResolvedCommit: "abc123"},
@@ -197,10 +198,17 @@ func TestBuildBaselineReport_FailedAdvisoryDisclosedNotFatal(t *testing.T) {
 	if !found {
 		t.Errorf("Partiality = %+v, want a tool_failure note naming GO-2021-0113", rep.Partiality)
 	}
+	var rows int
 	for _, f := range rep.Advisories {
 		if f.Advisory.ID == "GO-2021-0113" {
-			t.Errorf("an advisory whose analysis failed must carry no verdict, got %q", f.Verdict)
+			rows++
+			if f.Verdict != report.VerdictUndetermined || f.UndeterminedReason != report.ReasonAnalysisDidNotRun {
+				t.Errorf("an advisory whose analysis failed must be undetermined / %s, got %q / %q", report.ReasonAnalysisDidNotRun, f.Verdict, f.UndeterminedReason)
+			}
 		}
+	}
+	if rows != 1 {
+		t.Errorf("%d rows for GO-2021-0113, want exactly one", rows)
 	}
 }
 

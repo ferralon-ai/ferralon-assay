@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -55,17 +57,29 @@ func roundTrip(t *testing.T, req plugin.Request) plugin.Response {
 }
 
 // TestDispatch_ResolveInventoryIsLive asserts resolve_inventory is LIVE through the subprocess:
-// a reactor pom.xml with a literal-pinned dependency yields a real node (never Unsupported), and
-// a build dir with no manifest is honest-absent (Partial, never Complete over zero nodes).
+// a build graph naming one dependency yields its node (never Unsupported), and a run handed no
+// graph is honest-absent (Partial, never Complete over zero nodes).
 func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
 	dir := t.TempDir()
-	pom := `<project><modelVersion>4.0.0</modelVersion>
-<groupId>com.example</groupId><artifactId>app</artifactId><version>1.0.0</version>
-<dependencies><dependency><groupId>com.google.code.gson</groupId>
-<artifactId>gson</artifactId><version>2.10.1</version></dependency></dependencies></project>`
-	if err := os.WriteFile(dir+"/pom.xml", []byte(pom), 0o644); err != nil {
+	root := buildgraph.Node{Group: "com.example", Artifact: "app", Version: "1.0.0", Type: "jar"}
+	root.ID = buildgraph.NodeID(root.Group, root.Artifact, root.Type, "", root.Version)
+	gson := buildgraph.Node{Group: "com.google.code.gson", Artifact: "gson", Version: "2.10.1", Type: "pom", Scope: "compile"}
+	gson.ID = buildgraph.NodeID(gson.Group, gson.Artifact, gson.Type, "", gson.Version)
+	g, err := json.Marshal(buildgraph.Graph{
+		Schema: buildgraph.Schema,
+		Tool:   buildgraph.Tool{Name: "maven", Version: "test"},
+		JVM:    buildgraph.JVM{Version: "21.0.4"},
+		Modules: []buildgraph.Module{{ID: "com.example:app", Path: ".", Root: root.ID,
+			Nodes: []buildgraph.Node{root, gson}, Edges: []buildgraph.Edge{{From: root.ID, To: gson.ID}}}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	graph := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(graph, g, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(plugin.BuildGraphEnv, graph)
 	resp := roundTrip(t, plugin.Request{
 		Op:               plugin.OpResolveInventory,
 		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: dir},
@@ -80,7 +94,7 @@ func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
 	}
 	found := false
 	for _, n := range resp.Inventory.Nodes {
-		if n.PURL == "pkg:maven/com.google.code.gson/gson@2.10.1" && n.Version == "2.10.1" {
+		if n.PURL == "pkg:maven/com.google.code.gson/gson@2.10.1?type=pom" && n.Version == "2.10.1" {
 			found = true
 		}
 	}
@@ -88,7 +102,8 @@ func TestDispatch_ResolveInventoryIsLive(t *testing.T) {
 		t.Errorf("expected a gson@2.10.1 node; got %+v", resp.Inventory.Nodes)
 	}
 
-	// Honest-absent floor: no manifest ⇒ Partial, never a Complete() over zero nodes.
+	// Honest-absent floor: no graph ⇒ Partial, never a Complete() over zero nodes.
+	t.Setenv(plugin.BuildGraphEnv, "")
 	empty := roundTrip(t, plugin.Request{
 		Op:               plugin.OpResolveInventory,
 		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()},
@@ -156,5 +171,24 @@ func TestAnalyzerGate_ReadsBrandEnv(t *testing.T) {
 	t.Setenv(envAnalyzerDocker, "no-such-docker-binary-for-this-test")
 	if !hasToolFailure(roundTrip(t, req)) {
 		t.Error("image set, docker unrunnable: want tool_failure (gate open, analyzer failed)")
+	}
+}
+
+// A graph the host accepted that no longer decodes fails the request; it is never an absent
+// graph.
+func TestRun_UndecodableGraphIsAnError(t *testing.T) {
+	graph := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(graph, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(plugin.BuildGraphEnv, graph)
+	line, _ := json.Marshal(plugin.Request{Protocol: plugin.ProtocolVersion, Op: plugin.OpResolveInventory,
+		ResolveInventory: &plugin.ResolveInventoryRequest{BuildDir: t.TempDir()}})
+	in, _ := os.CreateTemp(t.TempDir(), "in")
+	_, _ = in.Write(append(line, '\n'))
+	_, _ = in.Seek(0, 0)
+	out, _ := os.CreateTemp(t.TempDir(), "out")
+	if err := run(context.Background(), in, out); err == nil {
+		t.Fatal("an undecodable build graph must be a hard error")
 	}
 }

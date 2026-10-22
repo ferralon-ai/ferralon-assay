@@ -1,4 +1,3 @@
-// internal/checkout/language.go
 package checkout
 
 import (
@@ -50,11 +49,10 @@ const (
 // since both compile through the same substrate, so the cost of the bias is one-sided and
 // small.
 //
-// Ties among the remaining languages (equal source-file counts, including the all-zero
-// case) fall back to the historical precedence order java > js > python > dotnet, so
-// behavior stays deterministic and every pre-existing single-language tree — which has a
-// nonzero count in exactly one bucket — detects exactly as it did under the old first-match
-// precedence. Zero source files in every bucket yields LangUnknown — the caller treats that
+// Ties among the languages (equal source-file counts) fall back to the precedence order
+// kotlin > java > js > python > dotnet > cfamily, so behavior stays deterministic and a
+// single-language tree — which has a nonzero count in exactly one bucket — detects as that
+// language. Zero source files in every bucket yields LangUnknown — the caller treats that
 // as "not a recognizable source tree" and errors (inv.5: never a silent half-checkout).
 func DetectLanguage(dir string) string {
 	if _, ok := FindGoModuleRoot(dir); ok {
@@ -147,8 +145,8 @@ type sourceCounts struct {
 // without importing them (internal/checkout must stay analysis-library-free): the .d.ts
 // TypeScript-declaration exclusion for JS and the .csproj/.sln/.fsproj/.vbproj project
 // markers for .NET are preserved. .kt/.kts count toward Kotlin, not Java. The C-family
-// bucket (.c/.cc/.cpp/.cxx/.c++ sources and .h/.hpp/.hh/.hxx headers) has no analysis
-// package to mirror yet — the lane is a Phase-0 skeleton.
+// bucket (.c/.cc/.cpp/.cxx/.c++ sources and .h/.hpp/.hh/.hxx headers) has no source-notion
+// package to mirror.
 func countSources(dir string) sourceCounts {
 	var c sourceCounts
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -182,7 +180,7 @@ func countSources(dir string) sourceCounts {
 				// translation units under one build system, so a whole-tree C-vs-C++ split here
 				// would force a classification the build reality does not respect. A .h header is
 				// counted toward the family without deciding C vs C++ — that per-TU decision is the
-				// compiler mode in compile_commands.json (ground truth), deferred to Phase 1.
+				// compiler mode in compile_commands.json (ground truth), not decided here.
 				c.cfamily++
 			}
 		}

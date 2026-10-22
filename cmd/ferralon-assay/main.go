@@ -10,6 +10,9 @@
 // `pr-inherit` (diff a PR head SBOM vs the stored baseline) and `cve-watch` (scheduled OSV.dev
 // watch). All three select a StateStore the same way: -git-dir / -repo seed and read the persistent
 // refs/assay/state, so a baseline can seed the ref a later pr-inherit / cve-watch inherits from.
+//
+// Two auxiliary commands sit beside them: `state` (operator views of the StateStore ref) and
+// `resolve-graph` (runs the repository's Maven or Gradle and writes its build graph).
 package main
 
 import (
@@ -90,6 +93,11 @@ func run() int {
 			fmt.Fprintln(os.Stderr, brand.Name+" state:", err)
 			return 1
 		}
+	case "resolve-graph":
+		if err := runResolveGraph(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, brand.Name+" resolve-graph:", err)
+			return 1
+		}
 	case "version", "-version", "--version":
 		fmt.Fprintf(os.Stdout, "%s %s\n", brand.Name, version)
 	case "help", "-h", "--help":
@@ -139,6 +147,7 @@ Usage:
   %[1]s pr-inherit [flags]   diff a PR head SBOM vs the stored baseline; inherit or re-analyze
   %[1]s cve-watch  [flags]   scheduled OSV.dev watch; heartbeat or earnest re-analysis
   %[1]s state <op> [flags]   operator views of the persisted StateStore ref (show | export)
+  %[1]s resolve-graph [flags] run the repository's Maven or Gradle, write its JVM build graph
   %[1]s version              print the build identity
   %[1]s help                 show this help
 
@@ -165,7 +174,7 @@ func runBaseline(args []string) error {
 
 	ctx := context.Background()
 
-	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries)
+	acq, err := acquireTarget(ctx, *f.target, *f.revision, *f.repo, *f.plugin, *f.houseCanaries, f.graphRequest())
 	if err != nil {
 		return err
 	}
@@ -177,11 +186,13 @@ func runBaseline(args []string) error {
 	}
 	defer cleanup()
 
-	assessOptions := []pipeline.AssessOption{pipeline.WithPlugin(acq.plugin)}
-	if opt, err := f.advisoryCorpusOption(); err != nil {
+	assessOptions, err := f.baselineAssessOptions(pipeline.WithPlugin(acq.plugin))
+	if err != nil {
 		return err
-	} else if opt != nil {
-		assessOptions = append(assessOptions, opt)
+	}
+	// After baselineAssessOptions, which resolves the corpus tree the signals default to.
+	if err := f.resolveSignals(); err != nil {
+		return err
 	}
 
 	// Widen the compiled-in language floor with the advisories OSV.dev reports against this
@@ -205,6 +216,7 @@ func runBaseline(args []string) error {
 		Advisories:    ws.advisories,
 		WorkSetLimits: ws.partiality,
 		AssessOptions: assessOptions,
+		Signals:       f.resolvedSignals,
 	}
 
 	rep, err := trigger.RunBaseline(ctx, store, req)
@@ -213,14 +225,14 @@ func runBaseline(args []string) error {
 	}
 
 	rescan := rescanFromEnv()
-	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef); err != nil {
+	if err := publishResult(ctx, *f.outDir, rep, f.intelProvenance(ws), acq.analyzeRef, acq.graph); err != nil {
 		return err
 	}
 
-	printSummary(*f.outDir, rep)
+	printSummary(*f.outDir, rep, f.signalsSummary(time.Now()))
 	printRescanContext(rescan)
 	postScan(ctx, store, req.Subject, rescan)
-	return nil
+	return acq.graph.err()
 }
 
 // baselineStore resolves the StateStore the baseline writes to. When an operator selects a store
@@ -252,7 +264,9 @@ func baselineStore(sf *stateStoreFlags) (statestore.StateStore, func(), error) {
 	return store, func() { os.RemoveAll(stateDir) }, nil
 }
 
-func printSummary(outDir string, rep *report.Report) {
+// printSummary prints the run summary. signals is the one-line account of the run's EPSS/KEV
+// signals (runFlags.signalsSummary).
+func printSummary(outDir string, rep *report.Report, signals string) {
 	counts := map[report.Verdict]int{}
 	for _, f := range rep.Advisories {
 		counts[f.Verdict]++
@@ -264,6 +278,7 @@ func printSummary(outDir string, rep *report.Report) {
 	for _, p := range rep.SBOM.Packages {
 		fmt.Fprintf(os.Stdout, "    - %s %s %s\n", p.Ecosystem, p.Name, p.Version)
 	}
+	fmt.Fprintf(os.Stdout, "  signals:    %s\n", signals)
 	fmt.Fprintf(os.Stdout, "  findings:   %d advisory finding(s)\n", len(rep.Advisories))
 	for _, v := range sortedVerdicts(counts) {
 		fmt.Fprintf(os.Stdout, "    - %-20s %d\n", v, counts[v])

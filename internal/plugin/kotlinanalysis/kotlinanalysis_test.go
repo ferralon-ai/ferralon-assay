@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
@@ -110,29 +111,9 @@ func TestParseMethodRef(t *testing.T) {
 	}
 }
 
-// TestLocateDependencyJar_Gradle verifies the Gradle module-cache locator globs the
-// content-hash subdirectory Gradle interposes and finds the JAR by coordinate+version.
-func TestLocateDependencyJar_Gradle(t *testing.T) {
-	build := t.TempDir()
-	hashDir := filepath.Join(build, ".gradle", "caches", "modules-2", "files-2.1",
-		"com.google.code.gson", "gson", "2.10.1", "abc123def")
-	if err := os.MkdirAll(hashDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	jar := filepath.Join(hashDir, "gson-2.10.1.jar")
-	if err := os.WriteFile(jar, []byte("PK"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, ok := LocateDependencyJar(build, "com.google.code.gson:gson", "2.10.1")
-	if !ok || got != jar {
-		t.Fatalf("LocateDependencyJar Gradle = %q, %v; want %q", got, ok, jar)
-	}
-}
-
 // TestCapabilityManifest_Honest asserts the manifest is honest (K5): Supported with a jvm
-// runtime and CHA semantics, no framework axis claimed (not implemented), the build-file
-// Resolvers axis declared (P1: version resolution went live), and the desugaring boundaries
-// declared. A future axis addition updates this test in step.
+// runtime and CHA semantics, no framework axis claimed (not implemented), the build tools it
+// reads resolved graphs from declared as Resolvers, and the desugaring boundaries declared. A future axis addition updates this test in step.
 func TestCapabilityManifest_Honest(t *testing.T) {
 	m := CapabilityManifest()
 	if !m.Supported || m.Language != "kotlin" {
@@ -141,12 +122,8 @@ func TestCapabilityManifest_Honest(t *testing.T) {
 	if len(m.Frameworks) != 0 {
 		t.Errorf("manifest claims frameworks it does not detect: %v", m.Frameworks)
 	}
-	// Resolvers ARE now claimed (build-file version resolution is live) and must name the
-	// build-file formats the shared parser actually reads.
-	for _, want := range []string{"build.gradle.kts", "pom.xml"} {
-		if !contains(m.Resolvers, want) {
-			t.Errorf("manifest omits resolver %q it now reads: %v", want, m.Resolvers)
-		}
+	if !reflect.DeepEqual(m.Resolvers, []string{"gradle", "maven"}) {
+		t.Errorf("Resolvers = %v, want the build tools whose graphs the lane reads", m.Resolvers)
 	}
 	for _, want := range []string{"invokedynamic", "coroutine_dispatch", "inline_function", "reflection"} {
 		if !contains(m.DynamicBoundaries, want) {

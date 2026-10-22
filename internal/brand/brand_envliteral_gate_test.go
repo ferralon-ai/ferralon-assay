@@ -53,7 +53,9 @@ var platformEnv = map[string]struct {
 
 // dynamicEnvReads is every read site whose key is not a constant the gate can resolve, by file.
 var dynamicEnvReads = map[string]string{
-	"telemetry/provider.go": "loops over the three OTEL_EXPORTER_OTLP_ endpoint constants",
+	"cmd/assay-plugin-java/main.go":   "plugin.BuildGraphEnv, the EnvPrefix_ key the host sets for its plugin subprocess",
+	"cmd/assay-plugin-kotlin/main.go": "plugin.BuildGraphEnv, the EnvPrefix_ key the host sets for its plugin subprocess",
+	"telemetry/provider.go":           "loops over the three OTEL_EXPORTER_OTLP_ endpoint constants",
 }
 
 // TestNoHardcodedBrandEnvLiteral fails on a string literal that spells out a complete

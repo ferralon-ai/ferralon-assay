@@ -95,7 +95,7 @@ func newDepFixture(t *testing.T, targetsJSON, librariesJSON string) depFixture {
 	assets := `{"version":3,"targets":{"net8.0":{` + targetsJSON + `}},"libraries":{` + librariesJSON + `},` +
 		`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 	dir := composeILBuildDir(t, map[string][]byte{
-		"App.csproj": []byte("<Project></Project>"),
+		"App.csproj": restoredProject,
 		"Decoy.cs": []byte(`namespace Newtonsoft.Json { public static class JsonConvert {
 	public static object DeserializeObject(string s) { return null; } } }
 namespace App { public static class Json { public static object DeserializeObject(string s) { return null; } } }
@@ -382,7 +382,7 @@ func TestLoadSpanningSet_RefAssemblyIsAMiss(t *testing.T) {
 		`"Newtonsoft.Json/12.0.3":{"type":"package","compile":{"ref/net8.0/Newtonsoft.Json.dll":{}}}`,
 		newtonsoftLib)
 	f.writePkgFile(t, "newtonsoft.json/12.0.3/ref/net8.0/Newtonsoft.Json.dll", newtonsoftLike(true))
-	data, ok := readAssetsFile(f.buildDir)
+	_, data, ok := readAssetsFile(f.buildDir)
 	if !ok {
 		t.Fatal("no assets file")
 	}
@@ -475,7 +475,7 @@ func TestResolveDependencySymbols_VersionOfTheBuiltTarget(t *testing.T) {
 				`"libraries":{` + newtonsoftLib + `,"Newtonsoft.Json/13.0.1":{"type":"package","path":"newtonsoft.json/13.0.1"}},` +
 				`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
 			f := depFixture{buildDir: composeILBuildDir(t, map[string][]byte{
-				"App.csproj":              []byte("<Project></Project>"),
+				"App.csproj":              restoredProject,
 				"obj/project.assets.json": []byte(assets),
 			}), pkgRoot: pkgRoot}
 			f.writePkgFile(t, "newtonsoft.json/13.0.1/lib/net8.0/Newtonsoft.Json.dll", newtonsoftLike(false))
@@ -494,6 +494,95 @@ func TestResolveDependencySymbols_VersionOfTheBuiltTarget(t *testing.T) {
 			}
 			if !hasILReason(res.Partiality, partialReasonNoDependencyArtifact) || len(res.Partiality.Scoped) != 1 {
 				t.Fatalf("partiality = %+v, want no_dependency_artifact scoped and run-wide", res.Partiality)
+			}
+		})
+	}
+}
+
+// jsonConvertOnly is a Newtonsoft.Json build that has JsonConvert.DeserializeObject but no
+// JObject.Parse, so which version's bytes were read shows in what matched.
+func jsonConvertOnly() []byte {
+	b := scaffold()
+	obj := cTypeDefOrRef(xTypeRef, b.extTypeRef("System", "Object"))
+	b.addType(0, "<Module>", "", 0, nil)
+	b.addType(0x1, "JsonConvert", "Newtonsoft.Json", obj, []mspec{
+		{name: "DeserializeObject", flags: 0x16, sig: sigStaticStringToObject, il: body()},
+	})
+	return b.bytesNamed("Newtonsoft.Json")
+}
+
+// TestResolveDependencySymbols_TwoVersionRestoreGraph: restore resolved Newtonsoft.Json
+// 13.0.1 for net8.0 and 12.0.3 for netstandard2.0. The advisory PURL's version, when it has
+// one, filters occurrences to that exact version; without one, every occurrence in the
+// bound target is read. With no built program to bind a target, every target's copy is
+// read and the run carries restore_target_unbound, so a straddling graph never narrows to
+// one version's bytes silently.
+func TestResolveDependencySymbols_TwoVersionRestoreGraph(t *testing.T) {
+	const (
+		deserialize = "Newtonsoft.Json.JsonConvert.DeserializeObject"
+		parse       = "Newtonsoft.Json.Linq.JObject.Parse"
+	)
+	tests := []struct {
+		name        string
+		purlVersion string
+		builtTFM    string // "" = no built program
+		wantMatched []string
+		wantReasons []string
+	}{
+		{"unversioned/net8.0 reads 13.0.1 only", "", "net8.0", []string{deserialize}, []string{partialReasonAdvisorySymbolUnresolved}},
+		{"unversioned/netstandard2.0 reads 12.0.3 only", "", "netstandard2.0", []string{deserialize, parse}, nil},
+		{"unversioned/unbound reads both", "", "", []string{deserialize, parse}, []string{partialReasonTargetUnbound}},
+		{"12.0.3/unbound reads 12.0.3 only", "12.0.3", "", []string{deserialize, parse}, []string{partialReasonTargetUnbound}},
+		{"13.0.1/unbound reads 13.0.1 only", "13.0.1", "", []string{deserialize}, []string{partialReasonAdvisorySymbolUnresolved, partialReasonTargetUnbound}},
+		{"13.0.1/netstandard2.0 is not restored there", "13.0.1", "netstandard2.0", nil, []string{partialReasonNoDependencyArtifact}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NUGET_PACKAGES", t.TempDir())
+			pkgRoot := t.TempDir()
+			assets := `{"version":3,"targets":{` +
+				`"net8.0":{"Newtonsoft.Json/13.0.1":{"type":"package","runtime":{"lib/net8.0/Newtonsoft.Json.dll":{}}}},` +
+				`"netstandard2.0":{"Newtonsoft.Json/12.0.3":{"type":"package","runtime":{"lib/netstandard2.0/Newtonsoft.Json.dll":{}}}}},` +
+				`"libraries":{` + newtonsoftLib + `,"Newtonsoft.Json/13.0.1":{"type":"package","path":"newtonsoft.json/13.0.1"}},` +
+				`"packageFolders":{"` + filepath.ToSlash(pkgRoot) + `/":{}}}`
+			f := depFixture{buildDir: composeILBuildDir(t, map[string][]byte{
+				"App.csproj":              restoredProject,
+				"obj/project.assets.json": []byte(assets),
+			}), pkgRoot: pkgRoot}
+			f.writePkgFile(t, "newtonsoft.json/13.0.1/lib/net8.0/Newtonsoft.Json.dll", jsonConvertOnly())
+			f.writePkgFile(t, "newtonsoft.json/12.0.3/lib/netstandard2.0/Newtonsoft.Json.dll", newtonsoftLike(false))
+			if tt.builtTFM != "" {
+				writeAppBuild(t, f.buildDir, tt.builtTFM)
+			}
+			purl := "pkg:nuget/Newtonsoft.Json"
+			if tt.purlVersion != "" {
+				purl += "@" + tt.purlVersion
+			}
+			res, err := ResolveDependencySymbols(t.Context(), plugin.ResolveSymbolsRequest{
+				BuildDir: f.buildDir, PURL: purl, AdvisorySymbols: []string{deserialize, parse},
+			})
+			if err != nil {
+				t.Fatalf("ResolveDependencySymbols: %v", err)
+			}
+			var matched []string
+			for s := range res.Matched {
+				matched = append(matched, s)
+			}
+			slices.Sort(matched)
+			want := slices.Clone(tt.wantMatched)
+			slices.Sort(want)
+			if !slices.Equal(matched, want) {
+				t.Errorf("Matched = %v, want %v", matched, want)
+			}
+			got := slices.Clone(res.Partiality.Reasons)
+			slices.Sort(got)
+			wantReasons := slices.Clone(tt.wantReasons)
+			slices.Sort(wantReasons)
+			if !slices.Equal(got, wantReasons) {
+				t.Errorf("Reasons = %v, want %v", got, wantReasons)
+			}
+			if res.Partiality.Complete != (len(tt.wantReasons) == 0) {
+				t.Errorf("Complete = %v with reasons %v", res.Partiality.Complete, got)
 			}
 		})
 	}

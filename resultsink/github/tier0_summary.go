@@ -14,9 +14,10 @@
 // # Invariant 5 (deterministic verdicts only)
 //
 // The sink renders report.Verdict and nothing else. The Report can only carry
-// disqualified / not_exploitable / reachable_candidate (report.Verdict.Valid), so
-// no `affected` / `error` / Case / Assessment / living-verdict concept can appear —
-// the boundary is structural, inherited from the Report it is handed.
+// disqualified / not_exploitable / reachable_candidate / undetermined /
+// malicious_package_present (report.Verdict.Valid), so no Case / Assessment /
+// living-verdict concept can appear — the boundary is structural, inherited from
+// the Report it is handed. `::error::` is reserved for malicious_package_present.
 package github
 
 import (
@@ -219,7 +220,7 @@ func (c counts) groundedSafe() int { return c.notExploitable + c.disqualified }
 
 // renderSummary builds the GFM job-summary headline: a one-line verdict statement, a
 // counts table, and a per-candidate table when any candidate exists. It renders only
-// the four deterministic verdicts (inv. 5).
+// the five deterministic verdicts (inv. 5).
 func renderSummary(r report.Report) string {
 	c := tally(r)
 	var b strings.Builder
@@ -269,6 +270,14 @@ func renderSummary(r report.Report) string {
 				path = "—"
 			}
 			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", f.Advisory.ID, pkg, mdCell(path))
+		}
+		b.WriteString("\n")
+	}
+
+	if absent := rangeAbsent(r); len(absent) > 0 {
+		b.WriteString("### Reachable, with no version range to check\n\n")
+		for _, f := range absent {
+			fmt.Fprintf(&b, "- %s\n", rangeAbsentLine(f))
 		}
 		b.WriteString("\n")
 	}
@@ -426,12 +435,12 @@ func partialityLine(n report.PartialityNote) string {
 	case plugin.PartialReasonNoPlugin:
 		return fmt.Sprintf("No analyzer is available for this codebase's language, so its %s set was not analyzed. The advisories below were not ruled out — they were not assessed.", scope)
 	case plugin.PartialReasonToolFailure:
-		// Names the step and the advisory: an advisory whose analysis failed carries no
-		// verdict, so it is absent from the counts and only this line accounts for it.
+		// Names the step and the advisory. The advisory's row is undetermined, so it is
+		// counted as not assessed.
 		if n.Detail != "" {
-			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is **not** counted below.", mdCell(n.Detail))
+			return fmt.Sprintf("An analysis step did not complete (`%s`). That advisory has no verdict and is counted as not assessed.", mdCell(n.Detail))
 		}
-		return "An analysis step did not complete, so one or more advisories have no verdict and are **not** counted below."
+		return "An analysis step did not complete, so one or more advisories have no verdict and are counted as not assessed."
 	default:
 		if n.Detail != "" {
 			return fmt.Sprintf("Part of the %s analysis was incomplete (`%s`: `%s`), so this run covers less than the whole codebase.", scope, mdCell(n.Reason), mdCell(n.Detail))
@@ -541,6 +550,113 @@ func candidates(r report.Report) []report.AdvisoryFinding {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Advisory.ID < out[j].Advisory.ID })
 	return out
+}
+
+// rangeAbsent returns the findings left undetermined because the advisory gives no version range
+// Assay can check, in stable order. Each still carries the path that reached the advisory's code.
+func rangeAbsent(r report.Report) []report.AdvisoryFinding {
+	var out []report.AdvisoryFinding
+	for i := range r.Advisories {
+		f := r.Advisories[i]
+		if f.Verdict == report.VerdictUndetermined && f.UndeterminedReason == report.ReasonAdvisoryRangeAbsent {
+			out = append(out, f)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Advisory.ID < out[j].Advisory.ID })
+	return out
+}
+
+// rangeAbsentLine renders one range-absent finding. It states only what the report holds: the
+// installed version when one was resolved, the entry point or path, and whatever partial bounds the
+// advisory records. Every value from the advisory or the codebase is a code span, so none of it can
+// render as markup, a link, a mention or math.
+func rangeAbsentLine(f report.AdvisoryFinding) string {
+	version, subject := "version not determined", "the installed version"
+	if f.Package != nil && f.Package.Version != "" && !f.Package.PinUnresolved() {
+		version = mdCode(f.Package.Version)
+		subject = version
+	}
+	var b strings.Builder
+	if f.Package != nil {
+		fmt.Fprintf(&b, "%s %s", mdCode(f.Package.Name), version)
+		if f.Package.Ecosystem != "" {
+			fmt.Fprintf(&b, " (%s)", mdCode(f.Package.Ecosystem))
+		}
+	} else {
+		fmt.Fprintf(&b, "Code named in the advisory, %s,", version)
+	}
+	switch {
+	case f.Evidence.EntryPoint != nil && f.Evidence.EntryPoint.Symbol != "":
+		fmt.Fprintf(&b, " is reachable from %s", mdCode(f.Evidence.EntryPoint.Symbol))
+	case f.Evidence.ReachablePath != "":
+		fmt.Fprintf(&b, " is reachable along %s", mdCode(f.Evidence.ReachablePath))
+	default:
+		b.WriteString(" is reachable")
+	}
+	fmt.Fprintf(&b, " and is named in %s. The advisory does not give a version range Assay can check %s against", mdCode(f.Advisory.ID), subject)
+	if bounds := boundsText(f.Evidence.AdvisoryBounds); bounds != "" {
+		fmt.Fprintf(&b, "; it records: %s", bounds)
+	}
+	fmt.Fprintf(&b, ". Confirm with the advisory or the maintainer whether %s is affected.", subject)
+	return b.String()
+}
+
+// boundsText describes the bounds of a range-absent advisory, one clause per range. A GIT range's
+// bounds are commits and are named as such; "no fix" is said only of a range with no fixed or
+// last_affected event.
+func boundsText(bounds []report.AdvisoryBound) string {
+	var parts []string
+	for _, bd := range bounds {
+		var p []string
+		switch bd.Type {
+		case "":
+		case "GIT":
+			p = append(p, "by commit")
+		default:
+			p = append(p, "by "+mdCode(bd.Type))
+		}
+		events := len(p)
+		if bd.Introduced != "" {
+			p = append(p, "introduced "+mdCode(bd.Introduced))
+		}
+		if bd.Fixed != "" {
+			p = append(p, "fixed in "+mdCode(bd.Fixed))
+		}
+		if bd.LastAffected != "" {
+			p = append(p, "last affected "+mdCode(bd.LastAffected))
+		}
+		if bd.Introduced != "" && bd.Fixed == "" && bd.LastAffected == "" {
+			p = append(p, "no fix")
+		}
+		if len(p) > events {
+			parts = append(parts, strings.Join(p, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// mdCode renders a value as a GFM code span. The fence is one backtick longer than the longest
+// backtick run in the value, so the value cannot close it; HTML inside a code span is literal.
+func mdCode(s string) string {
+	s = foldLines(s)
+	longest, run := 0, 0
+	for _, r := range s {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
+}
+
+func foldLines(s string) string {
+	return strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(s)
 }
 
 // mdCell escapes a value for use inside a GFM table cell (pipes break columns).

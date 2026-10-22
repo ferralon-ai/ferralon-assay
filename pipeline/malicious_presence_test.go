@@ -208,6 +208,23 @@ func TestMaliciousPresence_EmptySet_EmitsNothing(t *testing.T) {
 	}
 }
 
+// A listed version anywhere in the tree is present, even when the representative resolved_version
+// is a clean one: a nested install of the malicious release is the same compromise.
+func TestMaliciousPresence_AnyResolvedVersionMatches(t *testing.T) {
+	store := artifact.NewMemStore()
+	c := &assessment.Assessment{ID: "a1"}
+	adv, _ := json.Marshal(map[string]any{"vuln_id": "MAL-2024-1", "malicious_package": map[string]any{"affected_versions": []string{"1.0.1"}}})
+	putRaw(t, store, c.ID, artifact.TypeNormalizedAdvisory, string(adv))
+	putRaw(t, store, c.ID, artifact.TypeInventory, `{"resolved_version":"1.0.0","resolved_versions":["1.0.0","1.0.1"]}`)
+	if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+		t.Fatalf("malicious_presence: %v", err)
+	}
+	res, ok := queryMaliciousPresence(t, store, c.ID)
+	if !ok || !res.Present || res.MatchedVersion != "1.0.1" {
+		t.Fatalf("presence = %+v (emitted=%v), want present at 1.0.1", res, ok)
+	}
+}
+
 // --- helpers --------------------------------------------------------------------------------
 
 // fakeMaliciousSource is a minimal AdvisorySource returning a MAL-declared fact when versions is
@@ -267,4 +284,80 @@ func queryMaliciousPresence(t *testing.T, store *artifact.MemStore, caseID strin
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	return res, true
+}
+
+// A copy of a malicious package at a listed version is present whether or not the other copies
+// agree with it. The resolver withholds Match when copies disagree, which empties resolved_version;
+// the affirmative must still fire off the first resolved copy, as it does for a single copy.
+func TestMaliciousPresence_DisagreeingCopies_RealResolver(t *testing.T) {
+	const javaCoord, nugetID = "com.example.lib:widget", "Newtonsoft.Json"
+	project := func(v string) string {
+		return `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>` +
+			`<ItemGroup><PackageReference Include="Newtonsoft.Json" Version="` + v + `" /></ItemGroup></Project>`
+	}
+	// A requirements range leaves a PyPI package present but unresolved, a state a build graph never
+	// yields: every copy it records carries the version the tool resolved.
+	firstRanged := map[string]string{"requirements.txt": "first>=1.0\nwidget==1.0.1\n"}
+	firstThenWidget := []AffectedPackage{{Coordinate: "first", PURL: "pkg:pypi/first"}, {Coordinate: "widget", PURL: "pkg:pypi/widget"}}
+	cases := []struct {
+		name, lang, coord, purl, listed string
+		files                           map[string]string
+		graph                           []graphModule
+		wantResolved                    string
+		pkgs                            []AffectedPackage
+	}{
+		{name: "maven modules disagree", lang: "java", coord: javaCoord, purl: "pkg:maven/com.example.lib/widget", listed: "1.0.1",
+			graph: []graphModule{{"a", widgetAt("1.0.1")}, {"b", widgetAt("1.0.2")}}},
+		{name: "maven modules agree", lang: "java", coord: javaCoord, purl: "pkg:maven/com.example.lib/widget", listed: "1.0.1",
+			graph: []graphModule{{"a", widgetAt("1.0.1")}, {"b", widgetAt("1.0.1")}}, wantResolved: "1.0.1"},
+		// The first package is absent and the second package's copies disagree, so it has no agreed
+		// version; the presence scan still takes its first resolved copy.
+		{name: "maven: second package's copies disagree", lang: "java", coord: "com.example.lib:first", purl: "pkg:maven/com.example.lib/first", listed: "1.0.1",
+			graph: []graphModule{{"a", widgetAt("1.0.1")}, {"b", widgetAt("1.0.2")}},
+			pkgs:  []AffectedPackage{{Coordinate: "com.example.lib:first", PURL: "pkg:maven/com.example.lib/first"}, {Coordinate: javaCoord, PURL: "pkg:maven/com.example.lib/widget"}}},
+		{name: "nuget projects disagree", lang: "dotnet", coord: nugetID, purl: "pkg:nuget/Newtonsoft.Json", listed: "13.0.1",
+			files: map[string]string{"A/A.csproj": project("[13.0.1]"), "B/B.csproj": project("[12.0.3]")}},
+		// The first package is present unresolved; the presence scan still reaches the second
+		// package's copy.
+		{name: "pypi: first package unresolved", lang: "python", coord: "first", purl: "pkg:pypi/first", listed: "1.0.1",
+			files: firstRanged, pkgs: firstThenWidget},
+		// No package in the array has a resolved copy, so the presence scan falls back to the
+		// advisory's own package.
+		{name: "pypi: no package has a resolved copy", lang: "python", coord: "widget", purl: "pkg:pypi/widget", listed: "1.0.1",
+			files: firstRanged, pkgs: firstThenWidget[:1]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTreeFixture(t, tc.files)
+			src := selectionStubSource{facts: AdvisoryFacts{
+				Coordinate:       tc.coord,
+				PURL:             tc.purl,
+				MaliciousPackage: MaliciousPackageFacts{Declared: true, AffectedVersions: []string{tc.listed}},
+				AffectedPackages: tc.pkgs,
+				Provenance:       Provenance{Source: "synthetic", TrustTier: TrustFirstParty},
+			}}
+			store := artifact.NewMemStore()
+			c := &assessment.Assessment{ID: "mal-" + tc.lang, Request: assessment.Request{
+				Vulnerability: assessment.VulnRef{ID: "MAL-2024-1", Source: "corpus"},
+				Codebase:      assessment.CodebaseRef{Repo: "example.com/target", Revision: "v1", Acquisition: assessment.Acquisition{Mode: "git"}},
+			}}
+			if err := (advisoryIntake{src: src}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("advisory_intake: %v", err)
+			}
+			inv := codebaseInventory{checkout: dirCheckout{dir: dir, lang: tc.lang}, plugin: realResolverPlugin{lang: tc.lang, java: mavenGraph(t, tc.graph...)}, src: src}
+			if err := inv.Run(context.Background(), c, store); err != nil {
+				t.Fatalf("codebase_inventory: %v", err)
+			}
+			if got, _ := extractResolvedVersion(store, c.ID); got != tc.wantResolved {
+				t.Fatalf("resolved_version = %q, want %q", got, tc.wantResolved)
+			}
+			if err := (maliciousPresence{}).Run(context.Background(), c, store); err != nil {
+				t.Fatalf("malicious_presence: %v", err)
+			}
+			res, ok := queryMaliciousPresence(t, store, c.ID)
+			if !ok || res.MatchedVersion != tc.listed {
+				t.Fatalf("affirmative = %+v (emitted %v), want a match at %s", res, ok, tc.listed)
+			}
+		})
+	}
 }

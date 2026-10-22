@@ -11,6 +11,7 @@
 // (zero AdvisoryFacts, false), which downstream reads exactly as today's map miss: no facts →
 // fail OPEN → proceed to analysis, NEVER refute, NEVER a fabricated not-affected. A source never
 // returns a partial or laundered fact.
+
 package pipeline
 
 import (
@@ -106,6 +107,7 @@ func (tableSource) Lookup(vulnID string) (AdvisoryFacts, bool) {
 	if facts.Provenance.TrustTier == "" {
 		facts.Provenance.TrustTier = TrustFirstParty
 	}
+	facts.BuiltIn = true
 	return facts, true
 }
 
@@ -429,7 +431,7 @@ type advisoryDoc struct {
 
 	// MaliciousPackage marks an OSV malicious-package (MAL) advisory and carries the ENUMERATED
 	// affected version set. Object presence (non-nil) IS the marker: "this advisory is a malicious
-	// package; the presence-verdict model applies; there is no reachability/symbol/detonation."
+	// package; the presence-verdict model applies; there is no reachability/symbol/instrumented run."
 	// Absent (a v2 doc or any non-MAL advisory) ⇒ nil ⇒ the presence path never fires (inv.5
 	// fail-open). It carries NO bounds — a MAL record enumerates versions[], never a range — so it
 	// cannot feed the range/version axis; it is exact-string membership only (see toFacts / the
@@ -446,6 +448,13 @@ type advisoryDoc struct {
 	// repeated per element — they are shared across every package and stay top-level.
 	AffectedPackages []docAffectedPackage `json:"affected_packages,omitempty"`
 
+	// Affected is the published corpus's spelling of the same multi-package set (`affected[]`, which
+	// the corpus documents as authoritative and complete; its flat top-level block names the primary
+	// only). Its entries carry no per-package symbols and spell the range bounds differently, so
+	// affectedPackages maps them onto the affected_packages shape. Read only when affected_packages is
+	// absent.
+	Affected []docAffectedEntry `json:"affected,omitempty"`
+
 	// --- ferralon.normalized_advisory.v4 additive block -----------------------------------------
 	// SymbolsTyped is the §4.4.2/.3 typed-symbol axis: the canonical comparable plugin.Symbol identity
 	// (Kind/Package/Enclosing/Name/Descriptor/SCIP), coexisting with the bare `symbols []string` above.
@@ -457,13 +466,12 @@ type advisoryDoc struct {
 	// SymbolProvenance is the corpus's RECORD-SCOPED derivation tag for the `symbols` set — how those
 	// symbols were obtained. It is a SINGLE scalar per record (one value covers the whole `symbols`
 	// array, not one tag per symbol). OPEN SET, decoded verbatim: the emitted vocabulary is
-	// "osv-declared" | "curated" | "diff-lexed" (with "reasoning" reserved-not-emitted), but an
-	// unrecognized value passes through UNTOUCHED — never rejected, never coerced to zero — so a
-	// future producer tier needs no consumer change. STORE-ONLY (A2, cycle 2026-08-24 corpus-scaffold):
-	// decoded onto AdvisoryFacts and read by NOTHING — it must not enter any admission, reachability,
-	// or refute path. Absent → "" → UNKNOWN derivation, NOT low confidence and NOT "untrusted": a
-	// symbol with no provenance tag resolves and is walked exactly as today (honest-absent, inv.5).
-	// Carries no verdict.
+	// "osv-declared" | "curated" | "cna-declared" | "diff-lexed" (with "reasoning"
+	// reserved-not-emitted), and an unrecognized value passes through UNTOUCHED — never rejected,
+	// never coerced to zero. It enters no admission or reachability path: absent → "" → UNKNOWN
+	// derivation, and a symbol resolves and is walked the same under every tag. It qualifies a
+	// candidate (SymbolConfidence) and gates which symbol sets may ground not_exploitable on "no
+	// listed symbol reached" (trigger.vettedSymbols). Carries no verdict.
 	SymbolProvenance string `json:"symbol_provenance,omitempty"`
 }
 
@@ -480,6 +488,59 @@ type docAffectedPackage struct {
 	FixedVersion   string     `json:"fixed_version,omitempty"`
 	AffectedRanges []docRange `json:"affected_ranges,omitempty"`
 	Symbols        []string   `json:"symbols,omitempty"`
+}
+
+// docAffectedEntry is one entry of the published corpus's affected[] set. An entry whose source
+// stated no package URL omits purl.
+type docAffectedEntry struct {
+	Coordinate    string             `json:"coordinate,omitempty"`
+	PURL          string             `json:"purl,omitempty"`
+	VersionScheme string             `json:"version_scheme,omitempty"`
+	Ranges        []docAffectedRange `json:"ranges,omitempty"`
+	FixedVersions []string           `json:"fixed_versions,omitempty"`
+}
+
+// docAffectedRange is one affected[] range. UpperExclusive is the exclusive bound the flat shape
+// spells `fixed`; Fixed names the fixing release, which the flat shape spells `fixed_version`.
+type docAffectedRange struct {
+	Introduced     string `json:"introduced,omitempty"`
+	UpperExclusive string `json:"upper_exclusive,omitempty"`
+	LastAffected   string `json:"last_affected,omitempty"`
+	Fixed          string `json:"fixed,omitempty"`
+	Type           string `json:"type,omitempty"`
+}
+
+// affectedPackages returns the multi-package set in the affected_packages shape. A document that
+// carries affected_packages uses it as is. Otherwise each affected[] entry maps across and takes
+// the advisory's symbols, since a published entry carries none: whichever element select-by-target
+// picks searches the same symbols a read of the primary alone would have.
+func (d advisoryDoc) affectedPackages() []docAffectedPackage {
+	if len(d.AffectedPackages) > 0 || len(d.Affected) == 0 {
+		return d.AffectedPackages
+	}
+	pkgs := make([]docAffectedPackage, 0, len(d.Affected))
+	for _, e := range d.Affected {
+		p := docAffectedPackage{
+			Coordinate:    e.Coordinate,
+			PURL:          e.PURL,
+			VersionScheme: e.VersionScheme,
+			Symbols:       d.Symbols,
+		}
+		if len(e.FixedVersions) == 1 {
+			p.FixedVersion = e.FixedVersions[0]
+		}
+		for _, r := range e.Ranges {
+			p.AffectedRanges = append(p.AffectedRanges, docRange{
+				Introduced:   r.Introduced,
+				Fixed:        r.UpperExclusive,
+				LastAffected: r.LastAffected,
+				FixedVersion: r.Fixed,
+				Type:         r.Type,
+			})
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs
 }
 
 // docTrigger is the v3 per-CVE reach descriptor. IngressKind is a closed set
@@ -576,6 +637,7 @@ type docRange struct {
 	Fixed        string `json:"fixed,omitempty"`
 	LastAffected string `json:"last_affected,omitempty"`
 	FixedVersion string `json:"fixed_version,omitempty"`
+	Type         string `json:"type,omitempty"`
 }
 
 type docProv struct {
@@ -852,6 +914,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 			Fixed:        r.Fixed,
 			LastAffected: r.LastAffected,
 			FixedVersion: r.FixedVersion,
+			Type:         r.Type,
 		})
 	}
 
@@ -930,7 +993,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 	// UNCHANGED; the array decodes alongside it.
 	var affectedPkgs []AffectedPackage
 	var droppedPkgs []string
-	for _, p := range d.AffectedPackages {
+	for _, p := range d.affectedPackages() {
 		if !schemeRecognized(p.VersionScheme) {
 			droppedPkgs = append(droppedPkgs, p.PURL)
 			continue // fail open: drop this element, keep the document
@@ -947,6 +1010,7 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 				Fixed:        r.Fixed,
 				LastAffected: r.LastAffected,
 				FixedVersion: r.FixedVersion,
+				Type:         r.Type,
 			})
 		}
 		if garbled {
@@ -998,8 +1062,8 @@ func (d advisoryDoc) toFacts(wantID string) (AdvisoryFacts, bool) {
 		Coordinate:     d.Coordinate,
 		PURL:           d.PURL,
 		Symbols:        d.Symbols,
-		// A2 store-only: the record-scoped derivation tag rides alongside Symbols verbatim (open set,
-		// no validation — an unrecognized tier passes through). Nothing downstream reads it.
+		// The record-scoped derivation tag rides alongside Symbols verbatim (open set, no
+		// validation — an unrecognized tier passes through).
 		SymbolProvenance: d.SymbolProvenance,
 		GuardSymbols:     d.GuardSymbols,
 		CWEs:             d.CWEs,

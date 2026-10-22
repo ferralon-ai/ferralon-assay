@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Producer fixture: an aggregator over module-a and module-b, which depend on guava at
+  different versions, and module-c, which depends on its sibling module-a and adds
+  commons-text only under the "extra" profile, and module-d, which resolves from a repository
+  only it declares.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ferralon.benchmark</groupId>
+  <artifactId>maven-reactor-divergence</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <modules>
+    <module>module-a</module>
+    <module>module-b</module>
+    <module>module-c</module>
+    <module>module-d</module>
+  </modules>
+</project>

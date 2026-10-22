@@ -107,21 +107,33 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 		},
 		{
 			// The toolchain directive supplies the tighter floor and it reaches the axis — but a
-			// PATCHED 1.20.x build still fails open on a backport, and that is correct. buildAffectedRanges
-			// DISCARDS Range.Introduced, so each branch range is the open-below interval "< Fixed":
-			// "< go1.20.10" and "< go1.21.3". go1.20.14 is outside the first but INSIDE the second, and
-			// versionOutsideRanges disqualifies only when a version is outside EVERY range. So a
-			// branch-aware backport only disqualifies at or past its HIGHEST branch fix. That is the
-			// conservative direction (fail-open, no fabricated not-affected) and it is what ships;
-			// tightening it needs the introduced bound carried through, which is not this cycle's work.
-			name:          "the tighter floor reaches the axis; a patched branch build still fails open",
+			// PATCHED 1.20.x floor still fails open on a backport, and that is correct. go1.20.14 is
+			// past the 1.20 branch fix and below the mainline range's introduced go1.21.0, so as an
+			// exact version it would sit in the gap. As a floor it does not: the true toolchain may be
+			// go1.21.1, inside the mainline range. Being below a lower bound does not carry from a
+			// floor to the versions above it, so a floor is read against upper bounds only.
+			name:          "the tighter floor reaches the axis; a patched branch floor still fails open",
 			vulnID:        "CVE-2023-39325",
 			goMod:         "module example.com/target\n\ngo 1.20\n\ntoolchain go1.20.14\n",
 			wantFact:      ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundMinimum, Source: ToolchainSourceToolchainDirective},
 			wantVersion:   "go1.20.14",
 			wantDisqual:   false,
 			wantReason:    ReasonInsufficient,
-			wantRationale: "Introduced is dropped, so \"< go1.21.3\" still contains go1.20.14",
+			wantRationale: "a floor in the gap may be any later toolchain, including one inside the mainline range",
+		},
+		{
+			// The same version declared EXACTLY sits in the backport's gap: past go1.20.10 and below
+			// the mainline range's introduced go1.21.0. buildAffectedRanges carries Introduced, so it
+			// is outside both ranges.
+			name:          "an exact patched branch toolchain in the backport gap disqualifies",
+			vulnID:        "CVE-2023-39325",
+			goMod:         "module example.com/target\n\ngo 1.20\n",
+			declared:      "go1.20.14",
+			wantFact:      ToolchainFact{Version: "go1.20.14", Bound: ToolchainBoundExact, Source: ToolchainSourceSubjectDeclared},
+			wantVersion:   "go1.20.14",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.20.14 >= go1.20.10 and < go1.21.0: outside both branch ranges",
 		},
 		{
 			// An EXACT bound reaches the axis on exactly the same terms — Bound gates reachability
@@ -172,6 +184,27 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 			wantRationale: "go1.21.5 < go1.21.11 is still affected",
 		},
 		{
+			// GO-2021-0264 is fixed go1.16.10 and go1.17.3; a go 1.21 floor is past both.
+			name:          "a stdlib advisory with toolchain ranges disqualifies on a floor past its fixes",
+			vulnID:        "GO-2021-0264",
+			goMod:         "module example.com/target\n\ngo 1.21\n",
+			wantFact:      ToolchainFact{Version: "go1.21.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.21.0",
+			wantDisqual:   true,
+			wantReason:    ReasonVersionNotInRange,
+			wantRationale: "go1.21.0 is at or past go1.17.3",
+		},
+		{
+			name:          "a stdlib advisory proceeds on a floor inside a branch range",
+			vulnID:        "GO-2021-0264",
+			goMod:         "module example.com/target\n\ngo 1.17\n",
+			wantFact:      ToolchainFact{Version: "go1.17.0", Bound: ToolchainBoundMinimum, Source: ToolchainSourceGoDirective},
+			wantVersion:   "go1.17.0",
+			wantDisqual:   false,
+			wantReason:    ReasonInsufficient,
+			wantRationale: "go1.17.0 < go1.17.3 is still affected",
+		},
+		{
 			// No directive, no declaration, no observation: the fact resolves nothing, resolved_version
 			// stays empty, verKnown is false and the version axis fails OPEN. This fail-open is the
 			// correct one — declining to assert safety, rather than failing open INTO a safety claim.
@@ -206,8 +239,8 @@ func TestGoToolchainAxis_RealStagesEndToEnd(t *testing.T) {
 // TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings pins the recognizer the scan-level
 // disclosure keys on. The corpus carries "the subject is the toolchain" two ways and a recognizer
 // that saw only one would silently leave a quarter of the affected advisories emitting an
-// unestablished not_exploitable: CVE-2023-39325 declares the go-toolchain scheme EXPLICITLY, while
-// GO-2021-0264 is a pkg:golang/stdlib advisory whose scheme derives to gomod.
+// unestablished not_exploitable: an explicit go-toolchain version scheme, or a pkg:golang/stdlib PURL
+// whose scheme derives to gomod.
 func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 	tests := []struct {
 		vulnID string
@@ -217,7 +250,7 @@ func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 		{"CVE-2023-39325", true, "explicit go-toolchain version scheme"},
 		{"CVE-2023-45283", true, "explicit go-toolchain version scheme"},
 		{"CVE-2024-24790", true, "explicit go-toolchain version scheme"},
-		{"GO-2021-0264", true, "pkg:golang/stdlib PURL, scheme derives to gomod"},
+		{"GO-2021-0264", true, "explicit go-toolchain version scheme on a pkg:golang/stdlib PURL"},
 		{"GO-2021-0113", false, "a real module dependency (golang.org/x/text)"},
 		{"CVE-2024-55947", false, "a first-party application advisory"},
 		{"FERRALON-JS-DEP-0001", false, "an npm dependency"},
@@ -245,8 +278,8 @@ func TestGoToolchainAxis_ToolchainSubjectRecognizesBothSpellings(t *testing.T) {
 // A MISS restores the unestablished not_exploitable (ToolchainSubject is what withheldNote keys on)
 // AND stops advisoryFromArtifacts suppressing the SBOM coordinate, so a nonexistent
 // golang.org/x/net@go1.x.y reaches the SBOM and the OpenVEX product id. An OVER-match withholds a
-// genuinely resolved module finding. Today only GO-2021-0264 rests solely on this arm and the in-repo
-// fixtures pin the bare spelling — so nothing would have caught an upstream feed changing it.
+// genuinely resolved module finding. The in-repo fixtures pin the bare spelling, so nothing else would
+// catch an upstream feed changing it.
 func TestIsGoStdlibPURL(t *testing.T) {
 	tests := []struct {
 		purl string

@@ -1,31 +1,26 @@
 package javaanalysis
 
 import (
-	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
-// depgraph.go — composes steps (a)+(b)+(c) of dependency reachability: resolve the
-// build's declared dependencies, locate each JAR in the local cache, parse its
-// bytecode, and build the CHA engine that answers the two-trace PoNE. This is the
-// dependency-level graph the reachability verdict rests on.
+// depgraph.go — composes steps (a)+(b)+(c) of dependency reachability: take every JAR the
+// build graph resolved, parse its bytecode, and build the CHA engine that answers the
+// two-trace PoNE. This is the dependency-level graph the reachability verdict rests on.
 //
-// Completeness is tracked honestly (inv.5): every declared dependency that could
-// not be resolved to a version, located in the cache, or fully parsed is a Gap — a
-// place the vulnerable sink could hide. A caller must not read "sink not found in
-// the opened graph" as not_exploitable while Gaps is non-empty; the sink could live
-// in a dependency we never opened. Transitive dependencies absent from the declared
-// manifest are themselves a gap-source until PLAN-100/PLAN-140 supply the effective
-// resolved graph — recorded, never silently assumed complete.
+// Completeness is tracked honestly (inv.5): no graph, or a JAR that could not be read or fully
+// parsed, is a Gap — a place the vulnerable sink could hide. A caller must not read "sink not
+// found in the opened graph" as not_exploitable while Gaps is non-empty.
 
 // dependencyGraph is the parsed dependency closure plus its completeness account.
 type dependencyGraph struct {
 	Engine   *depreach.Engine
-	Complete bool              // every declared, resolved dependency JAR was located and fully parsed
+	Complete bool              // every JAR the build graph names was read and fully parsed
 	Gaps     []string          // one line per dependency the analysis could not fully open
 	Classes  []classfile.Class // every class the analysis opened, retained for the call-edge projection
 }
@@ -68,64 +63,56 @@ func (dg *dependencyGraph) callEdges() []plugin.CallEdge {
 	return edges
 }
 
-// jarGap words a dependency JAR that was not opened, by why.
-var jarGap = map[jarLookup]string{
-	jarMissing:      "JAR not in local cache",
-	jarCopiesDiffer: "cached JAR copies differ",
-	jarUnreadable:   "cached JAR unreadable, outside its cache, or not nameable as a cache path",
-}
-
-// buildDependencyGraph resolves the build's declared dependencies and assembles a
-// CHA engine over every dependency JAR it can open from the local cache. A missing
-// manifest or unparseable build file (from ResolveDependencyVersions) and any
-// unresolved / uncached / partially-parsed dependency are recorded as Gaps; the
-// engine still contains whatever WAS opened, so a reachable path through an opened
-// dependency is found even when another dependency is a gap.
-func buildDependencyGraph(ctx context.Context, buildDir string) (*dependencyGraph, error) {
-	res, err := ResolveDependencyVersions(ctx, plugin.ResolveVersionsRequest{BuildDir: buildDir})
-	if err != nil {
-		return nil, err
-	}
-
+// buildDependencyGraph assembles a CHA engine over every dependency JAR the build graph names,
+// in any scope, each read only when it still has its recorded digest. No graph, a JAR that
+// cannot be read, and a JAR partially parsed are recorded as Gaps; the engine still contains
+// whatever WAS opened, so a reachable path through an opened dependency is found even when
+// another dependency is a gap.
+func buildDependencyGraph(buildDir string, opts ...Option) (*dependencyGraph, error) {
 	dg := &dependencyGraph{Complete: true}
-	// A partial dependency-resolution result (no manifest, unparseable build file)
-	// means the declared set itself is untrustworthy — the whole closure is a gap.
-	if !res.Partiality.Complete {
+	var cp depreach.Classpath
+	g := BuildGraph(opts...)
+	if g == nil {
 		dg.Complete = false
-		for _, r := range res.Partiality.Reasons {
-			dg.Gaps = append(dg.Gaps, "dependency resolution partial: "+r)
-		}
+		cp.Unlisted = true
+		dg.Gaps = append(dg.Gaps, "dependency resolution partial: "+PartialReasonBuildGraphAbsent)
+		dg.Engine = depreach.NewEngineOn(nil, cp)
+		return dg, nil
 	}
 
+	cp.JDK = g.RuntimeJDK()
 	var classes []classfile.Class
-	for _, d := range res.All {
-		if !d.Resolved {
-			dg.Complete = false
-			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: version unresolved", d.Coordinate))
-			continue
-		}
-		jar, found := locateArtifactJar(buildDir, d.Coordinate, d.Version)
+	for _, d := range graphJars(g) {
+		jar, found := readJar(d)
 		if found != jarFound {
 			dg.Complete = false
-			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: %s", d.Coordinate, d.Version, jarGap[found]))
+			cp.Unlisted = true
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: %s unreadable or changed since the build resolved it", d.GAV(), filepath.Base(d.Path)))
+			continue
+		}
+		pkgs, listed, closed := classfile.JarBytesPackages(jar.data)
+		cp.Add(pkgs, listed && closed)
+		if !listed {
+			dg.Complete = false
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: JAR cannot be listed", d.GAV()))
 			continue
 		}
 		jr, err := classfile.LoadJarBytes(jar.data)
 		if err != nil {
 			dg.Complete = false
-			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: %v", d.Coordinate, d.Version, err))
+			dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: %v", d.GAV(), err))
 			continue
 		}
 		if len(jr.Failed) > 0 {
 			dg.Complete = false
 			for _, f := range jr.Failed {
-				dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s:%s: %s", d.Coordinate, d.Version, f))
+				dg.Gaps = append(dg.Gaps, fmt.Sprintf("%s: %s", d.GAV(), f))
 			}
 		}
 		classes = append(classes, jr.Classes...)
 	}
 
 	dg.Classes = classes
-	dg.Engine = depreach.NewEngine(classes)
+	dg.Engine = depreach.NewEngineOn(classes, cp)
 	return dg, nil
 }

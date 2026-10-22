@@ -6,20 +6,20 @@
 //
 // This binary deliberately mirrors cmd/assay-plugin-js / cmd/assay-plugin-python: same
 // one-shot protocol, same hard-error-vs-declared-partiality contract. At full Assess-parity
-// SEVEN ops are LIVE, backed by the real pure-Go lexical source analysis (no scip-dotnet
+// NINE ops are LIVE, backed by the real pure-Go lexical source analysis (no scip-dotnet
 // container on the Assess path): index_symbols, resolve_symbols, resolve_versions (installed
 // versions from packages.lock.json / .csproj PackageReference / packages.config), call_graph,
-// find_ingresses, reachability, and compute_taint. reachability and compute_taint are
+// find_ingresses, reachability, compute_taint, resolve_inventory and build_manifest. reachability and compute_taint are
 // declared Partial(dynamic_dispatch) ALWAYS — never Complete — because a lexical C# scan
-// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). resolve_inventory is LIVE
-// (PLAN-150): a pure-lexical whole-graph NuGet resolver over the checkout's
+// cannot see interface/virtual/DI/reflection dispatch (scope §5 R1). resolve_inventory is a
+// pure-lexical whole-graph NuGet resolver over the checkout's
 // project.assets.json / packages.lock.json / declared PackageReference text — it never runs
-// dotnet/MSBuild/NuGet. build_manifest is LIVE (PLAN-151): a pure-lexical read of the checkout's
+// dotnet/MSBuild/NuGet. build_manifest is a pure-lexical read of the checkout's
 // .csproj/.fsproj/.vbproj, Directory.Build.props/.targets, global.json, and restore-output
 // PRESENCE, projected into the flat ecosystem-neutral BuildManifestResult with declared partiality
 // where the shape cannot carry a fact — it too never runs dotnet/MSBuild/NuGet. generate_harness
 // stays CONTRACT-PRESENT Unsupported (Prove-tier; the .NET effect rides the corpus repro-runtime
-// sandbox, exactly as the Go/Java/JS/Python plugins ship it). Every op keeps the nil-payload
+// sandbox, exactly as the Java/Kotlin plugins ship it). Every op keeps the nil-payload
 // hard-error guard (inv.4).
 //
 // The client (internal/plugin.dotnetPlugin) owns the timeout via exec.CommandContext; this
@@ -74,7 +74,7 @@ func run(ctx context.Context, stdin *os.File, stdout *os.File) error {
 // dispatch runs the requested operation. index_symbols, resolve_symbols, and resolve_versions
 // call the real source-level .NET analysis (Assess-foundation pass); call_graph, find_ingresses,
 // reachability, and compute_taint are LIVE (reachability/compute_taint always Partial(dynamic_dispatch));
-// resolve_inventory is LIVE (PLAN-150) and build_manifest is LIVE (PLAN-151). generate_harness
+// resolve_inventory and build_manifest are LIVE. generate_harness
 // remains Unsupported (Prove-tier). An unknown op, or a missing per-op payload, is a hard failure
 // (inv.4).
 func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) {
@@ -176,8 +176,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		return plugin.Response{BuildManifest: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Capability manifest CONTENT is Phase-4; this cycle returns honest absence
-		// (Supported:false), never a Supported:true manifest with empty axes.
+		// Honest absence (Supported:false), never a Supported:true manifest with empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "dotnet"}}, nil
 
 	default:

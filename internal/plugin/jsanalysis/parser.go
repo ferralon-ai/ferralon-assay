@@ -105,7 +105,7 @@ func stripJS(src string) string {
 		c := r[i]
 		switch {
 		case c == '/' && i+1 < n && r[i+1] == '/':
-			for i < n && r[i] != '\n' {
+			for i < n && r[i] != '\n' && r[i] != '\r' && r[i] != '\u2028' && r[i] != '\u2029' {
 				b.WriteByte(' ')
 				i++
 			}

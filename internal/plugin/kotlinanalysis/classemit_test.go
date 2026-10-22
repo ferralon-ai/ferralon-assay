@@ -267,7 +267,7 @@ func TestReachability_Fixture_ReachableEmitsOrderedPath(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -301,8 +301,9 @@ func TestReachability_Fixture_UnreachableIsCompleteAndEmpty(t *testing.T) {
 	main := newKClassBuilder()
 	mainCode := main.invokeStatic("com/example/VulnKt", "other", "()V")
 	mainCode = append(mainCode, opReturn)
-	main.addMethod("main", "()V", mainCode)
+	main.addMethod("main", mainStringsDesc, mainCode)
 	writeClassFixture(t, dir, "com/example/MainKt", main.build("com/example/MainKt", "java/lang/Object"))
+	nameLaunchEntry(t, dir, "com.example.MainKt")
 
 	vuln := newKClassBuilder()
 	vuln.addMethod("other", "()V", []byte{opReturn})
@@ -312,7 +313,7 @@ func TestReachability_Fixture_UnreachableIsCompleteAndEmpty(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}
@@ -342,7 +343,7 @@ func TestReachability_Fixture_ToolUnavailableIsHonestPartiality(t *testing.T) {
 	res, err := Reachability(context.Background(), plugin.ReachabilityRequest{
 		BuildDir: dir,
 		Symbols:  []string{"com/example/VulnKt.sink()V"},
-	})
+	}, cacheGraph(t, dir))
 	if err != nil {
 		t.Fatalf("Reachability: %v", err)
 	}

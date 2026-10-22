@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
 	"github.com/ferralon-ai/ferralon-assay/verdict"
@@ -21,7 +22,11 @@ type groundsFixture struct {
 	resolution      plugin.SymbolResolutionResult
 	reach           plugin.ReachabilityResult
 	footprint       []string
+	mods            goModules // the build's Go modules
 	scoped          []artifact.ScopedPartialityFlag
+	provenance      string // symbol_provenance; "" = osv-declared
+	untagged        bool   // the record carries no symbol_provenance
+	builtIn         bool   // S1's marker for a record the built-in table answered
 }
 
 func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
@@ -32,10 +37,20 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 	for _, p := range fx.affected {
 		affected = append(affected, map[string]string{"purl": p})
 	}
-	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, map[string]any{
+	adv := map[string]any{
 		"purl": fx.advisoryPURL, "advisory_symbols": fx.advisorySymbols, "affected_packages": affected,
-		"dropped_affected_packages": fx.dropped,
-	})
+		"dropped_affected_packages": fx.dropped, "symbol_provenance": "osv-declared",
+	}
+	if fx.provenance != "" {
+		adv["symbol_provenance"] = fx.provenance
+	}
+	if fx.untagged {
+		delete(adv, "symbol_provenance")
+	}
+	if fx.builtIn {
+		adv["built_in"] = true
+	}
+	putJSON(t, store, aid, artifact.TypeNormalizedAdvisory, adv)
 	putJSON(t, store, aid, artifact.TypeVulnerableSymbol, fx.resolution)
 	seedReachArtifact(t, store, aid, plugin.CallGraphResult{
 		Partiality: plugin.Complete(),
@@ -46,7 +61,7 @@ func (fx groundsFixture) finding(t *testing.T) report.AdvisoryFinding {
 			PartialityFlags: fx.footprint, ScopedPartiality: fx.scoped,
 		})
 	}
-	return finding(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg)
+	return findingInBuild(store, aid, report.Advisory{ID: "GHSA-test", Source: "corpus"}, fx.pkg, fx.mods)
 }
 
 const (
@@ -651,12 +666,74 @@ func TestWithInventoryLimits(t *testing.T) {
 			}
 		})
 	}
-	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictDisqualified, report.VerdictUndetermined} {
+	for _, v := range []report.Verdict{report.VerdictReachableCandidate, report.VerdictUndetermined} {
 		f := ne
 		f.Verdict = v
 		if got := withInventoryLimits(f, ambiguous); got.Verdict != v {
 			t.Errorf("%s changed to %s", v, got.Verdict)
 		}
+	}
+}
+
+// TestWithInventoryLimits_Disqualified: a disqualification grounded in the inventory (version out
+// of range, package absent from the manifest) does not stand under a did_not_run inventory limit
+// of its ecosystem; one grounded elsewhere (symbol axis, ecosystem mismatch) does.
+func TestWithInventoryLimits_Disqualified(t *testing.T) {
+	disq := func(reason string) report.AdvisoryFinding {
+		return report.AdvisoryFinding{
+			Package:  &report.Package{Ecosystem: "npm", Name: "qs", Version: "6.5.3"},
+			Verdict:  report.VerdictDisqualified,
+			Evidence: report.EvidenceSummary{Basis: disqualBasis(reason), Detail: disqualDetail(reason)},
+		}
+	}
+	noPkg := func(f report.AdvisoryFinding) report.AdvisoryFinding {
+		f.Package = nil
+		return f
+	}
+	noVersion := func(f report.AdvisoryFinding) report.AdvisoryFinding {
+		f.Package = &report.Package{Ecosystem: "npm", Name: "qs"}
+		return f
+	}
+	ambiguous := inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "npm")
+	cases := []struct {
+		name    string
+		f       report.AdvisoryFinding
+		limits  []report.PartialityNote
+		blocked bool
+	}{
+		{"version out of range", disq(pipeline.ReasonVersionNotInRange), ambiguous, true},
+		{"absent from the manifest", disq(pipeline.ReasonNoManifestEntry), ambiguous, true},
+		{"version out of range, no limit", disq(pipeline.ReasonVersionNotInRange), nil, false},
+		{"version out of range, limit of another ecosystem", disq(pipeline.ReasonVersionNotInRange),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"version out of range, inherent limit", disq(pipeline.ReasonVersionNotInRange),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
+		{"symbol axis", disq(pipeline.ReasonSymbolAbsent), ambiguous, false},
+		{"ecosystem mismatch", disq(pipeline.ReasonAdvisoryEcosystemMismatch), ambiguous, false},
+		{"version set, no single version", noVersion(disq(pipeline.ReasonVersionNotInRange)), ambiguous, true},
+		{"version set, limit of another ecosystem", noVersion(disq(pipeline.ReasonVersionNotInRange)),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), false},
+		{"toolchain version out of range, no package", noPkg(disq(pipeline.ReasonVersionNotInRange)), ambiguous, false},
+		{"absent from the manifest, no package", noPkg(disq(pipeline.ReasonNoManifestEntry)),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonLockfileAmbiguous), "PyPI"), true},
+		{"absent from the manifest, no package, no limit", noPkg(disq(pipeline.ReasonNoManifestEntry)), nil, false},
+		{"absent from the manifest, no package, inherent limit", noPkg(disq(pipeline.ReasonNoManifestEntry)),
+			inventoryPartialityNotes(plugin.Partial(plugin.PartialReasonReflection), "npm"), false},
+		{"symbol axis, no package", noPkg(disq(pipeline.ReasonSymbolAbsent)), ambiguous, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := withInventoryLimits(tc.f, tc.limits)
+			if !tc.blocked {
+				if got.Verdict != report.VerdictDisqualified {
+					t.Fatalf("verdict = %s/%q, want disqualified", got.Verdict, got.UndeterminedReason)
+				}
+				return
+			}
+			if got.Verdict != report.VerdictUndetermined || got.UndeterminedReason != report.ReasonAnalysisDidNotRun || got.Evidence.Basis != "" {
+				t.Fatalf("got %s/%q basis %q, want undetermined/%s with no basis", got.Verdict, got.UndeterminedReason, got.Evidence.Basis, report.ReasonAnalysisDidNotRun)
+			}
+		})
 	}
 }
 

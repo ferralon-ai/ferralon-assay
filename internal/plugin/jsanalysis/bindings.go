@@ -86,6 +86,11 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		mb.imports[b.Local] = b
 	}
 	reqNames, crNames := loaderNames(clean)
+	frames := newThisFrames(clean)
+	globals := newGlobalScope(clean, frames)
+	if globals.keyed {
+		mb.evaluated = true
+	}
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {
@@ -94,9 +99,9 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 		word, next := readWord(clean, i)
 		switch {
-		case word == "import":
+		case word == "import" && !memberName(clean, i):
 			i = parseImportForm(clean, src, next, &mb, add)
-		case word == "export":
+		case word == "export" && !memberName(clean, i):
 			i = parseExportForm(clean, src, next, &mb)
 		case word == "const", word == "let", word == "var":
 			i = parseDeclForm(clean, src, next, &mb, add)
@@ -112,19 +117,44 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			mb.memberUse(clean, i, word)
 			i = next
 		case word == "Function":
-			mb.functionUse(clean, i, next)
+			mb.functionUse(clean, src, i, next)
 			i = next
 		case word == "module":
 			mb.moduleIndexUse(clean, i, next)
 			i = next
+		case globals.isGlobal(word, i):
+			mb.globalUse(clean, i, next, false, globals)
+			i = next
+		case word == "this" && frames.globalAt(i):
+			mb.globalUse(clean, i, next, !globals.thisGlobal(i), globals)
+			i = next
 		case word == "_" && src[i] != '_': // a string literal; see keyedUse
 			mb.keyedUse(clean, src, i)
+			i = next
+		case globals.callsReturnThis(clean, word, i, next):
+			// `G()` for `function G() { return this; }` is the global, used where it is called
+			mb.globalUse(clean, i, closeParen(clean, skipSpace(clean, next))+1, false, globals)
 			i = next
 		default:
 			i = next
 		}
 	}
 	return mb
+}
+
+// memberName reports whether the word at i is read as a property (`x.import`, `x?.export`),
+// not a keyword, so what follows it is still scanned. A spread (`...import(x)`) is not one,
+// nor a dot that may end a number (`1.` then a line break, where ASI makes import a keyword).
+func memberName(clean []rune, i int) bool {
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || clean[b] != '.' || b > 0 && clean[b-1] == '.' {
+		return false
+	}
+	t := b
+	for t > 0 && isIdentPart(clean[t-1]) {
+		t--
+	}
+	return t == b || clean[t] < '0' || clean[t] > '9'
 }
 
 // importPair is one (local, imported) name pair collected while parsing an import clause

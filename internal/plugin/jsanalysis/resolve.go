@@ -285,7 +285,7 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 // loadsUnreadModule reports whether a relative specifier names no in-tree source module: a
 // native addon, a file generated at build time, anything outside the parsed source set. Its
 // code runs on load and can itself load packages, yet this lane never reads it. A JSON file
-// is data and runs nothing.
+// is data and runs nothing, and so, under stock tooling, is a stylesheet in the build tree.
 func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
 	if !isRelativeSpecifier(spec) || rs.resolveRelative(fromModule, spec) != "" {
 		return false
@@ -294,8 +294,19 @@ func (rs *resolver) loadsUnreadModule(fromModule, spec string) bool {
 	if ext == ".json" {
 		return false
 	}
+	if rs.stylesheetRunsNoCode(fromModule, path.Join(path.Dir(fromModule), spec)) {
+		return false
+	}
 	// TS sources import siblings by their emitted name ("./util.js" for util.ts).
 	return !jsExtensions[ext] || rs.resolveRelative(fromModule, strings.TrimSuffix(spec, ext)) == ""
+}
+
+// stylesheetImport reports whether spec is a relative import of a stylesheet that
+// stylesheetRunsNoCode exempts from unresolved_module; the caller declares its loader runtime.
+func (rs *resolver) stylesheetImport(fromModule, spec string) bool {
+	return isRelativeSpecifier(spec) && stylesheetExtensions[path.Ext(spec)] &&
+		rs.resolveRelative(fromModule, spec) == "" &&
+		rs.stylesheetRunsNoCode(fromModule, path.Join(path.Dir(fromModule), spec))
 }
 
 // resolveName resolves a bare name (arity<0 means arity-free reference) via the module's

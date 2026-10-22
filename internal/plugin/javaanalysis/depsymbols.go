@@ -1,31 +1,33 @@
 package javaanalysis
 
 import (
-	"context"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
 // depsymbols.go — resolve a dependency advisory's symbols inside the dependency's own JAR.
 // The advisory's PURL names a Maven coordinate; the JAR for every version of it the build
-// resolved is located in the local caches (never fetched), read through the shared classfile
+// resolved is the file the build graph names (never fetched), read through the shared classfile
 // reader, and the advisory symbols are matched by full binary name against the classes it
 // holds. Only that JAR is searched, so a first-party method that happens to share a name can
 // never stand in for the vulnerable dependency method.
 //
 // Each resolved method carries the same id the dependency call graph uses
 // ("jvmref Owner#NameDesc"), Symbol.Package is the Maven coordinate, and Origins maps it to
-// the coordinate's versionless PURL. Every gap is scoped to the coordinate, bounded by what
+// the coordinate's versionless PURL. A coordinate a complete graph lacks is not installed by the build:
+// dependency_not_in_build, bounded to the coordinate's own PURL (intake already settles that
+// advisory as no_manifest_entry). Every gap is scoped to the coordinate, bounded by what
 // the JAR's code could call, callbacks into first-party code included (depclosure.go):
-//   - no version resolved, no cache holds the resolved version's JAR, or the build declares a
-//     classifier or non-jar type for it → tool_failure:no_dependency_artifact;
-//   - a cached copy is unreadable or resolves outside its cache, the JAR is unreadable, or some
-//     classes in it fail to parse → tool_failure.
+//   - a graph that could be missing a build resolved no version of it, or no JAR for a version →
+//     tool_failure:no_dependency_artifact;
+//   - a JAR is unreadable, no longer has the digest the graph recorded, or some classes in it
+//     fail to parse → tool_failure.
 // Each scoped reason is also listed run-wide in Reasons. An advisory symbol that matches
 // nothing in a fully read JAR is advisory_symbol_unresolved.
 
@@ -43,37 +45,49 @@ type depSymbolResolution struct {
 	part     plugin.Partiality
 }
 
-// isRootCoordinate reports whether coordinate names one of the build's own reactor modules:
-// an advisory against the project itself, whose code is first-party source.
-func isRootCoordinate(buildDir, coordinate string) bool {
-	for _, p := range findPOMs(buildDir) {
-		pom, ok := parseMavenPOM(p)
-		if !ok || pom.ArtifactID == "" {
-			continue
+// isRootCoordinate reports whether coordinate names one of the build's own modules, by its own
+// coordinate or one it publishes under: an advisory against the project itself, whose code is
+// first-party source. Without a graph no coordinate is known to be one.
+func isRootCoordinate(g *buildgraph.Graph, coordinate string) bool {
+	if g == nil {
+		return false
+	}
+	want := strings.TrimSpace(coordinate)
+	for _, m := range g.Modules {
+		for _, n := range m.Nodes {
+			if n.ID == m.Root && isCoordinate(n, want) {
+				return true
+			}
 		}
-		if pom.GroupID+":"+pom.ArtifactID == coordinate {
-			return true
+		for _, a := range m.Aliases {
+			if strings.EqualFold(a, want) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// resolveDependencyJarSymbols resolves wanted inside the JAR(s) of coordinate. purlVersion,
-// when the request PURL pins one, is the only version searched; otherwise every version the
-// inventory resolved for the coordinate is.
-func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purlVersion string, wanted []string) (depSymbolResolution, error) {
+// resolveDependencyJarSymbols resolves wanted inside the JAR(s) the build graph resolved for
+// coordinate. purlVersion, when the request PURL pins one the build resolved, is the only
+// version searched; otherwise every one is. Without a graph nothing is known about the
+// coordinate's code, and the result says so run-wide.
+func resolveDependencyJarSymbols(g *buildgraph.Graph, buildDir, coordinate, purlVersion string, wanted []string) depSymbolResolution {
 	out := depSymbolResolution{origins: map[string]string{}, matched: map[string][]string{}, part: plugin.Complete()}
 	if len(wanted) == 0 {
-		return out, nil
+		return out
+	}
+	if g == nil {
+		out.part = plugin.Partial(PartialReasonBuildGraphAbsent)
+		return out
 	}
 
-	inv, err := ResolveInventory(ctx, plugin.ResolveInventoryRequest{BuildDir: buildDir})
-	if err != nil {
-		return out, err
-	}
-	ix := indexInventory(inv)
 	purl := mavenPURLNoVersion(coordinate)
-	targets := unloadedJarTargets(ix, newMavenCache(buildDir), coordinate)
+	if AbsentFromBuild(g, buildDir, coordinate) {
+		out.part = NotInBuild(coordinate)
+		return out
+	}
+	targets := BlindSpotTargets(g, coordinate)
 	scoped := func(reason, path string) plugin.ScopedReason {
 		return plugin.ScopedReason{Reason: reason, Package: purl, Path: path, Targets: targets}
 	}
@@ -81,7 +95,7 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 	// Only the versions the build resolved are searched: another version that happens to sit
 	// in a cache is not the code the build runs. A version the request PURL pins narrows the
 	// search when the build resolved it, and is ignored when it did not.
-	versions := ix.versionsOf(coordinate)
+	versions := graphVersionsOf(g, coordinate)
 	if purlVersion != "" && slices.Contains(versions, purlVersion) {
 		versions = []string{purlVersion}
 	}
@@ -94,40 +108,34 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 	matchedSet := map[string]map[string]bool{}
 	read := false
 	for _, v := range versions {
-		if ix.variantAt(coordinate, v) {
-			// The build declares a classifier or non-jar type for this coordinate, so the main
-			// JAR may not be the file it uses.
-			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": artifact variant declared"))
-			continue
-		}
-		jar, found := locateArtifactJar(buildDir, coordinate, v)
-		switch found {
-		case jarCopiesDiffer:
-			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v+": cached copies differ"))
-			continue
-		case jarUnreadable:
-			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, coordinate+":"+v+": cached copy unreadable or outside the cache"))
-			continue
-		case jarMissing:
+		jars := CoordinateJars(g, coordinate, v)
+		if len(jars) == 0 {
 			scopedReasons = append(scopedReasons, scoped(reasonNoDependencyArtifact, coordinate+":"+v))
 			continue
 		}
-		jr, err := classfile.LoadJarBytes(jar.data)
-		if err != nil {
-			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)))
-			continue
-		}
-		if len(jr.Failed) > 0 {
-			scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
-		}
-		read = true
-		for w, syms := range matchJarSymbols(jr.Classes, coordinate, wanted) {
-			if matchedSet[w] == nil {
-				matchedSet[w] = map[string]bool{}
+		for _, j := range jars {
+			jar, found := readJar(j)
+			if found != jarFound {
+				scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, j.GAV()+": "+filepath.Base(j.Path)+" unreadable or changed since the build resolved it"))
+				continue
 			}
-			for _, s := range syms {
-				bySCIP[s.SCIP] = s
-				matchedSet[w][s.SCIP] = true
+			jr, err := classfile.LoadJarBytes(jar.data)
+			if err != nil {
+				scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)))
+				continue
+			}
+			if len(jr.Failed) > 0 {
+				scopedReasons = append(scopedReasons, scoped(plugin.PartialReasonToolFailure, filepath.Base(jar.path)+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
+			}
+			read = true
+			for w, syms := range matchJarSymbols(jr.Classes, coordinate, wanted) {
+				if matchedSet[w] == nil {
+					matchedSet[w] = map[string]bool{}
+				}
+				for _, s := range syms {
+					bySCIP[s.SCIP] = s
+					matchedSet[w][s.SCIP] = true
+				}
 			}
 		}
 	}
@@ -159,7 +167,7 @@ func resolveDependencyJarSymbols(ctx context.Context, buildDir, coordinate, purl
 	if len(reasons) > 0 || len(scopedReasons) > 0 {
 		out.part = plugin.Partiality{Complete: false, Reasons: reasons, Scoped: scopedReasons}
 	}
-	return out, nil
+	return out
 }
 
 // matchJarSymbols returns, per advisory symbol, the JAR methods it names. An advisory symbol

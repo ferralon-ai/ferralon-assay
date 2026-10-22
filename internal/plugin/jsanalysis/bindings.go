@@ -108,6 +108,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 	if globals.keyed || computedIndexPair(clean, src) || identifierEscape(clean) {
 		mb.evaluated = true
 	}
+	mb.patternKeys(clean, src, globals)
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {

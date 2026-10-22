@@ -1455,8 +1455,10 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 	start := i
 	if b >= 0 && clean[b] == '.' && !(b >= 1 && clean[b-1] == '.') {
 		s, ok := globalMember(clean, b, globals)
-		if !ok {
-			return // a property of that name on another object
+		if !ok || p < n && clean[p] == '(' || optionalCall(clean, p) {
+			// A property of that name on another object, or one that is called: neither
+			// process nor the module object is a function, so a call is never of them.
+			return
 		}
 		start = s
 		if objectTested(clean, s, next, skipSpaceBack(clean, s-1)) || negatedGroupTail(clean, s, p) {
@@ -1468,6 +1470,13 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 		if obj.tails[v] || clean[v] == '{' && patternKeysAccepted(clean, v, matchingClose(clean, v), obj) {
 			return
 		}
+		if obj.names["process"] {
+			mb.nativeLoad = true
+			return
+		}
+		mb.computedReq = true
+		return
+	} else if objectKey(clean, b, p) && patternKeyUnclassified(clean, i, globals) {
 		if obj.names["process"] {
 			mb.nativeLoad = true
 			return
@@ -1518,19 +1527,14 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 	mb.computedReq = true
 }
 
-// globalMember reports whether the '.' at b reads a property of the global object
-// (`global.process`), which is the object itself rather than a property of that name, and
-// where that receiver starts.
+// globalMember reports whether the '.' at b may read a property of the global object, which
+// is the object itself rather than a property of that name, and where that receiver starts:
+// a name that resolves to the global, a chain of global names off one
+// (`global.globalThis.process`), or a receiver ending in a group, call or index
+// (`(globalThis).process`, `(0, globalThis).process`), whose value this lane does not know.
+// A property of a plain name (`queue.process`) is not one.
 func globalMember(clean []rune, b int, globals *globalScope) (int, bool) {
-	k := skipSpaceBack(clean, memberDot(clean, b)-1)
-	if k < 0 || !isIdentPart(clean[k]) {
-		return 0, false
-	}
-	w, s := wordBefore(clean, k)
-	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
-		return 0, false
-	}
-	return s, isGlobalBase(w) || globals.isGlobal(w, s)
+	return globals.globalChain(clean, memberDot(clean, b), true)
 }
 
 // negatedGroupTail reports whether the operand starting at start and ending before p is the
@@ -1782,6 +1786,135 @@ func globalPatternKey(clean []rune, b, p int, globals *globalScope) (int, bool) 
 		return 0, false
 	}
 	return skipSpace(clean, p+1), true
+}
+
+// patternKeyUnclassified reports whether the object key at i sits in a destructuring pattern
+// whose source this lane cannot show is not the global object. Only a top-level key of a
+// pattern declared or assigned from a bare name that does not resolve to the global is
+// classified (`const { process: pr } = opts`); a pattern off the global by name is judged by
+// globalPatternKey first. Any other source is not: a group, comma, ??, ||, ternary, call or
+// member chain, an enclosing pattern (`{ globalThis: { process: pr } } = globalThis`), a
+// parameter, whose value is what a caller passes, and a for-of or for-in head.
+func patternKeyUnclassified(clean []rune, i int, globals *globalScope) bool {
+	o := enclosingOpen(clean, i)
+	if o < 0 || clean[o] != '{' {
+		return false
+	}
+	src, end, pattern := patternSource(clean, o)
+	return pattern && !(src >= 0 && plainSource(clean, src, end, globals))
+}
+
+// patternKeys declares a quoted or computed key that may read process or the module object
+// in a destructuring pattern whose source patternKeyUnclassified cannot classify: a quoted
+// key spelled process or module, a computed key whose whole literal is one of them, and a
+// computed key of any other expression, whose value may be either.
+func (mb *moduleBindings) patternKeys(clean, src []rune, globals *globalScope) {
+	n := len(clean)
+	for k := 0; k < n; k++ {
+		if clean[k] != '_' && clean[k] != '[' || clean[k] == '_' && (k >= len(src) || src[k] == '_') {
+			continue
+		}
+		b := skipSpaceBack(clean, k-1)
+		if b < 0 || clean[b] != '{' && clean[b] != ',' {
+			continue
+		}
+		key, e := "", k
+		if clean[k] == '[' {
+			e = closeBracket(clean, k)
+			if a := skipSpace(clean, k+1); a < n && clean[a] == '_' && a < len(src) && src[a] != '_' && wholeKey(clean, src, a) {
+				key = specifierAt(src, a)
+				if key != "process" && key != "module" {
+					continue
+				}
+			}
+		} else {
+			key = specifierAt(src, k)
+			if key != "process" && key != "module" {
+				continue
+			}
+		}
+		q := skipSpace(clean, e+1)
+		if q >= n || clean[q] != ':' || q+1 < n && clean[q+1] == ':' || !patternKeyUnclassified(clean, k, globals) {
+			continue
+		}
+		if key == "module" {
+			mb.computedReq = true
+		} else {
+			mb.nativeLoad = true
+		}
+	}
+}
+
+// patternSource reports whether the object brace at o opens a destructuring pattern, and
+// returns the start and end of the source it is declared or assigned from when o is the
+// pattern's outermost level and that source is the pattern's whole value; otherwise src is
+// -1. A brace that is an object literal, a TypeScript type literal or a block is no pattern.
+func patternSource(clean []rune, o int) (src, end int, pattern bool) {
+	n := len(clean)
+	top := true
+	for {
+		c := closeOf(clean, o)
+		if c >= n {
+			return -1, -1, false
+		}
+		q := skipSpace(clean, c+1)
+		if top && q < n && clean[q] == ':' && !(q+1 < n && clean[q+1] == ':') {
+			q = skipSpace(clean, typeEnd(clean, q+1)) // `const { ... }: T = src`
+		}
+		if w, _ := peekWord(clean, q); w == "of" || w == "in" {
+			return -1, -1, true // a for-of or for-in head
+		}
+		assign := q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>'))
+		from := func() (int, int, bool) {
+			if top && assign {
+				return skipSpace(clean, q+1), initEnd(clean, q+1), true
+			}
+			return -1, -1, true
+		}
+		bb := skipSpaceBack(clean, o-1)
+		if w, _ := wordBefore(clean, bb); w == "const" || w == "let" || w == "var" {
+			return from()
+		}
+		o2 := enclosingOpen(clean, o)
+		switch {
+		case bb < 0 || o2 < 0:
+			if clean[o] == '[' && assign {
+				return from()
+			}
+			return -1, -1, false
+		case clean[bb] == ':' && clean[o2] == '{':
+			// the value of a key in an enclosing pattern, or of a property in an object literal
+		case (clean[bb] == ',' || clean[bb] == '[') && clean[o2] == '[':
+			// an element of an enclosing array pattern, or of an array literal
+		case (clean[bb] == ',' || clean[bb] == '(') && clean[o2] == '(':
+			if parameterList(clean, o2) {
+				return -1, -1, true
+			}
+			if clean[bb] == '(' && assign {
+				return from() // `({ ... } = src)`
+			}
+			return -1, -1, false
+		default:
+			if clean[o] == '[' && assign && strings.ContainsRune(";{}", clean[bb]) {
+				return from() // `[a, { ... }] = src` as a statement
+			}
+			return -1, -1, false
+		}
+		o, top = o2, false
+	}
+}
+
+// plainSource reports whether clean[src:end] is a bare name that does not resolve to the
+// global object and is the whole source.
+func plainSource(clean []rune, src, end int, globals *globalScope) bool {
+	if src >= len(clean) || !isIdentStart(clean[src]) || clean[src] == '_' {
+		return false
+	}
+	w, e := readWord(clean, src)
+	if w == "this" || w == "super" || isGlobalBase(w) || globals.isGlobal(w, src) {
+		return false
+	}
+	return skipSpace(clean, e) >= end || valueTail(clean, e)
 }
 
 // matchingClose returns the index of the brace closing the one at open, or -1.

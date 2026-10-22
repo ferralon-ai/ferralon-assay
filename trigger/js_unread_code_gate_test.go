@@ -1110,6 +1110,166 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"vm through process renamed in a pattern off a parenthesised globalThis", `
+const { process: pr } = (globalThis);
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off a comma expression", `
+const { process: pr } = (0, globalThis);
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"ContextifyScript through process renamed in a pattern off a comma expression", `
+const { process: pr } = (0, globalThis);
+new (pr.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off globalThis ?? {}", `
+const { process: pr } = globalThis ?? {};
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off globalThis || {}", `
+const { process: pr } = globalThis || {};
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off global.globalThis", `
+const { process: pr } = global.globalThis;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off the isomorphic global ternary", `
+const { process: pr } = typeof globalThis !== 'undefined' ? globalThis : global;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"ContextifyScript through process renamed in a pattern off the isomorphic global ternary", `
+const { process: pr } = typeof globalThis !== 'undefined' ? globalThis : global;
+new (pr.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process nested under a global key of a pattern off globalThis", `
+const { globalThis: { process: pr } } = globalThis;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process quoted in a pattern off a comma expression", `
+const { 'process': pr } = (0, globalThis);
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a computed key in a pattern off globalThis ?? {}", `
+const k = 'process';
+const { [k]: pr } = globalThis ?? {};
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through global.globalThis.process", `
+global.globalThis.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through globalThis.global.process", `
+globalThis.global.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"ContextifyScript through global.globalThis.process", `
+new (global.globalThis.process.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through window.self.globalThis.process", `
+window.self.globalThis.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a local initialised from global.globalThis.process", `
+const pr = global.globalThis.process;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a local initialised from (globalThis).process", `
+const pr = (globalThis).process;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through (a ?? globalThis).process", `
+const a = undefined;
+const pr = (a ?? globalThis).process;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a local holding global.globalThis", `
+const g = global.globalThis;
+g.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module._load through module renamed in a pattern off a comma expression", `
+const { module: m } = (0, globalThis);
+m.constructor._load('json5');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a typed pattern off a parenthesised globalThis", `
+const { process: pr }: any = (globalThis);
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process read by optional chaining off a parenthesised globalThis", `
+const pr = (globalThis)?.process;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off a local aliasing a global-name chain", `
+const g = window.self.globalThis;
+const { process: pr } = g;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1169,6 +1329,8 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"process renamed and nested in patterns off globalThis, data members only", "const { process: pr } = globalThis;\nconst { process: { env } } = globalThis;\nconst mode = pr.env.NODE_ENV || env.HOME;\nconst j = require('./plugins');", nil},
+		{"process renamed in a pattern off a local object, any member", "const opts = { process: { getBuiltinModule: String } };\nconst { process: pr } = opts;\nconst m = pr.getBuiltinModule('x');\nconst j = require('./plugins');", nil},
+		{"process as a method of a local queue and of a call result", "const j = require('./plugins');\nconst queue = new j.Queue('jobs');\nqueue.process((job) => job);\nfunction getQueue() { return queue; }\ngetQueue().process((job) => job);\nthis.queues[0].process((job) => job);", nil},
 		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},
 		{"literal import() through a tsconfig paths alias with no installed package", "let j = { parse: (s) => s };\nimport('@app/plugins').then((m) => { j = m; });", map[string]string{
 			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,

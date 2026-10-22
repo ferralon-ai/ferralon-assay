@@ -1125,6 +1125,32 @@ func TestUndeterminedReason_JSWorkspaceMemberShadow(t *testing.T) {
 		return files
 	}
 	member := map[string]string{"node_modules/foo": "../packages/foo"}
+	const entrySrc = "const j = require('./src/entry');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+	// entryTo links src/entry.js to target over the member's link, with extra links added.
+	entryTo := func(target string, extra map[string]string) map[string]string {
+		links := map[string]string{"node_modules/foo": "../packages/foo", "src/entry.js": target}
+		maps.Copy(links, extra)
+		return links
+	}
+	withReal := func(files map[string]string) map[string]string {
+		files["dist/real.js"] = "module.exports = require('foo');\n"
+		return files
+	}
+	// outside is a directory outside the build root holding real.js beside an installed copy.
+	outside := t.TempDir()
+	for name, body := range map[string]string{
+		"real.js":                       "module.exports = require('foo');\n",
+		"node_modules/foo/package.json": installed["package.json"],
+		"node_modules/foo/index.js":     installed["index.js"],
+	} {
+		p := filepath.Join(outside, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cases := []struct {
 		name  string
 		src   string
@@ -1137,6 +1163,12 @@ func TestUndeterminedReason_JSWorkspaceMemberShadow(t *testing.T) {
 		{"a link to another directory", src, tree("vendor/foo"), map[string]string{"node_modules/foo": "../vendor/foo"}, true},
 		{"a file Node tries before the member's link", src, withFile(tree(), "node_modules/foo.js", installed["index.js"]), member, true},
 		{"a link that loops", src, tree(), map[string]string{"node_modules/foo": "foo"}, true},
+		{"a symlinked importer whose real directory holds an installed copy", entrySrc,
+			withReal(tree("dist/node_modules/foo")), entryTo("../dist/real.js", nil), true},
+		{"a symlinked importer whose real file is outside the build root beside an installed copy", entrySrc,
+			tree(), entryTo(filepath.Join(outside, "real.js"), nil), true},
+		{"a symlinked importer whose real directory holds only the member's link", entrySrc,
+			withReal(tree()), entryTo("../dist/real.js", map[string]string{"dist/node_modules/foo": "../../packages/foo"}), false},
 		{"the member's link at the root", src, tree(), member, false},
 		{"the member's link reached from a nested importer", viaSrc, tree(), member, false},
 		{"no installed copy", src, tree(), nil, false},

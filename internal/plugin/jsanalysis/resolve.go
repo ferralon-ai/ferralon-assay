@@ -781,53 +781,96 @@ func (rs *resolver) workspaceMember(spec string) (string, *pkgManifest, string, 
 	return "", nil, "", false
 }
 
-// memberShadowed reports whether Node's node_modules walk from fromModule's directory up to the
-// build root finds, for package name, something other than the workspace member at memberDir.
-// The first directory holding a candidate decides: a file Node's CommonJS LOAD_AS_FILE would
-// try, or a real directory, is different code; a symlink is the member only when its target's
-// real path is the member directory's. A candidate that cannot be stat'ed or followed, for any
-// reason but a missing path, counts as shadowing. A walk that finds nothing leaves the member.
+// memberShadowed reports whether Node's node_modules walk for package name, from the importing
+// module fromModule, finds something other than the workspace member at memberDir. Node walks
+// from the importing file's real path, so the walk runs from its logical directory up to the
+// build root and again from the real directory of each source file the module can be. A real
+// directory inside the build root stops at the build root; one outside it walks every ancestor.
+// In each walk the first directory holding a candidate decides: a file Node's CommonJS
+// LOAD_AS_FILE would try, or a real directory, is different code; a symlink is the member only
+// when its target's real path is the member directory's. A path that cannot be stat'ed or
+// followed, for any reason but a missing path, counts as shadowing. A walk that finds nothing
+// leaves the member.
 func (rs *resolver) memberShadowed(fromModule, name, memberDir string) bool {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
 		return true
 	}
-	memberReal, err := filepath.EvalSymlinks(filepath.Join(rs.prog.root, filepath.FromSlash(memberDir)))
+	root := filepath.Clean(rs.prog.root)
+	memberReal, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(memberDir)))
 	if err != nil {
 		return true
 	}
-	dir := path.Dir(fromModule)
-	for {
-		if dir == "." {
-			dir = ""
-		}
-		if path.Base(dir) != "node_modules" {
-			base := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name))
-			for _, ext := range []string{".js", ".json", ".node"} {
-				if _, err := os.Lstat(base + ext); err == nil || !absent(err) {
-					return true
-				}
-			}
-			fi, err := os.Lstat(base)
-			switch {
-			case err != nil && !absent(err):
-				return true
-			case err == nil && fi.Mode()&os.ModeSymlink == 0:
-				return true
-			case err == nil:
-				real, err := filepath.EvalSymlinks(base)
-				if err == nil {
-					return real != memberReal
-				}
-				if !absent(err) {
-					return true
-				}
+	// decides reports whether dir's node_modules holds a candidate for name, and if so whether
+	// it shadows the member.
+	decides := func(dir string) (bool, bool) {
+		base := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		for _, ext := range []string{".js", ".json", ".node"} {
+			if _, err := os.Lstat(base + ext); err == nil || !absent(err) {
+				return true, true
 			}
 		}
-		if dir == "" {
-			return false
+		fi, err := os.Lstat(base)
+		switch {
+		case err != nil:
+			return !absent(err), true
+		case fi.Mode()&os.ModeSymlink == 0:
+			return true, true
 		}
-		dir = path.Dir(dir)
+		real, err := filepath.EvalSymlinks(base)
+		if err != nil {
+			return !absent(err), true
+		}
+		return true, real != memberReal
 	}
+	// walk runs Node's walk from dir up to stop, or to the filesystem root when stop is "".
+	walk := func(dir, stop string) bool {
+		for {
+			if filepath.Base(dir) != "node_modules" {
+				if decided, shadowed := decides(dir); decided {
+					return shadowed
+				}
+			}
+			if dir == stop || dir == filepath.Dir(dir) {
+				return false
+			}
+			dir = filepath.Dir(dir)
+		}
+	}
+	if walk(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule))), root) {
+		return true
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return true
+	}
+	exts := []string{vueExtension}
+	for ext := range jsExtensions {
+		exts = append(exts, ext)
+	}
+	for _, ext := range exts {
+		file := filepath.Join(root, filepath.FromSlash(fromModule)+ext)
+		if _, err := os.Lstat(file); err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		real, err := filepath.EvalSymlinks(file)
+		if err != nil {
+			if absent(err) {
+				continue
+			}
+			return true
+		}
+		realDir, stop := filepath.Dir(real), ""
+		if rel, err := filepath.Rel(realRoot, realDir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			stop = realRoot
+		}
+		if walk(realDir, stop) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rs *resolver) rootManifest() (*pkgManifest, bool) {

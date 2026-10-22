@@ -156,13 +156,13 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		"a.js":                      "const foo = require('foo');\n",
 		"node_modules/.keep":        "",
 	}
-	memberShadowed := func(want bool) func(t *testing.T, dir string) {
+	memberShadowed := func(from string, want bool) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
 			prog := mustLoad(t, dir)
 			if prog == nil {
 				return
 			}
-			if got := prog.resolver().loadsOutOfTree("a.js", "foo", true); got != want {
+			if got := prog.resolver().loadsOutOfTree(from, "foo", true); got != want {
 				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
 			}
 		}
@@ -382,14 +382,27 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			{"EACCES", memberTree, func(t *testing.T, dir string) {
 				deny(t, filepath.Join(dir, "node_modules"), true) // listable, not searchable
 				wantErr(t, dir, "node_modules/foo.js", os.ErrPermission, true)
-			}, memberShadowed(true)},
+			}, memberShadowed("a", true)},
 			{"ELOOP", memberTree, func(t *testing.T, dir string) {
 				loop(t, dir, "node_modules/foo")
 				wantErr(t, dir, "node_modules/foo", syscall.ELOOP)
-			}, memberShadowed(true)},
+			}, memberShadowed("a", true)},
 			{"missing", memberTree, func(t *testing.T, dir string) {
 				dangle(t, dir, "node_modules/foo")
-			}, memberShadowed(false)},
+			}, memberShadowed("a", false)},
+		}},
+		{"memberShadowed importer real path", []row{
+			{"EACCES", memberTree, func(t *testing.T, dir string) {
+				link(t, dir, "src/entry.js", denied(t))
+				wantErr(t, dir, "src/entry.js", os.ErrPermission)
+			}, memberShadowed("src/entry", true)},
+			{"ELOOP", memberTree, func(t *testing.T, dir string) {
+				loop(t, dir, "src/entry.js")
+				wantErr(t, dir, "src/entry.js", syscall.ELOOP)
+			}, memberShadowed("src/entry", true)},
+			{"missing", memberTree, func(t *testing.T, dir string) {
+				dangle(t, dir, "src/entry.js")
+			}, memberShadowed("src/entry", false)},
 		}},
 		{"installCommand lockfile", []row{
 			{"EACCES", map[string]string{"package.json": `{"name":"app"}`}, func(t *testing.T, dir string) {

@@ -190,7 +190,8 @@ var implicitTags = map[string]bool{"!!str": true, "!!int": true, "!!float": true
 
 // plainYAML reports whether n and everything in it is YAML that means what it spells:
 // documents, mappings with plain-scalar keys other than <<, sequences and scalars, with no
-// anchor, no alias and no tag written in the text but !reference on a list of such scalars.
+// anchor, no alias and no tag written in the text but !reference on a list of such scalars,
+// and no scalar GitLab's loader reads as a Ruby symbol (:name), which its keys match.
 // The join reads only such files; anything else, including YAML features this does not name,
 // fails.
 func plainYAML(n *yaml.Node) bool {
@@ -211,7 +212,7 @@ func plainYAML(n *yaml.Node) bool {
 		return true
 	case n.Kind == yaml.MappingNode && n.Tag == "!!map":
 	case n.Kind == yaml.SequenceNode && n.Tag == "!!seq":
-	case n.Kind == yaml.ScalarNode && implicitTags[n.Tag]:
+	case n.Kind == yaml.ScalarNode && implicitTags[n.Tag] && !(len(n.Value) > 1 && n.Value[0] == ':'):
 	default:
 		return false
 	}

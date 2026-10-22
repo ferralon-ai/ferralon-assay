@@ -217,43 +217,21 @@ func (e *Engine) subtypeClosure(owner string) []string {
 	return out
 }
 
-// hiddenSubtypes returns the loaded classes and interfaces that have an unopened
-// dependency type among their supertypes, direct or not, and the unopened interfaces
-// lambdas implement. A JDK supertype hides nothing: the JDK cannot extend a class or
-// interface from the classpath.
+// hiddenSubtypes returns the loaded classes and interfaces directly below an unopened
+// dependency type, and the unopened interfaces lambdas implement; subtypeClosure adds
+// everything below them. A JDK supertype hides nothing: the JDK cannot extend a class
+// or interface from the classpath.
 func (e *Engine) hiddenSubtypes() []string {
 	if e.hiddenDone {
 		return e.hidden
 	}
 	e.hiddenDone = true
-	memo := map[string]bool{}
-	var hidden func(c string) bool
-	hidden = func(c string) bool {
-		if v, ok := memo[c]; ok {
-			return v
-		}
-		memo[c] = false // cycle guard
-		cls := e.classes[c]
-		v := false
-		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
-			if s == "" {
-				continue
-			}
-			if e.classes[s] == nil {
-				v = !e.platform(s)
-			} else {
-				v = hidden(s)
-			}
-			if v {
+	for _, c := range e.classes {
+		for _, s := range append([]string{c.Super}, c.Interfaces...) {
+			if s != "" && e.classes[s] == nil && !e.platform(s) {
+				e.hidden = append(e.hidden, c.Name)
 				break
 			}
-		}
-		memo[c] = v
-		return v
-	}
-	for c := range e.classes {
-		if hidden(c) {
-			e.hidden = append(e.hidden, c)
 		}
 	}
 	for t := range e.lambdas {

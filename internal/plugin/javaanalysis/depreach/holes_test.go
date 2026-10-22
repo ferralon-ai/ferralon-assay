@@ -862,6 +862,11 @@ func TestReach_UnopenedSupertype(t *testing.T) {
 			want:    NotExploitable,
 		},
 		{
+			name:    "the same JDK interface beside a default named by invokespecial",
+			classes: []classfile.Class{mainCalls(edge(classfile.EdgeSpecial, rows, "describe", "()V")), ifaceWith(rows, []string{base, "java/util/RandomAccess"}), baseDefault},
+			want:    NotExploitable,
+		},
+		{
 			name: "a body on the superclass chain wins over every default",
 			classes: []classfile.Class{describe, ifaceWith(rows, []string{base, "com/lib/M"}), baseDefault,
 				{Name: "com/acme/Parent", Super: objectClass, Methods: []classfile.Method{pubMethod("com/acme/Parent", "describe", "()V")}},

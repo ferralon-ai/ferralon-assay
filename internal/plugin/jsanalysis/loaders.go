@@ -592,9 +592,22 @@ func operandEnds(clean []rune, p int) bool {
 }
 
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of
-// a bracket access, `x['require']`, naming a loader entry point. A key on the module object
+// a bracket access, `x['require']`, or the key of a reflective read (reflectiveKey), naming
+// a loader entry point. A reflective read hands the member's value on, so a constructor
+// key there flags whatever the receiver. A key on the module object
 // or process is judged by objectUse whatever it is.
 func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
+	if reflectiveKey(clean, a) {
+		switch specifierAt(src, a) {
+		case "require", "createRequire", "_load", "mainModule":
+			mb.computedReq = true
+		case "dlopen", "process":
+			mb.nativeLoad = true
+		case "eval", "Function", "constructor":
+			mb.evaluated = true
+		}
+		return
+	}
 	if b := skipSpaceBack(clean, a-1); b < 0 || clean[b] != '[' {
 		return
 	}
@@ -620,6 +633,49 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 			mb.evaluated = true
 		}
 	}
+}
+
+// reflectiveKey reports whether the string literal at a is the whole second argument of
+// Reflect.get, Reflect.getOwnPropertyDescriptor or Object.getOwnPropertyDescriptor, each of
+// which reads the member that literal names from its first argument.
+func reflectiveKey(clean []rune, a int) bool {
+	b := skipSpaceBack(clean, a-1)
+	if b < 0 || clean[b] != ',' {
+		return false
+	}
+	if e := skipSpace(clean, a+1); e >= len(clean) || clean[e] != ')' && clean[e] != ',' {
+		return false
+	}
+	o := enclosingOpen(clean, b)
+	if o < 0 || clean[o] != '(' {
+		return false
+	}
+	depth := 0
+	for k := o + 1; k < b; k++ { // the literal is the second argument, not a later one
+		switch clean[k] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				return false
+			}
+		}
+	}
+	method, s := wordBefore(clean, skipSpaceBack(clean, o-1))
+	d := skipSpaceBack(clean, s-1)
+	if d < 0 || clean[d] != '.' || d > 0 && clean[d-1] == '?' {
+		return false
+	}
+	recv, _ := wordBefore(clean, skipSpaceBack(clean, d-1))
+	switch {
+	case recv == "Reflect":
+		return method == "get" || method == "getOwnPropertyDescriptor"
+	case recv == "Object":
+		return method == "getOwnPropertyDescriptor"
+	}
+	return false
 }
 
 // computedIndexPair reports whether clean holds two computed member reads in a row

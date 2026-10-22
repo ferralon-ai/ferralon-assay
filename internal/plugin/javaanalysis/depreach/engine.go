@@ -187,9 +187,9 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 }
 
 // subtypeClosure returns owner plus all transitive subclasses/implementors, sorted
-// for deterministic target ordering. It also holds every concrete
-// loaded class with a supertype in an unopened dependency (hiddenSubtypes): that
-// supertype's own supertypes are unknown, so it may extend owner.
+// for deterministic target ordering. It also holds every type below an unopened
+// dependency type (hiddenSubtypes): that type's own supertypes are unknown, so it may
+// extend owner.
 func (e *Engine) subtypeClosure(owner string) []string {
 	seen := map[string]bool{owner: true}
 	stack := []string{owner}
@@ -217,10 +217,10 @@ func (e *Engine) subtypeClosure(owner string) []string {
 	return out
 }
 
-// hiddenSubtypes returns the concrete loaded classes that have an unopened dependency
-// type among their supertypes, direct or not. A JDK supertype hides nothing: the JDK
-// cannot extend a class or interface from the classpath. Abstract classes are left
-// out: no object has one as its exact class, and a concrete subclass is listed too.
+// hiddenSubtypes returns the loaded classes and interfaces that have an unopened
+// dependency type among their supertypes, direct or not, and the unopened interfaces
+// lambdas implement. A JDK supertype hides nothing: the JDK cannot extend a class or
+// interface from the classpath.
 func (e *Engine) hiddenSubtypes() []string {
 	if e.hiddenDone {
 		return e.hidden
@@ -252,8 +252,13 @@ func (e *Engine) hiddenSubtypes() []string {
 		return v
 	}
 	for c := range e.classes {
-		if e.isConcrete(c) && hidden(c) {
+		if hidden(c) {
 			e.hidden = append(e.hidden, c)
+		}
+	}
+	for t := range e.lambdas {
+		if e.classes[t] == nil && !e.platform(t) {
+			e.hidden = append(e.hidden, t)
 		}
 	}
 	sort.Strings(e.hidden)
@@ -621,6 +626,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
 		var outside, abstractOutside, platformExits []string
+		var lambdaWhy string
 		implemented := false
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
 			if e.isConcrete(c) || len(e.lambdas[c]) > 0 {
@@ -638,8 +644,8 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				} else {
 					ts, h, w = e.lambdaInherited(site, edge.To)
 				}
-				if h {
-					return targets, true, w
+				if h && lambdaWhy == "" {
+					lambdaWhy = w
 				}
 				for _, t := range ts {
 					if !seen[t] {
@@ -680,12 +686,12 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 			// runs code the graph cannot see.
 			outside = append(outside, abstractOutside...)
 			if dep, ok := e.unloadedDependency(outside); ok {
-				return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+				return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
 			}
-			return nil, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
+			return targets, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
 		}
 		if dep, ok := e.unloadedDependency(outside); ok {
-			return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+			return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
 		}
 		if len(outside) > 0 {
 			// Some receiver inherits the body from an out-of-classpath platform
@@ -709,7 +715,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				return targets, true, w
 			}
 		}
-		return targets, false, ""
+		return targets, lambdaWhy != "", lambdaWhy
 	}
 	return nil, false, ""
 }
@@ -848,6 +854,7 @@ func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*c
 			if !m.Abstract {
 				targets = append(targets, m)
 			}
+			unloaded = append(unloaded, u...)
 			continue
 		}
 		for _, n := range u {

@@ -499,3 +499,27 @@ func TestReach_ProviderRootsLambdas(t *testing.T) {
 				meth(svc, "handle", handleD, jdkTouch))}},
 	})
 }
+
+// TestReach_LambdaUnopenedSupertype: a lambda implementing an unopened interface, or a
+// loaded one below it, may implement any loaded interface, and an unopened interface
+// beside a loaded default may override the default the lambda inherits.
+func TestReach_LambdaUnopenedSupertype(t *testing.T) {
+	const fn = "com/fw/Fn"
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	unopenedSite := indy("apply", "()Lcom/lib/U;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: applyDesc}, staticImpl, classfile.BootstrapArg{MethodType: applyDesc}))
+	fnIface := iface(fn, abstractMeth(fn, "apply", applyDesc), abstractMeth(fn, "other", applyDesc))
+	mixed := rowsSvc("com/acme/Base", edge(classfile.EdgeInterface, "com/acme/Rows", "describe", "()V"), nil,
+		iface("com/acme/Base", meth("com/acme/Base", "describe", "()V")))
+	mixed[1].Interfaces = []string{"com/acme/Base", "com/lib/M"}
+	runReachCases(t, []reachCase{
+		{name: "a lambda implementing an unopened interface answers a call on a loaded one", ingress: handle, want: ReachableCandidate,
+			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "apply", applyDesc), unopenedSite, fnIface)},
+		{name: "the same lambda inherits what it does not answer from the unopened interface", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "other", applyDesc), unopenedSite, fnIface)},
+		{name: "a lambda implementing a loaded interface below an unopened one", ingress: handle, want: ReachableCandidate,
+			classes: rowsSvc("com/lib/U", edge(classfile.EdgeInterface, fn, "iterator", iterD), sinkCall(), iface(fn, abstractMeth(fn, "iterator", iterD)))},
+		{name: "an unopened interface beside the loaded default a lambda inherits", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: mixed},
+	})
+}

@@ -833,12 +833,12 @@ func TestReach_UnopenedSupertype(t *testing.T) {
 		},
 		{
 			name:    "an abstract class with an unopened supertype and no concrete subclass is no receiver",
-			classes: []classfile.Class{callCb, callback, {Name: "com/acme/Mid", Super: objectClass, Interfaces: []string{"com/lib/U"}, Abstract: true}},
+			classes: []classfile.Class{callCb, callback, other, {Name: "com/acme/Mid", Super: objectClass, Interfaces: []string{"com/lib/U"}, Abstract: true}},
 			want:    NotExploitable,
 		},
 		{
 			name:    "a JDK supertype hides nothing: the JDK cannot extend a classpath type",
-			classes: []classfile.Class{callCb, callback, {Name: impl, Super: objectClass, Interfaces: []string{"java/lang/Runnable"}, Methods: []classfile.Method{callsSink(impl, "call", "()V")}}},
+			classes: []classfile.Class{callCb, callback, other, {Name: impl, Super: objectClass, Interfaces: []string{"java/lang/Runnable"}, Methods: []classfile.Method{callsSink(impl, "call", "()V")}}},
 			want:    NotExploitable,
 		},
 		{

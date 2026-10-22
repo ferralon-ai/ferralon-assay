@@ -59,6 +59,49 @@ func parseParamRefTypes(desc string) []string {
 	return refs
 }
 
+// paramTypes returns each reference-type parameter of a JVM method descriptor as
+// the receiver type a call on that argument would name: the internal class name of
+// an object parameter, or the whole descriptor ("[I", "[Ljava/lang/Object;") of an
+// array parameter. Primitive parameters are skipped.
+func paramTypes(desc string) []string {
+	i := strings.IndexByte(desc, '(')
+	if i < 0 {
+		return nil
+	}
+	i++
+	var out []string
+	for i < len(desc) && desc[i] != ')' {
+		start := i
+		for i < len(desc) && desc[i] == '[' {
+			i++
+		}
+		if i >= len(desc) {
+			return out
+		}
+		switch desc[i] {
+		case 'L':
+			j := strings.IndexByte(desc[i:], ';')
+			if j < 0 {
+				return out // malformed: unterminated object type
+			}
+			i += j + 1
+		case 'B', 'C', 'D', 'F', 'I', 'J', 'S', 'Z':
+			i++
+			if i-start == 1 {
+				continue
+			}
+		default:
+			return out
+		}
+		if desc[start] == '[' {
+			out = append(out, desc[start:i])
+		} else {
+			out = append(out, desc[start+1:i-1])
+		}
+	}
+	return out
+}
+
 // returnRefType returns the internal name of a method descriptor's reference return
 // type (the element type, for an array of references), and false for void, a
 // primitive, an array of primitives or a malformed descriptor.

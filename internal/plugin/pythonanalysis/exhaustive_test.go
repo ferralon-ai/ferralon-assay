@@ -264,6 +264,7 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"-r include of a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "flask==3.0.0" + h + "\n"}), true},
 		{"unhashed -r include inside a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n"}), true},
 		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
+		{"requirements file that only -r's a file with no pins", uv(map[string]string{"requirements-dev.txt": "-r requirements-empty.txt\n", "requirements-empty.txt": "# nothing pinned\n"}), false},
 		{"--require-hashes option line", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0" + h + "\n"}), true},
 		{"-c hashed constraints, unhashed requirement", uv(map[string]string{"requirements.txt": "-c requirements-constraints.txt\nflask>=3\n", "requirements-constraints.txt": "flask==3.0.0" + h + "\n"}), false},
 		{"Dockerfile installs an unhashed requirements.txt", uv(map[string]string{"requirements.txt": "flask>=3\n", "Dockerfile": docker + "RUN pip install -r requirements.txt\n"}), false},

@@ -1342,7 +1342,8 @@ func (e *Engine) platformLoadable(c string) bool {
 // since loading a class resolves its superclass and each direct superinterface (JVMS
 // 5.3.5), so the JDK can neither instantiate it nor hold one (platformLoadable). This
 // trusts the launch the way the build graph does: an agent that appends to the system
-// classpath at run time, or a JDK vendor's own additions, could supply the supertype.
+// classpath at run time, or a JDK vendor's own packages (OpenJ9's com/ibm, GraalVM's,
+// JavaFX), could supply the supertype.
 // An unlisted classpath (Classpath.Unlisted) is never linked.
 func (e *Engine) SetLinked(linked bool) {
 	linked = linked && !e.unlisted

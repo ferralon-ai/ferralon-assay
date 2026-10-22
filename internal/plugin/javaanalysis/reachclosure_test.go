@@ -3,6 +3,7 @@ package javaanalysis
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
@@ -207,17 +208,32 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 		writeJarEntries(t, p, entries)
 		return graphDep{group: "com.dep", artifact: artifact, version: "1.0.0", scope: scope, jar: p}
 	}
-	// graph records the build's outputs, so its class output and local repository hold no
-	// unlisted archive.
-	graph := func(a *appFixture, complete bool, deps ...graphDep) Option {
+	// graphOn records the build's outputs, so its class output and local repository hold no
+	// unlisted archive, and the JDK the program runs on.
+	graphOn := func(jdk string, complete bool, deps ...graphDep) Option {
+		m := testModule(t, ".", "app", deps...)
+		m.JDKToolchainsKnown = true
 		return writeGraph(t, buildgraph.Graph{
-			Schema:   buildgraph.Schema,
-			Tool:     buildgraph.Tool{Name: "maven", Version: "test"},
-			JVM:      buildgraph.JVM{Version: "21.0.4"},
-			Subject:  buildgraph.Subject{Outputs: []string{"target", ".m2/repository"}},
-			Modules:  []buildgraph.Module{testModule(t, ".", "app", deps...)},
-			Complete: complete,
+			Schema:     buildgraph.Schema,
+			Tool:       buildgraph.Tool{Name: "maven", Version: "test"},
+			JVM:        buildgraph.JVM{Version: "21.0.4"},
+			Conditions: buildgraph.Conditions{JDK: jdk},
+			Subject:    buildgraph.Subject{Outputs: []string{"target", ".m2/repository"}},
+			Modules:    []buildgraph.Module{m},
+			Complete:   complete,
 		})
+	}
+	graph := func(a *appFixture, complete bool, deps ...graphDep) Option {
+		return graphOn("21.0.4", complete, deps...)
+	}
+	// listener is a RowSetListener whose rowChanged, a method the JDK calls, reaches the sink.
+	listener := func(name, super string) map[string][]byte {
+		b := &cpb{}
+		return map[string][]byte{name + ".class": emitClassA(b, name, super, []string{"javax/sql/RowSetListener"}, 0x0021,
+			[]xmethod{{"rowChanged", "(Ljavax/sql/RowSetEvent;)V", accPublic, callFetch(b)}}, nil)}
+	}
+	base := func(ifaces []string) map[string][]byte {
+		return map[string][]byte{"com/dep/Base.class": emitClassA(&cpb{}, "com/dep/Base", "java/lang/Object", ifaces, 0x0021, nil, nil)}
 	}
 	lib := func(name string) map[string][]byte {
 		return map[string][]byte{name + ".class": emitClassX(&cpb{}, name, "java/lang/Object", 0x0021, nil)}
@@ -262,9 +278,27 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 		}, true},
 		{"the supertype in a JDK package", func(a *appFixture) {
 			a.deps = a.deps[:1]
-			b := &cpb{}
-			a.dep(libDep(a, "plug", "", map[string][]byte{"com/dep/Plug.class": emitClassA(b, "com/dep/Plug", "java/lang/Object", []string{"javax/sql/RowSetListener"}, 0x0021,
-				[]xmethod{{"start", "()V", accPublic, callFetch(b)}}, nil)}))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "java/lang/Object")))
+		}, true},
+		{"no recorded JDK", func(a *appFixture) {
+			a.graph = graphOn("", true, a.deps...)
+		}, true},
+		{"JDK 8, whose extension directories add to the classpath", func(a *appFixture) {
+			a.graph = graphOn("1.8.0_392", true, a.deps...)
+		}, true},
+		// Two JARs define Base; the closure keeps the copy whose coordinate sorts first, which
+		// need not be the one first on the classpath. Either order keeps the path.
+		{"a duplicate class, the unlinkable copy kept", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "b-base", "", base(nil)))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
+		}, true},
+		{"a duplicate class, the linkable copy kept", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base(nil)))
+			a.dep(libDep(a, "b-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
 		}, true},
 	}
 	for _, tt := range tests {
@@ -286,6 +320,9 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 				res := a.reach(netkitSinkID)
 				if got := len(res.Paths) > 0; got != tt.wantPath {
 					t.Errorf("%s closure: path found = %t, want %t: Paths %v, Searched %v, partiality %+v", run, got, tt.wantPath, res.Paths, res.Searched, res.Partiality)
+				}
+				if !tt.wantPath && !slices.Equal(res.Searched, []string{netkitSinkID}) {
+					t.Errorf("%s closure: Searched = %v, partiality %+v", run, res.Searched, res.Partiality)
 				}
 			}
 		})

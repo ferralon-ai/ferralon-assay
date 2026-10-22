@@ -68,7 +68,9 @@ func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
 
 // runtimeListed reports whether g lists every JAR its build puts on the runtime classpath:
 // g lists every install (listsEveryInstall), and no node is one the build resolves on no
-// classpath (buildgraph.ScopeOther), which a distribution can still copy in.
+// classpath (buildgraph.ScopeOther), which a distribution can still copy in. A packaging
+// plugin's own launcher classes (Spring Boot's loader) are not listed; they extend no
+// application class.
 func runtimeListed(g *buildgraph.Graph, buildDir string) bool {
 	for _, m := range g.Modules {
 		for _, n := range m.Nodes {

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -886,6 +887,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"a function's constructor name used as a string", "const f = function () {};\nconst label = 'type: ' + f.constructor.name;\nconst j = require('./plugins');", nil},
 		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"webpack's runtime require of an in-tree module", "const j = __non_webpack_require__('./plugins');", nil},
+		{"escaped specifier of an in-tree module", "const j = require('./\\x70lugins');", nil},
 		{"arguments inside a function, as a member and as a key", "function first() { return arguments[0]; }\nconst info = { arguments: first.arguments };\nconst j = require('./plugins');", nil},
 		{"local values exported under the names module, require and process", "const own = {};\nexport { own as module, own as require, own as process };\nconst j = require('./plugins');", nil},
 		{"constructor as a class method and an object-literal key", "class Box { constructor(v) { this.v = v; } }\nfunction inherit(sub, sup) { sub.prototype = Object.create(sup && sup.prototype, { constructor: { value: sub, writable: true } }); }\nconst desc = { constructor: Box, f({ a }) { return a; } };\nconst j = require('./plugins');", nil},
@@ -914,6 +916,108 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
 			}
 		})
+	}
+}
+
+// escapedKeyShapes are the forms that hand a member named by a string key on as a value: a
+// destructuring pattern, Reflect.get, a property descriptor and a bracket call. KEY stands
+// for the key literal.
+var escapedKeyShapes = []struct{ name, src string }{
+	{"destructured", "const { KEY: F } = function () {};\nF(process.argv[3])();\n"},
+	{"read through Reflect.get", "const g = function () {};\nReflect.get(g, KEY)(process.argv[3])();\n"},
+	{"read through Object.getOwnPropertyDescriptor", "const g = function () {};\nObject.getOwnPropertyDescriptor(Object.getPrototypeOf(g), KEY).value(process.argv[3])();\n"},
+	{"called by a bracket key", "const g = function () {};\ng[KEY](process.argv[3])();\n"},
+}
+
+// TestUndeterminedReason_JSEscapedConstructorKeyNeverRefutes: a constructor key reads as its
+// value however it is spelled, so each escape spelling in each shape that reaches Function
+// through it holds the verdict, as the plain key does.
+func TestUndeterminedReason_JSEscapedConstructorKeyNeverRefutes(t *testing.T) {
+	spellings := []struct{ name, key string }{
+		{"hex escape", `'\x63onstructor'`},
+		{"unicode escape", `'\u0063onstructor'`},
+		{"code point escape", `'\u{0063}onstructor'`},
+		{"surrogate-free code point escape", `'\u{63}onstructor'`},
+		{"line continuation", "'constr\\\nuctor'"},
+		{"CRLF line continuation", "'constr\\\r\nuctor'"},
+		{"legacy octal escape", `'\143onstructor'`},
+		{"mixed escapes", "'\\x63o\\u006E\\u{73}t\\\nr\\165ctor'"},
+		{"double-quoted hex escape", `"\x63onstructor"`},
+		{"escaped template", "`\\x63onstructor`"},
+	}
+	for _, sp := range spellings {
+		for _, sh := range escapedKeyShapes {
+			t.Run(sp.name+" "+sh.name, func(t *testing.T) {
+				src := strings.ReplaceAll(sh.src, "KEY", sp.key) + "const j = { parse: String };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+				store, edges := gateStoreFromJS(t, src, nil)
+				if edges == 0 {
+					t.Fatalf("program must have call edges")
+				}
+				if reason, ok := undeterminedReason(store, "a1", json5Package); !ok || reason != report.ReasonAnalysisDidNotRun {
+					t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+				}
+			})
+		}
+	}
+}
+
+// TestUndeterminedReason_JSEscapedLoaderSpellingNeverRefutes: the other forms that name a
+// loader or evaluator by an escaped key, and names spelled with an identifier escape, which
+// the scan cannot read, hold the verdict.
+func TestUndeterminedReason_JSEscapedLoaderSpellingNeverRefutes(t *testing.T) {
+	cases := []struct{ name, src string }{
+		{"constructor as an escaped computed destructuring key", "const { ['\\x63onstructor']: F } = function () {};\nF(process.argv[3])();\n"},
+		{"constructor as an escaped optional bracket key", "const g = function () {};\ng?.['\\x63onstructor'](process.argv[3])();\n"},
+		{"constructor as an escaped argument of a destructured Reflect.get", "const g = function () {};\nconst { get } = Reflect;\nget(g, '\\x63onstructor')(process.argv[3])();\n"},
+		{"Function as an escaped key of the global", "globalThis['\\x46unction'](process.argv[3])();\n"},
+		{"eval as an escaped key of the global", "globalThis['\\u0065val'](process.argv[3]);\n"},
+		{"dlopen as an escaped key of process", "const m = { exports: {} };\nprocess['\\x64lopen'](m, './x.node');\n"},
+		{"constructor of an escaped constructor key after a comma, read for its name", "const g = function () {};\nconst label = g[0, '\\x63onstructor'].constructor.name;\n"},
+		{"malformed escaped key of the module object", "const j = module['\\x6']('json5');\n"},
+		{"constructor member spelled with an identifier escape", "const g = function () {};\ng.\\u0063onstructor(process.argv[3])();\n"},
+		{"constructor destructured under an identifier escape", "const { \\u{63}onstructor: F } = function () {};\nF(process.argv[3])();\n"},
+		{"Function spelled with an identifier escape", "\\u0046unction(process.argv[3])();\n"},
+		{"eval spelled with an identifier escape", "\\u0065val(process.argv[3]);\n"},
+		{"require spelled with an identifier escape", "\\u0072equire(process.argv[3]);\n"},
+		{"module spelled with an identifier escape", "\\u006dodule.require(process.argv[3]);\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := tc.src + "const j = { parse: String };\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+			store, edges := gateStoreFromJS(t, src, nil)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			if reason, ok := undeterminedReason(store, "a1", json5Package); !ok || reason != report.ReasonAnalysisDidNotRun {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+		})
+	}
+}
+
+// TestUndeterminedReason_JSEscapedLookalikeKeyCanRefute is the control: an escaped key whose
+// value is not constructor reads as that value, in each shape, so it does not hold the
+// verdict.
+func TestUndeterminedReason_JSEscapedLookalikeKeyCanRefute(t *testing.T) {
+	spellings := []struct{ name, key string }{
+		{"truncated", `'\x63onstructo'`},
+		{"capital C", `'\x43onstructor'`},
+		{"trailing NUL", `'constructor\x00'`},
+		{"harmless member", `'\x6eame'`},
+	}
+	for _, sp := range spellings {
+		for _, sh := range escapedKeyShapes {
+			t.Run(sp.name+" "+sh.name, func(t *testing.T) {
+				src := strings.ReplaceAll(sh.src, "KEY", sp.key) + "const j = require('./plugins');\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+				store, edges := gateStoreFromJS(t, src, nil)
+				if edges == 0 {
+					t.Fatalf("program must have call edges")
+				}
+				if reason, ok := undeterminedReason(store, "a1", json5Package); ok {
+					t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+				}
+			})
+		}
 	}
 }
 

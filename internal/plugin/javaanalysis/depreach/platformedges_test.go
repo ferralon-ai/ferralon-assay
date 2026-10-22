@@ -525,6 +525,8 @@ func TestReach_LambdaUnopenedSupertype(t *testing.T) {
 			classes: rowsSvc("com/lib/U", edge(classfile.EdgeInterface, fn, "iterator", iterD), sinkCall(), iface(fn, abstractMeth(fn, "iterator", iterD)))},
 		{name: "a lambda implementing a JDK interface is no receiver of a loaded one", ingress: handle, want: NotExploitable,
 			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "apply", applyDesc), jdkSite, fnIface, otherFn)},
+		{name: "a lambda implementing a loaded interface below an unopened one is no known implementor", ingress: handle, want: Undetermined, why: "unloaded_dependency: com/fw/Fn.iterator",
+			classes: rowsSvc("com/lib/U", edge(classfile.EdgeInterface, fn, "iterator", iterD), nil, iface(fn, abstractMeth(fn, "iterator", iterD)))},
 		{name: "an unopened interface beside the loaded default a lambda inherits", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
 			classes: mixed},
 	})

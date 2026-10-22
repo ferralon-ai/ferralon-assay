@@ -191,9 +191,14 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 // dependency type (hiddenSubtypes): that type's own supertypes are unknown, so it may
 // extend owner.
 func (e *Engine) subtypeClosure(owner string) []string {
+	return e.closureFrom(owner, e.hiddenSubtypes())
+}
+
+// closureFrom returns owner, the seeds, and every loaded subtype of them.
+func (e *Engine) closureFrom(owner string, seeds []string) []string {
 	seen := map[string]bool{owner: true}
 	stack := []string{owner}
-	for _, h := range e.hiddenSubtypes() {
+	for _, h := range seeds {
 		if !seen[h] {
 			seen[h] = true
 			stack = append(stack, h)
@@ -429,7 +434,7 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		cur = c.Super
 	}
 	seen := map[string]bool{}
-	var found *classfile.Method
+	var decls []*classfile.Method
 	for len(ifaces) > 0 {
 		cur := ifaces[0]
 		ifaces = ifaces[1:]
@@ -437,9 +442,11 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		seen[cur] = true
-		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !d.Abstract && found == nil {
-			found = d
-			continue
+		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok {
+			decls = append(decls, d)
+			if !d.Abstract {
+				continue
+			}
 		}
 		c := e.classes[cur]
 		if c == nil {
@@ -447,6 +454,32 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		ifaces = append(ifaces, c.Interfaces...)
+	}
+	// The default that runs is a maximally specific one: no other declaration's
+	// interface extends its own. The first one met need not be it. Where every
+	// maximally specific declaration is abstract the call fails at runtime;
+	// the first default stands in for it.
+	masked := map[string]bool{}
+	for _, d := range decls {
+		for _, a := range e.ancestors(d.Ref.Owner)[1:] {
+			masked[a] = true
+		}
+	}
+	var found, first *classfile.Method
+	for _, d := range decls {
+		if d.Abstract {
+			continue
+		}
+		if first == nil {
+			first = d
+		}
+		if !masked[d.Ref.Owner] {
+			found = d
+			break
+		}
+	}
+	if found == nil {
+		found = first
 	}
 	if found == nil {
 		return nil, unloaded
@@ -598,9 +631,15 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		seen := map[*classfile.Method]bool{}
 		var outside, abstractOutside, platformExits []string
 		var lambdaWhy string
+		// Only a type known to be a subtype witnesses a loaded implementor; one that
+		// is merely below an unopened dependency type may not be a receiver at all.
+		known := map[string]bool{}
+		for _, c := range e.closureFrom(edge.To.Owner, nil) {
+			known[c] = true
+		}
 		implemented := false
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
-			if e.isConcrete(c) || len(e.lambdas[c]) > 0 {
+			if known[c] && (e.isConcrete(c) || len(e.lambdas[c]) > 0) {
 				implemented = true
 			}
 			// A lambda object implementing c answers the call with its

@@ -95,6 +95,13 @@ import { parse } from './lib';
 function load(s) { return parse(s); }
 load(process.argv);
 `}, ""},
+		{"static prefix into the package", map[string]string{"app.js": `
+function load(n, s) { return require('json5/' + n).parse(s); }
+load(process.argv[2], process.argv[3]);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"template prefix into the package", map[string]string{"app.js": "\n" +
+			"async function load(n, s) { const J = await import(`json5/${n}`); return J.parse(s); }\n" +
+			"load(process.argv[2], process.argv[3]);\n"}, plugin.PartialReasonDynamicImportSpecifier},
 		{"subpath import mapped to a package", map[string]string{
 			"package.json": `{"name":"app","imports":{"#json":"json5"}}`,
 			"app.js": `

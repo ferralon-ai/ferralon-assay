@@ -56,6 +56,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("app", nil, moduleInitFunc, 0),
 			funcSCIP("qs", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(29, 46), 2),
+			funcSCIP("qs", nil, "parse", 1), // escape root (exported or class member)
 		},
 	},
 	{
@@ -71,6 +72,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("app", nil, moduleInitFunc, 0),
 			funcSCIP("json5", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(22, 46), 2),
+			funcSCIP("json5", nil, "parse", 1), // escape root (exported or class member)
 		},
 	},
 	{
@@ -86,6 +88,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("app", nil, moduleInitFunc, 0),
 			funcSCIP("json5", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(22, 46), 2),
+			funcSCIP("json5", nil, "parse", 1), // escape root (exported or class member)
 		},
 	},
 	{
@@ -101,6 +104,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("app", nil, moduleInitFunc, 0),
 			funcSCIP("cookie", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(24, 46), 2),
+			funcSCIP("cookie", []string{"CookieJar"}, "setCookie", 2), // escape root (exported or class member)
 		},
 	},
 	{
@@ -136,6 +140,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("server", nil, moduleInitFunc, 0),
 			funcSCIP("require", nil, moduleInitFunc, 0),
 			funcSCIP("server", nil, anonHandlerFunc(22, 46), 2),
+			funcSCIP("require", nil, "requirePage", 2), // escape root (exported or class member)
 		},
 	},
 	{
@@ -152,6 +157,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("server", nil, moduleInitFunc, 0),
 			funcSCIP("require", nil, moduleInitFunc, 0),
 			funcSCIP("server", nil, anonHandlerFunc(30, 46), 2),
+			funcSCIP("require", nil, "requireModule", 1), // escape root (exported or class member)
 		},
 	},
 	{
@@ -170,6 +176,7 @@ var c3Baseline = []c3Case{
 			funcSCIP("fetcher", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(25, 46), 2),
 			funcSCIP("fetcher", nil, anonHandlerFunc(54, 42), 1),
+			funcSCIP("fetcher", nil, "fetchUrl", 1), // escape root (exported or class member)
 		},
 	},
 	{
@@ -188,12 +195,13 @@ var c3Baseline = []c3Case{
 			funcSCIP("fetcher", nil, moduleInitFunc, 0),
 			funcSCIP("app", nil, anonHandlerFunc(25, 46), 2),
 			funcSCIP("fetcher", nil, anonHandlerFunc(51, 42), 1),
+			funcSCIP("fetcher", nil, "fetchUrl", 1), // escape root (exported or class member)
 		},
 	},
 }
 
 // TestC3_BaselineDiffPreservedWithProvenance is the C3(a) gate: re-run the import-scoped
-// call graph over every baseline fixture and diff against the 38-edge/37-root control. It asserts NO baseline edge silently vanishes, NO unexpected edge is added,
+// call graph over every baseline fixture and diff against the 38-edge/45-root control. It asserts NO baseline edge silently vanishes, NO unexpected edge is added,
 // every root is preserved, and — the precision bar made structural — EVERY emitted edge
 // carries a non-empty provenance algorithm (C5 tie-in): an edge exists only via a named
 // rule, never a fabricated target.
@@ -265,8 +273,8 @@ func TestC3_BaselineDiffPreservedWithProvenance(t *testing.T) {
 	if totalBoundary != 8 {
 		t.Errorf("total boundary edges across corpus = %d, want 8", totalBoundary)
 	}
-	if totalRoots != 37 {
-		t.Errorf("total roots across corpus = %d, want 37 (baseline control)", totalRoots)
+	if totalRoots != 45 {
+		t.Errorf("total roots across corpus = %d, want 45 (baseline control plus 8 escape roots)", totalRoots)
 	}
 }
 

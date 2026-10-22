@@ -59,8 +59,12 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 		}
 	}
 	var reused map[string]bool
+	indirect := false
 	if gitlab {
 		reused = reusedJobs(tops)
+		for _, top := range tops {
+			indirect = indirect || aliasOrMerge(top)
+		}
 	}
 	for _, top := range tops {
 		if gitlab {
@@ -76,8 +80,10 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 				// as what runs with its script may be another job's before_script. In a set of
 				// files joined by include, that is any job: another file may extend it. GitLab
 				// keeps the last of a repeated key, so a job that repeats one is read alone too.
+				// An alias or a << merge anywhere in the file may stand for any key, value or
+				// job name the join reads, so a file with one has every job read alone.
 				name := top.Content[i].Value
-				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil || repeatsKey(job)
+				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil || repeatsKey(job) || indirect
 				pre := 0
 				for j := 0; j+1 < len(job.Content); j += 2 {
 					switch job.Content[j].Value {
@@ -172,6 +178,22 @@ func mayInclude(top *yaml.Node) bool {
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		k := top.Content[i]
 		if k.Kind != yaml.ScalarNode || k.Value == "include" || k.Value == "<<" {
+			return true
+		}
+	}
+	return false
+}
+
+// aliasOrMerge reports whether n or anything in it is an alias or a << merge key.
+func aliasOrMerge(n *yaml.Node) bool {
+	if n.Kind == yaml.AliasNode {
+		return true
+	}
+	for i, c := range n.Content {
+		if n.Kind == yaml.MappingNode && i%2 == 0 && c.Value == "<<" {
+			return true
+		}
+		if aliasOrMerge(c) {
 			return true
 		}
 	}

@@ -1256,6 +1256,24 @@ func (mb *moduleBindings) loaderCall(clean, src []rune, at, open int, dyn bool) 
 	recordLoad(clean, src, at, skipSpace(clean, open+1), dyn, mb)
 }
 
+// interpolated reports whether the literal whose opening quote is at src[a] is a template
+// holding an interpolation, read from the raw text so a malformed escape before it cannot
+// hide it.
+func interpolated(src []rune, a int) bool {
+	if src[a] != '`' {
+		return false
+	}
+	for k := a + 1; k < len(src) && src[k] != '`'; k++ {
+		switch {
+		case src[k] == '\\':
+			k++
+		case src[k] == '$' && k+1 < len(src) && src[k+1] == '{':
+			return true
+		}
+	}
+	return false
+}
+
 // declBoundName returns NAME when the call starting at the identifier at i is the
 // initialiser of `const|let|var NAME [: Type] = [await] [a.b.]ident(...)`.
 func declBoundName(clean []rune, i int) (string, bool) {
@@ -1553,7 +1571,7 @@ func negatedGroupTail(clean []rune, start, p int) bool {
 // holds no interpolation.
 func wholeKey(clean, src []rune, a int) bool {
 	e := skipSpace(clean, a+1)
-	return e < len(clean) && clean[e] == ']' && (src[a] != '`' || !strings.Contains(specifierAt(src, a), "${"))
+	return e < len(clean) && clean[e] == ']' && !interpolated(src, a)
 }
 
 // bindingSite reports whether the name at [i, next) is declared rather than used: a const,

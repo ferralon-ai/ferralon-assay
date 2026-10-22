@@ -36,6 +36,7 @@ type Engine struct {
 	hiddenDone  bool                         // hidden is computed
 	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
 	unlinked    map[string]bool              // unlinkable cache
+	resolving   map[string]bool              // lambda implementations met in the outermost lambdaImpl
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -153,6 +154,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		unlinked:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
 		held:        map[string]heldTypes{},
+		resolving:   map[string]bool{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 		methodsHold: cp.JDK == platformMethodsJDK,
@@ -712,7 +714,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 			// static/special leaf, an argument can re-enter application code (C8
 			// re-entry seam).
 			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+				return targets, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
 			}
 		}
 		// The inherited platform body also runs with the receiver as `this`.
@@ -786,7 +788,24 @@ func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.
 
 // lambdaImpl resolves a lambda's implementation handle, naming opaque when the
 // handle itself cannot be followed.
+//
+// A handle can call back into a dispatch that reaches the same lambda: a method
+// reference t::apply implementing the interface whose apply it calls, or two lambdas
+// whose handles call each other's interfaces. Within the outermost resolution, an
+// implementation met again adds nothing: every frame folds its targets and hazards into
+// that outermost result, which already holds them or is collecting them. Keeping each
+// implementation until the outermost one returns, not just while it is on the stack,
+// resolves it once per resolution rather than once per path to it. Nothing caches a
+// result, so no partial one outlives that outermost resolution.
 func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
+	key := fmt.Sprintf("%s %d %s", from, h.Kind, h.Ref.String())
+	if e.resolving[key] {
+		return nil, false, ""
+	}
+	if len(e.resolving) == 0 {
+		defer clear(e.resolving)
+	}
+	e.resolving[key] = true
 	ts, hz, w := e.resolveHandle(from, h)
 	switch {
 	case hz && w == "":

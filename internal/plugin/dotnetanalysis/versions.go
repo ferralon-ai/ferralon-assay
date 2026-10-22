@@ -146,14 +146,18 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 		}
 	}
 
-	var reasons []string
+	var (
+		reasons    []string
+		exhaustive bool
+	)
 	if want != "" && !parseFailed {
-		var ok bool
+		var settled, ok bool
 		ev := newEvaluator(req.BuildDir, projectList)
-		copies, reasons, ok = installedCopies(ev, copies, locks, projects, configs, want, strings.TrimSpace(req.Coordinate))
+		copies, reasons, settled, ok = installedCopies(ev, copies, locks, projects, configs, want, strings.TrimSpace(req.Coordinate))
 		if !ok {
 			parseFailed = true
 		}
+		exhaustive = ok && settled && len(reasons) == 0 && completeBuild(ev, manifests, projects, want)
 	}
 
 	part := plugin.Complete()
@@ -167,9 +171,11 @@ func installedSet(req plugin.ResolveVersionsRequest) (plugin.DependencyVersionRe
 	}
 
 	// MatchesComplete stays false. MSBuild can add or re-version a PackageReference from inputs
-	// this reader does not model (an SDK's props and targets, a build-time property), so no set
-	// of copies it reads is known to be the whole build.
-	return plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches}, copies, parseFailed, nil
+	// this reader does not model (an SDK's props and targets, a build-time property), so the
+	// declared copies are not known to be every version. Exhaustive is narrower: it holds only
+	// for the requested package, when every project is settled on restore's own record and
+	// completeBuild finds no other way in (absent.go).
+	return plugin.DependencyVersionResult{Partiality: part, All: all, Matches: matches, Exhaustive: exhaustive}, copies, parseFailed, nil
 }
 
 // nugetCopy is one manifest entry together with where it came from, which installedCopies

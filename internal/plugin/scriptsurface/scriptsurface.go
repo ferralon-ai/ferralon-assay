@@ -463,7 +463,10 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			if cur.mark.dangle && len(segs) > 0 {
 				segs[0].guarded = true
 			}
-			cur.mark.dangle = dangles
+			if len(segs) > 0 || !ok {
+				// A blank or comment line leaves a trailing && or || waiting for its command.
+				cur.mark.dangle = dangles
+			}
 			if !ok {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.

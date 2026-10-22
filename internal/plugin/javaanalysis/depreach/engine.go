@@ -756,8 +756,8 @@ func (s lambdaSite) answers(name, desc string) bool {
 // java/lang/Object, whose bodies on it call nothing it defines, and it inherits every
 // default of its interfaces, which runs with the object as `this`. A loaded default
 // is a target. A default that may sit in an unopened dependency is a hazard, and so
-// is one that may sit in the JDK, which can call the implementation back; either can
-// also override a loaded default beside it.
+// is one that may sit in the JDK, which can call the implementation back. An unopened
+// dependency can also override a loaded default beside it.
 func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*classfile.Method, bool, string) {
 	if objectMethods[ref.Name+ref.Descriptor] {
 		return nil, false, ""
@@ -784,7 +784,12 @@ func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*c
 	if dep, ok := e.unloadedDependency(unloaded); ok {
 		return targets, true, "unloaded_dependency: " + ref.String() + " on a lambda inherits from unopened " + dep
 	}
-	return targets, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
+	if len(targets) > 0 {
+		// A JDK interface cannot extend an application one, so it cannot override
+		// the loaded default.
+		return targets, false, ""
+	}
+	return nil, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
 }
 
 // resolveHandle resolves the call a lambda's implementation method handle makes,

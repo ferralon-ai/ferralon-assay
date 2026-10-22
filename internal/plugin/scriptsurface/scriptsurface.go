@@ -37,8 +37,9 @@
 // version-manager init script named exactly as pathOnlyScripts lists it, or a literal
 // <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
 // command before it, directory changes aside, created. That command must be in the same
-// cursor: the same shell text on the host, the same line of any other host surface, the same
-// RUN in a Dockerfile.
+// cursor: the same shell text on the host, the same shell unit of a GitHub workflow (a step's
+// run:) or GitLab pipeline (a job's before_script then script), the same line of any other
+// host surface, the same RUN in a Dockerfile.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
@@ -50,6 +51,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -425,23 +427,32 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			continue
 		}
-		lines, joined := logicalLines(u.text)
+		lines, starts, joined := logicalLinesAt(u.text)
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
 		}
 		read := make([]yamlLine, len(lines))
 		for i, l := range lines {
-			read[i] = yamlLine{text: l}
+			read[i] = yamlLine{text: l, start: i}
 		}
+		var shells map[int]shellUnit
 		if yaml {
 			read = foldYAML(lines)
+			shells = v.shellUnits(path, u.text)
 		}
+		inUnit := map[int]*hostCursor{}
 		for _, rl := range read {
 			line, lineKind := rl.text, kind
 			if rl.shell {
 				lineKind = kindShell
 			}
 			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, made: carry.made}
+			su, inShell := shells[starts[rl.start]]
+			if prev := inUnit[su.id]; inShell && prev != nil {
+				cur = &hostCursor{v: v, dirs: append([]string(nil), prev.dirs...), unknown: prev.unknown, made: prev.made, cwd: prev.cwd}
+			} else if inShell {
+				cur.cwd = slices.Index(cur.dirs, su.dir) + 1
+			}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
@@ -463,10 +474,14 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			// Shell text (a script, a package.json script value) keeps its directory from line
 			// to line; a recipe line or a CI step may start back where the surface started.
+			// So do the lines of one CI shell unit.
 			if kind == kindShell {
 				carry = cur
 			} else {
 				carry.merge(cur)
+				if inShell {
+					inUnit[su.id] = cur
+				}
 			}
 		}
 	}

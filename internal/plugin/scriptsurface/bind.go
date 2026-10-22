@@ -42,6 +42,9 @@ type hostCursor struct {
 	dirs    []string
 	unknown bool
 	made    string
+	// cwd is 1 + the index in dirs of the one directory a shell unit is known to run in, which
+	// cd moves with the rest; 0 when it is not known.
+	cwd int
 }
 
 func (c *hostCursor) cd(words []string) {
@@ -97,7 +100,11 @@ func (c *hostCursor) at(p string) (string, bool) {
 		return "", false
 	case filepath.IsAbs(p):
 		return "abs:" + filepath.Clean(p), true
-	case c.unknown || len(c.dirs) != 1:
+	case c.unknown:
+		return "", false
+	case c.cwd > 0:
+		return "rel:" + filepath.Join(c.dirs[c.cwd-1], p), true
+	case len(c.dirs) != 1:
 		return "", false
 	}
 	return "rel:" + filepath.Join(c.dirs[0], p), true

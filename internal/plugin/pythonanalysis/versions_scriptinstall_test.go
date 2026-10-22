@@ -108,6 +108,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"activate of a venv no command created", map[string]string{"requirements.txt": reqs, "install.sh": ". .venv/bin/activate\npip install -r requirements.txt\n"}, false, ""},
 		{"activate of a venv other than the one created", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv a\n. b/bin/activate\npip install -r requirements.txt\n"}, false, ""},
 		{"activate of a committed script that installs", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv venv\n. venv/bin/activate\npip install -r requirements.txt\n", "venv/bin/activate": "#!/bin/sh\npip install jinja2==3.1.2\n"}, false, ""},
+		{"activate in a step after the one that created the venv", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python -m venv .venv\n      - run: . .venv/bin/activate && pip install -r requirements.txt\n"}, false, ""},
 
 		// Controls.
 		{"pip install -r of a read file", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --no-cache-dir -r requirements.txt\n"}, true, ""},
@@ -126,6 +127,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"python -m venv, activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
 		{"virtualenv, source activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "virtualenv venv\nsource venv/bin/activate\npip install -r requirements.txt\n"}, true, ""},
 		{"absolute venv activated in a CI run", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
+		{"venv created and activated in a run block", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          python -m venv .venv\n          . .venv/bin/activate\n          pip install -r requirements.txt\n"}, true, ""},
+		{"venv created in before_script and activated in script", map[string]string{"requirements.txt": reqs, ".gitlab-ci.yml": "build:\n  before_script:\n    - python -m venv .venv\n  script:\n    - source .venv/bin/activate\n    - pip install -r requirements.txt\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}
 	for _, tt := range tests {

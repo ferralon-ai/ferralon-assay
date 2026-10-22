@@ -86,13 +86,6 @@ func TestCallGraph_LiteralImportUnmodeledConditionKeepsLimit(t *testing.T) {
 			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"development":"./dev.js","default":"./prod.js"}}}`,
 			"app.js":                        fmt.Sprintf(load, "cfg"),
 		}, true},
-		{"control: tsconfig paths alias over a package with default keys only", map[string]string{
-			"package.json":                  `{"name":"app"}`,
-			"tsconfig.json":                 `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
-			"src/cfg.js":                    "function parse(s) { return s; }\nmodule.exports = { parse };\n",
-			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"import":"./i.js","default":"./prod.js"}}}`,
-			"app.js":                        fmt.Sprintf(load, "cfg"),
-		}, false},
 		{"control: installed package with default keys only", map[string]string{
 			"package.json":                    `{"name":"app","dependencies":{"json5":"2.2.1"}}`,
 			"node_modules/json5/package.json": `{"name":"json5","exports":{".":{"import":"./dist/index.mjs","require":"./lib/index.js"}}}`,
@@ -129,6 +122,89 @@ func TestCallGraph_LiteralImportUnmodeledConditionKeepsLimit(t *testing.T) {
 				t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonDynamicImportSpecifier, got, tc.want, res.Partiality.Reasons)
 			}
 		})
+	}
+}
+
+// TestCallGraph_PathsShadowedLoadKeepsLimit: Node ignores tsconfig `paths`, so a bare
+// specifier an alias claims loads whatever Node itself resolves: a core module, the
+// governing package's own exports, or a node_modules candidate. Any of those keeps
+// uninspectable_package for every load form, whatever conditions the package declares. The
+// controls load the alias target only.
+func TestCallGraph_PathsShadowedLoadKeepsLimit(t *testing.T) {
+	forms := map[string]string{
+		"import()": "async function load(s) { const m = await import('%s'); return m.parse(s); }\nload(process.argv);\n",
+		"import":   "import m from '%s';\nfunction load(s) { return m.parse(s); }\nload(process.argv);\n",
+		"require":  "const m = require('%s');\nfunction load(s) { return m.parse(s); }\nload(process.argv);\n",
+	}
+	const parse = "function parse(s) { return s; }\nmodule.exports = { parse };\n"
+	cases := []struct {
+		name  string
+		spec  string
+		files map[string]string
+		want  bool
+	}{
+		{"scoped package installed under a wildcard alias", "@app/plugins", map[string]string{
+			"package.json":                           `{"name":"app"}`,
+			"tsconfig.json":                          `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"plugins/index.js":                       parse,
+			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+		}, true},
+		{"installed package with default keys only", "cfg", map[string]string{
+			"package.json":                  `{"name":"app"}`,
+			"tsconfig.json":                 `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":                    parse,
+			"node_modules/cfg/package.json": `{"name":"cfg","exports":{".":{"import":"./i.js","default":"./prod.js"}}}`,
+		}, true},
+		{"installed package with no package.json", "cfg", map[string]string{
+			"package.json":              `{"name":"app"}`,
+			"tsconfig.json":             `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":                parse,
+			"node_modules/cfg/index.js": "exports.parse = (s) => s;\n",
+		}, true},
+		{"installed single-file module", "cfg", map[string]string{
+			"package.json":        `{"name":"app"}`,
+			"tsconfig.json":       `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":          parse,
+			"node_modules/cfg.js": "exports.parse = (s) => s;\n",
+		}, true},
+		{"self-reference through its own exports", "app", map[string]string{
+			"package.json":  `{"name":"app","exports":{".":{"import":"./lib/index.js","default":"./lib/index.js"}}}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"app":["src/cfg.js"]}}}`,
+			"src/cfg.js":    parse,
+		}, true},
+		{"core module", "vm", map[string]string{
+			"package.json":  `{"name":"app"}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"*":["src/*"]}}}`,
+			"src/vm.js":     parse,
+		}, true},
+		{"control: alias with no installed package", "cfg", map[string]string{
+			"package.json":  `{"name":"app"}`,
+			"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"cfg":["src/cfg.js"]}}}`,
+			"src/cfg.js":    parse,
+		}, false},
+		{"control: relative load of the alias target", "./plugins/index.js", map[string]string{
+			"package.json":                           `{"name":"app"}`,
+			"tsconfig.json":                          `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"plugins/index.js":                       parse,
+			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+		}, false},
+	}
+	for _, tc := range cases {
+		for form, src := range forms {
+			t.Run(tc.name+"/"+form, func(t *testing.T) {
+				files := map[string]string{"app.js": fmt.Sprintf(src, tc.spec)}
+				for k, v := range tc.files {
+					files[k] = v
+				}
+				res, err := CallGraph(context.Background(), plugin.CallGraphRequest{BuildDir: writeProgram(t, files)})
+				if err != nil {
+					t.Fatalf("CallGraph: %v", err)
+				}
+				if got := hasReason(res.Partiality, plugin.PartialReasonUninspectablePackage); got != tc.want {
+					t.Errorf("%s declared = %v, want %v; reasons %v", plugin.PartialReasonUninspectablePackage, got, tc.want, res.Partiality.Reasons)
+				}
+			})
+		}
 	}
 }
 

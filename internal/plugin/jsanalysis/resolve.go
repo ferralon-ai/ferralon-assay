@@ -168,7 +168,7 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 
 // loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
 // outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
-// or a `#…` subpath import or workspace member whose selectable targets are not all the
+// one a paths alias claims but Node resolves elsewhere (pathsShadowed), or a `#…` subpath import or workspace member whose selectable targets are not all the
 // in-tree module call edges are built into (edgeModule). viaRequire marks a require() load (see loadConditions). Loading a module runs its
 // top-level code, so the run executes code this lane does not open however the binding, if
 // any, is used afterwards.
@@ -197,7 +197,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		return len(targets) == 0
 	}
 	if _, _, ok := rs.resolveTsPaths(fromModule, spec); ok {
-		return false
+		return rs.pathsShadowed(fromModule, spec)
 	}
 	dir, mm, sub, ok := rs.workspaceMember(spec)
 	if !ok {
@@ -221,6 +221,50 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		}
 	}
 	return len(targets) == 0
+}
+
+// pathsShadowed reports whether Node loads something other than the in-tree target of the
+// tsconfig `paths` alias that claims bare specifier spec. tsc does not rewrite the specifier
+// and Node ignores `paths`, so at run time Node resolves it itself: to a core module, to the
+// governing package's own exports (self-reference), or to whatever its node_modules walk
+// finds. Any of those, or a node_modules candidate that cannot be stat'ed, keeps the limit.
+func (rs *resolver) pathsShadowed(fromModule, spec string) bool {
+	if isNodeBuiltin(spec) {
+		return true
+	}
+	name, _ := splitBareSpecifier(spec)
+	if self, _ := rs.governingPackageJSON(fromModule); self != nil && self.name != "" && self.name == name && self.exports != nil {
+		return true
+	}
+	return rs.nodeModulesHas(fromModule, name)
+}
+
+// nodeModulesHas reports whether Node's node_modules walk from fromModule's directory finds
+// any candidate for package name: the package directory (with or without a package.json) or
+// a file Node's CommonJS LOAD_AS_FILE would try. A stat error other than a missing path
+// counts as found.
+func (rs *resolver) nodeModulesHas(fromModule, name string) bool {
+	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
+		return true
+	}
+	dir := path.Dir(fromModule)
+	for {
+		if dir == "." {
+			dir = ""
+		}
+		if path.Base(dir) != "node_modules" {
+			base := filepath.Join(rs.prog.root, filepath.FromSlash(dir), "node_modules", filepath.FromSlash(name))
+			for _, cand := range []string{base, base + ".js", base + ".json", base + ".node"} {
+				if _, err := os.Lstat(cand); err == nil || !absent(err) {
+					return true
+				}
+			}
+		}
+		if dir == "" {
+			return false
+		}
+		dir = path.Dir(dir)
+	}
 }
 
 // loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an

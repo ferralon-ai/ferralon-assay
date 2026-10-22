@@ -140,6 +140,32 @@ load(process.argv[2]);
 			"packages/m/package.json": `{"name":"m","exports":{".":{"development":"./dist/dev.js","default":"./src/index.js"}}}`,
 			"packages/m/src/index.js": "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 		}},
+		{"literal import() of an installed package a wildcard tsconfig paths alias shadows", `
+async function load(s) { const m = await import('@app/plugins'); return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"tsconfig.json":                          `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+			"node_modules/@app/plugins/index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+		}},
+		{"static import of an installed package a wildcard tsconfig paths alias shadows", `
+import m from '@app/plugins';
+function load(s) { return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"tsconfig.json":                          `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+			"node_modules/@app/plugins/index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+		}},
+		{"require of an installed package a wildcard tsconfig paths alias shadows", `
+const m = require('@app/plugins');
+function load(s) { return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"tsconfig.json":                          `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+			"node_modules/@app/plugins/index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+		}},
 		{"require reached by a string key", `
 const j = module['require']('json5');
 function load(s) { return j.parse(s); }
@@ -1061,6 +1087,16 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"the webpack 5 runtime handing its module record to a module factory", "var __webpack_modules__ = {};\nvar __webpack_module_cache__ = {};\nfunction __webpack_require__(moduleId) {\n  var cachedModule = __webpack_module_cache__[moduleId];\n  if (cachedModule !== undefined) return cachedModule.exports;\n  var module = __webpack_module_cache__[moduleId] = { exports: {} };\n  __webpack_modules__[moduleId](module, module.exports, __webpack_require__);\n  return module.exports;\n}\nconst j = require('./plugins');", nil},
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
+		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},
+		{"literal import() through a tsconfig paths alias with no installed package", "let j = { parse: (s) => s };\nimport('@app/plugins').then((m) => { j = m; });", map[string]string{
+			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+		}},
+		{"static import through a tsconfig paths alias with no installed package", "import j from '@app/plugins';", map[string]string{
+			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+		}},
+		{"require through a tsconfig paths alias with no installed package", "const j = require('@app/plugins');", map[string]string{
+			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+		}},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
 		}},

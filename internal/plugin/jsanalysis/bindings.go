@@ -293,7 +293,9 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 				return p + 1
 			}
 		}
-		return p
+		// A local `export { a as b }` hands its local names on to importers, so the names are
+		// left for the caller to judge as uses (`export { require as r }`).
+		return pos
 	}
 	return pos
 }

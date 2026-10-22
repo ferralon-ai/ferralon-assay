@@ -60,10 +60,11 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 // requireUse records one occurrence of a require-like name whose identifier ends at next.
 // The accepted forms are a call, whose argument loadCall judges; `.resolve`, which only
 // computes a path; the name declared (a parameter, `function require(...)`, a const, let or
-// var that is not exported) or written as an object key; a test of the name (typeof of the name or of a plain
-// member chain, !, ==, &&, a ternary test); and a property of that name read from an object
-// that cannot hold a loader (propertyOfPlainObject). Every other use hands the loader on,
-// so the module can load targets this lane never sees, and declares a computed target.
+// var that is not exported), written as an object key or named after `as`; a test of the
+// name (typeof of the name or of a plain member chain, !, ==, &&, a ternary test); and a
+// property of that name read from an object that cannot hold a loader
+// (propertyOfPlainObject). Every other use hands the loader on, so the module can load
+// targets this lane never sees, and declares a computed target.
 func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderScope) {
 	n := len(clean)
 	b := skipSpaceBack(clean, i-1)
@@ -79,6 +80,8 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderS
 		if kw, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); kw == "export" {
 			mb.computedReq = true // an exported result is called by importers this lane does not judge
 		}
+		return
+	case w == "as" && sameLine(clean, s, i): // the exported name of `export { r as require }`, or a type
 		return
 	case w == "function" && (s == 0 || !strings.ContainsRune(".#", clean[max(skipSpaceBack(clean, s-1), 0)])):
 		// `function require(...)` declares a parameter list, not a call; `o.function` and

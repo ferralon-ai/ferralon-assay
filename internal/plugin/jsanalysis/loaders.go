@@ -1326,8 +1326,8 @@ type loaderScope struct {
 func newLoaderScope(clean []rune, globals *globalScope) *loaderScope {
 	ls := &loaderScope{globals: globals}
 	ls.req, ls.cr = loaderNames(clean)
-	ls.module = objectAliases(clean, "module", moduleMember, moduleKey)
-	ls.process = objectAliases(clean, "process", processMember, processKey)
+	ls.module = objectAliases(clean, "module", moduleMember, moduleKey, globals)
+	ls.process = objectAliases(clean, "process", processMember, processKey, globals)
 	return ls
 }
 
@@ -1444,6 +1444,18 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 		if objectTested(clean, s, next, skipSpaceBack(clean, s-1)) || negatedGroupTail(clean, s, p) {
 			return
 		}
+	} else if v, ok := globalPatternKey(clean, b, p, globals); ok {
+		// `{ process: pr } = globalThis` reads the object itself: a renaming local is an alias
+		// (objectAliases) and a nested pattern is judged like a whole destructure.
+		if obj.tails[v] || clean[v] == '{' && patternKeysAccepted(clean, v, matchingClose(clean, v), obj) {
+			return
+		}
+		if obj.names["process"] {
+			mb.nativeLoad = true
+			return
+		}
+		mb.computedReq = true
+		return
 	} else if obj.tails[i] || bindingSite(clean, i, next, b, p) || objectTested(clean, i, next, b) || negatedGroupTail(clean, i, p) {
 		return
 	}
@@ -1622,7 +1634,16 @@ func destructuredWhole(clean []rune, b, next int, obj *loaderObject) bool {
 	if open < 0 {
 		return false
 	}
-	depth = 0
+	return patternKeysAccepted(clean, open, c, obj)
+}
+
+// patternKeysAccepted reports whether every top-level key of the pattern between the braces
+// at open and c is one obj accepts.
+func patternKeysAccepted(clean []rune, open, c int, obj *loaderObject) bool {
+	if c < 0 {
+		return false
+	}
+	depth := 0
 	expectKey := true
 	for k := open + 1; k < c; k++ {
 		switch r := clean[k]; {
@@ -1665,7 +1686,7 @@ func valueTail(clean []rune, next int) bool {
 // tracked as the whole value or the last operand of an &&, || or ?? chain
 // (`var freeModule = typeof module == 'object' && module`). Uses of such a local are judged
 // as uses of the object; an alias of an alias is followed too.
-func objectAliases(clean []rune, base string, member func([]rune, string, int) (bool, bool), key func(string) bool) loaderObject {
+func objectAliases(clean []rune, base string, member func([]rune, string, int) (bool, bool), key func(string) bool, globals *globalScope) loaderObject {
 	obj := loaderObject{names: map[string]bool{base: true}, tails: map[int]bool{}, member: member, key: key}
 	n := len(clean)
 	for changed := true; changed; {
@@ -1676,6 +1697,17 @@ func objectAliases(clean []rune, base string, member func([]rune, string, int) (
 				continue
 			}
 			word, next := readWord(clean, i)
+			if word == base {
+				if v, ok := globalPatternKey(clean, skipSpaceBack(clean, i-1), skipSpace(clean, next), globals); ok && !obj.tails[v] {
+					if name, e := readWord(clean, v); isIdentStart(clean[v]) && clean[v] != '_' && patternValueEnds(clean, e) {
+						obj.tails[v] = true
+						if !obj.names[name] {
+							obj.names[name] = true
+							changed = true
+						}
+					}
+				}
+			}
 			if obj.names[word] && !obj.tails[i] && !memberName(clean, i) {
 				if name, ok := aliasOf(clean, i, next); ok {
 					obj.tails[i] = true
@@ -1689,6 +1721,85 @@ func objectAliases(clean []rune, base string, member func([]rune, string, int) (
 		}
 	}
 	return obj
+}
+
+// globalPatternKey reports whether the name between the token ending at b and the one
+// starting at p is a top-level key of a destructuring pattern whose source is the global
+// object (`const { process: pr } = globalThis`), and returns where the key's value starts.
+func globalPatternKey(clean []rune, b, p int, globals *globalScope) (int, bool) {
+	if !objectKey(clean, b, p) {
+		return 0, false
+	}
+	depth, open := 0, -1
+	for k := b; k >= 0 && open < 0; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[':
+			if depth == 0 {
+				return 0, false
+			}
+			depth--
+		case '{':
+			if depth == 0 {
+				open = k
+			}
+			depth--
+		}
+	}
+	c := matchingClose(clean, open)
+	if c < 0 {
+		return 0, false
+	}
+	q := skipSpace(clean, c+1)
+	if q >= len(clean) || clean[q] != '=' || q+1 < len(clean) && (clean[q+1] == '=' || clean[q+1] == '>') {
+		return 0, false
+	}
+	s := skipSpace(clean, q+1)
+	if s >= len(clean) || !isIdentStart(clean[s]) || clean[s] == '_' {
+		return 0, false
+	}
+	w, e := readWord(clean, s)
+	if !valueTail(clean, e) || !globals.isGlobal(w, s) {
+		return 0, false
+	}
+	return skipSpace(clean, p+1), true
+}
+
+// matchingClose returns the index of the brace closing the one at open, or -1.
+func matchingClose(clean []rune, open int) int {
+	if open < 0 || open >= len(clean) || clean[open] != '{' {
+		return -1
+	}
+	depth := 0
+	for k := open; k < len(clean); k++ {
+		switch clean[k] {
+		case '{', '(', '[':
+			depth++
+		case '}', ')', ']':
+			depth--
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
+}
+
+// patternValueEnds reports whether a pattern element's value ending at e is a plain binding:
+// the next token ends the element, closes the pattern or starts a default value.
+func patternValueEnds(clean []rune, e int) bool {
+	q := skipSpace(clean, e)
+	if q >= len(clean) {
+		return false
+	}
+	switch clean[q] {
+	case ',', '}':
+		return true
+	case '=':
+		return !(q+1 < len(clean) && (clean[q+1] == '=' || clean[q+1] == '>'))
+	}
+	return false
 }
 
 // aliasOf returns NAME when the identifier at [i, next) is the value of the initialiser of

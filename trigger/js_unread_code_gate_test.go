@@ -1071,6 +1071,35 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"vm through process renamed in a pattern off globalThis", `
+const { process: pr } = globalThis;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"ContextifyScript through process renamed in a pattern off globalThis", `
+const { process: pr } = globalThis;
+const { ContextifyScript } = pr.binding('contextify');
+new ContextifyScript(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a nested pattern of process off globalThis", `
+const { process: { getBuiltinModule: gb } } = globalThis;
+gb('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off global", `
+const { process: pr } = global;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1128,6 +1157,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"the webpack 5 runtime handing its module record to a module factory", "var __webpack_modules__ = {};\nvar __webpack_module_cache__ = {};\nfunction __webpack_require__(moduleId) {\n  var cachedModule = __webpack_module_cache__[moduleId];\n  if (cachedModule !== undefined) return cachedModule.exports;\n  var module = __webpack_module_cache__[moduleId] = { exports: {} };\n  __webpack_modules__[moduleId](module, module.exports, __webpack_require__);\n  return module.exports;\n}\nconst j = require('./plugins');", nil},
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
+		{"process renamed and nested in patterns off globalThis, data members only", "const { process: pr } = globalThis;\nconst { process: { env } } = globalThis;\nconst mode = pr.env.NODE_ENV || env.HOME;\nconst j = require('./plugins');", nil},
 		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},
 		{"literal import() through a tsconfig paths alias with no installed package", "let j = { parse: (s) => s };\nimport('@app/plugins').then((m) => { j = m; });", map[string]string{
 			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,

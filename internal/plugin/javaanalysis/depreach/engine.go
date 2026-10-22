@@ -395,13 +395,6 @@ func (e *Engine) hasAppSubtype(typ string) bool {
 	return false
 }
 
-// lookupInherited resolves (owner,name,desc) walking up the superclass chain — for
-// static/special edges whose exact target may be declared on an ancestor.
-func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
-	m, _ := e.resolveMethod(ref.Owner, ref.Name, ref.Descriptor)
-	return m
-}
-
 // resolveMethod performs JVM method resolution (JVMS §5.4.3.3) of name+desc starting
 // at class owner over the loaded classes: the superclass chain first, then the
 // transitive superinterfaces for a default method. When nothing loaded declares it,
@@ -1631,13 +1624,18 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		return res
 	}
 
-	start := e.lookupInherited(ingress)
+	start, over := e.resolveMethod(ingress.Owner, ingress.Name, ingress.Descriptor)
 	if start == nil {
 		// The ingress itself is not in the analyzed classpath: the search never
 		// began, so absence proves nothing.
 		res.Verdict = Undetermined
 		res.hazard("ingress method not found in classpath: " + ingress.String())
 		return res
+	}
+	if len(over) > 0 {
+		// The ingress resolves to a loaded default that an unopened dependency
+		// interface may override; the search still runs from the default.
+		res.hazard("unloaded_dependency: ingress " + ingress.String() + " may resolve into unopened " + over[0] + ", which can override " + start.Ref.String())
 	}
 
 	visited := map[string]bool{start.Ref.String(): true}

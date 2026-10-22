@@ -545,3 +545,22 @@ func TestLambdaInherited_UnopenedOverride(t *testing.T) {
 		t.Errorf("hazard = %v %q, want the unopened override", h, w)
 	}
 }
+
+// An ingress that resolves to a loaded default is searched from it, but an unopened
+// dependency interface beside the default may override it.
+func TestReach_IngressUnopenedOverride(t *testing.T) {
+	const rows, base, impl = "com/acme/Rows", "com/acme/Base", "com/acme/RowsImpl"
+	beside := func(other string) []classfile.Class {
+		r := iface(rows)
+		r.Interfaces = []string{base, other}
+		return []classfile.Class{r, iface(base, meth(base, "describe", "()V")),
+			class(impl, "java/lang/Object", []string{rows}, meth(impl, "<init>", "()V"))}
+	}
+	ingress := mref(impl, "describe", "()V")
+	runReachCases(t, []reachCase{
+		{name: "an unopened interface beside the default the ingress resolves to", ingress: ingress, want: Undetermined,
+			why: "unloaded_dependency: ingress", classes: beside("com/lib/M")},
+		{name: "a JDK interface beside it cannot override it", ingress: ingress, want: NotExploitable,
+			classes: beside("java/util/RandomAccess")},
+	})
+}

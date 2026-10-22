@@ -20,9 +20,12 @@ import (
 //
 // Each resolved method carries the same id the dependency call graph uses
 // ("jvmref Owner#NameDesc"), Symbol.Package is the Maven coordinate, and Origins maps it to
-// the coordinate's versionless PURL. Every gap is scoped to the coordinate, bounded by what
+// the coordinate's versionless PURL. A coordinate a complete graph lacks is not installed by the build:
+// dependency_not_in_build, bounded to the coordinate's own PURL (intake already settles that
+// advisory as no_manifest_entry). Every gap is scoped to the coordinate, bounded by what
 // the JAR's code could call, callbacks into first-party code included (depclosure.go):
-//   - the graph resolved no version of it, or no JAR for a version → tool_failure:no_dependency_artifact;
+//   - a graph that could be missing a build resolved no version of it, or no JAR for a version →
+//     tool_failure:no_dependency_artifact;
 //   - a JAR is unreadable, no longer has the digest the graph recorded, or some classes in it
 //     fail to parse → tool_failure.
 // Each scoped reason is also listed run-wide in Reasons. An advisory symbol that matches
@@ -42,18 +45,34 @@ type depSymbolResolution struct {
 	part     plugin.Partiality
 }
 
-// isRootCoordinate reports whether coordinate names one of the build's own modules: an
-// advisory against the project itself, whose code is first-party source. Without a graph no
-// coordinate is known to be one.
+// isRootCoordinate reports whether coordinate names one of the build's own modules, by its own
+// coordinate or one it publishes under: an advisory against the project itself, whose code is
+// first-party source. Without a graph no coordinate is known to be one.
 func isRootCoordinate(g *buildgraph.Graph, coordinate string) bool {
-	return g != nil && moduleCoordinates(g)[coordinate]
+	if g == nil {
+		return false
+	}
+	want := strings.TrimSpace(coordinate)
+	for _, m := range g.Modules {
+		for _, n := range m.Nodes {
+			if n.ID == m.Root && isCoordinate(n, want) {
+				return true
+			}
+		}
+		for _, a := range m.Aliases {
+			if strings.EqualFold(a, want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveDependencyJarSymbols resolves wanted inside the JAR(s) the build graph resolved for
 // coordinate. purlVersion, when the request PURL pins one the build resolved, is the only
 // version searched; otherwise every one is. Without a graph nothing is known about the
 // coordinate's code, and the result says so run-wide.
-func resolveDependencyJarSymbols(g *buildgraph.Graph, coordinate, purlVersion string, wanted []string) depSymbolResolution {
+func resolveDependencyJarSymbols(g *buildgraph.Graph, buildDir, coordinate, purlVersion string, wanted []string) depSymbolResolution {
 	out := depSymbolResolution{origins: map[string]string{}, matched: map[string][]string{}, part: plugin.Complete()}
 	if len(wanted) == 0 {
 		return out
@@ -64,6 +83,10 @@ func resolveDependencyJarSymbols(g *buildgraph.Graph, coordinate, purlVersion st
 	}
 
 	purl := mavenPURLNoVersion(coordinate)
+	if AbsentFromBuild(g, buildDir, coordinate) {
+		out.part = NotInBuild(coordinate)
+		return out
+	}
 	targets := BlindSpotTargets(g, coordinate)
 	scoped := func(reason, path string) plugin.ScopedReason {
 		return plugin.ScopedReason{Reason: reason, Package: purl, Path: path, Targets: targets}

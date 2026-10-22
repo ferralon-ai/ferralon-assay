@@ -21,6 +21,8 @@ import (
 //
 // Honest-absent on every gap (inv.5), never a fabricated match:
 //   - no build graph → build_graph_absent, empty resolution.
+//   - a complete graph resolves no version of the coordinate → dependency_not_in_build, bounded
+//     to the coordinate's own PURL: a known absence, never a tool failure.
 //   - coordinate underivable, or the graph names no JAR for it → declared tool-unavailable
 //     partiality (no_dependency_artifact), empty resolution.
 //   - the JAR present but unreadable/partly unparseable → tool_failure partiality (a class
@@ -65,6 +67,9 @@ func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsReques
 	if g == nil {
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(javaanalysis.PartialReasonBuildGraphAbsent)}, nil
 	}
+	if coordinate, _, ok := javaanalysis.CoordinateOfPURL(req.PURL); ok && javaanalysis.AbsentFromBuild(g, req.BuildDir, coordinate) {
+		return plugin.SymbolResolutionResult{Partiality: javaanalysis.NotInBuild(coordinate)}, nil
+	}
 	jars, reasons, ok := dependencyJars(g, req.PURL)
 	if !ok {
 		return plugin.SymbolResolutionResult{Partiality: plugin.Partial(partialReasonNoDependencyArtifact)}, nil
@@ -92,7 +97,7 @@ func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsReques
 	if len(matched) < len(wanted) {
 		reasons[partialReasonAdvisorySymbolUnresolved] = true
 	}
-	coordinate, _, _ := parseMavenPURL(req.PURL)
+	coordinate, _, _ := javaanalysis.CoordinateOfPURL(req.PURL)
 
 	var origins map[string]string
 	if len(resolved) > 0 {
@@ -117,7 +122,7 @@ func ResolveDependencySymbols(_ context.Context, req plugin.ResolveSymbolsReques
 // for it.
 func dependencyJars(g *buildgraph.Graph, purl string) (jars []javaanalysis.RuntimeJar, reasons map[string]bool, ok bool) {
 	reasons = map[string]bool{}
-	coordinate, pinned, ok := parseMavenPURL(purl)
+	coordinate, pinned, ok := javaanalysis.CoordinateOfPURL(purl)
 	if !ok {
 		return nil, nil, false
 	}
@@ -134,34 +139,6 @@ func dependencyJars(g *buildgraph.Graph, purl string) (jars []javaanalysis.Runti
 		jars = all
 	}
 	return jars, reasons, len(jars) > 0
-}
-
-// parseMavenPURL parses "pkg:maven/<group>/<artifact>[@version][?qualifiers]" into a
-// "group:artifact" coordinate and (optional) version. ok is false for any non-Maven or
-// malformed PURL (A2: Kotlin dependency artifacts are Maven-ecosystem-keyed).
-func parseMavenPURL(purl string) (coordinate, version string, ok bool) {
-	const prefix = "pkg:maven/"
-	if !strings.HasPrefix(purl, prefix) {
-		return "", "", false
-	}
-	rest := purl[len(prefix):]
-	if i := strings.IndexByte(rest, '?'); i >= 0 {
-		rest = rest[:i]
-	}
-	if i := strings.IndexByte(rest, '@'); i >= 0 {
-		version = strings.TrimSpace(rest[i+1:])
-		rest = rest[:i]
-	}
-	slash := strings.IndexByte(rest, '/')
-	if slash <= 0 {
-		return "", "", false
-	}
-	group := strings.TrimSpace(rest[:slash])
-	artifact := strings.TrimSpace(rest[slash+1:])
-	if group == "" || artifact == "" || strings.Contains(artifact, "/") {
-		return "", "", false
-	}
-	return group + ":" + artifact, version, true
 }
 
 // matchAdvisorySymbols indexes the dependency classes into canonical plugin.Symbols and

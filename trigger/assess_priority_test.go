@@ -9,6 +9,7 @@ import (
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
+	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
 )
 
@@ -34,7 +35,7 @@ func prioritySignals(t *testing.T) *intel.Signals {
 // own stamp.
 func TestPriorityForResolvesViaCVEAlias(t *testing.T) {
 	p := priorityFor(report.Advisory{ID: "GO-2021-0113", Source: "osv", Aliases: []string{"CVE-2021-38561", "GHSA-ppp9-7jff-5vj2"}}, prioritySignals(t), nil)
-	want := report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, EPSSAsOf: "2026-10-18"}
+	want := report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, HasPercentile: true, EPSSAsOf: "2026-10-18"}
 	if p == nil || *p != want {
 		t.Fatalf("priority = %+v, want %+v (EPSS via the CVE alias, no KEV fields)", p, want)
 	}
@@ -46,7 +47,7 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 	sig := prioritySignals(t)
 	got := priorityFor(report.Advisory{ID: "CVE-2025-8110", Source: "osv", Aliases: []string{"GO-2025-3900"}}, sig, nil)
 	want := report.Priority{
-		EPSSScore: 0.91, EPSSPercentile: 0.99, EPSSAsOf: "2026-10-19",
+		EPSSScore: 0.91, EPSSPercentile: 0.99, HasPercentile: true, EPSSAsOf: "2026-10-19",
 		KEVListed: true, KEVDateAdded: "2025-07-28", KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z",
 	}
 	if got == nil || *got != want {
@@ -56,6 +57,94 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 	want = report.Priority{KEVCatalogVersion: "2026.10.19", KEVDateReleased: "2026-10-19T18:00:00Z"}
 	if got == nil || *got != want {
 		t.Errorf("CVE-2024-55947 priority = %+v, want the stamped not-listed observation %+v", got, want)
+	}
+}
+
+// TestSourcedZeroPercentileSurvivesEndToEnd: a sourced EPSS percentile of 0 (CVE-2026-50268's real
+// signals record) goes intel → rankWith → report → JSON → decode and reads back as sourced, and the
+// SARIF projected from the decoded report carries epss_percentile 0 and rank 0 — for a CVE-keyed
+// advisory's own record, and for a GHSA advisory attributed through its one CVE alias. A record with
+// no percentile stays unsourced at every step.
+func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
+	sig, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 3,
+	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	  "records": [
+	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
+	    {"identifier": "CVE-ALIASED-ZERO", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
+	    {"identifier": "CVE-UNSOURCED", "epss": {"score": 0.00047, "as_of": "2026-08-02"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := report.NewBuilder(report.Subject{Repo: "r", ResolvedCommit: "c"})
+	for _, adv := range []report.Advisory{
+		{ID: "CVE-2026-50268", Source: "osv"},
+		{ID: "GHSA-pppp-qqqq-rrrr", Source: "ghsa", Aliases: []string{"CVE-ALIASED-ZERO"}},
+		{ID: "CVE-UNSOURCED", Source: "osv"},
+	} {
+		b.AddFinding(report.AdvisoryFinding{
+			Advisory: adv,
+			Verdict:  report.VerdictReachableCandidate,
+			Evidence: report.EvidenceSummary{Grade: report.GradeControlFlowOnly},
+		})
+	}
+	rankWith(b, sig, nil, pipeline.NewTableSource())
+	encoded, err := json.Marshal(b.Build())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Advisories []struct {
+			Advisory struct{ ID string } `json:"advisory"`
+			Priority map[string]any      `json:"priority"`
+		} `json:"advisories"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var decoded report.Report
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = report.Upgrade(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("decoded report does not validate: %v", err)
+	}
+	if len(decoded.Advisories) != 3 || len(wire.Advisories) != 3 {
+		t.Fatalf("decoded %d rows, wire %d; want all 3", len(decoded.Advisories), len(wire.Advisories))
+	}
+	log, err := projection.ProjectReportSARIF(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sarif := map[string]projection.SARIFResult{}
+	for _, res := range log.Runs[0].Results {
+		sarif[res.RuleID] = res
+	}
+
+	for i, f := range decoded.Advisories {
+		id := f.Advisory.ID
+		sourced := id != "CVE-UNSOURCED"
+		pct, onWire := wire.Advisories[i].Priority["epss_percentile"]
+		if wire.Advisories[i].Advisory.ID != id || onWire != sourced || (sourced && pct != 0.0) {
+			t.Errorf("%s: wire epss_percentile = %v (present %v), want present %v", id, pct, onWire, sourced)
+		}
+		if f.Priority == nil || f.Priority.HasPercentile != sourced || f.Priority.EPSSPercentile != 0 {
+			t.Errorf("%s: decoded priority = %+v, want HasPercentile %v", id, f.Priority, sourced)
+		}
+		res := sarif[id]
+		if res.Properties == nil {
+			t.Fatalf("%s: SARIF result has no properties", id)
+		}
+		v, inSARIF := res.Properties.Scanner["epss_percentile"]
+		if inSARIF != sourced || (sourced && v != 0.0) {
+			t.Errorf("%s: SARIF epss_percentile = %v (present %v), want present %v", id, v, inSARIF, sourced)
+		}
+		if (res.Rank != nil) != sourced || (sourced && *res.Rank != 0) {
+			t.Errorf("%s: SARIF rank = %v, want present %v at 0", id, res.Rank, sourced)
+		}
 	}
 }
 

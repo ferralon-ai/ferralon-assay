@@ -162,3 +162,37 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeJDK(t *testing.T) {
+	for _, tc := range []struct {
+		jdk        string
+		toolchains [][]string
+		want       int
+	}{
+		{"21.0.4", nil, 21},
+		{"21.0.4", [][]string{nil}, 21},
+		{"21.0.4", [][]string{nil, {"21"}}, 21},
+		{"21.0.4", [][]string{{"21"}, {"17"}}, 0},
+		{"21.0.4", [][]string{{"21", toolchainUnstated}}, 0},
+		{"21.0.4", [][]string{{"[21,22)"}}, 0},
+		{"17", [][]string{{"17"}}, 17},
+		{"", [][]string{{"21"}}, 0},
+	} {
+		g := Graph{Conditions: Conditions{JDK: tc.jdk}}
+		for _, ts := range tc.toolchains {
+			g.Modules = append(g.Modules, Module{JDKToolchains: ts})
+		}
+		for i := range g.Modules {
+			g.Modules[i].JDKToolchainsKnown = true
+		}
+		if got := g.RuntimeJDK(); got != tc.want {
+			t.Errorf("JDK %q, toolchains %q: RuntimeJDK() = %d, want %d", tc.jdk, tc.toolchains, got, tc.want)
+		}
+	}
+	// A module whose toolchains went unread, as in a graph written before they were recorded,
+	// leaves the JDK its code meets unknown.
+	g := Graph{Conditions: Conditions{JDK: "21.0.4"}, Modules: []Module{{JDKToolchainsKnown: true}, {}}}
+	if got := g.RuntimeJDK(); got != 0 {
+		t.Errorf("unread toolchains: RuntimeJDK() = %d, want 0", got)
+	}
+}

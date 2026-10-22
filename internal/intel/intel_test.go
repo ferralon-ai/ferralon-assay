@@ -77,7 +77,7 @@ func TestLoadValid1x(t *testing.T) {
 				t.Errorf("envelope = %q %q %d, want 1.0.0 %s 4", s.Version, s.Digest, s.Records(), testDigest)
 			}
 			e, ok := s.EPSS("CVE-2021-38561")
-			if !ok || e.Score != 0.0123 || e.Percentile != 0.456 || e.AsOf != "2026-10-18" {
+			if !ok || e.Score != 0.0123 || e.Percentile != 0.456 || !e.HasPercentile || e.AsOf != "2026-10-18" {
 				t.Errorf("EPSS(CVE-2021-38561) = %+v, %v", e, ok)
 			}
 			k, ok := s.KEV("CVE-2025-8110")
@@ -111,7 +111,7 @@ func TestLookupIsOneRecord(t *testing.T) {
 	if e, ok := s.EPSS(" cve-2021-38561 "); !ok || e.Identifier != "CVE-2021-38561" {
 		t.Errorf("EPSS lookup = %+v, %v; want CVE-2021-38561's value", e, ok)
 	}
-	if e, ok := s.EPSS("ghsa-aaaa-bbbb-cccc"); !ok || e.Percentile != 0 || e.AsOf != "2026-10-01" {
+	if e, ok := s.EPSS("ghsa-aaaa-bbbb-cccc"); !ok || e.Percentile != 0 || e.HasPercentile || e.AsOf != "2026-10-01" {
 		t.Errorf("EPSS(GHSA) = %+v, %v; want a score with no percentile", e, ok)
 	}
 	if _, ok := s.KEV("CVE-2021-38561"); ok {
@@ -141,7 +141,7 @@ func TestLookupIsOneRecord(t *testing.T) {
 // CVE-2026-1001..1005 are one multi-CVE advisory's aliases: 1001 carries a stamped "not listed", 1002
 // is KEV-listed with the same EPSS value, 1003 agrees with 1001 in every value and stamp, 1004
 // differs from 1001 only in its EPSS score, and 1005 only in its EPSS as_of.
-const attributionDoc = `{"signals_version": "1.0.0", "record_count": 8, "signals_digest": "` + testDigest + `",
+const attributionDoc = `{"signals_version": "1.0.0", "record_count": 10, "signals_digest": "` + testDigest + `",
   "records": [
     {"identifier": "CVE-2023-39325", "epss": {"score": 0.03, "as_of": "2026-08-01"}},
     {"identifier": "CVE-2023-44487", "epss": {"score": 0.99, "as_of": "2026-08-11"},
@@ -157,6 +157,10 @@ const attributionDoc = `{"signals_version": "1.0.0", "record_count": 8, "signals
     {"identifier": "CVE-2026-1004", "epss": {"score": 0.7, "percentile": 0.5, "as_of": "2026-10-18"},
      "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
     {"identifier": "CVE-2026-1005", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-11"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1006", "epss": {"score": 0.02, "percentile": 0, "as_of": "2026-10-18"},
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1007", "epss": {"score": 0.02, "as_of": "2026-10-18"},
      "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`
 
 // TestAttribute pins the join's three rules: the advisory's own record and only it; nothing through
@@ -202,6 +206,8 @@ func TestAttribute(t *testing.T) {
 		{"only the first CVE is KEV-listed", "GO-2026-0001", []string{"CVE-2026-1002", "CVE-2026-1001"}, nil, "none"},
 		{"CVEs differ in EPSS score", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1004"}, nil, "none"},
 		{"CVEs differ in EPSS as_of", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1005"}, nil, "none"},
+		// A sourced percentile of 0 and no percentile at all are different values, not the same 0.
+		{"CVEs differ only in percentile presence", "GO-2026-0001", []string{"CVE-2026-1006", "CVE-2026-1007"}, nil, "none"},
 		{"CVEs agree", "GO-2026-0001", []string{"GHSA-xxxx-yyyy-zzzz", "CVE-2026-1001", "CVE-2026-1003"}, nil, "CVE-2026-1001 epss=true kev=true"},
 		{"a disagreeing CVE another advisory names", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1002"}, listedClaimed, "CVE-2026-1001 epss=true kev=true"},
 		{"a disagreeing CVE with no record", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2099-0003"}, nil, "CVE-2026-1001 epss=true kev=true"},
@@ -252,6 +258,26 @@ func TestStaleEPSS(t *testing.T) {
 		if stale, total := s.StaleEPSS(now, c.maxAge); stale != c.stale || total != c.total {
 			t.Errorf("StaleEPSS(%s) = %d/%d, want %d/%d", c.maxAge, stale, total, c.stale, c.total)
 		}
+	}
+}
+
+// TestEPSSPercentileZeroIsSourced: a sourced percentile of 0 (CVE-2026-50268's real record) loads as
+// sourced, told apart from a record that carries no percentile.
+func TestEPSSPercentileZeroIsSourced(t *testing.T) {
+	s, err := Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2, "signals_digest": "` + testDigest + `",
+	  "records": [
+	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
+	    {"identifier": "GHSA-pppp-qqqq-rrrr", "epss": {"score": 0.00047, "as_of": "2026-08-02"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := EPSS{Identifier: "CVE-2026-50268", Score: 0.00047, HasPercentile: true, AsOf: "2026-08-02"}
+	if e, ok := s.EPSS("CVE-2026-50268"); !ok || e != want {
+		t.Errorf("EPSS(CVE-2026-50268) = %+v, %v; want the sourced zero percentile %+v", e, ok, want)
+	}
+	want = EPSS{Identifier: "GHSA-PPPP-QQQQ-RRRR", Score: 0.00047, AsOf: "2026-08-02"}
+	if e, ok := s.EPSS("GHSA-pppp-qqqq-rrrr"); !ok || e != want {
+		t.Errorf("EPSS(GHSA-pppp-qqqq-rrrr) = %+v, %v; want no percentile %+v", e, ok, want)
 	}
 }
 

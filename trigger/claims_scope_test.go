@@ -80,7 +80,7 @@ func TestRowRanksTheSameOnEveryPath(t *testing.T) {
 		want    *report.Priority
 	}{
 		{"shared alias in the work set", []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}, {ID: sharedAliasAdvisory, Source: "ghsa"}}, nil},
-		{"row alone", []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}}, &report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, EPSSAsOf: "2026-10-18"}},
+		{"row alone", []assessment.VulnRef{{ID: "GO-2021-0113", Source: "osv"}}, &report.Priority{EPSSScore: 0.0123, EPSSPercentile: 0.456, HasPercentile: true, EPSSAsOf: "2026-10-18"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			baseline, err := buildBaselineReport(ctx, BaselineRequest{

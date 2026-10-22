@@ -3,12 +3,14 @@ package kotlinanalysis
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/buildgraph"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -716,5 +718,44 @@ func TestNoBuildGraph(t *testing.T) {
 	}
 	if len(syms.Resolved) != 0 || !hasReason(syms.Partiality, javaanalysis.PartialReasonBuildGraphAbsent) {
 		t.Errorf("ResolveDependencySymbols: Resolved = %v, partiality %+v; want none, carrying %s", syms.Resolved, syms.Partiality, javaanalysis.PartialReasonBuildGraphAbsent)
+	}
+}
+
+// The closure's classpath carries the JDK the program runs on, which is the stated one only when
+// every module's toolchain was read and selects it.
+func TestDependencyClosureRunsOnTheGraphRuntimeJDK(t *testing.T) {
+	for _, tc := range []struct {
+		jdk        string
+		toolchains []string
+		unread     bool
+		want       int
+	}{
+		{jdk: "21.0.4", want: 21},
+		{jdk: "17.0.12", want: 17},
+		{jdk: "21.0.4", toolchains: []string{"21"}, want: 21},
+		{jdk: "21.0.4", toolchains: []string{"17"}, want: 0},
+		{jdk: "21.0.4", unread: true, want: 0},
+	} {
+		m := graphModule(".", "app")
+		m.JDKToolchains = tc.toolchains
+		m.JDKToolchainsKnown = !tc.unread
+		b, err := json.Marshal(buildgraph.Graph{
+			Schema:     buildgraph.Schema,
+			Tool:       buildgraph.Tool{Name: "gradle", Version: "test"},
+			JVM:        buildgraph.JVM{Version: "21.0.4"},
+			Conditions: buildgraph.Conditions{JDK: tc.jdk},
+			Modules:    []buildgraph.Module{m},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(t.TempDir(), "graph.json")
+		if err := os.WriteFile(file, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dc := loadDependencyClosure(t.TempDir(), nil, javaanalysis.WithBuildGraph(file))
+		if dc.cp.JDK != tc.want {
+			t.Errorf("JDK %q, toolchains %q, unread %t: closure JDK = %d, want %d", tc.jdk, tc.toolchains, tc.unread, dc.cp.JDK, tc.want)
+		}
 	}
 }

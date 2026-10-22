@@ -1,12 +1,15 @@
 package buildgraph
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -249,7 +252,7 @@ func newFakeMavenRepo(t *testing.T, fail, failOut string, edit, repo map[string]
 	writeFiles(t, r.m2, map[string]string{
 		"guava-32.jar": "g32", "guava-33.jar": "g33", "failureaccess.jar": "fa", "lwjgl-natives.jar": "nat", "sys.jar": "sys",
 	})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -460,6 +463,8 @@ func TestMavenProducerFailures(t *testing.T) {
 		{name: "maven.config excludes", repo: map[string]string{".mvn/maven.config": "-ntp\n-Dexcludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "MAVEN_ARGS -D with a space", env: []string{"MAVEN_ARGS=-D verbose=true"}, want: "tool_failed:conditions"},
 		{name: "JAVA_TOOL_OPTIONS --define=", env: []string{"JAVA_TOOL_OPTIONS=--define=scope=compile"}, want: "tool_failed:conditions"},
+		{name: "MAVEN_CONFIG verbose", env: []string{"MAVEN_CONFIG=-Dverbose"}, want: "tool_failed:conditions"},
+		{name: "JDK_JAVA_OPTIONS quoted scope", env: []string{`JDK_JAVA_OPTIONS="-Dscope=compile"`}, want: "tool_failed:conditions"},
 		{name: "jvm.config includes", repo: map[string]string{".mvn/jvm.config": "-Xmx1g -Dincludes=a:b\n"}, want: "tool_failed:conditions"},
 		{name: "POM property scope", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <properties><scope>compile</scope></properties>", 1)}, want: "tool_failed:conditions"},
 		{name: "dependency-plugin default-cli excludes", edit: map[string]string{"effective-pom.txt": strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build><pluginManagement><plugins><plugin><artifactId>maven-dependency-plugin</artifactId><executions><execution><id>default-cli</id><configuration><excludes>a:b</excludes></configuration></execution></executions></plugin></plugins></pluginManagement></build>", 1)}, want: "tool_failed:conditions"},
@@ -489,6 +494,44 @@ func TestMavenProducerFailures(t *testing.T) {
 
 // TestMavenReactorPaths: a Maven that prints no "from" lines gets its module POMs from
 // help:evaluate, one index at a time with the tree step's arguments, plus one probe past the end.
+// A maven-dependency-plugin copy or unpack execution with artifactItems installs artifacts
+// dependency:tree never lists, so the module records it as unlisted.
+func TestMavenDependencyPluginArtifactItems(t *testing.T) {
+	const items = "<artifactItems><artifactItem><groupId>io.opentelemetry.javaagent</groupId><artifactId>opentelemetry-javaagent</artifactId><version>2.10.0</version></artifactItem></artifactItems>"
+	plugin := func(config, id, goal, execConfig string) string {
+		return "<plugin><artifactId>maven-dependency-plugin</artifactId>" + config + "<executions><execution><id>" + id + "</id><goals><goal>" + goal + "</goal></goals>" + execConfig + "</execution></executions></plugin>"
+	}
+	for _, tc := range []struct {
+		name  string
+		build string
+		want  []string
+	}{
+		{name: "copy with artifactItems", build: "<plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins>", want: []string{"maven-dependency-plugin execution copy-agent"}},
+		{name: "unpack with plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "unpack-ui", "unpack", "") + "</plugins>", want: []string{"maven-dependency-plugin execution unpack-ui"}},
+		{name: "copy-dependencies", build: "<plugins>" + plugin("", "deps", "copy-dependencies", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
+		{name: "copy-dependencies under plugin-level artifactItems", build: "<plugins>" + plugin("<configuration>"+items+"</configuration>", "deps", "copy-dependencies", "") + "</plugins>"},
+		{name: "copy without artifactItems", build: "<plugins>" + plugin("", "copy-none", "copy", "<configuration><outputDirectory>lib</outputDirectory></configuration>") + "</plugins>"},
+		{name: "only managed", build: "<pluginManagement><plugins>" + plugin("", "copy-agent", "copy", "<configuration>"+items+"</configuration>") + "</plugins></pluginManagement>"},
+		{name: "another plugin", build: "<plugins><plugin><artifactId>maven-assembly-plugin</artifactId><executions><execution><id>copy-agent</id><goals><goal>copy</goal></goals><configuration>" + items + "</configuration></execution></executions></plugin></plugins>"},
+	} {
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>\n    <build>"+tc.build+"</build>", 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{})
+		if err != nil {
+			t.Fatalf("%s: resolve: %v", tc.name, cause(err))
+		}
+		for _, m := range g.Modules {
+			want := []string(nil)
+			if m.ID == "com.example:module-a" {
+				want = tc.want
+			}
+			if !reflect.DeepEqual(m.Unlisted, want) {
+				t.Errorf("%s: %s unlisted %q, want %q", tc.name, m.ID, m.Unlisted, want)
+			}
+		}
+	}
+}
+
 func TestMavenReactorPaths(t *testing.T) {
 	r := newFakeMaven(t, "", "", map[string]string{"tree.log": mavenTreeLogBefore388})
 	g, err := r.resolve(t, ToolMaven, Conditions{Profiles: []string{"extra"}})
@@ -651,7 +694,7 @@ func newFakeGradle(t *testing.T, fail string, edit map[string]string) fakeRepo {
 	}
 	writeFiles(t, r.fake, answers)
 	writeFiles(t, r.m2, map[string]string{"lwjgl-3.3.4.jar": "l", "lwjgl-3.3.4-natives-linux.jar": "n", "lwjgl-3.3.5.jar": "l5", "lwjgl-3.3.6.jar": "l6", "jakarta.servlet-api-6.0.0.jar": "s", "junit-4.13.2.jar": "j"})
-	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + r.dir, "FAKE_FAIL=" + fail}
+	r.env = []string{"PATH=/usr/bin:/bin", "FAKE_DIR=" + r.fake, "FAKE_M2=" + r.m2, "FAKE_ROOT=" + realDir(t, r.dir), "FAKE_FAIL=" + fail}
 	return r
 }
 
@@ -806,6 +849,61 @@ func TestGradleOtherRuntimeClasspath(t *testing.T) {
 	node(t, module(t, g, ":lib#integrationTestRuntimeClasspath"), "org.lwjgl:lwjgl:jar:3.3.5")
 }
 
+// Every other configuration that declares a dependency folds in at ScopeOther, so a package a
+// distribution copies in from one is in the graph. One that fails to resolve is recorded as
+// unlisted rather than failing the graph.
+func TestGradleExtraConfigurations(t *testing.T) {
+	lib := strings.Replace(gradleLib, `"version":"1.0.0",
+"projects"`, `"version":"1.0.0","extra_classpaths":{
+"agent":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0","id":{"group":"io.opentelemetry.javaagent","name":"opentelemetry-javaagent","version":"2.10.0"}},{"key":"org.lwjgl:lwjgl:3.3.4","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.4"}}],
+"edges":[{"from":"project :lib","to":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0"},{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.4"}],
+"unresolved":[],
+"files":[{"component":"io.opentelemetry.javaagent:opentelemetry-javaagent:2.10.0","file":"@M2@/opentelemetry-javaagent-2.10.0.jar"},{"component":"org.lwjgl:lwjgl:3.3.4","file":"@M2@/lwjgl-3.3.4.jar"}]},
+"distLibs":{
+"components":[{"key":"project :lib","id":{"project":":lib","build":":"}},{"key":"org.lwjgl:lwjgl:3.3.5","id":{"group":"org.lwjgl","name":"lwjgl","version":"3.3.5"}}],
+"edges":[{"from":"project :lib","to":"org.lwjgl:lwjgl:3.3.5"}],
+"unresolved":[],
+"files":[{"component":"org.lwjgl:lwjgl:3.3.5","file":"@M2@/lwjgl-3.3.5.jar"}]},
+"drivers":{"components":[{"key":"project :lib","id":{"project":":lib","build":":"}}],"edges":[],"unresolved":[{"requested":"org.postgresql:postgresql:42.7.4","failure":"Could not find org.postgresql:postgresql:42.7.4."}],"files":[]},
+"lint":{"failure":"Cannot choose between the available variants"}},
+"projects"`, 1)
+	r := newFakeGradle(t, "", map[string]string{"project_lib.json": lib})
+	writeFiles(t, r.m2, map[string]string{"opentelemetry-javaagent-2.10.0.jar": "o"})
+	g, err := r.resolve(t, ToolGradle, Conditions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", cause(err))
+	}
+	m := module(t, g, ":lib")
+	if n := node(t, m, "io.opentelemetry.javaagent:opentelemetry-javaagent:jar:2.10.0"); n.Scope != ScopeOther || n.File == nil {
+		t.Errorf("agent %+v, want scope other with its file", n)
+	}
+	// A classpath's node keeps its scope.
+	if n := node(t, m, "org.lwjgl:lwjgl:jar:3.3.4"); n.Scope != "runtime" {
+		t.Errorf("lwjgl scope %q, want runtime", n.Scope)
+	}
+	if !hasEdge(m, m.Root, "io.opentelemetry.javaagent:opentelemetry-javaagent:jar:2.10.0") {
+		t.Errorf("edges %+v", m.Edges)
+	}
+	if !reflect.DeepEqual(m.Unlisted, []string{"gradle configuration drivers", "gradle configuration lint"}) {
+		t.Errorf("unlisted %q", m.Unlisted)
+	}
+	if n := node(t, module(t, g, ":lib#distLibs"), "org.lwjgl:lwjgl:jar:3.3.5"); n.Scope != ScopeOther {
+		t.Errorf("copy lwjgl scope %q, want other", n.Scope)
+	}
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "graph.json")
+	if err := os.WriteFile(file, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(file, r.dir, Conditions{}); err != nil {
+		t.Fatalf("Load: %v", cause(err))
+	}
+}
+
 func TestGradleProducerFailures(t *testing.T) {
 	// The init script joins the failure's cause chain one message per line, as Gradle 9 words it.
 	unresolved := strings.Replace(gradleLib, `"unresolved":[]`, `"unresolved":[{"requested":"corp:x:1","failure":"Could not resolve corp:x:1.\nCould not get resource 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nCould not GET 'https://maven.corp.example/repo/corp/x/1/x-1.pom'.\nReceived status code 401 from server: Unauthorized"}]`, 1)
@@ -846,4 +944,143 @@ func TestGradleProducerFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestJDKToolchains(t *testing.T) {
+	t.Run("maven", func(t *testing.T) {
+		pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", `<artifactId>module-a</artifactId>
+    <build>
+      <plugins>
+        <plugin>
+          <artifactId>maven-toolchains-plugin</artifactId>
+          <configuration><toolchains><jdk><version>17</version><vendor>temurin</vendor></jdk></toolchains></configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <executions><execution><id>it</id><configuration><jdkToolchain><vendor>temurin</vendor></jdkToolchain></configuration></execution></executions>
+        </plugin>
+      </plugins>
+      <pluginManagement><plugins><plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration><jdkToolchain><version>11</version></jdkToolchain></configuration>
+      </plugin></plugins></pluginManagement>
+    </build>`, 1)
+		r := newFakeMaven(t, "", "", map[string]string{"effective-pom.txt": pom})
+		g, err := r.resolve(t, ToolMaven, Conditions{JDK: "21"})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		// A managed plugin no module binds selects nothing; a toolchain chosen by vendor alone
+		// has no version the stated JDK can be checked against.
+		if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, []string{"17", toolchainUnstated}) {
+			t.Errorf("module-a toolchains %q", got)
+		}
+		if got := module(t, g, "com.example:module-c").JDKToolchains; got != nil {
+			t.Errorf("module-c toolchains %q", got)
+		}
+		for _, m := range g.Modules {
+			if !m.JDKToolchainsKnown {
+				t.Errorf("%s toolchains unknown", m.ID)
+			}
+		}
+	})
+	// maven-toolchains-plugin 3.2's select-jdk-toolchain goal states its version as a top-level
+	// parameter, or through the toolchain.jdk.version property, which a value set outside the POM
+	// overrides. Another plugin's <toolchains><jdk> is read like the toolchain goal's.
+	t.Run("maven select-jdk-toolchain", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, props, wide, exec, goal string
+			plugin                        string // "" is maven-toolchains-plugin
+			stated                        string // toolchain.jdk.version among the stated properties
+			config                        string // .mvn/maven.config
+			jvm                           string // .mvn/jvm.config
+			env                           string // a variable of Maven's environment
+			want                          []string
+		}{
+			{name: "execution version", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide version", wide: "<version>[17,18)</version>", goal: "select-jdk-toolchain", want: []string{"[17,18)"}},
+			{name: "execution over plugin-wide", wide: "<version>21</version>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "property", props: "<properties><toolchain.jdk.version>17</toolchain.jdk.version></properties>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated nowhere in the POM", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another goal", exec: "<version>17</version>", goal: "display-discovered-jdk-toolchains"},
+			{name: "execution over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "stated property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", stated: "17", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "maven.config property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", config: "-ntp\n-Dtoolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Xmx1g -Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "plugin-wide over property", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "plugin-wide over a stated property", stated: "21", wide: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "MAVEN_CONFIG property over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_CONFIG=-Dtoolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_ARGS --define= over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_ARGS=--define=toolchain.jdk.version=17", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "JDK_JAVA_OPTIONS quoted over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: `JDK_JAVA_OPTIONS="-Dtoolchain.jdk.version=17"`, goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "MAVEN_OPTS without a value over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "jvm.config -D with a space over the POM's", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", jvm: "-Xmx1g -D toolchain.jdk.version=17\n", goal: "select-jdk-toolchain", want: []string{toolchainUnstated}},
+			{name: "another property's name", props: "<properties><toolchain.jdk.version>21</toolchain.jdk.version></properties>", env: "MAVEN_OPTS=-Dtoolchain.jdk.version.x=17", goal: "select-jdk-toolchain", want: []string{"21"}},
+			{name: "execution over a maven.config property", config: "-Dtoolchain.jdk.version=21\n", exec: "<version>17</version>", goal: "select-jdk-toolchain", want: []string{"17"}},
+			{name: "another plugin's toolchains", plugin: "toolchains-maven-plugin", wide: "<toolchains><jdk><version>17</version></jdk></toolchains>", goal: "toolchain", want: []string{"17"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pom := strings.Replace(mavenEffectivePOM, "<artifactId>module-a</artifactId>", "<artifactId>module-a</artifactId>"+tc.props+`
+    <build><plugins><plugin>
+      <artifactId>`+cmp.Or(tc.plugin, "maven-toolchains-plugin")+`</artifactId>
+      <configuration>`+tc.wide+`</configuration>
+      <executions><execution><id>jdk</id><goals><goal>`+tc.goal+`</goal></goals><configuration>`+tc.exec+`</configuration></execution></executions>
+    </plugin></plugins></build>`, 1)
+				repo := map[string]string{}
+				if tc.config != "" {
+					repo[".mvn/maven.config"] = tc.config
+				}
+				if tc.jvm != "" {
+					repo[".mvn/jvm.config"] = tc.jvm
+				}
+				c := Conditions{JDK: "21"}
+				if tc.stated != "" {
+					c.Properties = map[string]string{"toolchain.jdk.version": tc.stated}
+				}
+				r := newFakeMavenRepo(t, "", "", map[string]string{"effective-pom.txt": pom}, repo)
+				if tc.env != "" {
+					r.env = append(r.env, tc.env)
+				}
+				g, err := r.resolve(t, ToolMaven, c)
+				if err != nil {
+					t.Fatalf("resolve: %v", cause(err))
+				}
+				if got := module(t, g, "com.example:module-a").JDKToolchains; !slices.Equal(got, tc.want) {
+					t.Errorf("module-a toolchains %q, want %q", got, tc.want)
+				}
+			})
+		}
+	})
+	t.Run("gradle", func(t *testing.T) {
+		app := strings.Replace(gradleApp, `"version":"1.0.0",`, `"version":"1.0.0","jdk_toolchain":"17","jdk_toolchain_known":true,`, 1)
+		r := newFakeGradle(t, "", map[string]string{"project_app.json": app})
+		g, err := r.resolve(t, ToolGradle, Conditions{})
+		if err != nil {
+			t.Fatalf("resolve: %v", cause(err))
+		}
+		for _, id := range []string{":app", ":app#testRuntimeClasspath"} {
+			if got := module(t, g, id).JDKToolchains; !slices.Equal(got, []string{"17"}) {
+				t.Errorf("%s toolchains %q", id, got)
+			}
+		}
+		if got := module(t, g, ":lib").JDKToolchains; got != nil {
+			t.Errorf(":lib toolchains %q", got)
+		}
+		// :lib's producer record does not say its toolchain was read.
+		for id, want := range map[string]bool{":app": true, ":app#testRuntimeClasspath": true, ":lib": false} {
+			if got := module(t, g, id).JDKToolchainsKnown; got != want {
+				t.Errorf("%s toolchains known = %t, want %t", id, got, want)
+			}
+		}
+	})
+}
+
+// realDir is dir with its links resolved: the checkout path a real build tool, run from the
+// resolved checkout, reports.
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }

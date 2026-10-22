@@ -77,7 +77,7 @@ func TestLoad(t *testing.T) {
 		{name: "unnamed lockfile", tool: "gradle", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			writeFiles(t, r.dir, map[string]string{"app/gradle.lockfile": ""})
 		}, want: "graph_rejected:subject_inputs"},
-		// The other tool's build is the plugin's to mark uncovered (OtherToolInputs), not a reason
+		// The other tool's build is the plugin's to mark uncovered (OtherToolBuildFiles), not a reason
 		// to refuse a graph that is sound for its own.
 		{name: "gradle build beside a maven graph", tool: "maven", edit: func(t *testing.T, g *Graph, r fakeRepo) {
 			writeFiles(t, r.dir, map[string]string{"svc/build.gradle": "dependencies {}\n"})

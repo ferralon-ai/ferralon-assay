@@ -94,6 +94,7 @@ type reachCase struct {
 	classes []classfile.Class   // besides UrlFetcher
 	want    Verdict
 	why     string // required HazardWhy prefix when undetermined
+	linked  bool   // the loaded classes are every class the run's classpath defines (SetLinked)
 }
 
 func runReachCases(t *testing.T, cases []reachCase) {
@@ -105,7 +106,9 @@ func runReachCases(t *testing.T, cases []reachCase) {
 			if ingress == (classfile.MethodRef{}) {
 				ingress = mref(appClass, "trigger", "()V")
 			}
-			r := NewEngine(append(tc.classes, urlFetcherDep())).Reach(ingress, sink)
+			e := NewEngine(append(tc.classes, urlFetcherDep()))
+			e.SetLinked(tc.linked)
+			r := e.Reach(ingress, sink)
 			if r.Verdict != tc.want {
 				t.Fatalf("verdict = %s, want %s (hazard=%q)", r.Verdict, tc.want, r.HazardWhy)
 			}

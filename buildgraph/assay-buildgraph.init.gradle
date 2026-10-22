@@ -171,17 +171,10 @@ gradle.settingsEvaluated { s ->
 
 // realizeTasks realizes every task of the build once, before any is recorded: a task's configuration
 // can change another task, so a task recorded before another is realized could be recorded stale.
-// A task that fails to realize is recorded with its failure here and not realized again, however
-// Gradle would answer a second get() on it.
+// A task that fails to realize in this pass is recorded with its failure here and not realized
+// again, however Gradle would answer a second get() on it.
 def tasksRealized = false
 def realizeFailures = [:].withDefault { [] }
-def failureMessage = { Throwable e ->
-    def messages = []
-    for (def c = e; c != null; c = c.cause) {
-        messages << String.valueOf(c.message)
-    }
-    messages.join(': ')
-}
 def realizeTasks = { root ->
     if (tasksRealized) {
         return
@@ -198,7 +191,7 @@ def realizeTasks = { root ->
                     try {
                         q.tasks.named(n).get()
                     } catch (Exception e) {
-                        realizeFailures[q.path] << [name: n, path: q.path + (q.path == ':' ? '' : ':') + n, failure: failureMessage(e)]
+                        realizeFailures[q.path] << [name: n, path: q.path + (q.path == ':' ? '' : ':') + n, failure: failureText(e)]
                     }
                 }
             }

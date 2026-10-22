@@ -186,8 +186,9 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 }
 
 // evaluatorTested reports whether the eval or Function at [i, next) is a member whose value
-// is neither called nor handed on: only tested (objectTested) or read for a further member
-// other than constructor, call, apply or bind. Any other read may hand on the global's
+// is neither called nor handed on: the target of a plain assignment (`cfg.eval = false`),
+// only tested (objectTested) or read for a further member other than constructor, call,
+// apply or bind. Any other read may hand on the global's
 // evaluator through a receiver whose value this lane does not know
 // (`const e = frame.contentWindow.eval`), and a member of a global's name may be the
 // evaluator itself, so both flag, as does the bare name.
@@ -204,6 +205,9 @@ func evaluatorTested(clean []rune, i, next int) bool {
 	start := receiverStart(clean, op)
 	if start < 0 {
 		return false
+	}
+	if assignTarget(clean, skipSpace(clean, next)) {
+		return true
 	}
 	if ok, member := memberReadAt(clean, skipSpace(clean, next)); member {
 		return ok

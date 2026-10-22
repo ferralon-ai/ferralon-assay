@@ -597,7 +597,7 @@ func operandEnds(clean []rune, p int) bool {
 // a loader entry point. A reflective read hands the member's value on, so a constructor
 // key there flags whatever the receiver. A key on the module object
 // or process is judged by objectUse whatever it is.
-func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
+func (mb *moduleBindings) keyedUse(clean, src []rune, a int, frames *thisFrames) {
 	if reflectiveKey(clean, a) {
 		switch specifierAt(src, a) {
 		case "require", "createRequire", "_load", "mainModule":
@@ -630,7 +630,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		if !ok {
 			return // an array literal holding the string
 		}
-		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1) {
+		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1, frames) {
 			mb.evaluated = true
 		}
 	}
@@ -866,7 +866,7 @@ func indexOperator(clean []rune, b int) (int, bool) {
 // function receiver from any other value, so the member is accepted only when it does not
 // reach a function constructor on any receiver (constructorReachesFunction) and its value is
 // neither called nor handed on (constructorRead).
-func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
+func (mb *moduleBindings) constructorUse(clean, src []rune, i int, frames *thisFrames) {
 	b := skipSpaceBack(clean, i-1)
 	if b < 0 || clean[b] != '.' || b >= 2 && clean[b-1] == '.' && clean[b-2] == '.' {
 		// A destructured key takes the member under a local name (`const { constructor: F } =
@@ -877,7 +877,7 @@ func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
 		return
 	}
 	op := memberDot(clean, b)
-	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor")) {
+	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor"), frames) {
 		mb.evaluated = true
 	}
 }
@@ -992,9 +992,11 @@ func closeOf(clean []rune, o int) int {
 // constructor, call, apply or bind; tested (objectTested: !, ==, ===, !=, !==, the left
 // operand of && or of a ternary, an if or while condition); the right operand of instanceof;
 // the target of a plain assignment (`F.prototype.constructor = F`); or constructed as
-// `new this.constructor`, the receiver's own class. A call, an alias, an argument, a
-// computed index or any other use may reach Function.
-func constructorRead(clean []rune, op, next int) bool {
+// `new this.constructor` where this is an instance (frames.instanceMethod) or with no
+// arguments; in a static method or a function called on a function, this.constructor is
+// Function. A call, an alias, an argument, a computed index or any other use may reach
+// Function.
+func constructorRead(clean []rune, op, next int, frames *thisFrames) bool {
 	start := receiverStart(clean, op)
 	if start < 0 {
 		return false
@@ -1016,10 +1018,20 @@ func constructorRead(clean []rune, op, next int) bool {
 	}
 	if w == "new" && clean[op] == '.' {
 		if recv, rs := wordBefore(clean, skipSpaceBack(clean, op-1)); recv == "this" && rs == start {
-			return true
+			return noArguments(clean, p) || frames.instanceMethod(clean, start)
 		}
 	}
 	return false
+}
+
+// noArguments reports whether the construction whose callee ends before p passes no
+// arguments (`new C`, `new C()`): Function so constructed is an empty function.
+func noArguments(clean []rune, p int) bool {
+	if p >= len(clean) || clean[p] != '(' {
+		return true
+	}
+	q := skipSpace(clean, p+1)
+	return q < len(clean) && clean[q] == ')'
 }
 
 // memberReadAt reports whether a member is read with `.` or `?.` at p (member), and whether

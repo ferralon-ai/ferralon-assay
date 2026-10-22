@@ -506,6 +506,28 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function read through Reflect get as a computed member", `
+const g = function () {};
+Reflect['get'](g, 'constructor')(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function read through a destructured Reflect.get", `
+const g = function () {};
+const { get } = Reflect;
+get(g, 'constructor')(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function read through Object.getOwnPropertyDescriptors", `
+const g = function () {};
+Object.getOwnPropertyDescriptors(Object.getPrototypeOf(g)).constructor.value(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"the module wrapper's require read through arguments in a class's computed key", `
 class A { [arguments[1](process.argv[3]).k]() {} }
 const j = { parse: String };

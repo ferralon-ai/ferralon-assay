@@ -600,7 +600,9 @@ func operandEnds(clean []rune, p int) bool {
 // a bracket access, `x['require']`, or the key of a reflective read (reflectiveKey), naming
 // a loader entry point. A reflective read hands the member's value on, so a constructor
 // key there flags whatever the receiver, and so does a quoted or computed constructor key
-// in a destructuring pattern (destructuredLiteralKey). A key on the module object
+// in a destructuring pattern (destructuredLiteralKey) or a constructor key passed as an
+// argument (literalArgument), since any callee may read the member it names (`get(g,
+// 'constructor')` for a destructured Reflect.get). A key on the module object
 // or process is judged by objectUse whatever it is.
 func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	if reflectiveKey(clean, a) {
@@ -614,7 +616,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		}
 		return
 	}
-	if specifierAt(src, a) == "constructor" && destructuredLiteralKey(clean, a) {
+	if specifierAt(src, a) == "constructor" && (destructuredLiteralKey(clean, a) || literalArgument(clean, a)) {
 		mb.evaluated = true
 		return
 	}
@@ -662,6 +664,24 @@ func destructuredLiteralKey(clean []rune, a int) bool {
 		return false
 	}
 	return destructuredKey(clean, i, next)
+}
+
+// literalArgument reports whether the string literal at a is a whole argument of a call or
+// construction, whatever the callee, or the whole of a parenthesised expression: it is
+// delimited by '(' or ',' and by ')' or ',' inside a parenthesis.
+func literalArgument(clean []rune, a int) bool {
+	b := skipSpaceBack(clean, a-1)
+	if b < 0 || clean[b] != '(' && clean[b] != ',' {
+		return false
+	}
+	if e := skipSpace(clean, a+1); e >= len(clean) || clean[e] != ')' && clean[e] != ',' {
+		return false
+	}
+	o := b
+	if clean[b] == ',' {
+		o = enclosingOpen(clean, b)
+	}
+	return o >= 0 && clean[o] == '('
 }
 
 // reflectiveKey reports whether the string literal at a is the whole second argument of
@@ -1017,7 +1037,8 @@ func closeOf(clean []rune, o int) int {
 // constructorRead reports whether the constructor member read by the operator starting at
 // op ('.', the '?' of `?.`, or the '[' of a literal key) and ending before next is used only
 // where its value is neither called nor handed on: read for a further member other than
-// constructor, call, apply or bind; tested (objectTested: !, ==, ===, !=, !==, the left
+// constructor, call, apply, bind, or the value or get of a property descriptor
+// (`getOwnPropertyDescriptors(p).constructor.value`); tested (objectTested: !, ==, ===, !=, !==, the left
 // operand of && or of a ternary, an if or while condition); the right operand of instanceof;
 // the target of a plain assignment (`F.prototype.constructor = F`); or constructed as
 // `new this.constructor` with no arguments. Any function can be called with this bound to a
@@ -1031,7 +1052,12 @@ func constructorRead(clean []rune, op, next int) bool {
 	}
 	p := skipSpace(clean, next)
 	if ok, member := memberReadAt(clean, p); member {
-		return ok
+		q := p + 1
+		if optionalDot(clean, p) {
+			q = p + 2
+		}
+		w, _ := peekWord(clean, skipSpace(clean, q))
+		return ok && w != "value" && w != "get"
 	}
 	if assignTarget(clean, p) {
 		return true

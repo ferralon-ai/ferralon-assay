@@ -783,6 +783,62 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"a local module destructured from an object literal and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(x) { const { m: module } = { m: x }; return helper(module); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module object literal rebound by a for-of head and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(xs) { var module = {}; for (module of xs) helper(module); }
+f([{}]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module object literal rebound by a for-in head and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(o) { var module = {}; for (module in o) helper(module); }
+f({ a: 1 });
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module object literal rebound in an array pattern of a for-in head and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(o) { var module = {}; for ([module] in o) helper(module); }
+f({ a: 1 });
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module initialised by a logical-or assignment and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(a) { var module = a ||= {}; return helper(module); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module initialised by a nullish assignment and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(a) { var module = a ??= {}; return helper(module); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a local module initialised by an object literal and && and passed on", `
+function helper(m) { return m.require(process.argv[3]); }
+function f(a) { var module = {} && a; return helper(module); }
+f({});
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

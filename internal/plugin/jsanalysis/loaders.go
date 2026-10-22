@@ -186,12 +186,12 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 // at once for one of its builtins: apply, call, bind or toString called on the spot (or
 // through .call, .apply or .bind), or [Symbol.hasInstance] when Symbol is the global's. The
 // hasInstance builtin may be stored, since reaching the constructor from it takes
-// .constructor, the residue every function value shares. A member, index, call or tagged
-// template after Function, or after the hasInstance builtin, may reach the constructor.
+// .constructor, the residue every function value shares. Function as instanceof's operand,
+// and the hasInstance builtin unless it is called, must end the operand (endsOperand):
+// anything else after them may read from, call or tag them.
 func functionConsumed(clean, src []rune, b, p int) bool {
-	n := len(clean)
-	if w, _ := wordBefore(clean, b); w == "instanceof" {
-		return !(p < n && (clean[p] == '(' || clean[p] == '!')) && !memberAfter(clean, src, p)
+	if w, s := wordBefore(clean, b); w == "instanceof" && !memberName(clean, s) {
+		return endsOperand(clean, p)
 	}
 	w, q := dotWord(clean, p)
 	if w != "prototype" {
@@ -201,25 +201,33 @@ func functionConsumed(clean, src []rune, b, p int) bool {
 	case "apply", "call", "bind", "toString":
 		return calledHere(clean, q)
 	case "":
-		if q >= n || clean[q] != '[' {
+		e, ok := hasInstanceKey(clean, q)
+		if !ok {
 			return false
 		}
-		a := skipSpace(clean, q+1)
-		if w, e := peekWord(clean, a); w != "Symbol" {
-			return false
-		} else if w, e = dotWord(clean, e); w != "hasInstance" {
-			return false
-		} else if e >= n || clean[e] != ']' {
-			return false
-		} else {
-			q = skipSpace(clean, e+1)
-		}
-		if q < n && clean[q] == '!' || memberAfter(clean, src, q) && !calledHere(clean, q) {
-			return false
-		}
-		return symbolPlain(clean)
+		q = skipSpace(clean, e+1)
+		return (endsOperand(clean, q) || calledHere(clean, q)) && symbolPlain(clean, src)
 	}
 	return false
+}
+
+// hasInstanceKey reports whether `[Symbol.hasInstance]` opens at p, and returns the index of
+// its closing bracket.
+func hasInstanceKey(clean []rune, p int) (int, bool) {
+	if p >= len(clean) || clean[p] != '[' {
+		return 0, false
+	}
+	w, e := peekWord(clean, skipSpace(clean, p+1))
+	if w != "Symbol" {
+		return 0, false
+	}
+	if w, e = dotWord(clean, skipSpace(clean, e)); w != "hasInstance" {
+		return 0, false
+	}
+	if e >= len(clean) || clean[e] != ']' {
+		return 0, false
+	}
+	return e, true
 }
 
 // dotWord reads `.name` at p, a static member and not an optional one, and returns the name
@@ -248,45 +256,89 @@ func calledHere(clean []rune, p int) bool {
 	return false
 }
 
-// memberAfter reports whether the token at p reads from the value before it: a member, an
-// index, an optional chain, or a tagged template.
-func memberAfter(clean, src []rune, p int) bool {
-	return p < len(clean) && (clean[p] == '.' || clean[p] == '[' || src[p] == '`') || optionalDot(clean, p)
+// endsOperand reports whether the token at p ends the operand before it without reading
+// from, calling or tagging it: the end of the source, a closing bracket, a separator, a
+// ternary's `?` or `:`, `&&`, `||`, `??`, or an equality test.
+func endsOperand(clean []rune, p int) bool {
+	n := len(clean)
+	if p >= n {
+		return true
+	}
+	var next rune
+	if p+1 < n {
+		next = clean[p+1]
+	}
+	switch clean[p] {
+	case ')', ']', '}', ';', ',', ':':
+		return true
+	case '?':
+		return next != '.'
+	case '&', '|':
+		return next == clean[p]
+	case '=', '!':
+		return next == '='
+	}
+	return false
 }
 
-// symbolPlain reports whether every Symbol the module names is the global's. Each bare
-// Symbol must be read by typeof or followed by `.` or `(`, and not name a function; anything
-// else may declare or assign one. A with statement may put any object's
-// Symbol in scope.
-func symbolPlain(clean []rune) bool {
+// symbolPlain reports whether every Symbol in the module appears where it cannot be bound
+// or assigned, so that it is the global's. Each Symbol, bare or a member (whose object may
+// be the global), must be followed by `.` or `(` and not name a function, or be read by
+// typeof. A with statement may put any object's Symbol in scope; a 'Symbol' string may key
+// a write to the global; an escaped identifier may spell Symbol unseen; and an HTML-like
+// comment, which a script reads to the end of its line, may hide a token the scan sees.
+func symbolPlain(clean, src []rune) bool {
+	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
+		return false
+	}
 	for i := 0; i < len(clean); {
+		if clean[i] == '_' && symbolLiteral(src, i) {
+			return false
+		}
 		if !isIdentPart(clean[i]) {
 			i++
 			continue
 		}
 		w, next := readWord(clean, i)
 		switch {
-		case memberName(clean, i):
-		case w == "with":
-			if q := skipSpace(clean, next); q < len(clean) && clean[q] == '(' {
-				return false
-			}
 		case w == "Symbol":
-			b := skipSpaceBack(clean, i-1)
-			prev, _ := wordBefore(clean, b)
-			if prev == "typeof" {
-				break
-			}
-			if prev == "function" || b >= 0 && clean[b] == '*' {
+			if !symbolRead(clean, i, next) {
 				return false
 			}
-			if q := skipSpace(clean, next); !(q < len(clean) && (clean[q] == '(' || clean[q] == '.')) {
+		case w == "with" && !memberName(clean, i):
+			if q := skipSpace(clean, next); q < len(clean) && clean[q] == '(' {
 				return false
 			}
 		}
 		i = next
 	}
 	return true
+}
+
+// symbolRead reports whether the Symbol word at i, ending before next, is only read.
+func symbolRead(clean []rune, i, next int) bool {
+	member := memberName(clean, i)
+	b := skipSpaceBack(clean, i-1)
+	prev, s := wordBefore(clean, b)
+	if !member && prev == "typeof" && !memberName(clean, s) {
+		return true
+	}
+	if !member && (prev == "function" || b >= 0 && clean[b] == '*') {
+		return false
+	}
+	q := skipSpace(clean, next)
+	return q < len(clean) && (clean[q] == '(' || clean[q] == '.')
+}
+
+// symbolLiteral reports whether the string or template literal opening at i is exactly
+// 'Symbol'.
+func symbolLiteral(src []rune, i int) bool {
+	const name = "Symbol"
+	e := i + 1 + len(name)
+	if e >= len(src) || src[i] != '\'' && src[i] != '"' && src[i] != '`' {
+		return false
+	}
+	return string(src[i+1:e]) == name && src[e] == src[i]
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens

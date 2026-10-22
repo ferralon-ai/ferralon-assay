@@ -1140,6 +1140,19 @@ func utilOverride(super string, run func(b *cpb) []byte, more ...xmethod) map[st
 	return map[string][]byte{"META-INF/versions/11/com/evil/netkit/Util.class": emitClassX(b, "com/evil/netkit/Util", super, 0x0021, methods)}
 }
 
+// utilPair is a base Util and its META-INF/versions/11 override, both extending super, with a
+// no-op static run(); the override also declares more.
+func utilPair(super string, more ...xmethod) map[string][]byte {
+	b := &cpb{}
+	entries := utilOverride(super, justReturn, more...)
+	entries["com/evil/netkit/Util.class"] = emitClassX(b, "com/evil/netkit/Util", super, 0x0021, []xmethod{{"run", "()V", accPublicStatic, ret}})
+	return entries
+}
+
+// accessor is a one-sided static synthetic method with descriptor desc, as javac emits
+// access$000 for a nested class reaching a private member.
+func accessor(desc string) xmethod { return xmethod{"access$000", desc, 0x1008, ret} }
+
 // A JDK at release 11 or later runs a multi-release JAR's versions/11 body in place of the
 // base class. The override is read and merged into the base, so a call only the override
 // makes is a path; an override that cannot be merged soundly withholds Searched.
@@ -1167,6 +1180,22 @@ func TestBytecodeReach_MultiReleaseOverrides(t *testing.T) {
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 		{"one-sided method an ancestor declares: multi_release_unmerged", func() map[string][]byte {
 			return utilOverride("java/lang/Object", justReturn, xmethod{"toString", "()Ljava/lang/String;", accPublic, []byte{0x01, 0xB0}})
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		// A java/ ancestor is JDK code all the way up, and JDK code names no classpath type.
+		{"one-sided accessor naming the class under an unread java/ ancestor: searched", func() map[string][]byte {
+			return utilPair("java/lang/Enum", accessor("(Lcom/evil/netkit/Util;)Ljava/lang/System$Logger$Level;"))
+		}, "com/evil/netkit/Util", false, ""},
+		{"one-sided method naming no classpath type under an unread java/ ancestor: multi_release_unmerged", func() map[string][]byte {
+			return utilPair("java/lang/Enum", accessor("(Ljava/lang/String;)V"))
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		{"one-sided method naming a type a JDK release may define: multi_release_unmerged", func() map[string][]byte {
+			return utilPair("java/lang/Enum", accessor("(Ljavax/net/SocketFactory;)V"))
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		{"one-sided accessor under an unread JDK-package ancestor outside java/: multi_release_unmerged", func() map[string][]byte {
+			return utilPair("javax/net/SocketFactory", accessor("(Lcom/evil/netkit/Util;)V"))
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		{"one-sided accessor under an unread classpath ancestor: multi_release_unmerged", func() map[string][]byte {
+			return utilPair("org/absent/Base", accessor("(Lcom/evil/netkit/Util;)V"))
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 	}
 	for _, tt := range tests {

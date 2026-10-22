@@ -84,7 +84,7 @@ func runIntakeDisqual(t *testing.T, vulnID, resolvedVersion string) (DisqualResu
 	if err := (advisoryIntake{}).Run(context.Background(), c, store); err != nil {
 		t.Fatalf("advisory_intake: %v", err)
 	}
-	putJSON(t, store, caseID, artifact.TypeInventory, map[string]string{"resolved_version": resolvedVersion})
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"resolved_version": resolvedVersion, "resolved_versions": []string{resolvedVersion}, "versions_complete": true})
 	return runDisqual(t, store, caseID), advisoryRangeScheme(t, store, caseID)
 }
 
@@ -168,7 +168,7 @@ func TestKnownSchemeOpenRange_StaysOpen(t *testing.T) {
 		"vuln_id":         "FERRALON-PY-FIRSTPARTY-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "", "scheme": "pypi"}},
 	})
-	putJSON(t, store, caseID, artifact.TypeInventory, map[string]string{"resolved_version": "1.2.3"})
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"resolved_version": "1.2.3", "resolved_versions": []string{"1.2.3"}, "versions_complete": true})
 	if res := runDisqual(t, store, caseID); res.Disqualified || res.Reason != ReasonInsufficient {
 		t.Fatalf("open/unbounded pypi range must FAIL OPEN, got %+v", res)
 	}
@@ -185,7 +185,7 @@ func TestUnknownScheme_NeverFabricatesNotAffected(t *testing.T) {
 		"vuln_id":         "FERRALON-UNKNOWN-DEP-0001",
 		"affected_ranges": []map[string]string{{"upper_exclusive": "2.3.2", "scheme": ""}},
 	})
-	putJSON(t, store, caseID, artifact.TypeInventory, map[string]string{"resolved_version": "2.4.0"})
+	putJSON(t, store, caseID, artifact.TypeInventory, map[string]any{"resolved_version": "2.4.0", "resolved_versions": []string{"2.4.0"}, "versions_complete": true})
 	res := runDisqual(t, store, caseID)
 	if res.Disqualified {
 		t.Fatalf("unknown scheme with unparseable-as-semver versions must FAIL OPEN, got disqualified %+v", res)

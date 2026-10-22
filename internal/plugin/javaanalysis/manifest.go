@@ -3,27 +3,18 @@ package javaanalysis
 // manifest.go — the ecosystem-neutral BuildManifest for the JVM lanes (Java live + Kotlin
 // delegating). BuildManifest is invoked ONCE per BuildDir and returns ONE flat
 // plugin.BuildManifestResult (PLAN-000 froze the 5-field shape — no per-module list, no
-// property bag). It reads the checkout LEXICALLY — pom.xml <properties>, build.gradle(.kts)
-// version/toolchain lines, and the exact-pin files (.tool-versions / .sdkmanrc) — and NEVER
-// runs mvn/gradle/javac or touches the network (§3.3 zero-egress). Build-file parsing is
-// JVM-generic, not Java-source-specific, so the impl lives here and Kotlin delegates — the
-// same precedent as ResolveDependencyVersions / ResolveInventory. The `lang` param keeps
-// RuntimeSpec.Name honest per lane ("java" | "kotlin"); it is otherwise cosmetic downstream.
+// property bag). It reads the build graph: the tool that resolved it, the JDK it ran on, and
+// its modules. The `lang` param keeps RuntimeSpec.Name honest per lane ("java" | "kotlin").
 //
-// Honest partiality (inv.5): where the flat shape cannot carry a fact, or the fact does not
-// exist statically, the result names it via a declared partiality reason — never a guessed
-// value, never Complete() over what could not be read. Because JVM emits portable bytecode
-// (no platform Target) and Maven/Gradle carry no first-class static build profile, the JVM
-// manifest is structurally never Complete: reasonTargetNotApplicable and
-// reasonNoBuildConfiguration are permanent declared residue, and the exact toolchain pin is
-// unresolvable without executing the build unless a pin file records it.
+// Honest partiality (inv.5): JVM bytecode is portable (no platform Target) and Maven/Gradle
+// carry no first-class build profile, so reasonTargetNotApplicable and
+// reasonNoBuildConfiguration are permanent declared residue and the manifest is never Complete.
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -46,13 +37,11 @@ const (
 	// (release/Debug) on disk without executing the build. Declared-absent, never guessed.
 	reasonNoBuildConfiguration = "no_build_configuration"
 
-	// reasonToolchainUnpinned: the exact toolchain pin is not resolvable without executing the
-	// build. Emitted UNLESS a pin file (.tool-versions / .sdkmanrc) records an exact version; a
-	// Gradle JavaLanguageVersion.of(N) is a major FLOOR (→ RuntimeSpec.Version), not an exact pin.
+	// reasonToolchainUnpinned: the build graph does not name the JDK the build ran on.
 	reasonToolchainUnpinned = "toolchain_unpinned"
 
-	// reasonNoRuntimeVersion: no declared JVM target/source version could be read from the
-	// build file. The version is left empty and NEVER guessed.
+	// reasonNoRuntimeVersion: no JVM version is known. The version is left empty and NEVER
+	// guessed.
 	reasonNoRuntimeVersion = "no_runtime_version"
 
 	// reasonMultiModule: >1 module (aggregator POM / Gradle multi-project); the flat
@@ -61,11 +50,11 @@ const (
 	reasonMultiModule = "multi_module_project"
 )
 
-// BuildManifest derives the flat, ecosystem-neutral build manifest for one JVM BuildDir from
-// DECLARED on-disk state only. lang selects the runtime Name ("java" | "kotlin"). A missing or
-// unreadable build dir is a hard error (inv.4); every unrepresentable or non-existent fact
-// becomes a declared partiality reason.
-func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang string) (plugin.BuildManifestResult, error) {
+// BuildManifest derives the flat build manifest for one JVM BuildDir from its build graph. lang
+// selects the runtime Name ("java" | "kotlin"). The runtime is the JDK the build tool ran on,
+// which is the job's own (ambient), exact. A missing or unreadable build dir is a hard error
+// (inv.4); without a graph the result names build_graph_absent and nothing else is known.
+func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang string, opts ...Option) (plugin.BuildManifestResult, error) {
 	info, err := os.Stat(req.BuildDir)
 	if err != nil {
 		return plugin.BuildManifestResult{}, fmt.Errorf("javaanalysis: stat build dir %q: %w", req.BuildDir, err)
@@ -74,58 +63,43 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 		return plugin.BuildManifestResult{}, fmt.Errorf("javaanalysis: build dir %q is not a directory", req.BuildDir)
 	}
 
-	buildDir := req.BuildDir
-	res := plugin.BuildManifestResult{}
-	rt := plugin.RuntimeSpec{Name: lang, Source: plugin.RuntimeSourceDeclared}
-	var reasons []string
-
-	poms, gradles := buildFiles(buildDir)
-
 	// Target and Configuration are permanently declared-absent for the JVM: portable bytecode
 	// has no platform Target, and no first-class static build profile lives on disk.
-	reasons = mergeManifestReasons(reasons, reasonTargetNotApplicable, reasonNoBuildConfiguration)
+	reasons := []string{reasonTargetNotApplicable, reasonNoBuildConfiguration}
+	rt := plugin.RuntimeSpec{Name: lang, Source: plugin.RuntimeSourceAmbient}
+	res := plugin.BuildManifestResult{ProjectRoot: "."}
 
-	var (
-		version string
-		members []string
-	)
-	switch {
-	case len(poms) > 0:
-		// Maven wins when a POM is present (the more explicit, primary declaration).
-		root := shortestPath(poms)
-		res.Resolvers = []plugin.ResolverSpec{{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceDeclared}}
-		proj, ok := parsePOMProject(root)
-		if ok {
-			res.ProjectRoot = mavenProjectRoot(buildDir, root, proj)
-			version = mavenRuntimeVersion(proj)
-		} else {
-			res.ProjectRoot = relManifestDir(buildDir, filepath.Dir(root))
+	g := BuildGraph(opts...)
+	if g == nil {
+		reasons = mergeManifestReasons(reasons, PartialReasonBuildGraphAbsent, reasonToolchainUnpinned, reasonNoRuntimeVersion)
+		res.Runtimes = []plugin.RuntimeSpec{rt}
+		res.Partiality = plugin.Partial(reasons...)
+		return res, nil
+	}
+
+	switch g.Tool.Name {
+	case "maven":
+		res.Resolvers = []plugin.ResolverSpec{{Name: "maven", Command: "mvn -o -DskipTests package", Source: plugin.RuntimeSourceAmbient}}
+	case "gradle":
+		res.Resolvers = []plugin.ResolverSpec{{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceAmbient}}
+	}
+	var members []string
+	for _, m := range g.Modules {
+		if _, isCopy := m.Project(); isCopy {
+			continue
 		}
-		members = moduleMembers(buildDir, poms)
-	case len(gradles) > 0:
-		root := shortestPath(gradles)
-		res.Resolvers = []plugin.ResolverSpec{{Name: "gradle", Command: "gradle --offline assemble", Source: plugin.RuntimeSourceDeclared}}
-		res.ProjectRoot = gradleProjectRoot(buildDir)
-		version = parseGradleManifest(root)
-		members = moduleMembers(buildDir, gradles)
-	default:
-		// No Maven/Gradle build file at all: a normal shape for some checkouts, degraded to
-		// declared partiality rather than a hard failure (mirrors ResolveDependencyVersions).
-		res.ProjectRoot = "."
-		reasons = mergeManifestReasons(reasons, plugin.PartialReasonNoManifest)
+		members = append(members, m.Path)
+		if m.Path == "." {
+			res.ProjectRoot = m.ID
+		}
 	}
+	sort.Strings(members)
 
-	rt.Version = version
-	if version == "" && (len(poms) > 0 || len(gradles) > 0) {
-		reasons = mergeManifestReasons(reasons, reasonNoRuntimeVersion)
-	}
-
-	// Exact toolchain pin: only from a real pin file; a Gradle languageVersion is a floor, not
-	// an exact pin. Absent ⇒ declared unpinned, never guessed.
-	if pin := toolchainPin(buildDir); pin != "" {
-		rt.Toolchain = pin
+	if v := g.JVM.Version; v != "" {
+		rt.Toolchain = v
+		rt.Version = javaMajor(v)
 	} else {
-		reasons = mergeManifestReasons(reasons, reasonToolchainUnpinned)
+		reasons = mergeManifestReasons(reasons, reasonToolchainUnpinned, reasonNoRuntimeVersion)
 	}
 
 	// Multi-module: the flat shape names the members in a declared reason (PLAN-400 owns true
@@ -140,201 +114,13 @@ func BuildManifest(_ context.Context, req plugin.BuildManifestRequest, lang stri
 	return res, nil
 }
 
-// parsePOMProject decodes a pom.xml into pomProject via the charset-aware POM decoder. The
-// bool is false when the file cannot be read or is undecodable XML.
-func parsePOMProject(path string) (pomProject, bool) {
-	data, err := readRegular(path)
-	if err != nil {
-		return pomProject{}, false
+// javaMajor is a Java version's feature release: "1.8.0_402" is 8, "21.0.4" is 21.
+func javaMajor(v string) string {
+	v = strings.TrimPrefix(v, "1.")
+	if i := strings.IndexAny(v, "._+-"); i >= 0 {
+		v = v[:i]
 	}
-	var proj pomProject
-	if err := unmarshalPOM(data, &proj); err != nil {
-		return pomProject{}, false
-	}
-	return proj, true
-}
-
-// mavenProjectRoot is the module identity: the declared groupId:artifactId (groupId inherited
-// from <parent> when the module omits it), falling back to the POM's relative directory when
-// no coordinate is declared.
-func mavenProjectRoot(buildDir, pomPath string, proj pomProject) string {
-	gid := strings.TrimSpace(proj.GroupID)
-	if gid == "" {
-		gid = strings.TrimSpace(proj.Parent.GroupID)
-	}
-	aid := strings.TrimSpace(proj.ArtifactID)
-	switch {
-	case gid != "" && aid != "":
-		return gid + ":" + aid
-	case aid != "":
-		return aid
-	default:
-		return relManifestDir(buildDir, filepath.Dir(pomPath))
-	}
-}
-
-// mavenRuntimeVersion reads the declared JVM target version from a POM's <properties>, in
-// Maven's own precedence: release ⊐ target ⊐ source, then the java.version convention. A
-// ${prop} indirection is resolved one level against the same <properties> map; anything that
-// does not reduce to a literal leaves the version empty (→ reasonNoRuntimeVersion), never
-// guessed.
-func mavenRuntimeVersion(proj pomProject) string {
-	props := proj.Properties.Entries
-	for _, key := range []string{"maven.compiler.release", "maven.compiler.target", "maven.compiler.source", "java.version"} {
-		raw, ok := props[key]
-		if !ok {
-			continue
-		}
-		if v, resolved := resolvePOMVersion(strings.TrimSpace(raw), props); resolved {
-			return v
-		}
-	}
-	return ""
-}
-
-// gradleProjectRoot reads rootProject.name from settings.gradle(.kts) when declared, else
-// falls back to the build dir's base name (or "." at the filesystem root).
-func gradleProjectRoot(buildDir string) string {
-	for _, name := range []string{"settings.gradle", "settings.gradle.kts"} {
-		data, err := readRegular(filepath.Join(buildDir, name))
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(stripGradleComment(line))
-			if !strings.HasPrefix(line, "rootProject.name") {
-				continue
-			}
-			if s, ok := firstQuoted(line); ok && strings.TrimSpace(s) != "" {
-				return strings.TrimSpace(s)
-			}
-		}
-	}
-	if base := filepath.Base(buildDir); base != "" && base != "." && base != string(filepath.Separator) {
-		return base
-	}
-	return "."
-}
-
-var (
-	reGradleLangVersion = regexp.MustCompile(`JavaLanguageVersion\.of\(\s*(\d+)\s*\)`)
-	reGradleVersionEnum = regexp.MustCompile(`VERSION_(\d+)(?:_(\d+))?`)
-	reGradleJvmEnum     = regexp.MustCompile(`JVM_(\d+)`)
-	reGradleQuotedNum   = regexp.MustCompile(`['"](\d+(?:\.\d+)?)['"]`)
-	reGradleBareNum     = regexp.MustCompile(`=\s*(\d+(?:\.\d+)?)\s*$`)
-)
-
-// parseGradleManifest line-scans a build.gradle(.kts) for the declared JVM target version — a
-// major FLOOR, never an exact toolchain pin. Precedence: java.toolchain
-// JavaLanguageVersion.of(N) (strongest floor) ⊐ source/targetCompatibility ⊐
-// kotlinOptions.jvmTarget. Undeterminable stays "" (→ reasonNoRuntimeVersion), never guessed.
-// It reads declared text only — no Gradle is executed (§3.3).
-func parseGradleManifest(path string) string {
-	data, err := readRegular(path)
-	if err != nil {
-		return ""
-	}
-	var languageVersion, compat, jvmTarget string
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := stripGradleComment(raw)
-		if m := reGradleLangVersion.FindStringSubmatch(line); m != nil && languageVersion == "" {
-			languageVersion = m[1]
-		}
-		if strings.Contains(line, "sourceCompatibility") || strings.Contains(line, "targetCompatibility") {
-			if v := gradleVersionToken(line); v != "" && compat == "" {
-				compat = v
-			}
-		}
-		if strings.Contains(line, "jvmTarget") {
-			if v := gradleVersionToken(line); v != "" && jvmTarget == "" {
-				jvmTarget = v
-			}
-		}
-	}
-	switch {
-	case languageVersion != "":
-		return languageVersion
-	case compat != "":
-		return compat
-	default:
-		return jvmTarget
-	}
-}
-
-// gradleVersionToken extracts a version literal from one Gradle line, tolerating the common
-// forms: JavaVersion.VERSION_17 / VERSION_1_8 (→ "17" / "1.8"), JvmTarget.JVM_17 (→ "17"), a
-// quoted "17"/"1.8", or a bare = 17. "" when no literal is present (e.g. an interpolation).
-func gradleVersionToken(line string) string {
-	if m := reGradleVersionEnum.FindStringSubmatch(line); m != nil {
-		if m[2] != "" {
-			return m[1] + "." + m[2]
-		}
-		return m[1]
-	}
-	if m := reGradleJvmEnum.FindStringSubmatch(line); m != nil {
-		return m[1]
-	}
-	if m := reGradleQuotedNum.FindStringSubmatch(line); m != nil {
-		return m[1]
-	}
-	if m := reGradleBareNum.FindStringSubmatch(line); m != nil {
-		return m[1]
-	}
-	return ""
-}
-
-// toolchainPin reads an EXACT interpreter pin from a pin file at the build root: asdf's
-// .tool-versions (the token after `java`) or SDKMAN's .sdkmanrc (`java=<version>`). Absent ⇒
-// "" (an honest "no exact pin," disclosed as reasonToolchainUnpinned), never guessed.
-func toolchainPin(buildDir string) string {
-	if data, err := readRegular(filepath.Join(buildDir, ".tool-versions")); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(strings.TrimSpace(line))
-			if len(fields) >= 2 && fields[0] == "java" {
-				return fields[1]
-			}
-		}
-	}
-	if data, err := readRegular(filepath.Join(buildDir, ".sdkmanrc")); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if v, ok := strings.CutPrefix(line, "java="); ok {
-				if v = strings.TrimSpace(v); v != "" {
-					return v
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// moduleMembers returns the sorted, unique relative directories of the given build files —
-// the aggregator's member modules. A single-element result is not multi-module.
-func moduleMembers(buildDir string, files []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, f := range files {
-		rel := relManifestDir(buildDir, filepath.Dir(f))
-		if seen[rel] {
-			continue
-		}
-		seen[rel] = true
-		out = append(out, rel)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// shortestPath returns the build file closest to the build root (shortest path; lexical
-// tie-break) — the aggregator/root module.
-func shortestPath(paths []string) string {
-	best := paths[0]
-	for _, p := range paths[1:] {
-		if len(p) < len(best) || (len(p) == len(best) && p < best) {
-			best = p
-		}
-	}
-	return best
+	return v
 }
 
 // relManifestDir renders target relative to base as a forward-slash path ("." for base

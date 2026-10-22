@@ -16,8 +16,8 @@
 //   - Noop  — a safe default that discards everything (used when no surface is wired).
 //   - Local — writes the projections to a local directory (the dogfood / CLI path).
 //
-// The GitHub-tiered sinks (PR comments, checks, code-scanning upload, permission
-// tiers) are Phase 3 adapters over this same interface and deliberately do NOT
+// The GitHub-tiered sinks (job summary, PR comment, Issue, SARIF, Pages) live in
+// resultsink/github as adapters over this same interface and deliberately do NOT
 // live here — keeping this package free of any platform specifics.
 package resultsink
 

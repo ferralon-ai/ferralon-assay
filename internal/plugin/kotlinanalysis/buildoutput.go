@@ -116,7 +116,14 @@ func loadClassTree(root string) (classes []classfile.Class, failed []string) {
 			failed = append(failed, path+": "+err.Error())
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".class") {
+		if d.IsDir() {
+			// A multi-release override is not the base class; launchEntryReasons withholds on it.
+			if rel, err := filepath.Rel(root, path); err == nil && rel == filepath.Join("META-INF", "versions") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".class") {
 			return nil
 		}
 		if d.Name() == "module-info.class" {

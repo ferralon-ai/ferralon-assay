@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -46,16 +47,12 @@ var codeEmittedReasons = map[string]string{
 	plugin.PartialReasonReachabilityUndetermined: "capability: folds every depreach hazard (invokedynamic, reflection, out-of-classpath re-entry) the Reachability op hits",
 	// callgraph.go:39 — an EdgeDynamic (invokedynamic) call-graph edge was dropped.
 	plugin.PartialReasonDynamicDispatch: "capability: CallGraph's direct invokedynamic signal",
-	// ops.go — ResolveDependencyVersions (via the shared JVM parser) declares no_manifest
-	// when the checkout carries NO pom.xml/build.gradle(.kts) at all. This is a build-shape
-	// condition (there is no build file to read), NOT the gradle_version_resolution
-	// capability boundary — the boundary's own limit (non-literal version forms) fails open
-	// per-dependency as Resolved=false with NO partiality reason (see manifestBoundaryRationale).
-	plugin.PartialReasonNoManifest: "operational: no build file present to read versions from; not a language capability boundary",
-	// resolve.go — the advisory's dependency JAR could not be located in (or read from) the
-	// build's local caches: version UNRESOLVED, coordinate underivable, or absent from every
-	// cache. Artifact-availability, not a language capability boundary.
-	partialReasonNoDependencyArtifact: "operational: dependency artifact unavailable in local caches; not a language capability boundary",
+	// ops.go, resolve.go, depclosure.go — no build graph was handed in, so no dependency
+	// version, JAR or inventory can be read. Build-shape, not a language capability boundary.
+	javaanalysis.PartialReasonBuildGraphAbsent: "operational: no build graph to read dependencies from; not a language capability boundary",
+	// resolve.go — the build graph names no JAR for the advisory's package, or none at the
+	// version the PURL pins. Artifact-availability, not a language capability boundary.
+	partialReasonNoDependencyArtifact: "operational: dependency artifact absent from the build graph; not a language capability boundary",
 	// resolve.go — the dependency JAR was located and fully read, but none of the advisory's
 	// named symbols resolved to a symbol in it. Request/artifact-content, not a desugaring boundary.
 	partialReasonAdvisorySymbolUnresolved: "operational: advisory symbol absent from the resolved artifact; not a language capability boundary",
@@ -103,21 +100,6 @@ var manifestBoundaryRationale = map[string]boundaryRationale{
 	"reflection": {
 		reasons: []string{plugin.PartialReasonReachabilityUndetermined},
 		note:    "depreach's isReflection hazard rule fires but is folded into the generic reachability_undetermined bucket; CallGraph has no reflection-specific edge kind so it is invisible there",
-	},
-	// gradle_version_resolution: ResolveDependencyVersions (ops.go, via the shared JVM
-	// build-file parser) now resolves LITERAL Maven/Gradle versions. The residual boundary is
-	// the NON-LITERAL Gradle version forms — a version catalog reference (`libs.foo`), the
-	// `kotlin("stdlib")` helper (no coordinate literal), an interpolated `"$version"` — which
-	// the parser cannot pin to a literal. Each such dependency is returned Resolved=false (an
-	// UNRESOLVED marker the disqualification predicate fails OPEN on), a PER-DEPENDENCY signal
-	// that emits NO whole-result Partiality.Reason. So, like inline_function, this boundary
-	// has no runtime reason code — its honest signal is the ResolvedDependency.Resolved=false
-	// field, not a partiality string. (no_manifest, which this op can also emit, is the
-	// distinct build-shape condition "no build file present at all" — operational, not this
-	// capability boundary; see codeEmittedReasons.)
-	"gradle_version_resolution": {
-		reasons: nil,
-		note:    "literal versions now resolve; the residual limit (version catalog / kotlin() helper / interpolated versions) fails open per-dependency as ResolvedDependency.Resolved=false, which carries no whole-result Partiality reason — a field signal, not a wire reason code",
 	},
 	// inline_function: a `inline fun` call site is bytecode-erased by kotlinc BEFORE
 	// class emission — the caller's Code attribute already contains the inlined body's
@@ -238,7 +220,7 @@ func TestSupportMatrix_CodeEmittedReasonsMatchSourceCitations(t *testing.T) {
 		plugin.PartialReasonNoIngress,
 		plugin.PartialReasonReachabilityUndetermined,
 		plugin.PartialReasonDynamicDispatch,
-		plugin.PartialReasonNoManifest,
+		javaanalysis.PartialReasonBuildGraphAbsent,
 		partialReasonNoDependencyArtifact,
 		partialReasonAdvisorySymbolUnresolved,
 	}

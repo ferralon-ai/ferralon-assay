@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
@@ -20,9 +21,9 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 // trace follows calls into the exact dependency bytecode the build resolved.
 //
 // Roots and what each may license:
-//   - `main` (every mainMethodRefs entry, plus the launch main a Gradle start script names,
-//     plus each main owner's companion initializers) is the whole-program root and the ONLY root that licenses a cleared sink. A sink is listed
-//     in Searched only when at least one main exists, the sink is a concrete method in loaded
+//   - `main` (every mainMethodRefs entry, plus each main owner's companion initializers) is the
+//     whole-program root and the ONLY root that licenses a cleared sink. A sink is listed in
+//     Searched only when at least one main exists, the sink is a concrete method in loaded
 //     bytecode, and every root's search (main and framework) was a hazard-free empty search.
 //     Every first-party class root and build/libs JAR must also have been listed and read in
 //     full (program.loadFailed): code that was not read may call any sink.
@@ -38,7 +39,7 @@ const partialReasonNoWholeProgramRoot = "no_whole_program_root"
 // `reflection` / `dynamic_dispatch` when those were the kinds met. A dependency JAR that could
 // not be opened is a Scoped reason bounded by its closure, and its reason is also declared
 // run-wide in Reasons.
-func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.ReachabilityResult, error) {
+func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...javaanalysis.Option) (plugin.ReachabilityResult, error) {
 	prog, err := loadProgram(req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, err
@@ -62,10 +63,7 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	for _, c := range prog.classes {
 		firstParty[c.Name] = true
 	}
-	deps, err := loadDependencyClosure(ctx, req.BuildDir, firstParty)
-	if err != nil {
-		return plugin.ReachabilityResult{}, err
-	}
+	deps := loadDependencyClosure(req.BuildDir, firstParty, opts...)
 	for _, sr := range deps.scoped {
 		prog.reasons[sr.Reason] = true
 	}
@@ -75,20 +73,17 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 	all := make([]classfile.Class, 0, len(prog.classes)+len(deps.classes))
 	all = append(all, prog.classes...)
 	all = append(all, deps.classes...)
+	// What the build says starts the program licenses an empty search; it says nothing about a
+	// path the search found.
+	entryReasons := launchEntryReasons(req.BuildDir, prog, deps, all)
 	cp := prog.cp
 	cp.Merge(deps.cp)
 	engine := depreach.NewEngineOn(all, cp)
-	concrete := concreteMethods(all)
+	concrete := concreteMethods(all, cp.JDK)
 
-	// Roots are first-party mains plus the launch main class a start script names. Any other
-	// `main` inside a dependency JAR is not this program's entry point. A launch main that is
-	// not in loaded code makes every search abstain (the engine cannot find the ingress).
+	// Roots are first-party mains. A `main` inside a dependency JAR is not this program's entry
+	// point; a build that launches one leaves its launch entry unmapped (launchEntryReasons).
 	mains := mainMethodRefs(prog.classes)
-	for _, cls := range deps.mainClasses {
-		if !firstParty[cls] {
-			mains = append(mains, classfile.MethodRef{Owner: cls, Name: "main", Descriptor: "([Ljava/lang/String;)V"})
-		}
-	}
 	mains = append(mains, companionInitRoots(all, mains)...)
 	frameworks := frameworkIngressRefs(prog.classes)
 
@@ -118,6 +113,11 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 			// An abstract sink is never an engine target (dispatch lands on overrides), so
 			// an empty search for it says nothing.
 			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
+		case len(entryReasons) > 0:
+			prog.reasons[plugin.PartialReasonReachabilityUndetermined] = true
+			for _, r := range entryReasons {
+				prog.reasons[r] = true
+			}
 		default:
 			searched = append(searched, s)
 		}
@@ -206,10 +206,14 @@ func searchSink(engine *depreach.Engine, mains, frameworks []classfile.MethodRef
 }
 
 // concreteMethods returns the set of method refs (MethodRef.String()) that have a body in the
-// loaded bytecode: not abstract, not native.
-func concreteMethods(classes []classfile.Class) map[string]bool {
+// loaded bytecode: not abstract, not native, and not on a copy of a class the JVM may load from
+// the JDK instead on feature release jdk.
+func concreteMethods(classes []classfile.Class, jdk int) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range classes {
+		if depreach.BootOnly(c.Name, jdk) {
+			continue
+		}
 		for _, m := range c.Methods {
 			if !m.Abstract && !m.Native {
 				out[m.Ref.String()] = true

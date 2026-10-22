@@ -23,8 +23,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 1 || flags[0] != plugin.PartialReasonNoManifest {
 			t.Fatalf("flags = %v, want [%s]", flags, plugin.PartialReasonNoManifest)
@@ -53,8 +53,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "" {
-			t.Errorf("version = %q, want empty", v)
+		if v.Version != "" {
+			t.Errorf("version = %q, want empty", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("an honest absence must disclose nothing, got %v", flags)
@@ -68,8 +68,8 @@ func TestResolveDependencyVersion_GoModPartiality(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveDependencyVersion: %v", err)
 		}
-		if v != "v0.3.6" {
-			t.Errorf("version = %q, want v0.3.6", v)
+		if v.Version != "v0.3.6" {
+			t.Errorf("version = %q, want v0.3.6", v.Version)
 		}
 		if len(flags) != 0 {
 			t.Fatalf("a resolved version must disclose nothing, got %v", flags)

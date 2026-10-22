@@ -20,7 +20,7 @@
 //
 // What the package defines is the shape of the claim — the fields, the closed enums, the
 // invariants, and the adversarial review that can downgrade a verdict (see Objection). It
-// does not describe how evidence is obtained: no detonation harness, no sandbox and no
+// does not describe how evidence is obtained: no execution harness, no sandbox and no
 // reproducer synthesis is part of this module.
 //
 // A vocabulary with no engine behind it cannot assert anything, which is what makes it safe

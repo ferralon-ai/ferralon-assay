@@ -1,11 +1,11 @@
 // internal/corpus/vulnclass.go
 //
 // The vuln-class expansion corpus. It is a SEPARATE fixture set from
-// the locked golden-4 (Load/LoadFS): those four are the Phase-1 taxonomy with a hard count guard.
+// the golden fixture set (Load/LoadFS).
 // The vuln-class corpus instead pairs, per NEW vuln class, a (vulnerable, patched) repro and the
 // proof signal/strategy the class is proven through, so the live trial can assert both directions:
 //   - the vulnerable repro reaches a proven exploitable verdict via the class's intrinsic signal;
-//   - detonating the same trigger against the patched repro stays DARK (negative control).
+//   - running the same trigger against the patched repro stays DARK (negative control).
 //
 // These fixtures are advisory-only metadata: they NEVER decide a verdict (inv.5). The expected
 // signal/strategy is what a SOUND end-to-end run must produce, asserted live, never asserted from
@@ -40,7 +40,7 @@ const VulnClassSchemaVersion = "tegron.corpus.vulnclass.v1"
 
 // VulnClassFixture pairs a vulnerable + patched repro for one NEW vuln class with the proof route
 // the class is confirmed through. The repro paths are relative to internal/corpus (the live trial
-// resolves them to absolute, like the golden-4).
+// resolves them to absolute, like the golden fixtures).
 type VulnClassFixture struct {
 	SchemaVersion  string `json:"schema_version"`
 	ID             string `json:"id"`              // advisory id (matches the pipeline advisoryTable entry)

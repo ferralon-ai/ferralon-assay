@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/assessment"
@@ -55,7 +57,9 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 // applying the deterministic verdict rule (inv. 5):
 //
 //   - disqualification_discovery disqualified  → VerdictDisqualified.
-//   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate.
+//   - a candidate (ingress→sink) reach path    → VerdictReachableCandidate, or
+//     VerdictUndetermined/advisory_range_absent with the path kept when the advisory
+//     carries no affected range the version axis can bound for the admitted package.
 //   - neither, and the empty path set is not evidence about the subject (see
 //     undeterminedReason) or has no positive grounds (see
 //     notExploitableGrounds)                    → VerdictUndetermined, no basis.
@@ -64,6 +68,13 @@ func assess(ctx context.Context, req assessment.Request, opts ...pipeline.Assess
 //
 // The OSS tool stops at reachable_candidate; it never emits exploitable/reasoned_*.
 func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package) report.AdvisoryFinding {
+	return findingInBuild(store, assessmentID, adv, pkg, nil)
+}
+
+// findingInBuild is finding with the scan's Go module list, which lets the not_exploitable gate
+// read a Go package path the advisory names as part of the module that holds it (see
+// samePackage). finding passes none, so every such path counts as another package.
+func findingInBuild(store artifact.Store, assessmentID string, adv report.Advisory, pkg *report.Package, mods goModules) report.AdvisoryFinding {
 	var f report.AdvisoryFinding
 	switch {
 	case maliciousPresent(store, assessmentID):
@@ -132,6 +143,21 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 				GuardSufficiency: guardSufficiencyFor(guards, advisoryGuardSufficiency(store, assessmentID)),
 			},
 		}
+		// An advisory with no affected range for the admitted package is admitted at every version,
+		// so the path says nothing about whether this version carries the flaw. The path stays as
+		// evidence; the candidate-only annotations go with the verdict.
+		if pipeline.AdvisoryRangeAbsent(store, assessmentID) {
+			f.Verdict = report.VerdictUndetermined
+			f.UndeterminedReason = report.ReasonAdvisoryRangeAbsent
+			f.Evidence = report.EvidenceSummary{
+				Detail:           report.UndeterminedDetail(report.ReasonAdvisoryRangeAbsent),
+				ReachablePath:    path,
+				EntryPoint:       entry,
+				CallPath:         frames,
+				MitigatingGuards: guards,
+				AdvisoryBounds:   advisoryBounds(store, assessmentID),
+			}
+		}
 	default:
 		// This arm is the only one that can rest on an absence, so it is the one that can
 		// mistake the analyzer's blind spot for a refutation. Reaching it means the axes
@@ -139,9 +165,27 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 		// path is evidence about the SUBJECT is a separate question, and undeterminedReason
 		// answers it.
 		reason, undetermined := undeterminedReason(store, assessmentID, pkg)
+		// An advisory whose package no module of the build holds rests on a search of every
+		// module's source rather than on a path or a symbol inside a package. It still needs every
+		// step to have run: a run that loads code from outside the build list (plugin_load) can
+		// hold the advisory's code with no module declaring it.
+		if !undetermined {
+			detail, unvetted, ok := outsideBuildGrounds(store, assessmentID, pkg, mods)
+			if ok {
+				f = report.AdvisoryFinding{
+					Advisory: adv,
+					Verdict:  report.VerdictNotExploitable,
+					Evidence: report.EvidenceSummary{Basis: verdict.BasisSymbolAbsent, Detail: detail},
+				}
+				break
+			}
+			if unvetted != "" {
+				reason, undetermined = unvetted, true
+			}
+		}
 		detail, groundsReason, grounded := "", "", false
 		if !undetermined {
-			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg)
+			detail, groundsReason, grounded = notExploitableGrounds(store, assessmentID, pkg, mods)
 			if !grounded {
 				reason, undetermined = groundsReason, true
 			}
@@ -166,10 +210,8 @@ func finding(store artifact.Store, assessmentID string, adv report.Advisory, pkg
 			},
 		}
 	}
-	// Attach offline EPSS/KEV likelihood context (package intel) to every finding by
-	// the advisory's CVE id/aliases. It only ranks attention; it NEVER changes the
-	// deterministic verdict (inv. 5) — a disqualified high-EPSS CVE stays disqualified.
-	f.Priority = priorityFor(adv)
+	// No Priority here: EPSS/KEV context is attached by the report Builder (rankBy), after every
+	// verdict is final, so nothing on this path can read it (inv. 5).
 	return f
 }
 
@@ -234,8 +276,9 @@ func advisoryGuards(store artifact.Store, assessmentID string) []string {
 // advisorySymbolProvenance reads the corpus's record-scoped symbol_provenance derivation tag
 // from the normalized advisory artifact (S1). Empty ("") when the advisory carries none, when
 // the artifact is absent, or when the payload is unreadable — every miss is the honest-absent
-// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed only as a
-// candidate-scoped strength signal (symbolConfidenceFor), never as an admission or refute input.
+// path (inv.5): an absent tag is UNKNOWN derivation, never low confidence. Consumed as a
+// candidate-scoped strength signal (symbolConfidenceFor); the not_exploitable grounds read the same
+// tag through vettedSymbols.
 func advisorySymbolProvenance(store artifact.Store, assessmentID string) string {
 	arts, err := store.Query(assessmentID, artifact.TypeNormalizedAdvisory)
 	if err != nil || len(arts) == 0 {
@@ -258,6 +301,7 @@ func advisorySymbolProvenance(store artifact.Store, assessmentID string) string 
 //   - absent / "" ⇒ ""       unknown derivation, NOT low confidence — candidate reported as today.
 //   - "osv-declared"/"curated" ⇒ high      authoritatively declared symbols.
 //   - "diff-lexed"           ⇒ moderate   heuristically extracted — a LOWER label, never a gate.
+//   - "cna-declared"         ⇒ ""         declared by the CNA, completeness unmeasured: no label.
 //   - any unrecognized tier   ⇒ ""         we never invent a confidence for a tier we don't know.
 //
 // No tier, including diff-lexed, yields a value that could gate a symbol out of reachability or
@@ -463,27 +507,36 @@ func maliciousPresentDetail(matchedVersion string) string {
 	return "the resolved dependency version is listed by the advisory as a known-malicious package release"
 }
 
-// priorityFor looks the advisory up in the pinned EPSS/KEV snapshot by its id and
-// aliases (EPSS/KEV are CVE-keyed; a GO-/GHSA-keyed advisory matches via its CVE
-// alias). Returns nil when neither feed has a record — most synthetic corpus ids
-// have no CVE, so they carry no likelihood signal, which is correct.
-func priorityFor(adv report.Advisory) *report.Priority {
+// priorityFor looks the advisory up in the run's signals file by its id and then its aliases (a GO-
+// or GHSA-keyed advisory matches through its CVE alias), and returns each value with its own stamp.
+// It returns nil when the run has no signals, or the file has no stamped value for any of the ids —
+// most synthetic corpus ids have no CVE and so no likelihood signal, which is correct.
+//
+// The join is only sound because an advisory's alias set names the SAME vulnerability its id does
+// (pipeline's TestKEVAttributionFollowsListedCVE): an alias naming a different CVE would hand this
+// advisory another vulnerability's KEV listing.
+//
+// Ranking context only (inv. 5): it is read by Builder.WithPriority after every verdict is final.
+func priorityFor(adv report.Advisory, sig *intel.Signals) *report.Priority {
 	ids := append([]string{adv.ID}, adv.Aliases...)
-	p := &report.Priority{}
-	matched := false
-	if s, ok := intel.EPSS(ids...); ok {
-		p.EPSSScore, p.EPSSPercentile = s.Score, s.Percentile
-		matched = true
+	var p report.Priority
+	if e, ok := sig.EPSS(ids...); ok {
+		p.EPSSScore, p.EPSSAsOf = e.Score, e.AsOf
+		p.EPSSPercentile, p.HasPercentile = e.Percentile, e.HasPercentile
 	}
-	if k, ok := intel.KEV(ids...); ok {
-		p.KEVListed, p.KEVDateAdded = true, k.DateAdded
-		matched = true
+	if k, ok := sig.KEV(ids...); ok {
+		p.KEVListed, p.KEVDateAdded = k.Listed, k.DateAdded
+		p.KEVCatalogVersion, p.KEVDateReleased = k.CatalogVersion, k.DateReleased
 	}
-	if !matched {
+	if !p.HasEPSS() && !p.HasKEV() {
 		return nil
 	}
-	p.Snapshot = intel.SnapshotDate
-	return p
+	return &p
+}
+
+// rankBy is the Builder.WithPriority function for a run with signals sig (nil for none).
+func rankBy(sig *intel.Signals) func(report.Advisory) *report.Priority {
+	return func(adv report.Advisory) *report.Priority { return priorityFor(adv, sig) }
 }
 
 // reachabilityEvidence derives the structured reachability evidence for a candidate
@@ -712,7 +765,7 @@ func disqualDetail(reason string) string {
 	case pipeline.ReasonAdvisoryEcosystemMismatch:
 		return "the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed"
 	case pipeline.ReasonNoManifestEntry:
-		return "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+		return "the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed"
 	default:
 		return "disqualified on an axis that is neither a version nor a symbol comparison; neither comparison was performed"
 	}
@@ -763,6 +816,11 @@ func advisoryFromArtifacts(store artifact.Store, assessmentID string, req assess
 	if inv.ResolvedVersion == "" {
 		if inv.Language == cfamilyLanguage {
 			return adv, cfamilyObservedPackage(name, purl, inv, sbom)
+		}
+		// Copies at more than one version: the row names the package but no single version, so
+		// an inventory limit of its ecosystem still reaches it (withInventoryLimits).
+		if len(inv.ResolvedVersions) > 0 && !pipeline.ToolchainSubject(store, assessmentID) {
+			return adv, &report.Package{Ecosystem: ecosystemFor(inv.Language), Name: name, PURL: purl, Root: pipeline.RootSubject(store, assessmentID)}
 		}
 		return adv, nil
 	}
@@ -821,9 +879,10 @@ func cfamilyObservedPackage(name, purl string, inv inventoryFacts, sbom []report
 }
 
 type inventoryFacts struct {
-	Language        string   `json:"language"`
-	ResolvedVersion string   `json:"resolved_version"`
-	PartialityFlags []string `json:"partiality_flags"`
+	Language         string   `json:"language"`
+	ResolvedVersion  string   `json:"resolved_version"`
+	ResolvedVersions []string `json:"resolved_versions"`
+	PartialityFlags  []string `json:"partiality_flags"`
 }
 
 // undeterminedReason decides whether this assessment established NOTHING about the advisory —
@@ -909,8 +968,16 @@ func analysisDidNotRun(store artifact.Store, assessmentID string, pkg *report.Pa
 			}
 		}
 	}
+	// A symbol the build's target of the package does not define was searched for and is not there.
+	absent := false
+	if res, err := pipeline.VulnerableSymbols(store, assessmentID); err == nil {
+		absent = len(targetConditionalAbsent(pipeline.AdvisorySymbols(store, assessmentID), pipeline.AdvisoryTargetConditionalSymbols(store, assessmentID), res)) > 0
+	}
 	didNotRun, unknownOnly := false, true
 	for _, reason := range reasons {
+		if absent && reason == plugin.PartialReasonAdvisorySymbolUnresolved {
+			continue
+		}
 		if report.ClassifyPartialityReason(reason) == report.PartialityDidNotRun {
 			didNotRun = true
 			unknownOnly = unknownOnly && reason == plugin.PartialReasonAdvisoryUnknownToAnalyzer
@@ -1051,7 +1118,8 @@ func limitNoteFor(f report.AdvisoryFinding) (report.PartialityNote, bool) {
 		return report.PartialityNote{}, false
 	}
 	switch f.UndeterminedReason {
-	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved:
+	case report.ReasonPackageVersionUnresolved, report.ReasonAdvisorySymbolAbsent, report.ReasonVulnerableSymbolUnresolved,
+		report.ReasonAdvisorySymbolsUnvetted, report.ReasonAdvisoryRangeAbsent:
 		note := report.PartialityNote{Reason: f.UndeterminedReason}
 		if f.Package != nil {
 			note.Ecosystem = f.Package.Ecosystem
@@ -1150,22 +1218,97 @@ func exposureFootprint(store artifact.Store, assessmentID string) (artifact.Expo
 
 // assessFailureNote turns a failed assessment into a scan-level disclosure. One
 // advisory whose analysis did not run must not discard the whole Report — that is the
-// "failed scan renders as no results" conflation — but it must not vanish either: the
-// advisory produces no finding, so without this note the counts silently shrink and a
-// scan that could not complete reads exactly like one that found nothing.
-//
-// Detail names the analysis step that failed and the advisory it was evaluating, so a
-// reader can act on it. Disclosure only: no verdict is emitted for the advisory.
+// "failed scan renders as no results" conflation. The advisory's row is
+// assessFailureFinding; this note names the step that failed at the scan level.
 func assessFailureNote(adv assessment.VulnRef, err error) report.PartialityNote {
-	step := "assess"
-	var se *pipeline.StageError
-	if errors.As(err, &se) && se.Stage != "" {
-		step = se.Stage
-	}
 	return report.PartialityNote{
 		Reason: plugin.PartialReasonToolFailure,
-		Detail: fmt.Sprintf("%s (%s)", step, adv.ID),
+		Detail: fmt.Sprintf("%s (%s)", failedStep(err), adv.ID),
 	}
+}
+
+// assessFailureFinding is the row for an advisory whose assessment failed. Without it the
+// advisory is absent from the rows, and a reader of rows (console, SARIF, carry-forward) sees
+// no verdict where it should see that none was established.
+//
+// The row carries no Package: the failed assessment resolved none, and pairing the advisory
+// with a guessed coordinate would be a fabricated fact.
+func assessFailureFinding(adv assessment.VulnRef, err error) report.AdvisoryFinding {
+	return report.AdvisoryFinding{
+		Advisory:           report.Advisory{ID: adv.ID, Source: adv.Source},
+		Verdict:            report.VerdictUndetermined,
+		UndeterminedReason: report.ReasonAnalysisDidNotRun,
+		Evidence: report.EvidenceSummary{
+			Detail: fmt.Sprintf("the %s step failed (%s), so no verdict was established", failedStep(err), assessErrorText(stageCause(err))),
+		},
+	}
+}
+
+func failedStep(err error) string {
+	var se *pipeline.StageError
+	if errors.As(err, &se) && se.Stage != "" {
+		return se.Stage
+	}
+	return "assess"
+}
+
+// stageCause is the error a failed stage returned, without the wrapping that repeats the
+// advisory and stage the row already names.
+func stageCause(err error) error {
+	var se *pipeline.StageError
+	if errors.As(err, &se) && se.Err != nil {
+		return se.Err
+	}
+	return err
+}
+
+// assessErrorLimit bounds the error text a failed-assessment row carries, in runes.
+const assessErrorLimit = 200
+
+// secretREs match the credentials a tool error can echo, each with what replaces them: the
+// userinfo of a URL (with or without a scheme, up to the authority's last '@', since a password
+// may hold one), a user:password@host without one (a proxy setting), query-string values, an
+// Authorization header, a bearer token and a GitLab PRIVATE-TOKEN header; a token= or npm
+// _authToken= setting outside a query string; a .netrc entry's password; and a bare GitHub, GitLab
+// or npm token, by its prefix and a body of a token's length (the prefix is kept). A Go
+// module@version has no ':' before its '@', so it is kept; a word that only contains "token" or
+// "password" (tokenizer, password-reset) has no value to redact, so it is kept.
+var secretREs = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)[^/\s]*@`), "${1}REDACTED@"},
+	{regexp.MustCompile(`[^\s/:@]+:[^\s/]*@`), "REDACTED@"},
+	{regexp.MustCompile(`([?&][^\s?&#=]+=)[^\s&#]*`), "${1}REDACTED"},
+	{regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)\s*[:=]\s*(?:(?:bearer|basic|token|digest)\s+)?[^\s,;]+`), "${1}: REDACTED"},
+	{regexp.MustCompile(`(?i)\b(bearer)\s+[^\s,;]+`), "${1} REDACTED"},
+	{regexp.MustCompile(`(?i)\b(private-token)\s*[:=]\s*[^\s,;]+`), "${1}: REDACTED"},
+	{regexp.MustCompile(`(?i)(_authToken)\s*=\s*[^\s,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b([A-Za-z0-9_-]*token)=[^\s&#,;]+`), "${1}=REDACTED"},
+	{regexp.MustCompile(`(?i)\b((?:machine\s+\S+(?:\s+(?:login|account)\s+\S+)*|default(?:\s+(?:login|account)\s+\S+)+)\s+password)\s+\S+`), "${1} REDACTED"},
+	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*`), "${1}REDACTED"},
+	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36,}`), "${1}REDACTED"},
+}
+
+// assessErrorText renders err for a report row: one line, credentials redacted, at most
+// assessErrorLimit runes.
+func assessErrorText(err error) string {
+	s := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	s = strings.Join(strings.Fields(s), " ")
+	for _, r := range secretREs {
+		s = r.re.ReplaceAllString(s, r.repl)
+	}
+	if r := []rune(s); len(r) > assessErrorLimit {
+		s = string(r[:assessErrorLimit-1]) + "…"
+	}
+	return s
 }
 
 func inventory(store artifact.Store, assessmentID string) (inventoryFacts, bool) {
@@ -1199,4 +1342,13 @@ func ecosystemFor(language string) string {
 	default:
 		return language
 	}
+}
+
+// advisoryBounds carries the partial bounds of a range-absent advisory onto its finding.
+func advisoryBounds(store artifact.Store, caseID string) []report.AdvisoryBound {
+	var out []report.AdvisoryBound
+	for _, b := range pipeline.AdvisoryRecordedBounds(store, caseID) {
+		out = append(out, report.AdvisoryBound{Type: b.Type, Introduced: b.Introduced, Fixed: b.Fixed, LastAffected: b.LastAffected})
+	}
+	return out
 }

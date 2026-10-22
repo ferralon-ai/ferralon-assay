@@ -394,6 +394,37 @@ func TestRunCVEWatch_OverlapEarnestRun(t *testing.T) {
 	}
 }
 
+// A held cursor still writes the Report but leaves the new advisory new, so the next run
+// assesses it again.
+func TestRunCVEWatch_HoldCursor(t *testing.T) {
+	store, _ := seedBaseline(t)
+	pkg := report.Package{Ecosystem: "Go", Name: "golang.org/x/text", Version: "v0.3.6"}
+	osv := &fakeOSV{result: OSVResult{Advisories: []OSVAdvisory{
+		{ID: "GO-2021-0113", Package: pkg},
+		{ID: "FERRALON-APP-SSRF-0001", Package: pkg},
+	}}}
+	req := CVEWatchRequest{Subject: Subject{Repo: "r", ResolvedCommit: "sha"}, Codebase: assessment.CodebaseRef{Repo: "r"}, HoldCursor: true}
+	for run := 1; run <= 2; run++ {
+		res, err := RunCVEWatch(context.Background(), store, osv, req)
+		if err != nil {
+			t.Fatalf("run %d: %v", run, err)
+		}
+		if res.Heartbeat || len(res.NewAdvisories) != 1 || res.Report == nil {
+			t.Fatalf("run %d: want an earnest run on the held advisory, got %+v", run, res)
+		}
+		if store.state.Cursor != "GO-2021-0113" {
+			t.Fatalf("run %d: cursor = %q, want it held at GO-2021-0113", run, store.state.Cursor)
+		}
+		// A write that conflicts merges the cursor from the Report, so it must hold there too.
+		if got := statestore.Merge(&statestore.State{}, store.state).Cursor; got != "GO-2021-0113" {
+			t.Fatalf("run %d: merged cursor = %q, want it held at GO-2021-0113", run, got)
+		}
+	}
+	if store.writes != 2 {
+		t.Fatalf("writes = %d, want the Report written each run", store.writes)
+	}
+}
+
 // TestRunCVEWatch_OSVError surfaces the OSV transport error (no silent swallow).
 func TestRunCVEWatch_OSVError(t *testing.T) {
 	store, _ := seedBaseline(t)

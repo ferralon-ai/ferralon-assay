@@ -55,14 +55,43 @@ func LaunchOptionReasons(buildDir string) []string {
 	return out
 }
 
+// checkoutDefines reports whether any file the LaunchOptionReasons walk reads sets one of keys
+// as a system property on a command line (-D<key> or --define <key>, with or without a value),
+// as Maven's -D does for a POM property. A file it cannot read counts as setting one.
+func checkoutDefines(buildDir string, keys map[string]bool) bool {
+	alts := make([]string, 0, len(keys))
+	for k := range keys {
+		alts = append(alts, regexp.QuoteMeta(k))
+	}
+	sort.Strings(alts)
+	re, err := regexp.Compile(`(?:-D|--define(?:=|\s+))\s*["']?(?:` + strings.Join(alts, "|") + `)(?:[^A-Za-z0-9_.\-]|$)`)
+	if err != nil {
+		return true
+	}
+	s := &launchScan{reasons: map[string]bool{}, defines: re}
+	s.walk(buildDir)
+	return s.defined || s.unread
+}
+
+func (s *launchScan) define(data []byte) {
+	if s.defines.Match(data) {
+		s.defined = true
+	}
+}
+
 // launchSkipDirs hold another ecosystem's installed packages, owned by the JS and Python lanes.
 var launchSkipDirs = map[string]bool{"node_modules": true, "site-packages": true}
 
 type launchScan struct {
 	reasons map[string]bool
+	// defines, when set, switches the scan to looking only for -D settings of given keys.
+	defines *regexp.Regexp
+	defined bool // a -D the defines pattern matched
+	unread  bool // a file or directory could not be read
 }
 
 func (s *launchScan) unreadable() { s.reasons[PartialReasonLaunchOption] = true }
+func (s *launchScan) readFail()   { s.unread = true; s.unreadable() }
 func (s *launchScan) agent()      { s.reasons[PartialReasonLaunchAgent] = true }
 
 // walk visits every file under root at its real path. A symlinked directory is walked at its
@@ -72,7 +101,7 @@ func (s *launchScan) agent()      { s.reasons[PartialReasonLaunchAgent] = true }
 func (s *launchScan) walk(root string) {
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		s.unreadable()
+		s.readFail()
 		return
 	}
 	walked := map[string]bool{realRoot: true}
@@ -82,7 +111,7 @@ func (s *launchScan) walk(root string) {
 func (s *launchScan) walkDir(realRoot, dir string, walked map[string]bool) {
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return nil
 		}
 		rel, _ := filepath.Rel(realRoot, path)
@@ -99,7 +128,7 @@ func (s *launchScan) walkDir(realRoot, dir string, walked map[string]bool) {
 		return nil
 	})
 	if err != nil {
-		s.unreadable()
+		s.readFail()
 	}
 }
 
@@ -108,23 +137,23 @@ func (s *launchScan) walkDir(realRoot, dir string, walked map[string]bool) {
 func (s *launchScan) link(realRoot, path, rel string, walked map[string]bool) {
 	target, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		s.unreadable() // dangling, or a component cannot be read
+		s.readFail() // dangling, or a component cannot be read
 		return
 	}
 	trel, err := filepath.Rel(realRoot, target)
 	if err != nil || trel == ".." || strings.HasPrefix(trel, ".."+string(filepath.Separator)) {
-		s.unreadable() // escapes the checkout
+		s.readFail() // escapes the checkout
 		return
 	}
 	for _, part := range strings.Split(trel, string(filepath.Separator)) {
 		if launchSkipDirs[part] {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 	}
 	fi, err := os.Stat(target)
 	if err != nil {
-		s.unreadable()
+		s.readFail()
 		return
 	}
 	switch {
@@ -174,12 +203,14 @@ func (s *launchScan) file(path, rel string) {
 	lower := strings.ToLower(rel)
 	switch {
 	case unopenedArchive(lower):
-		s.unreadable()
+		s.readFail()
+		return
+	case isCodeArchive(lower) && s.defines != nil:
 		return
 	case isCodeArchive(lower):
 		zr, err := zip.OpenReader(path)
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		defer zr.Close()
@@ -188,7 +219,7 @@ func (s *launchScan) file(path, rel string) {
 	case strings.HasSuffix(lower, ".zip"):
 		zr, err := zip.OpenReader(path)
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		defer zr.Close()
@@ -197,7 +228,7 @@ func (s *launchScan) file(path, rel string) {
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		s.unreadable()
+		s.readFail()
 		return
 	}
 	defer f.Close()
@@ -207,7 +238,7 @@ func (s *launchScan) file(path, rel string) {
 	}
 	fi, err := f.Stat()
 	if err != nil {
-		s.unreadable()
+		s.readFail()
 		return
 	}
 	s.content(rel, false, f, fi.Size())
@@ -218,7 +249,11 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 	if size >= 0 && size <= launchTextLimit {
 		data, err := io.ReadAll(r)
 		if err != nil {
-			s.unreadable()
+			s.readFail()
+			return
+		}
+		if s.defines != nil {
+			s.define(decodeUTF16(data))
 			return
 		}
 		s.text(rel, inDist, decodeUTF16(data))
@@ -230,12 +265,16 @@ func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
 		n, err := io.ReadFull(r, buf[carry:])
 		chunk := buf[:carry+n]
 		final := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-		s.tokensOnly(chunk, final)
+		if s.defines != nil {
+			s.define(chunk)
+		} else {
+			s.tokensOnly(chunk, final)
+		}
 		if final {
 			return
 		}
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		carry = copy(buf, chunk[len(chunk)-launchOverlap:])
@@ -273,13 +312,13 @@ func (s *launchScan) manifest(zr *zip.Reader) {
 		}
 		rc, err := f.Open()
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		data, err := io.ReadAll(io.LimitReader(rc, launchTextLimit))
 		rc.Close()
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		text := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n ", "")
@@ -307,7 +346,7 @@ func (s *launchScan) zipEntries(zr *zip.Reader) {
 		}
 		rc, err := f.Open()
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			continue
 		}
 		s.entry(f.Name, rc, int64(f.UncompressedSize64))
@@ -322,7 +361,7 @@ func (s *launchScan) tarEntries(r io.Reader, lower string) {
 	case !strings.HasSuffix(lower, ".tar"):
 		zr, err := gzip.NewReader(r)
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		defer zr.Close()
@@ -335,7 +374,7 @@ func (s *launchScan) tarEntries(r io.Reader, lower string) {
 			return
 		}
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		if h.Typeflag == tar.TypeReg {
@@ -350,15 +389,16 @@ func (s *launchScan) entry(name string, r io.Reader, size int64) {
 	lower := strings.ToLower(name)
 	switch {
 	case strings.HasSuffix(lower, ".class"):
+	case isCodeArchive(lower) && s.defines != nil:
 	case isCodeArchive(lower) || strings.HasSuffix(lower, ".zip"):
 		data, err := io.ReadAll(io.LimitReader(r, launchNestedLimit+1))
 		if err != nil || len(data) > launchNestedLimit {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 		if err != nil {
-			s.unreadable()
+			s.readFail()
 			return
 		}
 		s.manifest(zr)
@@ -423,7 +463,7 @@ var inertEncodings = map[string]bool{
 	"UTF-16BE": true, "UTF-16LE": true, "COMPAT": true,
 }
 
-var inertFlags = map[string]bool{
+var inertJVMFlags = map[string]bool{
 	"-server": true, "-client": true, "-ea": true, "-da": true, "-esa": true, "-dsa": true,
 	"-enableassertions": true, "-disableassertions": true,
 	"-enablesystemassertions": true, "-disablesystemassertions": true,
@@ -462,7 +502,7 @@ func classifyLaunchOption(opt string) optionClass {
 			return optionInert
 		}
 	}
-	if inertFlags[opt] {
+	if inertJVMFlags[opt] {
 		return optionInert
 	}
 	for _, p := range inertFlagPrefixes {

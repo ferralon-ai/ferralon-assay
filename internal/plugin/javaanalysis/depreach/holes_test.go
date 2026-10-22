@@ -273,6 +273,271 @@ func TestReach_ProviderRoots(t *testing.T) {
 	})
 }
 
+// TestReach_SignatureRoots: of a JDK-loadable class's overridable methods, only those
+// the JDK can name through a supertype it holds the object under are roots. Rows run on
+// the platformMethods release unless they state another runtime, except the last, which states none.
+func TestReach_SignatureRoots(t *testing.T) {
+	const (
+		d    = "com/acme/D"
+		base = "com/acme/Base"
+		cowl = "java/util/concurrent/CopyOnWriteArrayList"
+		ueh  = "java/lang/Thread$UncaughtExceptionHandler"
+		sub  = "java/util/concurrent/Flow$Subscriber"
+	)
+	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
+	uncaught := "(Ljava/lang/Thread;Ljava/lang/Throwable;)V"
+	undeclared := []classfile.Class{
+		mainCalls(touch),
+		{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
+			callsSink(d, "snapshot", "()Ljava/lang/Object;"),
+			callsSink(d, "cursor", "()Ljava/util/Iterator;"),
+		}},
+	}
+	cases := []holeCase{
+		{
+			name:    "a method no platform supertype declares is no root, and no re-entry hazard",
+			classes: undeclared,
+			want:    NotExploitable,
+		},
+		{
+			name:    "the same method on a later JDK, which can declare it, is a root",
+			classes: undeclared,
+			cp:      Classpath{JDK: platformMethodsJDK + 4},
+			want:    ReachableCandidate, via: "D.snapshot",
+		},
+		{
+			name:    "the same on an earlier JDK, which can declare a method since removed",
+			classes: undeclared,
+			cp:      Classpath{JDK: 8},
+			want:    ReachableCandidate, via: "D.snapshot",
+		},
+		{
+			name: "the same on a platform interface's implementor",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "uncaughtException", uncaught),
+					callsSink(d, "snapshot", "()Ljava/lang/Object;"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "a platform-declared override returning Object stays a root with its hazard",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/util/Hashtable", Public: true, Methods: []classfile.Method{
+					pubMethod(d, "get", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+			},
+			want: Undetermined, kind: HazardKindReentry, why: "returns java/lang/Object",
+		},
+		{
+			name: "an override of a platform interface the class is handed to the JDK under",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "uncaughtException", uncaught),
+				}},
+			},
+			want: ReachableCandidate, via: "D.uncaughtException",
+		},
+		{
+			name: "an inherited method a subclass's platform interface names",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: base, Interfaces: []string{ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.uncaughtException",
+		},
+		{
+			name: "the same two levels up",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: "com/acme/Mid", Super: base, Public: true},
+				{Name: d, Super: "com/acme/Mid", Interfaces: []string{ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.uncaughtException",
+		},
+		{
+			name: "an inherited default method a subclass's platform interface names",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: "com/acme/Handler", Super: objectClass, Abstract: true, Public: true, Methods: []classfile.Method{
+					callsSink("com/acme/Handler", "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: objectClass, Interfaces: []string{"com/acme/Handler", ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Handler.uncaughtException",
+		},
+		{
+			name: "a default method of a superinterface's superinterface",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: "com/acme/Handler", Super: objectClass, Abstract: true, Public: true, Methods: []classfile.Method{
+					callsSink("com/acme/Handler", "uncaughtException", uncaught),
+				}},
+				{Name: "com/acme/Logging", Super: objectClass, Interfaces: []string{"com/acme/Handler"}, Abstract: true, Public: true},
+				{Name: d, Super: objectClass, Interfaces: []string{"com/acme/Logging", ueh}, Public: true},
+			},
+			want: ReachableCandidate, via: "Handler.uncaughtException",
+		},
+		{
+			name: "an inherited method no loadable subclass names is no root",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "uncaughtException", uncaught),
+				}},
+				{Name: d, Super: base, Public: true},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "a method an unopened supertype may declare",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: cowl, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a method a subclass's unopened supertype may declare",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Public: true, Methods: []classfile.Method{
+					callsSink(base, "start", "()V"),
+				}},
+				{Name: d, Super: base, Interfaces: []string{"org/unopened/Plugin"}, Public: true},
+			},
+			want: ReachableCandidate, via: "Base.start",
+		},
+		{
+			name: "a JDK-prefixed supertype a classpath JAR defines is unopened",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:   Classpath{Packages: map[string]bool{"javax/net": true}},
+			want: ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a JAR's own java/ class does not shadow the JDK's",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: cowl, Super: objectClass, Public: true},
+				{Name: d, Super: cowl, Public: true, Methods: []classfile.Method{
+					callsSink(d, "add", "(Ljava/lang/Object;)Z"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.add",
+		},
+		{
+			name: "the same when the class is JDK-loadable through another supertype",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: cowl, Super: objectClass, Public: true},
+				{Name: d, Super: cowl, Interfaces: []string{ueh}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "uncaughtException", uncaught),
+					callsSink(d, "add", "(Ljava/lang/Object;)Z"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.add",
+		},
+		{
+			name: "a covariant override of a platform method",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/nio/charset/spi/CharsetProvider", Public: true, Methods: []classfile.Method{
+					callsSink(d, "charsetForName", "(Ljava/lang/String;)Lcom/acme/AcmeCharset;"),
+				}},
+			},
+			want: ReachableCandidate, via: "D.charsetForName",
+		},
+		{
+			name: "a generic override reached through its bridge",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{sub}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "onNext", "(Ljava/lang/String;)V"),
+					pubMethod(d, "onNext", "(Ljava/lang/Object;)V", edge(classfile.EdgeVirtual, d, "onNext", "(Ljava/lang/String;)V")),
+				}},
+			},
+			want: ReachableCandidate, via: "D.onNext(Ljava/lang/Object;)V -> D.onNext(Ljava/lang/String;)V",
+		},
+		{
+			name: "a generic override without its bridge is no root",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: objectClass, Interfaces: []string{sub}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "onNext", "(Ljava/lang/String;)V"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "a method a listed platform supertype lacks",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			want: NotExploitable,
+		},
+		{
+			name: "the same on a classpath not every entry of which was listed",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:   Classpath{Unlisted: true},
+			want: ReachableCandidate, via: "D.start",
+		},
+	}
+	for _, m := range []struct{ name, desc string }{
+		{"toString", "()Ljava/lang/String;"},
+		{"equals", "(Ljava/lang/Object;)Z"},
+		{"hashCode", "()I"},
+		{"finalize", "()V"},
+		{"clone", "()Ljava/lang/Object;"},
+	} {
+		cases = append(cases, holeCase{
+			name: "an override of java/lang/Object's " + m.name,
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/nio/charset/spi/CharsetProvider", Public: true, Methods: []classfile.Method{
+					callsSink(d, m.name, m.desc),
+				}},
+			},
+			want: ReachableCandidate, via: "D." + m.name,
+		})
+	}
+	for i := range cases {
+		if cases[i].cp.JDK == 0 {
+			cases[i].cp.JDK = platformMethodsJDK
+		}
+	}
+	cases = append(cases, holeCase{
+		name:    "the same undeclared method on an unstated JDK",
+		classes: undeclared,
+		want:    ReachableCandidate, via: "D.snapshot",
+	})
+	runHoleCases(t, cases)
+}
+
 // TestReach_PlatformBodyOnThis: a JDK body running with an application object as
 // `this` can call what the object overrides or holds.
 func TestReach_PlatformBodyOnThis(t *testing.T) {
@@ -421,6 +686,29 @@ func TestReach_ReentryAnyReferenceArgument(t *testing.T) {
 			want:    Undetermined, kind: HazardKindReentry, why: "java/lang/Object",
 		},
 		{
+			// The JVM defines java/ classes only from the boot loader, so the JDK's put runs and
+			// calls K.hashCode, not the stub's empty body.
+			name: "a JAR's own java/util/Hashtable does not stand in for the JDK's",
+			classes: []classfile.Class{
+				mainCalls(
+					edge(classfile.EdgeSpecial, "java/util/Hashtable", "<init>", "()V"),
+					edge(classfile.EdgeSpecial, "com/acme/K", "<init>", "()V"),
+					edge(classfile.EdgeVirtual, "java/util/Hashtable", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+				),
+				{Name: "java/util/Hashtable", Super: "java/util/Dictionary", Public: true, Methods: []classfile.Method{
+					pubMethod("java/util/Hashtable", "<init>", "()V"),
+					emptyFinalize("java/util/Hashtable"),
+					pubMethod("java/util/Hashtable", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+				{Name: "com/acme/K", Super: objectClass, Public: true, Methods: []classfile.Method{
+					pubMethod("com/acme/K", "<init>", "()V"),
+					emptyFinalize("com/acme/K"),
+					callsSink("com/acme/K", "hashCode", "()I"),
+				}},
+			},
+			want: Undetermined,
+		},
+		{
 			name: "value-class and primitive arguments are leaves",
 			classes: []classfile.Class{mainCalls(
 				edge(classfile.EdgeStatic, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I"),
@@ -474,6 +762,8 @@ func TestIsReflection_DynamicResolutionChannels(t *testing.T) {
 		mref("java/lang/ClassLoader", "findSystemClass", "(Ljava/lang/String;)Ljava/lang/Class;"),
 		mref("java/io/ObjectInputStream", "readObject", "()Ljava/lang/Object;"),
 		mref("java/io/ObjectOutputStream", "writeObject", "(Ljava/lang/Object;)V"),
+		mref("java/security/SignedObject", "getObject", "()Ljava/lang/Object;"),
+		mref("javax/crypto/SealedObject", "getObject", "(Ljava/security/Key;)Ljava/lang/Object;"),
 		mref("java/rmi/Naming", "lookup", "(Ljava/lang/String;)Ljava/rmi/Remote;"),
 		mref("javax/naming/InitialContext", "<init>", "()V"),
 		mref("java/lang/System", "loadLibrary", "(Ljava/lang/String;)V"),
@@ -490,6 +780,7 @@ func TestIsReflection_DynamicResolutionChannels(t *testing.T) {
 		mref("java/lang/System", "getProperty", getProperty),
 		mref("com/acme/Loader", "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;"),
 		mref("java/lang/String", "valueOf", "(I)Ljava/lang/String;"),
+		mref("java/security/SignedObject", "getSignature", "()[B"),
 	}
 	for _, r := range no {
 		if isReflection(r) {

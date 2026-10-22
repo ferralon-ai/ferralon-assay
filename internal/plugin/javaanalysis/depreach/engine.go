@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 )
@@ -27,8 +28,10 @@ type Engine struct {
 	overridable map[string]bool              // hasOverridable cache
 	loadable    map[string]bool              // platformLoadable cache
 	lambdas     map[string][]lambdaSite      // interface a lambda object implements -> its sites
+	held        map[string]heldTypes         // heldAs cache
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
+	methodsHold bool                         // platformMethods lists the runtime's methods
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -47,12 +50,89 @@ type Classpath struct {
 	Packages map[string]bool
 	// Unlisted is set when some entry could not be listed: it may define any package.
 	Unlisted bool
+	// JDK is the feature release of the JDK the program runs on, or 0 when not recorded.
+	// platformMethods holds only on the release it was generated from (platformMethodsJDK).
+	JDK int
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
 // retained by pointer, so callers must not mutate it afterwards.
 func NewEngine(classes []classfile.Class) *Engine {
 	return NewEngineOn(classes, Classpath{})
+}
+
+// BootOnly reports whether a classpath copy of the class named name may not be the body that runs
+// on feature release jdk (0 when not recorded): a java/ class, which the JVM refuses from any
+// loader but the boot and platform loaders, or a class in a package the JDK's own code occupies.
+// On 9 and later a package of a system module in the boot layer hides a classpath copy, and on 8
+// the boot and extension class paths are searched first. On a runtime image without the module
+// the copy does run, so outside java/ the copy is neither walked nor taken for the JDK's leaf: the
+// engine finds its package defined by the classpath and a call into it unopened.
+//
+// jdkPackages is read from Temurin images, so a vendor's additions (a JavaFX or GraalVM build) are
+// not in it. jdk is the release of the JVM that ran the build, which the deployed runtime need not
+// match: a copy of a package that only the deployed release has is still walked. A release
+// jdkPackages does not cover counts a package any covered release has. So does an unrecorded
+// one, which is also a release after the newest covered one when a module's toolchain picks it,
+// and so does a newer one; both also count a package where the JDK could add one (jdkSubtree).
+func BootOnly(name string, jdk int) bool {
+	if strings.HasPrefix(name, "java/") {
+		return true
+	}
+	i := strings.LastIndexByte(name, '/')
+	if i <= 0 {
+		return false
+	}
+	pkg := name[:i]
+	mask, ok := jdkPackages[pkg]
+	if jdk == 0 || jdk > jdkReleases[len(jdkReleases)-1] {
+		return ok || jdkSubtree(pkg)
+	}
+	if !ok {
+		return false
+	}
+	for b, r := range jdkReleases {
+		if r == jdk {
+			return mask&(1<<b) != 0
+		}
+	}
+	return true
+}
+
+// jdkPrefixes holds every proper prefix of a package in jdkPackages: javax/sound for
+// javax/sound/midi.
+var jdkPrefixes = func() map[string]bool {
+	m := map[string]bool{}
+	for p := range jdkPackages {
+		for i := strings.LastIndexByte(p, '/'); i > 0; i = strings.LastIndexByte(p[:i], '/') {
+			m[p[:i]] = true
+		}
+	}
+	return m
+}()
+
+// jdkSubtree reports whether a release jdkPackages does not hold could add pkg: a package under
+// jdk/ or sun/, one that is a prefix of a JDK package, or one whose parent is a JDK package or a
+// prefix of one, at least two segments deep (so not javax/servlet) and three under com/ and org/
+// (so not com/sun/jna). Every package Temurin added from 16 to 27 is one.
+func jdkSubtree(pkg string) bool {
+	if strings.HasPrefix(pkg, "jdk/") || strings.HasPrefix(pkg, "sun/") || jdkPrefixes[pkg] {
+		return true
+	}
+	i := strings.LastIndexByte(pkg, '/')
+	if i <= 0 {
+		return false
+	}
+	parent := pkg[:i]
+	least := 2
+	if strings.HasPrefix(parent, "com/") || strings.HasPrefix(parent, "org/") {
+		least = 3
+	}
+	if strings.Count(parent, "/")+1 < least {
+		return false
+	}
+	_, jdkParent := jdkPackages[parent]
+	return jdkParent || jdkPrefixes[parent]
 }
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The
@@ -65,18 +145,23 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
+		held:        map[string]heldTypes{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
+		methodsHold: cp.JDK == platformMethodsJDK,
 	}
 	for p := range cp.Packages {
 		e.defined[p] = true
 	}
 	for i := range classes {
 		c := &classes[i]
-		e.classes[c.Name] = c
 		if j := strings.LastIndexByte(c.Name, '/'); j > 0 {
 			e.defined[c.Name[:j]] = true
 		}
+		if BootOnly(c.Name, cp.JDK) {
+			continue
+		}
+		e.classes[c.Name] = c
 		for j := range c.Methods {
 			e.declared[c.Methods[j].Ref.String()] = &c.Methods[j]
 			for _, edge := range c.Methods[j].Edges {
@@ -357,6 +442,9 @@ func (e *Engine) platform(name string) bool {
 	}
 	return isPlatformClass(name)
 }
+
+// IsPlatformClass is isPlatformClass for callers outside the engine.
+func IsPlatformClass(name string) bool { return isPlatformClass(name) }
 
 // isPlatformClass reports whether an internal class name belongs to the Java
 // platform (the JDK's own modules), whose bodies the engine treats as leaves under
@@ -992,7 +1080,8 @@ func (e *Engine) hasOverridable(c string) bool {
 //     javax/management (MBean server, MLet), javax/script, java/lang/instrument.
 //   - deserialization: ObjectInputStream/ObjectOutputStream run readObject,
 //     readResolve, writeReplace and a serializable lambda's $deserializeLambda$ on
-//     classes the stream names; java/rmi lookups and calls deserialize results.
+//     classes the stream names; SignedObject and SealedObject getObject read one
+//     through an ObjectInputStream; java/rmi lookups and calls deserialize results.
 //   - process-global inputs: System/Runtime load/loadLibrary (a native library's
 //     JNI_OnLoad can call any Java method) and System.setProperty/setProperties
 //     (platform factories instantiate classes their properties name).
@@ -1003,6 +1092,8 @@ func isReflection(r classfile.MethodRef) bool {
 	case r.Owner == "java/util/ServiceLoader" || strings.HasPrefix(r.Owner, "java/util/ServiceLoader$"):
 		return true
 	case r.Owner == "java/io/ObjectInputStream" || r.Owner == "java/io/ObjectOutputStream":
+		return true
+	case (r.Owner == "java/security/SignedObject" || r.Owner == "javax/crypto/SealedObject") && r.Name == "getObject":
 		return true
 	case (r.Owner == "java/lang/System" || r.Owner == "java/lang/Runtime") && (r.Name == "load" || r.Name == "loadLibrary"):
 		return true
@@ -1102,7 +1193,7 @@ func (e *Engine) platformLoadable(c string) bool {
 // A Throwable needs no roots: every instance ran Throwable's constructor on itself,
 // which the search already treats as a platform body running on that receiver.
 func (e *Engine) loadableType(t string) bool {
-	if _, ok := e.classes[t]; ok {
+	if e.classes[t] != nil {
 		return e.platformLoadable(t)
 	}
 	if !e.platform(t) {
@@ -1115,31 +1206,135 @@ func (e *Engine) loadableType(t string) bool {
 	return !deniedLoadable[t] && !strings.HasPrefix(t, "java/util/function/")
 }
 
+// objectOverridable are java/lang/Object's overridable methods, keyed as platformMethods
+// keys them.
+var objectOverridable = map[string]bool{
+	"toString()": true, "equals(Ljava/lang/Object;)": true, "hashCode()": true, "finalize()": true, "clone()": true,
+}
+
+// platformSigs indexes platformMethods' methods by type.
+var platformSigs = sync.OnceValue(func() map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(platformMethods))
+	for t, pt := range platformMethods {
+		sigs := map[string]bool{}
+		for _, s := range strings.Fields(pt.methods) {
+			sigs[s] = true
+		}
+		out[t] = sigs
+	}
+	return out
+})
+
+// heldTypes is how the JDK can hold an object: the platformMethods types among its
+// supertypes, and unseen when some supertype's methods are unknown to the engine.
+type heldTypes struct {
+	types  []string
+	unseen bool
+}
+
+// heldAs returns the heldTypes of every loaded class that is owner or a subtype of it,
+// merged: a method owner declares runs on an object of each that does not override it.
+// A supertype is unseen when it is neither loaded, java/lang/Object, nor a platform type
+// platformMethods lists: an unopened dependency type, whose own supertypes are unknown,
+// or a platform type outside the list. Every platform type is unseen when the runtime is
+// not the list's release: a later JDK can add a method to a listed type, and an earlier one
+// can declare a method since removed (JDK 8's SecurityManager.checkMemberAccess).
+func (e *Engine) heldAs(owner string) heldTypes {
+	if h, ok := e.held[owner]; ok {
+		return h
+	}
+	var h heldTypes
+	seen := map[string]bool{}
+	stack := e.subtypeClosure(owner)
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[cur] || cur == objectClass {
+			continue
+		}
+		seen[cur] = true
+		if cls := e.classes[cur]; cls != nil {
+			if cls.Super != "" {
+				stack = append(stack, cls.Super)
+			}
+			stack = append(stack, cls.Interfaces...)
+			continue
+		}
+		pt, listed := platformMethods[cur]
+		if !listed || !e.methodsHold || !e.platform(cur) {
+			h.unseen = true
+			break
+		}
+		h.types = append(h.types, cur)
+		stack = append(stack, strings.Fields(pt.supers)...)
+	}
+	e.held[owner] = h
+	return h
+}
+
+// jdkCallable reports whether JDK code can invoke m, an overridable method of loaded
+// class owner, without reflection: the JDK names a method only through a type of its
+// own, so m must override a method a platform supertype declares (platformMethods,
+// objectOverridable) or one of a supertype the engine cannot see. A match is on name
+// and parameter types: a covariant override's bridge and the override itself both
+// match. Any other JDK call into m is reflective (deserialization hooks, java/beans,
+// JMX, method handles), and the search meets its JDK entry point as a hazard instead
+// (isReflection). That holds only for reflection the searched code starts: an endpoint
+// launch flags enable, such as JMX remote or an RMI registry, deserializes into
+// readResolve and writeReplace with no call in the code, and is outside the search.
+func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
+	i := strings.IndexByte(m.Descriptor, ')')
+	if i < 0 {
+		return true
+	}
+	sig := m.Name + m.Descriptor[:i+1]
+	if objectOverridable[sig] {
+		return true
+	}
+	h := e.heldAs(owner)
+	if h.unseen {
+		return true
+	}
+	sigs := platformSigs()
+	for _, t := range h.types {
+		if sigs[t][sig] {
+			return true
+		}
+	}
+	return false
+}
+
 // providerRoots returns the methods the JDK itself can call on loaded classes it
-// finds or holds without the searched code handing them over: for each
-// platformLoadable class, its overridable methods, and when it is a public concrete
-// class, its public constructors, public static provider() and the static
-// initializers instantiating it runs (ServiceLoader, DriverManager and the factory
-// lookups load providers named in META-INF/services). A root method that returns an
-// object the JDK then calls is a hazard when the object's type is not itself
-// covered (a denied or unopened type, such as Object or Iterator), because the
-// object's class need not be platformLoadable.
+// finds or holds without the searched code handing them over: the overridable methods
+// the JDK can name (jdkCallable) of each class that is platformLoadable or a supertype
+// of one, since a platformLoadable subclass inherits them, and for a platformLoadable
+// class that is public and concrete, its public constructors, public static
+// provider() and the static initializers instantiating it runs (ServiceLoader,
+// DriverManager and the factory lookups load providers named in META-INF/services).
+// A root method that returns an object the JDK then calls is a hazard when the
+// object's type is not itself covered (a denied or unopened type, such as Object or
+// Iterator), because the object's class need not be platformLoadable.
 func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 	names := make([]string, 0, len(e.classes))
 	for n := range e.classes {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	inherited := e.loadableSupertypes()
 	for _, n := range names {
-		if !e.platformLoadable(n) {
+		loadable := e.platformLoadable(n)
+		if !loadable && !inherited[n] {
 			continue
 		}
 		cls := e.classes[n]
-		byName := cls.Public && !cls.Abstract
+		byName := loadable && cls.Public && !cls.Abstract
 		for i := range cls.Methods {
 			m := &cls.Methods[i]
 			switch {
 			case isOverridable(m):
+				if !e.jdkCallable(n, m.Ref) {
+					continue
+				}
 				roots = append(roots, m)
 				if rt, ok := returnRefType(m.Ref.Descriptor); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
 					hazard = "higher-order re-entry: platform-callable " + m.Ref.String() + " returns " + rt + ", which can carry application objects"
@@ -1157,6 +1352,32 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 		}
 	}
 	return roots, hazard
+}
+
+// loadableSupertypes returns the loaded classes and interfaces a platformLoadable class
+// extends or implements, directly or not: the JDK holding that class runs the methods
+// it inherits from them.
+func (e *Engine) loadableSupertypes() map[string]bool {
+	out := map[string]bool{}
+	var stack []string
+	for n, cls := range e.classes {
+		if e.platformLoadable(n) {
+			stack = append(stack, cls.Super)
+			stack = append(stack, cls.Interfaces...)
+		}
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cls := e.classes[cur]
+		if cls == nil || out[cur] {
+			continue
+		}
+		out[cur] = true
+		stack = append(stack, cls.Super)
+		stack = append(stack, cls.Interfaces...)
+	}
+	return out
 }
 
 // touchesPlatform reports whether edge can run a JDK body other than
@@ -1494,7 +1715,14 @@ func (cp *Classpath) Add(pkgs map[string]bool, listed bool) {
 }
 
 // Merge adds everything other records.
+// A JDK only one side records is kept, and two that differ leave it 0.
 func (cp *Classpath) Merge(other Classpath) {
 	cp.Add(other.Packages, true)
 	cp.Unlisted = cp.Unlisted || other.Unlisted
+	switch {
+	case cp.JDK == 0:
+		cp.JDK = other.JDK
+	case other.JDK != 0 && other.JDK != cp.JDK:
+		cp.JDK = 0
+	}
 }

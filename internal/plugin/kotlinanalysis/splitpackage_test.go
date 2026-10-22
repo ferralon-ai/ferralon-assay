@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -66,28 +65,24 @@ func TestReachability_SplitPackages(t *testing.T) {
 		return append(b.invokeStatic(saxParserFactory, "newDefaultInstance", "()Ljavax/xml/parsers/SAXParserFactory;"),
 			b.invokeVirtual(objectMapper, "writeValueAsString", "(Ljava/lang/Object;)Ljava/lang/String;")...)
 	}
+	// errorproneJarPath is the JAR's place in a cache outside the build tree the launch-option
+	// scan reads. A build whose errorprone JAR goes there (withErrorprone with no jar) has the
+	// graph name it there, whether or not a row writes it.
+	var home string
+	errorproneJarPath := func(string) string {
+		return filepath.Join(home, ".gradle", "caches", "modules-2", "files-2.1",
+			errorproneGroup, errorproneArtifact, errorproneVersion, "0123abcd", errorproneArtifact+"-"+errorproneVersion+".jar")
+	}
+	var outside []graphDep
 	withErrorprone := func(t *testing.T, main func(*kclassBuilder) []byte, jar map[string][]byte) string {
 		dir := gradleJacksonBuild(t, `    implementation("`+errorproneGroup+":"+errorproneArtifact+":"+errorproneVersion+`")`)
 		if jar != nil {
 			writeGradleCacheJar(t, dir, errorproneGroup, errorproneArtifact, errorproneVersion, jar)
+		} else {
+			outside = append(outside, graphDep{group: errorproneGroup, artifact: errorproneArtifact, version: errorproneVersion, jar: errorproneJarPath(dir)})
 		}
 		writeMain(t, dir, main)
 		return dir
-	}
-	// withFileDep is the control build plus libs/javac-shaded.jar defining a class beside
-	// Option, and the given extra dependency line.
-	withFileDep := func(t *testing.T, line string) string {
-		dir := gradleJacksonBuild(t, `    implementation("`+errorproneGroup+":"+errorproneArtifact+":"+errorproneVersion+`")`+"\n"+line)
-		writeGradleCacheJar(t, dir, errorproneGroup, errorproneArtifact, errorproneVersion, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
-		writeJar(t, filepath.Join(dir, "libs", "javac-shaded.jar"), map[string][]byte{"com/sun/tools/javac/main/Main": plainClass("com/sun/tools/javac/main/Main")})
-		writeMain(t, dir, callsOption)
-		return dir
-	}
-	// errorproneJarPath is the JAR's place in the user-level Gradle cache (HOME is the test's),
-	// outside the build tree the launch-option scan reads.
-	errorproneJarPath := func(string) string {
-		return filepath.Join(os.Getenv("HOME"), ".gradle", "caches", "modules-2", "files-2.1",
-			errorproneGroup, errorproneArtifact, errorproneVersion, "0123abcd", errorproneArtifact+"-"+errorproneVersion+".jar")
 	}
 	tests := []struct {
 		name         string
@@ -145,7 +140,7 @@ func TestReachability_SplitPackages(t *testing.T) {
 			dir := withErrorprone(t, callsOption, map[string][]byte{"com/google/errorprone/Other": plainClass("com/google/errorprone/Other")})
 			writeRawJar(t, filepath.Join(dir, "build", "libs", "app.jar"), map[string][]byte{
 				"com/acme/Boot.class":  plainClass("com/acme/Boot"),
-				"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\nMain-Class: com.acme.Boot\n\n"),
+				"META-INF/MANIFEST.MF": []byte("Manifest-Version: 1.0\n\n"),
 			})
 			return dir
 		}, true, nil},
@@ -155,36 +150,6 @@ func TestReachability_SplitPackages(t *testing.T) {
 				map[string][]byte{"com/sun/tools/javac/main/Main.class": plainClass("com/sun/tools/javac/main/Main")})
 			return dir
 		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
-		{"a start-script classpath JAR's manifest names Class-Path: javac-shaded.jar: Option is unopened", func(t *testing.T) string {
-			dir := withErrorprone(t, callsOption, nil)
-			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
-				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
-				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\nClass-Path: javac-shaded.jar\n\n"),
-			})
-			writeStartScript(t, dir, "scripts/app", []string{jacksonJarName, errorproneArtifact + "-" + errorproneVersion + ".jar"}, "com.example.MainKt")
-			return dir
-		}, false, []string{plugin.PartialReasonReachabilityUndetermined}},
-		{"control: a start-script classpath JAR with no Class-Path, so Option is the JDK's", func(t *testing.T) string {
-			dir := withErrorprone(t, callsOption, nil)
-			writeRawJar(t, errorproneJarPath(dir), map[string][]byte{
-				"com/google/errorprone/Other.class": plainClass("com/google/errorprone/Other"),
-				"META-INF/MANIFEST.MF":              []byte("Manifest-Version: 1.0\n\n"),
-			})
-			writeStartScript(t, dir, "scripts/app", []string{jacksonJarName, errorproneArtifact + "-" + errorproneVersion + ".jar"}, "com.example.MainKt")
-			return dir
-		}, true, nil},
-		{"implementation(files(\"libs/javac-shaded.jar\")) is never loaded: not searched", func(t *testing.T) string {
-			return withFileDep(t, `    implementation(files("libs/javac-shaded.jar"))`)
-		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
-		{"implementation(fileTree(\"libs\")) is never loaded: not searched", func(t *testing.T) string {
-			return withFileDep(t, `    implementation(fileTree("libs"))`)
-		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
-		{"runtimeOnly(files(\"libs/javac-shaded.jar\")) is never loaded: not searched", func(t *testing.T) string {
-			return withFileDep(t, `    runtimeOnly(files("libs/javac-shaded.jar"))`)
-		}, false, []string{plugin.PartialReasonReachabilityUndetermined, javaanalysis.PartialReasonUnmodeledDependency}},
-		{"control: libs/javac-shaded.jar present but not declared, so Option is the JDK's", func(t *testing.T) string {
-			return withFileDep(t, "")
-		}, true, nil},
 		{"a corrupt dependency JAR may define javax/xml/parsers: not searched", func(t *testing.T) string {
 			dir := withErrorprone(t, callsParsers, nil)
 			p := errorproneJarPath(dir)
@@ -261,7 +226,9 @@ func TestReachability_SplitPackages(t *testing.T) {
 	}...)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := reach(t, tt.setup(t), readValueSink)
+			home, outside = t.TempDir(), nil
+			dir := tt.setup(t)
+			res := reachWith(t, dir, cacheGraph(t, dir, outside...), readValueSink)
 			if len(res.Paths) != 0 {
 				t.Fatalf("paths %+v", res.Paths)
 			}

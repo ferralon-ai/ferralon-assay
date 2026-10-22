@@ -194,30 +194,73 @@ func namesPackage(head []byte) bool {
 // directory (scoped ones under their @scope), its own nested node_modules, and pnpm's
 // .pnpm/<id>/node_modules. Each copy is its package.json name at its version, or UNRESOLVED
 // when it names no version. A directory or package.json that is there but cannot be read
-// makes ok false, and so does a symlink that leaves root or does not resolve (an npm link)
-// wherever this reads one: a package or @scope entry, a nested node_modules, a .pnpm/<id> or
-// its node_modules. A symlink inside root is not followed, since what it points at is read
-// where it lies. A node_modules the shared walk meets as a symlink is the walk's to judge
-// (buildtree.Candidates reports one that leaves root).
+// makes ok false. A symlink wherever this reads one (a node_modules, a package or @scope entry,
+// a .pnpm/<id>) is followed when it resolves inside root, whatever its target is named, and
+// makes ok false when it leaves root or does not resolve (an npm link). Each directory is read
+// once as a package and once as a node_modules, at its real path: a link can make one directory
+// both, and each role reads different copies from it.
 func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
 	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
-	// realDir reports whether path is a directory to read where it lies, without following a
-	// symlink. read is false when the path is there but cannot be read, or is a symlink that
-	// escapes.
+	// realDir reports whether path is a directory, following a symlink that resolves inside
+	// root. read is false when the path is there but cannot be read, or is a symlink that
+	// escapes or does not resolve.
 	realDir := func(path string) (dir, read bool) {
 		info, err := os.Lstat(path)
 		switch {
 		case err != nil:
 			return false, absent(err)
 		case info.Mode()&fs.ModeSymlink != 0:
-			return false, !escapes(path)
+			if escapes(path) {
+				return false, false
+			}
+			if info, err = os.Stat(path); err != nil {
+				return false, absent(err)
+			}
 		}
 		return info.IsDir(), true
 	}
+	// once reports whether path's real path is seen for the first time in the role whose set
+	// is seen. A path that does not resolve makes ok false.
+	pkgSeen, nmSeen := map[string]bool{}, map[string]bool{}
+	once := func(seen map[string]bool, path string) bool {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			ok = false
+			return false
+		}
+		if seen[real] {
+			return false
+		}
+		seen[real] = true
+		return true
+	}
+	// entryDir reports whether the directory entry e of dir is a directory to read, following
+	// a symlink as realDir does and making ok false where realDir cannot read it.
+	entryDir := func(dir string, e fs.DirEntry) bool {
+		if e.Type()&fs.ModeSymlink == 0 {
+			return e.IsDir()
+		}
+		d, read := realDir(filepath.Join(dir, e.Name()))
+		if !read {
+			ok = false
+		}
+		return d
+	}
 	var readDir func(dir string)
+	readNodeModules := func(nm string) {
+		switch d, read := realDir(nm); {
+		case !read:
+			ok = false
+		case d:
+			readDir(nm)
+		}
+	}
 	readPkg := func(dir string) {
+		if !once(pkgSeen, dir) {
+			return
+		}
 		data, err := readRegular(filepath.Join(dir, "package.json"))
 		switch {
 		case err == nil:
@@ -241,14 +284,12 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 			ok = false
 			return
 		}
-		switch d, read := realDir(filepath.Join(dir, "node_modules")); {
-		case !read:
-			ok = false
-		case d:
-			readDir(filepath.Join(dir, "node_modules"))
-		}
+		readNodeModules(filepath.Join(dir, "node_modules"))
 	}
 	readDir = func(dir string) {
+		if !once(nmSeen, dir) {
+			return
+		}
 		ents, err := os.ReadDir(dir)
 		if err != nil {
 			ok = false
@@ -256,10 +297,7 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 		}
 		for _, e := range ents {
 			p := filepath.Join(dir, e.Name())
-			if e.Type()&fs.ModeSymlink != 0 && e.Name() != ".bin" && escapes(p) {
-				ok = false
-			}
-			if e.Type()&fs.ModeSymlink != 0 || !e.IsDir() {
+			if e.Name() == ".bin" || !entryDir(dir, e) {
 				continue
 			}
 			switch {
@@ -270,19 +308,8 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 					continue
 				}
 				for _, id := range ids {
-					ip := filepath.Join(p, id.Name())
-					if id.Type()&fs.ModeSymlink != 0 && escapes(ip) {
-						ok = false
-					}
-					if id.Type()&fs.ModeSymlink != 0 || !id.IsDir() {
-						continue
-					}
-					nm := filepath.Join(ip, "node_modules")
-					switch d, read := realDir(nm); {
-					case !read:
-						ok = false
-					case d:
-						readDir(nm)
+					if entryDir(p, id) {
+						readNodeModules(filepath.Join(p, id.Name(), "node_modules"))
 					}
 				}
 			case strings.HasPrefix(e.Name(), "@"):
@@ -292,17 +319,11 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 					continue
 				}
 				for _, s := range pkgs {
-					sp := filepath.Join(p, s.Name())
-					switch {
-					case s.Type()&fs.ModeSymlink != 0:
-						if escapes(sp) {
-							ok = false
-						}
-					case s.IsDir():
-						readPkg(sp)
+					if entryDir(p, s) {
+						readPkg(filepath.Join(p, s.Name()))
 					}
 				}
-			case strings.HasPrefix(e.Name(), "."): // .bin, .cache and installer state hold no packages
+			case strings.HasPrefix(e.Name(), "."): // .cache and installer state hold no packages
 			default:
 				readPkg(p)
 			}
@@ -314,8 +335,8 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, ok bool) 
 			if !absent(err) {
 				ok = false
 			}
-		case e.Skipped && !e.Symlink && e.D.Name() == "node_modules":
-			readDir(e.Path)
+		case e.D.Name() == "node_modules" && (e.Skipped || e.Symlink):
+			readNodeModules(e.Path)
 		}
 		return nil
 	})

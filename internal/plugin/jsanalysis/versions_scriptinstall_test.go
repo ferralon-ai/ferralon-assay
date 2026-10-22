@@ -94,6 +94,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"YARN_ variable in CI", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  YARN_REGISTRY: https://registry.example.com\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
 
 		{"folded run joins a pin to an allowed form", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          npm ci\n          express@4.18.2\n"}), false, ""},
+		{"PowerShell pins express", npm(map[string]string{"deploy.ps1": "npm install express@4.18.2\n"}), false, ""},
+		{"batch pins express", npm(map[string]string{"setup.bat": "call npm install express@4.18.2\r\n"}), false, ""},
+		{"GitLab local include pins express", npm(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "build:\n  script:\n    - npm ci && npm install express@4.18.2\n"}), false, ""},
 
 		// What an allowed form reads.
 		{"unreadable package.json", map[string]string{"package.json": "{not json", "package-lock.json": lock, "install.sh": "npm run build\n"}, false, ""},

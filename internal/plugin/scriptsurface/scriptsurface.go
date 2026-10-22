@@ -79,7 +79,8 @@ const (
 	kindShell      = "shell"
 	kindDockerfile = "dockerfile"
 	kindMakefile   = "makefile"
-	kindData       = "data" // YAML, TOML, INI, JSON and Procfile lines: "key: command"
+	kindData       = "data"   // YAML, TOML, INI, JSON and Procfile lines: "key: command"
+	kindOpaque     = "opaque" // PowerShell and batch: not parsed, so a line naming a token withholds
 )
 
 // Where a host surface's commands start.
@@ -94,7 +95,7 @@ type surfaceType struct{ kind, base string }
 // dataNames are the lowercased names of CI, platform and tool files that carry commands
 // as values, and where those commands start.
 var dataNames = map[string]string{
-	".gitlab-ci.yml": baseRoot, "bitbucket-pipelines.yml": baseRoot, ".travis.yml": baseRoot,
+	".gitlab-ci.yml": baseRoot, ".gitlab-ci.yaml": baseRoot, "bitbucket-pipelines.yml": baseRoot, ".travis.yml": baseRoot,
 	".drone.yml": baseRoot, "appveyor.yml": baseRoot, ".appveyor.yml": baseRoot,
 	".woodpecker.yml": baseRoot, ".gitpod.yml": baseRoot, "render.yaml": baseRoot,
 	"netlify.toml": baseRoot, "nixpacks.toml": baseRoot, "vercel.json": baseRoot,
@@ -113,8 +114,10 @@ func surfaceOf(path string, head []byte) (surfaceType, bool) {
 	case lower == "dockerfile", lower == "containerfile", strings.HasPrefix(lower, "dockerfile."),
 		strings.HasPrefix(lower, "containerfile."), ext == ".dockerfile", ext == ".containerfile":
 		return surfaceType{kindDockerfile, baseNone}, true
-	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", lower == "justfile", lower == ".justfile":
+	case lower == "makefile", lower == "gnumakefile", ext == ".mk", ext == ".mak", ext == ".make", lower == "justfile", lower == ".justfile":
 		return surfaceType{kindMakefile, baseDir}, true
+	case ext == ".ps1", ext == ".bat", ext == ".cmd":
+		return surfaceType{kindOpaque, baseDir}, true
 	case ext == ".sh", ext == ".bash", ext == ".zsh", ext == ".ksh", ext == ".ash", ext == ".dash", shellShebang(head):
 		return surfaceType{kindShell, baseDir}, true
 	case lower == "procfile", strings.HasPrefix(lower, "procfile."):
@@ -249,16 +252,39 @@ func (v *Veto) surface(path string, head []byte) (string, bool) {
 	switch {
 	case s.kind == kindDockerfile:
 		why = v.dockerfile(path, src)
+	case s.kind == kindOpaque:
+		why = v.opaque(src)
 	case strings.EqualFold(filepath.Ext(path), ".json"):
 		if units, ok := jsonUnits(path, src); ok {
 			why = v.host(s, kindShell, path, units)
 			break
 		}
 		why = v.host(s, kindData, path, []unit{{text: src}})
+	case gitlabCI[strings.ToLower(filepath.Base(path))]:
+		units, w := v.gitlabIncludes(path, src, map[string]bool{path: true}, 0)
+		if w != "" {
+			return w, true
+		}
+		why = v.host(s, s.kind, path, append([]unit{{text: src}}, units...))
 	default:
 		why = v.host(s, s.kind, path, []unit{{text: src}})
 	}
 	return why, why != ""
+}
+
+// opaque applies the rule to a surface this does not parse: any line naming a token, or an
+// install verb after an expansion, withholds.
+func (v *Veto) opaque(src string) string {
+	for _, line := range strings.Split(src, "\n") {
+		if v.hasToken(line) {
+			return "install command in a surface this does not parse"
+		}
+		if expandedInstallLine(line) {
+			return "install verb after an expansion in a surface this does not parse"
+		}
+		v.mention(strings.Fields(line))
+	}
+	return ""
 }
 
 // unit is a run of shell text sharing a starting directory, or one exec-form command.

@@ -80,6 +80,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"flag outside the allowed set", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --index-url https://x -r requirements.txt\n"}, false, ""},
 
 		{"folded run joins a pin to an allowed form", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          pip install -r requirements.txt\n          jinja2==3.1.2\n"}, false, ""},
+		{"PowerShell pins jinja2", map[string]string{"requirements.txt": reqs, "install.ps1": "python -m pip install jinja2==3.1.2\n"}, false, ""},
+		{"cmd pins jinja2", map[string]string{"requirements.txt": reqs, "install.cmd": "pip install jinja2==3.1.2\r\n"}, false, ""},
+		{"GitLab string include pins jinja2", map[string]string{"requirements.txt": reqs, ".gitlab-ci.yaml": "include: ci/build.yml\n", "ci/build.yml": "build:\n  script:\n    - pip install jinja2==3.1.2\n"}, false, ""},
 		{"plain run continued with a pin", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pip install -r requirements.txt\n          jinja2==3.1.2\n"}, false, ""},
 
 		// What an allowed install reads.

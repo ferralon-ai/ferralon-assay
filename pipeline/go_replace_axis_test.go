@@ -14,12 +14,15 @@ import (
 // TestGoModuleAxisHonoursReplace runs advisory_intake → codebase_inventory →
 // disqualification_discovery over a real go.mod with nothing seeded between them, against the
 // built-in GO-2021-0113 (golang.org/x/text, fixed v0.3.7). Every go.mod requires v0.3.8, which is
-// outside the range; a replace decides what the build actually compiles.
+// outside the range; a replace decides what the build actually compiles. E6 swaps in a synthetic
+// two-package advisory.
 func TestGoModuleAxisHonoursReplace(t *testing.T) {
 	const head = "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.8\n"
 	tests := []struct {
 		name         string
 		replace      string
+		src          AdvisorySource
+		goMod        string
 		wantVersion  string
 		wantUnpinned bool
 		wantDisqual  bool
@@ -53,6 +56,16 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 			wantReason:   ReasonInsufficient,
 		},
 		{
+			// example.com/a is fork-replaced and example.com/b sits past its fix. Were the replaced
+			// package not kept as declared, selection would move on to b and disqualify on b's
+			// range alone.
+			name:         "E6 a fork-replaced package still ends selection in a two-package advisory",
+			src:          multipkgSelectSource{withArray: true},
+			goMod:        "module example.com/app\n\ngo 1.22\n\nrequire (\n\texample.com/a v1.0.0\n\texample.com/b v1.6.0\n)\n\nreplace example.com/a => github.com/example/a v1.0.0\n",
+			wantUnpinned: true,
+			wantReason:   ReasonInsufficient,
+		},
+		{
 			name:        "E4 without a replace the require version disqualifies",
 			wantVersion: "v0.3.8",
 			wantDisqual: true,
@@ -61,26 +74,30 @@ func TestGoModuleAxisHonoursReplace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			goMod := head
+			goMod, vulnID := head, "GO-2021-0113"
 			if tt.replace != "" {
 				goMod += "\n" + tt.replace
+			}
+			if tt.goMod != "" {
+				goMod, vulnID = tt.goMod, "CVE-TEST-MULTIPKG"
 			}
 			store := artifact.NewMemStore()
 			caseID := "case-go-replace"
 			c := &assessment.Assessment{ID: caseID, Request: assessment.Request{
-				Vulnerability: assessment.VulnRef{ID: "GO-2021-0113", Source: "corpus"},
+				Vulnerability: assessment.VulnRef{ID: vulnID, Source: "corpus"},
 				Codebase: assessment.CodebaseRef{
 					Repo:        "example.com/app",
 					Revision:    "v1",
 					Acquisition: assessment.Acquisition{Mode: "git"},
 				},
 			}}
-			if err := (advisoryIntake{}).Run(context.Background(), c, store); err != nil {
+			if err := (advisoryIntake{src: tt.src}).Run(context.Background(), c, store); err != nil {
 				t.Fatalf("advisory_intake: %v", err)
 			}
 			stage := codebaseInventory{
 				checkout: dirCheckout{dir: writeGoModFixture(t, goMod), lang: "go"},
 				plugin:   goManifestPlugin{},
+				src:      tt.src,
 			}
 			if err := stage.Run(context.Background(), c, store); err != nil {
 				t.Fatalf("codebase_inventory: %v", err)

@@ -43,6 +43,8 @@ type venvMark struct {
 	made   string // key of the venv the last command but for directory changes created, or ""
 	open   int    // if, case and loop bodies the command is inside
 	dangle bool   // the last line ended in &&, || or |
+	lost   bool   // a cd that may not have run left the rule not knowing where the shell is
+	chain  bool   // a cd after && moved the directory: known only while the && list goes on
 }
 
 // hostCursor is the set of host directories a command may run in.
@@ -140,6 +142,8 @@ func (c *hostCursor) loc(p string) (string, bool) {
 		return "", false
 	case filepath.IsAbs(p):
 		return filepath.Clean(p), true
+	case c.mark.lost:
+		return "", false
 	case c.wd != "":
 		return filepath.Join(c.wd, p), true
 	case c.unknown || len(c.dirs) != 1:

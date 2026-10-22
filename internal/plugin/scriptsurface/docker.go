@@ -217,7 +217,7 @@ func (c *dockerCursor) at(p string) (string, bool) {
 		return "", false
 	case path.IsAbs(p):
 		return path.Clean(p), true
-	case !c.known:
+	case !c.known || c.mark.lost:
 		return "", false
 	}
 	return path.Join(c.dir, p), true

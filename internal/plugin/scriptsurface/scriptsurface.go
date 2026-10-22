@@ -545,6 +545,10 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return ""
 	}
 	mark := cur.venv()
+	if mark.chain && !seg.and {
+		// The && list a cd was part of has ended: what runs now may run where the cd did not.
+		mark.made, mark.lost, mark.chain = "", true, false
+	}
 	made := mark.made
 	mark.made = venvMade(seg, cur)
 	mark.open += blockDepth[words[0]]
@@ -555,6 +559,15 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			cur.cd(nil)
 		} else {
 			cur.cd(words)
+		}
+		switch {
+		case seg.and && mark.open == 0:
+			// The cd may not have run, but what follows it in its && list runs only if it did.
+			mark.chain = true
+		case seg.guarded || mark.open != 0:
+			// The cd may not have run, so neither the venv a command before it made nor the
+			// directory it moved to is known.
+			mark.made, mark.lost = "", true
 		}
 		return ""
 	case ".", "source":

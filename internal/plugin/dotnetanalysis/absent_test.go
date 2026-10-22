@@ -177,6 +177,10 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"a response file beside the project", withFile("MSBuild.rsp", "-p:CodeAnalysisTargets=hooks/ca.targets\n")},
 		{"a toolset import climbing out", withItems(`<Import Project="$(MSBuildToolsPath)/../../../../hooks/h.targets" />`)},
 		{"a toolset import expanding a property", withItems(`<Import Project="$(MSBuildBinPath)/$(Hook)" />`)},
+		{"a toolset import listing a second file", withItems(`<Import Project="$(MSBuildToolsPath)/Microsoft.Common.Test.targets;hooks/h.targets" />`)},
+		{"an import listing two files", withItems(`<Import Project="build/a.targets;build/hook.targets" Condition="Exists('build/a.targets;build/hook.targets')" />`)},
+		{"a vendored script", withFile("wwwroot/lib/moment/moment.min.js", "")},
+		{"a vendored stylesheet source", withFile("wwwroot/lib/bs/less/variables.less", "")},
 		{"a toolset import with a wildcard", withItems(`<Import Project="$(MSBuildBinPath)/hooks/*.targets" />`)},
 		{"a project's PackageId", withItems(`<PropertyGroup><PackageId>Newtonsoft.Json</PackageId></PropertyGroup>`)},
 		{"a project's AssemblyName", withItems(`<PropertyGroup><AssemblyName>App.Web</AssemblyName></PropertyGroup>`)},
@@ -220,9 +224,11 @@ func TestNotInBuild_WantSpecific(t *testing.T) {
 		{"an SDK pack", "Microsoft.NET.Sdk.Android.Manifest-8.0.100", nil},
 		{"framework reference assemblies", "Microsoft.NETFramework.ReferenceAssemblies.net48", nil},
 		{"a download restore records", "Contoso.Pack", withDownload("net8.0", "Contoso.Pack")},
-		{"a vendored front-end library", "jQuery", withFile("wwwroot/lib/jquery/dist/jquery.min.js", "")},
-		{"a vendored library named with a dash", "jQuery.Validation", withFile("wwwroot/lib/jquery-validation/dist/jquery.validate.js", "")},
-		{"a vendored file named with an underscore", "Bootstrap.Sass", withFile("assets/bootstrap_sass.scss", "")},
+		{"a vendored library", "jQuery", withFile("wwwroot/lib/jquery/LICENSE.txt", "")},
+		{"a vendored library named with a dash", "jQuery.Validation", withFile("wwwroot/lib/jquery-validation/LICENSE.md", "")},
+		{"a vendored library named with an underscore", "Bootstrap.Sass", withFile("vendor/bootstrap_sass/README", "")},
+		{"a dashed id vendored with a dash", "bootstrap-select", withFile("wwwroot/lib/bootstrap-select/LICENSE", "")},
+		{"a dashed id vendored with a dot", "bootstrap-select", withFile("vendor/bootstrap.select/LICENSE", "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := closedBuild(t, tc.edit)

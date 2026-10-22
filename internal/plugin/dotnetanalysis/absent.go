@@ -158,7 +158,7 @@ func inertOpaque(item, value string) bool {
 //     doesn't record the SDK's downloads), or a target framework names a platform, whose
 //     workload packs restore never records;
 //   - a lockfile or packages.config has no project file beside it;
-//   - a project read anything opaque, including an Import path holding an escape, or names
+//   - a project read anything opaque, including an Import path holding an escape or a list, or names
 //     want as a Reference or FrameworkReference;
 //   - want names one of the build's projects by file name (a project that sets PackageId or
 //     AssemblyName is never settled on restore's record, so it never gets here);
@@ -202,14 +202,23 @@ func completeBuild(ev *evaluator, manifests []string, projects map[string]*proje
 	return treeClosed(ev.rootReal, ev.projects, refs, want)
 }
 
+// vendorName reads '-' and '_' as '.', so a vendored directory or file (jquery-validation)
+// matches the package id it copies (jQuery.Validation), and the other way round.
+var vendorName = strings.NewReplacer("-", ".", "_", ".")
+
+// frontEndAssets are the file kinds a front-end library is vendored as. Their names need not
+// hold the NuGet id that ships the same library (moment.min.js for Moment.js), so any of them
+// keeps the build open.
+var frontEndAssets = []string{".js", ".mjs", ".cjs", ".ts", ".css", ".less", ".scss", ".sass", ".map"}
+
 // treeClosed reports whether the tree holds nothing that brings code into the build outside
 // the projects' restore: no symlink, no assembly, native library or package file, no file named
 // exactly as a Reference (refs, normalized), which MSBuild resolves as a raw file name, no
 // script that references packages itself, no project of another kind, no Paket, no MSBuild
 // response file (MSBuild.rsp beside a project is read by dotnet build and -p: sets any
 // property), no solution naming a project outside the tree's project files, and no file or
-// directory whose name holds want (a vendored copy, such as a front-end library a NuGet
-// package also ships, with '-' and '_' read as '.'). Only the root's .git and each
+// directory whose name holds want (a vendored copy, read through vendorName), and no
+// front-end asset (frontEndAssets). Only the root's .git and each
 // project's own bin and obj directories, which hold its build output and restore output, are
 // not walked; no inert item may reach into them (inertOpaque).
 func treeClosed(rootReal string, projects, refs map[string]bool, want string) bool {
@@ -232,7 +241,7 @@ func treeClosed(rootReal string, projects, refs map[string]bool, want string) bo
 			return filepath.SkipDir
 		}
 		name := strings.ToLower(d.Name())
-		if path != rootReal && strings.Contains(strings.NewReplacer("-", ".", "_", ".").Replace(name), want) {
+		if path != rootReal && strings.Contains(vendorName.Replace(name), vendorName.Replace(want)) {
 			closed = false
 			return filepath.SkipAll
 		}
@@ -246,6 +255,8 @@ func treeClosed(rootReal string, projects, refs map[string]bool, want string) bo
 		case name == "paket.dependencies", name == "paket.lock", name == "paket.references":
 			closed = false
 		case slices.Contains([]string{".dll", ".exe", ".winmd", ".nupkg", ".so", ".dylib", ".a", ".fsx", ".csx", ".cake", ".projitems", ".shproj"}, ext):
+			closed = false
+		case slices.Contains(frontEndAssets, ext):
 			closed = false
 		case strings.Contains(name, ".so."), refs[name]:
 			closed = false

@@ -516,7 +516,7 @@ func (e *evaluator) evaluate(real string) *projectEval {
 			}
 		}
 		for _, imp := range r.mf.imports {
-			if strings.Contains(imp.project, "%") || toolsetEscape(imp.project) {
+			if strings.ContainsAny(imp.project, "%;") || toolsetEscape(imp.project) {
 				pe.opaque = true
 			}
 		}

@@ -3,7 +3,9 @@ package jsanalysis
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -2254,6 +2256,22 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 				t.Errorf("declared %v; want inherent reasons only", res.Partiality.Reasons)
 			}
 		})
+	}
+}
+
+// TestSymbolPlain_UnclosedBracedEscapesScanInLinearTime bounds the Symbol check's escape
+// decoding: each unclosed \u{ ends at the first non-hex rune, so a run of them is not
+// rescanned to the end of the module once per escape.
+func TestSymbolPlain_UnclosedBracedEscapesScanInLinearTime(t *testing.T) {
+	src := "var s = '" + strings.Repeat(`\u{`, 80000) + "';\nvar h = Function.prototype[Symbol.hasInstance];\n"
+	clean := stripJS(src)
+	start := time.Now()
+	ok := symbolPlain([]rune(clean), []rune(src))
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("symbolPlain took %v on 80000 unclosed \\u{ escapes; want under 1s", elapsed)
+	}
+	if !ok {
+		t.Errorf("symbolPlain = false; want escapes in a string ignored")
 	}
 }
 

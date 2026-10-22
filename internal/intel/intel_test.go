@@ -140,8 +140,11 @@ func TestLookupIsOneRecord(t *testing.T) {
 //
 // CVE-2026-1001..1005 are one multi-CVE advisory's aliases: 1001 carries a stamped "not listed", 1002
 // is KEV-listed with the same EPSS value, 1003 agrees with 1001 in every value and stamp, 1004
-// differs from 1001 only in its EPSS score, and 1005 only in its EPSS as_of.
-const attributionDoc = `{"signals_version": "1.0.0", "record_count": 10, "signals_digest": "` + testDigest + `",
+// differs from 1001 only in its EPSS score, and 1005 only in its EPSS as_of. 1006 differs from 1001
+// only in its EPSS percentile (a sourced 0), and 1007 from 1006 only in having no percentile. 1008
+// differs from 1001 only in KEV listed (neither states a date_added), 1009 only in its KEV
+// catalog_version, and 1010 differs from 1002 only in its KEV date_added.
+const attributionDoc = `{"signals_version": "1.0.0", "record_count": 13, "signals_digest": "` + testDigest + `",
   "records": [
     {"identifier": "CVE-2023-39325", "epss": {"score": 0.03, "as_of": "2026-08-01"}},
     {"identifier": "CVE-2023-44487", "epss": {"score": 0.99, "as_of": "2026-08-11"},
@@ -161,11 +164,17 @@ const attributionDoc = `{"signals_version": "1.0.0", "record_count": 10, "signal
     {"identifier": "CVE-2026-1006", "epss": {"score": 0.02, "percentile": 0, "as_of": "2026-10-18"},
      "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
     {"identifier": "CVE-2026-1007", "epss": {"score": 0.02, "as_of": "2026-10-18"},
-     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`
+     "kev": {"listed": false, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1008", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": true, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1009", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": false, "catalog_version": "2026.10.20", "date_released": "2026-10-19T18:00:00Z"}},
+    {"identifier": "CVE-2026-1010", "epss": {"score": 0.02, "percentile": 0.5, "as_of": "2026-10-18"},
+     "kev": {"listed": true, "date_added": "2026-10-02", "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`
 
 // TestAttribute pins the join's three rules: the advisory's own record and only it; nothing through
 // an alias for a CVE-keyed advisory; otherwise a CVE alias with a record that no other advisory of
-// the run names, and nothing when two such aliases' records disagree.
+// the run names, and nothing when any two of its CVE aliases' records disagree — claimed or not.
 func TestAttribute(t *testing.T) {
 	s, err := Parse(strings.NewReader(attributionDoc))
 	if err != nil {
@@ -184,6 +193,9 @@ func TestAttribute(t *testing.T) {
 	listedClaimed := new(Claims)
 	listedClaimed.Add("GO-2026-0001", "CVE-2026-1001", "CVE-2026-1002")
 	listedClaimed.Add("CVE-2026-1002")
+	agreeingClaimed := new(Claims)
+	agreeingClaimed.Add("GO-2026-0001", "CVE-2026-1001", "CVE-2026-1003")
+	agreeingClaimed.Add("CVE-2026-1001")
 	for _, c := range []struct {
 		name, id string
 		aliases  []string
@@ -208,8 +220,15 @@ func TestAttribute(t *testing.T) {
 		{"CVEs differ in EPSS as_of", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1005"}, nil, "none"},
 		// A sourced percentile of 0 and no percentile at all are different values, not the same 0.
 		{"CVEs differ only in percentile presence", "GO-2026-0001", []string{"CVE-2026-1006", "CVE-2026-1007"}, nil, "none"},
+		{"CVEs differ only in EPSS percentile", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1006"}, nil, "none"},
+		{"CVEs differ only in KEV listed", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1008"}, nil, "none"},
+		{"CVEs differ only in KEV catalog_version", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1009"}, nil, "none"},
+		{"CVEs differ only in KEV date_added", "GO-2026-0001", []string{"CVE-2026-1002", "CVE-2026-1010"}, nil, "none"},
 		{"CVEs agree", "GO-2026-0001", []string{"GHSA-xxxx-yyyy-zzzz", "CVE-2026-1001", "CVE-2026-1003"}, nil, "CVE-2026-1001 epss=true kev=true"},
-		{"a disagreeing CVE another advisory names", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1002"}, listedClaimed, "CVE-2026-1001 epss=true kev=true"},
+		// A CVE another advisory names is never the source, but it still takes part in the check.
+		{"a disagreeing CVE another advisory names", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1002"}, listedClaimed, "none"},
+		{"a disagreeing CVE another advisory names, listed first", "GO-2026-0001", []string{"CVE-2026-1002", "CVE-2026-1001"}, listedClaimed, "none"},
+		{"an agreeing CVE another advisory names", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2026-1003"}, agreeingClaimed, "CVE-2026-1003 epss=true kev=true"},
 		{"a disagreeing CVE with no record", "GO-2026-0001", []string{"CVE-2026-1001", "CVE-2099-0003"}, nil, "CVE-2026-1001 epss=true kev=true"},
 	} {
 		if g := got(c.id, c.aliases, c.claims); g != c.want {

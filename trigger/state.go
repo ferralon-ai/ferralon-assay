@@ -424,9 +424,9 @@ func earnestRun(ctx context.Context, state *statestore.State, req CVEWatchReques
 	reFindings := make(map[string]report.AdvisoryFinding)
 	freshIDs := make(map[string]struct{})
 	var notes []report.PartialityNote
-	// The pass is asked about the newly-relevant advisories; the prior rows it inherits complete its
-	// work set.
-	var workSet []assessment.VulnRef
+	// The pass assesses the newly-relevant advisories, but it is asked about the run's whole work set:
+	// both claim, and so do the prior rows it inherits.
+	workSet := append([]assessment.VulnRef(nil), req.Advisories...)
 	for _, a := range osvResult.Advisories {
 		if _, ok := newSet[a.ID]; !ok {
 			continue

@@ -548,7 +548,8 @@ func priorityFor(adv report.Advisory, sig *intel.Signals, claims *intel.Claims) 
 // every finding is added.
 //
 // So an advisory the run deferred, or assessed into no row, still claims its aliases, and a row ranks
-// the same in a baseline and in a PR-inherit report over the same work set. pipeline's
+// the same over the same work set on every path that ranks one: the baseline, the PR-inherit fast
+// path, the PR re-analysis and the CVE-watch earnest run. pipeline's
 // TestKEVAttributionFollowsListedCVE guards the join over the same scope.
 func rankWith(b *report.Builder, sig *intel.Signals, workSet []assessment.VulnRef, src pipeline.AdvisorySource) {
 	claims := new(intel.Claims)

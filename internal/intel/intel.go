@@ -345,7 +345,7 @@ func (s *Signals) has(id string) bool {
 }
 
 // Claims indexes the advisories of one run by every identifier they name — each advisory's id and
-// each of its aliases — so that Attribute can refuse an alias some OTHER advisory also names. A
+// each of its aliases — so that Attribute never takes the record of an alias some OTHER advisory also names. A
 // run's claims are its work set: every advisory the run was asked about, by its id and the aliases
 // its record lists, and every row its report holds, fresh or inherited. The zero value is empty and
 // ready to use; a nil *Claims names nothing.
@@ -410,13 +410,15 @@ type Match struct {
 //     CVE, and the file has none. An alias record — a GO roll-up that may carry a sibling CVE's KEV
 //     listing, or another CVE — is never taken in its place.
 //  3. Otherwise (a GO-, GHSA-, PYSEC-, RUSTSEC- or house-keyed advisory with no record of its own):
-//     the record of a CVE alias that has a record and is named by no other advisory in claims (the
-//     run's work set) — as that advisory's id or one of its aliases. When two or more of its CVE
-//     aliases qualify, their records must agree: the same KEV observation, or none, and the same
-//     EPSS value, or none, each with the same stamp. Then the first is taken, and which one does not
-//     change a value. When they disagree, nothing: which of the advisory's CVEs its signal is cannot
-//     be told from the file, and taking the first would hand it CVE-A's stamped "not listed" while
-//     its CVE-B is KEV-listed.
+//     the records of its CVE aliases. Every CVE alias that has a record takes part, and their
+//     records must agree: the same KEV observation, or none, and the same EPSS value, or none, each
+//     with the same stamp. When any two disagree, nothing: which of the advisory's CVEs its signal
+//     is cannot be told from the file, and taking one would hand it CVE-A's stamped "not listed"
+//     while its CVE-B is KEV-listed. An alias some other advisory in claims (the run's work set)
+//     names — as that advisory's id or one of its aliases — still takes part in that check, but its
+//     record is never the one taken. When they agree, the first alias no other advisory names is
+//     taken, and which one does not change a value; when every alias with a record is claimed,
+//     nothing.
 //
 // A refused match is honest absence: ok is false and the row gets no priority, never a guess.
 // Safe for concurrent use.
@@ -431,20 +433,21 @@ func (s *Signals) Attribute(id string, aliases []string, claims *Claims) (Match,
 	if isCVE(own) {
 		return Match{}, false
 	}
-	var m Match
-	found := false
+	var m, first Match
+	found, voted := false, false
 	for _, alias := range aliases {
 		a := normalise(alias)
-		if a == own || !isCVE(a) || !s.has(a) || claims.ClaimedByOther(a, own) {
+		if a == own || !isCVE(a) || !s.has(a) {
 			continue
 		}
 		c := s.match(a)
-		if !found {
-			m, found = c, true
-			continue
-		}
-		if !m.sameValues(c) {
+		if !voted {
+			first, voted = c, true
+		} else if !first.sameValues(c) {
 			return Match{}, false
+		}
+		if !found && !claims.ClaimedByOther(a, own) {
+			m, found = c, true
 		}
 	}
 	return m, found

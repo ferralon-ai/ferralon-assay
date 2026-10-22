@@ -1204,7 +1204,8 @@ func runCVEWatch(args []string) error {
 	return cfg.graph.err()
 }
 
-// cveWatchRequest is the run's cve-watch request. A failed build graph holds the cursor, so the
+// cveWatchRequest is the run's cve-watch request. It carries the run's work set, whose advisories
+// claim their aliases when the report is ranked. A failed build graph holds the cursor, so the
 // advisories this run assessed without it are assessed again on the next.
 func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchRequest {
 	return trigger.CVEWatchRequest{
@@ -1212,6 +1213,7 @@ func cveWatchRequest(cfg *runConfig, signals *intel.Signals) trigger.CVEWatchReq
 		Codebase:      cfg.codebase,
 		AssessOptions: cfg.assessOptions,
 		Signals:       signals,
+		Advisories:    cfg.advisories,
 		HoldCursor:    cfg.graph.err() != nil,
 	}
 }

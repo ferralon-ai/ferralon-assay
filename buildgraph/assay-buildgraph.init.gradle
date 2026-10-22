@@ -235,8 +235,8 @@ allprojects { p ->
     p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
-        // What the project declares about itself, read when this task is configured and again once
-        // the task graph is ready (see below).
+        // What the project declares about itself, read once the task graph is ready (see below):
+        // reading the toolchain finalizes it, so a read now would fail a script that sets it later.
         def describe = {
             // The JDK the project's toolchain selects, which Kotlin's jvmToolchain sets too. Without
             // the java extension it is known only for a project with no classpath at all. A project
@@ -281,7 +281,7 @@ allprojects { p ->
             }
             [doc: doc, aliases: aliases, projects: projects]
         }
-        def described = describe()
+        def described = null
         // Other runtime classpaths: beside runtimeClasspath, ones such as
         // integrationTestRuntimeClasspath, resolved too; without it, Android variants or KMP
         // targets, which this producer does not choose between.
@@ -302,8 +302,8 @@ allprojects { p ->
         def tasks = observeTasks(p, repos.roots)
         // This task can be configured before the build has declared everything above: by a script's
         // tasks.all, by a later projectsEvaluated callback, or under configure on demand. Once the
-        // task graph is ready, the set of tasks the build runs is fixed, so the description,
-        // repositories and tasks are read again then, and a configuration added since is recorded.
+        // task graph is ready, the set of tasks the build runs is fixed, so the description is read
+        // then, the repositories and tasks are read again, and a configuration added since is recorded.
         def resolvable = { p.configurations.findAll { it.canBeResolved }.collect { it.name }.sort() }
         def configured = resolvable()
         p.gradle.taskGraph.whenReady {

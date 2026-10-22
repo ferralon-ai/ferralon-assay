@@ -93,6 +93,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"npm_config_registry set by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV npm_config_registry=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 		{"YARN_ variable in CI", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  YARN_REGISTRY: https://registry.example.com\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
 		{"NPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  NPM_FLAGS = \"--no-save express@4.18.2\"\n"}), false, ""},
+		{"PNPM_FLAGS in netlify.toml", npm(map[string]string{"netlify.toml": "[build.environment]\n  PNPM_FLAGS = \"--no-frozen-lockfile\"\n"}), false, ""},
+		{"BUN_FLAGS in a CI file", npm(map[string]string{".github/workflows/ci.yml": "on: push\nenv:\n  BUN_FLAGS: --no-save\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n"}), false, ""},
+		{"NPM_CONFIG_REGISTRY set by Dockerfile ENV", npm(map[string]string{"Dockerfile": "FROM node:20\nENV NPM_CONFIG_REGISTRY=https://registry.example.com\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\n"}), false, ""},
 
 		{"folded run joins a pin to an allowed form", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: >\n          npm ci\n          express@4.18.2\n"}), false, ""},
 		{"PowerShell pins express", npm(map[string]string{"deploy.ps1": "npm install express@4.18.2\n"}), false, ""},

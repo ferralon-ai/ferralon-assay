@@ -339,13 +339,23 @@ func regexStarts(out []rune, prev rune, afterCond, inFor bool) bool {
 	case prev > 0 && isIdentPart(prev):
 		w, member := lastWord(out)
 		return !member && (regexKeywords[w] || inFor && w == "of")
+	case prev == '.':
+		// A spread (...) is an operator; a lone '.' cannot precede a '/'.
+		k := len(out)
+		for k > 0 && unicode.IsSpace(out[k-1]) {
+			k--
+		}
+		return k >= 3 && string(out[k-3:k]) == "..."
+	case prev == '<':
+		// "</" is a JSX closing tag; "< /" is a comparison with a regex.
+		return unicode.IsSpace(out[len(out)-1])
 	}
 	return regexAllowed(prev)
 }
 
 // regexAllowed reports whether a '/' after the punctuation prev begins a regex literal: at
-// the program start, or after an operator or an opening '(', '[', '{', ',', ';' or ':'. A
-// '<' is excluded: "</" is a JSX closing tag, never a comparison with a regex.
+// the program start, or after an operator or an opening '(', '[', '{', ',', ';' or ':'.
+// '<' and '.' are decided by regexStarts, which sees what precedes them.
 func regexAllowed(prev rune) bool {
 	switch prev {
 	case 0, '(', ',', '{', '[', ';', ':', '!', '&', '|', '?', '=', '+', '-', '*', '%', '>', '^', '~':
@@ -358,6 +368,7 @@ func regexAllowed(prev rune) bool {
 var regexKeywords = map[string]bool{
 	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true,
 	"new": true, "delete": true, "void": true, "throw": true, "instanceof": true,
+	"default": true,
 }
 
 // condKeywords open a parenthesized statement condition, after whose ')' a statement,

@@ -384,6 +384,15 @@ load(process.argv[2]);
 		{"division after a variable named of", `
 let of = 4; const x = of / 2; const m = require(process.argv[3]); const y = 1 / 3;
 ` + tail, true},
+		{"regex holding a quote after export default", `
+export default /'/; const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spread", `
+function check(s) { return [.../'/.exec(s)]; } const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spaced less-than", `
+function check(x, s) { return x < /'/.exec(s); } const m = require(process.argv[3]);
+` + tail, true},
 		{"regex holding a quote after a block", `
 function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
 function load(s) { return s.trim(); }

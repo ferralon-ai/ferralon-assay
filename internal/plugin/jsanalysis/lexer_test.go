@@ -46,6 +46,9 @@ func TestStripJS_HidesNoCode(t *testing.T) {
 		{"division after a variable named of", "let of = 4; x = of / 2; g() // c", []string{"/ 2; g()"}, nil},
 		{"division after variables named yield and await", "x = yield / 2 + await / 3; g() // c", []string{"/ 2 + await / 3; g()"}, nil},
 		{"regex after of in a for head", "for (const m of /'/.exec(s)) g() // it's", []string{"g()"}, []string{"'", "it"}},
+		{"regex after export default", "export default /'/; g() // it's", []string{"g()"}, []string{"'", "it"}},
+		{"regex after a spread", "a = [.../'/.exec(s)]; g() // it's", []string{"g()"}, []string{"'", "it"}},
+		{"regex after a spaced less-than", "b = x < /'/.exec(s); g() // it's", []string{"g()"}, []string{"'", "it"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

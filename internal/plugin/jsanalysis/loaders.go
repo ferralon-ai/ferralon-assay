@@ -317,13 +317,12 @@ func symbolPlain(clean, src []rune) bool {
 
 // symbolRead reports whether the Symbol word at i, ending before next, is only read.
 func symbolRead(clean []rune, i, next int) bool {
-	member := memberName(clean, i)
 	b := skipSpaceBack(clean, i-1)
 	prev, s := wordBefore(clean, b)
-	if !member && prev == "typeof" && !memberName(clean, s) {
+	if prev == "typeof" && !memberName(clean, s) {
 		return true
 	}
-	if !member && (prev == "function" || b >= 0 && clean[b] == '*') {
+	if prev == "function" || b >= 0 && clean[b] == '*' {
 		return false
 	}
 	q := skipSpace(clean, next)

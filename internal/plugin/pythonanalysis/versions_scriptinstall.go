@@ -33,7 +33,8 @@ import (
 // nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
 // installs (the nearest at or above that) read here. Anything
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
-// (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install. A
+// (it syncs), a bare uv sync or pdm install (both re-lock), conda, mamba, easy_install, and
+// every other tool laneToken names, run wrappers whose argv names one included. A
 // PIP_* or UV_* variable set in any script surface withholds, since every pip or uv the build
 // runs reads it. How a surface is read, and what binds a command to a file, is lane-neutral,
 // in scriptsurface.
@@ -54,11 +55,15 @@ var scriptSpec = scriptsurface.Spec{
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`)
 
 // laneToken reports whether word is a Python installer: uv, uvx, poetry, pdm, easy_install,
-// mamba, micromamba, any word starting pip or conda, and an interpreter option that runs one
-// as a module with its name attached (-mpip, -Impip).
+// mamba, micromamba, pixi, rye, hatch, flit, setup.py (install and develop fetch
+// install_requires), any word starting pip or conda, and an interpreter option that runs one
+// as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
+// file not read here defines, or installs into the environments it makes (poe, invoke and its
+// inv, nox, tox).
 func laneToken(word string) bool {
 	switch word {
-	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba":
+	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
+		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "nox", "tox":
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {

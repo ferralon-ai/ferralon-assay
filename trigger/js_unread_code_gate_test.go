@@ -375,6 +375,12 @@ function parse(s) { return s.trim(); }
 function load(s) { return parse(s); }
 load(process.argv[2]);
 `, true},
+		{"URL text in JSX followed by an import on its line", `
+const A = () => <p>See http://example.com {import(process.argv[3])}</p>;
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
 		{"regex holding a quote after a block", `
 function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
 function load(s) { return s.trim(); }

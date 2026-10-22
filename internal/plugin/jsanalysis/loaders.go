@@ -534,7 +534,7 @@ func loaderTested(clean []rune, i, next int) bool {
 		}
 		p = skipSpace(clean, e)
 	}
-	if p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '.' || clean[p] == '_') {
+	if !operandEnds(clean, p) {
 		return false // called, indexed or tagged: the chain is used, not tested
 	}
 	switch {
@@ -553,6 +553,23 @@ func loaderTested(clean []rune, i, next int) bool {
 		return true
 	}
 	return false
+}
+
+// operandEnds reports whether the expression before the token at p ends there rather than
+// being called, indexed, tagged, reached by optional chaining or asserted non-null and
+// called (`x!(...)`).
+func operandEnds(clean []rune, p int) bool {
+	n := len(clean)
+	if p >= n {
+		return true
+	}
+	switch clean[p] {
+	case '(', '[', '.', '_':
+		return false
+	case '!':
+		return p+1 < n && clean[p+1] == '='
+	}
+	return !optionalDot(clean, p)
 }
 
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of

@@ -287,6 +287,18 @@ load(process.argv[2]);
 			"packages/m/esm.js":       "export function parse(s) { return s; }\n",
 			"packages/m/cjs.js":       "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 		}},
+		{"require optionally called on the right of a comparison", `
+let j = { parse: String };
+if (j === require?.(process.argv[3])) j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"require optionally called under a negation", `
+let j = { parse: String };
+if (!require?.(process.argv[3])) j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

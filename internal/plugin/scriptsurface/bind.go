@@ -42,12 +42,22 @@ type hostCursor struct {
 	dirs    []string
 	unknown bool
 	made    string
-	// cwd is 1 + the index in dirs of the one directory a shell unit is known to run in, which
-	// cd moves with the rest; 0 when it is not known.
-	cwd int
+	// wd is the one directory a CI shell unit runs in, which only the venv rule reads; "" when
+	// it is not known.
+	wd string
 }
 
 func (c *hostCursor) cd(words []string) {
+	if c.wd != "" {
+		n := ""
+		if len(words) == 2 && words[0] != "popd" && words[1] != "-" && !strings.HasPrefix(words[1], "~") && !filepath.IsAbs(words[1]) {
+			n = filepath.Join(c.wd, words[1])
+		}
+		if n == "" || !c.v.inRoot(n) || !isDir(n) {
+			n = ""
+		}
+		c.wd = n
+	}
 	if c.unknown {
 		return
 	}
@@ -100,11 +110,9 @@ func (c *hostCursor) at(p string) (string, bool) {
 		return "", false
 	case filepath.IsAbs(p):
 		return "abs:" + filepath.Clean(p), true
-	case c.unknown:
-		return "", false
-	case c.cwd > 0:
-		return "rel:" + filepath.Join(c.dirs[c.cwd-1], p), true
-	case len(c.dirs) != 1:
+	case c.wd != "":
+		return "rel:" + filepath.Join(c.wd, p), true
+	case c.unknown || len(c.dirs) != 1:
 		return "", false
 	}
 	return "rel:" + filepath.Join(c.dirs[0], p), true

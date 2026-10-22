@@ -51,7 +51,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 
@@ -446,18 +445,23 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			if rl.shell {
 				lineKind = kindShell
 			}
-			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, made: carry.made}
+			// Lookups run from every directory the lines so far may have left; only the venv
+			// rule carries its mark and the unit's one directory from line to line.
+			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, made: carry.made, wd: carry.wd}
 			su, inShell := shells[starts[rl.start]]
 			if prev := inUnit[su.id]; inShell && prev != nil {
-				cur = &hostCursor{v: v, dirs: append([]string(nil), prev.dirs...), unknown: prev.unknown, made: prev.made, cwd: prev.cwd}
+				cur.made, cur.wd = prev.made, prev.wd
 			} else if inShell {
-				cur.cwd = slices.Index(cur.dirs, su.dir) + 1
+				cur.made, cur.wd = "", su.dir
 			}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
 			segs, ok := commandSegments(lineKind, line)
 			if !ok {
+				// A line this cannot split may hold a subshell, group or function body: the venv
+				// rule cannot say what ran, or where.
+				cur.made, cur.wd = "", ""
 				if v.hasToken(line) {
 					return "install command that does not tokenise"
 				}
@@ -474,7 +478,6 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			// Shell text (a script, a package.json script value) keeps its directory from line
 			// to line; a recipe line or a CI step may start back where the surface started.
-			// So do the lines of one CI shell unit.
 			if kind == kindShell {
 				carry = cur
 			} else {

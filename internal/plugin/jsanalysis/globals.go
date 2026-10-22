@@ -1086,7 +1086,8 @@ func (mb *moduleBindings) globalUse(clean []rune, i, next int, callOnly bool, gs
 // through a chain of global names whose first name resolves to the global
 // (`global.globalThis`, `window.self.globalThis`), and returns where the chain starts. With
 // groups, a receiver ending in a group, call or index anywhere in the chain counts as well,
-// since this lane does not know its value.
+// since this lane does not know its value, and so does a first name spelled as a global
+// name even where a local shadows it.
 func (gs *globalScope) globalChain(clean []rune, op int, groups bool) (int, bool) {
 	k := skipSpaceBack(clean, op-1)
 	for k >= 0 {
@@ -1109,6 +1110,11 @@ func (gs *globalScope) globalChain(clean []rune, op int, groups bool) (int, bool
 			}
 			k = skipSpaceBack(clean, memberDot(clean, d)-1)
 			continue
+		}
+		if groups {
+			// A shadowing parameter or import named global, window or self is how factory
+			// and UMD code receives the global object, so the spelling alone counts here.
+			return s, isGlobalBase(w) || gs.isGlobal(w, s)
 		}
 		return s, gs.isGlobal(w, s)
 	}

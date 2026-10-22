@@ -48,7 +48,7 @@ type moduleBindings struct {
 	prefixLoads   []prefixLoad       // require/import() whose specifier is a literal prefix plus a runtime value
 	dynImport     bool               // saw a runtime-computed ESM target `import(expr)` with no static prefix
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)` with no static prefix
-	nativeLoad    bool               // saw process.dlopen, which loads a native addon this lane never reads
+	nativeLoad    bool               // saw dlopen, getBuiltinModule or _linkedBinding, which load code this lane never reads
 	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
 }
 
@@ -131,7 +131,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case crNames[word]:
 			mb.createRequireUse(clean, src, i, next)
 			i = next
-		case word == "_load", word == "dlopen", word == "eval":
+		case word == "_load", word == "dlopen", word == "getBuiltinModule", word == "_linkedBinding", word == "eval":
 			mb.memberUse(clean, i, word)
 			i = next
 		case word == "arguments":

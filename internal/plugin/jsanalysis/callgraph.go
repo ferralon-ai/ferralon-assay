@@ -25,6 +25,9 @@ type program struct {
 	// moduleSet is the set of in-tree module ids, used for extension/index resolution
 	// of a relative specifier.
 	moduleSet map[string]bool
+	// sources maps a module id to the source files that yield it (one per extension), so
+	// a walk that depends on where the file really lives can resolve the file itself.
+	sources map[string][]string
 	// buildCtx caches the PLAN-163 build context (bundler alias/define map with
 	// provenance) the resolver injection point exposes; nil until the first resolver()
 	// call computes it once. It reads the static bundler configs and executes nothing (C4).
@@ -112,6 +115,7 @@ func loadProgram(buildDir string) (*program, error) {
 		root:      buildDir,
 		modules:   map[string]*moduleIndex{},
 		moduleSet: map[string]bool{},
+		sources:   map[string][]string{},
 	}
 	for _, f := range files {
 		data, err := readRegular(f)
@@ -120,6 +124,7 @@ func loadProgram(buildDir string) (*program, error) {
 			continue
 		}
 		module := moduleOf(buildDir, f)
+		prog.sources[module] = append(prog.sources[module], f)
 		var pr parseResult
 		if filepath.Ext(f) == vueExtension {
 			pr = parseVueSFC(module, string(data))

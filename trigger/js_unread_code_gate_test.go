@@ -1270,6 +1270,125 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"ContextifyScript through process off a parameter named global", `
+import g from './g.js';
+function f(global) { return new (global.process.binding('contextify').ContextifyScript)(process.argv[3]); }
+f(g).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"contextify binding through process off a parameter named self", `
+import g from './g.js';
+function f(self) { return self.process.binding('contextify'); }
+new (f(g).ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"ContextifyScript through process off an import named global", `
+import global from './g.js';
+new (global.process.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"ContextifyScript through process off a named import window", `
+import { window } from './g.js';
+new (window.process.binding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export const window = globalThis;\n"}},
+		{"vm through process off an import named global", `
+import global from './g.js';
+global.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through process off a named import window", `
+import { window } from './g.js';
+window.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export const window = globalThis;\n"}},
+		{"vm through process off a parameter named global", `
+import g from './g.js';
+function f(global) { return global.process.getBuiltinModule('vm'); }
+f(g).runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through process renamed in a pattern off a destructured object property", `
+const o = { g: globalThis };
+const { g } = o;
+const { process: pr } = g;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process renamed in a pattern off an imported global", `
+import g from './g.js';
+const { process: pr } = g;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"vm through process renamed in a pattern off an isomorphic root module", `
+import root from './_root.js';
+const { process: pr } = root;
+pr.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"_root.js": "const root = typeof globalThis !== 'undefined' ? globalThis : global;\nexport default root;\n"}},
+		{"vm through process off an object property holding globalThis", `
+const o = { g: globalThis };
+o.g.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process off a shorthand object property globalThis", `
+const o = { globalThis };
+o.globalThis.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process off a class static holding globalThis", `
+class K { static g = globalThis; }
+K.g.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through process off an imported global", `
+import g from './g.js';
+g.process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"g.js": "export default globalThis;\n"}},
+		{"contextify through _linkedBinding off a class static holding globalThis", `
+class K { static g = globalThis; }
+new (K.g.process._linkedBinding('contextify').ContextifyScript)(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through getBuiltinModule by a bracket key off an object property", `
+const o = { g: globalThis };
+o.g.process['getBuiltinModule']('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1329,8 +1448,10 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"process renamed and nested in patterns off globalThis, data members only", "const { process: pr } = globalThis;\nconst { process: { env } } = globalThis;\nconst mode = pr.env.NODE_ENV || env.HOME;\nconst j = require('./plugins');", nil},
-		{"process renamed in a pattern off a local object, any member", "const opts = { process: { getBuiltinModule: String } };\nconst { process: pr } = opts;\nconst m = pr.getBuiltinModule('x');\nconst j = require('./plugins');", nil},
+		{"process renamed in a pattern off a local object, any member", "const opts = { process: { binding: String } };\nconst { process: pr } = opts;\nconst m = pr.binding('x');\nconst j = require('./plugins');", nil},
 		{"process as a method of a local queue and of a call result", "const j = require('./plugins');\nconst queue = new j.Queue('jobs');\nqueue.process((job) => job);\nfunction getQueue() { return queue; }\ngetQueue().process((job) => job);\nthis.queues[0].process((job) => job);", nil},
+		{"a local object named global read for process data", "const global = { process: { env: { MODE: 'x' } } };\nconst mode = global.process.env.MODE;\nconst j = require('./plugins');", nil},
+		{"process as a method of a queue under a parameter named global", "const j = require('./plugins');\nfunction run(global, job) { global.queue.process(job); return global.getQueue().process(job); }\nrun({ queue: new j.Queue('jobs'), getQueue: () => null }, {});", nil},
 		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},
 		{"literal import() through a tsconfig paths alias with no installed package", "let j = { parse: (s) => s };\nimport('@app/plugins').then((m) => { j = m; });", map[string]string{
 			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
@@ -1579,6 +1700,77 @@ load(process.argv[2]);
 				t.Skipf("symlink: %v", err)
 			}
 			store, _ := gateStoreAt(t, filepath.Join(base, "pk", "app"))
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.installed && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.installed && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
+}
+
+// TestUndeterminedReason_JSSymlinkedImporterFile: a source file in the build dir that is a
+// symlink (app/src/entry.js) requires @app/plugins, which a tsconfig paths alias claims. Node
+// realpaths each module file before its node_modules walk, so when the link points outside
+// the build dir it loads the copy installed beside the file's real path, which requires
+// json5. That copy keeps the limit; with nothing installed there, or with the link's target
+// inside the build dir, the program can refute.
+func TestUndeterminedReason_JSSymlinkedImporterFile(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		outside   bool
+		installed bool
+	}{
+		{"installed copy beside the real path of an importer outside the build dir", true, true},
+		{"nothing installed beside the real path of an importer outside the build dir", true, false},
+		{"importer whose real path is inside the build dir", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			app := filepath.Join(base, "app")
+			entry := "const m = require('@app/plugins');\nmodule.exports = (s) => m.parse(s);\n"
+			files := map[string]string{"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`}
+			target := filepath.Join("..", "lib", "entry.js")
+			if tc.outside {
+				target = filepath.Join("..", "..", "elsewhere", "lib", "entry.js")
+				p := filepath.Join(base, "elsewhere", "lib", "entry.js")
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(entry), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				files["lib/entry.js"] = entry
+			}
+			if tc.installed {
+				for name, body := range map[string]string{
+					"package.json": `{"name":"@app/plugins","main":"index.js"}`,
+					"index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+				} {
+					p := filepath.Join(base, "elsewhere", "node_modules", "@app", "plugins", name)
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			writeGateTree(t, app, `
+const parse = require('./src/entry');
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, files)
+			if err := os.MkdirAll(filepath.Join(app, "src"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(app, "src", "entry.js")); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+			store, _ := gateStoreAt(t, app)
 			reason, ok := undeterminedReason(store, "a1", json5Package)
 			if tc.installed && (!ok || reason != report.ReasonAnalysisDidNotRun) {
 				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)

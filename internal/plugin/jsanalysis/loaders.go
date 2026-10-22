@@ -168,15 +168,17 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 // loads is never statically known.
 
 // memberUse records an identifier at i that is a loader entry point: `_load` loads a module
-// as require does and `dlopen` loads a native addon, wherever the name occurs (a member, a
-// destructured key, a local renaming one), since no form of either is known to load only
-// code this lane reads; eval is judged by evaluatorTested.
+// as require does, `dlopen` loads a native addon, `getBuiltinModule` returns any core module
+// (vm and module included) and `_linkedBinding` returns a native binding, wherever the name
+// occurs (a member, a destructured key, a local renaming one) and whatever the receiver,
+// since no form of any is known to load only code this lane reads; eval is judged by
+// evaluatorTested.
 func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	switch word {
 	case "_load":
 		mb.computedReq = true
 		return
-	case "dlopen":
+	case "dlopen", "getBuiltinModule", "_linkedBinding":
 		mb.nativeLoad = true
 		return
 	}
@@ -609,7 +611,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		switch specifierAt(src, a) {
 		case "require", "createRequire", "_load", "mainModule":
 			mb.computedReq = true
-		case "dlopen", "process":
+		case "dlopen", "process", "getBuiltinModule", "_linkedBinding":
 			mb.nativeLoad = true
 		case "eval", "Function", "constructor":
 			mb.evaluated = true
@@ -629,7 +631,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	switch specifierAt(src, a) {
 	case "require", "createRequire", "_load":
 		mb.computedReq = true
-	case "dlopen", "process":
+	case "dlopen", "process", "getBuiltinModule", "_linkedBinding":
 		mb.nativeLoad = true
 	case "mainModule":
 		mb.computedReq = true

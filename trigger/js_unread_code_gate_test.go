@@ -1540,6 +1540,56 @@ func TestUndeterminedReason_JSStylesheetImport(t *testing.T) {
 	}
 }
 
+// TestUndeterminedReason_JSSymlinkedAncestor: a build dir reached through a symlinked
+// ancestor (pk -> real/mono/packages, build dir pk/app) has a tsconfig paths alias claiming
+// @app/plugins. Node realpaths the main module before its node_modules walk, so it loads the
+// copy installed beside the real packages dir, which requires json5. That copy keeps the
+// limit; with nothing installed there the program can refute.
+func TestUndeterminedReason_JSSymlinkedAncestor(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		installed bool
+	}{
+		{"installed copy beside the real path of the build dir", true},
+		{"nothing installed beside the real path of the build dir", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			mono := filepath.Join(base, "real", "mono")
+			if tc.installed {
+				for name, body := range map[string]string{
+					"package.json": `{"name":"@app/plugins","main":"index.js"}`,
+					"index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+				} {
+					p := filepath.Join(mono, "node_modules", "@app", "plugins", name)
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			writeGateTree(t, filepath.Join(mono, "packages", "app"), `
+const m = require('@app/plugins');
+function load(s) { return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`})
+			if err := os.Symlink(filepath.Join("real", "mono", "packages"), filepath.Join(base, "pk")); err != nil {
+				t.Skipf("symlink: %v", err)
+			}
+			store, _ := gateStoreAt(t, filepath.Join(base, "pk", "app"))
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.installed && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.installed && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
+}
+
 // json5Package is the package the gate assesses: the dependency every program loads or could.
 var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.2.1", PURL: "pkg:npm/json5@2.2.1"}
 
@@ -1549,6 +1599,13 @@ var json5Package = &report.Package{Ecosystem: "npm", Name: "json5", Version: "2.
 func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifact.MemStore, int) {
 	t.Helper()
 	dir := t.TempDir()
+	writeGateTree(t, dir, src, files)
+	return gateStoreAt(t, dir)
+}
+
+// writeGateTree writes gateStoreFromJS's tree under dir.
+func writeGateTree(t *testing.T, dir, src string, files map[string]string) {
+	t.Helper()
 	tree := map[string]string{
 		"package.json":        `{"name":"fixture","version":"1.0.0","dependencies":{"json5":"2.2.1"}}`,
 		"index.js":            src,
@@ -1566,6 +1623,12 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 			t.Fatal(err)
 		}
 	}
+}
+
+// gateStoreAt runs the JS producer over the build dir dir and stores its results as
+// gateStoreFromJS does.
+func gateStoreAt(t *testing.T, dir string) (*artifact.MemStore, int) {
+	t.Helper()
 	ctx := context.Background()
 	cg, err := jsanalysis.CallGraph(ctx, plugin.CallGraphRequest{BuildDir: dir})
 	if err != nil {

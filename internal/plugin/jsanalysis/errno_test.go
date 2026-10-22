@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -84,6 +86,22 @@ func wantErr(t *testing.T, dir, rel string, want error, lstat ...bool) {
 	if _, err := stat(filepath.Join(dir, filepath.FromSlash(rel))); !errors.Is(err, want) {
 		t.Fatalf("stat %s: %v, want %v", rel, err, want)
 	}
+}
+
+// physicallyDeep returns a short path under dir to a directory whose real path is longer
+// than PATH_MAX: each level is a short symlink to a long sibling directory, so the kernel
+// resolves the short path one link at a time, but resolving its real path as a string fails
+// with ENAMETOOLONG.
+func physicallyDeep(t *testing.T, dir string) string {
+	t.Helper()
+	comp := strings.Repeat("d", 250)
+	logical := ""
+	for i := 0; i < 20; i++ {
+		mkdir(t, dir, path.Join(logical, comp))
+		link(t, dir, path.Join(logical, "l"), comp)
+		logical = path.Join(logical, "l")
+	}
+	return filepath.Join(dir, filepath.FromSlash(logical))
 }
 
 // wantListErr fails the row unless listing the directory rel under dir fails with want.
@@ -270,6 +288,9 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 		return m
 	}
 
+	// longReal, the logical build dir of the ENAMETOOLONG row, is set by its fault.
+	var longReal string
+
 	type row struct {
 		name  string
 		files map[string]string
@@ -321,6 +342,13 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 				loop(t, filepath.Dir(dir), "node_modules")
 				wantErr(t, filepath.Dir(dir), "node_modules/cfg", syscall.ELOOP, true)
 			}, shadowKeepsLimit(true)},
+			{"ENAMETOOLONG resolving the real path of the importer", nil, func(t *testing.T, dir string) {
+				longReal = filepath.Join(physicallyDeep(t, dir), "app")
+				writeFiles(t, longReal, shadowedCfg(nil))
+				if _, err := filepath.EvalSymlinks(longReal); !errors.Is(err, syscall.ENAMETOOLONG) {
+					t.Fatalf("EvalSymlinks: %v, want %v", err, syscall.ENAMETOOLONG)
+				}
+			}, func(t *testing.T, _ string) { shadowKeepsLimit(true)(t, longReal) }},
 		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {

@@ -241,9 +241,12 @@ func (rs *resolver) pathsShadowed(fromModule, spec string) bool {
 
 // nodeModulesHas reports whether Node's node_modules walk from fromModule's directory to the
 // filesystem root finds any candidate for package name: the package directory (with or
-// without a package.json) or a file Node's CommonJS LOAD_AS_FILE would try. Above the build
-// root (a workspace member whose node_modules is hoisted to the repository root) only Lstat
-// runs; nothing there is read. A stat error other than a missing path counts as found.
+// without a package.json) or a file Node's CommonJS LOAD_AS_FILE would try. Node walks the
+// ancestors of the importer's real path, or of its path as given under
+// --preserve-symlinks(-main), so both chains are walked: they differ when an ancestor of the
+// build root is a symlink. Above the build root (a workspace member whose node_modules is
+// hoisted to the repository root) only Lstat runs; nothing there is read. A stat or
+// symlink-resolution error other than a missing path counts as found.
 func (rs *resolver) nodeModulesHas(fromModule, name string) bool {
 	if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\:`) {
 		return true
@@ -277,14 +280,24 @@ func (rs *resolver) nodeModulesHas(fromModule, name string) bool {
 	if err != nil {
 		return true
 	}
-	for dir := filepath.Dir(root); ; dir = filepath.Dir(dir) {
-		if has(dir) {
-			return true
-		}
-		if dir == filepath.Dir(dir) {
-			return false
+	ancestorsHave := func(dir string) bool {
+		for ; ; dir = filepath.Dir(dir) {
+			if has(dir) {
+				return true
+			}
+			if dir == filepath.Dir(dir) {
+				return false
+			}
 		}
 	}
+	if ancestorsHave(filepath.Dir(root)) {
+		return true
+	}
+	real, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(path.Dir(fromModule))))
+	if err != nil {
+		return !absent(err)
+	}
+	return ancestorsHave(real)
 }
 
 // loadMeetsUnmodeledCondition reports whether resolving a literal specifier passes through an

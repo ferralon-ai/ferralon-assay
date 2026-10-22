@@ -105,6 +105,10 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"script fetches the file it installs", map[string]string{"requirements.txt": reqs,
 			"install.sh": "curl -fsSL -o requirements.txt https://example.com/r.txt\npip install -r requirements.txt\n"}, false, ""},
 
+		{"activate of a venv no command created", map[string]string{"requirements.txt": reqs, "install.sh": ". .venv/bin/activate\npip install -r requirements.txt\n"}, false, ""},
+		{"activate of a venv other than the one created", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv a\n. b/bin/activate\npip install -r requirements.txt\n"}, false, ""},
+		{"activate of a committed script that installs", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv venv\n. venv/bin/activate\npip install -r requirements.txt\n", "venv/bin/activate": "#!/bin/sh\npip install jinja2==3.1.2\n"}, false, ""},
+
 		// Controls.
 		{"pip install -r of a read file", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --no-cache-dir -r requirements.txt\n"}, true, ""},
 		{"Dockerfile pip install -r after COPY", map[string]string{"requirements.txt": reqs, "Dockerfile": docker + "pip install -q -r requirements.txt\nCOPY . .\nCMD [\"python\", \"app.py\"]\n"}, true, ""},
@@ -119,6 +123,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"pdm run without a scripts table", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
 		{"pipenv run without a scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 		{"pdm run, a tool.pdm table without scripts", map[string]string{"pyproject.toml": project + "[tool.pdm]\ndistribution = false\n", "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
+		{"python -m venv, activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
+		{"virtualenv, source activate, pip install -r", map[string]string{"requirements.txt": reqs, "install.sh": "virtualenv venv\nsource venv/bin/activate\npip install -r requirements.txt\n"}, true, ""},
+		{"absolute venv activated in a CI run", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: python3 -m venv /opt/venv && . /opt/venv/bin/activate && pip install -r requirements.txt\n"}, true, ""},
 		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}
 	for _, tt := range tests {

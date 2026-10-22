@@ -111,6 +111,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"npm pkg set then run", npm(map[string]string{"Dockerfile": docker + "npm pkg set scripts.x=\"npm i lodash\"\nRUN npm run x\n"}), false, ""},
 		{"script fetches package.json then runs", npm(map[string]string{"install.sh": "curl -fsSL -o package.json https://example.com/p.json && npm run x\n"}), false, ""},
 
+		{"sources a file beside nvm.sh", npm(map[string]string{"install.sh": ". ~/.nvm/other.sh && npm ci\n"}), false, ""},
+		{"sources a file above NVM_DIR", npm(map[string]string{"install.sh": ". \"$NVM_DIR/../evil.sh\" && npm ci\n"}), false, ""},
+
 		// Controls.
 		{"npm ci", npm(map[string]string{"install.sh": "npm ci --omit=dev\n"}), true, ""},
 		{"Dockerfile COPY then npm run build", npm(map[string]string{"Dockerfile": "FROM node:20\nWORKDIR /app\nCOPY package.json ./\nRUN npm run build\n"}), true, ""},
@@ -119,6 +122,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"npm test, t, start", npm(map[string]string{"install.sh": "npm test\nnpm t\nnpm start\n"}), true, ""},
 		{"yarn run, test, start", npm(map[string]string{"Procfile": "web: yarn start\nrelease: yarn run migrate\ncheck: yarn test\n"}), true, ""},
 		{"scripts that run scripts", npm(map[string]string{"package.json": pkg(`"build":"tsc && npm run lint","lint":"eslint .","postinstall":"npm run build"`)}), true, ""},
+		{"nvm.sh, nvm use, npm ci", npm(map[string]string{"install.sh": ". \"$NVM_DIR/nvm.sh\" && nvm use && npm ci\n"}), true, ""},
+		{"source ~/.nvm/nvm.sh in a CI run", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: source ~/.nvm/nvm.sh && npm ci\n"}), true, ""},
+		{"cargo env then npm ci", npm(map[string]string{"install.sh": ". \"$HOME/.cargo/env\"\nnpm ci\n"}), true, ""},
 		{"yarn --frozen-lockfile with yarn.lock", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "yarn --frozen-lockfile\n"}, true, ""},
 	}
 	for _, tt := range tests {

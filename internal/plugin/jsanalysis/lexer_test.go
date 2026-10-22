@@ -49,6 +49,7 @@ func TestStripJS_HidesNoCode(t *testing.T) {
 		{"regex after export default", "export default /'/; g() // it's", []string{"g()"}, []string{"'", "it"}},
 		{"regex after a spread", "a = [.../'/.exec(s)]; g() // it's", []string{"g()"}, []string{"'", "it"}},
 		{"regex after a spaced less-than", "b = x < /'/.exec(s); g() // it's", []string{"g()"}, []string{"'", "it"}},
+		{"division after a method named if", "x = o.if(a) / 2; g() / 3", []string{"/ 2; g() / 3"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,6 +147,18 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"module after return in a comment", "/* return module */\n", false, true, false},
 		{"brackets from separate templates", "a = `x]`;\nb = `[k]`;\nc = `[j]`;\n", false, false, false},
 		{"computed index pair in a comment", "/* o[a][b]() */\n", true, false, false},
+		{"require alias declared in code, used after a JSX apostrophe", "const r = createRequire(u);\na = <p>Don't {r(x)}</p>;\n", false, true, false},
+		{"createRequire alias declared in code, used after a JSX apostrophe", "const { createRequire: mk } = m;\na = <p>Don't {mk(u)(x)}</p>;\n", false, true, false},
+		{"require alias declared in a comment beside one declared in code", "/* const r = createRequire(u); */\nconst a = createRequire(u);\nr(x);\n", false, true, false},
+		{"createRequire alias declared in a comment", "/* import { createRequire as mk } from 'module'; */\nmk(u)(x);\n", false, true, false},
+		{"eval after a non-JSDoc @word", "a = <p>Don't mail me@home {eval(x)}</p>;\n", true, false, false},
+		{"JSDoc type left open on its line", "/** @param {Object\n * eval(x) } */\n", true, false, false},
+		{"name after a JSDoc tag", "a = <p>Don't @param me {eval(x)}</p>;\n", true, false, false},
+		{"eval asserted as a type after a JSX apostrophe", "a = <p>Don't {(eval as any)(x)}</p>;\n", true, false, false},
+		{"eval tested with in after a JSX apostrophe", "a = <p>Don't {eval in o}</p>;\n", true, false, false},
+		{"text nested within the layer bound is lexed", "x = 'a" + strings.Repeat(" \\'b", 7) + " \"require(y)\"\n", false, false, false},
+		{"text nested past the layer bound is read unlexed", "x = 'a" + strings.Repeat(" \\'b", 8) + " \"require(y)\"\n", false, true, false},
+		{"class extending Function in a comment", "/* class F extends Function {} */\n", true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := []rune(tc.src)

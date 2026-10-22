@@ -1323,6 +1323,20 @@ run(process.argv[3]);
 function A(s) { return <p>Don't {typeof require.bind^x^(s)}</p>; }
 A(process.argv[3]);
 ` + tail, true},
+		{"negated require.bind tagged flush, then called", `
+function run(s) { return !require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"a static import between a stray backtick in JSX text and a later template", `
+const A = () => <p>Run ^npm i</p>;
+import m from 'json5';
+function B() { return ^ok^; }
+` + tail, true},
+		{"two JSX apostrophes around process.dlopen", `
+function A(m, p) { return <p>Don't {process.dlopen(m, p)} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
 		{"strings holding braces", `
 const t = '{ "a": 1 }';
 const f = "{0} items";

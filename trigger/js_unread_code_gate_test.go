@@ -623,6 +623,20 @@ if (!require?.(process.argv[3])) j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function returned by valueOf on a function's constructor", `
+const f = function () {};
+f.constructor.valueOf()(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function returned by valueOf on a function's constructor read optionally", `
+const f = function () {};
+f.constructor?.valueOf()(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -667,6 +681,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
 		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
+		{"a function's constructor name used as a string", "const f = function () {};\nconst label = 'type: ' + f.constructor.name;\nconst j = require('./plugins');", nil},
 		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"webpack's runtime require of an in-tree module", "const j = __non_webpack_require__('./plugins');", nil},
 		{"arguments inside a function, as a member and as a key", "function first() { return arguments[0]; }\nconst info = { arguments: first.arguments };\nconst j = require('./plugins');", nil},

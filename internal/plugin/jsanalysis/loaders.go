@@ -1037,7 +1037,7 @@ func closeOf(clean []rune, o int) int {
 // constructorRead reports whether the constructor member read by the operator starting at
 // op ('.', the '?' of `?.`, or the '[' of a literal key) and ending before next is used only
 // where its value is neither called nor handed on: read for a further member other than
-// constructor, call, apply, bind, or the value or get of a property descriptor
+// constructor, call, apply, bind, valueOf, or the value or get of a property descriptor
 // (`getOwnPropertyDescriptors(p).constructor.value`); tested (objectTested: !, ==, ===, !=, !==, the left
 // operand of && or of a ternary, an if or while condition); the right operand of instanceof;
 // the target of a plain assignment (`F.prototype.constructor = F`); or constructed as
@@ -1094,7 +1094,7 @@ func noArguments(clean []rune, p int) bool {
 
 // memberReadAt reports whether a member is read with `.` or `?.` at p (member), and whether
 // that member is one through which a function's constructor is not reached or invoked:
-// any name but constructor, call, apply and bind.
+// any name but constructor, call, apply, bind and valueOf, which returns Function itself.
 func memberReadAt(clean []rune, p int) (ok, member bool) {
 	n := len(clean)
 	q := -1
@@ -1108,7 +1108,7 @@ func memberReadAt(clean []rune, p int) (ok, member bool) {
 	}
 	w, _ := peekWord(clean, skipSpace(clean, q))
 	switch w {
-	case "", "constructor", "call", "apply", "bind":
+	case "", "constructor", "call", "apply", "bind", "valueOf":
 		return false, true
 	}
 	return true, true

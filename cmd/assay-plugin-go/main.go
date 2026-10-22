@@ -1,7 +1,9 @@
 // Command assay-plugin-go is the out-of-process Go language analysis subprocess
 // (inv.8). It reads exactly one newline-delimited JSON plugin.Request from stdin,
-// dispatches on Op to the in-process goanalysis functions (the 5 live ops) or returns a
-// declared-Unsupported partiality (the 3 Phase-1 contract stubs), and writes exactly one
+// dispatches on Op to the in-process goanalysis functions (the 9 live ops: index_symbols,
+// resolve_symbols, call_graph, find_ingresses, reachability, compute_taint, generate_harness,
+// build_manifest, resolve_inventory). resolve_versions returns a declared-Unsupported partiality
+// and capability_manifest returns Supported:false. It writes exactly one
 // newline-delimited JSON plugin.Response to stdout. The analysis libraries (go/packages,
 // x/tools, x/vuln) link ONLY into this binary — never into the host binary.
 //
@@ -160,7 +162,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		if req.ResolveInventory == nil {
 			return plugin.Response{}, fmt.Errorf("%s: missing resolve_inventory request", req.Op)
 		}
-		// PLAN-102: Go resolves the SELECTED dependency graph (go mod graph + go.mod),
+		// Go resolves the SELECTED dependency graph (go mod graph + go.mod),
 		// not go.mod's require list. A declared-partial result (e.g. no manifest) is a
 		// success payload; only a hard resolution failure is an error (inv.4).
 		res, err := goanalysis.ResolveInventory(ctx, *req.ResolveInventory)
@@ -170,8 +172,7 @@ func dispatch(ctx context.Context, req plugin.Request) (plugin.Response, error) 
 		return plugin.Response{Inventory: &res}, nil
 
 	case plugin.OpCapabilityManifest:
-		// Go's capability manifest CONTENT is Phase-4 (PLAN-4x0); this cycle lands the op
-		// wired to honest absence (Supported:false), never a Supported:true manifest with
+		// Honest absence (Supported:false), never a Supported:true manifest with
 		// empty axes.
 		return plugin.Response{Manifest: &capability.Manifest{Supported: false, Language: "go"}}, nil
 

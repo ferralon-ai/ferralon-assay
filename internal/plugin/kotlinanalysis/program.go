@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -23,11 +24,15 @@ const partialReasonNoBuildOutput = plugin.PartialReasonToolFailure + ":no_build_
 // program is the loaded first-party bytecode plus the partiality its loading incurred.
 type program struct {
 	classes []classfile.Class
+	cp      depreach.Classpath // what the build output's roots and JARs define
 	// reasons is the accumulated declared-partiality reason set (deduplicated).
 	reasons map[string]bool
 	// noBuildOutput is true when no build-output root existed — the caller decides
 	// whether that is a hard error (index) or a fail-open partiality (reachability).
 	noBuildOutput bool
+	// loadFailed is true when a first-party root, JAR or class could not be listed, read or
+	// parsed: code that was not read may call any sink, so no sink is cleared.
+	loadFailed bool
 }
 
 // loadProgram stats the build dir, loads the first-party compiled classes, and folds
@@ -43,13 +48,14 @@ func loadProgram(buildDir string) (*program, error) {
 		return nil, fmt.Errorf("kotlinanalysis: build dir %q is not a directory", buildDir)
 	}
 
-	classes, found, failed := firstPartyLoad(buildDir)
-	p := &program{classes: classes, reasons: map[string]bool{}}
+	classes, found, failed, cp := firstPartyLoad(buildDir)
+	p := &program{classes: classes, cp: cp, reasons: map[string]bool{}}
 	if !found {
 		p.noBuildOutput = true
 		p.reasons[partialReasonNoBuildOutput] = true
 	}
 	if len(failed) > 0 {
+		p.loadFailed = true
 		p.reasons[plugin.PartialReasonToolFailure] = true
 	}
 	return p, nil

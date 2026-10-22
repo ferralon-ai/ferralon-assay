@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/depreach"
 )
 
 // buildoutput.go — first-party compiled-.class discovery and loading. Per A4, Kotlin
@@ -36,8 +37,11 @@ var firstPartyJarDir = filepath.Join("build", "libs")
 // held): found=false is the tool-unavailable signal the caller turns into partiality.
 // failed collects per-class parse hazards (a class the analyzer could not read is a place
 // an edge could hide — declared, never silently dropped). classes is sorted by binary name
-// for deterministic downstream ordering.
-func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, failed []string) {
+// for deterministic downstream ordering. cp lists the packages each root and JAR defines; a
+// root or JAR that cannot be listed (classfile.ClasspathPackages) is never opened, and is a
+// failure that leaves cp unlisted. A root or JAR that lists but is not closed (it nests an
+// archive or names a Class-Path) is read, and also leaves cp unlisted.
+func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, failed []string, cp depreach.Classpath) {
 	seen := map[string]bool{}
 	add := func(cs []classfile.Class) {
 		for _, c := range cs {
@@ -51,11 +55,22 @@ func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, fai
 
 	for _, rel := range firstPartyClassRoots {
 		root := filepath.Join(buildDir, rel)
-		info, err := os.Stat(root)
-		if err != nil || !info.IsDir() {
+		info, err := os.Lstat(root)
+		if err != nil || info.Mode().IsRegular() {
 			continue
 		}
 		found = true
+		pkgs, listed, closed := classfile.ClasspathPackages(root, buildDir)
+		cp.Add(pkgs, listed && closed)
+		if !listed {
+			failed = append(failed, rel+": not a listable class directory")
+			continue
+		}
+		// Load the tree that was listed: a root symlinked inside the build tree is walked at
+		// its target, since WalkDir does not follow a symlinked root.
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
 		cs, fs := loadClassTree(root)
 		add(cs)
 		failed = append(failed, fs...)
@@ -72,6 +87,12 @@ func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, fai
 		}
 		sort.Strings(names)
 		for _, n := range names {
+			pkgs, listed, closed := classfile.ClasspathPackages(filepath.Join(jarDir, n), buildDir)
+			cp.Add(pkgs, listed && closed)
+			if !listed {
+				failed = append(failed, filepath.Join(firstPartyJarDir, n)+": not a listable JAR")
+				continue
+			}
 			res, err := classfile.LoadJar(filepath.Join(jarDir, n))
 			if err != nil {
 				failed = append(failed, filepath.Join(firstPartyJarDir, n)+": "+err.Error())
@@ -83,7 +104,7 @@ func firstPartyLoad(buildDir string) (classes []classfile.Class, found bool, fai
 	}
 
 	sort.Slice(classes, func(i, j int) bool { return classes[i].Name < classes[j].Name })
-	return classes, found, failed
+	return classes, found, failed, cp
 }
 
 // loadClassTree walks a compiled-class directory, parsing every .class file. A file that
@@ -95,7 +116,14 @@ func loadClassTree(root string) (classes []classfile.Class, failed []string) {
 			failed = append(failed, path+": "+err.Error())
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".class") {
+		if d.IsDir() {
+			// A multi-release override is not the base class; launchEntryReasons withholds on it.
+			if rel, err := filepath.Rel(root, path); err == nil && rel == filepath.Join("META-INF", "versions") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".class") {
 			return nil
 		}
 		if d.Name() == "module-info.class" {

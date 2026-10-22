@@ -1,0 +1,1751 @@
+package javaanalysis
+
+// launchoptions.go — the JVM launch options a checkout can set, for the JVM reachability lanes.
+// A launch option can run code no call graph shows before main: an agent, a system class
+// loader, a security manager, a logging config class, a provider the JDK looks up by property,
+// a classpath entry. The lanes model only an allowlist of options known not to load or select
+// code. Every file in the checkout is scanned for launch-option tokens; each occurrence is
+// either classified inert, accounted for by a reader that can see its whole value, or it
+// withholds Searched. Options that only the deploy environment sets (platform config vars,
+// another repository's entrypoint, an env file outside the checkout) are residue.
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
+	"errors"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/ferralon-ai/ferralon-assay/plugin"
+)
+
+const (
+	// PartialReasonLaunchAgent: a launch surface loads a Java agent (-javaagent, -agentlib,
+	// -agentpath, -Xrun, a JAR's Launcher-Agent-Class) or extends the boot classpath.
+	PartialReasonLaunchAgent = plugin.PartialReasonRelationshipUnexpressed + ":launch_jvm_agent"
+	// PartialReasonLaunchOption: a launch surface sets a JVM option outside the modeled
+	// allowlist, names options in a form that cannot be read, or cannot itself be read.
+	PartialReasonLaunchOption = plugin.PartialReasonRelationshipUnexpressed + ":launch_jvm_option"
+)
+
+// LaunchOptionReasons scans every file under buildDir and returns the reasons its launch-option
+// tokens declare, sorted: none when every occurrence is accounted for. Only node_modules and
+// site-packages are skipped. A file or directory that cannot be read, and a symlink that
+// dangles, escapes buildDir, or leads into a skipped directory, withholds Searched.
+func LaunchOptionReasons(buildDir string) []string {
+	s := &launchScan{reasons: map[string]bool{}}
+	s.walk(buildDir)
+	out := make([]string, 0, len(s.reasons))
+	for r := range s.reasons {
+		out = append(out, r)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkoutDefines reports whether any file the LaunchOptionReasons walk reads sets one of keys
+// as a system property on a command line (-D<key> or --define <key>, with or without a value),
+// as Maven's -D does for a POM property. A file it cannot read counts as setting one.
+func checkoutDefines(buildDir string, keys map[string]bool) bool {
+	alts := make([]string, 0, len(keys))
+	for k := range keys {
+		alts = append(alts, regexp.QuoteMeta(k))
+	}
+	sort.Strings(alts)
+	re, err := regexp.Compile(`(?:-D|--define(?:=|\s+))\s*["']?(?:` + strings.Join(alts, "|") + `)(?:[^A-Za-z0-9_.\-]|$)`)
+	if err != nil {
+		return true
+	}
+	s := &launchScan{reasons: map[string]bool{}, defines: re}
+	s.walk(buildDir)
+	return s.defined || s.unread
+}
+
+func (s *launchScan) define(data []byte) {
+	if s.defines.Match(data) {
+		s.defined = true
+	}
+}
+
+// launchSkipDirs hold another ecosystem's installed packages, owned by the JS and Python lanes.
+var launchSkipDirs = map[string]bool{"node_modules": true, "site-packages": true}
+
+type launchScan struct {
+	reasons map[string]bool
+	// defines, when set, switches the scan to looking only for -D settings of given keys.
+	defines *regexp.Regexp
+	defined bool // a -D the defines pattern matched
+	unread  bool // a file or directory could not be read
+}
+
+func (s *launchScan) unreadable() { s.reasons[PartialReasonLaunchOption] = true }
+func (s *launchScan) readFail()   { s.unread = true; s.unreadable() }
+func (s *launchScan) agent()      { s.reasons[PartialReasonLaunchAgent] = true }
+
+// walk visits every file under root at its real path. A symlinked directory is walked at its
+// real path when that lies inside root's real path and outside a skipped directory; links are
+// never followed by the directory walk itself, and each link target directory is walked at
+// most once, so the walk terminates on cycles.
+func (s *launchScan) walk(root string) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		s.readFail()
+		return
+	}
+	walked := map[string]bool{realRoot: true}
+	s.walkDir(realRoot, realRoot, walked)
+}
+
+func (s *launchScan) walkDir(realRoot, dir string, walked map[string]bool) {
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			s.readFail()
+			return nil
+		}
+		rel, _ := filepath.Rel(realRoot, path)
+		switch {
+		case d.IsDir():
+			if path != dir && launchSkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+		case d.Type()&fs.ModeSymlink != 0:
+			s.link(realRoot, path, rel, walked)
+		case d.Type().IsRegular():
+			s.file(path, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if err != nil {
+		s.readFail()
+	}
+}
+
+// link resolves one symlink: an in-root directory is walked at its real path, an in-root file
+// is read through the link, and anything else withholds Searched.
+func (s *launchScan) link(realRoot, path, rel string, walked map[string]bool) {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		s.readFail() // dangling, or a component cannot be read
+		return
+	}
+	trel, err := filepath.Rel(realRoot, target)
+	if err != nil || trel == ".." || strings.HasPrefix(trel, ".."+string(filepath.Separator)) {
+		s.readFail() // escapes the checkout
+		return
+	}
+	for _, part := range strings.Split(trel, string(filepath.Separator)) {
+		if launchSkipDirs[part] {
+			s.readFail()
+			return
+		}
+	}
+	fi, err := os.Stat(target)
+	if err != nil {
+		s.readFail()
+		return
+	}
+	switch {
+	case fi.IsDir():
+		if !walked[target] {
+			walked[target] = true
+			s.walkDir(realRoot, target, walked)
+		}
+	case fi.Mode().IsRegular():
+		s.file(path, filepath.ToSlash(rel))
+	}
+}
+
+const (
+	// launchTextLimit is the largest file read whole; larger files are scanned in windows
+	// with no reader context, so every name or classpath token in them withholds Searched.
+	launchTextLimit = 8 << 20
+	launchWindow    = 1 << 20
+	launchOverlap   = 512
+	// launchNestedLimit bounds a JAR read into memory from inside a distribution archive.
+	launchNestedLimit = 64 << 20
+)
+
+func launchHasSuffix(lower string, suffixes ...string) bool {
+	for _, x := range suffixes {
+		if strings.HasSuffix(lower, x) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodeArchive(lower string) bool { return launchHasSuffix(lower, ".jar", ".war", ".ear") }
+func isTarArchive(lower string) bool {
+	return launchHasSuffix(lower, ".tar", ".tgz", ".tar.gz", ".tbz2", ".tbz", ".tar.bz2")
+}
+
+// unopenedArchive reports a compressed archive the scanner cannot decompress.
+func unopenedArchive(lower string) bool {
+	return launchHasSuffix(lower, ".tar.xz", ".txz", ".tar.zst", ".tzst", ".tar.lz", ".tar.lzma", ".tar.z", ".7z", ".rar")
+}
+
+// file scans one checkout file. A code archive is read for its manifest only; a distribution
+// archive (.zip, .tar, gzip or bzip2 tar) is read entry by entry; another compressed archive
+// cannot be read; anything else is scanned as text.
+func (s *launchScan) file(path, rel string) {
+	lower := strings.ToLower(rel)
+	switch {
+	case unopenedArchive(lower):
+		s.readFail()
+		return
+	case isCodeArchive(lower) && s.defines != nil:
+		return
+	case isCodeArchive(lower):
+		zr, err := zip.OpenReader(path)
+		if err != nil {
+			s.readFail()
+			return
+		}
+		defer zr.Close()
+		s.manifest(&zr.Reader)
+		return
+	case strings.HasSuffix(lower, ".zip"):
+		zr, err := zip.OpenReader(path)
+		if err != nil {
+			s.readFail()
+			return
+		}
+		defer zr.Close()
+		s.zipEntries(&zr.Reader)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		s.readFail()
+		return
+	}
+	defer f.Close()
+	if isTarArchive(lower) {
+		s.tarEntries(f, lower)
+		return
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		s.readFail()
+		return
+	}
+	s.content(rel, false, f, fi.Size())
+}
+
+// content scans one file's bytes: whole when small enough, else in windows.
+func (s *launchScan) content(rel string, inDist bool, r io.Reader, size int64) {
+	if size >= 0 && size <= launchTextLimit {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			s.readFail()
+			return
+		}
+		if s.defines != nil {
+			s.define(decodeUTF16(data))
+			return
+		}
+		s.text(rel, inDist, decodeUTF16(data))
+		return
+	}
+	buf := make([]byte, launchWindow+launchOverlap)
+	carry := 0
+	for {
+		n, err := io.ReadFull(r, buf[carry:])
+		chunk := buf[:carry+n]
+		final := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+		if s.defines != nil {
+			s.define(chunk)
+		} else {
+			s.tokensOnly(chunk, final)
+		}
+		if final {
+			return
+		}
+		if err != nil {
+			s.readFail()
+			return
+		}
+		carry = copy(buf, chunk[len(chunk)-launchOverlap:])
+	}
+}
+
+// decodeUTF16 returns a UTF-16 file with a byte-order mark as UTF-8; other data unchanged.
+func decodeUTF16(data []byte) []byte {
+	var le bool
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		le = true
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+	default:
+		return data
+	}
+	units := make([]uint16, 0, len(data)/2)
+	for i := 2; i+1 < len(data); i += 2 {
+		if le {
+			units = append(units, uint16(data[i])|uint16(data[i+1])<<8)
+		} else {
+			units = append(units, uint16(data[i])<<8|uint16(data[i+1]))
+		}
+	}
+	return []byte(string(utf16.Decode(units)))
+}
+
+// manifest reads a JAR's META-INF/MANIFEST.MF: a Launcher-Agent-Class starts an agent when
+// the JAR is launched with -jar, and a Class-Path extends the classpath of every launch that
+// puts the JAR on it.
+func (s *launchScan) manifest(zr *zip.Reader) {
+	for _, f := range zr.File {
+		if !strings.EqualFold(f.Name, "META-INF/MANIFEST.MF") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			s.readFail()
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(rc, launchTextLimit))
+		rc.Close()
+		if err != nil {
+			s.readFail()
+			return
+		}
+		text := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n ", "")
+		for _, line := range strings.Split(text, "\n") {
+			name, value, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(name)) {
+			case "launcher-agent-class":
+				s.agent()
+			case "class-path":
+				if strings.TrimSpace(value) != "" {
+					s.unreadable()
+				}
+			}
+		}
+	}
+}
+
+func (s *launchScan) zipEntries(zr *zip.Reader) {
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			s.readFail()
+			continue
+		}
+		s.entry(f.Name, rc, int64(f.UncompressedSize64))
+		rc.Close()
+	}
+}
+
+func (s *launchScan) tarEntries(r io.Reader, lower string) {
+	switch {
+	case launchHasSuffix(lower, ".tbz2", ".tbz", ".tar.bz2"):
+		r = bzip2.NewReader(r)
+	case !strings.HasSuffix(lower, ".tar"):
+		zr, err := gzip.NewReader(r)
+		if err != nil {
+			s.readFail()
+			return
+		}
+		defer zr.Close()
+		r = zr
+	}
+	tr := tar.NewReader(r)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if err != nil {
+			s.readFail()
+			return
+		}
+		if h.Typeflag == tar.TypeReg {
+			s.entry(h.Name, tr, h.Size)
+		}
+	}
+}
+
+// entry scans one distribution-archive entry: a nested code archive for its manifest, a class
+// file not at all (its code is the call graph's), anything else as text.
+func (s *launchScan) entry(name string, r io.Reader, size int64) {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".class"):
+	case isCodeArchive(lower) && s.defines != nil:
+	case isCodeArchive(lower) || strings.HasSuffix(lower, ".zip"):
+		data, err := io.ReadAll(io.LimitReader(r, launchNestedLimit+1))
+		if err != nil || len(data) > launchNestedLimit {
+			s.readFail()
+			return
+		}
+		zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			s.readFail()
+			return
+		}
+		s.manifest(zr)
+	default:
+		s.content(name, true, r, size)
+	}
+}
+
+// jvmOptionVar reports whether an environment variable carries JVM options for the program:
+// the JVM's and the java launcher's own variables, JAVA_OPTS-style variables, a Gradle start
+// script's <APP>_OPTS, and MAVEN_OPTS and GRADLE_OPTS, whose JVM runs the program under
+// exec:java or a run task. SBT's and Ant's variables configure their own JVM.
+func isJVMOptionVar(name string) bool {
+	return !buildToolVars[name] && (strings.Contains(name, "JAVA_TOOL_OPTIONS") ||
+		strings.Contains(name, "JAVA_OPTIONS") || strings.Contains(name, "_OPTS"))
+}
+
+// buildToolVars configure a build tool's own JVM, not the program's.
+var buildToolVars = map[string]bool{"SBT_OPTS": true, "ANT_OPTS": true}
+
+// options classifies one option list, token by token.
+func (s *launchScan) options(tokens []string) {
+	for i := 0; i < len(tokens); i++ {
+		switch classifyLaunchOption(tokens[i]) {
+		case optionAgent:
+			s.agent()
+		case optionUnmodeled:
+			s.unreadable()
+		case optionTakesValue:
+			i++
+		}
+	}
+}
+
+type optionClass int
+
+const (
+	optionInert optionClass = iota
+	optionTakesValue
+	optionAgent
+	optionUnmodeled
+)
+
+var agentOptionPrefixes = []string{"-javaagent:", "-agentlib:", "-agentpath:", "-Xrun", "-Xbootclasspath"}
+
+// inertProperties are system properties that select no code: the JDK reads them as plain
+// values. Encoding properties are inert only for a standard charset (inertEncodings).
+var inertProperties = map[string]bool{
+	"java.awt.headless": true, "java.net.preferIPv4Stack": true,
+	"java.net.preferIPv6Addresses": true, "java.security.egd": true,
+	"user.language": true, "user.country": true, "user.region": true, "user.variant": true,
+	"user.script": true, "user.timezone": true, "user.name": true,
+}
+
+var encodingProperties = map[string]bool{
+	"file.encoding": true, "sun.jnu.encoding": true, "stdout.encoding": true, "stderr.encoding": true,
+}
+
+// inertEncodings are the charsets every JDK resolves from java.base without a provider lookup.
+var inertEncodings = map[string]bool{
+	"UTF-8": true, "UTF8": true, "US-ASCII": true, "ISO-8859-1": true, "UTF-16": true,
+	"UTF-16BE": true, "UTF-16LE": true, "COMPAT": true,
+}
+
+var inertJVMFlags = map[string]bool{
+	"-server": true, "-client": true, "-ea": true, "-da": true, "-esa": true, "-dsa": true,
+	"-enableassertions": true, "-disableassertions": true,
+	"-enablesystemassertions": true, "-disablesystemassertions": true,
+}
+
+var inertFlagPrefixes = []string{"-Xmx", "-Xms", "-Xss", "-Xmn", "-Xlog:", "-verbose:", "-ea:", "-da:",
+	"-enableassertions:", "-disableassertions:"}
+
+// inertXX are -XX options that size or tune the VM and load no code.
+var inertXX = map[string]bool{
+	"MaxRAMPercentage": true, "InitialRAMPercentage": true, "MinRAMPercentage": true, "MaxRAM": true,
+	"MetaspaceSize": true, "MaxMetaspaceSize": true, "MaxDirectMemorySize": true,
+	"ReservedCodeCacheSize": true, "UseG1GC": true, "UseParallelGC": true, "UseSerialGC": true,
+	"UseZGC": true, "ZGenerational": true, "UseShenandoahGC": true, "UseContainerSupport": true,
+	"ExitOnOutOfMemoryError": true, "CrashOnOutOfMemoryError": true,
+	"HeapDumpOnOutOfMemoryError": true, "HeapDumpPath": true, "MaxGCPauseMillis": true,
+	"ActiveProcessorCount": true, "UseStringDeduplication": true,
+}
+
+// valueOptions take the next token as their value; module access options grant reflective
+// access only. Classpath, JAR and module-path options name the launch's code and are
+// unmodeled.
+var valueOptions = map[string]bool{"--add-opens": true, "--add-exports": true, "--add-reads": true}
+
+func classifyLaunchOption(opt string) optionClass {
+	for _, p := range agentOptionPrefixes {
+		if strings.HasPrefix(opt, p) {
+			return optionAgent
+		}
+	}
+	if valueOptions[opt] {
+		return optionTakesValue
+	}
+	for _, p := range []string{"--add-opens=", "--add-exports=", "--add-reads="} {
+		if strings.HasPrefix(opt, p) {
+			return optionInert
+		}
+	}
+	if inertJVMFlags[opt] {
+		return optionInert
+	}
+	for _, p := range inertFlagPrefixes {
+		if strings.HasPrefix(opt, p) {
+			return optionInert
+		}
+	}
+	if prop, ok := strings.CutPrefix(opt, "-D"); ok {
+		name, value, _ := strings.Cut(prop, "=")
+		switch {
+		case encodingProperties[name]:
+			if inertEncodings[strings.ToUpper(value)] {
+				return optionInert
+			}
+		case inertProperties[name]:
+			return optionInert
+		}
+		return optionUnmodeled
+	}
+	if xx, ok := strings.CutPrefix(opt, "-XX:"); ok {
+		name := strings.TrimLeft(xx, "+-")
+		name, _, _ = strings.Cut(name, "=")
+		if inertXX[name] {
+			return optionInert
+		}
+	}
+	return optionUnmodeled
+}
+
+// expansionWord matches a word that is one whole variable expansion: $NAME, ${NAME},
+// ${NAME:-default} and the other parameter forms, $(NAME), %NAME%.
+var expansionWord = regexp.MustCompile(`^(?:\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::?[-=+?][^}]*)?\}?|\$\(([A-Za-z_][A-Za-z0-9_]*)\)|%([A-Za-z_][A-Za-z0-9_]*)%)$`)
+
+// splitOptionWords splits a shell-quoted option string into words. A word that is a whole
+// expansion of another JVM option variable is that variable's value, read where it is set (or
+// deploy-time residue); any other word that expands a variable cannot be read.
+func splitOptionWords(value string) (words []string, unreadable bool) {
+	for _, w := range strings.Fields(strings.NewReplacer(`"`, " ", "'", " ", `\`, " ").Replace(value)) {
+		if m := expansionWord.FindStringSubmatch(w); m != nil {
+			if !isJVMOptionVar(m[1] + m[2] + m[3]) {
+				unreadable = true
+			}
+			continue
+		}
+		if strings.Contains(w, "$") || strings.Contains(w, "%") || strings.Contains(w, "`") {
+			if classifyLaunchOption(w) == optionAgent {
+				words = append(words, w) // an agent whatever path it names
+				continue
+			}
+			if prop, ok := strings.CutPrefix(w, "-D"); ok {
+				// A property's value is read only for the encoding properties.
+				name, _, _ := strings.Cut(prop, "=")
+				if !strings.ContainsAny(name, "$%`") && !encodingProperties[name] {
+					words = append(words, w)
+					continue
+				}
+			}
+			unreadable = true
+			continue
+		}
+		words = append(words, w)
+	}
+	return words, unreadable
+}
+
+func (s *launchScan) optionString(value string) {
+	words, unreadable := splitOptionWords(value)
+	if unreadable {
+		s.unreadable()
+	}
+	s.options(words)
+}
+
+// optionHead finds candidate launch-option tokens; launchOptionToken validates each.
+var optionHead = regexp.MustCompile(`-(?:D|XX:|javaagent|agentlib|agentpath|Xrun|Xbootclasspath|cp|classpath|jar|p)|--(?:add-modules|upgrade-module-path|patch-module|limit-modules|class-path|module-path)`)
+
+type launchToken struct {
+	start, end int
+	word       string
+}
+
+func isLaunchDelim(b byte) bool {
+	return b <= ' ' || b == 0x7f || strings.IndexByte("\"'`,[]();|&<>}\\", b) >= 0
+}
+
+// leftBoundary reports whether a token may start at i: at a word start, or after the `:-` of a
+// parameter default.
+func leftBoundary(data []byte, i int) bool {
+	if i == 0 {
+		return true
+	}
+	b := data[i-1]
+	if b <= ' ' || strings.IndexByte("\"'`[](){},;=:+|&<>", b) >= 0 {
+		return true
+	}
+	if b == 'J' && i >= 2 && data[i-2] == '-' && leftBoundary(data, i-2) {
+		return true // kotlin, jshell and javac pass -J<option> to their JVM
+	}
+	return b == '-' && i >= 2 && data[i-2] == ':'
+}
+
+var propertyNameByte = func() (t [256]bool) {
+	for _, c := range "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-${%" {
+		t[c] = true
+	}
+	return t
+}()
+
+// launchOptionTokens returns every launch-option token in data. A token is a whole word; one
+// that touches a control byte or is not UTF-8 is binary data, not text, and is skipped.
+func launchOptionTokens(data []byte) []launchToken {
+	var out []launchToken
+	for pos := 0; pos < len(data); {
+		loc := optionHead.FindIndex(data[pos:])
+		if loc == nil {
+			break
+		}
+		h := pos + loc[0]
+		head := string(data[h : pos+loc[1]])
+		if !leftBoundary(data, h) {
+			pos = h + 1
+			continue
+		}
+		end, joined := h, false
+		for end < len(data) {
+			if n := lineContinuation(data, end); n > 0 {
+				end += n
+				joined = true
+				continue
+			}
+			if isLaunchDelim(data[end]) {
+				break
+			}
+			end++
+		}
+		pos = end
+		if binaryAdjacent(data, h, end) {
+			continue
+		}
+		word := string(data[h:end])
+		if joined {
+			word = strings.NewReplacer("\\\r\n", "", "\\\n", "").Replace(word)
+		}
+		if !utf8.ValidString(word) {
+			continue
+		}
+		switch head {
+		case "-D":
+			quoted, unparsed := false, false
+			if end < len(data) && (data[end] == '"' || data[end] == '\'') && !strings.Contains(word, "=") {
+				// -D"k=v", -D'k', -Dk"ey": the shell joins the quoted segment into the name.
+				quoted = true
+				close := bytes.IndexByte(data[end+1:], data[end])
+				if close < 0 || bytes.IndexByte(data[end+1:end+1+close], '\n') >= 0 {
+					unparsed = true
+				} else {
+					word += string(data[end+1 : end+1+close])
+					end += close + 2
+					pos = end
+					unparsed = end < len(data) && !isLaunchDelim(data[end])
+				}
+			}
+			name, _, _ := strings.Cut(word[2:], "=")
+			if unparsed || name == "" || !validPropertyName(name) {
+				if quoted || joined || strings.HasPrefix(word, "-D=") {
+					out = append(out, launchToken{start: h, end: end, word: "-D"})
+				}
+				continue
+			}
+			if strings.HasSuffix(word, "=") && end < len(data) && (data[end] == '"' || data[end] == '\'') {
+				if close := bytes.IndexByte(data[end+1:], data[end]); close >= 0 && bytes.IndexByte(data[end+1:end+1+close], '\n') < 0 {
+					word += string(data[end+1 : end+1+close])
+					end += close + 2
+					pos = end
+				}
+			}
+		case "-XX:":
+			if len(word) == len(head) {
+				continue
+			}
+		case "-cp", "-classpath", "-jar", "-p":
+			if word != head {
+				continue
+			}
+		case "--class-path", "--module-path", "--add-modules", "--upgrade-module-path", "--patch-module", "--limit-modules":
+			if word != head && !strings.HasPrefix(word, head+"=") {
+				continue
+			}
+		}
+		out = append(out, launchToken{start: h, end: end, word: word})
+	}
+	return out
+}
+
+// lineContinuation returns the length of a backslash line continuation at i, or 0.
+func lineContinuation(data []byte, i int) int {
+	if data[i] != '\\' {
+		return 0
+	}
+	switch {
+	case i+1 < len(data) && data[i+1] == '\n':
+		return 2
+	case i+2 < len(data) && data[i+1] == '\r' && data[i+2] == '\n':
+		return 3
+	}
+	return 0
+}
+
+// binaryAdjacent reports whether data[a:b] touches a control byte other than whitespace: a
+// string in a binary serialization (a class file, Gradle's execution history), not text. The
+// launcher reads no options from such a file; options embedded in binaries are residue.
+func binaryAdjacent(data []byte, a, b int) bool {
+	ctl := func(c byte) bool { return c < ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' && c != '\v' }
+	return a > 0 && ctl(data[a-1]) || b < len(data) && ctl(data[b])
+}
+
+func validPropertyName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		if !propertyNameByte[name[i]] {
+			return false
+		}
+	}
+	return true
+}
+
+func isClasspathToken(w string) bool {
+	switch w {
+	case "-cp", "-classpath", "-jar", "--class-path", "--module-path":
+		return true
+	}
+	return strings.HasPrefix(w, "--class-path=") || strings.HasPrefix(w, "--module-path=")
+}
+
+// launchName finds the names that carry JVM options without being options themselves: option
+// variables, the Gradle and Maven DSL properties that become JVM options, the JAR manifest
+// attributes that start an agent or extend the classpath, and the CLASSPATH variable.
+var launchName = regexp.MustCompile(`\b[A-Za-z0-9_]*(?:JAVA_TOOL_OPTIONS|JAVA_OPTIONS|_OPTS)[A-Za-z0-9_]*\b|\b(?:applicationDefaultJvmArgs|defaultJvmOpts|jvmFlags?|jvmArguments|jvmArgs|jvmArgumentProviders|argLine)\b|\bLauncher-Agent-Class\b|\bClass-Path\b|\bCLASSPATH\b`)
+
+// launchNames returns the launch-name occurrences in text. A file with a NUL byte is a binary
+// serialization (a class file, Gradle's execution history) that the launcher reads no options
+// from: a name in it is data, and options embedded in binaries are residue. Option tokens in
+// binaries still classify themselves.
+func launchNames(data []byte) [][]int {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		if !bytes.HasPrefix(data, []byte("#!")) {
+			return nil
+		}
+		data = data[:i] // a script with an appended payload: its text is the script
+	}
+	var out [][]int
+	for _, loc := range launchName.FindAllIndex(data, -1) {
+		if !binaryAdjacent(data, loc[0], loc[1]) {
+			out = append(out, loc)
+		}
+	}
+	return out
+}
+
+var launchDSLNames = map[string]bool{
+	"applicationDefaultJvmArgs": true, "defaultJvmOpts": true, "jvmFlags": true, "jvmFlag": true, "jvmArguments": true,
+	"jvmArgs": true, "argLine": true,
+}
+
+// tokensOnly classifies the tokens of a window of a large file, with no reader context. An
+// occurrence running into the window's end is read whole from the next, overlapping window.
+func (s *launchScan) tokensOnly(data []byte, final bool) {
+	for _, t := range launchOptionTokens(data) {
+		if !final && t.end == len(data) {
+			if t.start < len(data)-launchOverlap {
+				s.unreadable() // the next window starts inside it
+			}
+			continue
+		}
+		if t.word == "-p" {
+			continue
+		}
+		s.options([]string{t.word})
+	}
+	for _, loc := range launchNames(data) {
+		n := string(data[loc[0]:loc[1]])
+		if !final && loc[1] == len(data) {
+			continue
+		}
+		switch {
+		case n == "Launcher-Agent-Class":
+			s.agent()
+		case !buildToolVars[n]:
+			s.unreadable()
+		}
+	}
+}
+
+type launchSpanKind int
+
+const (
+	// spanBuild: a build tool's own JVM or command line. Its -D and -XX options are claimed,
+	// except properties a build plugin turns into launch options (jib.*, spring-boot.*).
+	spanBuild launchSpanKind = iota
+	// spanTest: a Gradle jvmArgs in a test task's block, or a Maven argLine in the Surefire or
+	// Failsafe plugin: the test JVM only.
+	spanTest
+)
+
+type launchSpan struct {
+	start, end int
+	kind       launchSpanKind
+}
+
+// launchFile is one text file under scan, with the reader context its occurrences need.
+type launchFile struct {
+	s           *launchScan
+	data        []byte
+	lines       []int // start offset of each line
+	gradlew     bool
+	startScript bool
+	spans       []launchSpan
+	testScopes  [][2]int     // Surefire/Failsafe plugin elements
+	braces      map[int]int  // a Gradle script's code-level braces: open offset to close offset
+	testOpens   map[int]bool // the opening braces of a Gradle script's test-task blocks
+	yamlLines   map[int]bool // 1-based lines whose name occurrence a YAML reader classified
+	template    map[int]bool // 0-based start-script template comment lines
+}
+
+func (s *launchScan) text(rel string, inDist bool, data []byte) {
+	tokens := launchOptionTokens(data)
+	names := launchNames(data)
+	javaCtx := bytes.Contains(data, []byte("java")) && (bytes.Contains(data, []byte("-p")) || bytes.Contains(data, []byte("@")))
+	if len(tokens) == 0 && len(names) == 0 && !javaCtx {
+		return
+	}
+	base := strings.ToLower(rel[strings.LastIndex(rel, "/")+1:])
+	f := &launchFile{s: s, data: data, gradlew: isGradleWrapper(rel, inDist, data),
+		startScript: isStartScript(rel, inDist), yamlLines: map[int]bool{}, template: map[int]bool{}}
+	f.lines = append(f.lines, 0)
+	for i, b := range data {
+		if b == '\n' && i+1 < len(data) {
+			f.lines = append(f.lines, i+1)
+		}
+	}
+	f.buildSpans(rel)
+	f.testSpans(base)
+	if f.gradlew || f.startScript {
+		for i := range f.lines {
+			if startScriptCommentLines[strings.Join(strings.Fields(f.line(i)), " ")] {
+				f.template[i] = true
+			}
+		}
+	}
+	if launchHasSuffix(base, ".yaml", ".yml", ".json") {
+		f.yaml()
+	}
+	for _, t := range tokens {
+		f.option(t)
+	}
+	for _, loc := range names {
+		f.name(loc[0], loc[1])
+	}
+	if javaCtx {
+		f.javaContext()
+	}
+}
+
+// isGradleWrapper reports whether rel is the checkout's Gradle wrapper script: gradlew or
+// gradlew.bat at the root, carrying the template's wrapper entry point.
+func isGradleWrapper(rel string, inDist bool, data []byte) bool {
+	return !inDist && (rel == "gradlew" || rel == "gradlew.bat") &&
+		(bytes.Contains(data, []byte("org.gradle.wrapper.GradleWrapperMain")) || bytes.Contains(data, []byte("gradle-wrapper.jar")))
+}
+
+// isStartScript reports whether rel is a Gradle-generated start script: build/scripts/<name>
+// or build/install/<app>/bin/<name> in any project, or <app>/bin/<name> in a distribution.
+func isStartScript(rel string, inDist bool) bool {
+	parts := strings.Split(rel, "/")
+	n := len(parts)
+	if inDist {
+		return n == 3 && parts[1] == "bin"
+	}
+	return n >= 3 && parts[n-3] == "build" && parts[n-2] == "scripts" ||
+		n >= 5 && parts[n-5] == "build" && parts[n-4] == "install" && parts[n-2] == "bin"
+}
+
+// startScriptCommentLines are the comment lines of Gradle's start-script and wrapper templates
+// that name options.
+var startScriptCommentLines = map[string]bool{
+	"# * -classpath": true, "# * -D...appname settings": true, "# * --module-path (only if needed)": true,
+}
+
+func (f *launchFile) lineOf(off int) int {
+	return sort.Search(len(f.lines), func(i int) bool { return f.lines[i] > off }) - 1
+}
+
+func (f *launchFile) lineEnd(i int) int {
+	if i+1 < len(f.lines) {
+		return f.lines[i+1] - 1
+	}
+	return len(f.data)
+}
+
+func (f *launchFile) line(i int) string {
+	return strings.TrimRight(string(f.data[f.lines[i]:f.lineEnd(i)]), "\r\n")
+}
+
+func (f *launchFile) inSpan(off int, kind launchSpanKind) bool {
+	for _, sp := range f.spans {
+		if sp.kind == kind && off >= sp.start && off < sp.end {
+			return true
+		}
+	}
+	return false
+}
+
+// logicalLines returns the byte ranges of the file's logical lines: backslash continuations
+// (and caret continuations in batch files) are joined.
+func (f *launchFile) logicalLines() [][2]int {
+	var out [][2]int
+	start := 0
+	for i := range f.lines {
+		l := strings.TrimRight(f.line(i), " \t")
+		if (strings.HasSuffix(l, `\`) || strings.HasSuffix(l, "^")) && i+1 < len(f.lines) {
+			continue
+		}
+		out = append(out, [2]int{f.lines[start], f.lineEnd(i)})
+		start = i + 1
+	}
+	return out
+}
+
+// launchWords splits a command line into words and the separators ; | & between commands.
+var launchWords = regexp.MustCompile(`[;|&]+|[^\s"'\[\](),;|&]+`)
+
+var buildToolCommands = map[string]bool{
+	"mvn": true, "mvnw": true, "mvn.cmd": true, "mvnw.cmd": true, "gradle": true, "gradlew": true,
+	"gradle.bat": true, "gradlew.bat": true, "sbt": true, "ant": true, "cmake": true, "gcc": true,
+	"g++": true, "cc": true, "clang": true, "clang++": true,
+}
+
+func commandBase(w string) string {
+	w = w[strings.LastIndexAny(w, `/\`)+1:]
+	return strings.ToLower(w)
+}
+
+func isJavaCommand(w string) bool {
+	switch commandBase(w) {
+	case "java", "java.exe", "javaw", "javaw.exe":
+		return true
+	}
+	return false
+}
+
+// buildSpans marks the build tools' own option surfaces: the wrapper scripts and Maven's
+// command-line config file whole, a build-tool command up to the next command or java word,
+// and a line that assigns SBT's or Ant's option variable or Gradle's daemon JVM arguments.
+// Maven's .mvn/jvm.config, like MAVEN_OPTS, configures the JVM exec:java runs the program in.
+func (f *launchFile) buildSpans(rel string) {
+	if f.gradlew || strings.HasSuffix(rel, ".mvn/maven.config") || rel == ".mvn/maven.config" {
+		f.spans = append(f.spans, launchSpan{0, len(f.data), spanBuild})
+		return
+	}
+	for _, ll := range f.logicalLines() {
+		seg := f.data[ll[0]:ll[1]]
+		open := -1
+		for _, loc := range launchWords.FindAllIndex(seg, -1) {
+			w := string(seg[loc[0]:loc[1]])
+			switch {
+			case strings.ContainsAny(w[:1], ";|&") || isJavaCommand(w):
+				if open >= 0 {
+					f.spans = append(f.spans, launchSpan{ll[0] + open, ll[0] + loc[0], spanBuild})
+					open = -1
+				}
+			case open < 0 && buildToolCommands[commandBase(w)]:
+				open = loc[1]
+			case open < 0:
+				k := w
+				if i := strings.IndexAny(k, "=:"); i >= 0 {
+					k = k[:i]
+				}
+				if buildToolVars[k] || k == "org.gradle.jvmargs" || k == "kotlin.daemon.jvmargs" {
+					open = loc[0]
+				}
+			}
+		}
+		if open >= 0 {
+			f.spans = append(f.spans, launchSpan{ll[0] + open, ll[1], spanBuild})
+		}
+	}
+}
+
+var testArgs = regexp.MustCompile(`\bjvmArgs\b|<argLine>`)
+
+// testSpans marks the jvmArgs and argLine values that configure only a test JVM: a jvmArgs
+// directly in a Gradle test task's block, and an argLine in the Surefire or Failsafe plugin.
+// Every other jvmArgs (run, bootRun, any JavaExec) and argLine configures a JVM that may run
+// the program.
+func (f *launchFile) testSpans(base string) {
+	switch {
+	case base == "pom.xml":
+		f.testScopes = f.surefireScopes()
+	case launchHasSuffix(base, ".gradle", ".gradle.kts"):
+		f.braces = gradleBraces(f.data, strings.HasSuffix(base, ".kts"))
+		f.testOpens = map[int]bool{}
+		for _, loc := range gradleTestBlock.FindAllIndex(f.data, -1) {
+			f.testOpens[loc[1]-1] = true // testScope only asks about code-level braces
+		}
+	default:
+		return
+	}
+	for _, loc := range testArgs.FindAllIndex(f.data, -1) {
+		scopeEnd, ok := f.testScope(loc[0])
+		if !ok {
+			continue
+		}
+		var end int
+		if string(f.data[loc[0]:loc[1]]) == "<argLine>" {
+			i := bytes.Index(f.data[loc[1]:], []byte("</argLine>"))
+			if i < 0 {
+				continue
+			}
+			end = loc[1] + i
+		} else {
+			rest := string(f.data[loc[1]:])
+			trimmed := strings.TrimLeft(rest, " \t")
+			for _, op := range []string{"+=", "=", ".addAll", ".add", ".set"} {
+				if strings.HasPrefix(trimmed, op) {
+					trimmed = strings.TrimLeft(trimmed[len(op):], " \t")
+					break
+				}
+			}
+			start := loc[1] + len(rest) - len(trimmed)
+			if expr, ok := bracketedExpr(trimmed); ok {
+				end = start + len(expr)
+			} else if end, ok = literalArgsEnd(f.data, start, strings.HasSuffix(base, ".kts")); !ok {
+				continue
+			}
+		}
+		f.spans = append(f.spans, launchSpan{loc[0], min(end, scopeEnd), spanTest})
+	}
+}
+
+// literalArgsEnd returns where an unbracketed jvmArgs value starting at i ends: string
+// literals, commas and comments, up to the first ';', line end or '}' (after a comma the value
+// continues on the next line). ok is false when anything else comes first or the lexer cannot
+// classify a token: a value with no positive end is not test-only, so none of it is exempt.
+func literalArgsEnd(data []byte, i int, kts bool) (int, bool) {
+	comma := false
+	for i < len(data) {
+		ok := true
+		switch at := data[i:]; {
+		case at[0] == ';' || at[0] == '}' || (at[0] == '\n' || at[0] == '\r') && !comma:
+			return i, true
+		case isGradleSpace(at[0]):
+			i++
+		case at[0] == ',':
+			i, comma = i+1, true
+		case bytes.HasPrefix(at, []byte("//")):
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case bytes.HasPrefix(at, []byte("/*")):
+			i, ok = skipBlockComment(data, i, kts)
+		case stringQuote(at, kts) != "":
+			i, ok = skipString(data, i, stringQuote(at, kts), kts)
+			comma = false
+		default:
+			ok = false
+		}
+		if !ok {
+			return 0, false
+		}
+	}
+	return 0, false
+}
+
+// gradleTestBlock matches the opening of a block that configures Gradle test tasks: test { },
+// tasks.test { }, tasks.named("test") { }, and withType<Test> { } or withType(Test) { }, each
+// optionally through .configure or .configureEach.
+var gradleTestBlock = regexp.MustCompile(`(?m)(?:^[ \t]*|\btasks\.)test[ \t]*(?:\.configure[ \t]*)?\{` +
+	`|\btasks\.named(?:<Test>)?\([ \t]*["']test["'][ \t]*(?:,[ \t]*Test(?:::class(?:\.java)?)?[ \t]*)?\)[ \t]*(?:\.configure[ \t]*)?\{` +
+	`|\bwithType(?:<Test>[ \t]*(?:\([ \t]*\))?|\([ \t]*Test(?:::class(?:\.java)?)?[ \t]*\))[ \t]*(?:\.configureEach[ \t]*)?\{`)
+
+var (
+	mavenPlugin     = regexp.MustCompile(`<plugin>`)
+	mavenArtifactID = regexp.MustCompile(`<artifactId>\s*([^<\s]+)\s*</artifactId>`)
+)
+
+// testScope reports whether off configures only a test task, and where that configuration
+// ends. In a Gradle script the innermost block holding off decides: it must be a test task's
+// block, so a run or bootRun block nested anywhere inside one is not test configuration, and
+// the setting must be the test task's own (see testReceiver). In a POM, off must lie in a
+// Surefire or Failsafe plugin element.
+func (f *launchFile) testScope(off int) (int, bool) {
+	if f.braces == nil {
+		return rangeEnd(f.testScopes, off)
+	}
+	open, end := -1, 0
+	for o, c := range f.braces {
+		if o < off && off < c && o > open {
+			open, end = o, c
+		}
+	}
+	return end, open >= 0 && f.testOpens[open] && testReceiver(f.data, off)
+}
+
+// testReceiver reports whether the setting named at off is called on the enclosing task: bare,
+// or through it. or this. Any other receiver (tasks.run.get(), run, tasks.getByName("run"),
+// project.tasks.findByName("bootRun"), foo) configures a different task from inside the
+// block, whatever its name.
+func testReceiver(data []byte, off int) bool {
+	i := off
+	for i > 0 && isGradleSpace(data[i-1]) {
+		i--
+	}
+	if i == 0 || data[i-1] != '.' {
+		return optionStatementStart(data, off)
+	}
+	for _, r := range []string{"it", "this"} {
+		if k := i - 1 - len(r); k >= 0 && string(data[k:i-1]) == r && optionStatementStart(data, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// optionStatementStart reports whether an expression starting at i begins a statement: only
+// whitespace separates it from an opening or closing brace or a semicolon, or from the end
+// of a line whose last character can end a statement.
+func optionStatementStart(data []byte, i int) bool {
+	newline := false
+	for i > 0 && isGradleSpace(data[i-1]) {
+		newline = newline || data[i-1] == '\n'
+		i--
+	}
+	if i == 0 {
+		return true
+	}
+	switch c := data[i-1]; {
+	case c == '{' || c == '}' || c == ';':
+		return true
+	case c == ')' || c == ']' || c == '"' || c == '\'' || c == '`' || c == '_' || c == '$' || c >= 0x80 ||
+		'0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z':
+		return newline
+	}
+	return false
+}
+
+func isGradleSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
+
+// surefireScopes returns the byte ranges of a POM's Surefire and Failsafe <plugin> elements.
+func (f *launchFile) surefireScopes() [][2]int {
+	var out [][2]int
+	for _, loc := range mavenPlugin.FindAllIndex(f.data, -1) {
+		end := bytes.Index(f.data[loc[1]:], []byte("</plugin>"))
+		if end < 0 {
+			continue
+		}
+		body := f.data[loc[1] : loc[1]+end]
+		// The plugin's own coordinates precede its configuration, executions and dependencies.
+		head := body
+		for _, child := range []string{"<configuration>", "<executions>", "<dependencies>"} {
+			if i := bytes.Index(head, []byte(child)); i >= 0 {
+				head = head[:i]
+			}
+		}
+		if m := mavenArtifactID.FindSubmatch(head); m != nil {
+			switch string(m[1]) {
+			case "maven-surefire-plugin", "maven-failsafe-plugin":
+				out = append(out, [2]int{loc[1], loc[1] + end})
+			}
+		}
+	}
+	return out
+}
+
+// rangeEnd returns the end of the innermost range holding off.
+func rangeEnd(ranges [][2]int, off int) (int, bool) {
+	end, ok := 0, false
+	for _, r := range ranges {
+		if off >= r[0] && off < r[1] && (!ok || r[1] < end) {
+			end, ok = r[1], true
+		}
+	}
+	return end, ok
+}
+
+// gradleBraces returns a Gradle script's code-level braces, each opening brace's offset mapped
+// to its closing brace's. It skips comments (nested in Kotlin), strings, string templates and
+// backtick names. At the first token it cannot classify it stops, and every brace still open
+// there has no match: a lone '/' in Groovy (a slashy or dollar-slashy string, or division), a
+// backtick, '/' or newline inside a template, a newline inside a one-line string, anything
+// unterminated, and a '}' with no '{'. A block it cannot close is not a test task's block.
+func gradleBraces(data []byte, kts bool) map[int]int {
+	pairs := map[int]int{}
+	var open []int
+	for i := 0; i < len(data); {
+		ok := true
+		switch at := data[i:]; {
+		case bytes.HasPrefix(at, []byte("//")):
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case bytes.HasPrefix(at, []byte("/*")):
+			i, ok = skipBlockComment(data, i, kts)
+		case at[0] == '/':
+			ok = kts // Kotlin has no slashy strings: a lone '/' divides
+			i++
+		case stringQuote(at, kts) != "":
+			i, ok = skipString(data, i, stringQuote(at, kts), kts)
+		case at[0] == '`':
+			j := bytes.IndexAny(at[1:], "`\n")
+			ok = j >= 0 && at[1+j] == '`'
+			i += j + 2
+		case at[0] == '{':
+			open = append(open, i)
+			i++
+		case at[0] == '}':
+			if ok = len(open) > 0; ok {
+				pairs[open[len(open)-1]] = i
+				open = open[:len(open)-1]
+			}
+			i++
+		default:
+			i++
+		}
+		if !ok {
+			break
+		}
+	}
+	return pairs
+}
+
+// skipBlockComment returns the offset after the comment opening at i. Kotlin comments nest;
+// Groovy's end at the first "*/".
+func skipBlockComment(data []byte, i int, kts bool) (int, bool) {
+	depth := 0
+	for i < len(data) {
+		switch at := data[i:]; {
+		case bytes.HasPrefix(at, []byte("/*")) && (kts || depth == 0):
+			depth++
+			i += 2
+		case bytes.HasPrefix(at, []byte("*/")):
+			depth--
+			i += 2
+			if depth == 0 {
+				return i, true
+			}
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+// skipString returns the offset after the string literal opening at i with quote q. Kotlin's
+// raw strings take no escapes; double-quoted strings carry ${} templates.
+func skipString(data []byte, i int, q string, kts bool) (int, bool) {
+	triple := len(q) == 3
+	for i += len(q); i < len(data); {
+		switch at := data[i:]; {
+		case at[0] == '\\' && !(kts && triple):
+			i += 2
+		case bytes.HasPrefix(at, []byte(q)):
+			return i + len(q), true
+		case at[0] == '\n' && !triple:
+			return 0, false
+		case q[0] == '"' && bytes.HasPrefix(at, []byte("${")):
+			var ok bool
+			if i, ok = skipTemplate(data, i+2, kts); !ok {
+				return 0, false
+			}
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+// skipTemplate returns the offset after the template whose body starts at i, counting its
+// braces and skipping the strings inside it. A backtick, '/' or newline inside a template is
+// not classified.
+func skipTemplate(data []byte, i int, kts bool) (int, bool) {
+	for depth := 1; i < len(data); {
+		at := data[i:]
+		switch q := stringQuote(at, kts); {
+		case q != "":
+			var ok bool
+			if i, ok = skipString(data, i, q, kts); !ok {
+				return 0, false
+			}
+		case at[0] == '{':
+			depth++
+			i++
+		case at[0] == '}':
+			if depth--; depth == 0 {
+				return i + 1, true
+			}
+			i++
+		case at[0] == '`' || at[0] == '/' || at[0] == '\n':
+			return 0, false
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+// stringQuote returns the quote opening a string literal at the start of at, or "".
+func stringQuote(at []byte, kts bool) string {
+	switch {
+	case bytes.HasPrefix(at, []byte(`"""`)) || !kts && bytes.HasPrefix(at, []byte("'''")):
+		return string(at[:3])
+	case at[0] == '"' || at[0] == '\'':
+		return string(at[:1])
+	}
+	return ""
+}
+
+// option classifies one option token.
+func (f *launchFile) option(t launchToken) {
+	if t.word == "-p" || f.inSpan(t.start, spanTest) || f.template[f.lineOf(t.start)] {
+		return
+	}
+	if isClasspathToken(t.word) {
+		if !f.templateClasspath(t) {
+			f.s.unreadable()
+		}
+		return
+	}
+	switch classifyLaunchOption(t.word) {
+	case optionAgent:
+		f.s.agent()
+	case optionUnmodeled:
+		if !f.inSpan(t.start, spanBuild) || !buildClaimable(t.word) {
+			f.s.unreadable()
+		}
+	}
+}
+
+func buildClaimable(w string) bool {
+	if strings.HasPrefix(w, "-XX:") {
+		return true
+	}
+	prop, ok := strings.CutPrefix(w, "-D")
+	return ok && !strings.HasPrefix(prop, "jib.") && !strings.HasPrefix(prop, "spring-boot.")
+}
+
+// templateClasspath reports whether a classpath token is the Gradle template's own: a start
+// script's -classpath "$CLASSPATH", or the wrapper script's wrapper JAR.
+func (f *launchFile) templateClasspath(t launchToken) bool {
+	if !f.gradlew && !f.startScript {
+		return false
+	}
+	rest := strings.TrimLeft(string(f.data[t.end:min(t.end+64, len(f.data))]), " \t")
+	switch t.word {
+	case "-classpath":
+		return strings.HasPrefix(rest, `"$CLASSPATH"`) || strings.HasPrefix(rest, `"%CLASSPATH%"`)
+	case "-jar":
+		return f.gradlew && (strings.HasPrefix(rest, `"$APP_HOME/gradle/wrapper/gradle-wrapper.jar"`) ||
+			strings.HasPrefix(rest, `"%APP_HOME%\gradle\wrapper\gradle-wrapper.jar"`))
+	}
+	return false
+}
+
+// name classifies one occurrence of a launch name. An option variable is accounted for when it
+// is expanded, sits on a comment line, is assigned a literal on the same line, or a YAML/JSON
+// reader attached it to a scalar value; a DSL property when its value is a literal list.
+func (f *launchFile) name(a, b int) {
+	n := string(f.data[a:b])
+	switch n {
+	case "Launcher-Agent-Class":
+		f.s.agent()
+		return
+	case "Class-Path":
+		f.s.unreadable()
+		return
+	}
+	if f.inSpan(a, spanTest) || buildToolVars[n] || launchExpansion(f.data, a, b) {
+		return
+	}
+	if n == "argLine" && (a == 0 || f.data[a-1] != '<') {
+		return // Maven's argLine is an element; the name elsewhere is a reference to it
+	}
+	li := f.lineOf(a)
+	line := f.line(li)
+	if isLaunchCommentLine(line) {
+		return
+	}
+	if launchDSLNames[n] {
+		f.dsl(a, b)
+		return
+	}
+	if n == "CLASSPATH" {
+		// java reads CLASSPATH when no -cp is given: it names the launch's code. The Gradle
+		// templates set it for their own -classpath "$CLASSPATH".
+		if !f.gradlew && !f.startScript && strings.TrimSpace(line[:a-f.lines[li]]) != "unset" {
+			f.s.unreadable()
+		}
+		return
+	}
+	if n == "jvmArgumentProviders" {
+		if _, ok := f.testScope(a); !ok {
+			f.s.unreadable() // providers compute options at execution time
+		}
+		return
+	}
+	if f.yamlLines[li+1] {
+		return
+	}
+	col := a - f.lines[li]
+	if v, ok := assignedValue(line, col, col+len(n)); ok {
+		f.s.optionString(v)
+		return
+	}
+	switch strings.TrimSpace(line[:col]) + "|" + strings.TrimSpace(line[col+len(n):]) {
+	case "export|", "unset|":
+		return
+	}
+	f.s.unreadable()
+}
+
+// launchExpansion reports whether data[a:b] is a variable expansion: $NAME, ${NAME}, $(NAME),
+// %NAME%, !NAME!, or a GitHub Actions ${{ env.NAME }} context reference.
+func launchExpansion(data []byte, a, b int) bool {
+	switch {
+	case a >= 1 && data[a-1] == '$':
+		return true
+	case a >= 2 && data[a-2] == '$' && (data[a-1] == '{' || data[a-1] == '('):
+		return true
+	case a >= 1 && b < len(data) && (data[a-1] == '%' && data[b] == '%' || data[a-1] == '!' && data[b] == '!'):
+		return true
+	}
+	lineStart := bytes.LastIndexByte(data[:a], '\n') + 1
+	prefix := string(data[lineStart:a])
+	for _, ctx := range []string{"env.", "secrets.", "vars."} {
+		if strings.HasSuffix(prefix, ctx) {
+			open := strings.LastIndex(prefix, "${{")
+			return open >= 0 && !strings.Contains(prefix[open:], "}}")
+		}
+	}
+	return false
+}
+
+func isLaunchCommentLine(line string) bool {
+	t := strings.TrimSpace(line)
+	lower := strings.ToLower(t)
+	for _, p := range []string{"#", "//", "/*", "*", "<!--", "::", ";", "@rem"} {
+		if strings.HasPrefix(t, p) {
+			return true
+		}
+	}
+	return lower == "rem" || strings.HasPrefix(lower, "rem ")
+}
+
+var assignOp = regexp.MustCompile(`^\s*(\?=|\+=|::=|:=|=|:)\s*`)
+
+// assignedValue returns the literal a line assigns to the name at line[a:b]: NAME=value and
+// the make/YAML/JSON/TOML operators, Dockerfile's legacy ENV NAME value, Kotlin's "NAME" to
+// "value", and a call's ("NAME", "value"). ok is false when the value is not on the line.
+func assignedValue(line string, a, b int) (string, bool) {
+	after := line[b:]
+	quoted := a > 0 && (line[a-1] == '"' || line[a-1] == '\'') && strings.HasPrefix(after, line[a-1:a])
+	if quoted {
+		after = after[1:]
+	}
+	var rest string
+	op := ""
+	if m := assignOp.FindStringSubmatch(after); m != nil {
+		op, rest = m[1], after[len(m[0]):]
+	} else if strings.EqualFold(strings.TrimSpace(line[:a]), "ENV") && strings.HasPrefix(after, " ") {
+		op, rest = "ENV", strings.TrimSpace(after)
+	} else if m := regexp.MustCompile(`^\s+to\s+|^\s*,\s*`).FindString(after); quoted && m != "" {
+		if strings.TrimSpace(m) == "," && !strings.HasSuffix(strings.TrimRight(line[:a-1], " \t"), "(") {
+			return "", false
+		}
+		op, rest = strings.TrimSpace(m), after[len(m):]
+	} else {
+		return "", false
+	}
+	rest = strings.TrimRight(rest, " \t\r")
+	if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
+		q := rest[0]
+		for i := 1; i < len(rest); i++ {
+			switch rest[i] {
+			case '\\':
+				i++
+			case q:
+				return rest[1:i], true
+			}
+		}
+		return "", false // the literal continues past the line
+	}
+	if op == ":" && (rest == "" || rest[0] == '|' || rest[0] == '>') {
+		return "", false // a YAML block or nested value
+	}
+	if i := strings.Index(rest, " #"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest, true
+}
+
+var xmlTag = regexp.MustCompile(`<[^>]*>`)
+
+// dsl classifies a Gradle or Maven DSL property that becomes launch options: an XML element's
+// text (a property reference in it cannot be read), or an assignment, call or set(...) whose value is a
+// list of string literals (or a + concatenation of such lists). Anything else cannot be read.
+func (f *launchFile) dsl(a, b int) {
+	d := f.data
+	n := string(d[a:b])
+	if a >= 2 && d[a-2] == '<' && d[a-1] == '/' {
+		return
+	}
+	if a >= 1 && d[a-1] == '<' {
+		gt := bytes.IndexByte(d[b:], '>')
+		if gt < 0 {
+			f.s.unreadable()
+			return
+		}
+		if gt > 0 && d[b+gt-1] == '/' {
+			return
+		}
+		body := d[b+gt+1:]
+		end := bytes.Index(body, []byte("</"+n+">"))
+		if end < 0 {
+			f.s.unreadable()
+			return
+		}
+		f.s.optionString(xmlTag.ReplaceAllString(string(body[:end]), " "))
+		return
+	}
+	rest := string(d[b:])
+	trimmed := strings.TrimLeft(rest, " \t")
+	switch {
+	case strings.HasPrefix(trimmed, "+="):
+		trimmed = trimmed[2:]
+	case strings.HasPrefix(trimmed, "=") && !strings.HasPrefix(trimmed, "=="):
+		trimmed = trimmed[1:]
+	case strings.HasPrefix(trimmed, ".set("):
+		trimmed = trimmed[4:]
+	case strings.HasPrefix(trimmed, "("):
+	case len(trimmed) < len(rest) && (strings.HasPrefix(trimmed, `"`) || strings.HasPrefix(trimmed, "'")):
+	default:
+		f.s.unreadable() // a read, or a mutation of the property
+		return
+	}
+	lits, ok := literalListExpr(trimmed)
+	if !ok {
+		f.s.unreadable()
+		return
+	}
+	for _, lit := range lits {
+		if strings.Contains(lit, "$") {
+			if prop, ok := strings.CutPrefix(lit, "-D"); !ok || strings.ContainsAny(strings.SplitN(prop, "=", 2)[0], "$") {
+				f.s.unreadable()
+				continue
+			}
+		}
+		f.s.options([]string{lit})
+	}
+}
+
+var (
+	stringLiteral = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'`)
+	listWrapper   = regexp.MustCompile(`\b(listOf|mutableListOf|arrayListOf|setOf|arrayOf)\b|[()\[\],\s]`)
+)
+
+// literalListExpr reads a value made only of string literals: string literals and list
+// expressions of them, joined by + or ,, followed by nothing but the end of the statement.
+func literalListExpr(text string) ([]string, bool) {
+	var lits []string
+	for {
+		text = strings.TrimLeft(text, " \t")
+		var item string
+		if strings.HasPrefix(text, `"`) || strings.HasPrefix(text, "'") {
+			loc := stringLiteral.FindStringIndex(text)
+			if loc == nil || loc[0] != 0 {
+				return nil, false
+			}
+			item = text[:loc[1]]
+		} else {
+			expr, ok := bracketedExpr(text)
+			if !ok {
+				return nil, false
+			}
+			item = expr
+		}
+		if strings.TrimSpace(listWrapper.ReplaceAllString(stringLiteral.ReplaceAllString(item, ""), "")) != "" {
+			return nil, false
+		}
+		for _, m := range stringLiteral.FindAllStringSubmatch(item, -1) {
+			lits = append(lits, m[1]+m[2])
+		}
+		text = strings.TrimLeft(text[len(item):], " \t")
+		if strings.HasPrefix(text, "+") || strings.HasPrefix(text, ",") {
+			text = text[1:]
+			continue
+		}
+		end, _, _ := strings.Cut(text, "\n")
+		end = strings.TrimSpace(end)
+		for _, p := range []string{"", "}", ")", ";", "//", "/*"} {
+			if p == "" && end == "" || p != "" && strings.HasPrefix(end, p) {
+				return lits, true
+			}
+		}
+		return nil, false
+	}
+}
+
+// bracketedExpr returns the leading list expression of text: an optional wrapper call name,
+// then a balanced (...) or [...] group. ok is false when text does not start that way.
+func bracketedExpr(text string) (string, bool) {
+	trimmed := strings.TrimLeft(text, " \t")
+	i := 0
+	for i < len(trimmed) && (trimmed[i] == '_' || trimmed[i] >= 'a' && trimmed[i] <= 'z' || trimmed[i] >= 'A' && trimmed[i] <= 'Z') {
+		i++
+	}
+	if i >= len(trimmed) || trimmed[i] != '(' && trimmed[i] != '[' {
+		return "", false
+	}
+	depth := 0
+	var quote byte
+	for j := i; j < len(trimmed); j++ {
+		c := trimmed[j]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				j++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '(' || c == '[':
+			depth++
+		case c == ')' || c == ']':
+			depth--
+			if depth == 0 {
+				return trimmed[:j+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// javaContext finds the options that are launch options only after a java command word: -p
+// (the module path) and @argfile. A k8s command/args split is joined by the YAML reader.
+func (f *launchFile) javaContext() {
+	for _, ll := range f.logicalLines() {
+		seg := f.data[ll[0]:ll[1]]
+		if isLaunchCommentLine(string(seg)) || !bytes.Contains(seg, []byte("java")) {
+			continue
+		}
+		java := false
+		for _, loc := range launchWords.FindAllIndex(seg, -1) {
+			w := string(seg[loc[0]:loc[1]])
+			switch {
+			case strings.ContainsAny(w[:1], ";|&"):
+				java = false
+			case isJavaCommand(w):
+				java = true
+			case java && javaContextOption(w) && !f.inSpan(ll[0]+loc[0], spanTest):
+				f.s.unreadable()
+			}
+		}
+	}
+}
+
+func javaContextOption(w string) bool { return w == "-p" || len(w) > 1 && w[0] == '@' }
+
+// yaml reads a YAML or JSON file: a mapping entry NAME: scalar, a {name: NAME, value: scalar}
+// entry, and a container's command/args, whose concatenation is one command line. A name the
+// reader attaches to a scalar is classified here and its line recorded; a name it cannot
+// attach (valueFrom, a block it cannot parse) is left to withhold Searched.
+func (f *launchFile) yaml() {
+	dec := yaml.NewDecoder(bytes.NewReader(f.data))
+	for {
+		var doc yaml.Node
+		if err := dec.Decode(&doc); err != nil {
+			return
+		}
+		f.yamlNode(&doc)
+	}
+}
+
+func (f *launchFile) yamlNode(n *yaml.Node) {
+	if n.Kind != yaml.MappingNode {
+		for _, c := range n.Content {
+			f.yamlNode(c)
+		}
+		return
+	}
+	var nameNode, value *yaml.Node
+	var command, args []string
+	hasCommand := false
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		switch {
+		case k.Value == "name" && v.Kind == yaml.ScalarNode && isJVMOptionVar(v.Value):
+			nameNode = v
+		case k.Value == "value":
+			value = v
+		case isJVMOptionVar(k.Value) && v.Kind == yaml.ScalarNode:
+			f.s.optionString(v.Value)
+			f.yamlLines[k.Line] = true
+		case k.Value == "command" || k.Value == "entrypoint":
+			hasCommand = k.Value == "command" || hasCommand
+			command = append(command, yamlWords(v)...)
+		case k.Value == "args":
+			args = yamlWords(v)
+		}
+		f.yamlNode(v)
+	}
+	if nameNode != nil && value != nil && value.Kind == yaml.ScalarNode {
+		f.s.optionString(value.Value)
+		f.yamlLines[nameNode.Line] = true
+	}
+	java := false
+	for _, w := range append(command, args...) {
+		if isJavaCommand(w) {
+			java = true
+		} else if java && javaContextOption(w) {
+			f.s.unreadable()
+		}
+	}
+	if !hasCommand && len(command) == 0 {
+		for _, w := range args {
+			if javaContextOption(w) && w != "-p" {
+				f.s.unreadable() // the image's entrypoint may be java
+			}
+		}
+	}
+}
+
+// yamlWords returns a command's words: a list's scalars, or a scalar's fields.
+func yamlWords(n *yaml.Node) []string {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return strings.Fields(n.Value)
+	case yaml.SequenceNode:
+		var out []string
+		for _, c := range n.Content {
+			if c.Kind == yaml.ScalarNode {
+				out = append(out, strings.Fields(c.Value)...)
+			}
+		}
+		return out
+	}
+	return nil
+}

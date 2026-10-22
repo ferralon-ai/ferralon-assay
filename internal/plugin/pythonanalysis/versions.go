@@ -32,8 +32,9 @@ import (
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
 // never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
 //
-// Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go),
-// so a coordinate absent from All is provably not installed; otherwise absence proves nothing.
+// Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go)
+// and no script surface may install a package outside them (versionSurfaces), so a coordinate
+// absent from All is provably not installed; otherwise absence proves nothing.
 //
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
@@ -76,7 +77,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all     []plugin.ResolvedDependency
 		origins []manifestOrigin
 	)
-	manifests, parseFailed := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs := versionSurfaces(req.BuildDir)
 	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
@@ -96,17 +97,32 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		part = plugin.Partial(plugin.PartialReasonToolFailure)
 	}
 
+	want := normalizePyCoordinate(req.Coordinate)
+	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs)
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: coverageExhaustive(req.BuildDir, req.Coordinate, manifests),
+		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
-		append(origins[:len(origins):len(origins)], copyOrigins...), normalizePyCoordinate(req.Coordinate))
+		append(origins[:len(origins):len(origins)], copyOrigins...), want)
 	if parseFailed && res.Found {
 		res.Match.Version = ""
 		res.Match.Resolved = false
 	}
+	// Under coverage every other manifest's declaration is one its governing lock pins at a version
+	// the declaration admits, so the lock entries and the installed copies are every version.
+	for i, d := range all {
+		if want != "" && origins[i].lock != "" && normalizePyCoordinate(d.Coordinate) == want {
+			res.Matches = append(res.Matches, d)
+		}
+	}
+	for _, d := range copies {
+		if want != "" && normalizePyCoordinate(d.Coordinate) == want {
+			res.Matches = append(res.Matches, d)
+		}
+	}
+	res.MatchesComplete = len(res.Matches) > 0 && covers && !parseFailed && !installedCopyPresent(req.BuildDir, want, false)
 	return res, nil
 }
 
@@ -218,11 +234,26 @@ func manifestFiles(root string) (paths []string, read bool) {
 
 // walkManifests returns every file under root whose path satisfies match, skipping the
 // same trees as manifestFiles. read is false when the walk met an error other than a path
-// that is not there.
+// that is not there, a symlink that does not resolve, or a symlinked directory whose target
+// it does not itself read: one that resolves outside root, or to a directory the walk skips
+// or could not list. WalkDir never follows the link, so a target inside the walk is matched
+// once, at its real path.
 func walkManifests(root string, match func(string) bool) (out []string, read bool) {
 	read = true
+	realRoot, rootErr := filepath.EvalSymlinks(root)
+	// walked holds the real path of every directory the walk entered and listed.
+	walked := map[string]bool{}
+	realOf := func(path string) string {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(realRoot, rel)
+	}
+	var linkedDirs []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
+			delete(walked, realOf(path))
 			if !absent(err) {
 				read = false
 			}
@@ -232,13 +263,30 @@ func walkManifests(root string, match func(string) bool) (out []string, read boo
 			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
+			walked[realOf(path)] = true
 			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 && !skipDir(d.Name()) {
+			fi, serr := os.Stat(path)
+			switch {
+			case serr != nil:
+				read = false
+			case fi.IsDir():
+				linkedDirs = append(linkedDirs, path)
+				return nil
+			}
 		}
 		if match(path) {
 			out = append(out, path)
 		}
 		return nil
 	})
+	for _, link := range linkedDirs {
+		target, err := filepath.EvalSymlinks(link)
+		if rootErr != nil || err != nil || !walked[target] {
+			read = false
+		}
+	}
 	return out, read
 }
 
@@ -1048,13 +1096,13 @@ func normalizePyCoordinate(c string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// coverageExhaustive is the no-manifest-entry coverage check (exhaustiveManifestSet) over the
+// coverageCovers is the no-manifest-entry coverage check (manifestSetCovers) over the
 // manifests' declared names. It reads each manifest with the coverage readers
 // (parseManifestCoverage), not the version-resolution vetoes above: a surface version
 // resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
-func coverageExhaustive(root, coordinate string, manifests []string) bool {
+func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {
 	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
 	failed := false
 	for _, m := range manifests {
@@ -1064,7 +1112,7 @@ func coverageExhaustive(root, coordinate string, manifests []string) bool {
 		}
 		perFile[m] = deps
 	}
-	return exhaustiveManifestSet(root, coordinate, manifests, perFile, failed)
+	return manifestSetCovers(root, coordinate, manifests, perFile, failed, installs)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the

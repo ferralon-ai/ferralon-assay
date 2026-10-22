@@ -4,8 +4,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ferralon-ai/ferralon-assay/pipeline"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/report"
+	"github.com/ferralon-ai/ferralon-assay/verdict"
 )
 
 // sbomFromInventory maps a whole-graph plugin.DependencyInventory (§4.1) to the report.SBOM the scan
@@ -30,6 +32,7 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 			Version:   n.Version,
 			PURL:      n.PURL,
 			Direct:    n.Direct,
+			Replace:   n.Replace,
 		}
 		if !n.Partiality.Complete && len(n.Partiality.Reasons) > 0 {
 			// A node-level limit (e.g. a version that could not be pinned, a digest not acquired)
@@ -89,7 +92,11 @@ func sbomFromInventory(inv plugin.DependencyInventory, ecosystem string) (report
 	if len(rels) == 0 {
 		rels = nil
 	}
-	return report.SBOM{Packages: pkgs, Relationships: rels}, notes
+	sbom := report.SBOM{Packages: pkgs, Relationships: rels}
+	if ecosystem == "Go" {
+		sbom.GoBuildList, sbom.GoMainModule = inv.BuildList, inv.MainModule
+	}
+	return sbom, notes
 }
 
 // inventoryLimitDetail marks a note as the whole-graph inventory's own limit. CVE-watch reads the
@@ -112,13 +119,24 @@ func inventoryLimits(notes []report.PartialityNote) []report.PartialityNote {
 // admitted package may also be installed where the analysis never looked, so no
 // not_exploitable of that ecosystem stands. Those limits are resolved once per scan, outside
 // every assessment's own artifacts, which is why finding() cannot see them and this runs after
-// it. It only ever removes not_exploitable.
+// it.
+//
+// The same holds for a disqualification that rests on the inventory: a version outside the range
+// says nothing of a second copy the inventory missed, and a package absent from the manifest may
+// be present where it never looked. Those rows become undetermined too. A symbol-axis
+// disqualification compares the built artifact and an ecosystem mismatch compares the lane, so
+// neither depends on the inventory and both stand.
+//
+// A package absent from the manifest has no Package to match a limit's ecosystem against, so any
+// did-not-run limit demotes it. Any other row with no Package is a Go toolchain row, whose version
+// is the toolchain's rather than the inventory's, so it stands.
 func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNote) report.AdvisoryFinding {
-	if f.Verdict != report.VerdictNotExploitable || f.Package == nil {
+	absent := f.Verdict == report.VerdictDisqualified && f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
+	if !(f.Verdict == report.VerdictNotExploitable || restsOnInventory(f)) || (f.Package == nil && !absent) {
 		return f
 	}
 	for _, n := range limits {
-		if n.Ecosystem != "" && n.Ecosystem != f.Package.Ecosystem {
+		if n.Ecosystem != "" && f.Package != nil && n.Ecosystem != f.Package.Ecosystem {
 			continue
 		}
 		if report.ClassifyPartialityReason(n.Reason) != report.PartialityDidNotRun {
@@ -130,6 +148,15 @@ func withInventoryLimits(f report.AdvisoryFinding, limits []report.PartialityNot
 		return f
 	}
 	return f
+}
+
+// restsOnInventory reports whether f is a disqualification whose grounds are inventory facts.
+func restsOnInventory(f report.AdvisoryFinding) bool {
+	if f.Verdict != report.VerdictDisqualified {
+		return false
+	}
+	return f.Evidence.Basis == verdict.BasisVersionNotAffected ||
+		f.Evidence.Detail == disqualDetail(pipeline.ReasonNoManifestEntry)
 }
 
 // inventoryPartialityNotes turns a graph-level Partiality into the scan-level notes that declare an

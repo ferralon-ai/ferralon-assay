@@ -53,7 +53,7 @@ StateStore selection (both subcommands):
   -git-dir <path>   use the local git-ref StateStore at <path> (a repo or bare repo)
   -repo <o/r>       use the GitHub Refs-API StateStore for owner/repo
                     (token from -token or $GITHUB_TOKEN; -api-url overrides the API root)
-  -ref <ref>        state ref to read (default: %[2]s)
+  -ref <ref>        state ref (default: %[2]s)
 
 Run "%[1]s state show -h" / "%[1]s state export -h" for the full flags.
 `, brand.Name, statestore.DefaultRef)
@@ -75,7 +75,7 @@ func registerStateStoreFlags(fs *flag.FlagSet) *stateStoreFlags {
 		repo:   fs.String("repo", "", "GitHub StateStore as owner/repo (token from -token or $GITHUB_TOKEN)"),
 		token:  fs.String("token", "", "GitHub API token (default: $GITHUB_TOKEN)"),
 		apiURL: fs.String("api-url", "", "GitHub API root override (default: https://api.github.com)"),
-		ref:    fs.String("ref", "", fmt.Sprintf("state ref to read (default: %s)", statestore.DefaultRef)),
+		ref:    fs.String("ref", "", fmt.Sprintf("state ref (default: %s)", statestore.DefaultRef)),
 	}
 }
 

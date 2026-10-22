@@ -32,6 +32,9 @@ type acquired struct {
 	// the default path. See provenance.
 	analyzeRef     string
 	analyzedCommit string
+
+	// graph is the Java or Kotlin scan's build graph; nil for every other language.
+	graph *jvmGraph
 }
 
 // provenance returns the Revision and ResolvedCommit to record on the Report's subject. By default
@@ -76,7 +79,7 @@ func (a *acquired) provenance(revision, commit string) (string, string) {
 // corpus. It defaults OFF so a customer/investor scan never evaluates them (see
 // goAdvisoryCorpus); the demo scan sets it via -include-house-canaries so the DOS canary
 // surfaces as a reachable_candidate the pipeline can enumerate and fire.
-func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool) (*acquired, error) {
+func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBin string, includeHouseCanaries bool, graphReq graphRequest) (*acquired, error) {
 	var buildDir, language, repo, analyzeRef, analyzedCommit string
 	cleanup := func() {}
 
@@ -154,7 +157,14 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 			cfOpts = append(cfOpts, plugin.WithCFamilyWasmCacheDir(dir))
 		}
 	}
-	lp, err := selectPlugin(language, pluginBin, cfOpts...)
+	var graph *jvmGraph
+	if language == checkout.LangJava || language == checkout.LangKotlin {
+		var done func()
+		graph, done = acquireBuildGraph(ctx, buildDir, graphReq)
+		prev := cleanup
+		cleanup = func() { done(); prev() }
+	}
+	lp, err := selectPlugin(language, pluginBin, graph, cfOpts...)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -170,6 +180,7 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 
 		analyzeRef:     analyzeRef,
 		analyzedCommit: analyzedCommit,
+		graph:          graph,
 	}, nil
 }
 
@@ -178,7 +189,11 @@ func acquireTarget(ctx context.Context, target, revision, repoOverride, pluginBi
 // (the -plugin-go flag); when empty each constructor discovers its binary on PATH. Only one
 // plugin runs per scan (the tree is a single language), so a single override suffices. cfOpts
 // apply to the C-family plugin only.
-func selectPlugin(language, bin string, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+func selectPlugin(language, bin string, graph *jvmGraph, cfOpts ...plugin.CFamilyOption) (plugin.LanguagePlugin, error) {
+	var graphFile string
+	if graph != nil {
+		graphFile = graph.file
+	}
 	switch language {
 	case checkout.LangGo:
 		if bin != "" {
@@ -186,15 +201,17 @@ func selectPlugin(language, bin string, cfOpts ...plugin.CFamilyOption) (plugin.
 		}
 		return plugin.NewGoPlugin()
 	case checkout.LangJava:
+		opts := []plugin.JavaOption{plugin.WithJavaBuildGraph(graphFile)}
 		if bin != "" {
-			return plugin.NewJavaPlugin(plugin.WithJavaBinaryPath(bin))
+			opts = append(opts, plugin.WithJavaBinaryPath(bin))
 		}
-		return plugin.NewJavaPlugin()
+		return plugin.NewJavaPlugin(opts...)
 	case checkout.LangKotlin:
+		opts := []plugin.KotlinOption{plugin.WithKotlinBuildGraph(graphFile)}
 		if bin != "" {
-			return plugin.NewKotlinPlugin(plugin.WithKotlinBinaryPath(bin))
+			opts = append(opts, plugin.WithKotlinBinaryPath(bin))
 		}
-		return plugin.NewKotlinPlugin()
+		return plugin.NewKotlinPlugin(opts...)
 	case checkout.LangJS:
 		if bin != "" {
 			return plugin.NewJSPlugin(plugin.WithJSBinaryPath(bin))

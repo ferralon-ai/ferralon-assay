@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/buildtree"
+	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 )
 
@@ -23,9 +24,11 @@ import (
 // content, so a surface this lane has no reader for vetoes by default instead of being
 // listed one name at a time.
 
-// versionSurfaces returns the manifests version resolution parses, and whether any other
-// install surface under root goes unread.
-func versionSurfaces(root string) (manifests []string, unread bool) {
+// versionSurfaces returns the manifests version resolution parses, whether any other install
+// surface under root goes unread, whether a script surface may install a package no manifest
+// or lock read here names (scriptsurface.Veto.Withheld), and every pip install -r the script
+// surfaces run.
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -51,12 +54,15 @@ func versionSurfaces(root string) (manifests []string, unread bool) {
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	for _, c := range buildtree.Candidates(root, pyInstallSurface, read) {
+	installs = pipInstalls{}
+	veto := scriptsurface.New(root, read, newScriptSpec(installs))
+	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
-	return manifests, unread
+	scriptWithheld = veto.Withheld()
+	return manifests, unread || scriptWithheld, scriptWithheld, installs
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.
@@ -266,15 +272,40 @@ func toxDeclares(src string) bool {
 
 // installedCopies reads the distributions installed in every site-packages directory under
 // root, which the shared walk does not enter: each *.dist-info or *.egg-info names one by its
-// metadata's Name and Version. A copy whose metadata cannot be read, or that is a symlink
-// leaving root, makes ok false. A site-packages directory that is a symlink is not read; one
-// leaving root is already an unread surface (buildtree.Candidates), and one inside it is read
-// at its target.
+// metadata's Name and Version. A symlink, whether the site-packages directory itself or an entry
+// in it, is followed when it resolves inside root, whatever its target is named, and makes ok
+// false when it leaves root or does not resolve. Each site-packages directory is read once at
+// its real path, and so is each metadata file: a link can make one directory both a
+// site-packages and a metadata entry, and each role reads it. A copy whose metadata cannot be
+// read makes ok false.
 func installedCopies(root string) (copies []plugin.ResolvedDependency, origins []manifestOrigin, ok bool) {
 	ok = true
 	realRoot, rootErr := filepath.EvalSymlinks(root)
+	escapes := func(path string) bool { return rootErr != nil || !buildtree.Inside(realRoot, path) }
+	// once reports whether path's real path is seen for the first time in the role whose set
+	// is seen. A path that does not resolve makes ok false.
+	dirSeen, metaSeen := map[string]bool{}, map[string]bool{}
+	once := func(seen map[string]bool, path string) bool {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			ok = false
+			return false
+		}
+		if seen[real] {
+			return false
+		}
+		seen[real] = true
+		return true
+	}
 	_ = buildtree.Walk(root, func(e buildtree.Entry, err error) error {
-		if err != nil || !e.Skipped || e.Symlink || e.D.Name() != "site-packages" {
+		if err != nil || e.D.Name() != "site-packages" || !e.Skipped && !e.Symlink {
+			return nil
+		}
+		if e.Symlink && e.Escapes {
+			ok = false
+			return nil
+		}
+		if !once(dirSeen, e.Path) {
 			return nil
 		}
 		ents, rerr := os.ReadDir(e.Path)
@@ -284,20 +315,32 @@ func installedCopies(root string) (copies []plugin.ResolvedDependency, origins [
 		}
 		for _, d := range ents {
 			name := d.Name()
+			p := filepath.Join(e.Path, name)
+			isDir := d.IsDir()
+			if d.Type()&fs.ModeSymlink != 0 {
+				if escapes(p) {
+					ok = false
+					continue
+				}
+				fi, serr := os.Stat(p)
+				if serr != nil {
+					ok = false
+					continue
+				}
+				isDir = fi.IsDir()
+			}
 			var meta string
 			switch {
-			case d.Type()&fs.ModeSymlink != 0:
-				if rootErr != nil || !buildtree.Inside(realRoot, filepath.Join(e.Path, name)) {
-					ok = false
-				}
-				continue
-			case strings.HasSuffix(name, ".dist-info") && d.IsDir():
-				meta = filepath.Join(e.Path, name, "METADATA")
-			case strings.HasSuffix(name, ".egg-info") && d.IsDir():
-				meta = filepath.Join(e.Path, name, "PKG-INFO")
+			case strings.HasSuffix(name, ".dist-info") && isDir:
+				meta = filepath.Join(p, "METADATA")
+			case strings.HasSuffix(name, ".egg-info") && isDir:
+				meta = filepath.Join(p, "PKG-INFO")
 			case strings.HasSuffix(name, ".egg-info"):
-				meta = filepath.Join(e.Path, name)
+				meta = p
 			default:
+				continue
+			}
+			if !once(metaSeen, meta) {
 				continue
 			}
 			dist, version, mok := readDistMetadata(meta)

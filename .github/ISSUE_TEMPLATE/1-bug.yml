@@ -45,7 +45,7 @@ body:
       description: >-
         Which release or commit were you running? If you are not sure, paste the
         line from your workflow file that pins it.
-      placeholder: v0.3.1
+      placeholder: v0.5
 
   - type: dropdown
     id: environment

@@ -24,7 +24,7 @@ type LanguagePlugin interface {
 	// Language returns the language tag this plugin serves, e.g. "go".
 	Language() string
 
-	// --- LIVE in Phase 1 (Go) ---
+	// --- Operations every lane implements ---
 
 	// IndexSymbols emits SCIP-qualified symbol ids stable across app + dependencies.
 	IndexSymbols(ctx context.Context, req IndexSymbolsRequest) (SymbolIndexResult, error)
@@ -35,7 +35,7 @@ type LanguagePlugin interface {
 	ResolveDependencySymbols(ctx context.Context, req ResolveSymbolsRequest) (SymbolResolutionResult, error)
 
 	// ResolveDependencyVersions reads the codebase's declared dependency versions
-	// (pom.xml / build.gradle for Java; Phase-1 Go: Unsupported) for the given advisory
+	// (pom.xml / build.gradle for Java; Go resolves versions from go.mod in-pipeline and returns Unsupported) for the given advisory
 	// coordinate. It NEVER guesses a version: a coordinate it cannot resolve confidently
 	// (BOM-managed, unresolvable property indirection) is returned with Resolved=false so
 	// the disqualification predicate fails OPEN (inv.5: unknown is never not-affected).
@@ -51,28 +51,27 @@ type LanguagePlugin interface {
 	// vulnerable symbols, via govulncheck reconciled with the call graph.
 	Reachability(ctx context.Context, req ReachabilityRequest) (ReachabilityResult, error)
 
-	// --- CONTRACT-PRESENT STUBS in Phase 1 (return declared partiality, Unsupported) ---
+	// --- Operations whose support varies by lane (a lane that lacks one returns declared partiality, Unsupported) ---
 
-	// ComputeTaint computes source→sink taint flows. Phase-1 Go: Unsupported.
+	// ComputeTaint computes source→sink taint flows.
 	ComputeTaint(ctx context.Context, req ComputeTaintRequest) (TaintResult, error)
 
-	// GenerateHarness scaffolds a fuzz/unit/integration harness. Phase-1 Go: Unsupported.
+	// GenerateHarness scaffolds a fuzz/unit/integration harness. Go and JavaScript implement it; the other lanes return Unsupported.
 	GenerateHarness(ctx context.Context, req GenerateHarnessRequest) (HarnessResult, error)
 
-	// BuildManifest produces enough to build and run the app under test. Phase-1 Go: Unsupported.
+	// BuildManifest produces enough to build and run the app under test.
 	BuildManifest(ctx context.Context, req BuildManifestRequest) (BuildManifestResult, error)
 
 	// ResolveInventory resolves the whole dependency graph for the buildable module (§4.1).
-	// This cycle lands the operation; no plugin populates a real inventory yet — every plugin
-	// without a resolver returns DependencyInventory{Partiality: Unsupported()} (honest absence,
-	// never an empty-but-successful inventory).
+	// A plugin without a resolver returns DependencyInventory{Partiality: Unsupported()} (honest
+	// absence, never an empty-but-successful inventory).
 	ResolveInventory(ctx context.Context, req ResolveInventoryRequest) (DependencyInventory, error)
 
 	// CapabilityManifest returns the lane's static capability manifest — the up-front
 	// declaration of what this analyzer supports (the compile-time complement to the per-run
-	// Partiality). This cycle lands the operation only; no lane publishes content yet, so every
-	// plugin returns capability.Manifest{Supported:false} (honest absence, never a Supported:true
-	// manifest with empty axes). Content is authored per-lane in Phase-4.
+	// Partiality). Support varies by lane; each manifest and each operation's Partiality state what
+	// that lane implements. A lane without a manifest returns capability.Manifest{Supported:false}
+	// (honest absence, never a Supported:true manifest with empty axes).
 	CapabilityManifest(ctx context.Context, req CapabilityManifestRequest) (capability.Manifest, error)
 }
 
@@ -108,7 +107,7 @@ const (
 	PartialReasonReflection      = "reflection"         // calls via reflect.* invisible to static analysis
 	PartialReasonDynamicDispatch = "dynamic_dispatch"   // interface dispatch not fully resolved
 	PartialReasonCgo             = "cgo"                // native-code boundary (cgo) crossed
-	PartialReasonUnsupported     = "unsupported_phase1" // operation is a Phase-1 contract stub
+	PartialReasonUnsupported     = "unsupported_phase1" // operation not implemented by the lane
 	PartialReasonToolFailure     = "tool_failure"       // a wrapped tool failed; surfaced, not retried (inv.4)
 	PartialReasonNoIngress       = "no_known_ingress"   // reachable sink, no entry point found
 	PartialReasonNoManifest      = "no_manifest"        // no lockfile/manifest to read installed versions from
@@ -132,6 +131,10 @@ const (
 	// the inv.5 boundary this vocabulary exists to hold.
 	PartialReasonReachabilityUndetermined = "reachability_undetermined"
 
+	// PartialReasonAdvisorySymbolUnresolved: the package's code was read in full, but an advisory
+	// symbol named nothing in it.
+	PartialReasonAdvisorySymbolUnresolved = "advisory_symbol_unresolved"
+
 	// Shared dependency-resolution partiality codes (onyx-q6, cross-lane vocabulary owned by
 	// platform-core). Each names a distinct way an inventory/graph resolution is honestly partial;
 	// a lane appends a suffix to localise it (§4 naming: "code:python_version"-style on the reason
@@ -151,7 +154,7 @@ const (
 	// the graph is partial — an unexpressed edge is absent from the graph, never inferred to exist.
 	PartialReasonRelationshipUnexpressed = "relationship_unexpressed"
 
-	// --- dependency-inventory reason localisers (PLAN-160) ---
+	// --- dependency-inventory reason localisers ---
 	//
 	// These name conditions a whole-graph dependency inventory (ResolveInventory, §4.1) cannot
 	// resolve from lockfile/manifest metadata alone, under the no-package-manager constraint
@@ -176,13 +179,13 @@ const (
 	// adjudication — anvil may want a fourth base for "resolution could not proceed".
 	PartialReasonLockfileAmbiguous = PartialReasonToolFailure + ":lockfile_ambiguous"
 
-	// --- module-resolution reason localisers (PLAN-162) ---
+	// --- module-resolution reason localisers ---
 	//
 	// These name conditions the JS/TS import-scoped module resolver (CallGraph) cannot turn into a
 	// first-party edge, under the no-Node/no-package-manager, node_modules-excluded constraint
 	// (§3.3/§10.1). Each is a DECLARED gap, never a silent decline or a fabricated edge (§3.1). They
-	// split the former blanket dynamic_dispatch into three reviewer-legible conditions (PLAN-162 C5);
-	// dynamic_dispatch is NOT retired — it keeps its meaning (a callee name resolved to >1 in-tree
+	// split dynamic_dispatch into three reviewer-legible conditions;
+	// dynamic_dispatch keeps its meaning (a callee name resolved to >1 in-tree
 	// decl / prototype dispatch).
 	//
 	// RECONCILED to the onyx-q6 shared bases (quartz-q7 resolution): all three localise
@@ -201,7 +204,7 @@ const (
 	// (shared vocabulary; overlays import these, none invents its own). Never a fabricated
 	// edge or a flipped verdict — each is the tri-state UNKNOWN arm made legible (§3.1).
 	//
-	// PartialReasonBeanAmbiguous localises dynamic_dispatch (the PLAN-162 move — it does
+	// PartialReasonBeanAmbiguous localises dynamic_dispatch (it does
 	// NOT retire the base): a @Autowired injection point satisfied by >1 candidate bean
 	// with no @Primary/@Qualifier winner, so the wired implementation is undetermined and
 	// the interface hop stays unresolved. Raised by the bean resolver.
@@ -227,7 +230,7 @@ const (
 	// NOT a positive "guarded" signal. Raised by the guard overlay (#5).
 	PartialReasonGuardUnknown = "guard_unknown"
 
-	// --- Phase-1 C/C++ partiality codes (c-cpp-parity-map-2026-09-28.md §5) ---
+	// --- C/C++ partiality codes (c-cpp-parity-map-2026-09-28.md §5) ---
 	//
 	// New bases for the C/C++ lane's own limits — distinct from the Go-caller-into-native
 	// cgo boundary above, which names a Go program crossing OUT to native code, not a C/C++
@@ -296,7 +299,7 @@ func Complete() Partiality { return Partiality{Complete: true} }
 // Partial constructs a declared-partial result with the given reason codes.
 func Partial(reasons ...string) Partiality { return Partiality{Complete: false, Reasons: reasons} }
 
-// Unsupported is the canonical Phase-1 contract-stub partiality.
+// Unsupported is the canonical partiality for an operation a lane does not implement.
 func Unsupported() Partiality { return Partial(PartialReasonUnsupported) }
 
 // --- shared inputs (the plugin is GIVEN ground truth; inv.7) ---
@@ -323,6 +326,10 @@ type ResolveSymbolsRequest struct {
 	PURL            string   `json:"purl"`             // e.g. pkg:golang/github.com/x/y@v1.2.3
 	AdvisorySymbols []string `json:"advisory_symbols"` // vulnerable symbols from the advisory
 	VulnID          string   `json:"vuln_id"`          // e.g. GO-2021-0001 (for govulncheck)
+	// TargetEnv is the run's stated target-environment conditions, as on ReachabilityRequest:
+	// a lane that resolves the inventory to choose which dependency versions to read resolves it
+	// under these. Nil means none were stated.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
 }
 
 // ResolveVersionsRequest carries the advisory's dependency coordinate whose declared
@@ -354,15 +361,37 @@ type ResolvedDependency struct {
 // Resolved indicating whether its version is known); Found is false when no declaration of
 // that coordinate exists in the build files at all.
 type DependencyVersionResult struct {
-	Partiality Partiality           `json:"partiality"`
-	Found      bool                 `json:"found"` // a declaration of the request coordinate exists
-	Match      ResolvedDependency   `json:"match"`
-	All        []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	Partiality Partiality         `json:"partiality"`
+	Found      bool               `json:"found"` // a declaration of the request coordinate exists
+	Match      ResolvedDependency `json:"match"`
+	// Presence is the first resolved declaration of the request coordinate in All, with no
+	// requirement that other copies agree. It answers only "is some copy declared at this exact
+	// version", which is what a malicious-package advisory asks, and it must never feed a
+	// not-affected verdict. Nil means Match answers it too.
+	Presence *ResolvedDependency  `json:"presence,omitempty"`
+	All      []ResolvedDependency `json:"all,omitempty"` // every parsed declaration (evidence)
+	// Matches is every copy of the request coordinate the plugin read, Match among them: a
+	// package declared or installed at several versions (one per module, a nested install) lists
+	// each. It is evidence; on its own it does not claim no other version exists.
+	Matches []ResolvedDependency `json:"matches,omitempty"`
+	// MatchesComplete asserts that Matches holds every version of the request coordinate the
+	// build can install: every version source in scope is a form the plugin recognises and read
+	// in full, and every project that could carry the coordinate transitively is covered by a
+	// lockfile or pins it directly. False (the default) means other versions cannot be ruled out.
+	MatchesComplete bool `json:"matches_complete,omitempty"`
 	// Exhaustive asserts that All enumerates every package the build can install: the plugin read
-	// a complete, edge-bearing lockfile covering every manifest it found, so a coordinate absent
-	// from All is provably not a dependency. Build-isolation environments are not runtime
-	// installs: a build requirement (PEP 517 build-system.requires, setup_requires) is a
-	// declaration in All, but what the build backend pulls in transitively is not enumerated.
+	// a complete, edge-bearing lockfile covering every manifest it found, or a JVM build graph
+	// whose producer observed every way the build installs a dependency (buildgraph.Graph.Complete)
+	// and that marks nothing it installs as unlisted. A coordinate absent from All is then provably
+	// not installed by the build. The claim covers the build alone: what a container image, a
+	// deploy step or a Java agent adds at run time is outside it. A shaded copy inside another
+	// artifact is not a package of its own. Build-isolation environments are not runtime installs:
+	// a build requirement (PEP 517 build-system.requires, setup_requires) is a declaration in All,
+	// but what the build backend pulls in transitively is not enumerated.
+	// The .NET lane, whose All lists declarations only, sets it for the request's coordinate
+	// alone: every project is settled on a trusted project.assets.json, the coordinate is not
+	// one the SDK delivers outside it, and nothing else can bring a package in, so a coordinate
+	// that is not Found is provably not a dependency.
 	// False (the default, and every plugin that does not set it) means absence from All proves
 	// nothing and a consumer must fail open.
 	Exhaustive bool `json:"exhaustive,omitempty"`
@@ -397,6 +426,12 @@ type ReachabilityRequest struct {
 	// never on version, so a lane refutes only when no installed copy of that canonical name loads,
 	// at any version, and refutes nothing when it cannot enumerate the copies.
 	Package string `json:"package,omitempty"`
+	// TargetEnv carries the run's stated target-environment conditions, with the same keys and
+	// meaning as ResolveInventoryRequest.TargetEnv, so a lane that resolves the inventory to build
+	// its search space resolves it under the conditions the inventory stage used. Like there, it is
+	// configuration handed to the plugin, never read from the tree: nil means none were stated, and
+	// whatever they would have decided stays unresolved and is disclosed, not assumed.
+	TargetEnv map[string]string `json:"target_env,omitempty"`
 }
 
 // --- result payloads ---
@@ -447,6 +482,22 @@ type SymbolResolutionResult struct {
 	// advisory symbol accounted for, and only the lane's own matcher knows which resolved symbol
 	// answered which advisory symbol.
 	Matched map[string][]string `json:"matched,omitempty"`
+	// ModuleSearch is a search of the source of every module in the build for the request's
+	// advisory symbols, for an advisory whose package no module in the build holds. Nil when no
+	// such search ran.
+	ModuleSearch *ModuleSearch `json:"module_search,omitempty"`
+}
+
+// ModuleSearch reports which of the build's modules the lane read in full and which of those
+// declare a function, method or variable named like one of the request's advisory symbols. A
+// module whose source the lane could not obtain or parse is left out of Searched, so a reader
+// that needs every module searched sees the gap.
+type ModuleSearch struct {
+	// Searched holds each searched module's path, and beside it the path of the module a
+	// replace directive substitutes for it.
+	Searched []string `json:"searched"`
+	// Declaring holds the paths of the searched modules that declare such a name.
+	Declaring []string `json:"declaring,omitempty"`
 }
 
 // CallEdge is one directed call-graph edge between canonical symbols.
@@ -547,25 +598,37 @@ type ResolveInventoryRequest struct {
 // independent of any checked-out build. The type exists for protocol uniformity/extensibility.
 type CapabilityManifestRequest struct{}
 
-// DependencyInventory is the whole-graph resolver result (§4.1). This cycle lands the TYPE only;
-// no plugin populates it (four+ plugins return Unsupported() — see §5). Nodes and Edges are
+// DependencyInventory is the whole-graph resolver result (§4.1). A lane without a resolver
+// returns Unsupported() (see §5). Nodes and Edges are
 // emitted in explicit sorted order (see §7); no map is an iteration source on the encoding path.
 type DependencyInventory struct {
 	Partiality Partiality       `json:"partiality"` // graph-level declared partiality for unresolved conditions (§4.1 "declared partiality")
 	Nodes      []DependencyNode `json:"nodes"`      // one per resolved package instance; sorted by Node.ID
 	Edges      []DependencyEdge `json:"edges"`      // parent→child relationships; sorted by (Parent, Child)
+	// BuildList names the resolver output Nodes were taken from when they are the build's whole
+	// module list, replace targets included ("go mod graph"); empty otherwise. Partiality still
+	// says whether that resolution completed.
+	BuildList string `json:"build_list,omitempty"`
+	// MainModule is the path of the module the build list was resolved for (Go), which is part of
+	// the build but not one of Nodes; set with BuildList.
+	MainModule string `json:"main_module,omitempty"`
 }
+
+// BuildListGoModGraph is the BuildList of a Go inventory resolved from `go mod graph`: the selected
+// module build list, which a vendored module resolves to the same list.
+const BuildListGoModGraph = "go mod graph"
 
 // DependencyNode is one resolved package instance in the dependency graph.
 type DependencyNode struct {
-	ID         string               `json:"id"`         // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
-	PURL       string               `json:"purl"`       // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
-	Version    string               `json:"version"`    // §4.1 exact resolved version
-	Direct     bool                 `json:"direct"`     // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
-	Membership DependencyMembership `json:"membership"` // §4.1 project/workspace/target membership
-	Artifact   DependencyArtifact   `json:"artifact"`   // §4.1 selected artifact identity + integrity digest
-	Provenance DependencyProvenance `json:"provenance"` // §4.1 manifest/lockfile/resolver/runtime-target provenance
-	Partiality Partiality           `json:"partiality"` // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	ID         string               `json:"id"`                // stable package-instance key; DependencyEdge endpoints reference it. Distinct instances of the same PURL (different resolution scopes) get distinct IDs
+	PURL       string               `json:"purl"`              // §4.1 normalized Package URL ("pkg:golang/github.com/x/y@v1.2.3")
+	Version    string               `json:"version"`           // §4.1 exact resolved version
+	Direct     bool                 `json:"direct"`            // §4.1 direct (true) vs transitive (false) relationship. NOT omitempty: false is load-bearing
+	Membership DependencyMembership `json:"membership"`        // §4.1 project/workspace/target membership
+	Artifact   DependencyArtifact   `json:"artifact"`          // §4.1 selected artifact identity + integrity digest
+	Provenance DependencyProvenance `json:"provenance"`        // §4.1 manifest/lockfile/resolver/runtime-target provenance
+	Partiality Partiality           `json:"partiality"`        // §4.1 per-node declared partiality (unresolved condition on THIS node)
+	Replace    string               `json:"replace,omitempty"` // module path a replace directive substitutes for this one (Go); empty when not replaced or replaced by a directory
 }
 
 // DependencyEdge is one parent→child dependency relationship (§4.1 "parent edges"). This is the
@@ -601,7 +664,7 @@ type DependencyProvenance struct {
 // --- stub-only results ---
 
 // ComputeTaintRequest carries the buildable module and the resolved sinks to trace
-// source→sink flows toward. Phase-1 Go: Unsupported.
+// source→sink flows toward.
 type ComputeTaintRequest struct {
 	BuildDir string   `json:"build_dir"`
 	Sinks    []string `json:"sinks,omitempty"` // resolved sink SCIP ids to trace toward
@@ -618,7 +681,7 @@ type TaintResult struct {
 }
 
 // GenerateHarnessRequest names the sink (and optionally the ingress) to scaffold a
-// reproducer harness for. Phase-1 Go: Unsupported.
+// reproducer harness for.
 type GenerateHarnessRequest struct {
 	Sink    string `json:"sink"`
 	Ingress string `json:"ingress,omitempty"`
@@ -636,7 +699,6 @@ type HarnessResult struct {
 }
 
 // BuildManifestRequest carries the buildable module to derive a build manifest for.
-// Phase-1 Go: Unsupported.
 type BuildManifestRequest struct {
 	BuildDir string `json:"build_dir"`
 }
@@ -702,8 +764,9 @@ func (r BuildManifestResult) PrimaryResolver() (ResolverSpec, bool) {
 }
 
 // StubPlugin implements LanguagePlugin with canned, in-memory results — the analog of
-// episode.StubModel and the sandbox fakes. The live ops return fixed payloads; the three
-// Phase-1 contract stubs return Unsupported(). It performs no I/O, no subprocess, no
+// episode.StubModel and the sandbox fakes. The live ops return fixed payloads; the five
+// stub ops (ResolveDependencyVersions, ComputeTaint, GenerateHarness, BuildManifest,
+// ResolveInventory) return Unsupported(). It performs no I/O, no subprocess, no
 // network, so it backs the hermetic test suite and the pipeline seam tests.
 //
 // When Partial is true, the live ops flip their Partiality to declared-partial (keeping a
@@ -800,34 +863,34 @@ func (p StubPlugin) Reachability(_ context.Context, _ ReachabilityRequest) (Reac
 	}, nil
 }
 
-// ResolveDependencyVersions is a Phase-1 contract stub: it always returns Unsupported.
+// ResolveDependencyVersions always returns Unsupported.
 func (StubPlugin) ResolveDependencyVersions(_ context.Context, _ ResolveVersionsRequest) (DependencyVersionResult, error) {
 	return DependencyVersionResult{Partiality: Unsupported()}, nil
 }
 
-// ComputeTaint is a Phase-1 contract stub: it always returns Unsupported.
+// ComputeTaint always returns Unsupported.
 func (StubPlugin) ComputeTaint(_ context.Context, _ ComputeTaintRequest) (TaintResult, error) {
 	return TaintResult{Partiality: Unsupported()}, nil
 }
 
-// GenerateHarness is a Phase-1 contract stub: it always returns Unsupported.
+// GenerateHarness always returns Unsupported.
 func (StubPlugin) GenerateHarness(_ context.Context, _ GenerateHarnessRequest) (HarnessResult, error) {
 	return HarnessResult{Partiality: Unsupported()}, nil
 }
 
-// BuildManifest is a Phase-1 contract stub: it always returns Unsupported.
+// BuildManifest always returns Unsupported.
 func (StubPlugin) BuildManifest(_ context.Context, _ BuildManifestRequest) (BuildManifestResult, error) {
 	return BuildManifestResult{Partiality: Unsupported()}, nil
 }
 
-// ResolveInventory is a Phase-1 contract stub: it always returns Unsupported. It returns an
+// ResolveInventory always returns Unsupported. It returns an
 // honestly-partial inventory (Complete=false, PartialReasonUnsupported), NOT an empty-but-successful
 // one — a zero-node Complete() inventory would read downstream as "this build has no dependencies".
 func (StubPlugin) ResolveInventory(_ context.Context, _ ResolveInventoryRequest) (DependencyInventory, error) {
 	return DependencyInventory{Partiality: Unsupported()}, nil
 }
 
-// CapabilityManifest is honest absence this cycle: no lane publishes a manifest yet, so it returns
+// CapabilityManifest is honest absence: the stub publishes no manifest, so it returns
 // capability.Manifest{Supported:false} — never a Supported:true manifest with empty axes.
 func (StubPlugin) CapabilityManifest(_ context.Context, _ CapabilityManifestRequest) (capability.Manifest, error) {
 	return capability.Manifest{Supported: false}, nil

@@ -274,15 +274,20 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"activates a venv created after a cd in an if body, from a cd relative to it", tree(map[string]string{"install.sh": "if [ -n \"$X\" ]; then\ncd sub\nfi\npython -m venv .venv\ncd ..\n. sub/.venv/bin/activate\ninst sync\n", "sub/keep": ""}), true, ""},
 		{"activates a venv created after a fallback cd, from a cd relative to it", tree(map[string]string{"install.sh": "cd a || true\npython -m venv .venv\ncd b\n. ../.venv/bin/activate\ninst sync\n", "a/b/keep": ""}), true, ""},
 		{"activates a venv named with a tilde in and out of word start", tree(map[string]string{"install.sh": "python -m venv ~/v\ncd sub\n. ../~/v/bin/activate\ninst sync\n", "sub/keep": ""}), true, ""},
-		{"activates a venv in a run block after popd with a directory, over a committed activate", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv sub/.venv\n          popd sub\n          . .venv/bin/activate\n          inst sync\n"), "sub/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
-		{"activates a venv in a run block after cd -", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv ./-/.venv\n          cd -\n          . .venv/bin/activate\n          inst sync\n"), "-/keep": ""}), true, ""},
-		{"activates a venv in a run block after cd ~x", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          cd ./~x\n          python -m venv .venv\n          cd ..\n          cd ~x\n          . .venv/bin/activate\n          inst sync\n"), "~x/keep": ""}), true, ""},
-		{"activates a venv in a run block after an absolute cd", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv opt/.venv\n          cd /opt\n          . .venv/bin/activate\n          inst sync\n"), "opt/keep": ""}), true, ""},
-		{"activates a venv in a run block after a cd to a directory not there", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd ghost\n          . ../.venv/bin/activate\n          inst sync\n")}), true, ""},
-		{"activates a venv in a run block after a cd out of the build root", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "app/.github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd ..\n          cd y\n          . ../app/.venv/bin/activate\n          inst sync\n"), "y/keep": ""}, true, "app"},
+		{"activates a venv in a run block after popd with a directory, over a committed activate", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv sub/.venv\n          popd sub\n          . .venv/bin/activate\n"), "sub/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
+		{"activates a venv in a run block after cd -", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv ./-/.venv\n          cd -\n          . .venv/bin/activate\n"), "-/keep": ""}), true, ""},
+		{"activates a venv in a run block after cd ~x", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          cd ./~x\n          python -m venv .venv\n          cd ..\n          cd ~x\n          . .venv/bin/activate\n"), "~x/keep": ""}), true, ""},
+		{"activates a venv in a run block after an absolute cd", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv opt/.venv\n          cd /opt\n          . .venv/bin/activate\n"), "opt/keep": ""}), true, ""},
+		{"activates a venv in a run block after a cd to a directory not there", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd ghost\n          . ../.venv/bin/activate\n")}), true, ""},
+		{"activates a venv in a run block after a cd out of the build root", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "app/.github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd ..\n          cd y\n          . ../app/.venv/bin/activate\n"), "y/keep": ""}, true, "app"},
 		{"activates a venv in a Dockerfile RUN after a fallback cd", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nRUN cd sub || cd other; python -m venv .venv; cd x; . ../.venv/bin/activate\n"}), true, ""},
-		{"activates a venv in a run block whose working-directory is an expression", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd b\n          . ../.venv/bin/activate\n          inst sync\n        working-directory: ${{ matrix.d }}\n"), "${{ matrix.d }}/b/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
-		{"activates a venv in a run block whose working-directory is absolute", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd b\n          . ../.venv/bin/activate\n          inst sync\n        working-directory: /opt\n"), "opt/b/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
+		{"activates a venv in a run block whose working-directory is an expression", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd b\n          . ../.venv/bin/activate\n        working-directory: ${{ matrix.d }}\n"), "${{ matrix.d }}/b/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
+		{"activates a venv in a run block whose working-directory is absolute", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          cd b\n          . ../.venv/bin/activate\n        working-directory: /opt\n"), "opt/b/keep": "", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
+		{"activates a venv a creation named by the build root's absolute path made, from a relative path", tree(map[string]string{"install.sh": "python -m venv @root@/.venv\n. .venv/bin/activate\ninst sync\n"}), true, ""},
+		{"activates a venv in a run block whose working-directory leaves the build root", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "app/.github/workflows/ci.yml": steps("- run: |\n          python -m venv .venv\n          . .venv/bin/activate\n        working-directory: ../y\n"), "y/keep": ""}, true, "app"},
+		{"activates a venv whose activate path cannot be looked up", tree(map[string]string{"install.sh": "python -m venv " + strings.Repeat("v", 300) + "\n. " + strings.Repeat("v", 300) + "/bin/activate\n"}), true, ""},
+		{"activates a venv in a Dockerfile RUN over an activate COPY put there", tree(map[string]string{"Dockerfile": "FROM base\nWORKDIR /app\nCOPY . .\nRUN python -m venv .venv && . .venv/bin/activate\n", ".venv/bin/activate": "# x\ninst add x\n"}), true, ""},
+		{"activates a venv in a recipe line that may run from either of two directories, over a committed activate", tree(map[string]string{"Makefile": "deps:\n\tcd a\n\tpython -m venv x; . x/bin/activate\n", "a/x/bin/activate": "# x\ninst add x\n"}), true, ""},
 		{"venv activated in a hidden job's script that a pipeline above the build root extends", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", ".gitlab-ci.yml": "include:\n  - local: app/.gitlab-ci.yml\nbuild:\n  extends: .setup\n  before_script:\n    - echo hi\n", "app/.gitlab-ci.yml": ".setup:\n  before_script:\n    - python -m venv .venv\n  script:\n    - source .venv/bin/activate\n    - inst sync\n"}, true, "app"},
 		{"venv activated in a job's script another job in the file references", tree(map[string]string{".gitlab-ci.yml": "setup:\n  before_script:\n    - python -m venv .venv\n  script:\n    - source .venv/bin/activate\n    - inst sync\nbuild:\n  script:\n    - !reference [setup, script]\n"}), true, ""},
 		{"venv activated in a job's script another job extends by a list", tree(map[string]string{".gitlab-ci.yml": "setup:\n  before_script:\n    - python -m venv .venv\n  script:\n    - source .venv/bin/activate\n    - inst sync\nbuild:\n  extends: [setup]\n  before_script:\n    - echo hi\n"}), true, ""},
@@ -364,7 +369,17 @@ func TestVeto_LaneNeutral(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := withheld(filepath.Join(writeTree(t, tt.files), tt.root), testSpec); got != tt.want {
+			dir := writeTree(t, tt.files)
+			root := filepath.Join(dir, tt.root)
+			// A script that names the build root by its absolute path, as a CI workspace path.
+			for rel, content := range tt.files {
+				if strings.Contains(content, "@root@") {
+					if err := os.WriteFile(filepath.Join(dir, rel), []byte(strings.ReplaceAll(content, "@root@", root)), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if got := withheld(root, testSpec); got != tt.want {
 				t.Fatalf("withheld = %v, want %v", got, tt.want)
 			}
 		})

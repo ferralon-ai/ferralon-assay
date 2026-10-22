@@ -32,8 +32,9 @@ import (
 // unreadable entry is an UNRESOLVED marker (Resolved=false) the predicate fails OPEN on,
 // never fabricating a not-affected. A declared range is carried as Constraint (evidence only).
 //
-// Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go),
-// so a coordinate absent from All is provably not installed; otherwise absence proves nothing.
+// Exhaustive is set only when a complete lockfile covers every manifest found (exhaustive.go)
+// and no script surface may install a package outside them (versionSurfaces), so a coordinate
+// absent from All is provably not installed; otherwise absence proves nothing.
 //
 // Hard error vs. partiality (inv.4 / inv.5):
 //   - A missing/unreadable build dir is a hard error.
@@ -76,7 +77,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all     []plugin.ResolvedDependency
 		origins []manifestOrigin
 	)
-	manifests, parseFailed := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs := versionSurfaces(req.BuildDir)
 	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
@@ -97,11 +98,11 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	want := normalizePyCoordinate(req.Coordinate)
-	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests)
+	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs)
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
-		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true),
+		Exhaustive: covers && !installedCopyPresent(req.BuildDir, want, true) && !scriptWithheld,
 	}
 	res.Match, res.Found = matchCoordinate(append(all[:len(all):len(all)], copies...),
 		append(origins[:len(origins):len(origins)], copyOrigins...), want)
@@ -1101,7 +1102,7 @@ func normalizePyCoordinate(c string) string {
 // resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
-func coverageCovers(root, coordinate string, manifests []string) bool {
+func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {
 	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
 	failed := false
 	for _, m := range manifests {
@@ -1111,7 +1112,7 @@ func coverageCovers(root, coordinate string, manifests []string) bool {
 		}
 		perFile[m] = deps
 	}
-	return manifestSetCovers(root, coordinate, manifests, perFile, failed)
+	return manifestSetCovers(root, coordinate, manifests, perFile, failed, installs)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the

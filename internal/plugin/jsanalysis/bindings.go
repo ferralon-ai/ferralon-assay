@@ -1,6 +1,11 @@
 package jsanalysis
 
-import "strings"
+import (
+	"maps"
+	"strings"
+	"unicode"
+	"unicode/utf16"
+)
 
 // bindingKind classifies how a local name was bound to a module specifier.
 type bindingKind int
@@ -55,6 +60,16 @@ type loadSpec struct {
 	viaRequire bool
 }
 
+// addLoads records the loads o found (its literal specifiers and runtime-computed, native
+// and evaluated loads) without its bindings.
+func (mb *moduleBindings) addLoads(o moduleBindings) {
+	mb.specifiers = append(mb.specifiers, o.specifiers...)
+	mb.dynImport = mb.dynImport || o.dynImport
+	mb.computedReq = mb.computedReq || o.computedReq
+	mb.nativeLoad = mb.nativeLoad || o.nativeLoad
+	mb.evaluated = mb.evaluated || o.evaluated
+}
+
 func newModuleBindings() moduleBindings {
 	return moduleBindings{
 		imports:   bindingTable{},
@@ -73,6 +88,12 @@ func newModuleBindings() moduleBindings {
 // '_'. stripJS is length-preserving rune-for-rune, so clean[i] and src[i] name the same
 // source position. §3.8 evidence-only: a non-literal specifier yields NO binding.
 func extractModuleBindings(clean, src []rune) moduleBindings {
+	return extractBindings(clean, src, nil, nil)
+}
+
+// extractBindings is extractModuleBindings with loader names declared outside clean
+// (extraReq require aliases, extraCr createRequire aliases) added to those clean declares.
+func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) moduleBindings {
 	mb := newModuleBindings()
 	n := len(clean)
 	add := func(b binding) {
@@ -85,10 +106,13 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 		mb.imports[b.Local] = b
 	}
-	reqNames, crNames := loaderNames(clean)
 	frames := newThisFrames(clean)
 	globals := newGlobalScope(clean, frames)
-	if globals.keyed {
+	ls := newLoaderScope(clean, globals)
+	reqNames, crNames := ls.req, ls.cr
+	maps.Copy(reqNames, extraReq)
+	maps.Copy(crNames, extraCr)
+	if globals.keyed || computedIndexPair(clean, src) || identifierEscape(clean) {
 		mb.evaluated = true
 	}
 	i := 0
@@ -108,7 +132,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case reqNames[word]:
 			// A loader use NOT consumed as a const/let/var binding: `return require(f)`,
 			// `const r = require`, a createRequire result called inline.
-			mb.requireUse(clean, src, i, next)
+			mb.requireUse(clean, src, i, next, ls)
 			i = next
 		case crNames[word]:
 			mb.createRequireUse(clean, src, i, next)
@@ -116,11 +140,20 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "_load", word == "dlopen", word == "eval":
 			mb.memberUse(clean, i, word)
 			i = next
+		case word == "arguments":
+			mb.argumentsUse(clean, i, next, frames)
+			i = next
+		case word == "constructor":
+			mb.constructorUse(clean, src, i)
+			i = next
 		case word == "Function":
 			mb.functionUse(clean, src, i, next)
 			i = next
-		case word == "module":
-			mb.moduleIndexUse(clean, i, next)
+		case ls.module.names[word]:
+			mb.objectUse(clean, src, i, next, &ls.module, globals)
+			i = next
+		case ls.process.names[word]:
+			mb.objectUse(clean, src, i, next, &ls.process, globals)
 			i = next
 		case globals.isGlobal(word, i):
 			mb.globalUse(clean, i, next, false, globals)
@@ -283,7 +316,9 @@ func parseExportForm(clean, src []rune, pos int, mb *moduleBindings) int {
 				return p + 1
 			}
 		}
-		return p
+		// A local `export { a as b }` hands its local names on to importers, so the names are
+		// left for the caller to judge as uses (`export { require as r }`).
+		return pos
 	}
 	return pos
 }
@@ -465,9 +500,28 @@ func collectBraceList(clean []rune, open int, pairs []importPair, destructure bo
 	return pairs, q
 }
 
-// specifierAt reads a string/template specifier from the RAW source at pos, where the
-// opening quote/backtick lives (clean marks that position with '_'). Escapes are
-// unescaped by one level; interpolations are not expected in a specifier.
+// identifierEscape reports whether the code outside literals and comments holds a \u
+// escape, which can only spell part of a name (`g.\u0063onstructor`, `\u0065val`). The
+// scan reads names as written, so such a name could be any loader or evaluator under a
+// spelling it does not recognise.
+func identifierEscape(clean []rune) bool {
+	for k := 0; k+1 < len(clean); k++ {
+		if clean[k] == '\\' && clean[k+1] == 'u' {
+			return true
+		}
+	}
+	return false
+}
+
+// specifierAt returns the value of the string or template literal whose opening quote is at
+// src[pos] (clean marks that position with '_'), decoded as the engine reads it: single-
+// character, \xHH, \uHHHH and \u{H…} escapes (two \u escapes forming a surrogate pair make
+// one code point), legacy octal escapes in a string (valid in sloppy code; in strict code
+// the literal is a syntax error and nothing runs), and line continuations, which add
+// nothing. A template is read up to its first interpolation, which is returned as "${", so
+// a caller sees it is computed. A malformed escape, a line break in a string or an
+// unterminated literal returns "", as for a position holding no literal, so no misspelling
+// reads as another key.
 func specifierAt(src []rune, pos int) string {
 	n := len(src)
 	if pos >= n {
@@ -477,14 +531,154 @@ func specifierAt(src []rune, pos int) string {
 	if quote != '\'' && quote != '"' && quote != '`' {
 		return ""
 	}
-	var b strings.Builder
-	for i := pos + 1; i < n && src[i] != quote; i++ {
-		if src[i] == '\\' && i+1 < n {
-			b.WriteRune(src[i+1])
-			i++
-			continue
+	tmpl := quote == '`'
+	var units []uint16
+	put := func(r rune) { units = utf16.AppendRune(units, r) }
+	for i := pos + 1; i < n; i++ {
+		c := src[i]
+		switch {
+		case c == quote:
+			return string(utf16.Decode(units))
+		case tmpl && c == '$' && i+1 < n && src[i+1] == '{':
+			return string(utf16.Decode(units)) + "${"
+		case tmpl && c == '\r':
+			if i+1 < n && src[i+1] == '\n' {
+				i++
+			}
+			put('\n')
+		case !tmpl && (c == '\n' || c == '\r'):
+			return ""
+		case c != '\\':
+			put(c)
+		default:
+			k, ok := escapeAt(src, i+1, tmpl, &units)
+			if !ok {
+				return ""
+			}
+			i = k - 1
 		}
-		b.WriteRune(src[i])
 	}
-	return b.String()
+	return ""
+}
+
+// escapeAt decodes the escape whose character after the backslash is at src[i], appending
+// its UTF-16 code units, and returns the index past it; false when it is malformed.
+func escapeAt(src []rune, i int, tmpl bool, units *[]uint16) (int, bool) {
+	n := len(src)
+	if i >= n {
+		return i, false
+	}
+	put := func(r rune) { *units = utf16.AppendRune(*units, r) }
+	switch c := src[i]; c {
+	case '\n', '\u2028', '\u2029':
+		return i + 1, true
+	case '\r':
+		if i+1 < n && src[i+1] == '\n' {
+			return i + 2, true
+		}
+		return i + 1, true
+	case 'b':
+		put('\b')
+	case 'f':
+		put('\f')
+	case 'n':
+		put('\n')
+	case 'r':
+		put('\r')
+	case 't':
+		put('\t')
+	case 'v':
+		put('\v')
+	case 'x':
+		v, ok := hexValue(src, i+1, i+3)
+		if !ok {
+			return i, false
+		}
+		put(v)
+		return i + 3, true
+	case 'u':
+		if i+1 < n && src[i+1] == '{' {
+			e := i + 2
+			for e < n && src[e] != '}' {
+				e++
+			}
+			if e >= n || e == i+2 {
+				return i, false
+			}
+			v, ok := hexValue(src, i+2, e)
+			if !ok {
+				return i, false
+			}
+			*units = append(*units, codeUnits(v)...)
+			return e + 1, true
+		}
+		v, ok := hexValue(src, i+1, i+5)
+		if !ok {
+			return i, false
+		}
+		*units = append(*units, uint16(v))
+		return i + 5, true
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		if tmpl {
+			if c != '0' || i+1 < n && src[i+1] >= '0' && src[i+1] <= '9' {
+				return i, false
+			}
+			put(0)
+			break
+		}
+		width := 3
+		if c > '3' {
+			width = 2
+		}
+		v, e := rune(0), i
+		for e < n && e-i < width && src[e] >= '0' && src[e] <= '7' {
+			v = v*8 + src[e] - '0'
+			e++
+		}
+		put(v)
+		return e, true
+	case '8', '9':
+		if tmpl {
+			return i, false
+		}
+		put(c)
+	default:
+		put(c)
+	}
+	return i + 1, true
+}
+
+// hexValue reads src[from:to] as hexadecimal digits: false when the range runs past src,
+// holds anything else, or exceeds the last code point.
+func hexValue(src []rune, from, to int) (rune, bool) {
+	if to > len(src) {
+		return 0, false
+	}
+	v := rune(0)
+	for _, c := range src[from:to] {
+		var d rune
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		if v = v*16 + d; v > unicode.MaxRune {
+			return 0, false
+		}
+	}
+	return v, true
+}
+
+// codeUnits returns the UTF-16 code units of a code point escape, which in a JS string may
+// be a lone surrogate that pairs with an adjacent escape.
+func codeUnits(v rune) []uint16 {
+	if v >= 0xD800 && v <= 0xDFFF {
+		return []uint16{uint16(v)}
+	}
+	return utf16.AppendRune(nil, v)
 }

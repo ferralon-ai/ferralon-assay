@@ -167,8 +167,8 @@ func (rs *resolver) packageHead(fromModule, head string) (resolution, bool) {
 
 // loadsOutOfTree reports whether a literal specifier written in fromModule loads code from
 // outside the tree: a bare specifier that no tsconfig paths alias or workspace member claims,
-// or a `#…` subpath import or workspace member whose selectable targets are not all in-tree
-// modules. viaRequire marks a require() load (see loadConditions). Loading a module runs its
+// or a `#…` subpath import or workspace member whose selectable targets are not all the
+// in-tree module call edges are built into (edgeModule). viaRequire marks a require() load (see loadConditions). Loading a module runs its
 // top-level code, so the run executes code this lane does not open however the binding, if
 // any, is used afterwards.
 func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) bool {
@@ -182,17 +182,14 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 			return true
 		}
 		targets := exportsTargets(pkg.imports, spec, conds)
+		edge := rs.edgeModule(pkg.imports, spec, pkgDir)
 		for _, t := range targets {
-			if strings.HasPrefix(t, "#") {
+			if !isRelativeSpecifier(t) {
+				// a `#…` chain or a package: edges are never built through either
+				// (resolveImportsSubpath), so its calls are missed even when it is in-tree
 				return true
 			}
-			if !isRelativeSpecifier(t) { // an imports entry may map to a package
-				if rs.loadsOutOfTree(fromModule, t, viaRequire) {
-					return true
-				}
-				continue
-			}
-			if rs.moduleFromDirRelative(pkgDir, t) == "" {
+			if m := rs.moduleFromDirRelative(pkgDir, t); m == "" || m != edge {
 				return true
 			}
 		}
@@ -206,6 +203,7 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		return true
 	}
 	var targets []string
+	edge, _, _ := rs.resolveWorkspaceMember(fromModule, spec)
 	switch {
 	case mm.exports != nil:
 		targets = exportsTargets(mm.exports, sub, conds)
@@ -217,16 +215,32 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 		targets = []string{"index"}
 	}
 	for _, t := range targets {
-		if rs.moduleFromDirRelative(dir, t) == "" {
+		if m := rs.moduleFromDirRelative(dir, t); m == "" || m != edge {
 			return true
 		}
 	}
 	return len(targets) == 0
 }
 
-// loadConditions is the set of exports/imports conditions a load can match under Node's
-// defaults. A require() load matches "require"; any other form may match "require" or
-// "import", because a transpiler can emit ESM syntax as require().
+// edgeModule is the in-tree module call edges are built into for subpath of an imports or
+// exports field under the resolver's fixed conditions (rs.conditions), or "" when there is
+// none. A load whose selectable target is another module runs code this lane reads but
+// builds no edges into, so loadsOutOfTree declares it.
+func (rs *resolver) edgeModule(field interface{}, subpath, dir string) string {
+	rel, _, ok := resolveExportsField(field, subpath, rs.conditions())
+	if !ok || !isRelativeSpecifier(rel) {
+		return ""
+	}
+	return rs.moduleFromDirRelative(dir, rel)
+}
+
+// loadConditions is the set of Node's default exports/imports conditions a load can match.
+// Node's defaults are "node", "import", "require", "default", "module-sync" and, unless
+// --no-addons, "node-addons" (nodejs.org/api/packages.html#conditional-exports); this lane
+// treats all of them as matching. A require() load matches "require"; any other form may
+// match "require" or "import", because a transpiler can emit ESM syntax as require(). Any
+// condition outside Node's defaults ("development", "browser", "worker", a bundler's or a
+// framework's own) is selectable too (see conditionSelectable).
 func loadConditions(viaRequire bool) map[string]bool {
 	conds := map[string]bool{"node": true, "node-addons": true, "module-sync": true, "default": true, "require": true}
 	if !viaRequire {
@@ -264,6 +278,45 @@ func exportsTargets(field interface{}, subpath string, conds map[string]bool) []
 	return out
 }
 
+// conditionSelectable reports whether the branch under condition key k can be the one a load
+// runs. A key in conds matches by default. A key outside Node's defaults matches whenever the
+// run sets it (node --conditions, a bundler, a test runner), which the build tree does not
+// record, so it counts as selectable too and each of its targets must be in-tree. A "types"
+// branch naming only declaration files is read by type checkers and never loaded.
+func conditionSelectable(k string, sub interface{}, conds map[string]bool) bool {
+	switch k {
+	case "node", "node-addons", "module-sync", "default", "require", "import":
+		return conds[k]
+	case "types":
+		return !declarationOnly(sub)
+	}
+	return true
+}
+
+// declarationOnly reports whether node names at least one target, under any condition, and
+// every one is a TypeScript declaration file.
+func declarationOnly(node interface{}) bool {
+	switch v := node.(type) {
+	case string:
+		return strings.HasSuffix(v, ".d.ts") || strings.HasSuffix(v, ".d.mts") || strings.HasSuffix(v, ".d.cts")
+	case []interface{}:
+		for _, e := range v {
+			if !declarationOnly(e) {
+				return false
+			}
+		}
+		return len(v) > 0
+	case map[string]interface{}:
+		for _, sub := range v {
+			if !declarationOnly(sub) {
+				return false
+			}
+		}
+		return len(v) > 0
+	}
+	return false
+}
+
 func conditionTargets(node interface{}, conds map[string]bool, out []string) []string {
 	switch v := node.(type) {
 	case string:
@@ -274,7 +327,7 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 		}
 	case map[string]interface{}:
 		for k, sub := range v {
-			if conds[k] {
+			if conditionSelectable(k, sub, conds) {
 				out = conditionTargets(sub, conds, out)
 			}
 		}

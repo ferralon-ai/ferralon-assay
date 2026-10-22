@@ -31,6 +31,8 @@ type Engine struct {
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
 	methodsHold bool                         // platformMethods lists the runtime's methods
+	hidden      []string                     // hiddenSubtypes cache, sorted
+	hiddenDone  bool                         // hidden is computed
 }
 
 // Classpath is what the analysed classpath defines beyond the classes handed to the engine.
@@ -166,10 +168,18 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 }
 
 // subtypeClosure returns owner plus all transitive subclasses/implementors, sorted
-// for deterministic target ordering.
+// for deterministic target ordering. It also holds every concrete
+// loaded class with a supertype in an unopened dependency (hiddenSubtypes): that
+// supertype's own supertypes are unknown, so it may extend owner.
 func (e *Engine) subtypeClosure(owner string) []string {
 	seen := map[string]bool{owner: true}
 	stack := []string{owner}
+	for _, h := range e.hiddenSubtypes() {
+		if !seen[h] {
+			seen[h] = true
+			stack = append(stack, h)
+		}
+	}
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -186,6 +196,49 @@ func (e *Engine) subtypeClosure(owner string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hiddenSubtypes returns the concrete loaded classes that have an unopened dependency
+// type among their supertypes, direct or not. A JDK supertype hides nothing: the JDK
+// cannot extend a class or interface from the classpath. Abstract classes are left
+// out: no object has one as its exact class, and a concrete subclass is listed too.
+func (e *Engine) hiddenSubtypes() []string {
+	if e.hiddenDone {
+		return e.hidden
+	}
+	e.hiddenDone = true
+	memo := map[string]bool{}
+	var hidden func(c string) bool
+	hidden = func(c string) bool {
+		if v, ok := memo[c]; ok {
+			return v
+		}
+		memo[c] = false // cycle guard
+		cls := e.classes[c]
+		v := false
+		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
+			if s == "" {
+				continue
+			}
+			if e.classes[s] == nil {
+				v = !e.platform(s)
+			} else {
+				v = hidden(s)
+			}
+			if v {
+				break
+			}
+		}
+		memo[c] = v
+		return v
+	}
+	for c := range e.classes {
+		if e.isConcrete(c) && hidden(c) {
+			e.hidden = append(e.hidden, c)
+		}
+	}
+	sort.Strings(e.hidden)
+	return e.hidden
 }
 
 // initClosure returns owner plus every in-classpath class whose <clinit> the JVM
@@ -350,6 +403,12 @@ func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
 // unloaded lists the out-of-classpath ancestors (owner itself, if unloaded) where the
 // real body may live, so the caller can decide leaf vs hazard by who owns them. A
 // declaration found on the superclass chain wins over any interface, as at runtime.
+//
+// A loaded default is returned with unloaded listing the unopened dependency
+// interfaces it does not extend: one may extend the default's interface and override
+// it with a more specific default (JVMS §5.4.3.3), so the caller must treat the default
+// as possibly not the one that runs. A JDK interface cannot extend a classpath one, so
+// it never overrides a loaded default and is not listed.
 func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, unloaded []string) {
 	var ifaces []string
 	for cur := owner; cur != ""; {
@@ -372,6 +431,7 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		cur = c.Super
 	}
 	seen := map[string]bool{}
+	var found *classfile.Method
 	for len(ifaces) > 0 {
 		cur := ifaces[0]
 		ifaces = ifaces[1:]
@@ -379,8 +439,9 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		seen[cur] = true
-		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !m.Abstract {
-			return m, nil
+		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !d.Abstract && found == nil {
+			found = d
+			continue
 		}
 		c := e.classes[cur]
 		if c == nil {
@@ -389,7 +450,20 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		}
 		ifaces = append(ifaces, c.Interfaces...)
 	}
-	return nil, unloaded
+	if found == nil {
+		return nil, unloaded
+	}
+	less := map[string]bool{}
+	for _, a := range e.ancestors(found.Ref.Owner) {
+		less[a] = true
+	}
+	var over []string
+	for _, u := range unloaded {
+		if !less[u] && !e.platform(u) {
+			over = append(over, u)
+		}
+	}
+	return found, over
 }
 
 // unloadedDependency returns the first of names that is neither loaded nor a JDK
@@ -479,6 +553,9 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 	case classfile.EdgeStatic, classfile.EdgeSpecial:
 		m, unloaded := e.resolveMethod(edge.To.Owner, edge.To.Name, edge.To.Descriptor)
 		if m != nil {
+			if len(unloaded) > 0 {
+				return []*classfile.Method{m}, true, "unloaded_dependency: " + edge.To.String() + " may resolve into unopened " + unloaded[0] + ", which can override " + m.Ref.String()
+			}
 			return []*classfile.Method{m}, false, ""
 		}
 		if dep, ok := e.unloadedDependency(unloaded); ok {
@@ -520,6 +597,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				}
 				continue
 			}
+			outside = append(outside, unloaded...)
 			if !m.Abstract && !seen[m] {
 				seen[m] = true
 				targets = append(targets, m)

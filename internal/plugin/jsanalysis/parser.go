@@ -447,6 +447,7 @@ func parseFile(module, src string) parseResult {
 func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
 	loads := newModuleBindings()
 	req, cr := loaderNames(clean)
+	seedReq, seedCr := loaderNames(nil)
 	for layer := 0; len(hidden) > 0; layer++ {
 		view := make([]rune, len(raw))
 		for k, c := range raw {
@@ -483,7 +484,7 @@ func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
 		proseLoaders(view)
 		loads.addLoads(extractBindings(view, raw, req, cr))
 		// A loader alias the text declares may be used in the code.
-		if hreq, hcr := loaderNames(view); len(hreq) > 1 || len(hcr) > 1 {
+		if hreq, hcr := loaderNames(view); len(hreq) > len(seedReq) || len(hcr) > len(seedCr) {
 			loads.addLoads(extractBindings(clean, raw, hreq, hcr))
 		}
 		hidden = next

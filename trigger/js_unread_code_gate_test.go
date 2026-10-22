@@ -352,6 +352,34 @@ const m = require^json5^;
 		{"Function tagging a template flush against it", `
 const m = Function^return require(process.argv[3])^();
 ` + tail, true},
+		{"JSX apostrophe followed by a require on its line", `
+function A(name) { return <p>Don't forget {require(process.argv[3]).parse(name)}</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"JSX apostrophe followed by an eval on its own line", `
+function A(x) {
+  return (
+    <div>
+      <p>It's {eval(x)}</p>
+    </div>
+  );
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a stray backtick in JSX text inverting a template that holds an apostrophe", `
+const A = () => <p>Press ^ to search</p>;
+function B(x) { return ^it's ${require(x)}^; }
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
+		{"regex holding a quote after a block", `
+function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
 		// Template and comment text shaped like a loader call is read as code, since a
 		// misread opener can make real code look like text; these over-declare by design.
 		{"loader-call text in a template's literal part", `

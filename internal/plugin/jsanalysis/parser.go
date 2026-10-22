@@ -93,7 +93,7 @@ type parseResult struct {
 // close where JS would close it:
 //   - a ' or " string ends at an unescaped line break (JS forbids one there; a
 //     backslash-newline continuation still continues), so a misread quote blanks at
-//     most the rest of its line;
+//     most the rest of its line, and that text is still read for loads (lexJS);
 //   - a regex never spans a line: a '/' whose regex would not close on its line is a
 //     division, and lexing continues after it;
 //   - a block comment or template literal that would run to end of file without
@@ -107,8 +107,9 @@ func stripJS(src string) string {
 type span struct{ from, to int }
 
 // lexJS is stripJS returning runes, plus the text of every block comment and template it
-// blanked (between the delimiters): the two literals that span lines, so the two whose
-// misread opener can blank code far from it.
+// blanked (between the delimiters), the two literals that span lines and so the two whose
+// misread opener can blank code far from it, and of every string that ended at a line
+// break or end of file unclosed, which only a misread quote does.
 func lexJS(src string) ([]rune, []span) {
 	r := []rune(src)
 	n := len(r)
@@ -212,6 +213,11 @@ func lexJS(src string) ([]rune, []span) {
 			out = append(out, '_')
 			if j < n && r[j] == c {
 				j++
+			} else {
+				// A valid string closes on its line, so this one was a misread quote (an
+				// apostrophe in JSX text, or in a regex read as a division): its text may
+				// be code.
+				hide(i+1, j)
 			}
 			blank(i+1, j)
 			prev = litEnd
@@ -390,11 +396,12 @@ func parseFile(module, src string) parseResult {
 	return res
 }
 
-// hiddenLoads reads the block-comment and template text the lexer blanked as if it
-// were code, and returns the loads that reading finds. Lexing JS without a parser cannot
-// always tell a literal's opener from text (a backtick or "/*" in JSX text, or in a
-// regex read as a division), and a misread opener pairs with a later real closer, so the
-// text it blanks can be code. The text is read on its own, everything else blank, so a
+// hiddenLoads reads the text lexJS reports blanking (block-comment and template text, and
+// unclosed strings) as if it were code, and returns the loads that reading finds. Lexing
+// JS without a parser cannot always tell a literal's opener from text (a quote, backtick
+// or "/*" in JSX text, or in a regex read as a division), and a misread opener either
+// pairs with a later real closer or runs to the end of its line, so the text it blanks
+// can be code. The text is read on its own, everything else blank, so a
 // real literal never changes how the code around it reads; the loader aliases the code
 // declares (clean) still apply to it. Text that the reading blanks in turn is read the
 // same way, one layer at a time. The reading adds no binding or edge, so text that really

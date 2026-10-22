@@ -714,7 +714,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 			// static/special leaf, an argument can re-enter application code (C8
 			// re-entry seam).
 			if cb, ok := e.reentryCallback(edge.To.Descriptor); ok {
-				return nil, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
+				return targets, true, "higher-order re-entry via inherited out-of-classpath method: takes " + cb
 			}
 		}
 		// The inherited platform body also runs with the receiver as `this`.

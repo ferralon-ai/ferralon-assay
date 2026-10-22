@@ -41,7 +41,7 @@ type cursor interface {
 // venvMark is what the venv rule carries from command to command in one shell.
 type venvMark struct {
 	made   string // key of the venv the last command but for directory changes created, or ""
-	open   int    // if, case and loop bodies the command is inside
+	open   int    // if, case and loop bodies the command is inside; below 0 when not known
 	dangle bool   // the last line ended in &&, || or |
 	lost   bool   // a cd that may not have run left the rule not knowing where the shell is
 	chain  bool   // a cd after && moved the directory: known only while the && list goes on

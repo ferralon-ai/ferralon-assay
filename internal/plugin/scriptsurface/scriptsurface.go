@@ -554,7 +554,11 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	}
 	made := mark.made
 	mark.made = venvMade(seg, cur)
-	mark.open += blockDepth[words[0]]
+	if mark.open >= 0 {
+		// Below 0 a fi, done or esac closed a body the rule did not see open, such as a line
+		// of a heredoc: it no longer knows which body a command is in, so it stays below 0.
+		mark.open += blockDepth[words[0]]
+	}
 	switch words[0] {
 	case "cd", "pushd", "popd":
 		mark.made = made // the venv's key was taken where it was made

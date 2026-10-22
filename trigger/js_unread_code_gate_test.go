@@ -166,6 +166,15 @@ load(process.argv[2]);
 			"node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
 			"node_modules/@app/plugins/index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
 		}},
+		{"require of a package hoisted above the build root a wildcard tsconfig paths alias shadows", `
+const m = require('@app/plugins');
+function load(s) { return m.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"../node_modules/@app/plugins/package.json": `{"name":"@app/plugins","main":"index.js"}`,
+			"../node_modules/@app/plugins/index.js":     "const j = require('json5');\nexports.parse = (s) => j.parse(s);\n",
+		}},
 		{"require reached by a string key", `
 const j = module['require']('json5');
 function load(s) { return j.parse(s); }
@@ -1161,6 +1170,10 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"literal import() of an in-tree module", "let j = { parse: (s) => s };\nimport('./plugins/index.js').then((m) => { j = m; });", nil},
 		{"literal import() through a tsconfig paths alias with no installed package", "let j = { parse: (s) => s };\nimport('@app/plugins').then((m) => { j = m; });", map[string]string{
 			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+		}},
+		{"require through a tsconfig paths alias with nothing installed above the build root", "const j = require('@app/plugins');", map[string]string{
+			"tsconfig.json":                      `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,
+			"../node_modules/other/package.json": `{"name":"other"}`,
 		}},
 		{"static import through a tsconfig paths alias with no installed package", "import j from '@app/plugins';", map[string]string{
 			"tsconfig.json": `{"compilerOptions":{"paths":{"@app/*":["./*"]}}}`,

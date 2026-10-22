@@ -317,6 +317,10 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			{"missing", shadowedCfg(nil), func(t *testing.T, dir string) {
 				dangle(t, dir, "node_modules")
 			}, shadowKeepsLimit(false)},
+			{"ELOOP above the build root", shadowedCfg(nil), func(t *testing.T, dir string) {
+				loop(t, filepath.Dir(dir), "node_modules")
+				wantErr(t, filepath.Dir(dir), "node_modules/cfg", syscall.ELOOP, true)
+			}, shadowKeepsLimit(true)},
 		}},
 		{"installedPackage package dir", []row{
 			{"EACCES", with(map[string]string{"node_modules/absent-package/package.json": `{"name":"absent-package"}`}), func(t *testing.T, dir string) {

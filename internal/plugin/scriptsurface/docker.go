@@ -205,25 +205,27 @@ func (c *dockerCursor) cd(words []string) {
 // other taints the whole stage: a command that is not an allowed install may write anywhere.
 func (c *dockerCursor) other() { c.st.taintAll() }
 
-func (c *dockerCursor) File(p string) bool {
+func (c *dockerCursor) File(p string) bool { return c.Hosts(p) != nil }
+
+func (c *dockerCursor) Hosts(p string) []string {
 	if !path.IsAbs(p) && !c.known || strings.ContainsAny(p, "*?[~") {
-		return false
+		return nil
 	}
 	f := path.Clean(p)
 	if !path.IsAbs(p) {
 		f = path.Join(c.dir, p)
 	}
 	hosts, state := c.st.lookup(c.v, f)
-	if state != pathBound {
-		return false
+	if state != pathBound || len(hosts) == 0 {
+		return nil
 	}
 	for _, h := range hosts {
 		if !c.v.read(h) {
-			return false
+			return nil
 		}
 	}
 	c.v.bind(p)
-	return true
+	return hosts
 }
 
 func (c *dockerCursor) Nearest(name string, locks ...string) []string {

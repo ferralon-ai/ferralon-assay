@@ -31,7 +31,8 @@ import (
 //	poetry|pdm|pipenv run <argv>   run without syncing; <argv> passes the same gate, and pdm
 //	                               and pipenv run only where no script table can name <argv>
 //
-// with only --no-cache-dir, --user and -q added, and with the manifest each binds to (the
+// with only --no-cache-dir, --user and -q added (and, to pip, --no-deps and --require-hashes,
+// which only narrow what it installs), and with the manifest each binds to (the
 // nearest pyproject.toml or Pipfile at or above the command's directory) and the lock it
 // installs (the nearest at or above that) read here. Anything
 // else that names an installer withholds: a package argument, another flag, pipx, uvx, uv run
@@ -42,15 +43,30 @@ import (
 // in scriptsurface.
 
 // scriptSpec is the Python lane's part of the rule.
-var scriptSpec = scriptsurface.Spec{
-	Token:       laneToken,
-	Env:         laneEnvRE,
-	Allowed:     laneAllowed,
-	RunWrapper:  laneRunWrapper,
-	RunBinds:    laneRunBinds,
-	ReadRegular: readRegular,
-	Absent:      absent,
+var scriptSpec = newScriptSpec(nil)
+
+// newScriptSpec is scriptSpec recording into installs every pip install -r it allows.
+func newScriptSpec(installs pipInstalls) scriptsurface.Spec {
+	return scriptsurface.Spec{
+		Token:       laneToken,
+		Env:         laneEnvRE,
+		Allowed:     installs.allowed,
+		RunWrapper:  laneRunWrapper,
+		RunBinds:    laneRunBinds,
+		ReadRegular: readRegular,
+		Absent:      absent,
+	}
 }
+
+// pipInstall is how one allowed pip install -r installs a requirements file.
+type pipInstall struct {
+	noDeps        bool // --no-deps: only the requirements the files list
+	requireHashes bool // --require-hashes: hash-checking mode
+}
+
+// pipInstalls records, by build-tree path, every allowed pip install -r of a requirements file
+// the script surfaces run. A nil pipInstalls records nothing.
+type pipInstalls map[string][]pipInstall
 
 // laneEnvRE matches a PIP_* or UV_* name that is not a $, ${ or attribute reference, so is
 // being set.
@@ -145,18 +161,18 @@ func laneRunBinds(words []string, b scriptsurface.Binder) bool {
 	return true
 }
 
-// laneAllowed reports whether a command holding an installer token, already free of
+// allowed reports whether a command holding an installer token, already free of
 // expansions and redirects, is one of the allowed forms and binds to files read here.
-func laneAllowed(words []string, b scriptsurface.Binder) bool {
+func (installs pipInstalls) allowed(words []string, b scriptsurface.Binder) bool {
 	head, ok := scriptsurface.CommandName(words[0])
 	if !ok {
 		return false
 	}
 	switch {
 	case pipHeadRE.MatchString(head):
-		return pipRequirementsInstall(words[1:], b)
+		return installs.pip(words[1:], b)
 	case pythonHeadRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && pipHeadRE.MatchString(words[2]):
-		return pipRequirementsInstall(words[3:], b)
+		return installs.pip(words[3:], b)
 	case len(words) < 2:
 		return false
 	case head == "uv" && words[1] == "sync":
@@ -173,17 +189,27 @@ func laneAllowed(words []string, b scriptsurface.Binder) bool {
 	return false
 }
 
-// pipRequirementsInstall reports whether pip's arguments are install, the shared flags, and
-// one or more -r naming a requirements file read here.
-func pipRequirementsInstall(args []string, b scriptsurface.Binder) bool {
+// pip reports whether pip's arguments are install, the shared flags, --no-deps,
+// --require-hashes, and one or more -r naming a requirements file read here, and records the
+// install of each file.
+func (installs pipInstalls) pip(args []string, b scriptsurface.Binder) bool {
 	if len(args) == 0 || args[0] != "install" {
 		return false
 	}
-	reqs := 0
+	var (
+		how   pipInstall
+		files []string
+	)
 	for i := 1; i < len(args); i++ {
 		var p string
 		switch a := args[i]; {
 		case laneFlags[a]:
+			continue
+		case a == "--no-deps":
+			how.noDeps = true
+			continue
+		case a == "--require-hashes":
+			how.requireHashes = true
 			continue
 		case (a == "-r" || a == "--requirement") && i+1 < len(args):
 			p = args[i+1]
@@ -193,10 +219,23 @@ func pipRequirementsInstall(args []string, b scriptsurface.Binder) bool {
 		default:
 			return false
 		}
-		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) || !b.File(p) {
+		if name := filepath.Base(p); isManifest(name) && !isRequirementsName(name) {
 			return false // a lock or build definition is not a requirements file
 		}
-		reqs++
+		hosts := b.Hosts(p)
+		if hosts == nil {
+			return false
+		}
+		files = append(files, hosts...)
 	}
-	return reqs > 0
+	if len(files) == 0 {
+		return false
+	}
+	if installs != nil {
+		for _, f := range files {
+			f = filepath.Clean(f)
+			installs[f] = append(installs[f], how)
+		}
+	}
+	return true
 }

@@ -10,6 +10,9 @@ import (
 type Binder interface {
 	// File reports whether p, from the command's directory, is a file read here and unchanged.
 	File(p string) bool
+	// Hosts is File, returning the build-tree files p names, one per directory the command may
+	// run in or Dockerfile source it was copied from; nil when File is false.
+	Hosts(p string) []string
 	// Nearest returns the nearest name at or above the command's directory, one per directory
 	// the command may run in, each read here and unchanged; with locks given, the nearest of
 	// them at or above each must be read here and unchanged too. nil when any is not.
@@ -63,18 +66,22 @@ func (c *hostCursor) merge(o *hostCursor) {
 	}
 }
 
-func (c *hostCursor) File(p string) bool {
+func (c *hostCursor) File(p string) bool { return c.Hosts(p) != nil }
+
+func (c *hostCursor) Hosts(p string) []string {
 	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {
-		return false
+		return nil
 	}
+	hosts := make([]string, 0, len(c.dirs))
 	for _, d := range c.dirs {
 		full := filepath.Join(d, p)
 		if !c.v.inRoot(full) || !c.v.read(full) {
-			return false
+			return nil
 		}
+		hosts = append(hosts, full)
 	}
 	c.v.bind(p)
-	return true
+	return hosts
 }
 
 func (c *hostCursor) Nearest(name string, locks ...string) []string {

@@ -77,7 +77,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 		all     []plugin.ResolvedDependency
 		origins []manifestOrigin
 	)
-	manifests, parseFailed, scriptWithheld := versionSurfaces(req.BuildDir)
+	manifests, parseFailed, scriptWithheld, installs := versionSurfaces(req.BuildDir)
 	copies, copyOrigins, copiesRead := installedCopies(req.BuildDir)
 	parseFailed = parseFailed || !copiesRead
 	for _, m := range manifests {
@@ -98,7 +98,7 @@ func ResolveDependencyVersions(_ context.Context, req plugin.ResolveVersionsRequ
 	}
 
 	want := normalizePyCoordinate(req.Coordinate)
-	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests)
+	covers := coverageCovers(req.BuildDir, req.Coordinate, manifests, installs)
 	res := plugin.DependencyVersionResult{
 		Partiality: part,
 		All:        all,
@@ -1102,7 +1102,7 @@ func normalizePyCoordinate(c string) string {
 // resolution declines to read (a -r include, a [dependency-groups] table) is one the coverage
 // check accounts for itself, through manifestDecls and the install-surface walk, so a version
 // left undecided must not withhold Exhaustive on its own.
-func coverageCovers(root, coordinate string, manifests []string) bool {
+func coverageCovers(root, coordinate string, manifests []string, installs pipInstalls) bool {
 	perFile := make(map[string][]plugin.ResolvedDependency, len(manifests))
 	failed := false
 	for _, m := range manifests {
@@ -1112,7 +1112,7 @@ func coverageCovers(root, coordinate string, manifests []string) bool {
 		}
 		perFile[m] = deps
 	}
-	return manifestSetCovers(root, coordinate, manifests, perFile, failed)
+	return manifestSetCovers(root, coordinate, manifests, perFile, failed, installs)
 }
 
 // parseManifestCoverage reads one manifest's declared entries for the coverage check and the

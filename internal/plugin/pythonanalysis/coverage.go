@@ -30,6 +30,8 @@ type pyDecls struct {
 	reqs     []pyDecl
 	files    []string // requirement files read in full through a file directive (cleaned)
 	includes []string // requirement files a -r/-c line names (cleaned), each checked on its own
+	nested   []string // the -r includes among them: pip installs what they list with the file
+	hashed   bool     // a requirement line carries --hash, or an option line is --require-hashes
 }
 
 // manifestDecls returns every requirement the non-lock manifest at path declares in a role that
@@ -116,10 +118,16 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 					target = filepath.Join(filepath.Dir(path), target)
 				}
 				out.includes = append(out.includes, filepath.Clean(target))
+				if !strings.HasPrefix(line, "-c") && !strings.HasPrefix(line, "--constraint") {
+					out.nested = append(out.nested, filepath.Clean(target))
+				}
 				continue
 			}
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
+			}
+			if f := strings.Fields(line); f[0] == "--require-hashes" {
+				out.hashed = true
 			}
 			continue
 		}
@@ -127,6 +135,9 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			return out, false
 		}
 		if i := strings.Index(line, " --"); i >= 0 {
+			for _, f := range strings.Fields(line[i:]) {
+				out.hashed = out.hashed || f == "--hash" || strings.HasPrefix(f, "--hash=")
+			}
 			line = strings.TrimSpace(line[:i])
 		}
 		r, ok := parsePEP508(line)
@@ -653,4 +664,136 @@ func (l *pyLock) covers(path string, decls pyDecls) bool {
 		}
 	}
 	return true
+}
+
+// --- requirements files pip may resolve past -----------------------------------------
+//
+// pip resolves a requirements file's dependencies itself, from the index: a lock holding every
+// name the file lists says nothing about a newer release's new dependency. A requirements file
+// therefore covers only with proof that pip refuses any distribution the files do not list.
+
+// reqInstalls decides, for the requirements files a build's manifests reach, whether pip may
+// install a package they do not list.
+type reqInstalls struct {
+	installs pipInstalls         // every allowed pip install -r the script surfaces run
+	decls    map[string]*pyDecls // requirements file → what it reads as; nil when it does not
+	includer map[string][]string // requirements file → the requirements files that -r it
+	directed map[string]bool     // files a pyproject.toml or setup.cfg names in a file directive
+	memo     map[string]bool
+	visiting map[string]bool
+}
+
+// newReqInstalls reads every requirements file among manifests and every file they -r, and
+// the file directives of every other manifest.
+func newReqInstalls(manifests []string, installs pipInstalls) *reqInstalls {
+	r := &reqInstalls{installs: installs, decls: map[string]*pyDecls{}, includer: map[string][]string{},
+		directed: map[string]bool{}, memo: map[string]bool{}, visiting: map[string]bool{}}
+	var queue []string
+	for _, m := range manifests {
+		switch base := filepath.Base(m); {
+		case isRequirementsName(base):
+			queue = append(queue, filepath.Clean(m))
+		case base == "pyproject.toml" || base == "setup.cfg":
+			if d, ok := manifestDecls(m); ok {
+				for _, f := range d.files {
+					r.directed[filepath.Clean(f)] = true
+				}
+			}
+		}
+	}
+	for len(queue) > 0 {
+		f := queue[0]
+		queue = queue[1:]
+		if _, seen := r.decls[f]; seen {
+			continue
+		}
+		r.decls[f] = nil
+		data, err := readRegular(f)
+		if err != nil {
+			continue
+		}
+		d, ok := requirementsDecls(f, data, pyDecls{})
+		if !ok {
+			continue
+		}
+		r.decls[f] = &d
+		for _, inc := range d.nested {
+			r.includer[inc] = append(r.includer[inc], f)
+			queue = append(queue, inc)
+		}
+	}
+	return r
+}
+
+// hashMode reports whether pip installs the file in hash-checking mode however it is run:
+// a requirement in it or in a file it -r's, at any depth, carries --hash, or one of them sets
+// --require-hashes. pip then requires a hash for every requirement and every dependency, and
+// fails the install on any it lacks (pip's RequirementCommand.get_requirements turns
+// require_hashes on when any requirement has hash options). A -c constraint file's hashes are
+// not counted.
+func (r *reqInstalls) hashMode(f string) bool {
+	seen := map[string]bool{}
+	var walk func(string) bool
+	walk = func(f string) bool {
+		if seen[f] {
+			return false
+		}
+		seen[f] = true
+		d := r.decls[f]
+		if d == nil {
+			return false
+		}
+		if d.hashed {
+			return true
+		}
+		for _, inc := range d.nested {
+			if walk(inc) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(filepath.Clean(f))
+}
+
+// refused reports whether pip refuses, wherever the build installs the requirements file f,
+// any distribution the files it installs with do not list: f is in hash-checking mode; or f
+// is installed at least once, and every install of it (by a script surface, or through a
+// requirements file that -r's it) passes --no-deps or --require-hashes, or is through a file
+// pip refuses for. A file named requirements.txt, which Python buildpacks install on their own
+// whenever it is there, or named in a file directive, which installs it with the project and
+// its dependencies, is installed some way this does not see.
+func (r *reqInstalls) refused(f string) bool {
+	f = filepath.Clean(f)
+	if v, ok := r.memo[f]; ok {
+		return v
+	}
+	if r.visiting[f] {
+		return false
+	}
+	r.visiting[f] = true
+	defer delete(r.visiting, f)
+	v := r.hashMode(f) || r.narrowed(f)
+	r.memo[f] = v
+	return v
+}
+
+func (r *reqInstalls) narrowed(f string) bool {
+	if filepath.Base(f) == "requirements.txt" || r.directed[f] || r.decls[f] == nil {
+		return false
+	}
+	paths := 0
+	for _, in := range r.installs[f] {
+		if !in.noDeps && !in.requireHashes {
+			return false
+		}
+		paths++
+	}
+	for _, x := range r.includer[f] {
+		if !r.refused(x) {
+			return false
+		}
+		paths++
+	}
+	return paths > 0
 }

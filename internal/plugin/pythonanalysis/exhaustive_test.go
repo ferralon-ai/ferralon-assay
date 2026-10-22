@@ -109,7 +109,8 @@ func TestResolveVersions_ExhaustiveInstallSurface(t *testing.T) {
 		{"-r include glued", map[string]string{"requirements.txt": "-rbase.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"--requirement= include", map[string]string{"requirements.txt": "--requirement=base.txt\n", "base.txt": "pyjwt==2.8.0\n"}, false},
 		{"-c include missing", map[string]string{"requirements.txt": "-c pins.txt\nflask==3.0.0\n"}, false},
-		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
+		{"-r include of a parsed manifest", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, false},
+		{"-r include of a parsed manifest, hashed", map[string]string{"requirements.txt": "-r requirements-dev.txt\nflask==3.0.0 --hash=sha256:aaa\n", "requirements-dev.txt": "jinja2==3.1.4\n"}, true},
 
 		// pyproject declarations outside [project].
 		{"[dependency-groups] unlocked", map[string]string{"pyproject.toml": exPyproject + "[dependency-groups]\ndev = [\"pyjwt>=2\"]\n"}, false},
@@ -231,6 +232,68 @@ func TestResolveVersions_ExhaustiveScriptInstall(t *testing.T) {
 				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
 			}
 		})
+	}
+}
+
+// pip resolves a requirements file's dependencies from the index, so a lock holding every name
+// the file lists proves nothing about what pip installs past it. The file covers only in
+// hash-checking mode (any --hash in the files one install reads, or --require-hashes), or when
+// every install of it passes --no-deps and nothing installs it any other way.
+func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
+	const (
+		h      = " --hash=sha256:aaa"
+		docker = "FROM python:3.12\nWORKDIR /app\nCOPY . .\n"
+	)
+	uv := func(extra map[string]string) map[string]string {
+		files := map[string]string{"pyproject.toml": exPyproject, "uv.lock": exUVLock}
+		for k, v := range extra {
+			files[k] = v
+		}
+		return files
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  bool
+	}{
+		{"unhashed requirements.txt, no install", uv(map[string]string{"requirements.txt": "flask>=3\n"}), false},
+		{"unhashed requirements file never installed", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n"}), false},
+		{"every line hashed", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\njinja2==3.1.4" + h + "\n"}), true},
+		{"some lines hashed", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\njinja2==3.1.4\n"}), true},
+		{"hash on a continued line", uv(map[string]string{"requirements.txt": "flask==3.0.0 \\\n    " + h + "\n"}), true},
+		{"-r include of a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "flask==3.0.0" + h + "\n"}), true},
+		{"unhashed -r include inside a hashed file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n"}), true},
+		{"unhashed -r include inside a hashed file, installed alone", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\nflask==3.0.0" + h + "\n", "requirements-base.txt": "jinja2==3.1.4\n", "Dockerfile": docker + "RUN pip install -r requirements-base.txt\n"}), false},
+		{"--require-hashes option line", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0" + h + "\n"}), true},
+		{"-c hashed constraints, unhashed requirement", uv(map[string]string{"requirements.txt": "-c requirements-constraints.txt\nflask>=3\n", "requirements-constraints.txt": "flask==3.0.0" + h + "\n"}), false},
+		{"Dockerfile installs an unhashed requirements.txt", uv(map[string]string{"requirements.txt": "flask>=3\n", "Dockerfile": docker + "RUN pip install -r requirements.txt\n"}), false},
+
+		{"install passes --require-hashes", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --require-hashes -r requirements-prod.txt\n"}), true},
+		{"every install passes --no-deps", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\n"}), true},
+		{"--no-deps install from a shell script", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "install.sh": "pip install --no-deps -r requirements-prod.txt\n"}), true},
+		{"--no-deps install, and a second without it", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\nRUN pip install -r requirements-prod.txt\n"}), false},
+		{"--no-deps install, and -r from a file installed with deps", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "requirements-dev.txt": "-r requirements-prod.txt\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\nRUN pip install -r requirements-dev.txt\n"}), false},
+		{"--no-deps install, -r from a file installed --no-deps", uv(map[string]string{"requirements-prod.txt": "flask==3.0.0\n", "requirements-dev.txt": "-r requirements-prod.txt\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\nRUN pip install --no-deps -r requirements-dev.txt\n"}), true},
+		{"root requirements.txt under a Procfile, --no-deps in a Dockerfile", uv(map[string]string{"requirements.txt": "flask==3.0.0\n", "Procfile": "web: gunicorn app:app\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements.txt\n"}), false},
+		{"requirements.txt installed --no-deps, no buildpack signal", uv(map[string]string{"requirements.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements.txt\n"}), false},
+		{"--no-deps install of a file setup.cfg also names", uv(map[string]string{"setup.cfg": "[metadata]\nname = app\n[options]\ninstall_requires = file: requirements-prod.txt\n", "requirements-prod.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\n"}), false},
+		{"install passes --no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN pip install --no-require-hashes -r requirements.txt\n"}), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := resolveVersion(t, writeTree(t, tt.files), "PyJWT")
+			if r.Found {
+				t.Fatalf("PyJWT unexpectedly found: %+v", r.Match)
+			}
+			if r.Exhaustive != tt.want {
+				t.Fatalf("Exhaustive = %v, want %v (partiality %+v)", r.Exhaustive, tt.want, r.Partiality)
+			}
+		})
+	}
+	// The version path is unchanged: a requirements file that no longer covers still resolves.
+	r := resolveVersion(t, writeTree(t, uv(map[string]string{"requirements.txt": "flask>=3\n"})), "jinja2")
+	if !r.Found || !r.Match.Resolved {
+		t.Fatalf("jinja2: found=%v %+v, want resolved", r.Found, r.Match)
 	}
 }
 

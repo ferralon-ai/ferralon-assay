@@ -25,9 +25,10 @@ import (
 // listed one name at a time.
 
 // versionSurfaces returns the manifests version resolution parses, whether any other install
-// surface under root goes unread, and whether a script surface may install a package no
-// manifest or lock read here names (scriptsurface.Veto.Withheld).
-func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool) {
+// surface under root goes unread, whether a script surface may install a package no manifest
+// or lock read here names (scriptsurface.Veto.Withheld), and every pip install -r the script
+// surfaces run.
+func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bool, installs pipInstalls) {
 	manifests, walked := manifestFiles(root)
 	unread = !walked
 	discovered := make(map[string]bool, len(manifests))
@@ -53,14 +54,15 @@ func versionSurfaces(root string) (manifests []string, unread, scriptWithheld bo
 		}
 		return discovered[path] || via[filepath.Clean(path)] || declaresNothing(path)
 	}
-	veto := scriptsurface.New(root, read, scriptSpec)
+	installs = pipInstalls{}
+	veto := scriptsurface.New(root, read, newScriptSpec(installs))
 	for _, c := range buildtree.Candidates(root, veto.Classify(pyInstallSurface), veto.FullyRead) {
 		if !c.FullyRead {
 			unread = true
 		}
 	}
 	scriptWithheld = veto.Withheld()
-	return manifests, unread || scriptWithheld, scriptWithheld
+	return manifests, unread || scriptWithheld, scriptWithheld, installs
 }
 
 // wideMarked reports whether the file at path starts with a UTF-16 or UTF-32 byte-order mark.

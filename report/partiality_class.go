@@ -55,8 +55,8 @@ const (
 // analysis, but it is declared only on codebases that actually cross it, so it still
 // tells a reader something specific about THIS codebase's coverage.
 //
-// The JVM lanes' dependency_not_in_build is did-not-run on purpose. Intake settles an
-// advisory on a package a complete build graph lacks (no_manifest_entry), so the code reaches
+// The JVM and .NET lanes' dependency_not_in_build is did-not-run on purpose. Intake settles an
+// advisory on a package a complete build graph or closed .NET build lacks (no_manifest_entry), so the code reaches
 // a verdict only where intake did not: a mixed-ecosystem advisory, a failed version lookup.
 // Making it inherent would let that row read not_exploitable on the lane's word alone.
 func ClassifyPartialityReason(reason string) PartialityClass {

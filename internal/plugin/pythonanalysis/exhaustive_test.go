@@ -283,6 +283,12 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"--no-require-hashes second on an option line", uv(map[string]string{"requirements.txt": "--trusted-host pypi.org --no-require-hashes\nflask==3.0.0" + h + "\n"}), false},
 		{"--no-require-hashes second on an option line in a nested file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "--prefer-binary --no-require-hashes\nflask==3.0.0" + h + "\n"}), false},
 		{"--no-require-hashes abbreviated on an option line", uv(map[string]string{"requirements.txt": "--trusted-host pypi.org --no-r\nflask==3.0.0" + h + "\n"}), false},
+		{"pip.conf with the key capitalised", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[install]\nNo-Require-Hashes = 1\n"}), false},
+		{"pip.conf with underscores", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[install]\nno_require_hashes = 1\n"}), false},
+		{"pip.ini names no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.ini": "[install]\nno-require-hashes = 1\n"}), false},
+		{"PIP.CONF names no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/PIP.CONF": "[install]\nno-require-hashes = 1\n"}), false},
+		{"pip.conf inside a nested .git directory", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "vendor/.git/pip.conf": "[install]\nno-require-hashes = 1\n"}), false},
+		{"option line --require-hashes with unhashed pins", uv(map[string]string{"requirements.txt": "--require-hashes\nflask==3.0.0\n"}), true},
 		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), true},
 	}
 	for _, tt := range tests {
@@ -300,6 +306,75 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 	r := resolveVersion(t, writeTree(t, uv(map[string]string{"requirements.txt": "flask>=3\n"})), "jinja2")
 	if !r.Found || !r.Match.Resolved {
 		t.Fatalf("jinja2: found=%v %+v, want resolved", r.Found, r.Match)
+	}
+}
+
+// A file installed only with --no-deps is refused only while every file that -r's it is refused
+// too. The Exhaustive rows cannot pin this: an includer that is not refused withholds on its own
+// check, so the includer test runs directly.
+func TestReqInstalls_RefusedNeedsEveryIncluder(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"requirements-base.txt": "flask==3.0.0\n",
+		"requirements-dev.txt":  "-r requirements-base.txt\n",
+	})
+	base, dev := filepath.Join(root, "requirements-base.txt"), filepath.Join(root, "requirements-dev.txt")
+	tests := []struct {
+		name     string
+		devInstl pipInstall
+		want     bool // base refused
+	}{
+		{"includer installed with dependencies", pipInstall{}, false},
+		{"includer installed --no-deps", pipInstall{noDeps: true}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			installs := pipInstalls{base: {{noDeps: true}}, dev: {tt.devInstl}}
+			r := newReqInstalls(root, []string{base, dev}, installs)
+			if got := r.refused(base); got != tt.want {
+				t.Fatalf("refused(base) = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A pip.conf or pip.ini this cannot read, or a directory it cannot walk, may name
+// no-require-hashes, so either counts as naming it. The Exhaustive rows cannot pin this: an
+// unreadable file or directory withholds there on its own, so the check runs directly.
+func TestPipConfigDisablesHashes_Unreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files whatever their mode")
+	}
+	tests := []struct {
+		name string
+		mode os.FileMode
+		path string // the entry made unreadable
+		file bool
+	}{
+		{"pip.conf that cannot be read", 0o000, "pip.conf", true},
+		{"directory that cannot be walked", 0o000, "svc", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			p := filepath.Join(root, tt.path)
+			if tt.file {
+				if err := os.WriteFile(p, []byte("[global]\ntimeout = 60\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if pipConfigDisablesHashes(root) {
+				t.Fatal("readable tree reported as naming no-require-hashes")
+			}
+			if err := os.Chmod(p, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(p, 0o755) })
+			if !pipConfigDisablesHashes(root) {
+				t.Fatal("unreadable entry not counted as naming no-require-hashes")
+			}
+		})
 	}
 }
 

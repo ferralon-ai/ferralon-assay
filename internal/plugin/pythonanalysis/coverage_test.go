@@ -148,6 +148,8 @@ func TestResolveVersions_ExhaustiveCoverage(t *testing.T) {
 		{"requirements extra the lock does not record", map[string]string{"uv.lock": covUVLockNoExtra, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3\n"}, false},
 		{"requirements extra recorded", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3\n"}, false},
 		{"requirements extra recorded, hashed", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --hash=sha256:aaa\n"}, true},
+		{"requirements extra recorded, hashed with a space", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --hash sha256:aaa\n"}, true},
+		{"requirements extra recorded, hash after another option", map[string]string{"uv.lock": covUVLock, "pyproject.toml": covPyproject("requests"), "requirements.txt": "requests[socks]==2.32.3 --no-binary=:all: --hash=sha256:aaa\n"}, true},
 		{"poetry extra recorded, its package locked", map[string]string{"poetry.lock": covPoetryLock, "pyproject.toml": "[tool.poetry.dependencies]\npython = \"^3.12\"\nrequests = { version = \"^2.31\", extras = [\"socks\"] }\n"}, true},
 		{"poetry extra recorded, its package unlocked", map[string]string{"poetry.lock": covPoetryLockNoPySocks, "pyproject.toml": "[tool.poetry.dependencies]\npython = \"^3.12\"\nrequests = { version = \"^2.31\", extras = [\"socks\"] }\n"}, false},
 		{"pdm extra recorded", map[string]string{"pdm.lock": covPDMLock, "pyproject.toml": covPyproject("requests[socks]>=2.31")}, true},

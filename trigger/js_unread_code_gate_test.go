@@ -423,6 +423,21 @@ function check(s) { if (s) { s = s.trim(); } /\//.test(s) && require(process.arg
 function load(s) { return s.trim(); }
 load(process.argv[2]);
 `, true},
+		{"two JSX apostrophes around a require", `
+function A() { return <p>Don't {require(process.argv[3]).parse("x")} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around an eval", `
+function A(x) { return <p>It's {eval(x)}, isn't it</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around a dynamic import", `
+function A(x) { return <p>We're {import(x)} ready, aren't we</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
 		// Template and comment text shaped like a loader call is read as code, since a
 		// misread opener can make real code look like text; these over-declare by design.
 		{"loader-call text in a template's literal part", `
@@ -451,6 +466,12 @@ load(process.argv[2]);
 		{"string continued across a line", `
 function load(s) { return 'a \
 require(process.argv[3]) b' + s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"strings holding braces", `
+const t = '{ "a": 1 }';
+const f = "{0} items";
+function load(s) { return s.trim() + t + f; }
 load(process.argv[2]);
 `, false},
 		{"regex holding a quote and a backtick after return", `

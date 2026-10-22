@@ -153,9 +153,10 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 
 // functionUse records a use of the Function constructor at i. Every reference to Function
 // counts, whatever follows it: a call, `new Function`, a member, an alias or a value handed
-// on may each reach the constructor by a path the walk does not follow. The one exception is
+// on may each reach the constructor by a path the walk does not follow. The exceptions are
 // a direct call whose source is all plain literals with no way to run other code
-// (literalFunction) and whose result is not called at once.
+// (literalFunction) and whose result is not called at once, and the two consumed shapes
+// functionConsumed accepts.
 func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
@@ -173,7 +174,119 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 			}
 		}
 	}
+	if functionConsumed(clean, src, b, p) {
+		return
+	}
 	mb.evaluated = true
+}
+
+// functionConsumed reports whether the bare Function whose previous token ends at b and
+// whose next token starts at p is used up where it stands, never reaching a value that can
+// run code. That holds for the right operand of instanceof, and for Function.prototype read
+// at once for one of its builtins: apply, call, bind or toString called on the spot (or
+// through .call, .apply or .bind), or [Symbol.hasInstance] when Symbol is the global's. The
+// hasInstance builtin may be stored, since reaching the constructor from it takes
+// .constructor, the residue every function value shares. A member, index, call or tagged
+// template after Function, or after the hasInstance builtin, may reach the constructor.
+func functionConsumed(clean, src []rune, b, p int) bool {
+	n := len(clean)
+	if w, _ := wordBefore(clean, b); w == "instanceof" {
+		return !(p < n && (clean[p] == '(' || clean[p] == '!')) && !memberAfter(clean, src, p)
+	}
+	w, q := dotWord(clean, p)
+	if w != "prototype" {
+		return false
+	}
+	switch w, q := dotWord(clean, q); w {
+	case "apply", "call", "bind", "toString":
+		return calledHere(clean, q)
+	case "":
+		if q >= n || clean[q] != '[' {
+			return false
+		}
+		a := skipSpace(clean, q+1)
+		if w, e := peekWord(clean, a); w != "Symbol" {
+			return false
+		} else if w, e = dotWord(clean, e); w != "hasInstance" {
+			return false
+		} else if e >= n || clean[e] != ']' {
+			return false
+		} else {
+			q = skipSpace(clean, e+1)
+		}
+		if q < n && clean[q] == '!' || memberAfter(clean, src, q) && !calledHere(clean, q) {
+			return false
+		}
+		return symbolPlain(clean)
+	}
+	return false
+}
+
+// dotWord reads `.name` at p, a static member and not an optional one, and returns the name
+// and the next token's start, or "" and p when no static member starts there.
+func dotWord(clean []rune, p int) (string, int) {
+	if p >= len(clean) || clean[p] != '.' {
+		return "", p
+	}
+	w, e := peekWord(clean, skipSpace(clean, p+1))
+	if w == "" {
+		return "", p
+	}
+	return w, skipSpace(clean, e)
+}
+
+// calledHere reports whether the builtin read just before p is called at once: `(` at p, or
+// `.call(`, `.apply(` or `.bind(`.
+func calledHere(clean []rune, p int) bool {
+	if p < len(clean) && clean[p] == '(' {
+		return true
+	}
+	switch w, q := dotWord(clean, p); w {
+	case "call", "apply", "bind":
+		return q < len(clean) && clean[q] == '('
+	}
+	return false
+}
+
+// memberAfter reports whether the token at p reads from the value before it: a member, an
+// index, an optional chain, or a tagged template.
+func memberAfter(clean, src []rune, p int) bool {
+	return p < len(clean) && (clean[p] == '.' || clean[p] == '[' || src[p] == '`') || optionalDot(clean, p)
+}
+
+// symbolPlain reports whether every Symbol the module names is the global's. Each bare
+// Symbol must be read by typeof or followed by `.` or `(`, and not name a function; anything
+// else may declare or assign one. A with statement may put any object's
+// Symbol in scope.
+func symbolPlain(clean []rune) bool {
+	for i := 0; i < len(clean); {
+		if !isIdentPart(clean[i]) {
+			i++
+			continue
+		}
+		w, next := readWord(clean, i)
+		switch {
+		case memberName(clean, i):
+		case w == "with":
+			if q := skipSpace(clean, next); q < len(clean) && clean[q] == '(' {
+				return false
+			}
+		case w == "Symbol":
+			b := skipSpaceBack(clean, i-1)
+			prev, _ := wordBefore(clean, b)
+			if prev == "typeof" {
+				break
+			}
+			if prev == "function" || b >= 0 && clean[b] == '*' {
+				return false
+			}
+			if q := skipSpace(clean, next); !(q < len(clean) && (clean[q] == '(' || clean[q] == '.')) {
+				return false
+			}
+		}
+		i = next
+	}
+	return true
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens

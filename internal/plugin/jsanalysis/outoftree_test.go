@@ -1767,6 +1767,34 @@ load(process.argv);
 		{"a Function.call.call chain called optionally", map[string]string{"app.js": "function f() {}\nconst r = Function.call.call?.(f);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"a Function.call.call chain called optionally after a space", map[string]string{"app.js": "function f() {}\nconst r = Function.call.call?. (f);" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"Function compared", map[string]string{"app.js": "function isCtor(f) { return f instanceof Function || (Function === f); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.constructor called", map[string]string{"app.js": "Function.prototype.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype constructor read by a literal key", map[string]string{"app.js": "Function.prototype['constructor'](process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype indexed by a computed key", map[string]string{"app.js": "const k = process.argv[3];\nFunction.prototype[k](process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"a member of Function as instanceof's operand", map[string]string{"app.js": "function f(x) { return x instanceof Function.call; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function indexed as instanceof's operand", map[string]string{"app.js": "function f(x, k) { return x instanceof Function[k]; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function called as instanceof's operand", map[string]string{"app.js": "function f(x) { return x instanceof Function(process.argv[2]); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function non-null asserted as instanceof's operand", map[string]string{"app.js": "function f(x) { return x instanceof Function!.constructor(process.argv[2])(); }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function as instanceof's operand tagging a template", map[string]string{"app.js": "function f(x) { return x instanceof Function `x`; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype held as a value", map[string]string{"app.js": "var p = Function.prototype;\np.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.call held as a value", map[string]string{"app.js": "var c = Function.prototype.call;\nc.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.call read but not called", map[string]string{"app.js": "const c = [Function.prototype.call];" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.call's constructor read", map[string]string{"app.js": "Function.prototype.call.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.apply.call handed Function", map[string]string{"app.js": "Function.prototype.apply.call(Function, null, [process.argv[2]])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.apply.call handed the global's Function", map[string]string{"app.js": "Function.prototype.apply.call(globalThis.Function, null, [process.argv[2]])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype read optionally", map[string]string{"app.js": "Function.prototype?.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance builtin's constructor read", map[string]string{"app.js": "Function.prototype[Symbol.hasInstance].constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance builtin indexed", map[string]string{"app.js": "Function.prototype[Symbol.hasInstance]['constructor'](process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance builtin read optionally", map[string]string{"app.js": "Function.prototype[Symbol.hasInstance]?.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance builtin non-null asserted", map[string]string{"app.js": "Function.prototype[Symbol.hasInstance]!.constructor(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance builtin tagging a template", map[string]string{"app.js": "const f = Function.prototype[Symbol.hasInstance] `x`;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance read through a declared Symbol", map[string]string{"app.js": "var Symbol = { hasInstance: 'constructor' };\nvar h = Function.prototype[Symbol.hasInstance];\nh(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance read through a Symbol parameter", map[string]string{"app.js": "function f(Symbol) { return Function.prototype[Symbol.hasInstance]; }\nf({ hasInstance: 'constructor' })(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance read through a function named Symbol", map[string]string{"app.js": "function Symbol() {}\nSymbol.hasInstance = 'constructor';\nvar h = Function.prototype[Symbol.hasInstance];\nh(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance read through a generator named Symbol", map[string]string{"app.js": "function* Symbol() {}\nSymbol.hasInstance = 'constructor';\nvar h = Function.prototype[Symbol.hasInstance];\nh(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"hasInstance read through a Symbol a with statement scopes", map[string]string{"app.js": "with ({ Symbol: { hasInstance: 'constructor' } }) { var h = Function.prototype[Symbol.hasInstance]; }\nh(process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype indexed by another well-known symbol", map[string]string{"app.js": "var h = Function.prototype[Symbol.iterator];" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype.call.call read but not called", map[string]string{"app.js": "const cc = [Function.prototype.call.call];" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
+		{"Function.prototype indexed by an expression starting with Symbol.hasInstance", map[string]string{"app.js": "Function.prototype[Symbol.hasInstance ? 'constructor' : 'x'](process.argv[2])();" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"global root from Function", map[string]string{"app.js": "var root = Function('return this')() || {};" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"global from Function read by a literal member", map[string]string{"app.js": "const T = Function('return this')().TextEncoder;" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
 		{"Function as an optional parameter type", map[string]string{"app.js": "function run(cb?: Function, f?: Function): Function | undefined { return cb; }" + "\nfunction load(s) { return s; }\nload(process.argv);\n"}, plugin.PartialReasonEvaluatedCode},
@@ -1956,8 +1984,8 @@ load(process.argv);
 }
 
 // TestCallGraph_LoaderShapesThatHandNothingOn is the control for the shapes above: a
-// parameter or function named require, a test of a loader, and Function.prototype's
-// call/apply/bind reached as a chain or a value load nothing this lane does not read.
+// parameter or function named require, a test of a loader, and Function consumed as
+// instanceof's operand or by a Function.prototype builtin load nothing this lane does not read.
 func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 	cases := []struct{ name, app string }{
 		{"browserify module wrapper", "var mods = {1: [function (require, module, exports) { module.exports = require('./util'); }, {}]};"},
@@ -1989,6 +2017,17 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"UMD wrapper", "(function (root, factory) { if (typeof define === 'function') define(factory); else root.Lib = factory(); }(this, function () { return {}; }));"},
 		{"UMD wrapper through call", "(function (root) { root.Lib = {}; }).call(this, this);"},
 		{"IIFE called with this", "(function () { var x = 1; return x; }).call(this);"},
+		{"Function as instanceof's operand", "function isFn(x) { return x instanceof Function && typeof x === 'function'; }"},
+		{"Function as instanceof's operand at the end of a statement", "function isFn(x) { return x instanceof Function }"},
+		{"Function.prototype.apply called through call", "function log() { return Function.prototype.apply.call(console.log, console, arguments); }"},
+		{"Function.prototype.toString called through call", "const src = Function.prototype.toString.call(trim);"},
+		{"Function.prototype.call bound", "const has = Function.prototype.call.bind(Object.prototype.hasOwnProperty);"},
+		{"Function.prototype.bind called", "const noop = Function.prototype.bind(null);"},
+		{"hasInstance builtin stored", "var realHasInstance;\nif (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.prototype[Symbol.hasInstance] === 'function') {\n  realHasInstance = Function.prototype[Symbol.hasInstance];\n  Object.defineProperty(trim, Symbol.hasInstance, { value: function (o) { return realHasInstance.call(this, o); } });\n}"},
+		{"hasInstance builtin called through call", "const is = Function.prototype[Symbol.hasInstance].call(trim, {});"},
+		{"hasInstance builtin called", "const is = Function.prototype[Symbol.hasInstance](trim);"},
+		{"Symbol method shorthand named Symbol beside hasInstance", "const o = { Symbol() { return Symbol('x'); } };\nvar h = Function.prototype[Symbol.hasInstance];"},
+		{"a member named Symbol beside hasInstance", "const o = {};\no.Symbol = 1;\nvar h = Function.prototype[Symbol.hasInstance];"},
 		{"Function of parameters", "const add = new Function('a', 'b', 'return a + b');"},
 		{"Function of a parameter list", "const min = Function('a, b', 'return a < b ? a : b');"},
 		{"Function with an empty body", "const noop = Function('');"},

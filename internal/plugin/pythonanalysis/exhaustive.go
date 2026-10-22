@@ -88,7 +88,7 @@ func manifestSetCovers(root, coordinate string, manifests []string, perFile map[
 	if len(locks) == 0 {
 		return false
 	}
-	reqs := newReqInstalls(manifests, installs)
+	reqs := newReqInstalls(root, manifests, installs)
 	for _, m := range manifests {
 		if completeLockfiles[filepath.Base(m)] {
 			continue

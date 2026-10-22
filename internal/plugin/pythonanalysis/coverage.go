@@ -5,8 +5,10 @@ package pythonanalysis
 // declaration of one manifest at a version its range admits and with the extras it asks for.
 
 import (
+	"io/fs"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +34,7 @@ type pyDecls struct {
 	includes []string // requirement files a -r/-c line names (cleaned), each checked on its own
 	nested   []string // the -r includes among them: pip installs what they list with the file
 	hashed   bool     // a requirement line carries --hash, or an option line is --require-hashes
+	hashOff  bool     // an option line is --no-require-hashes
 }
 
 // manifestDecls returns every requirement the non-lock manifest at path declares in a role that
@@ -126,8 +129,11 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
-			if f := strings.Fields(line); f[0] == "--require-hashes" {
+			switch strings.Fields(line)[0] {
+			case "--require-hashes":
 				out.hashed = true
+			case "--no-require-hashes":
+				out.hashOff = true
 			}
 			continue
 		}
@@ -675,18 +681,20 @@ func (l *pyLock) covers(path string, decls pyDecls) bool {
 // reqInstalls decides, for the requirements files a build's manifests reach, whether pip may
 // install a package they do not list.
 type reqInstalls struct {
+	root     string
 	installs pipInstalls         // every allowed pip install -r the script surfaces run
 	decls    map[string]*pyDecls // requirements file → what it reads as; nil when it does not
 	includer map[string][]string // requirements file → the requirements files that -r it
 	directed map[string]bool     // files a pyproject.toml or setup.cfg names in a file directive
 	memo     map[string]bool
 	visiting map[string]bool
+	hashOff  *bool // memoized hashesDisabled
 }
 
 // newReqInstalls reads every requirements file among manifests and every file they -r, and
 // the file directives of every other manifest.
-func newReqInstalls(manifests []string, installs pipInstalls) *reqInstalls {
-	r := &reqInstalls{installs: installs, decls: map[string]*pyDecls{}, includer: map[string][]string{},
+func newReqInstalls(root string, manifests []string, installs pipInstalls) *reqInstalls {
+	r := &reqInstalls{root: root, installs: installs, decls: map[string]*pyDecls{}, includer: map[string][]string{},
 		directed: map[string]bool{}, memo: map[string]bool{}, visiting: map[string]bool{}}
 	var queue []string
 	for _, m := range manifests {
@@ -732,6 +740,9 @@ func newReqInstalls(manifests []string, installs pipInstalls) *reqInstalls {
 // require_hashes on when any requirement has hash options). A -c constraint file's hashes are
 // not counted.
 func (r *reqInstalls) hashMode(f string) bool {
+	if r.hashesDisabled() {
+		return false
+	}
 	seen := map[string]bool{}
 	var walk func(string) bool
 	walk = func(f string) bool {
@@ -754,6 +765,56 @@ func (r *reqInstalls) hashMode(f string) bool {
 		return false
 	}
 	return walk(filepath.Clean(f))
+}
+
+// hashesDisabled reports whether pip may run with --no-require-hashes (pip 26.2 and later),
+// which stops a --hash line from turning hash-checking mode on: a requirements file read here
+// sets it on an option line, or a pip.conf or pip.ini anywhere under root names it (a build can
+// COPY one to where pip reads its config). A config file that cannot be read counts. pip
+// configuration outside the tree is assumed not to set it.
+func (r *reqInstalls) hashesDisabled() bool {
+	if r.hashOff != nil {
+		return *r.hashOff
+	}
+	off := false
+	for _, d := range r.decls {
+		off = off || d != nil && d.hashOff
+	}
+	if !off {
+		off = pipConfigDisablesHashes(r.root)
+	}
+	r.hashOff = &off
+	return off
+}
+
+var noRequireHashesRE = regexp.MustCompile(`(?i)no[-_]require[-_]hashes`)
+
+// pipConfigDisablesHashes walks root (all but its own .git) for a pip.conf or pip.ini that
+// names no-require-hashes, whatever value it gives it. A walk or read error counts as naming it.
+func pipConfigDisablesHashes(root string) bool {
+	found := false
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			found = true
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" && filepath.Dir(path) == filepath.Clean(root) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if name := strings.ToLower(d.Name()); name != "pip.conf" && name != "pip.ini" {
+			return nil
+		}
+		data, rerr := readRegular(path)
+		if rerr != nil || noRequireHashesRE.Match(data) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found || err != nil
 }
 
 // refused reports whether pip refuses, wherever the build installs the requirements file f,

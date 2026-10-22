@@ -278,6 +278,9 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"requirements.txt installed --no-deps, no buildpack signal", uv(map[string]string{"requirements.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements.txt\n"}), false},
 		{"--no-deps install of a file setup.cfg also names", uv(map[string]string{"setup.cfg": "[metadata]\nname = app\n[options]\ninstall_requires = file: requirements-prod.txt\n", "requirements-prod.txt": "flask==3.0.0\n", "Dockerfile": docker + "RUN pip install --no-deps -r requirements-prod.txt\n"}), false},
 		{"install passes --no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "Dockerfile": docker + "RUN pip install --no-require-hashes -r requirements.txt\n"}), false},
+		{"--no-require-hashes option line in a hashed file", uv(map[string]string{"requirements.txt": "--no-require-hashes\nflask==3.0.0" + h + "\n"}), false},
+		{"pip.conf copied in sets no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[install]\nno-require-hashes = true\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), false},
+		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

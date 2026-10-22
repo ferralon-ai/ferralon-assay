@@ -330,7 +330,7 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 				if got := len(res.Paths) > 0; got != tt.wantPath {
 					t.Errorf("%s closure: path found = %t, want %t: Paths %v, Searched %v, partiality %+v", run, got, tt.wantPath, res.Paths, res.Searched, res.Partiality)
 				}
-				if !tt.wantPath && !slices.Equal(res.Searched, []string{netkitSinkID}) {
+				if !tt.wantPath && (!slices.Equal(res.Searched, []string{netkitSinkID}) || len(res.Partiality.Reasons) != 0 || len(res.Partiality.Scoped) != 0) {
 					t.Errorf("%s closure: Searched = %v, partiality %+v", run, res.Searched, res.Partiality)
 				}
 			}

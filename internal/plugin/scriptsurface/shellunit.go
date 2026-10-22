@@ -74,9 +74,10 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 				// a job another job may take them from (a hidden, extended, referenced or
 				// anchored one) or one that takes keys from another (by extends or a << merge),
 				// as what runs with its script may be another job's before_script. In a set of
-				// files joined by include, that is any job: another file may extend it.
+				// files joined by include, that is any job: another file may extend it. GitLab
+				// keeps the last of a repeated key, so a job that repeats one is read alone too.
 				name := top.Content[i].Value
-				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil
+				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil || repeatsKey(job)
 				pre := 0
 				for j := 0; j+1 < len(job.Content); j += 2 {
 					switch job.Content[j].Value {
@@ -141,7 +142,8 @@ func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 }
 
 // gitlabIncluded reports whether path is a GitLab pipeline and any of its units, the pipeline
-// and the files it includes, has an include: key.
+// and the files it includes, may have an include: key: one written out, or one a << merge or
+// a key that is not plain text may bring in, since GitLab resolves both.
 func gitlabIncluded(path string, units []unit) bool {
 	if !gitlabCI[strings.ToLower(filepath.Base(path))] {
 		return false
@@ -156,10 +158,35 @@ func gitlabIncluded(path string, units []unit) bool {
 				}
 				break
 			}
-			if len(doc.Content) == 1 && mapValue(doc.Content[0], "include") != nil {
+			if len(doc.Content) == 1 && mayInclude(doc.Content[0]) {
 				return true
 			}
 		}
+	}
+	return false
+}
+
+// mayInclude reports whether a top-level mapping has an include: key or a key that may stand
+// for one.
+func mayInclude(top *yaml.Node) bool {
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		k := top.Content[i]
+		if k.Kind != yaml.ScalarNode || k.Value == "include" || k.Value == "<<" {
+			return true
+		}
+	}
+	return false
+}
+
+// repeatsKey reports whether a mapping has the same key more than once.
+func repeatsKey(n *yaml.Node) bool {
+	seen := map[string]bool{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i].Value
+		if seen[k] {
+			return true
+		}
+		seen[k] = true
 	}
 	return false
 }

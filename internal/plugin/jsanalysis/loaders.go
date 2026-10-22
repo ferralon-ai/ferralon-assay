@@ -58,15 +58,22 @@ func loaderNames(clean []rune) (req, cr map[string]bool) {
 }
 
 // requireUse records one occurrence of a require-like name whose identifier ends at next.
-// A call loads its argument; `.resolve` only computes a path. Any other use hands the
-// loader on, so the module can load targets this lane never sees. Declaring the name
-// (a parameter or `function require(...)`) and testing it hand nothing on: every call
-// through the declared name is judged where it occurs.
-func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
+// The accepted forms are a call, whose argument loadCall judges; `.resolve`, which only
+// computes a path; the name declared (a parameter, `function require(...)`, a const, let or
+// var) or written as an object key; a test of the name (typeof of the name or of a plain
+// member chain, !, ==, &&, a ternary test); and a property of that name read from an object
+// that cannot hold a loader (propertyOfPlainObject). Every other use hands the loader on,
+// so the module can load targets this lane never sees, and declares a computed target.
+func (mb *moduleBindings) requireUse(clean, src []rune, i, next int, ls *loaderScope) {
+	n := len(clean)
+	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
-	call := p < len(clean) && clean[p] == '('
-	switch w, s := wordBefore(clean, skipSpaceBack(clean, i-1)); {
-	case w == "typeof" && !call: // a type test of the loader; `typeof require('x')` still loads x
+	call := p < n && clean[p] == '('
+	if ls.propertyOfPlainObject(clean, i) {
+		return
+	}
+	switch w, s := wordBefore(clean, b); {
+	case w == "typeof" && !chainUsed(clean, next): // `typeof require('x')` still loads x
 		return
 	case w == "const", w == "let", w == "var": // the declaration of a createRequire result
 		return
@@ -75,19 +82,41 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 		// `this.#function` are members
 		return
 	}
-	if !call && (declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
+	if !call && (objectKey(clean, b, p) || declaredParam(clean, i, next) || loaderTested(clean, i, next)) {
 		return
 	}
 	switch {
 	case call:
 		mb.loaderCall(clean, src, p, true)
-	case p < len(clean) && clean[p] == '.':
+	case p < n && clean[p] == '.':
 		if w, _ := peekWord(clean, skipSpace(clean, p+1)); w != "resolve" {
 			mb.computedReq = true
 		}
 	default:
 		mb.computedReq = true
 	}
+}
+
+// chainUsed reports whether the name ending at next, with any plain member chain after it,
+// is called, indexed, tagged or reached by optional chaining rather than only read.
+func chainUsed(clean []rune, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	for p < n && clean[p] == '.' {
+		w, e := peekWord(clean, skipSpace(clean, p+1))
+		if w == "" {
+			return true
+		}
+		p = skipSpace(clean, e)
+	}
+	return p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '_' || optionalDot(clean, p))
+}
+
+// objectKey reports whether the name between the token ending at b and the one starting at p
+// is a key in an object literal or pattern (`{ require: [...] }`), not a value.
+func objectKey(clean []rune, b, p int) bool {
+	n := len(clean)
+	return p < n && clean[p] == ':' && !(p+1 < n && clean[p+1] == ':') && b >= 0 && (clean[b] == '{' || clean[b] == ',')
 }
 
 // createRequireUse records one occurrence of a createRequire-like name. Calling the result
@@ -97,7 +126,7 @@ func (mb *moduleBindings) requireUse(clean, src []rune, i, next int) {
 func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 	p := skipSpace(clean, next)
 	call := p < len(clean) && clean[p] == '('
-	if w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w == "typeof" && !call {
+	if w, _ := wordBefore(clean, skipSpaceBack(clean, i-1)); w == "typeof" && !chainUsed(clean, next) {
 		return
 	}
 	if !call {
@@ -120,35 +149,52 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 // key (`module['require']`). Each sets a flag rather than a specifier, because what it
 // loads is never statically known.
 
-// memberUse records an identifier at i that is a loader entry point when reached as a
-// member: `._load` loads a module as require does, `.dlopen` loads a native addon, and
-// `.eval` on the global object is eval.
+// memberUse records an identifier at i that is a loader entry point: `_load` loads a module
+// as require does and `dlopen` loads a native addon, wherever the name occurs (a member, a
+// destructured key, a local renaming one), since no form of either is known to load only
+// code this lane reads; eval is judged as a bare name or as a member.
 func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 	p := skipSpaceBack(clean, i-1)
-	if p < 0 || clean[p] != '.' {
-		if word == "eval" {
-			mb.evaluated = true
-		}
-		return
-	}
 	switch word {
 	case "_load":
 		mb.computedReq = true
+		return
 	case "dlopen":
 		mb.nativeLoad = true
-	case "eval":
-		// A call of .eval on any receiver may be the global's eval; a read of .eval is
-		// judged by globalUse when the receiver is the global. A read of .eval on a global's
-		// name flags even when a local shadows the name, since the local may hold the global
-		// by a path globalUse does not follow.
-		if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) {
-			mb.evaluated = true
-		}
-		switch recv, _ := wordBefore(clean, skipSpaceBack(clean, p-1)); recv {
-		case "globalThis", "global", "window", "self":
-			mb.evaluated = true
-		}
+		return
 	}
+	if p < 0 || clean[p] != '.' {
+		mb.evaluated = true
+		return
+	}
+	// A call of .eval on any receiver may be the global's eval; a read of .eval is judged by
+	// globalUse when the receiver is the global. A read of .eval on a global's name flags even
+	// when a local shadows the name, since the local may hold the global by a path globalUse
+	// does not follow, and so does a read from a receiver that is not a name (`(globalThis).eval`).
+	if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) || !namedReceiver(clean, p) {
+		mb.evaluated = true
+	}
+	switch recv, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, p)-1)); recv {
+	case "globalThis", "global", "window", "self":
+		mb.evaluated = true
+	}
+}
+
+// memberDot returns the start of the member operator whose '.' is at b: b itself, or the '?'
+// of `?.`.
+func memberDot(clean []rune, b int) int {
+	if b >= 1 && clean[b-1] == '?' {
+		return b - 1
+	}
+	return b
+}
+
+// namedReceiver reports whether the member access whose '.' is at b reads from a name or a
+// plain chain of names, rather than from a call, an index, a literal or a parenthesised
+// expression, whose value this lane does not know.
+func namedReceiver(clean []rune, b int) bool {
+	k := skipSpaceBack(clean, memberDot(clean, b)-1)
+	return k >= 0 && isIdentPart(clean[k]) && clean[k] != '_'
 }
 
 // functionUse records a use of the Function constructor at i. Every reference to Function
@@ -160,8 +206,10 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
-		// A call of .Function on any receiver may be the global's Function constructor.
-		if p < len(clean) && clean[p] == '(' || optionalCall(clean, p) {
+		// A call of .Function on any receiver may be the global's Function constructor, and so
+		// may a read from a receiver that is not a name (`(globalThis).Function`); a read from
+		// a global's name is judged by globalUse.
+		if p < len(clean) && clean[p] == '(' || optionalCall(clean, p) || !namedReceiver(clean, b) {
 			mb.evaluated = true
 		}
 		return
@@ -508,8 +556,8 @@ func loaderTested(clean []rune, i, next int) bool {
 }
 
 // keyedUse records the string literal at a (clean marks it '_') when it is the whole key of
-// a bracket access, `x['require']`, naming a loader entry point; module itself indexed by a
-// computed key is treated the same way, since the key can name any of them.
+// a bracket access, `x['require']`, naming a loader entry point. A key on the module object
+// or process is judged by objectUse whatever it is.
 func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	if b := skipSpaceBack(clean, a-1); b < 0 || clean[b] != '[' {
 		return
@@ -520,27 +568,13 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	switch specifierAt(src, a) {
 	case "require", "createRequire", "_load":
 		mb.computedReq = true
-	case "dlopen":
+	case "dlopen", "process":
 		mb.nativeLoad = true
+	case "mainModule":
+		mb.computedReq = true
 	case "eval", "Function":
 		mb.evaluated = true
 	}
-}
-
-// moduleIndexUse records `module[expr]` with a key that is not a literal: the key can name
-// require or the Module constructor's loaders.
-func (mb *moduleBindings) moduleIndexUse(clean []rune, i, next int) {
-	if b := skipSpaceBack(clean, i-1); b >= 0 && clean[b] == '.' {
-		return
-	}
-	p := skipSpace(clean, next)
-	if p >= len(clean) || clean[p] != '[' {
-		return
-	}
-	if a := skipSpace(clean, p+1); a < len(clean) && clean[a] == '_' {
-		return // a literal key; keyedUse judges it
-	}
-	mb.computedReq = true
 }
 
 // loaderCall records the argument of a require() (viaRequire) or import() call whose '(' is
@@ -630,4 +664,433 @@ func skipSpaceBack(r []rune, i int) int {
 		i--
 	}
 	return i
+}
+
+// loaderScope is what a module's loader uses are judged by: the require-like and
+// createRequire-like names (loaderNames), the module object and process with their local
+// aliases (objectAliases), and the global scope.
+type loaderScope struct {
+	req, cr map[string]bool
+	module  loaderObject
+	process loaderObject
+	globals *globalScope
+}
+
+func newLoaderScope(clean []rune, globals *globalScope) *loaderScope {
+	ls := &loaderScope{globals: globals}
+	ls.req, ls.cr = loaderNames(clean)
+	ls.module = objectAliases(clean, "module", moduleMember, moduleKey)
+	ls.process = objectAliases(clean, "process", processMember, processKey)
+	return ls
+}
+
+// propertyOfPlainObject reports whether the name at i is read as a property of an object
+// that cannot hold a loader (`opts.require`, `cfg.loader.require`): the member chain before
+// it starts at a name that is not the module object, process, a require-like name, `this`,
+// `super` or a global. Each of those reaches the loader by a use this lane declares wherever
+// it is handed on, so a plain object's property of the same name is not the loader. The
+// module object's or process's own member is judged as the loader.
+func (ls *loaderScope) propertyOfPlainObject(clean []rune, i int) bool {
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || clean[b] != '.' || b >= 1 && clean[b-1] == '.' {
+		return false
+	}
+	immediate := true
+	for {
+		k := skipSpaceBack(clean, memberDot(clean, b)-1)
+		if k < 0 || !isIdentPart(clean[k]) || clean[k] == '_' {
+			return false // a call, index, literal or parenthesised receiver
+		}
+		w, s := wordBefore(clean, k)
+		if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' && !(d >= 1 && clean[d-1] == '.') {
+			b, immediate = d, false
+			continue
+		}
+		switch {
+		case immediate && (ls.module.names[w] || ls.process.names[w]):
+			return false
+		case ls.req[w], ls.cr[w], w == "this", w == "super", isGlobalBase(w), ls.globals.isGlobal(w, s):
+			return false
+		}
+		return w[0] < '0' || w[0] > '9'
+	}
+}
+
+// loaderObject is the module object or process, which hold loader entry points as members
+// (module.require, module.constructor._load, module._compile, process.dlopen,
+// process.mainModule). A use of either is accepted only in a recognized form (objectUse);
+// any other use hands the object on or reaches a member this lane does not follow.
+type loaderObject struct {
+	names  map[string]bool // the object's name and every local whose initialiser yields it
+	tails  map[int]bool    // occurrences that are such a local's initialiser value
+	member func(clean []rune, name string, after int) (ok, nativeLoad bool)
+	key    func(name string) bool // a whole string-literal key, or a destructured key, that is accepted
+}
+
+// moduleMember accepts a member of the module object: its own exports and data, require
+// (judged by requireUse as a loader use), and constructor.createRequire (judged by
+// createRequireUse). Any other member (constructor, _compile, parent, children) reaches
+// the Module API or another module's loader.
+func moduleMember(clean []rune, name string, after int) (bool, bool) {
+	switch name {
+	case "require":
+		return true, false
+	case "constructor":
+		if q := skipSpace(clean, after); q < len(clean) && clean[q] == '.' {
+			w, _ := peekWord(clean, skipSpace(clean, q+1))
+			return w == "createRequire", false
+		}
+		return false, false
+	}
+	return moduleKey(name), false
+}
+
+// moduleKey accepts the module object's data members, read by a literal key or destructured.
+// module.paths is left out: writing it changes where this module's bare specifiers resolve.
+func moduleKey(name string) bool {
+	switch name {
+	case "exports", "id", "filename", "loaded", "path", "hot":
+		return true
+	}
+	return false
+}
+
+// processMember accepts every member of process but dlopen, which loads a native addon, and
+// mainModule, the main module object.
+func processMember(_ []rune, name string, _ int) (bool, bool) {
+	switch name {
+	case "dlopen":
+		return false, true
+	case "mainModule":
+		return false, false
+	}
+	return true, false
+}
+
+func processKey(name string) bool {
+	ok, _ := processMember(nil, name, 0)
+	return ok
+}
+
+// objectUse records one occurrence of a name in obj.names. The accepted forms are a property
+// of that name on another object; a declaration of the name, a parameter, an object key or a
+// TypeScript `module 'x'` declaration; the initialiser value of a local tracked as an alias
+// (objectAliases); a test (typeof of the bare name, !, ==, &&, a ternary or an if condition);
+// an accepted member read with `.`, `?.` or a whole literal key; and the whole value
+// destructured by a pattern whose keys are all accepted. Any other use, including a computed
+// key, a member outside the accepted set and the object handed on as a value, declares a
+// computed require target, or an unread native module for process.
+func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderObject, globals *globalScope) {
+	n := len(clean)
+	b := skipSpaceBack(clean, i-1)
+	p := skipSpace(clean, next)
+	start := i
+	if b >= 0 && clean[b] == '.' && !(b >= 1 && clean[b-1] == '.') {
+		s, ok := globalMember(clean, b, globals)
+		if !ok {
+			return // a property of that name on another object
+		}
+		start = s
+		if objectTested(clean, s, next, skipSpaceBack(clean, s-1)) || negatedGroupTail(clean, s, p) {
+			return
+		}
+	} else if obj.tails[i] || bindingSite(clean, i, next, b, p) || objectTested(clean, i, next, b) || negatedGroupTail(clean, i, p) {
+		return
+	}
+	b = skipSpaceBack(clean, start-1)
+	if w, _ := wordBefore(clean, b); w == "typeof" && !chainUsed(clean, next) &&
+		!(p < n && clean[p] == '.') {
+		return
+	}
+	native := false
+	switch {
+	case optionalDot(clean, p) && skipSpace(clean, p+2) < n && clean[skipSpace(clean, p+2)] == '[':
+		p = skipSpace(clean, p+2)
+		fallthrough
+	case p < n && clean[p] == '[':
+		a := skipSpace(clean, p+1)
+		if a < n && clean[a] == '_' && src[a] != '_' && wholeKey(clean, src, a) && obj.key(specifierAt(src, a)) {
+			return
+		}
+	case p < n && clean[p] == '.' || optionalDot(clean, p):
+		q := p + 1
+		if clean[p] == '?' {
+			q = p + 2
+		}
+		if w, e := peekWord(clean, skipSpace(clean, q)); w != "" {
+			ok, nl := obj.member(clean, w, e)
+			if ok {
+				return
+			}
+			native = nl
+		}
+	case destructuredWhole(clean, b, next, obj):
+		return
+	}
+	if native || obj.names["process"] {
+		mb.nativeLoad = true
+		return
+	}
+	mb.computedReq = true
+}
+
+// globalMember reports whether the '.' at b reads a property of the global object
+// (`global.process`), which is the object itself rather than a property of that name, and
+// where that receiver starts.
+func globalMember(clean []rune, b int, globals *globalScope) (int, bool) {
+	k := skipSpaceBack(clean, memberDot(clean, b)-1)
+	if k < 0 || !isIdentPart(clean[k]) {
+		return 0, false
+	}
+	w, s := wordBefore(clean, k)
+	if d := skipSpaceBack(clean, s-1); d >= 0 && clean[d] == '.' {
+		return 0, false
+	}
+	return s, isGlobalBase(w) || globals.isGlobal(w, s)
+}
+
+// negatedGroupTail reports whether the operand starting at start and ending before p is the
+// last operand of an && chain that is the whole of a negated group, `!!(a && window.process)`:
+// its value is only coerced to a boolean.
+func negatedGroupTail(clean []rune, start, p int) bool {
+	if p >= len(clean) || clean[p] != ')' {
+		return false
+	}
+	b := skipSpaceBack(clean, start-1)
+	if b < 1 || clean[b] != '&' || clean[b-1] != '&' {
+		return false
+	}
+	depth := 0
+	for k := p - 1; k >= 0; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '[', '{':
+			depth--
+		case '(':
+			if depth == 0 {
+				o := skipSpaceBack(clean, k-1)
+				return o >= 0 && clean[o] == '!'
+			}
+			depth--
+		case ';', ',', '?', ':', '=':
+			if depth == 0 && !(clean[k] == '=' && k >= 1 && strings.ContainsRune("=!", clean[k-1])) &&
+				!(clean[k] == '=' && k+1 < len(clean) && clean[k+1] == '=') {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// wholeKey reports whether the string literal at a is the whole key of a bracket access and
+// holds no interpolation.
+func wholeKey(clean, src []rune, a int) bool {
+	e := skipSpace(clean, a+1)
+	return e < len(clean) && clean[e] == ']' && (src[a] != '`' || !strings.Contains(specifierAt(src, a), "${"))
+}
+
+// bindingSite reports whether the name at [i, next) is declared rather than used: a const,
+// let, var, function, class or import binding of it, a parameter, an object key, or a
+// TypeScript `declare module 'x'` / `module N {` declaration. Uses of a local so declared
+// are judged as uses of the object, since its value may be the object.
+func bindingSite(clean []rune, i, next, b, p int) bool {
+	switch w, s := wordBefore(clean, b); w {
+	case "const", "let", "var", "class", "import", "as":
+		return true
+	case "function":
+		if d := skipSpaceBack(clean, s-1); d < 0 || clean[d] != '.' {
+			return true
+		}
+	}
+	if objectKey(clean, b, p) || declaredParam(clean, i, next) {
+		return true
+	}
+	if p < len(clean) && clean[p] == '_' {
+		return true // `module 'x'`: a string cannot follow the object in an expression
+	}
+	if w, e := peekWord(clean, p); w != "" && w != "in" && w != "instanceof" {
+		q := skipSpace(clean, e)
+		return q < len(clean) && (clean[q] == '{' || clean[q] == '.') && sameLine(clean, i, p)
+	}
+	return false
+}
+
+// objectTested reports whether the name at [i, next), with any plain member chain after it,
+// is only tested: loaderTested, or the whole condition of an if or while.
+func objectTested(clean []rune, i, next, b int) bool {
+	if loaderTested(clean, i, next) {
+		return true
+	}
+	if b < 0 || clean[b] != '(' {
+		return false
+	}
+	if w, _ := wordBefore(clean, skipSpaceBack(clean, b-1)); w != "if" && w != "while" {
+		return false
+	}
+	n := len(clean)
+	p := skipSpace(clean, next)
+	for p < n && clean[p] == '.' {
+		w, e := peekWord(clean, skipSpace(clean, p+1))
+		if w == "" {
+			return false
+		}
+		p = skipSpace(clean, e)
+	}
+	return p < n && clean[p] == ')'
+}
+
+// destructuredWhole reports whether the name at [?, next) preceded by the token ending at b
+// is the whole value of a destructuring `{ ... } = name` whose keys obj accepts. A rest
+// element, a computed or quoted key, or any other key declares, since the pattern then
+// takes a member this lane does not follow under a local name.
+func destructuredWhole(clean []rune, b, next int, obj *loaderObject) bool {
+	if b < 1 || clean[b] != '=' || strings.ContainsRune("=!<>+-*/%&|^?", clean[b-1]) || !valueTail(clean, next) {
+		return false
+	}
+	c := skipSpaceBack(clean, b-1)
+	if c < 0 || clean[c] != '}' {
+		return false
+	}
+	depth, open := 0, -1
+	for k := c; k >= 0; k-- {
+		switch clean[k] {
+		case '}':
+			depth++
+		case '{':
+			depth--
+		}
+		if depth == 0 {
+			open = k
+			break
+		}
+	}
+	if open < 0 {
+		return false
+	}
+	depth = 0
+	expectKey := true
+	for k := open + 1; k < c; k++ {
+		switch r := clean[k]; {
+		case r == '[' || r == '_' || r == '.':
+			return false // a computed key, a quoted key or a rest element
+		case r == '{' || r == '(':
+			depth++
+		case r == '}' || r == ')':
+			depth--
+		case r == ',' && depth == 0:
+			expectKey = true
+		case expectKey && depth == 0 && isIdentStart(r):
+			w, e := readWord(clean, k)
+			if !obj.key(w) {
+				return false
+			}
+			expectKey = false
+			k = e - 1
+		}
+	}
+	return true
+}
+
+// valueTail reports whether the expression ending at next ends there: the next token closes
+// the statement, a declarator, a group or a block, or starts a new statement on a later line.
+func valueTail(clean []rune, next int) bool {
+	q := skipSpace(clean, next)
+	if q >= len(clean) || strings.ContainsRune(";,)}", clean[q]) {
+		return true
+	}
+	if !sameLine(clean, next, q) && isIdentStart(clean[q]) && clean[q] != '_' {
+		w, _ := readWord(clean, q)
+		return w != "in" && w != "instanceof"
+	}
+	return false
+}
+
+// objectAliases returns a loaderObject for base: its name and every local declared with
+// const, let or var whose initialiser's value can be the object, through a name already
+// tracked as the whole value or the last operand of an &&, || or ?? chain
+// (`var freeModule = typeof module == 'object' && module`). Uses of such a local are judged
+// as uses of the object; an alias of an alias is followed too.
+func objectAliases(clean []rune, base string, member func([]rune, string, int) (bool, bool), key func(string) bool) loaderObject {
+	obj := loaderObject{names: map[string]bool{base: true}, tails: map[int]bool{}, member: member, key: key}
+	n := len(clean)
+	for changed := true; changed; {
+		changed = false
+		for i := 0; i < n; {
+			if !isIdentStart(clean[i]) {
+				i++
+				continue
+			}
+			word, next := readWord(clean, i)
+			if obj.names[word] && !obj.tails[i] && !memberName(clean, i) {
+				if name, ok := aliasOf(clean, i, next); ok {
+					obj.tails[i] = true
+					if !obj.names[name] {
+						obj.names[name] = true
+						changed = true
+					}
+				}
+			}
+			i = next
+		}
+	}
+	return obj
+}
+
+// aliasOf returns NAME when the identifier at [i, next) is the value of the initialiser of
+// `const|let|var NAME = ...`: the whole initialiser, or the last operand of a chain of &&,
+// || and ?? at the initialiser's top level.
+func aliasOf(clean []rune, i, next int) (string, bool) {
+	if !valueTail(clean, next) {
+		return "", false
+	}
+	k := skipSpaceBack(clean, i-1)
+	if k >= 1 && (clean[k] == '&' && clean[k-1] == '&' || clean[k] == '|' && clean[k-1] == '|' || clean[k] == '?' && clean[k-1] == '?') {
+		depth := 0
+		for k -= 2; k >= 0; k-- {
+			r := clean[k]
+			switch {
+			case r == ')' || r == ']' || r == '}':
+				depth++
+				continue
+			case r == '(' || r == '[' || r == '{':
+				if depth == 0 {
+					return "", false
+				}
+				depth--
+				continue
+			case depth > 0:
+				continue
+			case r == ';' || r == ',' || r == ':':
+				return "", false
+			case r == '?' && !(k >= 1 && clean[k-1] == '?') && !(k+1 < len(clean) && clean[k+1] == '?'):
+				return "", false // a ternary
+			case r == '=':
+				if k+1 < len(clean) && (clean[k+1] == '=' || clean[k+1] == '>') || k >= 1 && strings.ContainsRune("=!<>", clean[k-1]) {
+					if k+1 < len(clean) && clean[k+1] == '>' {
+						return "", false // an arrow body
+					}
+					continue
+				}
+			default:
+				continue
+			}
+			break
+		}
+		if k < 0 {
+			return "", false
+		}
+	}
+	if k < 1 || clean[k] != '=' || strings.ContainsRune("=!<>+-*/%&|^?", clean[k-1]) || k+1 < len(clean) && (clean[k+1] == '=' || clean[k+1] == '>') {
+		return "", false
+	}
+	name, s := wordBefore(clean, skipSpaceBack(clean, k-1))
+	if name == "" {
+		return "", false
+	}
+	switch kw, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); kw {
+	case "const", "let", "var":
+		return name, true
+	}
+	return "", false
 }

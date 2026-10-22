@@ -224,9 +224,13 @@ func (rs *resolver) loadsOutOfTree(fromModule, spec string, viaRequire bool) boo
 	return len(targets) == 0
 }
 
-// loadConditions is the set of exports/imports conditions a load can match under Node's
-// defaults. A require() load matches "require"; any other form may match "require" or
-// "import", because a transpiler can emit ESM syntax as require().
+// loadConditions is the set of Node's default exports/imports conditions a load can match.
+// Node's defaults are "node", "import", "require", "default", "module-sync" and, unless
+// --no-addons, "node-addons" (nodejs.org/api/packages.html#conditional-exports); this lane
+// treats all of them as matching. A require() load matches "require"; any other form may
+// match "require" or "import", because a transpiler can emit ESM syntax as require(). Any
+// condition outside Node's defaults ("development", "browser", "worker", a bundler's or a
+// framework's own) is selectable too (see conditionSelectable).
 func loadConditions(viaRequire bool) map[string]bool {
 	conds := map[string]bool{"node": true, "node-addons": true, "module-sync": true, "default": true, "require": true}
 	if !viaRequire {
@@ -264,6 +268,45 @@ func exportsTargets(field interface{}, subpath string, conds map[string]bool) []
 	return out
 }
 
+// conditionSelectable reports whether the branch under condition key k can be the one a load
+// runs. A key in conds matches by default. A key outside Node's defaults matches whenever the
+// run sets it (node --conditions, a bundler, a test runner), which the build tree does not
+// record, so it counts as selectable too and each of its targets must be in-tree. A "types"
+// branch naming only declaration files is read by type checkers and never loaded.
+func conditionSelectable(k string, sub interface{}, conds map[string]bool) bool {
+	switch k {
+	case "node", "node-addons", "module-sync", "default", "require", "import":
+		return conds[k]
+	case "types":
+		return !declarationOnly(sub)
+	}
+	return true
+}
+
+// declarationOnly reports whether node names at least one target, under any condition, and
+// every one is a TypeScript declaration file.
+func declarationOnly(node interface{}) bool {
+	switch v := node.(type) {
+	case string:
+		return strings.HasSuffix(v, ".d.ts") || strings.HasSuffix(v, ".d.mts") || strings.HasSuffix(v, ".d.cts")
+	case []interface{}:
+		for _, e := range v {
+			if !declarationOnly(e) {
+				return false
+			}
+		}
+		return len(v) > 0
+	case map[string]interface{}:
+		for _, sub := range v {
+			if !declarationOnly(sub) {
+				return false
+			}
+		}
+		return len(v) > 0
+	}
+	return false
+}
+
 func conditionTargets(node interface{}, conds map[string]bool, out []string) []string {
 	switch v := node.(type) {
 	case string:
@@ -274,7 +317,7 @@ func conditionTargets(node interface{}, conds map[string]bool, out []string) []s
 		}
 	case map[string]interface{}:
 		for k, sub := range v {
-			if conds[k] {
+			if conditionSelectable(k, sub, conds) {
 				out = conditionTargets(sub, conds, out)
 			}
 		}

@@ -103,6 +103,135 @@ const f = new Function('m', 'return require(m)');
 function load(s) { return f('json5').parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"module indexed by a computed key", `
+const j = module['re' + 'quire']('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"module indexed by an optional computed key", `
+const j = module?.[process.argv[3]]('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function read from a parenthesised global", `
+const F = (globalThis).Function;
+const j = F('return require("json5")')();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"typeof before an optional require call", `
+let j = {};
+if (typeof require?.('json5') === 'object') j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"typeof before require.call", `
+let j = {};
+if (typeof require.call(null, 'json5') === 'object') j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"typeof before require.apply", `
+let j = {};
+if (typeof require.apply(null, ['json5']) === 'object') j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"imports entry with a development branch that is a package", `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"development":"json5","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
+		}},
+		{"imports entry with a browser branch absent from the tree", `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"browser":"./missing.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
+		}},
+		{"module aliased then indexed", `
+const m = module;
+const j = m[process.argv[3]]('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"module passed as a value", `
+const j = Reflect.get(module, 'require')('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"module._compile", `
+const j = {};
+module._compile('module.exports = require("json5")', 'x.js');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"eval read from a parenthesised global", `
+const e = (globalThis).eval;
+const j = e('require')('json5');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"createRequire result optionally called under typeof", `
+const r = module.constructor.createRequire(__filename);
+let j = {};
+if (typeof r?.('json5') === 'object') j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"createRequire result called through .call under typeof", `
+const r = module.constructor.createRequire(__filename);
+let j = {};
+if (typeof r.call(null, 'json5') === 'object') j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process.dlopen destructured", `
+const j = { exports: {} };
+const { dlopen } = process;
+dlopen(j, './x.node');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process.dlopen by a computed key", `
+const j = { exports: {} };
+process['dl' + 'open'](j, './x.node');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process aliased then indexed", `
+const j = { exports: {} };
+const p = process;
+p[process.argv[3]](j, './x.node');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process passed as a value", `
+const j = { exports: {} };
+Reflect.get(process, process.argv[3])(j, './x.node');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"process reached through the global and indexed", `
+const j = { exports: {} };
+global.process[process.argv[3]](j, './x.node');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module._load by a computed key on an alias", `
+const M = module.constructor;
+const j = M['_lo' + 'ad']('json5', module);
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module._load destructured", `
+const { _load } = module.constructor;
+const j = _load('json5', module);
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,6 +256,40 @@ load(process.argv[2]);
 `, nil)
 	if reason, ok := undeterminedReason(store, "a1", json5Package); ok {
 		t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+	}
+}
+
+// TestUndeterminedReason_JSRecognizedLoadsCanRefute: loads and loader mentions the lane
+// recognizes in full hand nothing on that it does not read, so a program made only of them
+// keeps its call edges and passes the gate. The rows above are held by the use they add, not
+// by an inversion that declares every program.
+func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		files map[string]string
+	}{
+		{"plain require of an in-tree module", "const j = require('./plugins');", nil},
+		{"static import of an in-tree module", "import { parse } from './plugins/index.js';\nconst j = { parse };", nil},
+		{"require property of a plain object", "const opts = { a: 1 };\nconst r = opts.require;\nconst j = require('./plugins');", nil},
+		{"require as an object key", "const cfg = { require: ['./plugins'] };\nconst j = require('./plugins');", nil},
+		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
+		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
+		{"imports entry whose types branch is a declaration file", "const j = require('#j');", map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"types":"./plugins/index.d.ts","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := tc.src + "\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n"
+			store, edges := gateStoreFromJS(t, src, tc.files)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			if reason, ok := undeterminedReason(store, "a1", json5Package); ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
 	}
 }
 

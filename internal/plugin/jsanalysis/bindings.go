@@ -85,9 +85,10 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		}
 		mb.imports[b.Local] = b
 	}
-	reqNames, crNames := loaderNames(clean)
 	frames := newThisFrames(clean)
 	globals := newGlobalScope(clean, frames)
+	ls := newLoaderScope(clean, globals)
+	reqNames, crNames := ls.req, ls.cr
 	if globals.keyed {
 		mb.evaluated = true
 	}
@@ -108,7 +109,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case reqNames[word]:
 			// A loader use NOT consumed as a const/let/var binding: `return require(f)`,
 			// `const r = require`, a createRequire result called inline.
-			mb.requireUse(clean, src, i, next)
+			mb.requireUse(clean, src, i, next, ls)
 			i = next
 		case crNames[word]:
 			mb.createRequireUse(clean, src, i, next)
@@ -119,8 +120,11 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		case word == "Function":
 			mb.functionUse(clean, src, i, next)
 			i = next
-		case word == "module":
-			mb.moduleIndexUse(clean, i, next)
+		case ls.module.names[word]:
+			mb.objectUse(clean, src, i, next, &ls.module, globals)
+			i = next
+		case ls.process.names[word]:
+			mb.objectUse(clean, src, i, next, &ls.process, globals)
 			i = next
 		case globals.isGlobal(word, i):
 			mb.globalUse(clean, i, next, false, globals)

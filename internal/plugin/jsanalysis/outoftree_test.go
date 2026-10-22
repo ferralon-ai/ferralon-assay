@@ -228,6 +228,30 @@ const k = 'require';
 function load(s) { return module[k]('json5').parse(s); }
 load(process.argv);
 `}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module aliased then indexed", map[string]string{"app.js": `
+const m = typeof module === 'object' && module;
+function load(s) { return m[process.argv[3]]('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"module destructured for a loader member", map[string]string{"app.js": `
+const { constructor: Module } = module;
+function load(s) { return Module._load('json5').parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonComputedRequireSpecifier},
+		{"process reached through the global and indexed", map[string]string{"app.js": `
+const m = { exports: {} };
+globalThis['process'][process.argv[3]](m, './x.node');
+function load(s) { return m.exports.parse(s); }
+load(process.argv);
+`}, plugin.PartialReasonUnresolvedModule},
+		{"imports branch under a non-default condition", map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"json5","default":"./util.js"}},"dependencies":{"json5":"2.2.1"}}`,
+			"util.js":      "module.exports = { parse(s) { return s; } };\n",
+			"app.js": `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv);
+`}, ""},
 		{"Module._load", map[string]string{"app.js": `
 const j = module.constructor._load('json5', module);
 function load(s) { return j.parse(s); }
@@ -1997,6 +2021,14 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"a literal Function stored and called later", "const add = Function('a', 'b', 'return a + b');\nconst three = add(1, 2);"},
 		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
 		{"global require tested", "const electron = typeof window !== 'undefined' && !!(window.require && window.process);"},
+		{"require property of a plain object", "const opts = { a: 1 };\nconst r = opts.require;\nmodule.exports = cfg.loader.require;"},
+		{"require and module as object keys", "module.exports = { require: ['./util'], module: { rules: [] } };"},
+		{"UMD export guard", "var X = {};\nif (typeof module !== 'undefined' && module.exports) { module.exports = X; } else { this.X = X; }"},
+		{"lodash freeModule", "var freeExports = typeof exports == 'object' && exports;\nvar freeModule = freeExports && typeof module == 'object' && module && !module.nodeType && module;\nvar moduleExports = freeModule && freeModule.exports === freeExports;"},
+		{"process members and destructuring", "const dev = process.env.NODE_ENV !== 'production';\nprocess.on('exit', () => {});\nconst { env, argv } = process;\nconst p = typeof process !== 'undefined' ? process.env : {};"},
+		{"module data members", "if (module.hot) { module.hot.accept(); }\nmodule.exports = { id: module.id, file: module['filename'] };"},
+		{"module re-exported under its name", "const m = 1;\nexport { m as module };"},
+		{"property named module on a plain object", "const cfg = {};\ncfg.module = 1;\nmodule.exports = cfg.module.rules;"},
 		{"global alias guarded by tests", "var freeGlobal = typeof global == 'object' && global && global.Object === Object && global;\nvar root = freeGlobal || {};"},
 		{"top-level this tested", "var __extends = (this && this.__extends) || function (d, b) { d.prototype = b; };"},
 		{"TypeScript function return type", "function pick(this: Box, k: string): Box { const s = wrap(this); return s; }\nfunction wrap(o) { return o; }"},

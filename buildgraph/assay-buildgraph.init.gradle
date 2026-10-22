@@ -15,6 +15,10 @@ import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.component.ModuleComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentSelector
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
+import org.gradle.api.artifacts.repositories.IvyArtifactRepository
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+import org.gradle.api.artifacts.repositories.UrlArtifactRepository
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
 
@@ -80,7 +84,10 @@ if (gradle.parent == null) {
         void afterResolve(ResolvableDependencies d) {
             def doc = [path: d.path, script: scriptResolutions.contains(d)]
             def files = { set ->
-                set.collect { a -> [file: a.file.absolutePath, project: a.id.componentIdentifier instanceof ProjectComponentIdentifier] }
+                set.collect { a ->
+                    def c = a.id.componentIdentifier
+                    [file: a.file.absolutePath, project: c instanceof ProjectComponentIdentifier, module: c instanceof ModuleComponentIdentifier]
+                }
             }
             try {
                 doc.artifacts = files(d.artifacts.artifacts)
@@ -152,17 +159,84 @@ def actionOrigin = { a ->
     x.getClass().name
 }
 
+// The settings' repository handlers: for every project, for plugins, and for the settings script's
+// own classpath. Each is kept live, so a repository a settings plugin adds later is still read.
+def settingsRepositories = []
+gradle.settingsEvaluated { s ->
+    if (s.hasProperty('dependencyResolutionManagement')) {
+        settingsRepositories << s.dependencyResolutionManagement.repositories
+    }
+    settingsRepositories << s.pluginManagement.repositories << s.buildscript.repositories
+}
+
+// realizeTasks realizes every task of the build once, before any is recorded: a task's configuration
+// can change another task, so a task recorded before another is realized could be recorded stale.
+// A task that fails to realize in this pass is recorded with its failure here and not realized
+// again, however Gradle would answer a second get() on it.
+def tasksRealized = false
+def realizeFailures = [:].withDefault { [] }
+def realizeTasks = { root ->
+    if (tasksRealized) {
+        return
+    }
+    tasksRealized = true
+    def seen = [] as Set
+    def more = true
+    while (more) {
+        more = false
+        root.allprojects.each { q ->
+            (q.tasks.names.toList() - ['assayBuildGraph']).each { n ->
+                if (seen.add(q.path + ' ' + n)) {
+                    more = true
+                    try {
+                        q.tasks.named(n).get()
+                    } catch (Exception e) {
+                        realizeFailures[q.path] << [name: n, path: q.path + (q.path == ':' ? '' : ':') + n, failure: failureText(e)]
+                    }
+                }
+            }
+        }
+    }
+}
+
+// foreignRoots are the directories p's resolutions fetch files into or from: the Gradle user home
+// and the root of every file repository p, its build script or the settings declare (mavenLocal,
+// a file: URL, a Maven repository's file artifact URLs, a flatDir), each as given and canonical.
+// A file under one was fetched, not made, however the paths nest. opaque names an Ivy repository
+// with no URL, whose patterns alone say where its files are.
+def foreignRoots = { p ->
+    def dirs = [p.gradle.gradleUserHomeDir]
+    def opaque = []
+    (p.repositories.toList() + p.buildscript.repositories.toList() + settingsRepositories.collectMany { it.toList() }).each { r ->
+        if (r instanceof FlatDirectoryArtifactRepository) {
+            dirs.addAll(r.dirs)
+        } else if (r instanceof UrlArtifactRepository) {
+            if (r.url == null) {
+                if (r instanceof IvyArtifactRepository) {
+                    opaque << r.name
+                }
+            } else if (r.url.scheme == 'file') {
+                dirs << new File(r.url)
+            }
+            if (r instanceof MavenArtifactRepository) {
+                dirs.addAll(r.artifactUrls.findAll { it.scheme == 'file' }.collect { new File(it) })
+            }
+        }
+    }
+    [roots: dirs.collectMany { [it.absolutePath, it.canonicalPath] }.unique().sort(), opaque: opaque.unique().sort()]
+}
+
 // observeTasks records each of p's tasks. Reading a task's input files resolves whatever a lazy
 // input would at execution, so the listener sees that resolution too.
-def observeTasks = { p ->
+def observeTasks = { p, List<String> foreign, List<String> failed ->
     def root = p.rootDir.toPath()
-    // A Gradle user home inside the checkout (CI caches set one) holds what resolution downloaded,
-    // so a file under it is outside the build however the paths nest.
-    def home = p.gradle.gradleUserHomeDir.canonicalFile.toPath()
+    // A Gradle user home or file repository inside the checkout (CI caches set one) holds what
+    // resolution fetched, so a file under it is outside the build however the paths nest.
+    def fetched = foreign.collect { new File(it).toPath() }
     def tasks = []
     try {
-        // assayBuildGraph is the task being configured, and only writes the graph.
-        def names = p.tasks.names.toList() - ['assayBuildGraph']
+        // assayBuildGraph only writes the graph.
+        def names = p.tasks.names.toList() - ['assayBuildGraph'] - failed
         names.each { n ->
             def k = p.tasks.named(n).get()
             def t = [path: k.path, type: k.getClass().name.replace('_Decorated', '')]
@@ -172,13 +246,13 @@ def observeTasks = { p ->
                 // A task ordered after another can package what it wrote, as a dependent can.
                 def ordered = (k.mustRunAfter.getDependencies(k) + k.shouldRunAfter.getDependencies(k)).collect { it.path }
                 t.depends = (k.taskDependencies.getDependencies(k).collect { it.path } + t.finalized_by + ordered).unique().sort()
-                t.outside = k.inputs.files.files.findAll { !it.toPath().startsWith(root) || it.toPath().startsWith(home) }.collect { it.absolutePath }.sort()
+                t.outside = k.inputs.files.files.findAll { f -> !f.toPath().startsWith(root) || fetched.any { f.toPath().startsWith(it) } }.collect { it.absolutePath }.sort()
             } catch (Exception e) {
                 t.failure = String.valueOf(e.message)
             }
             tasks << t
         }
-        if (p.tasks.names.toList() - ['assayBuildGraph'] != names) {
+        if (p.tasks.names.toList() - ['assayBuildGraph'] - failed != names) {
             tasks << [path: p.path, failure: 'tasks were registered while the tasks were observed']
         }
     } catch (Exception e) {
@@ -191,30 +265,51 @@ allprojects { p ->
     p.buildscript.configurations.all { c -> scriptResolutions << c.incoming }
     p.tasks.register('assayBuildGraph') { t ->
         def projectPath = p.path
-        // The JDK the project's toolchain selects, which Kotlin's jvmToolchain sets too. Without
-        // the java extension it is known only for a project with no classpath at all. A project
-        // with an Android plugin, Kotlin Multiplatform's Android target included, is never known:
-        // its Android code runs on Android's runtime, whatever the java extension says.
-        def javaExt = p.extensions.findByName('java')
-        def toolchain = javaExt != null && javaExt.hasProperty('toolchain') ? javaExt.toolchain.languageVersion.getOrNull() : null
-        def android = p.plugins.any { it.class.name.startsWith('com.android.') }
-        def toolchainKnown = !android && (javaExt != null || !p.configurations.any { it.canBeResolved && it.name.endsWith('Classpath') })
-        def doc = [
-            gradle     : gradleVersion,
-            java       : javaVersion,
-            java_vendor: javaVendor,
-            path       : projectPath,
-            dir        : p.projectDir.absolutePath,
-            build_file : p.buildFile.absolutePath,
-            build_dir  : p.layout.buildDirectory.get().asFile.absolutePath,
-            user_home  : p.gradle.gradleUserHomeDir.absolutePath,
-            root_dir   : p.rootDir.absolutePath,
-            group      : String.valueOf(p.group),
-            name       : p.name,
-            version    : String.valueOf(p.version),
-            jdk_toolchain: toolchain == null ? '' : String.valueOf(toolchain.asInt()),
-            jdk_toolchain_known: toolchainKnown,
-        ]
+        // What the project declares about itself, read once the task graph is ready (see below).
+        def describe = {
+            // The JDK the project's toolchain selects, which Kotlin's jvmToolchain sets too. Without
+            // the java extension it is known only for a project with no classpath at all. A project
+            // with an Android plugin, Kotlin Multiplatform's Android target included, is never known:
+            // its Android code runs on Android's runtime, whatever the java extension says.
+            def javaExt = p.extensions.findByName('java')
+            def toolchain = javaExt != null && javaExt.hasProperty('toolchain') ? javaExt.toolchain.languageVersion.getOrNull() : null
+            def android = p.plugins.any { it.class.name.startsWith('com.android.') }
+            def toolchainKnown = !android && (javaExt != null || !p.configurations.any { it.canBeResolved && it.name.endsWith('Classpath') })
+            def doc = [
+                gradle     : gradleVersion,
+                java       : javaVersion,
+                java_vendor: javaVendor,
+                path       : projectPath,
+                dir        : p.projectDir.absolutePath,
+                build_file : p.buildFile.absolutePath,
+                build_dir  : p.layout.buildDirectory.get().asFile.absolutePath,
+                user_home  : p.gradle.gradleUserHomeDir.absolutePath,
+                root_dir   : p.rootDir.absolutePath,
+                group      : String.valueOf(p.group),
+                name       : p.name,
+                version    : String.valueOf(p.version),
+                jdk_toolchain: toolchain == null ? '' : String.valueOf(toolchain.asInt()),
+                jdk_toolchain_known: toolchainKnown,
+            ]
+            // The coordinates the project publishes under beside group:name.
+            def aliases = []
+            def base = p.extensions.findByName('base')
+            if (base != null && base.hasProperty('archivesName')) {
+                aliases << String.valueOf(p.group) + ':' + base.archivesName.get()
+            }
+            p.extensions.findByName('publishing')?.publications?.each { pub ->
+                if (pub.hasProperty('artifactId')) {
+                    aliases << String.valueOf(pub.groupId) + ':' + pub.artifactId
+                } else if (pub.hasProperty('module')) {
+                    aliases << String.valueOf(pub.organisation) + ':' + pub.module
+                }
+            }
+            def projects = [:]
+            p.rootProject.allprojects { q ->
+                projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]
+            }
+            [doc: doc, aliases: aliases, projects: projects]
+        }
         // Other runtime classpaths: beside runtimeClasspath, ones such as
         // integrationTestRuntimeClasspath, resolved too; without it, Android variants or KMP
         // targets, which this producer does not choose between.
@@ -231,20 +326,27 @@ allprojects { p ->
         // Without runtimeClasspath, the other runtime classpaths are left uncollected (an Android
         // variant or a KMP target).
         def uncollected = otherRuntime.findAll { !names.contains(it) }
-        // The coordinates the project publishes under beside group:name.
-        def aliases = []
-        def base = p.extensions.findByName('base')
-        if (base != null && base.hasProperty('archivesName')) {
-            aliases << String.valueOf(p.group) + ':' + base.archivesName.get()
-        }
-        p.extensions.findByName('publishing')?.publications?.each { pub ->
-            if (pub.hasProperty('artifactId')) {
-                aliases << String.valueOf(pub.groupId) + ':' + pub.artifactId
-            } else if (pub.hasProperty('module')) {
-                aliases << String.valueOf(pub.organisation) + ':' + pub.module
+        // This task can be configured before the build has declared its description, repositories,
+        // tasks and configurations: by a script's tasks.all, by a later projectsEvaluated callback, or
+        // under configure on demand. Reading them then can also fail the build, by finalizing a
+        // toolchain the script sets later. So they are read once the task graph
+        // is ready, when the set of tasks the build runs is fixed, and a configuration added since this
+        // task was configured is recorded.
+        def described = null
+        def repos = null
+        def tasks = null
+        def resolvable = { p.configurations.findAll { it.canBeResolved }.collect { it.name }.sort() }
+        def configured = resolvable()
+        p.gradle.taskGraph.whenReady {
+            realizeTasks(p.rootProject)
+            described = describe()
+            repos = foreignRoots(p)
+            def failed = realizeFailures[p.path]
+            tasks = observeTasks(p, repos.roots, failed*.name) + failed.collect { [path: it.path, failure: it.failure] }
+            if (resolvable() != configured) {
+                tasks << [path: p.path, failure: 'configurations were added after assayBuildGraph was configured']
             }
         }
-        def tasks = observeTasks(p)
         def capture = { name ->
             def cfg = p.configurations.findByName(name)
             if (cfg == null) {
@@ -257,17 +359,16 @@ allprojects { p ->
         }
         def classpaths = names.collectEntries(capture)
         def extras = extraNames.collectEntries(capture)
-        def projects = [:]
-        p.rootProject.allprojects { q ->
-            projects[q.path] = [group: String.valueOf(q.group), name: q.name, version: String.valueOf(q.version)]
-        }
         def out = new File(assayOut, 'project' + projectPath.replace(':', '_') + '.json')
         t.doLast {
+            def doc = described.doc
             doc.other_runtime_classpaths = otherRuntime
             doc.uncollected = uncollected
-            doc.aliases = aliases.unique()
+            doc.aliases = described.aliases.unique()
             doc.tasks = tasks
-            doc.projects = projects
+            doc.foreign_roots = repos.roots
+            doc.opaque_repositories = repos.opaque
+            doc.projects = described.projects
             def id = { c ->
                 if (c instanceof ModuleComponentIdentifier) {
                     return [group: c.group, name: c.module, version: c.version]

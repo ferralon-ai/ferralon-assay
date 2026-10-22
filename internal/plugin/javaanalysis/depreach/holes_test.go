@@ -788,3 +788,187 @@ func TestIsReflection_DynamicResolutionChannels(t *testing.T) {
 		}
 	}
 }
+
+// TestReach_UnopenedSupertype: a supertype in an unopened dependency hides its own
+// supertypes. A class below one may implement any loaded interface or extend any loaded
+// class, so CHA dispatches to it; and an unopened interface beside a loaded default may
+// extend the default's interface and override it.
+func TestReach_UnopenedSupertype(t *testing.T) {
+	const (
+		cb    = "com/fw/Callback"
+		impl  = "com/acme/AppImpl"
+		rows  = "com/acme/Rows"
+		base  = "com/acme/Base"
+		named = "com/acme/RowsImpl"
+	)
+	callCb := mainCalls(edge(classfile.EdgeInterface, cb, "call", "()V"))
+	callback := ifaceWith(cb, nil, classfile.Method{Ref: mref(cb, "call", "()V"), Abstract: true, Public: true})
+	other := classfile.Class{Name: "com/acme/Other", Super: objectClass, Interfaces: []string{cb}, Methods: []classfile.Method{pubMethod("com/acme/Other", "call", "()V")}}
+	describe := mainCalls(edge(classfile.EdgeInterface, rows, "describe", "()V"))
+	baseDefault := ifaceWith(base, nil, pubMethod(base, "describe", "()V"))
+	rowsImpl := classfile.Class{Name: named, Super: objectClass, Interfaces: []string{rows}}
+	runHoleCases(t, []holeCase{
+		{
+			name:    "a class implementing an unopened interface is dispatched to on a loaded one",
+			classes: []classfile.Class{callCb, callback, other, {Name: impl, Super: objectClass, Interfaces: []string{"com/lib/U"}, Methods: []classfile.Method{callsSink(impl, "call", "()V")}}},
+			want:    ReachableCandidate, via: "AppImpl.call",
+		},
+		{
+			name:    "the same class declaring no body inherits one from the unopened interface",
+			classes: []classfile.Class{callCb, callback, other, {Name: impl, Super: objectClass, Interfaces: []string{"com/lib/U"}}},
+			want:    Undetermined, kind: HazardKindUnloadedDependency, why: "com/lib/U",
+		},
+		{
+			name:    "a class extending an unopened class is dispatched to",
+			classes: []classfile.Class{callCb, callback, {Name: impl, Super: "com/lib/BaseCls", Methods: []classfile.Method{callsSink(impl, "call", "()V")}}},
+			want:    ReachableCandidate, via: "AppImpl.call",
+		},
+		{
+			name: "a concrete class below a loaded class with an unopened supertype",
+			classes: []classfile.Class{callCb, callback,
+				{Name: "com/acme/Mid", Super: objectClass, Interfaces: []string{"com/lib/U"}, Abstract: true, Methods: []classfile.Method{callsSink("com/acme/Mid", "call", "()V")}},
+				{Name: "com/acme/Sub", Super: "com/acme/Mid"},
+			},
+			want: ReachableCandidate, via: "Mid.call",
+		},
+		{
+			name:    "an abstract class with an unopened supertype and no concrete subclass is no receiver",
+			classes: []classfile.Class{callCb, callback, other, {Name: "com/acme/Mid", Super: objectClass, Interfaces: []string{"com/lib/U"}, Abstract: true}},
+			want:    NotExploitable,
+		},
+		{
+			name:    "a JDK supertype hides nothing: the JDK cannot extend a classpath type",
+			classes: []classfile.Class{callCb, callback, other, {Name: impl, Super: objectClass, Interfaces: []string{"java/lang/Runnable"}, Methods: []classfile.Method{callsSink(impl, "call", "()V")}}},
+			want:    NotExploitable,
+		},
+		{
+			name:    "an unopened interface beside a loaded default may override it",
+			classes: []classfile.Class{describe, ifaceWith(rows, []string{base, "com/lib/M"}), baseDefault, rowsImpl},
+			want:    Undetermined, kind: HazardKindUnloadedDependency, why: "com/lib/M",
+		},
+		{
+			name:    "the same default named by invokespecial",
+			classes: []classfile.Class{mainCalls(edge(classfile.EdgeSpecial, rows, "describe", "()V")), ifaceWith(rows, []string{base, "com/lib/M"}), baseDefault},
+			want:    Undetermined, kind: HazardKindUnloadedDependency, why: "may resolve into unopened com/lib/M",
+		},
+		{
+			name:    "an unopened superinterface of the default's own interface cannot override it",
+			classes: []classfile.Class{describe, ifaceWith(rows, []string{base, "com/lib/Up"}), ifaceWith(base, []string{"com/lib/Up"}, pubMethod(base, "describe", "()V")), rowsImpl},
+			want:    NotExploitable,
+		},
+		{
+			name:    "a JDK interface beside a loaded default cannot override it",
+			classes: []classfile.Class{describe, ifaceWith(rows, []string{base, "java/util/RandomAccess"}), baseDefault, rowsImpl},
+			want:    NotExploitable,
+		},
+		{
+			name:    "the same JDK interface beside a default named by invokespecial",
+			classes: []classfile.Class{mainCalls(edge(classfile.EdgeSpecial, rows, "describe", "()V")), ifaceWith(rows, []string{base, "java/util/RandomAccess"}), baseDefault},
+			want:    NotExploitable,
+		},
+		{
+			name: "a body on the superclass chain wins over every default",
+			classes: []classfile.Class{describe, ifaceWith(rows, []string{base, "com/lib/M"}), baseDefault,
+				{Name: "com/acme/Parent", Super: objectClass, Methods: []classfile.Method{pubMethod("com/acme/Parent", "describe", "()V")}},
+				{Name: named, Super: "com/acme/Parent", Interfaces: []string{rows}},
+			},
+			want: Undetermined, kind: HazardKindUnloadedDependency, why: "com/lib/M",
+		},
+		{
+			name:    "a class below an unopened interface is no known implementor",
+			classes: []classfile.Class{callCb, callback, {Name: "com/acme/H", Super: objectClass, Interfaces: []string{"com/lib/U"}, Methods: []classfile.Method{pubMethod("com/acme/H", "call", "()V")}}},
+			want:    Undetermined, why: "no loaded implementor",
+		},
+		{
+			name:    "a class below an unopened class is no known implementor",
+			classes: []classfile.Class{callCb, callback, {Name: "com/acme/H", Super: "com/lib/BaseCls", Methods: []classfile.Method{pubMethod("com/acme/H", "call", "()V")}}},
+			want:    Undetermined, why: "no loaded implementor",
+		},
+		{
+			name: "a class below an unopened interface is no known subclass of an abstract receiver",
+			classes: []classfile.Class{mainCalls(edge(classfile.EdgeVirtual, "com/acme/AbsSvc", "call", "()V")),
+				{Name: "com/acme/AbsSvc", Super: objectClass, Abstract: true, Methods: []classfile.Method{{Ref: mref("com/acme/AbsSvc", "call", "()V"), Abstract: true, Public: true}}},
+				{Name: "com/acme/H", Super: objectClass, Interfaces: []string{"com/lib/U"}, Methods: []classfile.Method{pubMethod("com/acme/H", "call", "()V")}},
+			},
+			want: Undetermined, why: "no loaded implementor",
+		},
+		{
+			name: "a JDK-loadable class's method runs on a subclass the JDK holds through an unopened supertype",
+			classes: []classfile.Class{
+				mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)),
+				{Name: "com/acme/D", Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{callsSink("com/acme/D", "helper", "()V")}},
+				{Name: "com/acme/H", Super: "com/lib/Mid"},
+			},
+			want: ReachableCandidate, via: "D.helper",
+		},
+	})
+}
+
+// A loaded default that a more specific loaded interface overrides is not the one
+// that runs, even when the search meets it first.
+func TestReach_MaximallySpecificDefault(t *testing.T) {
+	const i1, i2, b, c = "com/acme/I1", "com/acme/I2", "com/acme/B", "com/acme/C"
+	types := []classfile.Class{
+		ifaceWith(i1, nil, pubMethod(i1, "m", "()V")),
+		ifaceWith(i2, []string{i1}, callsSink(i2, "m", "()V")),
+		{Name: b, Super: objectClass, Interfaces: []string{i2}, Methods: []classfile.Method{pubMethod(b, "<init>", "()V")}},
+		{Name: c, Super: b, Interfaces: []string{i1}, Methods: []classfile.Method{pubMethod(c, "<init>", "()V")}},
+	}
+	const f, d = "com/acme/F", "com/acme/D"
+	callM := mainCalls(edge(classfile.EdgeSpecial, c, "m", "()V"))
+	runHoleCases(t, []holeCase{
+		{
+			name:    "virtual call",
+			classes: append([]classfile.Class{mainCalls(edge(classfile.EdgeSpecial, c, "<init>", "()V"), edge(classfile.EdgeVirtual, c, "m", "()V"))}, types...),
+			want:    ReachableCandidate, via: "I2.m",
+		},
+		{
+			name:    "invokespecial",
+			classes: append([]classfile.Class{callM}, types...),
+			want:    ReachableCandidate, via: "I2.m",
+		},
+		{
+			name: "an unopened interface above a sibling default may override the one met first",
+			classes: []classfile.Class{callM,
+				ifaceWith(f, nil, pubMethod(f, "m", "()V")),
+				ifaceWith(d, []string{"com/lib/U"}, callsSink(d, "m", "()V")),
+				{Name: c, Super: objectClass, Interfaces: []string{f, d}},
+			},
+			want: Undetermined, kind: HazardKindUnloadedDependency, why: "may resolve into unopened com/lib/U",
+		},
+		{
+			name: "a static interface method is no default and hides none",
+			classes: []classfile.Class{callM,
+				ifaceWith(i1, nil, callsSink(i1, "m", "()V")),
+				ifaceWith(i2, []string{i1}, staticMeth(i2, "m", "()V")),
+				{Name: c, Super: objectClass, Interfaces: []string{i2}},
+			},
+			want: ReachableCandidate, via: "I1.m",
+		},
+		{
+			name: "a private interface method is no default and hides none",
+			classes: []classfile.Class{callM,
+				ifaceWith(i1, nil, callsSink(i1, "m", "()V")),
+				ifaceWith(i2, []string{i1}, classfile.Method{Ref: mref(i2, "m", "()V"), Private: true}),
+				{Name: c, Super: objectClass, Interfaces: []string{i2}},
+			},
+			want: ReachableCandidate, via: "I1.m",
+		},
+	})
+}
+
+// A body on the superclass chain is resolved before any default, so an unopened
+// interface beside the default cannot override it.
+func TestResolveMethod_SuperclassChainFirst(t *testing.T) {
+	const rows, base, parent, impl = "com/acme/Rows", "com/acme/Base", "com/acme/Parent", "com/acme/RowsImpl"
+	e := NewEngine([]classfile.Class{
+		ifaceWith(rows, []string{base, "com/lib/M"}),
+		ifaceWith(base, nil, pubMethod(base, "describe", "()V")),
+		{Name: parent, Super: objectClass, Methods: []classfile.Method{pubMethod(parent, "describe", "()V")}},
+		{Name: impl, Super: parent, Interfaces: []string{rows}},
+	})
+	m, over := e.resolveMethod(impl, "describe", "()V")
+	if m == nil || m.Ref.Owner != parent || len(over) != 0 {
+		t.Errorf("resolveMethod = %v %v, want %s.describe and no override", m, over, parent)
+	}
+}

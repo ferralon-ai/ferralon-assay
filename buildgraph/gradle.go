@@ -35,6 +35,8 @@ type gradleProject struct {
 	BuildFile         string                     `json:"build_file"`
 	BuildDir          string                     `json:"build_dir"`
 	UserHome          string                     `json:"user_home"`
+	ForeignRoots      []string                   `json:"foreign_roots"`       // the user home and file repository roots, as given and canonical
+	OpaqueRepos       []string                   `json:"opaque_repositories"` // Ivy repositories with no URL
 	RootDir           string                     `json:"root_dir"`
 	Group             string                     `json:"group"`
 	Name              string                     `json:"name"`

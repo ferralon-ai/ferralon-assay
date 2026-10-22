@@ -508,6 +508,10 @@ func TestMavenJDKToolchainRoundTrip(t *testing.T) {
 	}
 }
 
+// agentPOM is a POM for com.acme:agent:1.0, which a file repository in a TestGradleComplete edit
+// serves.
+const agentPOM = "<project><modelVersion>4.0.0</modelVersion><groupId>com.acme</groupId><artifactId>agent</artifactId><version>1.0</version></project>\n"
+
 // TestGradleComplete runs the real Gradle over edits of gradle-multi, each adding one way a build
 // can install what its configurations do not list, and checks that the producer withholds
 // Complete for it and only for it.
@@ -517,8 +521,10 @@ func TestGradleComplete(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		append     map[string]string
-		homeInside bool   // GRADLE_USER_HOME inside the checkout, as CI caches set it
-		want       string // a substring of every reason expected; empty means Complete
+		prepend    map[string]string // text to put first, for blocks that must precede the rest
+		links      map[string]string // symbolic links to make, path to target; $ROOT is the checkout, $OUT a directory outside it
+		homeInside bool              // GRADLE_USER_HOME inside the checkout, as CI caches set it
+		want       string            // a substring of every reason expected; empty means Complete
 		check      func(t *testing.T, g *Graph)
 	}{
 		{name: "fixture as is"},
@@ -658,6 +664,219 @@ func TestGradleComplete(t *testing.T) {
 			},
 		},
 		{
+			name: "detached configuration resolved from a Maven repository under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('build/m2') } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/m2/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"app/build/m2/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			// The root project declares no repositories, so it resolves from the settings' ones.
+			name: "detached configuration resolved from a settings repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "dependencyResolutionManagement { repositories { maven { url = file('build/m2s') } } }\n",
+				"build.gradle":    "configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"build/m2s/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"build/m2s/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "detached configuration resolved from mavenLocal under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "System.setProperty('maven.repo.local', file('build/m2local').absolutePath)\nrepositories { mavenLocal() }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/m2local/com/acme/agent/1.0/agent-1.0.pom": agentPOM,
+				"app/build/m2local/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "detached configuration resolved from a flat directory under the build directory",
+			append: map[string]string{
+				"app/build.gradle":             "repositories { flatDir { dirs 'build/flat' } }\nconfigurations.detachedConfiguration(dependencies.create(':agent:1.0')).resolve()\n",
+				"app/build/flat/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "Zip of a file in a flat directory under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { flatDir { dirs 'build/flat' } }\n" +
+					"tasks.register('z', Zip) { from 'build/flat/agent-1.0.jar'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/flat/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, outside the build",
+		},
+		{
+			// The repository's URL is outside the build directory; only its artifact URL is under it.
+			name: "detached configuration resolved from a Maven artifact URL under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('m2meta'); artifactUrls file('build/arts') } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/m2meta/com/acme/agent/1.0/agent-1.0.pom":     agentPOM,
+				"app/build/arts/com/acme/agent/1.0/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			// The repository's URL is outside the build directory; its extra artifact pattern is under it,
+			// and no recorded root holds it.
+			name: "detached configuration resolved from an Ivy artifact pattern under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { ivy { url = file('ivymeta'); artifactPattern \"${projectDir}/build/ivy/[module]-[revision].[ext]\"; metadataSources { artifact() } } }\n" +
+					"configurations.detachedConfiguration(dependencies.create('com.acme:agent:1.0')).resolve()\n",
+				"app/build/ivy/agent-1.0.jar": "agent",
+			},
+			want: "agent-1.0.jar, which no collected configuration lists",
+		},
+		{
+			name: "Zip of a file under a Maven artifact URL under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('m2meta'); artifactUrls file('build/arts') } }\n" +
+					"tasks.register('z', Zip) { from 'build/arts/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/arts/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a build script repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "include 'bsr'\n",
+				"bsr/build.gradle": "buildscript { repositories { maven { url = file('build/bsm2') } } }\napply plugin: 'base'\n" +
+					"tasks.register('z', Zip) { from 'build/bsm2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"bsr/build/bsm2/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a settings dependency repository under the build directory",
+			append: map[string]string{
+				"settings.gradle": "dependencyResolutionManagement { repositories { maven { url = file('build/m2s') } } }\n",
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/m2s/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/m2s/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a plugin repository under the build directory",
+			append: map[string]string{
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/pm2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/pm2/x.txt": "x",
+			},
+			prepend: map[string]string{"settings.gradle": "pluginManagement { repositories { maven { url = file('build/pm2') }; gradlePluginPortal() } }\n"},
+			want:    "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a settings script repository under the build directory",
+			append: map[string]string{
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/sb2/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/sb2/x.txt": "x",
+			},
+			prepend: map[string]string{"settings.gradle": "buildscript { repositories { maven { url = file('build/sb2') } } }\n"},
+			want:    "x.txt, outside the build",
+		},
+		{
+			// The repository is named through a link outside the checkout to a directory in the build
+			// directory.
+			name: "Zip of a file in a linked file repository under the build directory",
+			append: map[string]string{
+				"app/build.gradle": "repositories { maven { url = file('$OUT/m2link') } }\n" +
+					"tasks.register('z', Zip) { from 'build/real/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"app/build/real/x.txt": "x",
+			},
+			links: map[string]string{"$OUT/m2link": "$ROOT/app/build/real"},
+			want:  "x.txt, outside the build",
+		},
+		{
+			name:   "Ivy repository with no URL",
+			append: map[string]string{"app/build.gradle": "repositories { ivy { name = 'patterns'; artifactPattern '/opt/ivy/[module]-[revision].[ext]' } }\n"},
+			want:   "project :app: Ivy repository patterns has no URL to place the files it resolves by",
+		},
+		{
+			name: "Exec registered after a script configures every task",
+			append: map[string]string{"app/build.gradle": "tasks.all { }\n" +
+				"def gen = tasks.register('gen', Exec) { commandLine 'true' }\ntasks.named('jar') { dependsOn gen }\n"},
+			want: "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "Exec registered by a later projectsEvaluated callback",
+			append: map[string]string{"app/build.gradle": "gradle.projectsEvaluated { project(':app') { tasks.all { }; def gen = tasks.register('gen', Exec) { commandLine 'true' }; tasks.named('jar') { dependsOn gen } } }\n"},
+			want:   "task :app:gen runs a program (org.gradle.api.tasks.Exec) that another task depends on",
+		},
+		{
+			name:   "configuration added by a later projectsEvaluated callback",
+			append: map[string]string{"app/build.gradle": "gradle.projectsEvaluated { project(':app') { tasks.all { }; configurations.create('late') } }\n"},
+			want:   "configurations were added after assayBuildGraph was configured",
+		},
+		{
+			name:   "toolchain declared after a script configures every task",
+			append: map[string]string{"app/build.gradle": "tasks.all { }\njava { toolchain { languageVersion = JavaLanguageVersion.of(21) } }\n"},
+			check: func(t *testing.T, g *Graph) {
+				if got := module(t, g, ":app").JDKToolchains; !reflect.DeepEqual(got, []string{"21"}) {
+					t.Errorf(":app toolchains %q, want [21]", got)
+				}
+			},
+		},
+		{
+			// vendorJar sorts after jar, so recording each task as it is realized records jar first.
+			name: "task whose configuration adds an input to a task recorded before it",
+			append: map[string]string{"app/build.gradle": "def vendor = tasks.register('vendorJar') { tasks.getByName('jar').from('/etc/hostname') }\n" +
+				"tasks.register('release') { dependsOn vendor }\n"},
+			want: "task :app:jar reads /etc/hostname, outside the build",
+		},
+		{
+			// bad is in no task graph the producer runs, so only the producer realizes it.
+			name:   "configure action that throws",
+			append: map[string]string{"app/build.gradle": "tasks.register('bad') { throw new GradleException('boom') }\n"},
+			want:   "boom",
+		},
+		{
+			// :lib records after :app, so realizing each project's tasks as it records them records :app:jar first.
+			name: "task in another project whose configuration adds an input to jar",
+			append: map[string]string{"lib/build.gradle": "def vendor = tasks.register('vendorJar') { project(':app').tasks.getByName('jar').from('/etc/hostname') }\n" +
+				"tasks.register('release') { dependsOn vendor }\n"},
+			want: "task :app:jar reads /etc/hostname, outside the build",
+		},
+		{
+			name: "jar in the old build directory after a script configures every task",
+			append: map[string]string{
+				"app/build.gradle": "tasks.all { }\nlayout.buildDirectory = file('target')\n" +
+					"configurations.detachedConfiguration(dependencies.create(files('build/agent.jar'))).resolve()\n",
+				"app/build/agent.jar": "agent",
+			},
+			want: "agent.jar, which no collected configuration lists",
+		},
+		{
+			name: "Zip of a file in a repository a later projectsEvaluated callback adds",
+			append: map[string]string{
+				"app/build.gradle": "tasks.register('z', Zip) { from 'build/late/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n" +
+					"gradle.projectsEvaluated { project(':app') { tasks.all { }; repositories { flatDir { dirs 'build/late' } } } }\n",
+				"app/build/late/x.txt": "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name: "Zip of a file in a repository a later settingsEvaluated callback adds",
+			append: map[string]string{
+				"settings.gradle": "gradle.settingsEvaluated { s -> s.dependencyResolutionManagement.repositories.flatDir { dirs file('build/sl') } }\n",
+				"build.gradle":    "tasks.register('z', Zip) { from 'build/sl/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n",
+				"build/sl/x.txt":  "x",
+			},
+			want: "x.txt, outside the build",
+		},
+		{
+			name:   "configure on demand",
+			append: map[string]string{"gradle.properties": "org.gradle.configureondemand=true\n"},
+		},
+		{
+			name:   "flat directory in the checkout nothing unlisted resolves from",
+			append: map[string]string{"app/build.gradle": "repositories { flatDir { dirs 'libs' } }\n", "app/libs/README": "jars"},
+		},
+		{
 			name:   "build script no project reads",
 			append: map[string]string{"tools/build.gradle": "plugins { id 'java' }\n"},
 			want:   "tools/build.gradle is a Gradle build file no project of the build reads",
@@ -665,7 +884,9 @@ func TestGradleComplete(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := copyFixture(t, "gradle-multi")
+			expand := strings.NewReplacer("$ROOT", dir, "$OUT", t.TempDir()).Replace
 			for name, text := range tc.append {
+				text = expand(text)
 				p := filepath.Join(dir, name)
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 					t.Fatal(err)
@@ -679,6 +900,21 @@ func TestGradleComplete(t *testing.T) {
 					err = cerr
 				}
 				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, text := range tc.prepend {
+				p := filepath.Join(dir, name)
+				b, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, append([]byte(text), b...), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, target := range tc.links {
+				if err := os.Symlink(expand(target), expand(name)); err != nil {
 					t.Fatal(err)
 				}
 			}

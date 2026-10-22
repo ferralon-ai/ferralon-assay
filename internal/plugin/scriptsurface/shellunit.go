@@ -42,19 +42,25 @@ func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
 		}
 		walk(n)
 	}
+	var tops []*yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader([]byte(src)))
 	for {
 		var doc yaml.Node
 		if err := dec.Decode(&doc); err != nil {
-			if errors.Is(err, io.EOF) {
-				return units
+			if !errors.Is(err, io.EOF) {
+				return nil
 			}
-			return nil
+			break
 		}
-		if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
-			continue
+		if len(doc.Content) == 1 && doc.Content[0].Kind == yaml.MappingNode {
+			tops = append(tops, doc.Content[0])
 		}
-		top := doc.Content[0]
+	}
+	var reused map[string]bool
+	if gitlab {
+		reused = reusedJobs(tops)
+	}
+	for _, top := range tops {
 		if gitlab {
 			for i := 0; i+1 < len(top.Content); i += 2 {
 				job := top.Content[i+1]
@@ -62,14 +68,21 @@ func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
 					continue
 				}
 				// before_script and script run in one shell, before_script first; a script
-				// written above its before_script is read as a shell of its own.
+				// written above its before_script is read as a shell of its own. So is each of
+				// a job another job may take them from (a hidden, extended, referenced or
+				// anchored one) or one that takes keys from another (by extends or a << merge),
+				// as what runs with its script may be another job's before_script.
+				name := top.Content[i].Value
+				alone := strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil
 				pre := 0
 				for j := 0; j+1 < len(job.Content); j += 2 {
 					switch job.Content[j].Value {
 					case "before_script":
 						next++
-						pre = next
-						mark(job.Content[j+1], shellUnit{id: pre, dir: v.root})
+						if !alone {
+							pre = next
+						}
+						mark(job.Content[j+1], shellUnit{id: next, dir: v.root})
 					case "script":
 						id := pre
 						if id == 0 {
@@ -121,6 +134,49 @@ func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
 			}
 		}
 	}
+	return units
+}
+
+// reusedJobs returns the name of each GitLab job another job in the file extends or takes a
+// key from with !reference.
+func reusedJobs(tops []*yaml.Node) map[string]bool {
+	reused := map[string]bool{}
+	var walk func(*yaml.Node)
+	walk = func(n *yaml.Node) {
+		if n.Kind == yaml.SequenceNode && n.Tag == "!reference" && len(n.Content) > 0 {
+			reused[n.Content[0].Value] = true
+		}
+		for _, c := range n.Content {
+			walk(c)
+		}
+	}
+	for _, top := range tops {
+		for i := 0; i+1 < len(top.Content); i += 2 {
+			ext := mapValue(top.Content[i+1], "extends")
+			if ext != nil {
+				reused[ext.Value] = true
+				for _, c := range ext.Content {
+					reused[c.Value] = true
+				}
+			}
+			walk(top.Content[i+1])
+		}
+	}
+	return reused
+}
+
+// anchored reports whether n or anything in it carries a YAML anchor, which another job may
+// alias.
+func anchored(n *yaml.Node) bool {
+	if n.Anchor != "" {
+		return true
+	}
+	for _, c := range n.Content {
+		if anchored(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // runDir returns the directory a GitHub workflow or job's defaults.run.working-directory sets,

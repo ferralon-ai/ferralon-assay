@@ -79,7 +79,7 @@ func Reachability(_ context.Context, req plugin.ReachabilityRequest, opts ...jav
 	cp := prog.cp
 	cp.Merge(deps.cp)
 	engine := depreach.NewEngineOn(all, cp)
-	concrete := concreteMethods(all)
+	concrete := concreteMethods(all, cp.JDK)
 
 	// Roots are first-party mains. A `main` inside a dependency JAR is not this program's entry
 	// point; a build that launches one leaves its launch entry unmapped (launchEntryReasons).
@@ -206,12 +206,12 @@ func searchSink(engine *depreach.Engine, mains, frameworks []classfile.MethodRef
 }
 
 // concreteMethods returns the set of method refs (MethodRef.String()) that have a body in the
-// loaded bytecode: not abstract, not native, and not on a copy of a class the JVM loads only
-// from the JDK.
-func concreteMethods(classes []classfile.Class) map[string]bool {
+// loaded bytecode: not abstract, not native, and not on a copy of a class the JVM may load from
+// the JDK instead on feature release jdk.
+func concreteMethods(classes []classfile.Class, jdk int) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range classes {
-		if depreach.BootOnly(c.Name) {
+		if depreach.BootOnly(c.Name, jdk) {
 			continue
 		}
 		for _, m := range c.Methods {

@@ -219,7 +219,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	}
 	all = mergeReleases(built, all, gavs, versioned, definedBy, isFirstParty, scoped)
 	built.Engine = depreach.NewEngineOn(all, cp)
-	built.index(all)
+	built.index(all, cp.JDK)
 
 	closureCache.Lock()
 	closureCache.m[buildDir] = closureEntry{key: fingerprint, rc: built}
@@ -321,13 +321,13 @@ func (rc *reachClosure) concrete(ref classfile.MethodRef) bool {
 	return ok && !m.Abstract && !m.Native
 }
 
-// index records the classes and methods of all that run, as the engine does: a classpath copy
-// of a class the JVM loads only from the JDK is left out.
-func (rc *reachClosure) index(all []classfile.Class) {
+// index records the classes and methods of all that run on feature release jdk, as the engine
+// does: a classpath copy of a class the JVM may load from the JDK instead is left out.
+func (rc *reachClosure) index(all []classfile.Class, jdk int) {
 	rc.methods = make(map[string]classfile.Method)
 	rc.classes = make(map[string]*classfile.Class, len(all))
 	for i := range all {
-		if depreach.BootOnly(all[i].Name) {
+		if depreach.BootOnly(all[i].Name, jdk) {
 			continue
 		}
 		rc.classes[all[i].Name] = &all[i]

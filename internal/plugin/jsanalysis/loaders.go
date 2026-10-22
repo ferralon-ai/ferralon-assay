@@ -1439,6 +1439,10 @@ func (mb *moduleBindings) objectUse(clean, src []rune, i, next int, obj *loaderO
 		}
 	case destructuredWhole(clean, b, next, obj):
 		return
+	default:
+		if start == i && globals.plainObject(clean, string(clean[i:next]), i) {
+			return // a local holding an object literal, handed on as a plain value
+		}
 	}
 	if native || obj.names["process"] {
 		mb.nativeLoad = true

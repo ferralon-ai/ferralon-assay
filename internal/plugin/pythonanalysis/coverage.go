@@ -129,12 +129,13 @@ func requirementsDecls(path string, data []byte, out pyDecls) (pyDecls, bool) {
 			if kind, ok := optionKind(line); ok && kind == reqEditable {
 				return out, false
 			}
-			// pip parses every option on the line, not just the first.
+			// pip parses every option on the line, not just the first, and accepts any
+			// unambiguous prefix of a long option; --no-r is the shortest for this one.
 			for _, f := range strings.Fields(line) {
-				switch f {
-				case "--require-hashes":
+				switch {
+				case f == "--require-hashes":
 					out.hashed = true
-				case "--no-require-hashes":
+				case len(f) >= len("--no-r") && strings.HasPrefix("--no-require-hashes", f):
 					out.hashOff = true
 				}
 			}

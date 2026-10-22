@@ -282,6 +282,7 @@ func TestResolveVersions_ExhaustiveRequirementsInstall(t *testing.T) {
 		{"pip.conf copied in sets no-require-hashes", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[install]\nno-require-hashes = true\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), false},
 		{"--no-require-hashes second on an option line", uv(map[string]string{"requirements.txt": "--trusted-host pypi.org --no-require-hashes\nflask==3.0.0" + h + "\n"}), false},
 		{"--no-require-hashes second on an option line in a nested file", uv(map[string]string{"requirements.txt": "-r requirements-base.txt\n", "requirements-base.txt": "--prefer-binary --no-require-hashes\nflask==3.0.0" + h + "\n"}), false},
+		{"--no-require-hashes abbreviated on an option line", uv(map[string]string{"requirements.txt": "--trusted-host pypi.org --no-r\nflask==3.0.0" + h + "\n"}), false},
 		{"pip.conf that leaves hash mode alone", uv(map[string]string{"requirements.txt": "flask==3.0.0" + h + "\n", "docker/pip.conf": "[global]\ntimeout = 60\n", "Dockerfile": docker + "COPY docker/pip.conf /etc/pip.conf\n"}), true},
 	}
 	for _, tt := range tests {

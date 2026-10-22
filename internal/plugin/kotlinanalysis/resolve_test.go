@@ -251,26 +251,70 @@ func TestResolveDependencySymbols_PURLPinnedVersion(t *testing.T) {
 }
 
 // TestResolveDependencySymbols_JarAbsentIsHonestPartiality proves that when the graph names no
-// JAR for the dependency, the op declares no_dependency_artifact partiality with an empty
-// resolution — never a fabricated match, never a clean empty.
+// JAR for the dependency the op never renders a clean empty or a fabricated match. A coordinate a
+// complete graph lacks is dependency_not_in_build, bounded to that package alone; beside a build
+// of the other tool, or named by the graph without a JAR, it stays a run-wide
+// no_dependency_artifact.
 func TestResolveDependencySymbols_JarAbsentIsHonestPartiality(t *testing.T) {
-	build := t.TempDir()
-	res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
-		BuildDir:        build,
-		PURL:            "pkg:maven/com.example/vuln",
-		AdvisorySymbols: []string{"com.example.net.UrlFetcher.fetch"},
-	}, cacheGraph(t, build))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Partiality.Complete {
-		t.Fatal("absent-JAR case rendered Complete: honest-absent violated")
-	}
-	if !hasReason(res.Partiality, partialReasonNoDependencyArtifact) {
-		t.Errorf("partiality %v missing %q", res.Partiality.Reasons, partialReasonNoDependencyArtifact)
-	}
-	if len(res.Resolved) != 0 {
-		t.Errorf("absent-JAR case carried resolved symbols: %+v", res.Resolved)
+	const purl = "pkg:maven/com.example/vuln"
+	for _, tc := range []struct {
+		name        string
+		purl        string // "" ⇒ vuln's
+		otherTool   bool
+		inGraph     bool
+		goneJar     bool // the graph names a JAR no longer on disk
+		unlisted    bool // the graph's module installs something it does not list
+		wantRunWide []string
+		wantScoped  []plugin.ScopedReason
+	}{
+		{name: "absent from a complete graph",
+			wantScoped: []plugin.ScopedReason{{Reason: javaanalysis.PartialReasonDependencyNotInBuild, Package: purl, Path: "com.example:vuln", Targets: []string{purl}}}},
+		{name: "absent beside a build of the other tool", otherTool: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
+		{name: "in the graph without a JAR", inGraph: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
+		{name: "in the graph with its JAR gone", goneJar: true, wantRunWide: []string{plugin.PartialReasonToolFailure}},
+		// The build's own module is first-party, not a dependency the build lacks.
+		{name: "the project's own coordinate", purl: "pkg:maven/com.example/app", wantRunWide: []string{partialReasonNoDependencyArtifact}},
+		{name: "absent from a build installing what its graph does not list", unlisted: true, wantRunWide: []string{partialReasonNoDependencyArtifact}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := t.TempDir()
+			if tc.otherTool {
+				if err := os.WriteFile(filepath.Join(build, "pom.xml"), []byte("<project/>"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var extra []graphDep
+			if tc.inGraph {
+				extra = append(extra, graphDep{group: "com.example", artifact: "vuln", version: "1.0.0", jar: filepath.Join(build, "vuln-1.0.0.pom")})
+			}
+			if tc.goneJar {
+				extra = append(extra, graphDep{group: "com.example", artifact: "vuln", version: "1.0.0", jar: filepath.Join(build, "vuln-1.0.0.jar")})
+			}
+			graph := cacheGraph(t, build, extra...)
+			if tc.unlisted {
+				m := graphModule(".", "app")
+				m.Unlisted = []string{"maven-dependency-plugin execution copy-agent"}
+				graph = graphOption(t, m)
+			}
+			p := tc.purl
+			if p == "" {
+				p = purl
+			}
+			res, err := ResolveDependencySymbols(context.Background(), plugin.ResolveSymbolsRequest{
+				BuildDir:        build,
+				PURL:            p,
+				AdvisorySymbols: []string{"com.example.net.UrlFetcher.fetch"},
+			}, graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Partiality.Complete || len(res.Resolved) != 0 {
+				t.Fatalf("absent-JAR case rendered complete or resolved: %+v", res)
+			}
+			if !reflect.DeepEqual(res.Partiality.Reasons, tc.wantRunWide) || !reflect.DeepEqual(res.Partiality.Scoped, tc.wantScoped) {
+				t.Errorf("partiality %+v, want run-wide %v scoped %+v", res.Partiality, tc.wantRunWide, tc.wantScoped)
+			}
+		})
 	}
 }
 

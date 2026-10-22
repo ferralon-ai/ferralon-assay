@@ -93,7 +93,7 @@ func ProjectReportSARIF(r report.Report) (*SARIFLog, error) {
 		if p := f.Priority; p.HasEPSS() {
 			props["epss_score"] = p.EPSSScore
 			props["epss_as_of"] = p.EPSSAsOf
-			if p.EPSSPercentile != 0 {
+			if p.HasEPSSPercentile() { // a sourced percentile of 0 is a value, ranked 0
 				props["epss_percentile"] = p.EPSSPercentile
 				// rank is 0.0–100.0 per SARIF spec; scale from 0..1 percentile.
 				rv := p.EPSSPercentile * 100.0

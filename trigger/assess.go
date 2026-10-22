@@ -521,7 +521,8 @@ func priorityFor(adv report.Advisory, sig *intel.Signals) *report.Priority {
 	ids := append([]string{adv.ID}, adv.Aliases...)
 	var p report.Priority
 	if e, ok := sig.EPSS(ids...); ok {
-		p.EPSSScore, p.EPSSPercentile, p.EPSSAsOf = e.Score, e.Percentile, e.AsOf
+		p.EPSSScore, p.EPSSAsOf = e.Score, e.AsOf
+		p.EPSSPercentile, p.HasPercentile = e.Percentile, e.HasPercentile
 	}
 	if k, ok := sig.KEV(ids...); ok {
 		p.KEVListed, p.KEVDateAdded = k.Listed, k.DateAdded
@@ -764,7 +765,7 @@ func disqualDetail(reason string) string {
 	case pipeline.ReasonAdvisoryEcosystemMismatch:
 		return "the advisory targets a different ecosystem than this codebase; no version or symbol comparison was performed"
 	case pipeline.ReasonNoManifestEntry:
-		return "the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"
+		return "the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed"
 	default:
 		return "disqualified on an axis that is neither a version nor a symbol comparison; neither comparison was performed"
 	}

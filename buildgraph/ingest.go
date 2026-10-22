@@ -22,8 +22,12 @@ const (
 )
 
 // scopes are the scopes a non-root node may carry: Maven's, and the ones the Gradle producer folds
-// its classpaths into.
-var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true, "system": true, "test": true}
+// its classpaths into. ScopeOther is a dependency the build resolves on no classpath: one a
+// distribution copies in, or a tool's.
+var scopes = map[string]bool{"compile": true, "runtime": true, "provided": true, "system": true, "test": true, ScopeOther: true}
+
+// ScopeOther is the scope of a node the build resolves on a configuration that is no classpath.
+const ScopeOther = "other"
 
 // Load reads the graph at file and checks it against the checkout at dir and the conditions the
 // scan states. On top of Validate it requires that:
@@ -58,6 +62,9 @@ func Load(file, dir string, stated Conditions, opts ...LoadOption) (*Graph, erro
 		return nil, reject(CheckConditions, "graph resolved under other conditions than the scan states")
 	}
 	dir, err = filepath.Abs(dir)
+	if err == nil {
+		dir, err = filepath.EvalSymlinks(dir)
+	}
 	if err != nil {
 		return nil, reject(CheckSubjectInputs, err.Error())
 	}
@@ -192,18 +199,34 @@ func checkInputs(g *Graph, dir string) error {
 	return nil
 }
 
-// OtherToolInputs lists dir's build inputs of the tool that did not resolve a tool graph: a
-// Gradle build beside a Maven graph, or a POM beside a Gradle one. The graph is sound for its own
-// build and says nothing about that one, which can resolve other versions; a repository shipping
-// both (spring-petclinic does) is common and is not a reason to refuse the graph.
-func OtherToolInputs(dir, tool string) ([]Input, error) {
-	switch tool {
+// OtherToolBuildFiles lists dir's build files of the tool that did not resolve g: a Gradle build
+// beside a Maven graph, or a POM beside a Gradle one. The graph is sound for its own build and
+// says nothing about that one, which can resolve other versions; a repository shipping both
+// (spring-petclinic does) is common and is not a reason to refuse the graph. The walk is the tree
+// checks' own, skipping only the outputs g records, so a POM under a directory merely named target
+// or build is found.
+func OtherToolBuildFiles(dir string, g *Graph) ([]string, error) {
+	var match func(rel, name string) bool
+	switch g.Tool.Name {
 	case "maven":
-		return collectInputs(dir, gradleInput)
+		match = gradleInput
 	case "gradle":
-		return collectInputs(dir, mavenInput(nil))
+		match = mavenInput(nil)
+	default:
+		return nil, fmt.Errorf("unknown tool %q", g.Tool.Name)
 	}
-	return nil, fmt.Errorf("unknown tool %q", tool)
+	entries, err := treeFiles(dir, g.Subject.Outputs, match)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		// A directory link the walk cannot follow already withholds Complete.
+		if !e.Escapes {
+			out = append(out, e.Path)
+		}
+	}
+	return out, nil
 }
 
 func checkModule(m Module, dir string, siblings map[string]bool) error {

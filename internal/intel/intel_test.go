@@ -76,7 +76,7 @@ func TestLoadValid1x(t *testing.T) {
 				t.Errorf("envelope = %q %q %d, want 1.0.0 %s 4", s.Version, s.Digest, s.Records(), testDigest)
 			}
 			e, ok := s.EPSS("CVE-2021-38561")
-			if !ok || e.Score != 0.0123 || e.Percentile != 0.456 || e.AsOf != "2026-10-18" {
+			if !ok || e.Score != 0.0123 || e.Percentile != 0.456 || !e.HasPercentile || e.AsOf != "2026-10-18" {
 				t.Errorf("EPSS(CVE-2021-38561) = %+v, %v", e, ok)
 			}
 			k, ok := s.KEV("CVE-2025-8110")
@@ -111,7 +111,7 @@ func TestLookupFollowsIDOrder(t *testing.T) {
 	if !ok || e.Identifier != "CVE-2021-38561" {
 		t.Errorf("EPSS lookup = %+v, %v; want the first matching id CVE-2021-38561", e, ok)
 	}
-	if e, ok := s.EPSS("ghsa-aaaa-bbbb-cccc"); !ok || e.Percentile != 0 || e.AsOf != "2026-10-01" {
+	if e, ok := s.EPSS("ghsa-aaaa-bbbb-cccc"); !ok || e.Percentile != 0 || e.HasPercentile || e.AsOf != "2026-10-01" {
 		t.Errorf("EPSS(GHSA) = %+v, %v; want a score with no percentile", e, ok)
 	}
 	if _, ok := s.KEV("CVE-2021-38561"); ok {
@@ -126,6 +126,26 @@ func TestLookupFollowsIDOrder(t *testing.T) {
 	}
 	if _, ok := none.NewestEPSSAsOf(); ok || none.Records() != 0 {
 		t.Error("a nil *Signals holds nothing")
+	}
+}
+
+// TestEPSSPercentileZeroIsSourced: a sourced percentile of 0 (CVE-2026-50268's real record) loads as
+// sourced, told apart from a record that carries no percentile.
+func TestEPSSPercentileZeroIsSourced(t *testing.T) {
+	s, err := Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2, "signals_digest": "` + testDigest + `",
+	  "records": [
+	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},
+	    {"identifier": "GHSA-pppp-qqqq-rrrr", "epss": {"score": 0.00047, "as_of": "2026-08-02"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := EPSS{Identifier: "CVE-2026-50268", Score: 0.00047, HasPercentile: true, AsOf: "2026-08-02"}
+	if e, ok := s.EPSS("CVE-2026-50268"); !ok || e != want {
+		t.Errorf("EPSS(CVE-2026-50268) = %+v, %v; want the sourced zero percentile %+v", e, ok, want)
+	}
+	want = EPSS{Identifier: "GHSA-PPPP-QQQQ-RRRR", Score: 0.00047, AsOf: "2026-08-02"}
+	if e, ok := s.EPSS("GHSA-pppp-qqqq-rrrr"); !ok || e != want {
+		t.Errorf("EPSS(GHSA-pppp-qqqq-rrrr) = %+v, %v; want no percentile %+v", e, ok, want)
 	}
 }
 

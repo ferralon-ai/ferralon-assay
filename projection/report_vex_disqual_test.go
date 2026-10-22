@@ -51,7 +51,7 @@ func statementFor(t *testing.T, r report.Report) projection.VEXStatement {
 // justification is withheld, which OpenVEX §3.2 permits.
 func TestReportVEX_UnadjudicatedDisqualificationHasNoJustification(t *testing.T) {
 	s := statementFor(t, disqualReport(t, verdict.BasisNone,
-		"the advisory's package is absent from this codebase's dependency manifest; no version or symbol comparison was performed"))
+		"the advisory's package is not installed by the build: its dependency manifest or build graph has no entry for it; no version or symbol comparison was performed"))
 
 	if s.Status != projection.VEXStatusNotAffected {
 		t.Errorf("status = %q, want not_affected (verdict-driven, inv. 5)", s.Status)

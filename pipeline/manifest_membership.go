@@ -3,10 +3,11 @@ package pipeline
 // Non-Go manifest membership for the intake no-manifest-entry guard.
 //
 // Go answers "does the codebase declare this module?" straight off go.mod (goModRequires). For
-// PyPI, npm and NuGet the answer lives in the language plugin's dependency read, and absence is
-// only provable when the plugin vouches that its read is exhaustive: a complete, edge-bearing
-// lockfile covers every manifest it found, or every .NET project is settled on restore's own
-// record (plugin.DependencyVersionResult.Exhaustive). Declared-only
+// PyPI, npm, Maven and NuGet the answer lives in the language plugin's dependency read, and
+// absence is only provable when the plugin vouches that its read is exhaustive: a complete,
+// edge-bearing lockfile covers every manifest it found, a JVM build graph covers the whole
+// build, or every .NET project is settled on restore's own record
+// (plugin.DependencyVersionResult.Exhaustive). Declared-only
 // manifests, requirements files, or no lockfile at all leave Exhaustive false and the guard
 // fails open. Build-isolation environments are not runtime installs, so a package only a build
 // backend pulls in is outside what Exhaustive vouches for.
@@ -43,6 +44,8 @@ func membershipEcosystem(language string) string {
 		return "pypi"
 	case "javascript", "js":
 		return "npm"
+	case "java", "kotlin":
+		return "maven"
 	case "dotnet":
 		return "nuget"
 	default:

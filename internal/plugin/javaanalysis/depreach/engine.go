@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
 )
@@ -26,8 +27,26 @@ type Engine struct {
 	subtypes    map[string][]string          // supertype -> direct subclasses/implementors
 	overridable map[string]bool              // hasOverridable cache
 	loadable    map[string]bool              // platformLoadable cache
+	lambdas     map[string][]lambdaSite      // interface a lambda object implements -> its sites
+	held        map[string]heldTypes         // heldAs cache
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
+	methodsHold bool                         // platformMethods lists the runtime's methods
+	hidden      []string                     // hiddenSubtypes cache, sorted
+	hiddenDone  bool                         // hidden is computed
+	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
+	unlinked    map[string]bool              // unlinkable cache
+}
+
+// lambdaSite is a LambdaMetafactory call site in class from. The object it produces
+// implements ifaces and answers a call to name with one of descs by running handle;
+// every other method it runs is java/lang/Object's or a default it inherits.
+type lambdaSite struct {
+	from   string
+	name   string
+	descs  []string
+	ifaces []string
+	handle classfile.MethodHandle
 }
 
 // Classpath is what the analysed classpath defines beyond the classes handed to the engine.
@@ -37,12 +56,89 @@ type Classpath struct {
 	Packages map[string]bool
 	// Unlisted is set when some entry could not be listed: it may define any package.
 	Unlisted bool
+	// JDK is the feature release of the JDK the program runs on, or 0 when not recorded.
+	// platformMethods holds only on the release it was generated from (platformMethodsJDK).
+	JDK int
 }
 
 // NewEngine indexes the classes for hierarchy and method lookup. The input slice is
 // retained by pointer, so callers must not mutate it afterwards.
 func NewEngine(classes []classfile.Class) *Engine {
 	return NewEngineOn(classes, Classpath{})
+}
+
+// BootOnly reports whether a classpath copy of the class named name may not be the body that runs
+// on feature release jdk (0 when not recorded): a java/ class, which the JVM refuses from any
+// loader but the boot and platform loaders, or a class in a package the JDK's own code occupies.
+// On 9 and later a package of a system module in the boot layer hides a classpath copy, and on 8
+// the boot and extension class paths are searched first. On a runtime image without the module
+// the copy does run, so outside java/ the copy is neither walked nor taken for the JDK's leaf: the
+// engine finds its package defined by the classpath and a call into it unopened.
+//
+// jdkPackages is read from Temurin images, so a vendor's additions (a JavaFX or GraalVM build) are
+// not in it. jdk is the release of the JVM that ran the build, which the deployed runtime need not
+// match: a copy of a package that only the deployed release has is still walked. A release
+// jdkPackages does not cover counts a package any covered release has. So does an unrecorded
+// one, which is also a release after the newest covered one when a module's toolchain picks it,
+// and so does a newer one; both also count a package where the JDK could add one (jdkSubtree).
+func BootOnly(name string, jdk int) bool {
+	if strings.HasPrefix(name, "java/") {
+		return true
+	}
+	i := strings.LastIndexByte(name, '/')
+	if i <= 0 {
+		return false
+	}
+	pkg := name[:i]
+	mask, ok := jdkPackages[pkg]
+	if jdk == 0 || jdk > jdkReleases[len(jdkReleases)-1] {
+		return ok || jdkSubtree(pkg)
+	}
+	if !ok {
+		return false
+	}
+	for b, r := range jdkReleases {
+		if r == jdk {
+			return mask&(1<<b) != 0
+		}
+	}
+	return true
+}
+
+// jdkPrefixes holds every proper prefix of a package in jdkPackages: javax/sound for
+// javax/sound/midi.
+var jdkPrefixes = func() map[string]bool {
+	m := map[string]bool{}
+	for p := range jdkPackages {
+		for i := strings.LastIndexByte(p, '/'); i > 0; i = strings.LastIndexByte(p[:i], '/') {
+			m[p[:i]] = true
+		}
+	}
+	return m
+}()
+
+// jdkSubtree reports whether a release jdkPackages does not hold could add pkg: a package under
+// jdk/ or sun/, one that is a prefix of a JDK package, or one whose parent is a JDK package or a
+// prefix of one, at least two segments deep (so not javax/servlet) and three under com/ and org/
+// (so not com/sun/jna). Every package Temurin added from 16 to 27 is one.
+func jdkSubtree(pkg string) bool {
+	if strings.HasPrefix(pkg, "jdk/") || strings.HasPrefix(pkg, "sun/") || jdkPrefixes[pkg] {
+		return true
+	}
+	i := strings.LastIndexByte(pkg, '/')
+	if i <= 0 {
+		return false
+	}
+	parent := pkg[:i]
+	least := 2
+	if strings.HasPrefix(parent, "com/") || strings.HasPrefix(parent, "org/") {
+		least = 3
+	}
+	if strings.Count(parent, "/")+1 < least {
+		return false
+	}
+	_, jdkParent := jdkPackages[parent]
+	return jdkParent || jdkPrefixes[parent]
 }
 
 // NewEngineOn is NewEngine for classes loaded from a classpath that cp describes. The
@@ -54,20 +150,33 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		subtypes:    map[string][]string{},
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
+		unlinked:    map[string]bool{},
+		lambdas:     map[string][]lambdaSite{},
+		held:        map[string]heldTypes{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
+		methodsHold: cp.JDK == platformMethodsJDK,
 	}
 	for p := range cp.Packages {
 		e.defined[p] = true
 	}
 	for i := range classes {
 		c := &classes[i]
-		e.classes[c.Name] = c
 		if j := strings.LastIndexByte(c.Name, '/'); j > 0 {
 			e.defined[c.Name[:j]] = true
 		}
+		if BootOnly(c.Name, cp.JDK) {
+			continue
+		}
+		e.classes[c.Name] = c
 		for j := range c.Methods {
 			e.declared[c.Methods[j].Ref.String()] = &c.Methods[j]
+			for _, edge := range c.Methods[j].Edges {
+				site, ifaces := lambdaSiteOf(c.Name, edge)
+				for _, t := range ifaces {
+					e.lambdas[t] = append(e.lambdas[t], site)
+				}
+			}
 		}
 	}
 	for _, c := range e.classes {
@@ -81,10 +190,23 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 }
 
 // subtypeClosure returns owner plus all transitive subclasses/implementors, sorted
-// for deterministic target ordering.
+// for deterministic target ordering. It also holds every type below an unopened
+// dependency type (hiddenSubtypes): that type's own supertypes are unknown, so it may
+// extend owner.
 func (e *Engine) subtypeClosure(owner string) []string {
+	return e.closureFrom(owner, e.hiddenSubtypes())
+}
+
+// closureFrom returns owner, the seeds, and every loaded subtype of them.
+func (e *Engine) closureFrom(owner string, seeds []string) []string {
 	seen := map[string]bool{owner: true}
 	stack := []string{owner}
+	for _, h := range seeds {
+		if !seen[h] {
+			seen[h] = true
+			stack = append(stack, h)
+		}
+	}
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -101,6 +223,32 @@ func (e *Engine) subtypeClosure(owner string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hiddenSubtypes returns the loaded classes and interfaces directly below an unopened
+// dependency type, and the unopened interfaces lambdas implement; subtypeClosure adds
+// everything below them. A JDK supertype hides nothing: the JDK cannot extend a class
+// or interface from the classpath.
+func (e *Engine) hiddenSubtypes() []string {
+	if e.hiddenDone {
+		return e.hidden
+	}
+	e.hiddenDone = true
+	for _, c := range e.classes {
+		for _, s := range append([]string{c.Super}, c.Interfaces...) {
+			if s != "" && e.classes[s] == nil && !e.platform(s) {
+				e.hidden = append(e.hidden, c.Name)
+				break
+			}
+		}
+	}
+	for t := range e.lambdas {
+		if e.classes[t] == nil && !e.platform(t) {
+			e.hidden = append(e.hidden, t)
+		}
+	}
+	sort.Strings(e.hidden)
+	return e.hidden
 }
 
 // initClosure returns owner plus every in-classpath class whose <clinit> the JVM
@@ -236,14 +384,17 @@ func declaresInstanceBody(c *classfile.Class) bool {
 }
 
 // hasAppSubtype reports whether some in-classpath class other than typ is a direct
-// subtype of typ — i.e. an application object of the (possibly JDK) type could exist
-// and be passed as a callback. The re-entry rule names it as the witness; it does not
+// subtype of typ, or a loaded lambda implements typ — i.e. an application object of
+// the (possibly JDK) type could exist and be passed as a callback. The re-entry rule names it as the witness; it does not
 // gate the hazard, since an app class can reach typ through a platform intermediate.
 //
 // Every name in e.subtypes is a loaded class, so a direct subtype other than typ itself
 // is exactly the witness; walking the whole closure (all loaded classes, for
 // java/lang/Object) on every call edge made large classpaths quadratic.
 func (e *Engine) hasAppSubtype(typ string) bool {
+	if len(e.lambdas[typ]) > 0 {
+		return true
+	}
 	for _, c := range e.subtypes[typ] {
 		if c != typ {
 			return true
@@ -252,19 +403,18 @@ func (e *Engine) hasAppSubtype(typ string) bool {
 	return false
 }
 
-// lookupInherited resolves (owner,name,desc) walking up the superclass chain — for
-// static/special edges whose exact target may be declared on an ancestor.
-func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
-	m, _ := e.resolveMethod(ref.Owner, ref.Name, ref.Descriptor)
-	return m
-}
-
 // resolveMethod performs JVM method resolution (JVMS §5.4.3.3) of name+desc starting
 // at class owner over the loaded classes: the superclass chain first, then the
 // transitive superinterfaces for a default method. When nothing loaded declares it,
 // unloaded lists the out-of-classpath ancestors (owner itself, if unloaded) where the
 // real body may live, so the caller can decide leaf vs hazard by who owns them. A
 // declaration found on the superclass chain wins over any interface, as at runtime.
+//
+// A loaded default is returned with unloaded listing the unopened dependency
+// interfaces it does not extend: one may extend the default's interface and override
+// it with a more specific default (JVMS §5.4.3.3), so the caller must treat the default
+// as possibly not the one that runs. A JDK interface cannot extend a classpath one, so
+// it never overrides a loaded default and is not listed.
 func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, unloaded []string) {
 	var ifaces []string
 	for cur := owner; cur != ""; {
@@ -287,6 +437,7 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		cur = c.Super
 	}
 	seen := map[string]bool{}
+	var decls []*classfile.Method
 	for len(ifaces) > 0 {
 		cur := ifaces[0]
 		ifaces = ifaces[1:]
@@ -294,8 +445,11 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		seen[cur] = true
-		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !m.Abstract {
-			return m, nil
+		// A static or private interface method is no candidate (JVMS §5.4.3.3). The
+		// walk goes on past a default: an unopened interface above a sibling one may
+		// still override it.
+		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !d.Static && !d.Private {
+			decls = append(decls, d)
 		}
 		c := e.classes[cur]
 		if c == nil {
@@ -304,7 +458,46 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		}
 		ifaces = append(ifaces, c.Interfaces...)
 	}
-	return nil, unloaded
+	// The default that runs is a maximally specific one: no other declaration's
+	// interface extends its own. The first one met need not be it. Where every
+	// maximally specific declaration is abstract the call fails at runtime;
+	// the first default stands in for it.
+	masked := map[string]bool{}
+	for _, d := range decls {
+		for _, a := range e.ancestors(d.Ref.Owner)[1:] {
+			masked[a] = true
+		}
+	}
+	var found, first *classfile.Method
+	for _, d := range decls {
+		if d.Abstract {
+			continue
+		}
+		if first == nil {
+			first = d
+		}
+		if !masked[d.Ref.Owner] {
+			found = d
+			break
+		}
+	}
+	if found == nil {
+		found = first
+	}
+	if found == nil {
+		return nil, unloaded
+	}
+	less := map[string]bool{}
+	for _, a := range e.ancestors(found.Ref.Owner) {
+		less[a] = true
+	}
+	var over []string
+	for _, u := range unloaded {
+		if !less[u] && !e.platform(u) {
+			over = append(over, u)
+		}
+	}
+	return found, over
 }
 
 // unloadedDependency returns the first of names that is neither loaded nor a JDK
@@ -367,11 +560,14 @@ func isPlatformClass(name string) bool {
 //
 // The hazard rules are the soundness of the whole analysis; each is the seam where a
 // missed edge would produce a false not_exploitable:
-//   - invokedynamic and reflection (isReflection): the target is decided at runtime
-//     (a lambda's metafactory, Class.forName, a deserialized object's hooks) and is
-//     invisible to a static graph.
+//   - invokedynamic, except the two bootstraps whose behaviour is fixed by the JDK
+//     (resolveDynamic), and reflection (isReflection): the target is decided at
+//     runtime (Class.forName, a deserialized object's hooks) and is invisible to a
+//     static graph.
 //   - a virtual/interface call whose receiver type is out of classpath: real
-//     dispatch could land on anything, including the sink.
+//     dispatch could land on anything, including the sink. The exceptions are an
+//     array receiver and the listed methods of a final JDK value class
+//     (valueReceiverMethods), whose bodies reach no application object.
 //   - a call whose body lives in an UNLOADED DEPENDENCY (not loaded, not platform):
 //     the dependency's bytecode was never opened, so the sink could be anywhere
 //     beneath it. Covers a direct static/special call, a method inherited from such
@@ -385,7 +581,7 @@ func isPlatformClass(name string) bool {
 //     overrides, or objects it holds (platformBodyOn).
 func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*classfile.Method, hazard bool, why string) {
 	if edge.Kind == classfile.EdgeDynamic {
-		return nil, true, "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+		return e.resolveDynamic(from, edge)
 	}
 	if isReflection(edge.To) {
 		return nil, true, "reflection: " + edge.To.String()
@@ -394,6 +590,9 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 	case classfile.EdgeStatic, classfile.EdgeSpecial:
 		m, unloaded := e.resolveMethod(edge.To.Owner, edge.To.Name, edge.To.Descriptor)
 		if m != nil {
+			if len(unloaded) > 0 {
+				return []*classfile.Method{m}, true, "unloaded_dependency: " + edge.To.String() + " may resolve into unopened " + unloaded[0] + ", which can override " + m.Ref.String()
+			}
 			return []*classfile.Method{m}, false, ""
 		}
 		if dep, ok := e.unloadedDependency(unloaded); ok {
@@ -414,6 +613,18 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		return nil, false, ""
 	case classfile.EdgeVirtual, classfile.EdgeInterface:
 		if _, known := e.classes[edge.To.Owner]; !known {
+			switch {
+			case strings.HasPrefix(edge.To.Owner, "["):
+				// An array's methods are Object's plus clone; none calls back.
+				return nil, false, ""
+			case valueReceiverMethods[edge.To.Owner+"."+edge.To.Name+edge.To.Descriptor] != valueUnlisted:
+				// The receiver is exactly this final class, and this body reads
+				// only it, value arguments and JDK-internal state.
+				return nil, false, ""
+			}
+			// Any other platform receiver can be a JDK object holding application
+			// objects (an ArrayList whose hashCode calls each element's hashCode),
+			// which no rule here can bound without a model of the JDK's bodies.
 			return nil, true, "virtual/interface call on out-of-classpath receiver " + edge.To.Owner
 		}
 		// CHA: every class in the receiver's subtype closure dispatches to the method
@@ -421,27 +632,79 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		// declarations in the closure. A class that inherits the body from outside the
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
-		var outside, platformExits []string
+		var outside, abstractOutside, platformExits []string
+		var lambdaWhy string
+		// Only a type known to be a subtype witnesses a loaded implementor; one that
+		// is merely below an unopened dependency type may not be a receiver at all.
+		known := map[string]bool{}
+		for _, c := range e.closureFrom(edge.To.Owner, nil) {
+			known[c] = true
+		}
+		implemented := false
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
+			if known[c] && (e.isConcrete(c) || len(e.lambdas[c]) > 0) {
+				implemented = true
+			}
+			// A lambda object implementing c answers the call with its
+			// implementation, or runs what it inherits, wherever the object was
+			// created.
+			for _, site := range e.lambdas[c] {
+				var ts []*classfile.Method
+				var h bool
+				var w string
+				if site.answers(edge.To.Name, edge.To.Descriptor) {
+					ts, h, w = e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
+				} else {
+					ts, h, w = e.lambdaInherited(site, edge.To)
+				}
+				if h && lambdaWhy == "" {
+					lambdaWhy = w
+				}
+				for _, t := range ts {
+					if !seen[t] {
+						seen[t] = true
+						targets = append(targets, t)
+					}
+				}
+			}
 			m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor)
 			if m == nil {
+				// Only an object whose exact class is c runs what c resolves to. An
+				// abstract class or interface has none: its loaded concrete subtypes
+				// are in the closure, and a lambda implementing it was added above.
+				// Where neither exists, its supertypes still say where the unseen
+				// receiver's code may come from.
 				// An Object body (unloaded is exactly [Object]) never calls an
 				// argument; it still runs on c.
+				if !e.isConcrete(c) {
+					abstractOutside = append(abstractOutside, unloaded...)
+					continue
+				}
 				if !e.isObjectBody(c, edge.To.Name, edge.To.Descriptor) {
 					outside = append(outside, unloaded...)
 				}
-				if e.isConcrete(c) {
-					platformExits = append(platformExits, c)
-				}
+				platformExits = append(platformExits, c)
 				continue
 			}
+			outside = append(outside, unloaded...)
 			if !m.Abstract && !seen[m] {
 				seen[m] = true
 				targets = append(targets, m)
 			}
 		}
+		if !implemented {
+			// No loaded class or lambda can be the receiver: the object is generated
+			// at runtime (a Proxy, a CGLIB or ByteBuddy subclass, a Spring Data
+			// repository, a Feign client) or comes from outside the classpath, and
+			// runs code the graph cannot see.
+			outside = append(outside, abstractOutside...)
+			if dep, ok := e.unloadedDependency(outside); ok {
+				return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+			}
+			return targets, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
+		}
 		if dep, ok := e.unloadedDependency(outside); ok {
-			return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+			return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
 		}
 		if len(outside) > 0 {
 			// Some receiver inherits the body from an out-of-classpath platform
@@ -465,10 +728,286 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				return targets, true, w
 			}
 		}
-		return targets, false, ""
+		return targets, lambdaWhy != "", lambdaWhy
 	}
 	return nil, false, ""
 }
+
+// The bootstrap methods whose call sites the engine resolves (JDK API facts).
+var (
+	lambdaBootstraps = map[string]bool{
+		"java/lang/invoke/LambdaMetafactory.metafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodType;Ljava/lang/invoke/MethodHandle;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;": true,
+		"java/lang/invoke/LambdaMetafactory.altMetafactory(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;":                                                                    true,
+	}
+	concatBootstraps = map[string]bool{
+		"java/lang/invoke/StringConcatFactory.makeConcat(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/CallSite;":                                                   true,
+		"java/lang/invoke/StringConcatFactory.makeConcatWithConstants(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;": true,
+	}
+)
+
+// resolveDynamic resolves an invokedynamic site by its bootstrap method. Two are
+// fixed by the JDK and resolved:
+//   - LambdaMetafactory builds an object whose functional method calls the
+//     implementation handle (bootstrap argument 1). The implementation counts as
+//     reached where the lambda is created, and CHA dispatch on any interface the
+//     object implements reaches it again (lambdaSiteOf), so a call from a root that
+//     never reaches the creation site still finds it. A lambda handed to the
+//     platform is caught by the re-entry rule at that call.
+//   - StringConcatFactory calls String.valueOf, hence toString(), on each dynamic
+//     argument and nothing else; each toString is resolved as a virtual call.
+//
+// Every other bootstrap, or a site with no bootstrap entry, stays a hazard.
+func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.Method, bool, string) {
+	opaque := "invokedynamic (runtime-bound target): " + edge.To.Name + edge.To.Descriptor
+	b := edge.Bootstrap
+	if b == nil || b.Method.Kind != classfile.RefInvokeStatic {
+		return nil, true, opaque
+	}
+	switch boot := b.Method.Ref.String(); {
+	case lambdaBootstraps[boot]:
+		if len(b.Args) < 2 || b.Args[1].Handle == nil {
+			return nil, true, opaque
+		}
+		return e.lambdaImpl(from, *b.Args[1].Handle, opaque)
+	case concatBootstraps[boot]:
+		var targets []*classfile.Method
+		hazard, why := false, ""
+		for _, p := range paramTypes(edge.To.Descriptor) {
+			ts, h, w := e.resolveTargets(from, classfile.Edge{To: classfile.MethodRef{Owner: p, Name: "toString", Descriptor: "()Ljava/lang/String;"}, Kind: classfile.EdgeVirtual})
+			targets = append(targets, ts...)
+			if h && !hazard {
+				hazard, why = true, w+" (string concatenation toString)"
+			}
+		}
+		return targets, hazard, why
+	}
+	return nil, true, opaque
+}
+
+// lambdaImpl resolves a lambda's implementation handle, naming opaque when the
+// handle itself cannot be followed.
+func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
+	ts, hz, w := e.resolveHandle(from, h)
+	switch {
+	case hz && w == "":
+		w = opaque
+	case hz:
+		w += " (lambda implementation)"
+	}
+	return ts, hz, w
+}
+
+// lambdaSiteOf indexes a LambdaMetafactory site in class from by every interface
+// its object implements: the indy return type, plus altMetafactory's marker
+// interfaces. The functional method is the indy name with the erased SAM
+// descriptor (bootstrap argument 0) or a bridge descriptor. altMetafactory's flags
+// and counts are integer constants the parser leaves empty, so after the three
+// fixed arguments every class is a marker and every method type a bridge. Any other
+// edge returns no interfaces.
+func lambdaSiteOf(from string, edge classfile.Edge) (lambdaSite, []string) {
+	b := edge.Bootstrap
+	if edge.Kind != classfile.EdgeDynamic || b == nil || b.Method.Kind != classfile.RefInvokeStatic ||
+		!lambdaBootstraps[b.Method.Ref.String()] || len(b.Args) < 2 || b.Args[1].Handle == nil {
+		return lambdaSite{}, nil
+	}
+	produced, ok := returnRefType(edge.To.Descriptor)
+	if !ok {
+		return lambdaSite{}, nil
+	}
+	site := lambdaSite{from: from, name: edge.To.Name, handle: *b.Args[1].Handle}
+	if d := b.Args[0].MethodType; d != "" {
+		site.descs = append(site.descs, d)
+	}
+	ifaces := []string{produced}
+	for i := 3; i < len(b.Args); i++ {
+		if c := b.Args[i].Class; c != "" {
+			ifaces = append(ifaces, c)
+		}
+		if d := b.Args[i].MethodType; d != "" {
+			site.descs = append(site.descs, d)
+		}
+	}
+	site.ifaces = ifaces
+	return site, ifaces
+}
+
+// answers reports whether the site's object runs its implementation for a call to
+// name+desc. A site with no SAM descriptor answers every descriptor of the name.
+func (s lambdaSite) answers(name, desc string) bool {
+	if name != s.name {
+		return false
+	}
+	if len(s.descs) == 0 {
+		return true
+	}
+	for _, d := range s.descs {
+		if d == desc {
+			return true
+		}
+	}
+	return false
+}
+
+// lambdaInherited resolves a call to ref on site's object that its implementation
+// does not answer. The object's class is generated: its superclass is
+// java/lang/Object, whose bodies on it call nothing it defines, and it inherits every
+// default of its interfaces, which runs with the object as `this`. A loaded default
+// is a target. A default that may sit in an unopened dependency is a hazard, and so
+// is one that may sit in the JDK, which can call the implementation back. An unopened
+// dependency can also override a loaded default beside it.
+func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*classfile.Method, bool, string) {
+	if objectMethods[ref.Name+ref.Descriptor] {
+		return nil, false, ""
+	}
+	var targets []*classfile.Method
+	var unloaded []string
+	for _, t := range site.ifaces {
+		m, u := e.resolveMethod(t, ref.Name, ref.Descriptor)
+		if m != nil {
+			if !m.Abstract {
+				targets = append(targets, m)
+			}
+			unloaded = append(unloaded, u...)
+			continue
+		}
+		for _, n := range u {
+			if n != objectClass {
+				unloaded = append(unloaded, n)
+			}
+		}
+	}
+	if len(unloaded) == 0 {
+		return targets, false, ""
+	}
+	if dep, ok := e.unloadedDependency(unloaded); ok {
+		return targets, true, "unloaded_dependency: " + ref.String() + " on a lambda inherits from unopened " + dep
+	}
+	if len(targets) > 0 {
+		// A JDK interface cannot extend an application one, so it cannot override
+		// the loaded default.
+		return targets, false, ""
+	}
+	return nil, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
+}
+
+// resolveHandle resolves the call a lambda's implementation method handle makes,
+// by its reference kind (JVMS §5.4.3.5). Invoking a static or constructor handle
+// initializes its class (JVMS §5.5), so those also reach the class's static
+// initializers. A field handle or unknown kind returns a hazard with an empty reason
+// for the caller to fill.
+func (e *Engine) resolveHandle(from string, h classfile.MethodHandle) ([]*classfile.Method, bool, string) {
+	var kind classfile.EdgeKind
+	switch h.Kind {
+	case classfile.RefInvokeVirtual:
+		kind = classfile.EdgeVirtual
+	case classfile.RefInvokeInterface:
+		kind = classfile.EdgeInterface
+	case classfile.RefInvokeSpecial:
+		kind = classfile.EdgeSpecial
+	case classfile.RefInvokeStatic:
+		kind = classfile.EdgeStatic
+	case classfile.RefNewInvokeSpecial:
+		// A constructor reference makes a fresh object, never `this` of from.
+		from, kind = "", classfile.EdgeSpecial
+	default:
+		return nil, true, ""
+	}
+	targets, hazard, why := e.resolveTargets(from, classfile.Edge{To: h.Ref, Kind: kind})
+	if h.Kind == classfile.RefInvokeStatic || h.Kind == classfile.RefNewInvokeSpecial {
+		ts, ih, iw := e.initTargets(h.Ref.Owner)
+		targets = append(targets, ts...)
+		if ih && !hazard {
+			hazard, why = true, iw
+		}
+	}
+	return targets, hazard, why
+}
+
+// initTargets returns the static initializers initializing owner runs, and a hazard
+// when one belongs to an unopened dependency (as Reach does for an InitTrigger).
+func (e *Engine) initTargets(owner string) (targets []*classfile.Method, hazard bool, why string) {
+	for _, cls := range e.initClosure(owner) {
+		if dep, ok := e.unloadedDependency([]string{cls}); ok {
+			if !hazard {
+				hazard, why = true, "unloaded_dependency: static initializer of unopened "+dep
+			}
+			continue
+		}
+		if m := e.declared[(classfile.MethodRef{Owner: cls, Name: "<clinit>", Descriptor: "()V"}).String()]; m != nil {
+			targets = append(targets, m)
+		}
+	}
+	return targets, hazard, why
+}
+
+// A valueReceiverMethods entry says why a value-class method is a leaf.
+const (
+	valueUnlisted   = iota // not listed: the call stays a hazard
+	valueArgs              // every reference parameter is a value class
+	valueComparedTo        // its Object parameter is only tested with instanceof
+)
+
+// valueReceiverMethods lists, by owner.name+descriptor, the methods of the final
+// value classes whose JDK bodies (OpenJDK 17/21) read only the receiver, value
+// arguments and JDK-internal state: no service or provider lookup, no class named
+// by configuration, and no call on an argument. A hand-listed JDK fact. Leaving a
+// method out keeps it a hazard; listing one that reaches a provider turns a hidden
+// edge into a silent leaf. String.getBytes(String) is out for that reason:
+// Charset.forName finds charsets through CharsetProvider services, which can be
+// application classes. So are getBytes(), the case mappings and every method
+// taking a CharSequence, Object or functional argument.
+var valueReceiverMethods = func() map[string]int {
+	m := map[string]int{}
+	add := func(owner string, kind int, methods ...string) {
+		for _, s := range methods {
+			m[owner+"."+s] = kind
+		}
+	}
+	const str = "Ljava/lang/String;"
+	add("java/lang/String", valueArgs,
+		"length()I", "isEmpty()Z", "isBlank()Z", "charAt(I)C", "codePointAt(I)I",
+		"hashCode()I", "toString()"+str, "toCharArray()[C", "intern()"+str,
+		"substring(I)"+str, "substring(II)"+str, "subSequence(II)Ljava/lang/CharSequence;",
+		"indexOf(I)I", "indexOf(II)I", "indexOf("+str+")I", "indexOf("+str+"I)I",
+		"lastIndexOf(I)I", "lastIndexOf(II)I", "lastIndexOf("+str+")I", "lastIndexOf("+str+"I)I",
+		"startsWith("+str+")Z", "startsWith("+str+"I)Z", "endsWith("+str+")Z",
+		"trim()"+str, "strip()"+str, "stripLeading()"+str, "stripTrailing()"+str,
+		"concat("+str+")"+str, "repeat(I)"+str, "replace(CC)"+str,
+		"equalsIgnoreCase("+str+")Z", "compareTo("+str+")I", "compareToIgnoreCase("+str+")I",
+		"contentEquals(Ljava/lang/StringBuffer;)Z",
+		"regionMatches(I"+str+"II)Z", "regionMatches(ZI"+str+"II)Z",
+		"matches("+str+")Z", "replaceAll("+str+str+")"+str, "replaceFirst("+str+str+")"+str,
+		"split("+str+")[Ljava/lang/String;", "split("+str+"I)[Ljava/lang/String;")
+	add("java/lang/String", valueComparedTo, "equals(Ljava/lang/Object;)Z", "compareTo(Ljava/lang/Object;)I")
+	for _, sb := range []string{"java/lang/StringBuilder", "java/lang/StringBuffer"} {
+		self := "L" + sb + ";"
+		add(sb, valueArgs,
+			"length()I", "charAt(I)C", "toString()"+str, "setLength(I)V",
+			"append("+str+")"+self, "append(Ljava/lang/StringBuffer;)"+self, "append([C)"+self,
+			"append([CII)"+self, "append(C)"+self, "append(I)"+self, "append(J)"+self,
+			"append(Z)"+self, "append(F)"+self, "append(D)"+self,
+			"insert(I"+str+")"+self, "insert(IC)"+self, "insert(II)"+self,
+			"reverse()"+self, "delete(II)"+self, "deleteCharAt(I)"+self,
+			"replace(II"+str+")"+self, "setCharAt(IC)V",
+			"indexOf("+str+")I", "lastIndexOf("+str+")I", "substring(I)"+str, "substring(II)"+str,
+			"compareTo("+self+")I")
+	}
+	boxed := map[string][]string{
+		"java/lang/Integer":   {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Long":      {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Short":     {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Byte":      {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "shortValue()S", "byteValue()B"},
+		"java/lang/Float":     {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "isNaN()Z", "isInfinite()Z"},
+		"java/lang/Double":    {"intValue()I", "longValue()J", "doubleValue()D", "floatValue()F", "isNaN()Z", "isInfinite()Z"},
+		"java/lang/Character": {"charValue()C"},
+		"java/lang/Boolean":   {"booleanValue()Z"},
+	}
+	for owner, ms := range boxed {
+		add(owner, valueArgs, append(ms, "hashCode()I", "toString()"+str, "compareTo(L"+owner+";)I")...)
+		add(owner, valueComparedTo, "equals(Ljava/lang/Object;)Z", "compareTo(Ljava/lang/Object;)I")
+	}
+	return m
+}()
 
 // valueClasses are final JDK classes whose instances hold only characters and
 // primitives (JDK fact): handing one to a platform method gives the method no
@@ -688,7 +1227,8 @@ func (e *Engine) hasOverridable(c string) bool {
 //     javax/management (MBean server, MLet), javax/script, java/lang/instrument.
 //   - deserialization: ObjectInputStream/ObjectOutputStream run readObject,
 //     readResolve, writeReplace and a serializable lambda's $deserializeLambda$ on
-//     classes the stream names; java/rmi lookups and calls deserialize results.
+//     classes the stream names; SignedObject and SealedObject getObject read one
+//     through an ObjectInputStream; java/rmi lookups and calls deserialize results.
 //   - process-global inputs: System/Runtime load/loadLibrary (a native library's
 //     JNI_OnLoad can call any Java method) and System.setProperty/setProperties
 //     (platform factories instantiate classes their properties name).
@@ -699,6 +1239,8 @@ func isReflection(r classfile.MethodRef) bool {
 	case r.Owner == "java/util/ServiceLoader" || strings.HasPrefix(r.Owner, "java/util/ServiceLoader$"):
 		return true
 	case r.Owner == "java/io/ObjectInputStream" || r.Owner == "java/io/ObjectOutputStream":
+		return true
+	case (r.Owner == "java/security/SignedObject" || r.Owner == "javax/crypto/SealedObject") && r.Name == "getObject":
 		return true
 	case (r.Owner == "java/lang/System" || r.Owner == "java/lang/Runtime") && (r.Name == "load" || r.Name == "loadLibrary"):
 		return true
@@ -773,14 +1315,15 @@ var deniedLoadable = map[string]bool{
 // platformLoadable reports whether the JDK could instantiate loaded class c by name
 // from a provider lookup, or hold one and call its methods: c reaches a platform
 // supertype outside deniedLoadable, or an unopened dependency supertype (whose own
-// supertypes are unknown).
+// supertypes are unknown). On a linked classpath a class that cannot link is neither
+// (SetLinked).
 func (e *Engine) platformLoadable(c string) bool {
 	if v, ok := e.loadable[c]; ok {
 		return v
 	}
 	e.loadable[c] = false // cycle guard
 	found := false
-	if cls := e.classes[c]; cls != nil {
+	if cls := e.classes[c]; cls != nil && !(e.linked && e.unlinkable(c)) {
 		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
 			if s != "" && e.loadableType(s) {
 				found = true
@@ -792,13 +1335,59 @@ func (e *Engine) platformLoadable(c string) bool {
 	return found
 }
 
+// SetLinked declares whether the loaded classes are every class the run's classpath
+// defines: the build lists every dependency it installs, each one's JAR was read, the
+// class output covers the sources, and the program is launched on that classpath. A
+// loaded class with a supertype that is neither loaded nor the JDK's then cannot link,
+// since loading a class resolves its superclass and each direct superinterface (JVMS
+// 5.3.5), so the JDK can neither instantiate it nor hold one (platformLoadable). This
+// trusts the launch the way the build graph does: an agent that appends to the system
+// classpath at run time, or a JDK vendor's own packages (OpenJ9's com/ibm, GraalVM's,
+// JavaFX), could supply the supertype.
+// An unlisted classpath (Classpath.Unlisted) is never linked.
+func (e *Engine) SetLinked(linked bool) {
+	linked = linked && !e.unlisted
+	if linked != e.linked {
+		e.linked = linked
+		e.loadable = map[string]bool{}
+	}
+}
+
+// unlinkable reports whether loaded class c cannot link on a linked classpath: some
+// supertype is neither loaded nor a type the JDK may define, or is a loaded class that
+// cannot link. A type the JDK may define is one in a package some JDK release occupies
+// (BootOnly at an unrecorded release), even where a classpath entry also defines that
+// package; every platform package is one.
+func (e *Engine) unlinkable(c string) bool {
+	if v, ok := e.unlinked[c]; ok {
+		return v
+	}
+	e.unlinked[c] = false // cycle guard
+	out := false
+	for _, s := range append([]string{e.classes[c].Super}, e.classes[c].Interfaces...) {
+		if s == "" {
+			continue
+		}
+		if e.classes[s] != nil {
+			out = e.unlinkable(s)
+		} else {
+			out = !BootOnly(s, 0)
+		}
+		if out {
+			break
+		}
+	}
+	e.unlinked[c] = out
+	return out
+}
+
 // loadableType reports whether type t can be the static type under which the JDK
 // holds an object it may call: a loaded class that is platformLoadable, an unopened
 // dependency type, or a platform type outside deniedLoadable and the Throwables.
 // A Throwable needs no roots: every instance ran Throwable's constructor on itself,
 // which the search already treats as a platform body running on that receiver.
 func (e *Engine) loadableType(t string) bool {
-	if _, ok := e.classes[t]; ok {
+	if e.classes[t] != nil {
 		return e.platformLoadable(t)
 	}
 	if !e.platform(t) {
@@ -811,31 +1400,135 @@ func (e *Engine) loadableType(t string) bool {
 	return !deniedLoadable[t] && !strings.HasPrefix(t, "java/util/function/")
 }
 
+// objectOverridable are java/lang/Object's overridable methods, keyed as platformMethods
+// keys them.
+var objectOverridable = map[string]bool{
+	"toString()": true, "equals(Ljava/lang/Object;)": true, "hashCode()": true, "finalize()": true, "clone()": true,
+}
+
+// platformSigs indexes platformMethods' methods by type.
+var platformSigs = sync.OnceValue(func() map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(platformMethods))
+	for t, pt := range platformMethods {
+		sigs := map[string]bool{}
+		for _, s := range strings.Fields(pt.methods) {
+			sigs[s] = true
+		}
+		out[t] = sigs
+	}
+	return out
+})
+
+// heldTypes is how the JDK can hold an object: the platformMethods types among its
+// supertypes, and unseen when some supertype's methods are unknown to the engine.
+type heldTypes struct {
+	types  []string
+	unseen bool
+}
+
+// heldAs returns the heldTypes of every loaded class that is owner or a subtype of it,
+// merged: a method owner declares runs on an object of each that does not override it.
+// A supertype is unseen when it is neither loaded, java/lang/Object, nor a platform type
+// platformMethods lists: an unopened dependency type, whose own supertypes are unknown,
+// or a platform type outside the list. Every platform type is unseen when the runtime is
+// not the list's release: a later JDK can add a method to a listed type, and an earlier one
+// can declare a method since removed (JDK 8's SecurityManager.checkMemberAccess).
+func (e *Engine) heldAs(owner string) heldTypes {
+	if h, ok := e.held[owner]; ok {
+		return h
+	}
+	var h heldTypes
+	seen := map[string]bool{}
+	stack := e.subtypeClosure(owner)
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[cur] || cur == objectClass {
+			continue
+		}
+		seen[cur] = true
+		if cls := e.classes[cur]; cls != nil {
+			if cls.Super != "" {
+				stack = append(stack, cls.Super)
+			}
+			stack = append(stack, cls.Interfaces...)
+			continue
+		}
+		pt, listed := platformMethods[cur]
+		if !listed || !e.methodsHold || !e.platform(cur) {
+			h.unseen = true
+			break
+		}
+		h.types = append(h.types, cur)
+		stack = append(stack, strings.Fields(pt.supers)...)
+	}
+	e.held[owner] = h
+	return h
+}
+
+// jdkCallable reports whether JDK code can invoke m, an overridable method of loaded
+// class owner, without reflection: the JDK names a method only through a type of its
+// own, so m must override a method a platform supertype declares (platformMethods,
+// objectOverridable) or one of a supertype the engine cannot see. A match is on name
+// and parameter types: a covariant override's bridge and the override itself both
+// match. Any other JDK call into m is reflective (deserialization hooks, java/beans,
+// JMX, method handles), and the search meets its JDK entry point as a hazard instead
+// (isReflection). That holds only for reflection the searched code starts: an endpoint
+// launch flags enable, such as JMX remote or an RMI registry, deserializes into
+// readResolve and writeReplace with no call in the code, and is outside the search.
+func (e *Engine) jdkCallable(owner string, m classfile.MethodRef) bool {
+	i := strings.IndexByte(m.Descriptor, ')')
+	if i < 0 {
+		return true
+	}
+	sig := m.Name + m.Descriptor[:i+1]
+	if objectOverridable[sig] {
+		return true
+	}
+	h := e.heldAs(owner)
+	if h.unseen {
+		return true
+	}
+	sigs := platformSigs()
+	for _, t := range h.types {
+		if sigs[t][sig] {
+			return true
+		}
+	}
+	return false
+}
+
 // providerRoots returns the methods the JDK itself can call on loaded classes it
-// finds or holds without the searched code handing them over: for each
-// platformLoadable class, its overridable methods, and when it is a public concrete
-// class, its public constructors, public static provider() and the static
-// initializers instantiating it runs (ServiceLoader, DriverManager and the factory
-// lookups load providers named in META-INF/services). A root method that returns an
-// object the JDK then calls is a hazard when the object's type is not itself
-// covered (a denied or unopened type, such as Object or Iterator), because the
-// object's class need not be platformLoadable.
+// finds or holds without the searched code handing them over: the overridable methods
+// the JDK can name (jdkCallable) of each class that is platformLoadable or a supertype
+// of one, since a platformLoadable subclass inherits them, and for a platformLoadable
+// class that is public and concrete, its public constructors, public static
+// provider() and the static initializers instantiating it runs (ServiceLoader,
+// DriverManager and the factory lookups load providers named in META-INF/services).
+// A root method that returns an object the JDK then calls is a hazard when the
+// object's type is not itself covered (a denied or unopened type, such as Object or
+// Iterator), because the object's class need not be platformLoadable.
 func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 	names := make([]string, 0, len(e.classes))
 	for n := range e.classes {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+	inherited := e.loadableSupertypes()
 	for _, n := range names {
-		if !e.platformLoadable(n) {
+		loadable := e.platformLoadable(n)
+		if !loadable && !inherited[n] {
 			continue
 		}
 		cls := e.classes[n]
-		byName := cls.Public && !cls.Abstract
+		byName := loadable && cls.Public && !cls.Abstract
 		for i := range cls.Methods {
 			m := &cls.Methods[i]
 			switch {
 			case isOverridable(m):
+				if !e.jdkCallable(n, m.Ref) {
+					continue
+				}
 				roots = append(roots, m)
 				if rt, ok := returnRefType(m.Ref.Descriptor); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
 					hazard = "higher-order re-entry: platform-callable " + m.Ref.String() + " returns " + rt + ", which can carry application objects"
@@ -852,7 +1545,80 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 			}
 		}
 	}
+	// A lambda the JDK can hold (a HostnameVerifier handed to
+	// HttpsURLConnection.setDefaultHostnameVerifier) runs its implementation when the
+	// JDK calls it.
+	ifaces := make([]string, 0, len(e.lambdas))
+	for t := range e.lambdas {
+		ifaces = append(ifaces, t)
+	}
+	sort.Strings(ifaces)
+	for _, t := range ifaces {
+		if !e.loadableType(t) {
+			continue
+		}
+		for _, site := range e.lambdas[t] {
+			ts, h, w := e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+t)
+			roots = append(roots, ts...)
+			if h && hazard == "" {
+				hazard = w
+			}
+			descs := site.descs
+			if len(descs) == 0 {
+				descs = []string{site.handle.Ref.Descriptor}
+			}
+			for _, d := range descs {
+				if rt, ok := returnRefType(d); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
+					hazard = "higher-order re-entry: platform-callable lambda implementing " + t + " returns " + rt + ", which can carry application objects"
+				}
+			}
+		}
+	}
 	return roots, hazard
+}
+
+// loadableSupertypes returns the loaded classes and interfaces a platformLoadable class
+// extends or implements, directly or not: the JDK holding that class runs the methods
+// it inherits from them.
+func (e *Engine) loadableSupertypes() map[string]bool {
+	out := map[string]bool{}
+	var stack []string
+	for n, cls := range e.classes {
+		if e.platformLoadable(n) {
+			stack = append(stack, cls.Super)
+			stack = append(stack, cls.Interfaces...)
+		}
+	}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		cls := e.classes[cur]
+		if cls == nil || out[cur] {
+			continue
+		}
+		out[cur] = true
+		stack = append(stack, cls.Super)
+		stack = append(stack, cls.Interfaces...)
+	}
+	return out
+}
+
+// handleTouchesPlatform reports whether a lambda implementation handle runs a JDK
+// body: its owner is a JDK class, or it inherits the method from one
+// (MyCharset::forName, with MyCharset extending Charset).
+func (e *Engine) handleTouchesPlatform(h classfile.MethodHandle) bool {
+	o := h.Ref.Owner
+	if e.classes[o] == nil {
+		return e.platformBody(o)
+	}
+	if m, unloaded := e.resolveMethod(o, h.Ref.Name, h.Ref.Descriptor); m == nil {
+		for _, u := range unloaded {
+			if e.platformBody(u) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // touchesPlatform reports whether edge can run a JDK body other than
@@ -871,6 +1637,13 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 		owners = e.subtypeClosure(o)
 	}
 	for _, c := range owners {
+		// A lambda answering the call runs its implementation, which can be a JDK
+		// method (Charset::forName).
+		for _, site := range e.lambdas[c] {
+			if site.answers(edge.To.Name, edge.To.Descriptor) && e.handleTouchesPlatform(site.handle) {
+				return true
+			}
+		}
 		if m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor); m == nil {
 			for _, u := range unloaded {
 				if e.platformBody(u) {
@@ -940,13 +1713,18 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		return res
 	}
 
-	start := e.lookupInherited(ingress)
+	start, over := e.resolveMethod(ingress.Owner, ingress.Name, ingress.Descriptor)
 	if start == nil {
 		// The ingress itself is not in the analyzed classpath: the search never
 		// began, so absence proves nothing.
 		res.Verdict = Undetermined
 		res.hazard("ingress method not found in classpath: " + ingress.String())
 		return res
+	}
+	if len(over) > 0 {
+		// The ingress resolves to a loaded default that an unopened dependency
+		// interface may override; the search still runs from the default.
+		res.hazard("unloaded_dependency: ingress " + ingress.String() + " may resolve into unopened " + over[0] + ", which can override " + start.Ref.String())
 	}
 
 	visited := map[string]bool{start.Ref.String(): true}
@@ -1190,7 +1968,14 @@ func (cp *Classpath) Add(pkgs map[string]bool, listed bool) {
 }
 
 // Merge adds everything other records.
+// A JDK only one side records is kept, and two that differ leave it 0.
 func (cp *Classpath) Merge(other Classpath) {
 	cp.Add(other.Packages, true)
 	cp.Unlisted = cp.Unlisted || other.Unlisted
+	switch {
+	case cp.JDK == 0:
+		cp.JDK = other.JDK
+	case other.JDK != 0 && other.JDK != cp.JDK:
+		cp.JDK = 0
+	}
 }

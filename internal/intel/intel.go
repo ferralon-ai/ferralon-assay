@@ -42,8 +42,11 @@ type EPSS struct {
 	// Score is FIRST.org's 0..1 probability of exploitation in the 30 days after AsOf.
 	Score float64
 	// Percentile is the score's rank among all scored CVEs in the same model run (0..1); 0 when
-	// the producer did not source one.
+	// the producer did not source one. A sourced 0 is a real percentile: HasPercentile tells the two
+	// apart.
 	Percentile float64
+	// HasPercentile is whether the producer sourced Percentile, zero included.
+	HasPercentile bool
 	// AsOf is the EPSS model date (YYYY-MM-DD) the score and percentile come from. Always set.
 	AsOf string
 }
@@ -238,7 +241,7 @@ func (s *Signals) add(rec wireRecord, seen map[string]struct{}) error {
 			if *e.Percentile < 0 || *e.Percentile > 1 {
 				return fmt.Errorf("%s: epss percentile %v is outside [0,1]", id, *e.Percentile)
 			}
-			v.Percentile = *e.Percentile
+			v.Percentile, v.HasPercentile = *e.Percentile, true
 		}
 		s.epss[id] = v
 		if asOf.After(s.newest) {

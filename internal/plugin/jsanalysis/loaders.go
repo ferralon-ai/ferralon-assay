@@ -812,12 +812,121 @@ func indexOperator(clean []rune, b int) (int, bool) {
 func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
 	b := skipSpaceBack(clean, i-1)
 	if b < 0 || clean[b] != '.' || b >= 2 && clean[b-1] == '.' && clean[b-2] == '.' {
-		return // a constructor method, an object key, a local name or a spread
+		// A destructured key takes the member under a local name (`const { constructor: F } =
+		// g`); a constructor method, an object-literal key, a local name or a spread does not.
+		if destructuredKey(clean, i, i+len("constructor")) {
+			mb.evaluated = true
+		}
+		return
 	}
 	op := memberDot(clean, b)
 	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor")) {
 		mb.evaluated = true
 	}
+}
+
+// destructuredKey reports whether the name at [i, next) is a key, shorthand or defaulted
+// entry of an object destructuring pattern: a `{...}`, possibly nested in further patterns,
+// that is assigned from (`{...} =`), declared by const, let or var, the head of a for-of or
+// for-in, a catch binding, or a parameter of a function, method or arrow.
+func destructuredKey(clean []rune, i, next int) bool {
+	n := len(clean)
+	p := skipSpace(clean, next)
+	if p >= n {
+		return false
+	}
+	switch c := clean[p]; {
+	case c == ':' && !(p+1 < n && clean[p+1] == ':'), c == ',', c == '}':
+	case c == '=' && !(p+1 < n && (clean[p+1] == '=' || clean[p+1] == '>')):
+	default:
+		return false
+	}
+	o := enclosingOpen(clean, i)
+	if o < 0 || clean[o] != '{' {
+		return false
+	}
+	for o >= 0 && (clean[o] == '{' || clean[o] == '[') {
+		q := skipSpace(clean, closeOf(clean, o)+1)
+		if q < n && clean[q] == '=' && !(q+1 < n && (clean[q+1] == '=' || clean[q+1] == '>')) {
+			return true
+		}
+		if w, _ := peekWord(clean, q); w == "of" || w == "in" {
+			return true
+		}
+		b := skipSpaceBack(clean, o-1)
+		if b < 0 {
+			return false
+		}
+		if w, _ := wordBefore(clean, b); w == "const" || w == "let" || w == "var" {
+			return true
+		}
+		switch clean[b] {
+		case ':', ',', '[', '{', '(':
+		default:
+			return false
+		}
+		o = enclosingOpen(clean, o)
+	}
+	return o >= 0 && clean[o] == '(' && parameterList(clean, o)
+}
+
+// parameterList reports whether the parenthesis at o opens a parameter list: of an arrow
+// (`(...) =>`), a function (`function [name](...)`), a method (`name(...) {`) or a catch
+// clause.
+func parameterList(clean []rune, o int) bool {
+	n := len(clean)
+	q := skipSpace(clean, closeOf(clean, o)+1)
+	if q+1 < n && clean[q] == '=' && clean[q+1] == '>' {
+		return true
+	}
+	b := skipSpaceBack(clean, o-1)
+	w, s := wordBefore(clean, b)
+	switch w {
+	case "function", "catch":
+		return true
+	case "", "if", "while", "for", "switch", "with", "return", "typeof", "void", "await", "yield", "new", "in", "of", "case":
+		return false
+	}
+	if v, _ := wordBefore(clean, skipSpaceBack(clean, s-1)); v == "function" {
+		return true
+	}
+	d := skipSpaceBack(clean, s-1)
+	return q < n && clean[q] == '{' && (d < 0 || clean[d] != '.')
+}
+
+// enclosingOpen returns the index of the innermost bracket that opens before i and is not
+// closed before it, or -1.
+func enclosingOpen(clean []rune, i int) int {
+	depth := 0
+	for k := i - 1; k >= 0; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			if depth == 0 {
+				return k
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// closeOf returns the index of the bracket that closes the one opened at o, or len(clean).
+func closeOf(clean []rune, o int) int {
+	depth := 0
+	for k := o; k < len(clean); k++ {
+		switch clean[k] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return len(clean)
 }
 
 // constructorRead reports whether the constructor member read by the operator starting at

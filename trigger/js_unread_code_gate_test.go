@@ -521,6 +521,53 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function constructed as this.constructor in a class method called on a function", `
+class A { m(s) { return new this.constructor(s); } }
+A.prototype.m.call(function () {}, process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructed as this.constructor in a prototype method called on a function", `
+function Foo() {}
+Foo.prototype.m = function (s) { return new this.constructor(s); };
+Foo.prototype.m.call(function () {}, process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructed as this.constructor in a class method copied onto a function", `
+class A { m(s) { return new this.constructor(s); } }
+const f = function () {};
+f.m = A.prototype.m;
+f.m(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructed as this.constructor in a class method applied through Reflect.apply", `
+class A { m(s) { return new this.constructor(s); } }
+Reflect.apply(A.prototype.m, function () {}, [process.argv[3]])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function constructed as this.constructor in a method added to Object.prototype", `
+Object.prototype.mk = function (s) { return new this.constructor(s); };
+(function () {}).mk(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"this.constructor constructed with arguments in an instance method and a prototype method", `
+class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }
+new Box(1).clone();
+function Foo(v) { this.v = v; }
+Foo.prototype.clone = function () { return new this.constructor(this.v); };
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };
@@ -576,7 +623,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require as an object key", "const cfg = { require: ['./plugins'] };\nconst j = require('./plugins');", nil},
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
-		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
+		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
 		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"webpack's runtime require of an in-tree module", "const j = __non_webpack_require__('./plugins');", nil},
 		{"arguments inside a function, as a member and as a key", "function first() { return arguments[0]; }\nconst info = { arguments: first.arguments };\nconst j = require('./plugins');", nil},
@@ -584,7 +631,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"constructor as a class method and an object-literal key", "class Box { constructor(v) { this.v = v; } }\nfunction inherit(sub, sup) { sub.prototype = Object.create(sup && sup.prototype, { constructor: { value: sub, writable: true } }); }\nconst desc = { constructor: Box, f({ a }) { return a; } };\nconst j = require('./plugins');", nil},
 		{"a prototype-pollution guard on a constructor key", "function set(o, k, v) { if (k === '__proto__' || k === 'constructor') return; o[k] = v; }\nconst name = Reflect.get(set, 'name');\nconst j = require('./plugins');", nil},
 		{"arguments inside class methods", "class A { m() { return arguments[0]; } static s() { return arguments.length; } constructor() { this.n = arguments.length; } }\nconst j = require('./plugins');", nil},
-		{"this.constructor constructed in an instance method and a prototype method", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nfunction Foo(v) { this.v = v; }\nFoo.prototype.clone = function () { return new this.constructor(this.v); };\nclass Reg { static make() { return new this.constructor(); } }\nconst j = require('./plugins');", nil},
+		{"this.constructor constructed with no arguments", "class Box { clone() { return new this.constructor(); } }\nfunction Foo() {}\nFoo.prototype.clone = function () { return new this.constructor; };\nclass Reg { static make() { return new this.constructor(); } }\nconst j = require('./plugins');", nil},
 		{"the webpack 5 runtime handing its module record to a module factory", "var __webpack_modules__ = {};\nvar __webpack_module_cache__ = {};\nfunction __webpack_require__(moduleId) {\n  var cachedModule = __webpack_module_cache__[moduleId];\n  if (cachedModule !== undefined) return cachedModule.exports;\n  var module = __webpack_module_cache__[moduleId] = { exports: {} };\n  __webpack_modules__[moduleId](module, module.exports, __webpack_require__);\n  return module.exports;\n}\nconst j = require('./plugins');", nil},
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},

@@ -121,7 +121,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			mb.argumentsUse(clean, i, next, frames)
 			i = next
 		case word == "constructor":
-			mb.constructorUse(clean, src, i, frames)
+			mb.constructorUse(clean, src, i)
 			i = next
 		case word == "Function":
 			mb.functionUse(clean, src, i, next)
@@ -139,7 +139,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 			mb.globalUse(clean, i, next, !globals.thisGlobal(i), globals)
 			i = next
 		case word == "_" && src[i] != '_': // a string literal; see keyedUse
-			mb.keyedUse(clean, src, i, frames)
+			mb.keyedUse(clean, src, i)
 			i = next
 		case globals.callsReturnThis(clean, word, i, next):
 			// `G()` for `function G() { return this; }` is the global, used where it is called

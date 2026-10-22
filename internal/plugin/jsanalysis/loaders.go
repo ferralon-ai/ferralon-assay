@@ -601,7 +601,7 @@ func operandEnds(clean []rune, p int) bool {
 // a loader entry point. A reflective read hands the member's value on, so a constructor
 // key there flags whatever the receiver. A key on the module object
 // or process is judged by objectUse whatever it is.
-func (mb *moduleBindings) keyedUse(clean, src []rune, a int, frames *thisFrames) {
+func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	if reflectiveKey(clean, a) {
 		switch specifierAt(src, a) {
 		case "require", "createRequire", "_load", "mainModule":
@@ -634,7 +634,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int, frames *thisFrames)
 		if !ok {
 			return // an array literal holding the string
 		}
-		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1, frames) {
+		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1) {
 			mb.evaluated = true
 		}
 	}
@@ -870,7 +870,7 @@ func indexOperator(clean []rune, b int) (int, bool) {
 // function receiver from any other value, so the member is accepted only when it does not
 // reach a function constructor on any receiver (constructorReachesFunction) and its value is
 // neither called nor handed on (constructorRead).
-func (mb *moduleBindings) constructorUse(clean, src []rune, i int, frames *thisFrames) {
+func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
 	b := skipSpaceBack(clean, i-1)
 	if b < 0 || clean[b] != '.' || b >= 2 && clean[b-1] == '.' && clean[b-2] == '.' {
 		// A destructured key takes the member under a local name (`const { constructor: F } =
@@ -881,7 +881,7 @@ func (mb *moduleBindings) constructorUse(clean, src []rune, i int, frames *thisF
 		return
 	}
 	op := memberDot(clean, b)
-	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor"), frames) {
+	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor")) {
 		mb.evaluated = true
 	}
 }
@@ -996,11 +996,11 @@ func closeOf(clean []rune, o int) int {
 // constructor, call, apply or bind; tested (objectTested: !, ==, ===, !=, !==, the left
 // operand of && or of a ternary, an if or while condition); the right operand of instanceof;
 // the target of a plain assignment (`F.prototype.constructor = F`); or constructed as
-// `new this.constructor` where this is an instance (frames.instanceMethod) or with no
-// arguments; in a static method or a function called on a function, this.constructor is
-// Function. A call, an alias, an argument, a computed index or any other use may reach
-// Function.
-func constructorRead(clean []rune, op, next int, frames *thisFrames) bool {
+// `new this.constructor` with no arguments. Any function can be called with this bound to a
+// function (`.call`, `Reflect.apply`, a member copied onto a function), where
+// this.constructor is Function, so a construction with arguments may build code. A call, an
+// alias, an argument, a computed index or any other use may reach Function.
+func constructorRead(clean []rune, op, next int) bool {
 	start := receiverStart(clean, op)
 	if start < 0 {
 		return false
@@ -1022,7 +1022,7 @@ func constructorRead(clean []rune, op, next int, frames *thisFrames) bool {
 	}
 	if w == "new" && clean[op] == '.' {
 		if recv, rs := wordBefore(clean, skipSpaceBack(clean, op-1)); recv == "this" && rs == start {
-			return noArguments(clean, p) || frames.instanceMethod(clean, start)
+			return noArguments(clean, p)
 		}
 	}
 	return false

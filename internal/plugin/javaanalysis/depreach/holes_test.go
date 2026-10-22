@@ -18,6 +18,7 @@ type holeCase struct {
 	why     string // a substring of some hazard reason the row pins (optional)
 	via     string // a method the found path must pass through (ReachableCandidate rows)
 	cp      Classpath
+	linked  bool // the loaded classes are every class the run's classpath defines (SetLinked)
 }
 
 const holeMain = "com/acme/Main"
@@ -52,7 +53,9 @@ func runHoleCases(t *testing.T, cases []holeCase) {
 	t.Helper()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := NewEngineOn(append(tc.classes, urlFetcherDep()), tc.cp).Reach(holeIngress, holeSink)
+			e := NewEngineOn(append(tc.classes, urlFetcherDep()), tc.cp)
+			e.SetLinked(tc.linked)
+			r := e.Reach(holeIngress, holeSink)
 			if r.Verdict != tc.want {
 				t.Fatalf("verdict = %s, want %s (hazard=%q kinds=%v path=%s)", r.Verdict, tc.want, r.HazardWhy, r.HazardKinds, PathString(r.Path))
 			}
@@ -970,5 +973,152 @@ func TestResolveMethod_SuperclassChainFirst(t *testing.T) {
 	m, over := e.resolveMethod(impl, "describe", "()V")
 	if m == nil || m.Ref.Owner != parent || len(over) != 0 {
 		t.Errorf("resolveMethod = %v %v, want %s.describe and no override", m, over, parent)
+	}
+}
+
+// TestReach_LinkBoundLoadability: on a linked classpath a class whose supertype no
+// loaded class and no JDK package supplies cannot link (JVMS 5.3.5), so the JDK never
+// holds one and its methods are no provider roots.
+func TestReach_LinkBoundLoadability(t *testing.T) {
+	const (
+		d    = "com/acme/D"
+		base = "com/acme/Base"
+	)
+	touch := edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)
+	plugin := func(methods ...classfile.Method) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(touch),
+			{Name: d, Super: objectClass, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: methods},
+		}
+	}
+	driver := func(super string) []classfile.Class {
+		return []classfile.Class{
+			mainCalls(edge(classfile.EdgeStatic, "java/sql/DriverManager", "getConnection", "(Ljava/lang/String;)Ljava/sql/Connection;")),
+			{Name: base, Super: objectClass, Interfaces: []string{super}, Public: true, Methods: []classfile.Method{
+				pubMethod(base, "<init>", "()V"),
+			}},
+			{Name: d, Super: base, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+				pubMethod(d, "<init>", "()V"),
+				callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
+			}},
+		}
+	}
+	runHoleCases(t, []holeCase{
+		{
+			name:    "an unopened supertype, unlinked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			want:    ReachableCandidate, via: "D.start",
+		},
+		{
+			name:    "an unopened supertype, linked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "an Object-returning method below an unopened supertype, unlinked",
+			classes: plugin(pubMethod(d, "get", "()Ljava/lang/Object;")),
+			want:    Undetermined, kind: HazardKindReentry,
+		},
+		{
+			name:    "an Object-returning method below an unopened supertype, linked",
+			classes: plugin(pubMethod(d, "get", "()Ljava/lang/Object;")),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "a provider below a loaded class with an unopened supertype, unlinked",
+			classes: driver("org/unopened/Plugin"),
+			want:    ReachableCandidate, via: "D.connect",
+		},
+		{
+			name:    "a provider below a loaded class with an unopened supertype, linked",
+			classes: driver("org/unopened/Plugin"),
+			linked:  true,
+			want:    NotExploitable,
+		},
+		{
+			name:    "a provider below a loaded class with a JDK supertype, linked",
+			classes: driver("java/io/Serializable"),
+			linked:  true,
+			want:    ReachableCandidate, via: "D.connect",
+		},
+		{
+			name: "a provider with only JDK supertypes, linked",
+			classes: []classfile.Class{
+				mainCalls(edge(classfile.EdgeStatic, "java/sql/DriverManager", "getConnection", "(Ljava/lang/String;)Ljava/sql/Connection;")),
+				{Name: d, Super: objectClass, Interfaces: []string{"java/sql/Driver"}, Public: true, Methods: []classfile.Method{
+					pubMethod(d, "<init>", "()V"),
+					callsSink(d, "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"),
+				}},
+			},
+			linked: true,
+			want:   ReachableCandidate, via: "D.connect",
+		},
+		{
+			// A JDK release may define the supertype even though a classpath JAR also does.
+			name: "a JDK-prefixed supertype a classpath JAR defines, linked",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "javax/net/SocketFactory", Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			cp:     Classpath{Packages: map[string]bool{"javax/net": true}},
+			linked: true,
+			want:   ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "an Object-returning override of a JDK class, linked",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: d, Super: "java/util/Hashtable", Public: true, Methods: []classfile.Method{
+					pubMethod(d, "get", "(Ljava/lang/Object;)Ljava/lang/Object;"),
+				}},
+			},
+			linked: true,
+			want:   Undetermined, kind: HazardKindReentry, why: "returns java/lang/Object",
+		},
+		{
+			name:    "an unlisted classpath is never linked",
+			classes: plugin(callsSink(d, "start", "()V")),
+			cp:      Classpath{Unlisted: true},
+			linked:  true,
+			want:    ReachableCandidate, via: "D.start",
+		},
+		{
+			name: "a supertype cycle is not taken as linking",
+			classes: []classfile.Class{
+				mainCalls(touch),
+				{Name: base, Super: objectClass, Interfaces: []string{d}, Public: true},
+				{Name: d, Super: objectClass, Interfaces: []string{base, "org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+					callsSink(d, "start", "()V"),
+				}},
+			},
+			linked: true,
+			want:   NotExploitable,
+		},
+	})
+}
+
+// TestSetLinked_ResetsLoadable: the loadable cache answers for the linked bit it was
+// filled under.
+func TestSetLinked_ResetsLoadable(t *testing.T) {
+	const d = "com/acme/D"
+	e := NewEngine([]classfile.Class{
+		mainCalls(edge(classfile.EdgeStatic, "java/lang/System", "getProperty", getProperty)),
+		{Name: d, Super: objectClass, Interfaces: []string{"org/unopened/Plugin"}, Public: true, Methods: []classfile.Method{
+			callsSink(d, "start", "()V"),
+		}},
+		urlFetcherDep(),
+	})
+	for _, step := range []struct {
+		linked bool
+		want   Verdict
+	}{{false, ReachableCandidate}, {true, NotExploitable}, {false, ReachableCandidate}} {
+		e.SetLinked(step.linked)
+		if r := e.Reach(holeIngress, holeSink); r.Verdict != step.want {
+			t.Fatalf("linked=%v: verdict = %s, want %s (hazard=%q)", step.linked, r.Verdict, step.want, r.HazardWhy)
+		}
 	}
 }

@@ -47,6 +47,13 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"pipenv install --deploy with no Pipfile.lock", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "install.sh": "pipenv install --deploy\n"}, false, ""},
 		{"pipenv run with a scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\nsetup = \"pip install jinja2==3.1.2\"\n", "Pipfile.lock": "{}\n", "install.sh": "pipenv run setup\n"}, false, ""},
 		{"pdm run with a scripts table", map[string]string{"pyproject.toml": project + "[tool.pdm.scripts]\ntest = \"pip install jinja2==3.1.2\"\n", "pdm.lock": lockPDM, "install.sh": "pdm run test\n"}, false, ""},
+		{"pdm run, scripts under a [tool.pdm] table", map[string]string{"pyproject.toml": project + "[tool.pdm]\nscripts.setup = \"pip install jinja2==3.1.2\"\n", "pdm.lock": lockPDM, "install.sh": "pdm run setup\n"}, false, ""},
+		{"pdm run, scripts as an inline table", map[string]string{"pyproject.toml": project + "[tool.pdm]\nscripts = { setup = \"pip install jinja2==3.1.2\" }\n", "pdm.lock": lockPDM, "install.sh": "pdm run setup\n"}, false, ""},
+		{"pdm run, spaced table header", map[string]string{"pyproject.toml": project + "[ tool.pdm.scripts ]\nsetup = \"pip install jinja2==3.1.2\"\n", "pdm.lock": lockPDM, "install.sh": "pdm run setup\n"}, false, ""},
+		{"pdm run, pre_run hook around a plain command", map[string]string{"pyproject.toml": project + "[tool.pdm.scripts]\npre_run = \"pip install jinja2==3.1.2\"\n", "pdm.lock": lockPDM, "install.sh": "pdm run pytest\n"}, false, ""},
+		{"pdm run, pyproject that does not decode", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "tools/pyproject.toml": "[tool.pdm\n", "tools/run.sh": "pdm run pytest\n"}, false, ""},
+		{"pipenv run, spaced table header", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[ scripts ]\nsetup = \"pip install jinja2==3.1.2\"\n", "Pipfile.lock": "{}\n", "install.sh": "pipenv run setup\n"}, false, ""},
+		{"pipenv run, Pipfile that does not decode", map[string]string{"requirements.txt": reqs, "tools/Pipfile": "[packages\n", "tools/run.sh": "pipenv run gunicorn app:app\n"}, false, ""},
 		{"unknown installer: conda", map[string]string{"requirements.txt": reqs, "install.sh": "conda install jinja2\n"}, false, ""},
 		{"unknown installer: mamba", map[string]string{"requirements.txt": reqs, "install.sh": "mamba install jinja2\n"}, false, ""},
 		{"unknown installer: easy_install", map[string]string{"requirements.txt": reqs, "install.sh": "easy_install jinja2\n"}, false, ""},
@@ -111,6 +118,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"noxfile that never installs, run by nox", map[string]string{"requirements.txt": reqs, "noxfile.py": "import nox\n\n@nox.session\ndef t(s):\n    s.run(\"pytest\")\n", "install.sh": "nox -s t\n"}, true, ""},
 		{"pdm run without a scripts table", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
 		{"pipenv run without a scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
+		{"pdm run, a tool.pdm table without scripts", map[string]string{"pyproject.toml": project + "[tool.pdm]\ndistribution = false\n", "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
+		{"pipenv run, an empty scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n\n[scripts]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

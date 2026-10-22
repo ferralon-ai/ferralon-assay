@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/scriptsurface"
 )
 
@@ -98,21 +100,45 @@ func laneRunWrapper(words []string) ([]string, bool) {
 }
 
 // laneRunBinds reports whether a run wrapper's argv is the command it runs rather than a
-// script a manifest names: pdm run and pipenv run look a name up in [tool.pdm.scripts] and a
-// Pipfile's [scripts] first, and those values are not read here.
+// script a manifest names: pdm run and pipenv run look a name up in pyproject.toml's
+// tool.pdm.scripts and a Pipfile's scripts table first, pdm runs that table's pre_run and
+// post_run hooks around any command, and those values are not read here. So any entry in the
+// table, or a manifest this cannot decode, withholds.
 func laneRunBinds(words []string, b scriptsurface.Binder) bool {
-	var name, table string
+	var name string
+	var scripts func(data []byte) (map[string]any, error)
 	switch head, _ := scriptsurface.CommandName(words[0]); head {
 	case "pdm":
-		name, table = "pyproject.toml", "[tool.pdm.scripts"
+		name = "pyproject.toml"
+		scripts = func(data []byte) (map[string]any, error) {
+			var doc struct {
+				Tool struct {
+					PDM struct {
+						Scripts map[string]any `toml:"scripts"`
+					} `toml:"pdm"`
+				} `toml:"tool"`
+			}
+			_, err := toml.Decode(string(data), &doc)
+			return doc.Tool.PDM.Scripts, err
+		}
 	case "pipenv":
-		name, table = "Pipfile", "[scripts]"
+		name = "Pipfile"
+		scripts = func(data []byte) (map[string]any, error) {
+			var doc struct {
+				Scripts map[string]any `toml:"scripts"`
+			}
+			_, err := toml.Decode(string(data), &doc)
+			return doc.Scripts, err
+		}
 	default:
 		return true
 	}
 	for _, m := range b.Nearest(name) {
 		data, err := readRegular(m)
-		if err != nil || strings.Contains(string(data), table) {
+		if err != nil {
+			return false
+		}
+		if table, err := scripts(data); err != nil || len(table) > 0 {
 			return false
 		}
 	}

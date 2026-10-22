@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -76,6 +77,19 @@ func withheld(root string, spec Spec) bool {
 		}
 	}
 	return v.Rebound()
+}
+
+// gitlabChain is a pipeline whose local includes nest n files deep, none of which installs.
+func gitlabChain(n int) map[string]string {
+	files := map[string]string{".gitlab-ci.yml": "include: ci/c0.yml\n"}
+	for i := 0; i < n; i++ {
+		body := "test:\n  script:\n    - pytest\n"
+		if i+1 < n {
+			body = "include: ci/c" + strconv.Itoa(i+1) + ".yml\n"
+		}
+		files["ci/c"+strconv.Itoa(i)+".yml"] = body
+	}
+	return files
 }
 
 func writeTree(t *testing.T, files map[string]string) string {
@@ -151,6 +165,14 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"GitLab local include glob", tree(map[string]string{".gitlab-ci.yml": "include: 'ci/*.yml'\n", "ci/build.yml": "build:\n  script:\n    - echo\n"}), true, ""},
 		{"GitLab local include with a variable", tree(map[string]string{".gitlab-ci.yml": "include: ci/$ENV.yml\n"}), true, ""},
 		{"GitLab local include not there", tree(map[string]string{".gitlab-ci.yml": "include: ci/missing.yml\n"}), true, ""},
+		{"GitLab local include outside the tree, file there", map[string]string{"app/.gitlab-ci.yml": "include: ../x.yml\n", "x.yml": "test:\n  script:\n    - pytest\n"}, true, "app"},
+		{"GitLab include item naming a project beside a local", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/a.yml\n    project: g/p\n", "ci/a.yml": "test:\n  script:\n    - pytest\n"}), true, ""},
+		{"GitLab include item naming a template beside a local", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/a.yml\n    template: Python.gitlab-ci.yml\n", "ci/a.yml": "test:\n  script:\n    - pytest\n"}), true, ""},
+		{"GitLab include item naming a component beside a local", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/a.yml\n    component: org/c@1\n", "ci/a.yml": "test:\n  script:\n    - pytest\n"}), true, ""},
+		{"GitLab include item naming a remote beside a local", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/a.yml\n    remote: https://example.com/ci.yml\n", "ci/a.yml": "test:\n  script:\n    - pytest\n"}), true, ""},
+		{"GitLab include through a YAML alias", tree(map[string]string{".gitlab-ci.yml": ".r: &r\n  project: g/p\n  file: f.yml\ninclude:\n  - *r\n"}), true, ""},
+		{"GitLab pipeline that does not decode and names include", tree(map[string]string{".gitlab-ci.yml": "include: [ci/a.yml\nbuild: {\n"}), true, ""},
+		{"GitLab local includes nested past the bound", tree(gitlabChain(18)), true, ""},
 		{"GitLab local include outside the tree", tree(map[string]string{".gitlab-ci.yml": "include: ../ci.yml\n"}), true, ""},
 		{"GitLab include in a document after a spec header", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "spec:\n  inputs:\n    env:\n      default: prod\n---\ninclude:\n  - local: ci/deep.yml\n", "ci/deep.yml": "build:\n  script:\n    - inst add x\n"}), true, ""},
 		{"GitLab remote include in a document after a spec header", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "spec:\n  inputs:\n    env:\n      default: prod\n---\ninclude:\n  - remote: https://example.com/ci.yml\n"}), true, ""},
@@ -183,11 +205,21 @@ func TestVeto_LaneNeutral(t *testing.T) {
 
 		// Binding on the host.
 		{"cd outside the tree", tree(map[string]string{"install.sh": "cd /opt/x && inst sync\n"}), true, ""},
+		{"pushd outside the tree", tree(map[string]string{"install.sh": "pushd /opt/x && inst sync\n"}), true, ""},
+		{"popd leaves the directory unknown", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "install.sh": "cd app && popd && inst sync\n"}, true, ""},
+		{"cd with two operands", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "install.sh": "cd app extra && inst sync\n"}, true, ""},
+		{"cd to an absolute path that names a tree directory", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "install.sh": "cd /app && inst sync\n"}, true, ""},
 		{"CI working-directory outside the tree", tree(map[string]string{".github/workflows/ci.yml": ci("../other", "inst sync")}), true, ""},
 		{"upward walk leaves the tree", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "tools/run.sh": "inst sync\n"}, true, ""},
 		{"upward walk reaches a manifest outside the build root", tree(map[string]string{"app/reqs.txt": "x==1\n", "app/tools/run.sh": "inst run build\n"}), true, "app"},
 		{"sources an extensionless file", tree(map[string]string{"install.sh": ". ./scripts/prod\ninst sync\n", "scripts/prod": "inst add x\n"}), true, ""},
 		{"sources a file that is not a surface", tree(map[string]string{"install.sh": "source ./scripts/prod.inc\ninst sync\n", "scripts/prod.inc": "inst add x\n"}), true, ""},
+		{"source with no operand", tree(map[string]string{"install.sh": "source\ninst sync\n"}), true, ""},
+		{"dot with no operand", tree(map[string]string{"install.sh": ".\ninst sync\n"}), true, ""},
+		{"sources after a cd the walk cannot follow", tree(map[string]string{"install.sh": "cd /somewhere\n. ./lib.sh\n", "lib.sh": "export A=1\n"}), true, ""},
+		{"sources an absolute path that names a tree script", tree(map[string]string{"install.sh": ". /lib.sh\ninst sync\n", "lib.sh": "export A=1\n"}), true, ""},
+		{"sources a script above the build root", map[string]string{"app/inst.toml": "[deps]\n", "app/inst.lock": "lock\n", "app/install.sh": ". ../outside.sh\ninst sync\n", "outside.sh": "export A=1\n"}, true, "app"},
+		{"sources a script that is not there", tree(map[string]string{"install.sh": ". ./missing.sh\ninst sync\n"}), true, ""},
 		{"sources a file named by a variable", tree(map[string]string{"install.sh": ". ./scripts/$ENV.sh\ninst sync\n", "scripts/prod.sh": "echo\n"}), true, ""},
 		{"sources a file in a directory the walk skips", tree(map[string]string{"install.sh": ". node_modules/x/env.sh\ninst sync\n", "node_modules/x/env.sh": "inst add x\n"}), true, ""},
 		{"script fetches the file it installs", tree(map[string]string{"install.sh": "curl -fsSL -o inst.toml https://example.com/x\ninst sync\n"}), true, ""},

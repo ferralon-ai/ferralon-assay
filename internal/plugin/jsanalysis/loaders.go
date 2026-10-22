@@ -500,10 +500,10 @@ func identEscape(r []rune, i int) (rune, int, bool) {
 	if j < len(r) && r[j] == '{' {
 		j++
 		end = j
-		for end < len(r) && r[end] != '}' {
+		for end < len(r) && isHexDigit(r[end]) {
 			end++
 		}
-		if end == len(r) {
+		if end == len(r) || r[end] != '}' {
 			return 0, i, false
 		}
 	}

@@ -595,6 +595,13 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Function constructed as this.constructor with a tagged template in a class method called on a function", `
+class A { m(s) { return new this.constructor ` + "`a${s}`" + `; } }
+A.prototype.m.call(function () {}, process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"this.constructor constructed with arguments in an instance method and a prototype method", `
 class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }
 new Box(1).clone();

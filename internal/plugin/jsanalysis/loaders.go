@@ -1079,8 +1079,12 @@ func constructorRead(clean []rune, op, next int) bool {
 }
 
 // noArguments reports whether the construction whose callee ends before p passes no
-// arguments (`new C`, `new C()`): Function so constructed is an empty function.
+// arguments (`new C`, `new C()`): Function so constructed is an empty function. A literal
+// after the callee can only be a tagged template, which passes arguments.
 func noArguments(clean []rune, p int) bool {
+	if p < len(clean) && (clean[p] == '_' || clean[p] == '`') {
+		return false
+	}
 	if p >= len(clean) || clean[p] != '(' {
 		return true
 	}

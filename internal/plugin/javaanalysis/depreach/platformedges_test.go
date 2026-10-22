@@ -321,14 +321,14 @@ func TestReach_FrameworkHeldCallbacks(t *testing.T) {
 				staticMeth(appClass, "lambda$callbacks$0", iterD, sinkCall()...)),
 			ifaceExtending("com/fw/Callbacks", "java/lang/Iterable"),
 			framework(edge(classfile.EdgeInterface, "com/fw/Callbacks", "forEach", "(Ljava/util/function/Consumer;)V"))}},
-		{name: "lambda the framework calls through Supplier.get", ingress: main, want: Undetermined, classes: []classfile.Class{
+		{name: "lambda the framework calls through Supplier.get", ingress: main, want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/util/function/Supplier", classes: []classfile.Class{
 			class(appClass, "java/lang/Object", nil,
 				staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
 				staticMeth(appClass, "supplier", "()Ljava/util/function/Supplier;", indy("get", "()Ljava/util/function/Supplier;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
 					classfile.BootstrapArg{MethodType: "()Ljava/lang/Object;"}, handleArg(classfile.RefInvokeStatic, appClass, "lambda$supplier$0", "()Ljava/lang/Object;"), classfile.BootstrapArg{MethodType: "()Ljava/lang/Object;"}))),
 				staticMeth(appClass, "lambda$supplier$0", "()Ljava/lang/Object;", sinkCall()...)),
 			framework(edge(classfile.EdgeInterface, "java/util/function/Supplier", "get", "()Ljava/lang/Object;"))}},
-		{name: "lambda the framework calls through Runnable.run", ingress: main, want: Undetermined, classes: []classfile.Class{
+		{name: "lambda the framework calls through Runnable.run", ingress: main, want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/lang/Runnable", classes: []classfile.Class{
 			class(appClass, "java/lang/Object", nil,
 				staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
 				staticMeth(appClass, "task", "()Ljava/lang/Runnable;", lambda(handleArg(classfile.RefInvokeStatic, appClass, "lambda$task$0", "()V"))),
@@ -408,6 +408,10 @@ func TestReach_LambdaInheritedMembers(t *testing.T) {
 			classes: lambdaSvc(edge(classfile.EdgeInterface, transformer, "other", applyDesc),
 				altSite(classfile.BootstrapArg{}, classfile.BootstrapArg{Class: "com/acme/Others"}),
 				iface("com/acme/Others", meth("com/acme/Others", "other", applyDesc, sinkCall()...)))},
+		{name: "unopened marker interface beside a loaded default", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: lambdaSvc(edge(classfile.EdgeInterface, transformer, "other", applyDesc),
+				altSite(classfile.BootstrapArg{}, classfile.BootstrapArg{Class: "com/acme/Others"}, classfile.BootstrapArg{Class: "com/lib/M"}),
+				iface("com/acme/Others", meth("com/acme/Others", "other", applyDesc)))},
 		{name: "lambda beside a named implementor overriding forEach", ingress: handle, want: Undetermined,
 			classes: rowsSvc("java/lang/Iterable", forEach, nil,
 				class("com/acme/RowsImpl", "java/lang/Object", []string{rows},
@@ -436,6 +440,15 @@ func TestReach_LambdaOnPlatformMethod(t *testing.T) {
 				meth(svc, "handle", "(Ljava/lang/String;)V", edge(classfile.EdgeInterface, lookup, "apply", d))),
 			iface(lookup, abstractMeth(lookup, "apply", d)),
 			provider}},
+		{name: "MyCharset::forName, inherited from Charset", ingress: mref(svc, "handle", "(Ljava/lang/String;)V"), want: ReachableCandidate, classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil,
+				meth(svc, "<init>", "()V"),
+				staticMeth(svc, "make", "()L"+lookup+";", indy("apply", "()L"+lookup+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+					classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefInvokeStatic, "com/acme/MyCharset", "forName", d), classfile.BootstrapArg{MethodType: d}))),
+				meth(svc, "handle", "(Ljava/lang/String;)V", edge(classfile.EdgeInterface, lookup, "apply", d))),
+			iface(lookup, abstractMeth(lookup, "apply", d)),
+			class("com/acme/MyCharset", "java/nio/charset/Charset", nil, meth("com/acme/MyCharset", "<init>", "()V")),
+			provider}},
 	})
 }
 
@@ -445,6 +458,8 @@ func TestReach_ProviderRootsLambdas(t *testing.T) {
 	const hv = "javax/net/ssl/HostnameVerifier"
 	const d = "(Ljava/lang/String;Ljavax/net/ssl/SSLSession;)Z"
 	const handleD = "(Ljava/lang/String;)V"
+	const ihIf = "java/lang/reflect/InvocationHandler"
+	const ihD = "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;"
 	jdkTouch := edge(classfile.EdgeStatic, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I")
 	site := indy("verify", "()L"+hv+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
 		classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefInvokeStatic, svc, "lambda$boot$0", d), classfile.BootstrapArg{MethodType: d}))
@@ -461,6 +476,17 @@ func TestReach_ProviderRootsLambdas(t *testing.T) {
 				staticMeth(svc, "boot", "()V", site, edge(classfile.EdgeStatic, "javax/net/ssl/HttpsURLConnection", "setDefaultHostnameVerifier", "(L"+hv+";)V")),
 				meth(svc, "handle", handleD, jdkTouch),
 				staticMeth(svc, "lambda$boot$0", d, sinkCall()...))}},
+		{name: "lambda InvocationHandler returning an application object", ingress: ingress, want: Undetermined, why: "higher-order re-entry: platform-callable lambda implementing java/lang/reflect/InvocationHandler returns java/lang/Object", classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil,
+				meth(svc, "<init>", "()V"),
+				staticMeth(svc, "boot", "()V", indy("invoke", "()L"+ihIf+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+					classfile.BootstrapArg{MethodType: ihD}, handleArg(classfile.RefInvokeStatic, svc, "lambda$boot$1", ihD), classfile.BootstrapArg{MethodType: ihD}))),
+				meth(svc, "handle", handleD, jdkTouch),
+				staticMeth(svc, "lambda$boot$1", ihD, edge(classfile.EdgeSpecial, "com/acme/AppIter", "<init>", "()V"))),
+			class("com/acme/AppIter", "java/lang/Object", []string{"java/util/Iterator"},
+				meth("com/acme/AppIter", "<init>", "()V"),
+				meth("com/acme/AppIter", "hasNext", "()Z"),
+				meth("com/acme/AppIter", "next", "()Ljava/lang/Object;", sinkCall()...))}},
 		{name: "lambda HostnameVerifier with an unfollowable implementation", ingress: ingress, want: Undetermined, why: "invokedynamic", classes: []classfile.Class{
 			class(svc, "java/lang/Object", nil,
 				meth(svc, "<init>", "()V"),

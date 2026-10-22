@@ -756,7 +756,8 @@ func (s lambdaSite) answers(name, desc string) bool {
 // java/lang/Object, whose bodies on it call nothing it defines, and it inherits every
 // default of its interfaces, which runs with the object as `this`. A loaded default
 // is a target. A default that may sit in an unopened dependency is a hazard, and so
-// is one that may sit in the JDK, which can call the implementation back.
+// is one that may sit in the JDK, which can call the implementation back; either can
+// also override a loaded default beside it.
 func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*classfile.Method, bool, string) {
 	if objectMethods[ref.Name+ref.Descriptor] {
 		return nil, false, ""
@@ -777,13 +778,13 @@ func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*c
 			}
 		}
 	}
-	if len(targets) > 0 || len(unloaded) == 0 {
+	if len(unloaded) == 0 {
 		return targets, false, ""
 	}
 	if dep, ok := e.unloadedDependency(unloaded); ok {
-		return nil, true, "unloaded_dependency: " + ref.String() + " on a lambda inherits from unopened " + dep
+		return targets, true, "unloaded_dependency: " + ref.String() + " on a lambda inherits from unopened " + dep
 	}
-	return nil, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
+	return targets, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
 }
 
 // resolveHandle resolves the call a lambda's implementation method handle makes,
@@ -1412,6 +1413,15 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 			if h && hazard == "" {
 				hazard = w
 			}
+			descs := site.descs
+			if len(descs) == 0 {
+				descs = []string{site.handle.Ref.Descriptor}
+			}
+			for _, d := range descs {
+				if rt, ok := returnRefType(d); ok && hazard == "" && !valueClasses[rt] && !e.loadableType(rt) {
+					hazard = "higher-order re-entry: platform-callable lambda implementing " + t + " returns " + rt + ", which can carry application objects"
+				}
+			}
 		}
 	}
 	return roots, hazard
@@ -1443,6 +1453,24 @@ func (e *Engine) loadableSupertypes() map[string]bool {
 	return out
 }
 
+// handleTouchesPlatform reports whether a lambda implementation handle runs a JDK
+// body: its owner is a JDK class, or it inherits the method from one
+// (MyCharset::forName, with MyCharset extending Charset).
+func (e *Engine) handleTouchesPlatform(h classfile.MethodHandle) bool {
+	o := h.Ref.Owner
+	if e.classes[o] == nil {
+		return e.platformBody(o)
+	}
+	if m, unloaded := e.resolveMethod(o, h.Ref.Name, h.Ref.Descriptor); m == nil {
+		for _, u := range unloaded {
+			if e.platformBody(u) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // touchesPlatform reports whether edge can run a JDK body other than
 // java/lang/Object's own or an array's: the point from which the JDK can load and
 // call providers (providerRoots).
@@ -1462,7 +1490,7 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 		// A lambda answering the call runs its implementation, which can be a JDK
 		// method (Charset::forName).
 		for _, site := range e.lambdas[c] {
-			if o := site.handle.Ref.Owner; site.answers(edge.To.Name, edge.To.Descriptor) && e.classes[o] == nil && e.platformBody(o) {
+			if site.answers(edge.To.Name, edge.To.Descriptor) && e.handleTouchesPlatform(site.handle) {
 				return true
 			}
 		}

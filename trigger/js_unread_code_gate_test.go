@@ -1315,6 +1315,14 @@ run(process.argv[3]);
 class A { m(s) { return new this.constructor^a${s}^; } }
 A.prototype.m.call(function () {}, process.argv[3]);
 ` + tail, true},
+		{"typeof of require.bind tagged flush, then called", `
+function run(s) { return typeof require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"typeof of require.bind tagged flush, then called, after a JSX apostrophe", `
+function A(s) { return <p>Don't {typeof require.bind^x^(s)}</p>; }
+A(process.argv[3]);
+` + tail, true},
 		{"strings holding braces", `
 const t = '{ "a": 1 }';
 const f = "{0} items";

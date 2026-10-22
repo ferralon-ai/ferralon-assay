@@ -115,7 +115,7 @@ func chainUsed(clean []rune, next int) bool {
 		}
 		p = skipSpace(clean, e)
 	}
-	return p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '_' || optionalDot(clean, p))
+	return p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '_' || clean[p] == '`' || optionalDot(clean, p))
 }
 
 // objectKey reports whether the name between the token ending at b and the one starting at p

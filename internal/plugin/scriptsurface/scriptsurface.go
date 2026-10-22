@@ -32,6 +32,17 @@
 // the stage, with nothing since that could have changed it: a COPY --from, ADD, heredoc or
 // unresolvable COPY over it, or any RUN command that is not itself an allowed form.
 //
+// A file run with . or source runs its commands in place, so it withholds unless it is a
+// literal in-tree script surface the walk checks on its own, or only sets PATH: a
+// version-manager init script named exactly as pathOnlyScripts lists it, or a literal
+// <dir>/bin/activate whose <dir> names the same one place as the virtual environment the
+// command before it, directory changes aside, created. That command must be in the same
+// cursor: the same shell text on the host, the same shell unit of a GitHub workflow (a step's
+// run:) or GitLab pipeline (a job's before_script then script), the same line of any other
+// host surface, the same RUN in a Dockerfile. A creation that may not run (after &&, ||, | or
+// &, or inside an if, case or loop) creates nothing here, nor does one whose bin/activate is
+// already a file the build holds.
+//
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
 // the install reads it, so it withholds too (Veto.Rebound).
@@ -403,6 +414,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		dirs, ok := v.workingDirs(units)
 		base, unknown = append(base, dirs...), !ok
 	}
+	included := yaml && gitlabIncluded(path, units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -417,28 +429,49 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			continue
 		}
-		lines, joined := logicalLines(u.text)
+		lines, starts, joined := logicalLinesAt(u.text)
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
 		}
 		read := make([]yamlLine, len(lines))
 		for i, l := range lines {
-			read[i] = yamlLine{text: l}
+			read[i] = yamlLine{text: l, start: i}
 		}
+		var shells map[int]shellUnit
 		if yaml {
 			read = foldYAML(lines)
+			shells = v.shellUnits(path, u.text, included)
 		}
+		inUnit := map[int]*hostCursor{}
 		for _, rl := range read {
 			line, lineKind := rl.text, kind
 			if rl.shell {
 				lineKind = kindShell
 			}
-			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown}
+			// Lookups run from every directory the lines so far may have left; only the venv
+			// rule carries its mark and the unit's one directory from line to line.
+			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, mark: carry.mark, wd: carry.wd}
+			su, inShell := shells[starts[rl.start]]
+			if prev := inUnit[su.id]; inShell && prev != nil {
+				cur.mark, cur.wd = prev.mark, prev.wd
+			} else if inShell {
+				cur.mark, cur.wd = venvMark{}, su.dir
+			}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
-			segs, ok := commandSegments(lineKind, line)
+			segs, ok, dangles := commandSegments(lineKind, line)
+			if cur.mark.dangle && len(segs) > 0 {
+				segs[0].guarded = true
+			}
+			if len(segs) > 0 || !ok {
+				// A blank or comment line leaves a trailing && or || waiting for its command.
+				cur.mark.dangle = dangles
+			}
 			if !ok {
+				// A line this cannot split may hold a subshell, group or function body: the venv
+				// rule cannot say what ran, or where.
+				cur.mark.made, cur.wd = "", ""
 				if v.hasToken(line) {
 					return "install command that does not tokenise"
 				}
@@ -459,6 +492,9 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				carry = cur
 			} else {
 				carry.merge(cur)
+				if inShell {
+					inUnit[su.id] = cur
+				}
 			}
 		}
 	}
@@ -512,18 +548,44 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if len(words) == 0 {
 		return ""
 	}
+	mark := cur.venv()
+	if mark.chain && !seg.and {
+		// The && list a cd was part of has ended: what runs now may run where the cd did not.
+		mark.made, mark.lost, mark.chain = "", true, false
+	}
+	made := mark.made
+	mark.made = venvMade(seg, cur)
+	if mark.open >= 0 {
+		// Below 0 a fi, done or esac closed a body the rule did not see open, such as a line
+		// of a heredoc: it no longer knows which body a command is in, so it stays below 0.
+		mark.open += blockDepth[words[0]]
+	}
 	switch words[0] {
 	case "cd", "pushd", "popd":
+		mark.made = made // the venv's key was taken where it was made
 		if seg.expands {
 			cur.cd(nil)
 		} else {
 			cur.cd(words)
 		}
+		switch {
+		case seg.background || seg.end == "|" || seg.end == "||":
+			// A cd before & or | runs in a subshell, and what follows a cd before || runs only
+			// if it failed: the shell is not where the cd went.
+			mark.made, mark.lost, mark.chain = "", true, false
+		case seg.and && mark.open == 0:
+			// The cd may not have run, but what follows it in its && list runs only if it did.
+			mark.chain = true
+		case seg.guarded || mark.open != 0:
+			// The cd may not have run, so neither the venv a command before it made nor the
+			// directory it moved to is known.
+			mark.made, mark.lost = "", true
+		}
 		return ""
 	case ".", "source":
 		// The sourced file's commands run here; they are checked only when it is a surface
-		// the walk reads itself.
-		if seg.expands || len(words) < 2 || !cur.sourced(words[1]) {
+		// the walk reads itself, or when it only sets PATH.
+		if (seg.expands || len(words) < 2 || !cur.sourced(words[1])) && !pathOnly(seg, cur, made) {
 			return "sources a file not read as a script: " + strings.Join(words, " ")
 		}
 		return ""
@@ -551,6 +613,88 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install command: " + strings.Join(words, " ")
 	}
 	return ""
+}
+
+// pathOnlyScripts are the version-manager init scripts, as written after . or source, that
+// only set PATH and functions when sourced and install nothing.
+var pathOnlyScripts = map[string]bool{
+	"$NVM_DIR/nvm.sh": true, "$HOME/.nvm/nvm.sh": true, "~/.nvm/nvm.sh": true,
+	"$HOME/.cargo/env": true, "~/.cargo/env": true,
+}
+
+// pathOnly reports whether a . or source of a file the walk does not read only sets PATH: one
+// of pathOnlyScripts, its $ expanding, or a literal <dir>/bin/activate of the virtual
+// environment that made, the previous command but for directory changes, created at the same
+// place.
+func pathOnly(seg segment, cur cursor, made string) bool {
+	if len(seg.words) != 2 {
+		return false
+	}
+	op := seg.words[1]
+	if pathOnlyScripts[op] {
+		return seg.expands == strings.Contains(op, "$")
+	}
+	dir, ok := strings.CutSuffix(op, "/bin/activate")
+	if seg.expands || !ok {
+		return false
+	}
+	key, ok := cur.at(dir)
+	return ok && made != "" && key == made
+}
+
+// blockDepth is how far each word opening or closing an if, case or loop moves a command into
+// or out of a body that may not run.
+var blockDepth = map[string]int{
+	"if": 1, "case": 1, "for": 1, "while": 1, "until": 1, "select": 1,
+	"fi": -1, "esac": -1, "done": -1,
+}
+
+var pythonRE = regexp.MustCompile(`^python(?:\d+(?:\.\d+)?)?$`)
+
+// venvMade returns the key of the virtual environment a command creates: python -m venv <dir>,
+// virtualenv <dir>, or uv venv [<dir>] (.venv when there is none), with flags before or after
+// <dir> and -p, --python or --prompt taking the next word. "" when it is none of these, when
+// its directory is not one place, when it may not run (after &&, ||, | or &, or inside an if,
+// case or loop) or not finish first (before a lone &), or when <dir>/bin/activate is already a file the build holds, which a creation
+// that did not run would leave in place.
+func venvMade(seg segment, cur cursor) string {
+	words := seg.words
+	head, ok := CommandName(words[0])
+	var args []string
+	switch {
+	case seg.expands || !ok || seg.guarded || seg.background || cur.venv().open != 0:
+		return ""
+	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
+		args = words[3:]
+	case head == "virtualenv":
+		args = words[1:]
+	case head == "uv" && len(words) >= 2 && words[1] == "venv":
+		args = words[2:]
+	default:
+		return ""
+	}
+	var dirs []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "-p" || a == "--python" || a == "--prompt":
+			i++
+		case strings.HasPrefix(a, "--directory") || strings.HasPrefix(a, "--project"):
+			return ""
+		case !strings.HasPrefix(a, "-"):
+			dirs = append(dirs, a)
+		}
+	}
+	switch {
+	case len(dirs) == 0 && head == "uv":
+		dirs = []string{".venv"}
+	case len(dirs) != 1:
+		return ""
+	}
+	key, ok := cur.at(dirs[0])
+	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) {
+		return ""
+	}
+	return key
 }
 
 // installVerbs are the subcommands with which a package manager installs or re-locks.

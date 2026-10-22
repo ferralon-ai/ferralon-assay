@@ -147,6 +147,26 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			}
 		}
 	}
+	// memberTree is a workspace whose member foo a.js requires; node_modules exists but holds
+	// no copy of foo.
+	memberTree := map[string]string{
+		"package.json":              `{"name":"app","workspaces":["packages/*"]}`,
+		"packages/foo/package.json": `{"name":"foo"}`,
+		"packages/foo/index.js":     js,
+		"a.js":                      "const foo = require('foo');\n",
+		"node_modules/.keep":        "",
+	}
+	memberShadowed := func(want bool) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			prog := mustLoad(t, dir)
+			if prog == nil {
+				return
+			}
+			if got := prog.resolver().loadsOutOfTree("a.js", "foo", true); got != want {
+				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
+			}
+		}
+	}
 	copiesRead := func(sub string, want bool) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
 			if _, ok := installedCopies(filepath.Join(dir, sub)); ok != want {
@@ -217,27 +237,6 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			}
 			if wantCommand != "" && (!res.Partiality.Complete || got != wantCommand) {
 				t.Errorf("BuildManifest = %+v; want Complete with %q", res, wantCommand)
-			}
-		}
-	}
-
-	// memberTree is a workspace whose member foo a.js requires; node_modules exists but holds
-	// no copy of foo.
-	memberTree := map[string]string{
-		"package.json":              `{"name":"app","workspaces":["packages/*"]}`,
-		"packages/foo/package.json": `{"name":"foo"}`,
-		"packages/foo/index.js":     js,
-		"a.js":                      "const foo = require('foo');\n",
-		"node_modules/.keep":        "",
-	}
-	memberShadowed := func(want bool) func(t *testing.T, dir string) {
-		return func(t *testing.T, dir string) {
-			prog := mustLoad(t, dir)
-			if prog == nil {
-				return
-			}
-			if got := prog.resolver().loadsOutOfTree("a.js", "foo", true); got != want {
-				t.Errorf("loadsOutOfTree = %v, want %v", got, want)
 			}
 		}
 	}

@@ -140,6 +140,10 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"text nested in blanked text", "a = <p>src/*</p>;\nc = <p>Run `npm i</p>;\nrequire(x);\nb = `ok`;\n/* c */\n", false, true, false},
 		{"JSDoc types", "/** @param {Function} f\n * @returns {import(x).T} */\n", false, false, false},
 		{"prose", "/* Function that this returns, eval it and require the rest; we require. */\n", false, false, false},
+		{"prose naming module after a JSX apostrophe", "a = <p>Don't run the real module, mutated (module paths) on module</p>;\n", false, false, false},
+		{"module.require after a JSX apostrophe", "a = <p>Don't {module.require(x)}</p>;\n", false, true, false},
+		{"module handed on after a JSX apostrophe", "a = <p>Don't {f(module)}</p>;\n", false, true, false},
+		{"module after return in a comment", "/* return module */\n", false, true, false},
 		{"brackets from separate templates", "a = `x]`;\nb = `[k]`;\nc = `[j]`;\n", false, false, false},
 		{"computed index pair in a comment", "/* o[a][b]() */\n", true, false, false},
 	} {

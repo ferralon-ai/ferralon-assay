@@ -498,9 +498,10 @@ const maxHiddenLayers = 8
 // there: a JSDoc type expression on its tag's line (`@param {Function} f`,
 // `@type {import('x').T}`), since `@tag {` is a syntax error in JS and plain text in
 // JSX; and a name in proseNames followed on the same line by another name ("Function
-// that", "this returns") or ending a sentence ("to require."), since a name after a value
-// is a syntax error unless it is one of the operators in proseFollowers, and a member
-// access needs a member name.
+// that", "this returns"), preceded on it by one ("the real module, mutated"), or ending a
+// sentence ("to require."), since a name after a value is a syntax error unless it is one
+// of the operators in proseFollowers, a value after a name is one unless the name is one of
+// proseLeaders, and a member access needs a member name.
 func proseLoaders(view []rune) {
 	n := len(view)
 	for i := 0; i < n; i++ {
@@ -540,6 +541,8 @@ func proseLoaders(view []rune) {
 				blankRunes(view, i, e)
 			case p == e && p < n && view[p] == '.' && !identAt(view, skipSpace(view, p+1)): // "to require."
 				blankRunes(view, i, e)
+			case proseLeader(view, i): // "the real module"
+				blankRunes(view, i, e)
 			}
 		}
 		i = e - 1
@@ -555,11 +558,33 @@ var jsdocTypeTags = map[string]bool{
 	"callback": true, "member": true, "var": true, "const": true, "constant": true,
 }
 
-// proseNames are the loader and global-object names proseLoaders reads as prose. module
-// and import are not among them: `module Foo {` and `import x from` are code.
+// proseNames are the loader and global-object names proseLoaders reads as prose. import
+// is not among them: `import x from` is code. `module Foo {` is a TypeScript declaration,
+// whose name loads nothing, so blanking module there loses no load.
 var proseNames = map[string]bool{
 	"require": true, "createRequire": true, "eval": true, "Function": true, "this": true,
 	"globalThis": true, "global": true, "window": true, "self": true, "process": true,
+	"module": true,
+}
+
+// proseLeaders are the words a value may follow on the same line in JS: the operators and
+// keywords that take an expression after them. Any other name before a value is prose, or
+// a declaration or type naming it, which loads nothing.
+var proseLeaders = map[string]bool{
+	"return": true, "typeof": true, "instanceof": true, "in": true, "of": true, "new": true,
+	"delete": true, "void": true, "throw": true, "case": true, "do": true, "else": true,
+	"yield": true, "await": true, "default": true, "extends": true,
+}
+
+// proseLeader reports whether the name at i follows, on its line, a name that is not one of
+// proseLeaders.
+func proseLeader(view []rune, i int) bool {
+	b := i - 1
+	for b >= 0 && (view[b] == ' ' || view[b] == '\t') {
+		b--
+	}
+	w, s := wordBefore(view, b)
+	return w != "" && isIdentStart(view[s]) && !proseLeaders[w]
 }
 
 // proseFollowers are the words that may follow a value on the same line in JS or TS.

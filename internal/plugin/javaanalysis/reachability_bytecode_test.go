@@ -1185,6 +1185,9 @@ func TestBytecodeReach_MultiReleaseOverrides(t *testing.T) {
 		{"one-sided accessor naming the class under an unread java/ ancestor: searched", func() map[string][]byte {
 			return utilPair("java/lang/Enum", accessor("(Lcom/evil/netkit/Util;)Ljava/lang/System$Logger$Level;"))
 		}, "com/evil/netkit/Util", false, ""},
+		{"one-sided accessor naming the class as an array after a JDK type: searched", func() map[string][]byte {
+			return utilPair("java/lang/Enum", accessor("(Ljava/lang/String;[Lcom/evil/netkit/Util;)V"))
+		}, "com/evil/netkit/Util", false, ""},
 		{"one-sided method naming no classpath type under an unread java/ ancestor: multi_release_unmerged", func() map[string][]byte {
 			return utilPair("java/lang/Enum", accessor("(Ljava/lang/String;)V"))
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},

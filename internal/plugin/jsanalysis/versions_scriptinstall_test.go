@@ -77,9 +77,11 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		// What an allowed form reads.
 		{"unreadable package.json", map[string]string{"package.json": "{not json", "package-lock.json": lock, "install.sh": "npm run build\n"}, false, ""},
 		{"yarn --frozen-lockfile with no yarn.lock", npm(map[string]string{"install.sh": "yarn install --frozen-lockfile\n"}), false, ""},
+		{"npm ci with no package-lock.json", map[string]string{"package.json": yarnPkg, "yarn.lock": yarnLock, "install.sh": "npm ci\n"}, false, ""},
 
 		// Binding: the directory a command runs in and the file it reads there.
 		{"npm pkg set then run", npm(map[string]string{"Dockerfile": docker + "npm pkg set scripts.x=\"npm i lodash\"\nRUN npm run x\n"}), false, ""},
+		{"script fetches package.json then runs", npm(map[string]string{"install.sh": "curl -fsSL -o package.json https://example.com/p.json && npm run x\n"}), false, ""},
 
 		// Controls.
 		{"npm ci", npm(map[string]string{"install.sh": "npm ci --omit=dev\n"}), true, ""},

@@ -70,6 +70,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"stale pdm.lock under pdm sync", map[string]string{"pyproject.toml": stale, "pdm.lock": lockPDM, "install.sh": "pdm sync\n"}, false, ""},
 
 		// Binding: the directory a command runs in and the file it reads there.
+		{"script fetches the file it installs", map[string]string{"requirements.txt": reqs,
+			"install.sh": "curl -fsSL -o requirements.txt https://example.com/r.txt\npip install -r requirements.txt\n"}, false, ""},
 
 		// Controls.
 		{"pip install -r of a read file", map[string]string{"requirements.txt": reqs, "install.sh": "pip install --no-cache-dir -r requirements.txt\n"}, true, ""},

@@ -233,7 +233,7 @@ func literalFunction(clean, src []rune, p int) (ok, open bool) {
 		}
 	}
 	body := []rune(lits[len(lits)-1])
-	// stripJS cannot tell a regular expression from a division after a keyword, nor end a
+	// stripJS cannot always tell a regular expression from a division, nor end a
 	// comment at U+2028 or U+2029, so a body with a backtick or a slash is not read at all.
 	if strings.ContainsAny(string(body), "`/") {
 		return false, false

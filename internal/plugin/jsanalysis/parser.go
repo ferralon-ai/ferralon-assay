@@ -1,7 +1,6 @@
 package jsanalysis
 
 import (
-	"strings"
 	"unicode"
 )
 
@@ -77,159 +76,270 @@ type parseResult struct {
 	skipped   bool
 }
 
-// stripJS removes comments, string literals, template literals, char data, and
-// regex literals from JS/TS source, replacing each with equivalent whitespace so
-// byte offsets and newlines are preserved but no comment/string content can be
-// mistaken for code. A string/template literal collapses to a single '_' token (a
-// valid identifier char) so a literal-only argument still counts toward call-site
-// arity. This is the lexical pre-pass every scanner relies on.
+// stripJS removes comments, string literals, template literal text, and regex literals
+// from JS/TS source, replacing each with equivalent whitespace so rune offsets and
+// newlines are preserved but no comment/string content can be mistaken for code. A
+// string or template literal's opening quote becomes a single '_' token (a valid
+// identifier char) so a literal-only argument still counts toward call-site arity. This
+// is the lexical pre-pass every scanner relies on.
 //
-// Template literals are flattened (including ${...} interpolations) to a single
-// '_' — interpolated calls inside a template are not modeled (a declared-partial
-// limitation, conservative: it never fabricates an edge).
+// A template's ${...} substitutions are code and stay in place: only the literal text
+// around them is blanked, so a call, require, eval or import inside a substitution is
+// seen. Substitutions nest (a template inside a substitution is lexed the same way).
+//
+// The lexer must never hide code it cannot classify, so every literal it opens has to
+// close where JS would close it:
+//   - a '/' or '"' string ends at an unescaped line break (JS forbids one there; a
+//     backslash-newline continuation still continues), so a misread quote blanks at
+//     most the rest of its line;
+//   - a regex never spans a line: a '/' whose regex would not close on its line is a
+//     division, and lexing continues after it;
+//   - a block comment or template literal that would run to end of file without
+//     closing is not one: its opener is lexed as code instead.
 func stripJS(src string) string {
-	var b strings.Builder
-	b.Grow(len(src))
 	r := []rune(src)
 	n := len(r)
-	// prevSignif is the last non-space emitted rune; it disambiguates a '/' that
-	// starts a regex literal (after an operator/'(') from a division operator.
-	prevSignif := rune(0)
+	out := make([]rune, 0, n)
+	// prev is the last significant code rune; it decides whether a '/' starts a regex.
+	// litEnd stands for a just-closed string or template, after which '/' divides.
+	const litEnd = rune(-1)
+	prev := rune(0)
 	emit := func(c rune) {
-		b.WriteRune(c)
+		out = append(out, c)
 		if !unicode.IsSpace(c) {
-			prevSignif = c
+			prev = c
 		}
+	}
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if r[k] == '\n' {
+				out = append(out, '\n')
+			} else {
+				out = append(out, ' ')
+			}
+		}
+	}
+	// subst holds, per open template substitution (innermost last), the depth of
+	// code braces opened inside it; the '}' that meets depth 0 resumes the template.
+	var subst []int
+	// parens records, per open '(', whether it opens an if/while/for/with condition;
+	// afterCond is whether the last ')' closed one (a regex may start a statement there).
+	var parens []bool
+	afterCond := false
+	noCommentClose := false
+	// templateEnd finds where template text starting at i stops: the index of the
+	// closing '`' or of the next "${", or -1 when neither follows before end of file.
+	templateEnd := func(i int) int {
+		for i < n && r[i] != '`' && !(r[i] == '$' && i+1 < n && r[i+1] == '{') {
+			if r[i] == '\\' && i+1 < n {
+				i++
+			}
+			i++
+		}
+		if i >= n {
+			return -1
+		}
+		return i
+	}
+	// templateText blanks template text from i to its stop j (from templateEnd) and
+	// the closing '`' or "${" there, and returns where lexing resumes.
+	templateText := func(i, j int) int {
+		if r[j] == '`' {
+			blank(i, j+1)
+			prev = litEnd
+			return j + 1
+		}
+		blank(i, j+2)
+		subst = append(subst, 0)
+		prev = '{'
+		return j + 2
 	}
 	for i := 0; i < n; {
 		c := r[i]
 		switch {
 		case c == '/' && i+1 < n && r[i+1] == '/':
-			for i < n && r[i] != '\n' && r[i] != '\r' && r[i] != '\u2028' && r[i] != '\u2029' {
-				b.WriteByte(' ')
+			j := i
+			for j < n && r[j] != '\n' && r[j] != '\r' && r[j] != ' ' && r[j] != ' ' {
+				j++
+			}
+			blank(i, j)
+			i = j
+		case c == '/' && i+1 < n && r[i+1] == '*' && !noCommentClose:
+			j := i + 2
+			for j < n && !(r[j] == '*' && j+1 < n && r[j+1] == '/') {
+				j++
+			}
+			if j >= n {
+				noCommentClose = true
+				emit(c)
 				i++
+				continue
 			}
-		case c == '/' && i+1 < n && r[i+1] == '*':
-			b.WriteString("  ")
-			i += 2
-			for i < n && !(r[i] == '*' && i+1 < n && r[i+1] == '/') {
-				if r[i] == '\n' {
-					b.WriteByte('\n')
-				} else {
-					b.WriteByte(' ')
-				}
-				i++
-			}
-			if i < n {
-				b.WriteString("  ")
-				i += 2
-			}
+			blank(i, j+2)
+			i = j + 2
 		case c == '"' || c == '\'':
-			// string literal → single '_' token
-			b.WriteByte('_')
-			i++
-			for i < n && r[i] != c {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
+			j := i + 1
+			for j < n && r[j] != c && r[j] != '\n' && r[j] != '\r' {
+				if r[j] == '\\' && j+1 < n {
+					j++
+					if r[j] == '\r' && j+1 < n && r[j+1] == '\n' {
+						j++
+					}
 				}
-				b.WriteByte(' ')
-				i++
+				j++
 			}
-			if i < n {
-				b.WriteByte(' ')
-				i++
+			out = append(out, '_')
+			if j < n && r[j] == c {
+				j++
 			}
-			prevSignif = '_'
+			blank(i+1, j)
+			prev = litEnd
+			i = j
 		case c == '`':
-			// template literal (with possible ${...}) → single '_' token, rest blanked
-			b.WriteByte('_')
-			i++
-			depth := 0
-			for i < n {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if depth == 0 && r[i] == '`' {
+			out = append(out, '_')
+			prev = litEnd
+			j := templateEnd(i + 1)
+			if j < 0 {
+				i++
+				continue
+			}
+			i = templateText(i+1, j)
+		case c == '}' && len(subst) > 0 && subst[len(subst)-1] == 0:
+			j := templateEnd(i + 1)
+			if j < 0 {
+				// The template never closes, so none of the open ones do: what
+				// follows is code.
+				subst = subst[:0]
+				emit(c)
+				i++
+				continue
+			}
+			subst = subst[:len(subst)-1]
+			out = append(out, ' ')
+			i = templateText(i+1, j)
+		case c == '/' && regexStarts(out, prev, afterCond):
+			j := i + 1
+			inClass, closed := false, false
+			for j < n && !isLineTerminator(r[j]) {
+				if r[j] == '\\' {
+					if j+1 < n && !isLineTerminator(r[j+1]) {
+						j += 2
+						continue
+					}
 					break
 				}
-				if r[i] == '$' && i+1 < n && r[i+1] == '{' {
-					depth++
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if depth > 0 && r[i] == '}' {
-					depth--
-					b.WriteByte(' ')
-					i++
-					continue
-				}
-				if r[i] == '\n' {
-					b.WriteByte('\n')
-				} else {
-					b.WriteByte(' ')
-				}
-				i++
-			}
-			if i < n {
-				b.WriteByte(' ')
-				i++
-			}
-			prevSignif = '_'
-		case c == '/' && regexAllowed(prevSignif):
-			// regex literal /.../flags → blanked to spaces
-			b.WriteByte(' ')
-			i++
-			inClass := false
-			for i < n && r[i] != '\n' {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if r[i] == '[' {
+				if r[j] == '[' {
 					inClass = true
-				} else if r[i] == ']' {
+				} else if r[j] == ']' {
 					inClass = false
-				} else if r[i] == '/' && !inClass {
+				} else if r[j] == '/' && !inClass {
+					closed = true
 					break
 				}
-				b.WriteByte(' ')
-				i++
+				j++
 			}
-			if i < n && r[i] == '/' {
-				b.WriteByte(' ')
+			if !closed {
+				emit(c)
 				i++
-				// flags
-				for i < n && isIdentPart(r[i]) {
-					b.WriteByte(' ')
-					i++
+				continue
+			}
+			j++
+			for j < n && isIdentPart(r[j]) {
+				j++
+			}
+			blank(i, j)
+			prev = litEnd
+			i = j
+		default:
+			switch c {
+			case '{':
+				if len(subst) > 0 {
+					subst[len(subst)-1]++
+				}
+			case '}':
+				if len(subst) > 0 {
+					subst[len(subst)-1]--
+				}
+			case '(':
+				w, member := lastWord(out)
+				parens = append(parens, !member && condKeywords[w])
+			case ')':
+				afterCond = false
+				if len(parens) > 0 {
+					afterCond = parens[len(parens)-1]
+					parens = parens[:len(parens)-1]
 				}
 			}
-		default:
 			emit(c)
 			i++
 		}
 	}
-	return b.String()
+	return string(out)
 }
 
-// regexAllowed reports whether a '/' at the current position begins a regex literal
-// rather than a division operator, based on the previous significant rune. A regex
-// may start at the program start, after an operator, '(', ',', '{', '[', ';', ':',
-// '!', '&', '|', '?', '=', or a return/typeof-like context. We approximate with the
-// punctuation set (the common cases); an identifier/')'/']'/'_' before '/' means
-// division.
+// regexStarts reports whether a '/' at the end of out begins a regex literal rather
+// than a division, from the previous significant rune and, where that rune is ambiguous,
+// the token it ends: a keyword after which an expression starts, a postfix ++/--, or
+// the ')' of a statement condition (afterCond).
+func regexStarts(out []rune, prev rune, afterCond bool) bool {
+	switch {
+	case prev == ')':
+		return afterCond
+	case prev == '+' || prev == '-':
+		k := len(out) - 1
+		for k > 0 && unicode.IsSpace(out[k]) {
+			k--
+		}
+		return !(k > 0 && out[k-1] == prev)
+	case prev > 0 && isIdentPart(prev):
+		w, member := lastWord(out)
+		return !member && regexKeywords[w]
+	}
+	return regexAllowed(prev)
+}
+
+// regexAllowed reports whether a '/' after the punctuation prev begins a regex literal: at
+// the program start, or after an operator or an opening '(', '[', '{', ',', ';' or ':'. A
+// '<' is excluded: "</" is a JSX closing tag, never a comparison with a regex.
 func regexAllowed(prev rune) bool {
 	switch prev {
-	case 0, '(', ',', '{', '[', ';', ':', '!', '&', '|', '?', '=', '+', '-', '*', '%', '<', '>', '^', '~':
+	case 0, '(', ',', '{', '[', ';', ':', '!', '&', '|', '?', '=', '+', '-', '*', '%', '>', '^', '~':
 		return true
 	}
 	return false
+}
+
+// regexKeywords are the keywords after which an expression, and so a regex, may start.
+var regexKeywords = map[string]bool{
+	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true,
+	"of": true, "new": true, "delete": true, "void": true, "throw": true,
+	"instanceof": true, "yield": true, "await": true,
+}
+
+// condKeywords open a parenthesized statement condition, after whose ')' a statement,
+// and so a regex, may start.
+var condKeywords = map[string]bool{"if": true, "while": true, "for": true, "with": true}
+
+// lastWord returns the identifier or keyword that out ends with (after trailing space),
+// and whether it is a property name (preceded by '.').
+func lastWord(out []rune) (string, bool) {
+	k := len(out)
+	for k > 0 && unicode.IsSpace(out[k-1]) {
+		k--
+	}
+	end := k
+	for k > 0 && isIdentPart(out[k-1]) {
+		k--
+	}
+	j := k
+	for j > 0 && unicode.IsSpace(out[j-1]) {
+		j--
+	}
+	return string(out[k:end]), j > 0 && out[j-1] == '.'
+}
+
+func isLineTerminator(c rune) bool {
+	return c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029'
 }
 
 // declKeywords are the leading keywords that introduce a JS/TS class declaration.

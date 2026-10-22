@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
@@ -264,4 +265,105 @@ func gateStoreFromJS(t *testing.T, src string, files map[string]string) (*artifa
 		t.Fatal(err)
 	}
 	return store, len(cg.Edges)
+}
+
+// TestUndeterminedReason_JSLexerHidesNoCode runs programs whose only unread load sits where the
+// lexer once blanked code: inside a template substitution, or after a quote, backtick or comment
+// opener the lexer misread as starting a literal. Each held program must declare; each control,
+// whose require text really is inside a literal, must stay refutable. Sources write a backtick
+// as '^'.
+func TestUndeterminedReason_JSLexerHidesNoCode(t *testing.T) {
+	const tail = "function load(s) { return m.parse(s); }\nload(process.argv[2]);\n"
+	cases := []struct {
+		name string
+		src  string
+		held bool
+	}{
+		{"require inside a template substitution", `
+function load(s) { return ^${require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"eval inside a template substitution", `
+function load(s) { return ^v=${eval(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"dynamic import inside a template substitution", `
+function load(s) { return ^${import(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"require inside a nested template", `
+function load(s) { return ^a${^b${require(process.argv[3]).parse(s)}^}^; }
+load(process.argv[2]);
+`, true},
+		{"require after a block and a brace in a string inside a substitution", `
+function load(s) { return ^${[s].map(x => { return '}' + x; }).join() + require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"regex holding a quote after return", `
+function check(s) { return /'/.test(s); }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"regex holding a quote after a control condition", `
+function check(s) { if (s) /'/.test(s); return s; }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"division after a postfix increment", `
+let i = 0;
+const n = i++ / 2; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"JSX text with apostrophes", `
+function A() {
+  return <p>Don't panic</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  return <p>That's all</p>;
+}
+` + tail, true},
+		{"JSX closing tag followed by code on the same line", `
+const A = () => <p>hi</p>; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"a backtick in JSX text that never closes", `
+const A = () => <p>Press ^ to search</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"a comment opener in JSX text that never closes", `
+const A = () => <p>Match files with /* globs</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"require text in a template's literal part", `
+function load(s) { return ^require(process.argv[3]) ${s}^; }
+load(process.argv[2]);
+`, false},
+		{"multi-line template holding quotes and require text", `
+function load(s) { return ^it's line one
+require(process.argv[3]) "here"
+and ${s.trim()} done^; }
+load(process.argv[2]);
+`, false},
+		{"string continued across a line", `
+function load(s) { return 'a \
+require(process.argv[3]) b' + s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"regex holding a quote and a backtick after return", `
+function load(s) { return /[^'"]/.test(s) ? s.trim() : s; }
+load(process.argv[2]);
+`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, edges := gateStoreFromJS(t, strings.ReplaceAll(tc.src, "^", "`"), nil)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.held && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
 }

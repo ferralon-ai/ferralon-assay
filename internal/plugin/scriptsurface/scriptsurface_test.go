@@ -152,6 +152,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"GitLab local include with a variable", tree(map[string]string{".gitlab-ci.yml": "include: ci/$ENV.yml\n"}), true, ""},
 		{"GitLab local include not there", tree(map[string]string{".gitlab-ci.yml": "include: ci/missing.yml\n"}), true, ""},
 		{"GitLab local include outside the tree", tree(map[string]string{".gitlab-ci.yml": "include: ../ci.yml\n"}), true, ""},
+		{"GitLab include in a document after a spec header", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "spec:\n  inputs:\n    env:\n      default: prod\n---\ninclude:\n  - local: ci/deep.yml\n", "ci/deep.yml": "build:\n  script:\n    - inst add x\n"}), true, ""},
+		{"GitLab remote include in a document after a spec header", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "spec:\n  inputs:\n    env:\n      default: prod\n---\ninclude:\n  - remote: https://example.com/ci.yml\n"}), true, ""},
+		{"GitLab spec header then a local include that never installs", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/build.yml\n", "ci/build.yml": "spec:\n  inputs:\n    env:\n      default: prod\n---\ninclude:\n  - local: ci/test.yml\n", "ci/test.yml": "test:\n  script:\n    - pytest\n"}), false, ""},
 		{"GitLab local include that never installs", tree(map[string]string{".gitlab-ci.yml": "include:\n  - local: ci/test.yml\n", "ci/test.yml": "test:\n  script:\n    - pytest\n"}), false, ""},
 		{"GitLab local includes in a cycle", tree(map[string]string{".gitlab-ci.yml": "include: ci/a.yml\n", "ci/a.yml": "include: ci/b.yml\n", "ci/b.yml": "include: ci/a.yml\n"}), false, ""},
 

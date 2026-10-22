@@ -1,6 +1,9 @@
 package scriptsurface
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -20,14 +23,25 @@ const maxIncludeDepth = 16
 // project or component include, a glob or variable in a local path, a path outside the build
 // root or not there, and an include this cannot decode each run jobs this does not read.
 func (v *Veto) gitlabIncludes(path, src string, seen map[string]bool, depth int) ([]unit, string) {
-	var doc struct {
-		Include yaml.Node `yaml:"include"`
-	}
-	if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
-		if strings.Contains(src, "include") {
-			return nil, "GitLab pipeline whose includes cannot be decoded"
+	// A file with a spec: header keeps its include: in a later document, so every document is
+	// read.
+	var incs []yaml.Node
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(src)))
+	for {
+		var doc struct {
+			Include yaml.Node `yaml:"include"`
 		}
-		return nil, ""
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			if strings.Contains(src, "include") {
+				return nil, "GitLab pipeline whose includes cannot be decoded"
+			}
+			return nil, ""
+		}
+		incs = append(incs, doc.Include)
 	}
 	var locals []string
 	add := func(n *yaml.Node) string {
@@ -60,18 +74,19 @@ func (v *Veto) gitlabIncludes(path, src string, seen map[string]bool, depth int)
 		}
 		return "GitLab include of an unknown form"
 	}
-	switch inc := &doc.Include; inc.Kind {
-	case 0:
-		return nil, ""
-	case yaml.SequenceNode:
-		for _, n := range inc.Content {
-			if why := add(n); why != "" {
+	for i := range incs {
+		switch inc := &incs[i]; inc.Kind {
+		case 0:
+		case yaml.SequenceNode:
+			for _, n := range inc.Content {
+				if why := add(n); why != "" {
+					return nil, why
+				}
+			}
+		default:
+			if why := add(inc); why != "" {
 				return nil, why
 			}
-		}
-	default:
-		if why := add(inc); why != "" {
-			return nil, why
 		}
 	}
 	if len(locals) > 0 && depth >= maxIncludeDepth {

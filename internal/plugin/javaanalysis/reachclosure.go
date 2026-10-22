@@ -265,6 +265,7 @@ func mergeReleases(built *reachClosure, all []classfile.Class, gavs []gav, versi
 	// merge holds into it stay valid.
 	extra := make([]classfile.Class, 0, n)
 	merge := classfile.NewReleaseMerge(all)
+	merge.JDKType = func(name string) bool { return depreach.BootOnly(name, 0) }
 	unmerged := func(g gav, detail string) {
 		built.Scoped = append(built.Scoped, scoped(reasonMultiReleaseUnmerged, g.coordinate, g.String()+"!"+detail))
 		if !slices.Contains(built.releaseReasons, reasonMultiReleaseUnmerged) {

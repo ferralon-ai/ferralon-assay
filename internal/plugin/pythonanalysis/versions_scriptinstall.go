@@ -59,11 +59,12 @@ var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:PIP|UV)_[A-Z0-9_]+`
 // install_requires), any word starting pip or conda, and an interpreter option that runs one
 // as a module with its name attached (-mpip, -Impip); or a task runner that runs commands a
 // file not read here defines, or installs into the environments it makes (poe, invoke and its
-// inv, nox, tox).
+// inv, tox). nox is not one: every noxfile imports it, and the noxfile.py it runs is a
+// candidate whenever a session installs.
 func laneToken(word string) bool {
 	switch word {
 	case "uv", "uvx", "poetry", "pdm", "easy_install", "mamba", "micromamba", "pixi", "rye",
-		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "nox", "tox":
+		"hatch", "flit", "setup.py", "poe", "invoke", "inv", "tox":
 		return true
 	}
 	if m := attachedModuleRE.FindStringSubmatch(word); m != nil && laneToken(m[1]) {

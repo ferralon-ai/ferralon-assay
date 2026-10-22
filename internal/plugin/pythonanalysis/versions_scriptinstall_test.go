@@ -59,7 +59,8 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 			"poetry.lock": lockPoetry, "install.sh": "poetry run poe setup\n"}, false, ""},
 		{"invoke task", map[string]string{"requirements.txt": reqs, "tasks.py": "from invoke import task\n", "install.sh": "invoke setup\n"}, false, ""},
 		{"inv task", map[string]string{"requirements.txt": reqs, "tasks.py": "from invoke import task\n", "Makefile": "setup:\n\tinv setup\n"}, false, ""},
-		{"nox session installs", map[string]string{"requirements.txt": reqs, "install.sh": "nox -s tests\n"}, false, ""},
+		{"nox session installs", map[string]string{"requirements.txt": reqs, "noxfile.py": "import nox\n\n@nox.session\ndef t(s):\n    s.install(\"jinja2==3.1.2\")\n", "install.sh": "nox -s t\n"}, false, ""},
+		{"tox env from a pyproject tox table", map[string]string{"pyproject.toml": project + "[tool.tox]\nlegacy_tox_ini = \"\"\"\n[testenv]\ndeps = jinja2==3.1.2\n\"\"\"\n", "uv.lock": lockUV, "install.sh": "tox -e py312\n"}, false, ""},
 		{"tox env installs deps", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: tox -e py312\n"}, false, ""},
 		{"rye sync", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "install.sh": "rye sync\n"}, false, ""},
 		{"flit install", map[string]string{"pyproject.toml": project, "uv.lock": lockUV, "install.sh": "flit install --deps production\n"}, false, ""},
@@ -101,6 +102,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"poetry run", map[string]string{"pyproject.toml": project, "poetry.lock": lockPoetry, "Procfile": "web: poetry run gunicorn app:app\n"}, true, ""},
 		{"pipenv install --deploy", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "install.sh": "pipenv install --deploy\n"}, true, ""},
 		{"pipenv sync", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "Makefile": "deps:\n\tpipenv sync\n"}, true, ""},
+		{"noxfile that never installs, run by nox", map[string]string{"requirements.txt": reqs, "noxfile.py": "import nox\n\n@nox.session\ndef t(s):\n    s.run(\"pytest\")\n", "install.sh": "nox -s t\n"}, true, ""},
 		{"pdm run without a scripts table", map[string]string{"pyproject.toml": project, "pdm.lock": lockPDM, "Makefile": "test:\n\tpdm run pytest\n"}, true, ""},
 		{"pipenv run without a scripts table", map[string]string{"requirements.txt": reqs, "Pipfile": "[packages]\n", "Pipfile.lock": "{}\n", "Procfile": "web: pipenv run gunicorn app:app\n"}, true, ""},
 	}

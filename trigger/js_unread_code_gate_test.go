@@ -1188,8 +1188,10 @@ func TestUndeterminedReason_JSWorkspaceMemberShadow(t *testing.T) {
 			"node_modules/foo/index.js":     installed["index.js"],
 		}, true},
 		// Node walks the symlink's own directory under --preserve-symlinks, which the tree does not record.
-		{"a symlinked importer whose own directory's ancestor holds an installed copy", req("./src/a/entry"),
-			withReal(tree("src/node_modules/foo")), map[string]string{"node_modules/foo": "../packages/foo", "src/a/entry.js": "../../dist/real.js"}, nil, true},
+		{"a symlinked importer whose own directory's ancestor holds an installed copy", req("./src/a/b/entry"),
+			withReal(tree("src/a/node_modules/foo")), map[string]string{"node_modules/foo": "../packages/foo", "src/a/b/entry.js": "../../../dist/real.js"}, nil, true},
+		{"a symlinked importer whose real directory's ancestor holds an installed copy", entrySrc,
+			withFile(tree("dist/node_modules/foo"), "dist/sub/real.js", "module.exports = require('foo');\n"), entryTo("../dist/sub/real.js", nil), nil, true},
 		{"a member name with a candidate that cannot be stat'ed", req(long), named(long), map[string]string{"node_modules/" + long: "../packages/foo"}, nil, true},
 		{"an importer with a source file name that cannot be stat'ed", req("./src/" + stem),
 			withFile(tree(), "src/"+stem+".js", "module.exports = require('foo');\n"), member, nil, true},

@@ -416,14 +416,11 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 			}, memberShadowed("a", false)},
 		}},
 		{"memberShadowed member real path", []row{
-			{"ENAMETOOLONG", map[string]string{
-				"package.json":       memberTree["package.json"],
-				"a.js":               memberTree["a.js"],
-				"node_modules/.keep": "",
-			}, func(t *testing.T, dir string) {
-				deep := deepLink(t, dir, "packages")
-				for name, body := range map[string]string{"foo/package.json": `{"name":"foo"}`, "foo/index.js": js} {
-					p := filepath.Join(deep, filepath.FromSlash(name))
+			// the build root is reached through short links; its real path is past PATH_MAX
+			{"ENAMETOOLONG", nil, func(t *testing.T, dir string) {
+				root := filepath.Join(deepLink(t, dir, "r"), "repo")
+				for name, body := range memberTree {
+					p := filepath.Join(root, filepath.FromSlash(name))
 					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 						t.Fatal(err)
 					}
@@ -431,10 +428,12 @@ func TestFSErrors_NotAbsent(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := filepath.EvalSymlinks(filepath.Join(dir, "packages", "foo")); !errors.Is(err, syscall.ENAMETOOLONG) {
+				if _, err := filepath.EvalSymlinks(filepath.Join(root, "packages", "foo")); !errors.Is(err, syscall.ENAMETOOLONG) {
 					t.Fatalf("realpath packages/foo: %v, want %v", err, syscall.ENAMETOOLONG)
 				}
-			}, memberShadowed("a", true)},
+			}, func(t *testing.T, dir string) {
+				memberShadowed("a", true)(t, filepath.Join(dir, "r", "repo"))
+			}},
 		}},
 		{"memberShadowed importer real path", []row{
 			{"EACCES", memberTree, func(t *testing.T, dir string) {

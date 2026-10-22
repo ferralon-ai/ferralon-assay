@@ -242,3 +242,166 @@ func shellSegments(s string) ([]segment, bool) {
 	endSeg()
 	return segs, true
 }
+
+// yamlLine is a line of a YAML surface as read: shell marks the text of a folded scalar,
+// already unwrapped, which is read as shell text, not as a "key: value" line.
+type yamlLine struct {
+	text  string
+	shell bool
+}
+
+// blockHeaderRE matches a block scalar indicator: | or >, then an indentation or chomping
+// indicator in either order, then at most a comment.
+var blockHeaderRE = regexp.MustCompile(`^([|>])([1-9]?[+-]?|[+-]?[1-9]?)\s*(?:#.*)?$`)
+
+// foldYAML joins what YAML folds before a command is read. A folded block (>, >-, >+) becomes
+// its folded lines, each a command, under a key whose value a build may run; a plain or quoted
+// scalar continued on more-indented lines becomes one line, its continuations joined with
+// spaces and a blank line starting a new command. A literal block (|) keeps one command per
+// line, and its lines are passed through unread here.
+func foldYAML(lines []string) []yamlLine {
+	var out []yamlLine
+	for i := 0; i < len(lines); i++ {
+		col, key, val, ok := yamlScalarStart(lines[i])
+		out = append(out, yamlLine{text: lines[i]})
+		if !ok {
+			continue
+		}
+		end := i + 1
+		for end < len(lines) && (strings.TrimSpace(lines[end]) == "" || yamlIndent(lines[end]) > col) {
+			end++
+		}
+		run := !dataKeys[strings.ToLower(key)]
+		switch m := blockHeaderRE.FindStringSubmatch(val); {
+		case m != nil && m[1] == "|":
+			for _, l := range lines[i+1 : end] {
+				out = append(out, yamlLine{text: l})
+			}
+			i = end - 1
+		case m != nil:
+			base := col + 1
+			if d := strings.Trim(m[2], "+-"); d != "" {
+				base = col + int(d[0]-'0')
+			} else {
+				for _, l := range lines[i+1 : end] {
+					if strings.TrimSpace(l) != "" {
+						base = yamlIndent(l)
+						break
+					}
+				}
+			}
+			if run {
+				for _, p := range foldedPieces(lines[i+1:end], base) {
+					out = append(out, yamlLine{text: p, shell: true})
+				}
+			}
+			i = end - 1
+		default:
+			// A comment ends a plain scalar; anything after it is read line by line.
+			for j := i + 1; j < end; j++ {
+				if strings.HasPrefix(strings.TrimSpace(lines[j]), "#") {
+					end = j
+					break
+				}
+			}
+			for end > i+1 && strings.TrimSpace(lines[end-1]) == "" {
+				end--
+			}
+			if end == i+1 {
+				continue
+			}
+			groups := plainGroups(lines[i+1 : end])
+			out[len(out)-1].text = strings.TrimRight(lines[i], " \t") + " " + groups[0]
+			if run {
+				for _, g := range groups[1:] {
+					out = append(out, yamlLine{text: g, shell: true})
+				}
+			}
+			i = end - 1
+		}
+	}
+	return out
+}
+
+// yamlScalarStart reports whether a line opens a scalar value: "key: value", "- key: value" or
+// "- value", with a value that is not empty, a comment, or only an anchor or tag before a
+// nested block. col is the indentation its continuation lines must exceed: the key's column,
+// or the dash's for a bare item.
+func yamlScalarStart(line string) (col int, key, val string, ok bool) {
+	col = yamlIndent(line)
+	s := line[col:]
+	if rest, item := strings.CutPrefix(s, "- "); item {
+		trimmed := strings.TrimLeft(rest, " ")
+		if m := keyRE.FindStringSubmatch(trimmed); m != nil {
+			col += 2 + len(rest) - len(trimmed)
+			key, val = strings.Trim(m[1], `"'`), trimmed[len(m[0]):]
+		} else {
+			val = trimmed
+		}
+	} else if m := keyRE.FindStringSubmatch(s); m != nil {
+		key, val = strings.Trim(m[1], `"'`), s[len(m[0]):]
+	} else {
+		return 0, "", "", false
+	}
+	val = strings.TrimSpace(val)
+	for _, f := range strings.Fields(val) {
+		if strings.HasPrefix(f, "#") {
+			break
+		}
+		if !strings.HasPrefix(f, "&") && !strings.HasPrefix(f, "!") {
+			return col, key, val, true
+		}
+	}
+	return 0, "", "", false
+}
+
+func yamlIndent(line string) int { return len(line) - len(strings.TrimLeft(line, " ")) }
+
+// foldedPieces folds a folded block's lines: lines at the block's indentation join with
+// spaces, and a blank line or a more-indented line, which YAML keeps on its own line, ends
+// the command.
+func foldedPieces(lines []string, base int) []string {
+	var (
+		pieces []string
+		cur    []string
+	)
+	flush := func() {
+		if len(cur) > 0 {
+			pieces = append(pieces, strings.Join(cur, " "))
+			cur = nil
+		}
+	}
+	for _, l := range lines {
+		switch t := strings.TrimSpace(l); {
+		case t == "":
+			flush()
+		case yamlIndent(l) > base:
+			flush()
+			pieces = append(pieces, t)
+		default:
+			cur = append(cur, t)
+		}
+	}
+	flush()
+	return pieces
+}
+
+// plainGroups joins a plain scalar's continuation lines with spaces; a blank line, which YAML
+// keeps as a line break, starts a new group.
+func plainGroups(lines []string) []string {
+	groups := []string{""}
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		switch {
+		case t == "":
+			if groups[len(groups)-1] != "" {
+				groups = append(groups, "")
+			}
+		case groups[len(groups)-1] == "":
+			groups[len(groups)-1] = t
+		default:
+			groups[len(groups)-1] += " " + t
+		}
+	}
+	return groups
+}

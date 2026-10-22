@@ -108,6 +108,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		return "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        working-directory: " +
 			wd + "\n    steps:\n      - run: " + run + "\n"
 	}
+	steps := func(body string) string {
+		return "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      " + body
+	}
 	tests := []struct {
 		name  string
 		files map[string]string
@@ -125,6 +128,12 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"hyphenated tool name", tree(map[string]string{"install.sh": "inst_wrapper x\n"}), true, ""},
 		{"input key naming a token", tree(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/setup@v1\n        with:\n          inst-args: x==2\n"}), true, ""},
 		{"installer variable set", tree(map[string]string{"install.sh": "export INST_INDEX=https://x\ninst sync\n"}), true, ""},
+
+		// YAML scalars a build folds into one command.
+		{"folded block joins its lines", tree(map[string]string{".github/workflows/ci.yml": steps("- run: >\n          inst sync\n          x\n")}), true, ""},
+		{"folded block, strip chomping and a comment", tree(map[string]string{".gitlab-ci.yml": "build:\n  script:\n    - >- # install\n      inst sync\n      x\n"}), true, ""},
+		{"plain scalar continued on the next line", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n          x\n")}), true, ""},
+		{"double-quoted scalar continued on the next line", tree(map[string]string{".github/workflows/ci.yml": steps("- run: \"inst sync\n          x\"\n")}), true, ""},
 
 		// Expansions, redirects and lines that do not tokenise.
 		{"$VAR argument", tree(map[string]string{"install.sh": "inst install -r $REQS\n"}), true, ""},
@@ -160,6 +169,10 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile COPY glob with a wildcard directory", tree(map[string]string{"svc/inst.toml": "[deps]\n", "Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nCOPY */inst.toml ./\nRUN inst sync\n"}), true, ""},
 
 		// Controls.
+		{"literal block keeps a command per line", tree(map[string]string{".github/workflows/ci.yml": steps("- run: |\n          inst sync\n          inst run build\n")}), false, ""},
+		{"folded block, a blank line between commands", tree(map[string]string{".github/workflows/ci.yml": steps("- run: >\n          inst sync\n\n          inst run build\n        name: deps\n")}), false, ""},
+		{"folded block under a key a build never runs", tree(map[string]string{".github/workflows/ci.yml": steps("- name: >\n          inst add x\n        run: inst sync\n")}), false, ""},
+		{"plain scalar beside a sibling key", tree(map[string]string{".github/workflows/ci.yml": steps("- run: inst sync\n        name: deps\n")}), false, ""},
 		{"job key naming a token opens a block", tree(map[string]string{".gitlab-ci.yml": "inst-build: &job\n  script:\n    - inst sync\n"}), false, ""},
 		{"make variable", tree(map[string]string{"Makefile": "all:\n\t$(MAKE) -C sub\n\t$(MAKE) install\n\t${MAKE} build\n\t$(CC) -o x x.c\n"}), false, ""},
 		{"expansion not followed by an install verb", tree(map[string]string{"install.sh": "$TOOL build\necho \"$X\" done\n"}), false, ""},

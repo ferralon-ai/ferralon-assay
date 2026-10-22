@@ -340,6 +340,8 @@ var cdRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.-])(?:cd|pushd|popd)(?:$|[^A-Za
 
 // host applies the rule to a host surface's units, each line split as kind.
 func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	yaml := kind == kindData && (ext == ".yml" || ext == ".yaml")
 	var base []string
 	unknown := s.base == baseNone
 	switch s.base {
@@ -368,12 +370,23 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		if !joined && v.hasToken(lines[len(lines)-1]) {
 			return "install command in an unjoined continuation"
 		}
-		for _, line := range lines {
+		read := make([]yamlLine, len(lines))
+		for i, l := range lines {
+			read[i] = yamlLine{text: l}
+		}
+		if yaml {
+			read = foldYAML(lines)
+		}
+		for _, rl := range read {
+			line, lineKind := rl.text, kind
+			if rl.shell {
+				lineKind = kindShell
+			}
 			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown}
-			if kind == kindData && v.hasToken(valuedKey(line)) {
+			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
-			segs, ok := commandSegments(kind, line)
+			segs, ok := commandSegments(lineKind, line)
 			if !ok {
 				if v.hasToken(line) {
 					return "install command that does not tokenise"

@@ -36,6 +36,7 @@ type Engine struct {
 	hiddenDone  bool                         // hidden is computed
 	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
 	unlinked    map[string]bool              // unlinkable cache
+	resolving   map[string]bool              // lambda implementations being resolved (lambdaImpl)
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -153,6 +154,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		unlinked:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
 		held:        map[string]heldTypes{},
+		resolving:   map[string]bool{},
 		defined:     map[string]bool{},
 		unlisted:    cp.Unlisted,
 		methodsHold: cp.JDK == platformMethodsJDK,
@@ -786,7 +788,20 @@ func (e *Engine) resolveDynamic(from string, edge classfile.Edge) ([]*classfile.
 
 // lambdaImpl resolves a lambda's implementation handle, naming opaque when the
 // handle itself cannot be followed.
+//
+// A handle can call back into a dispatch that reaches the same lambda: a method
+// reference t::apply implementing the interface whose apply it calls, or two lambdas
+// whose handles call each other's interfaces. Re-entered while it is being resolved,
+// the implementation adds nothing: its targets and hazards are those the outer
+// resolution is already collecting. Nothing caches a result, so no partial one
+// outlives that outer resolution.
 func (e *Engine) lambdaImpl(from string, h classfile.MethodHandle, opaque string) ([]*classfile.Method, bool, string) {
+	key := fmt.Sprintf("%s %d %s", from, h.Kind, h.Ref.String())
+	if e.resolving[key] {
+		return nil, false, ""
+	}
+	e.resolving[key] = true
+	defer delete(e.resolving, key)
 	ts, hz, w := e.resolveHandle(from, h)
 	switch {
 	case hz && w == "":

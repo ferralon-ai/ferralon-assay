@@ -48,6 +48,53 @@ func altSite(extra ...classfile.BootstrapArg) classfile.Edge {
 
 var staticImpl = handleArg(classfile.RefInvokeStatic, svc, implName, applyDesc)
 
+const relay = "com/acme/Relay"
+
+// siteOf is a metafactory site in a class of its own producing an iface whose apply runs impl.
+func siteOf(owner, iface string, impl classfile.BootstrapArg) classfile.Class {
+	return class(owner, "java/lang/Object", nil,
+		staticMeth(owner, "make", "()L"+iface+";", indy("apply", "()L"+iface+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+			classfile.BootstrapArg{MethodType: applyDesc}, impl, classfile.BootstrapArg{MethodType: applyDesc}))))
+}
+
+// A lambda whose implementation handle calls the interface it implements (t::apply), or
+// two whose handles call each other's interfaces, re-enter the dispatch that resolves
+// them. The search must terminate, and a re-entered lambda must not hide its siblings'
+// targets or hazards.
+func TestReach_LambdaHandleCycles(t *testing.T) {
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	callApply := edge(classfile.EdgeInterface, transformer, "apply", applyDesc)
+	selfRef := handleArg(classfile.RefInvokeInterface, transformer, "apply", applyDesc)
+	viaRelay := handleArg(classfile.RefInvokeInterface, relay, "apply", applyDesc)
+	relayIface := iface(relay, abstractMeth(relay, "apply", applyDesc))
+	runReachCases(t, []reachCase{
+		{name: "method reference to the implemented method", ingress: handle, want: NotExploitable,
+			classes: lambdaSvc(callApply, transformerSite(selfRef))},
+		{name: "method reference beside a lambda reaching the sink", ingress: handle, want: ReachableCandidate,
+			classes: lambdaSvc(callApply, transformerSite(selfRef), siteOf("com/acme/Other", transformer, staticImpl))},
+		{name: "method reference beside a lambda into an unopened dependency", ingress: handle, want: Undetermined, why: "unloaded_dependency",
+			classes: lambdaSvc(callApply, transformerSite(selfRef), siteOf("com/acme/Other", transformer, handleArg(classfile.RefInvokeStatic, "org/unopened/Util", "f", applyDesc)))},
+		{name: "two lambdas calling each other's interfaces", ingress: handle, want: NotExploitable,
+			classes: lambdaSvc(callApply, transformerSite(viaRelay), relayIface, siteOf("com/acme/Other", relay, selfRef))},
+		{name: "two lambdas calling each other's interfaces, one more reaching the sink", ingress: handle, want: ReachableCandidate,
+			classes: lambdaSvc(callApply, transformerSite(viaRelay), relayIface, siteOf("com/acme/Other", relay, selfRef), siteOf("com/acme/Third", relay, staticImpl))},
+	})
+}
+
+// A lambda resolved once is resolved again for the next search on the same engine.
+func TestReach_LambdaHandleCycleResolvesAgain(t *testing.T) {
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	callApply := edge(classfile.EdgeInterface, transformer, "apply", applyDesc)
+	selfRef := handleArg(classfile.RefInvokeInterface, transformer, "apply", applyDesc)
+	e := NewEngine(append(lambdaSvc(callApply, transformerSite(selfRef), siteOf("com/acme/Other", transformer, staticImpl)), urlFetcherDep()))
+	sink := mref("com/evil/netkit/UrlFetcher", "fetch", sinkDesc)
+	for i := range 2 {
+		if r := e.Reach(handle, sink); r.Verdict != ReachableCandidate {
+			t.Fatalf("search %d: verdict = %s, want %s (hazard=%q)", i+1, r.Verdict, ReachableCandidate, r.HazardWhy)
+		}
+	}
+}
+
 // A lambda object answers interface calls wherever it travels, so its
 // implementation must be reached from a root that never reaches its creation site.
 func TestReach_LambdaDispatchFromAnyRoot(t *testing.T) {

@@ -48,13 +48,13 @@ var scriptSpec = scriptsurface.Spec{
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+)`)
 
 // laneToken reports whether word is a JavaScript package manager or package runner, an alias
-// or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nr, nlx, nu, nun, na), or a tool
+// or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nlx, nu, na), or a tool
 // that installs packages itself or runs commands a file not read here defines (volta, lerna,
 // rush, nx, ng, ncu, vlt).
 func laneToken(word string) bool {
 	switch word {
 	case "npm", "npx", "yarn", "pnpm", "pnpx", "bun", "bunx", "deno", "corepack",
-		"yarnpkg", "cnpm", "ni", "nci", "nr", "nlx", "nu", "nun", "na",
+		"yarnpkg", "cnpm", "ni", "nci", "nlx", "nu", "na",
 		"volta", "lerna", "rush", "nx", "ng", "ncu", "vlt":
 		return true
 	}

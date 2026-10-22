@@ -155,9 +155,8 @@ func (mb *moduleBindings) createRequireUse(clean, src []rune, i, next int) {
 // memberUse records an identifier at i that is a loader entry point: `_load` loads a module
 // as require does and `dlopen` loads a native addon, wherever the name occurs (a member, a
 // destructured key, a local renaming one), since no form of either is known to load only
-// code this lane reads; eval is judged as a bare name or as a member.
+// code this lane reads; eval is judged by evaluatorTested.
 func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
-	p := skipSpaceBack(clean, i-1)
 	switch word {
 	case "_load":
 		mb.computedReq = true
@@ -166,21 +165,35 @@ func (mb *moduleBindings) memberUse(clean []rune, i int, word string) {
 		mb.nativeLoad = true
 		return
 	}
-	if p < 0 || clean[p] != '.' {
-		mb.evaluated = true
-		return
-	}
-	// A call of .eval on any receiver may be the global's eval; a read of .eval is judged by
-	// globalUse when the receiver is the global. A read of .eval on a global's name flags even
-	// when a local shadows the name, since the local may hold the global by a path globalUse
-	// does not follow, and so does a read from a receiver that is not a name (`(globalThis).eval`).
-	if q := skipSpace(clean, i+len("eval")); q < len(clean) && clean[q] == '(' || optionalCall(clean, q) || !namedReceiver(clean, p) {
+	if !evaluatorTested(clean, i, i+len(word)) {
 		mb.evaluated = true
 	}
-	switch recv, _ := wordBefore(clean, skipSpaceBack(clean, memberDot(clean, p)-1)); recv {
+}
+
+// evaluatorTested reports whether the eval or Function at [i, next) is a member whose value
+// is neither called nor handed on: only tested (objectTested) or read for a further member
+// other than constructor, call, apply or bind. Any other read may hand on the global's
+// evaluator through a receiver whose value this lane does not know
+// (`const e = frame.contentWindow.eval`), and a member of a global's name may be the
+// evaluator itself, so both flag, as does the bare name.
+func evaluatorTested(clean []rune, i, next int) bool {
+	b := skipSpaceBack(clean, i-1)
+	if b < 0 || clean[b] != '.' {
+		return false
+	}
+	op := memberDot(clean, b)
+	switch recv, _ := wordBefore(clean, skipSpaceBack(clean, op-1)); recv {
 	case "globalThis", "global", "window", "self":
-		mb.evaluated = true
+		return false
 	}
+	start := receiverStart(clean, op)
+	if start < 0 {
+		return false
+	}
+	if ok, member := memberReadAt(clean, skipSpace(clean, next)); member {
+		return ok
+	}
+	return objectTested(clean, start, next, skipSpaceBack(clean, start-1))
 }
 
 // memberDot returns the start of the member operator whose '.' is at b: b itself, or the '?'
@@ -192,14 +205,6 @@ func memberDot(clean []rune, b int) int {
 	return b
 }
 
-// namedReceiver reports whether the member access whose '.' is at b reads from a name or a
-// plain chain of names, rather than from a call, an index, a literal or a parenthesised
-// expression, whose value this lane does not know.
-func namedReceiver(clean []rune, b int) bool {
-	k := skipSpaceBack(clean, memberDot(clean, b)-1)
-	return k >= 0 && isIdentPart(clean[k]) && clean[k] != '_'
-}
-
 // functionUse records a use of the Function constructor at i. Every reference to Function
 // counts, whatever follows it: a call, `new Function`, a member, an alias or a value handed
 // on may each reach the constructor by a path the walk does not follow. The one exception is
@@ -209,10 +214,7 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
 	if b >= 0 && clean[b] == '.' {
-		// A call of .Function on any receiver may be the global's Function constructor, and so
-		// may a read from a receiver that is not a name (`(globalThis).Function`); a read from
-		// a global's name is judged by globalUse.
-		if p < len(clean) && clean[p] == '(' || optionalCall(clean, p) || !namedReceiver(clean, b) {
+		if !evaluatorTested(clean, i, next) {
 			mb.evaluated = true
 		}
 		return

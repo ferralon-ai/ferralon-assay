@@ -1961,7 +1961,7 @@ import { fmt } from './fmt.js';
 const u = require('#u');
 const cfg = require('./config.json');
 const where = require.resolve('./util');
-if (typeof require === 'function' && cfg.eval) { load(where); }
+if (typeof require === 'function' && cfg.eval === true) { load(where); }
 module.exports = { load };
 function load(s) { return fmt(trim(s)); }
 load(process.argv);
@@ -2017,7 +2017,7 @@ func TestCallGraph_LoaderShapesThatHandNothingOn(t *testing.T) {
 		{"Function of a parameter list", "const min = Function('a, b', 'return a < b ? a : b');"},
 		{"Function with an empty body", "const noop = Function('');"},
 		{"Function of nothing", "const nil = Function();"},
-		{"a member named Function read on a parameter", "function ctorOf(o) { return o.Function; }"},
+		{"a member named Function tested on a parameter", "function hasCtor(o) { return o.Function !== undefined; }"},
 		{"a literal Function stored and called later", "const add = Function('a', 'b', 'return a + b');\nconst three = add(1, 2);"},
 		{"Function body with a string", "const tag = Function('a', 'return a == \"x\" ? 1 : 0');"},
 		{"global require tested", "const electron = typeof window !== 'undefined' && !!(window.require && window.process);"},

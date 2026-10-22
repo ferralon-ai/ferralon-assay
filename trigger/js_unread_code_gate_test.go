@@ -384,6 +384,29 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"eval aliased off a named receiver", `
+const frame = { contentWindow: globalThis };
+const e = frame.contentWindow.eval;
+e(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"eval returned off a parameter", `
+function evalOf(w) { return w.eval; }
+module.exports = evalOf;
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function aliased off a named receiver", `
+const frame = { contentWindow: globalThis };
+const F = frame.contentWindow.Function;
+F(process.argv[3])();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };
@@ -440,6 +463,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
 		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
+		{"eval and Function members tested", "const opts = {};\nconst j = require('./plugins');\nif (opts.eval) load('x');\nconst on = !opts.Function && opts.eval !== true;", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,

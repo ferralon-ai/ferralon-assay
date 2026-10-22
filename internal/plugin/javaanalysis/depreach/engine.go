@@ -442,11 +442,11 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		seen[cur] = true
-		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok {
+		// A static or private interface method is no candidate (JVMS §5.4.3.3). The
+		// walk goes on past a default: an unopened interface above a sibling one may
+		// still override it.
+		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !d.Static && !d.Private {
 			decls = append(decls, d)
-			if !d.Abstract {
-				continue
-			}
 		}
 		c := e.classes[cur]
 		if c == nil {

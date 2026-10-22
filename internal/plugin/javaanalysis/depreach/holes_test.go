@@ -914,6 +914,8 @@ func TestReach_MaximallySpecificDefault(t *testing.T) {
 		{Name: b, Super: objectClass, Interfaces: []string{i2}, Methods: []classfile.Method{pubMethod(b, "<init>", "()V")}},
 		{Name: c, Super: b, Interfaces: []string{i1}, Methods: []classfile.Method{pubMethod(c, "<init>", "()V")}},
 	}
+	const f, d = "com/acme/F", "com/acme/D"
+	callM := mainCalls(edge(classfile.EdgeSpecial, c, "m", "()V"))
 	runHoleCases(t, []holeCase{
 		{
 			name:    "virtual call",
@@ -922,8 +924,35 @@ func TestReach_MaximallySpecificDefault(t *testing.T) {
 		},
 		{
 			name:    "invokespecial",
-			classes: append([]classfile.Class{mainCalls(edge(classfile.EdgeSpecial, c, "m", "()V"))}, types...),
+			classes: append([]classfile.Class{callM}, types...),
 			want:    ReachableCandidate, via: "I2.m",
+		},
+		{
+			name: "an unopened interface above a sibling default may override the one met first",
+			classes: []classfile.Class{callM,
+				ifaceWith(f, nil, pubMethod(f, "m", "()V")),
+				ifaceWith(d, []string{"com/lib/U"}, callsSink(d, "m", "()V")),
+				{Name: c, Super: objectClass, Interfaces: []string{f, d}},
+			},
+			want: Undetermined, kind: HazardKindUnloadedDependency, why: "may resolve into unopened com/lib/U",
+		},
+		{
+			name: "a static interface method is no default and hides none",
+			classes: []classfile.Class{callM,
+				ifaceWith(i1, nil, callsSink(i1, "m", "()V")),
+				ifaceWith(i2, []string{i1}, staticMeth(i2, "m", "()V")),
+				{Name: c, Super: objectClass, Interfaces: []string{i2}},
+			},
+			want: ReachableCandidate, via: "I1.m",
+		},
+		{
+			name: "a private interface method is no default and hides none",
+			classes: []classfile.Class{callM,
+				ifaceWith(i1, nil, callsSink(i1, "m", "()V")),
+				ifaceWith(i2, []string{i1}, classfile.Method{Ref: mref(i2, "m", "()V"), Private: true}),
+				{Name: c, Super: objectClass, Interfaces: []string{i2}},
+			},
+			want: ReachableCandidate, via: "I1.m",
 		},
 	})
 }

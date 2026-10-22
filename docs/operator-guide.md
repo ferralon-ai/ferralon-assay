@@ -71,7 +71,10 @@ file has a value for the advisory's id or one of its aliases:
 Every value carries its own date because the values are captures of different ages; there is no
 report-wide "as of" date. `provenance.intel.signals_digest` names the signals file once. Assay
 recomputes that digest from the file's payload when it loads the file, and refuses a file whose
-stated `signals_digest` does not match, so the digest a report names is one the scan verified.
+stated `signals_digest` does not match, so the digest a report names is one the scan verified. It
+also refuses a file with a key the digest and the loader would read differently: a key repeated in
+one object, two keys that differ only in case, or a field's name spelled in another case (`"Score"`
+for `"score"`), so every value a report ranks by is one the digest covered.
 
 The scanner holds no EPSS or KEV data of its own and never contacts FIRST or CISA. Signals are a
 provided input, read from, in order:

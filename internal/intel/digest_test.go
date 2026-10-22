@@ -2,6 +2,8 @@ package intel
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"sort"
@@ -96,9 +98,10 @@ func swapFirstRecords(t *testing.T, doc string) []byte {
 	return b
 }
 
-// TestLoadVerifiesSignalsDigest: Load recomputes signals_digest over the payload in the producer's
-// canonical form. The producer's own file loads, and so does the same document in other bytes; a
-// changed value, digest, count or record order is refused, naming both digests, and nothing loads.
+// TestLoadVerifiesSignalsDigest: Load and Parse recompute signals_digest over the payload in the
+// producer's canonical form. The producer's own file loads, and so does the same document in other
+// bytes; a changed value, digest, count or record order is refused, naming both digests, and
+// nothing loads.
 func TestLoadVerifiesSignalsDigest(t *testing.T) {
 	doc := producerDoc(t)
 	var indented bytes.Buffer
@@ -126,21 +129,30 @@ func TestLoadVerifiesSignalsDigest(t *testing.T) {
 		{"first two records swapped", swapFirstRecords(t, doc), "signals_digest mismatch"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			s, err := Load(writeFixture(t, "signals.json", c.body))
-			if c.refused == "" {
-				if err != nil {
-					t.Fatalf("Load: %v", err)
+			path := writeFixture(t, "signals.json", c.body)
+			for _, l := range []struct {
+				name string
+				load func() (*Signals, error)
+			}{
+				{"Load", func() (*Signals, error) { return Load(path) }},
+				{"Parse", func() (*Signals, error) { return Parse(bytes.NewReader(c.body)) }},
+			} {
+				s, err := l.load()
+				if c.refused == "" {
+					if err != nil {
+						t.Fatalf("%s: %v", l.name, err)
+					}
+					if s.Digest != producerDigest || s.Records() != 107 {
+						t.Errorf("%s loaded %s with %d records; want %s with 107", l.name, s.Digest, s.Records(), producerDigest)
+					}
+					continue
 				}
-				if s.Digest != producerDigest || s.Records() != 107 {
-					t.Errorf("loaded %s with %d records; want %s with 107", s.Digest, s.Records(), producerDigest)
+				if err == nil || s != nil {
+					t.Fatalf("%s = %v, %v; want the file refused", l.name, s, err)
 				}
-				return
-			}
-			if err == nil || s != nil {
-				t.Fatalf("Load = %v, %v; want the file refused", s, err)
-			}
-			if !strings.Contains(err.Error(), c.refused) {
-				t.Errorf("error %q lacks %q", err, c.refused)
+				if !strings.Contains(err.Error(), c.refused) {
+					t.Errorf("%s error %q lacks %q", l.name, err, c.refused)
+				}
 			}
 		})
 	}
@@ -186,5 +198,66 @@ func TestLoadRefusesValidDocTampered(t *testing.T) {
 	tampered := strings.Replace(validDoc, `"listed": true`, `"listed": false`, 1)
 	if _, err := Load(writeFixture(t, "signals.json", []byte(tampered))); err == nil || !strings.Contains(err.Error(), "signals_digest mismatch") {
 		t.Errorf("validDoc with a KEV value flipped: err = %v; want a digest mismatch", err)
+	}
+}
+
+// wholeDigest is the producer's signals_digest taken the way the producer takes it, and the way
+// this package took it before it streamed the hash: the whole payload decoded generically, then
+// encoded at once by corpus.CanonicalJSON's Encoder settings. It is the reference payloadHash must
+// equal.
+func wholeDigest(t *testing.T, doc string) string {
+	t.Helper()
+	var env struct {
+		SignalsVersion string          `json:"signals_version"`
+		RecordCount    int             `json:"record_count"`
+		Records        json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(doc), &env); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(env.Records))
+	dec.UseNumber()
+	var recs any
+	if err := dec.Decode(&recs); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(map[string]any{"signals_version": env.SignalsVersion, "record_count": env.RecordCount, "records": recs}); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// TestPayloadHashMatchesWholeEncoding: the digest hashed one record at a time is the digest of the
+// whole payload encoded at once, for documents that exercise every shape the canonical form has:
+// no records, one, several; nested and empty objects and arrays an unknown field carries; strings
+// HTML escaping would change, escapes, and non-ASCII; and number tokens float64 would rewrite.
+func TestPayloadHashMatchesWholeEncoding(t *testing.T) {
+	head := `{"signals_version": "1.2.3", "signals_digest": "` + testDigest + `", `
+	for name, doc := range map[string]string{
+		"producer's file": producerDoc(t),
+		"validDoc":        validDoc,
+		"tokenDoc":        tokenDoc,
+		"no records":      head + `"record_count": 0, "records": []}`,
+		"one record":      head + `"record_count": 1, "records": [{"identifier": "CVE-1", "epss": {"score": 1E-7, "as_of": "2026-10-01"}}]}`,
+		"unknown fields": head + `"record_count": 2, "records": [
+		  {"identifier": "CVE-1", "epss": {"score": 0.50, "as_of": "2026-10-01"}, "note": "<a & b> \u00e9 \"q\" \\ \t", "tags": [], "meta": {}, "deep": {"x": [1, {"y": [[]], "z": null}], "w": true}},
+		  {"identifier": "CVE-2", "kev": {"listed": false, "catalog_version": "v", "date_released": "d", "extra": [{"b": 2, "a": 1}]}, "ünï": "Ω"}]}`,
+	} {
+		want := wholeDigest(t, doc)
+		if got, err := Digest([]byte(doc)); err != nil || got != want {
+			t.Errorf("%s: Digest = %q, %v; want %s", name, got, err, want)
+		}
+		sealed := strings.Replace(doc, testDigest, want, 1)
+		if !strings.Contains(sealed, want) {
+			continue // the producer's file states its own digest
+		}
+		if s, err := Parse(strings.NewReader(sealed)); err != nil || s.Digest != want {
+			t.Errorf("%s: Parse of the sealed document = %v; want it verified as %s", name, err, want)
+		}
 	}
 }

@@ -2,11 +2,11 @@ package trigger
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/artifact"
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
 	"github.com/ferralon-ai/ferralon-assay/plugin"
 	"github.com/ferralon-ai/ferralon-assay/projection"
 	"github.com/ferralon-ai/ferralon-assay/report"
@@ -16,7 +16,7 @@ import (
 // is KEV-listed with EPSS, and CVE-2024-55947 carries a stamped not-listed KEV observation.
 func prioritySignals(t *testing.T) *intel.Signals {
 	t.Helper()
-	s, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 3,
+	s, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 3,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2021-38561", "epss": {"score": 0.0123, "percentile": 0.456, "as_of": "2026-10-18"}},
@@ -64,7 +64,7 @@ func TestPriorityForCarriesEachValuesStamp(t *testing.T) {
 // projected from the decoded report carries epss_percentile 0 and rank 0. A record with no
 // percentile stays unsourced at every step.
 func TestSourcedZeroPercentileSurvivesEndToEnd(t *testing.T) {
-	sig, err := intel.Parse(strings.NewReader(`{"signals_version": "1.0.0", "record_count": 2,
+	sig, err := intel.Parse(inteltest.Sealed(t, `{"signals_version": "1.0.0", "record_count": 2,
 	  "signals_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
 	  "records": [
 	    {"identifier": "CVE-2026-50268", "epss": {"score": 0.00047, "percentile": 0, "as_of": "2026-08-02"}},

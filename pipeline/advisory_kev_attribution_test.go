@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/intel"
+	"github.com/ferralon-ai/ferralon-assay/internal/intel/inteltest"
 )
 
 // gogsKEVSignals is a signals 1.x fixture that, like the CISA catalog, lists only the gogs
@@ -33,7 +34,7 @@ const gogsKEVSignals = `{"signals_version": "1.0.0", "record_count": 1,
 // TestKEVAttributionFollowsListedCVE pins the join to the CVE that is actually in the feed.
 // An entry keyed by a CVE must never take a KEV hit that belongs to a different CVE.
 func TestKEVAttributionFollowsListedCVE(t *testing.T) {
-	sig, err := intel.Parse(strings.NewReader(gogsKEVSignals))
+	sig, err := intel.Parse(inteltest.Sealed(t, gogsKEVSignals))
 	if err != nil {
 		t.Fatal(err)
 	}

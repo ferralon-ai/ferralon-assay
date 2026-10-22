@@ -292,7 +292,7 @@ func TestReach_FrameworkHeldCallbacks(t *testing.T) {
 	appBean := class("com/acme/AppBean", "java/lang/Object", []string{beanIf},
 		meth("com/acme/AppBean", "<init>", "()V"),
 		meth("com/acme/AppBean", "toString", toStr, sinkCall()...))
-	runReachCases(t, []reachCase{
+	cases := []reachCase{
 		{name: "lambda the framework calls through its interface", ingress: main, want: ReachableCandidate, classes: []classfile.Class{
 			appWith(runnerSite), runnerIf, framework(getBean, edge(classfile.EdgeInterface, runner, "run", runDesc))}},
 		{name: "lambda held by an unopened framework", ingress: main, want: Undetermined, why: "unloaded_dependency:", classes: []classfile.Class{
@@ -353,7 +353,17 @@ func TestReach_FrameworkHeldCallbacks(t *testing.T) {
 				meth("com/acme/AppBean", "<init>", "()V"),
 				meth("com/acme/AppBean", "charAt", "(I)C", sinkCall()...)),
 			framework(edge(classfile.EdgeVirtual, "java/lang/String", "contentEquals", "(Ljava/lang/CharSequence;)Z"))}},
-	})
+		{name: "bean implementing an unopened framework's interface", ingress: main, want: Undetermined, why: "unloaded_dependency:", classes: []classfile.Class{
+			appWith(runnerSite), appBean}},
+	}
+	runReachCases(t, cases)
+	// A linked classpath narrows only which classes the JDK can hold: every callback the
+	// framework holds still reaches or stays hazarded.
+	for i := range cases {
+		cases[i].name += ", linked"
+		cases[i].linked = true
+	}
+	runReachCases(t, cases)
 }
 
 const iterD = "()Ljava/util/Iterator;"

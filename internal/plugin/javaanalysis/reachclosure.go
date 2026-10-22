@@ -71,6 +71,16 @@ type reachClosure struct {
 	// releaseReasons are the run-wide reasons loading the JARs incurred, kept with the cached
 	// engine.
 	releaseReasons []string
+	// Listed is set when the loaded classes are every class the build's runtime classpath
+	// defines: the graph lists the runtime classpath (runtimeListed), every entry was listed,
+	// every class each JAR holds was read, no two JARs define one class (the copy kept is not
+	// the one first on the classpath), and the runtime is a recorded JDK after 8, whose
+	// extension directories add to the classpath. The launch is the caller's to check.
+	Listed bool
+	// unread is set when a JAR could not be opened or holds a class that failed to parse.
+	unread bool
+	// shadowed is set when two JARs define the same class.
+	shadowed bool
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -133,6 +143,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
+	whole := g != nil && runtimeListed(g, buildDir) && g.RuntimeJDK() > 8
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
@@ -175,6 +186,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)
 		out.Reasons = append(reasons, hit.rc.releaseReasons...)
+		out.Listed = whole && !cp.Unlisted && !hit.rc.unread && !hit.rc.shadowed
 		return &out, nil
 	}
 
@@ -190,10 +202,12 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	for ji, j := range jars {
 		jr, err := loadJarCached(j.jar)
 		if err != nil {
+			built.unread = true
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+": "+err.Error()))
 			continue
 		}
 		if len(jr.Failed) > 0 {
+			built.unread = true
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
 		}
 		built.Loaded[j.gav.String()] = j.jar.path
@@ -207,6 +221,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 					shadowReported[key] = true
 					built.Scoped = append(built.Scoped, scoped(reasonDuplicateClass, j.gav.coordinate, fmt.Sprintf("%s shadowed by %s: %s", j.gav, prev, c.Name)))
 				}
+				built.shadowed = true
 				continue
 			}
 			definedBy[c.Name] = j.gav
@@ -228,6 +243,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
 	out.Reasons = append(reasons, built.releaseReasons...)
+	out.Listed = whole && !cp.Unlisted && !built.unread && !built.shadowed
 	return &out, nil
 }
 
@@ -277,6 +293,7 @@ func mergeReleases(built *reachClosure, all []classfile.Class, gavs []gav, versi
 					shadowReported[key] = true
 					built.Scoped = append(built.Scoped, scoped(reasonDuplicateClass, g.coordinate, fmt.Sprintf("%s shadowed by %s: %s", g, owner, v.Entry)))
 				}
+				built.shadowed = true
 				continue
 			}
 			if err := merge.Merge(v); err != nil {

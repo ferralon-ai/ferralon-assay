@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -174,6 +175,31 @@ func TestNewGoPlugin_ExplicitPathWins(t *testing.T) {
 	}
 	if gp.bin != "/some/explicit/assay-plugin-go" {
 		t.Errorf("explicit path should win, got %q", gp.bin)
+	}
+}
+
+// TestWithRunCacheDir pins that the run cache reaches the subprocess on its environment, under the
+// name cmd/assay-plugin-go reads, and that an empty dir still sets it, empty, so a value inherited
+// from the host's environment cannot turn the cache on.
+func TestWithRunCacheDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		dir     string
+		wantEnv []string
+	}{
+		{name: "dir set", dir: "/tmp/run-cache", wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR=/tmp/run-cache"}},
+		{name: "empty dir", dir: "", wantEnv: []string{"ASSAY_GO_RUN_CACHE_DIR="}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, err := NewGoPlugin(WithBinaryPath("/bin/true"), WithRunCacheDir(tt.dir))
+			if err != nil {
+				t.Fatalf("NewGoPlugin: %v", err)
+			}
+			if got := p.(*goPlugin).env; !reflect.DeepEqual(got, tt.wantEnv) {
+				t.Errorf("env = %q, want %q", got, tt.wantEnv)
+			}
+		})
 	}
 }
 

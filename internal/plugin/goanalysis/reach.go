@@ -169,13 +169,19 @@ func Reachability(ctx context.Context, req plugin.ReachabilityRequest) (plugin.R
 		return plugin.ReachabilityResult{}, err
 	}
 
-	load, err := LoadProgram(ctx, req.BuildDir)
+	cg, err := reconcileCallGraph(ctx, req.BuildDir)
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res, err := scanResult(ctx, scanned, load, req.BuildDir, env)
-	if err != nil {
-		return plugin.ReachabilityResult{}, err
+	res := evidenceResult(scanned.findings, cg, env)
+	if res.Refutation != nil {
+		// Only a refutation is ever withheld, and the withholds read the loaded packages, which
+		// the run cache cannot hold, so the program is loaded again only for one.
+		load, err := LoadProgram(ctx, req.BuildDir)
+		if err != nil {
+			return plugin.ReachabilityResult{}, fmt.Errorf("load for withholding a refutation: %w", err)
+		}
+		res = withholdRefutation(ctx, res, scanned, load.Packages, req.BuildDir, env)
 	}
 	res.ScanToolchain = scanToolchain
 	return res, nil
@@ -190,9 +196,15 @@ func scanResult(ctx context.Context, scanned vulnScan, load *LoadResult, buildDi
 	if err != nil {
 		return plugin.ReachabilityResult{}, fmt.Errorf("call graph for reconciliation: %w", err)
 	}
-	res := withholdForLeftOutFiles(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env)
-	res = withholdForUnsearchedMethods(res, scanned, load.Packages)
-	return withholdForLibraryEscape(res, scanned, load.Packages), nil
+	return withholdRefutation(ctx, evidenceResult(scanned.findings, cg, env), scanned, load.Packages, buildDir, env), nil
+}
+
+// withholdRefutation withholds res's refutation when files the build left out, exported methods
+// govulncheck never searched, or a library's callers may contradict it.
+func withholdRefutation(ctx context.Context, res plugin.ReachabilityResult, scanned vulnScan, pkgs []*packages.Package, buildDir string, env []string) plugin.ReachabilityResult {
+	res = withholdForLeftOutFiles(ctx, res, scanned, pkgs, buildDir, env)
+	res = withholdForUnsearchedMethods(res, scanned, pkgs)
+	return withholdForLibraryEscape(res, scanned, pkgs)
 }
 
 // withholdForUnsearchedMethods drops a refutation that exported methods govulncheck never searched
@@ -573,13 +585,31 @@ func (r goRelease) toolchain() string {
 // silent empty result; only the caller may decide that a failure under a switched toolchain is
 // retryable.
 func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []string) (vulnScan, error) {
+	// The scan covers every advisory govulncheck knows for the tree; the advisory is selected only
+	// when the stream is parsed. So one stream per tree and environment answers every advisory.
+	out, err := runCached("govulncheck", append([]string{req.BuildDir}, env...), func() ([]byte, error) {
+		return govulncheckStream(ctx, req.BuildDir, env)
+	})
+	if err != nil {
+		return vulnScan{}, err
+	}
+
+	scanned, err := parseFindings(out, req.VulnID)
+	if err != nil {
+		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
+	}
+	return scanned, nil
+}
+
+// govulncheckStream runs govulncheck over buildDir under env and returns its -json stream.
+func govulncheckStream(ctx context.Context, buildDir string, env []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := scan.Command(ctx, "-C", req.BuildDir, "-json", "-mode=source", "-scan=symbol", "./...")
+	cmd := scan.Command(ctx, "-C", buildDir, "-json", "-mode=source", "-scan=symbol", "./...")
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmd.Env = env
 	if err := cmd.Start(); err != nil {
-		return vulnScan{}, fmt.Errorf("govulncheck start (%q): %w", req.BuildDir, err)
+		return nil, fmt.Errorf("govulncheck start (%q): %w", buildDir, err)
 	}
 	if err := cmd.Wait(); err != nil {
 		// govulncheck signals "vulnerabilities found" via an error with
@@ -589,16 +619,32 @@ func runGovulncheck(ctx context.Context, req plugin.ReachabilityRequest, env []s
 		// (inv.4) — never a silent empty result.
 		var ec interface{ ExitCode() int }
 		if !errors.As(err, &ec) || (ec.ExitCode() != 0 && ec.ExitCode() != 3) {
-			return vulnScan{}, fmt.Errorf("govulncheck failed (%q): %w: %s",
-				req.BuildDir, err, strings.TrimSpace(stderr.String()))
+			return nil, fmt.Errorf("govulncheck failed (%q): %w: %s",
+				buildDir, err, strings.TrimSpace(stderr.String()))
 		}
 	}
+	return stdout.Bytes(), nil
+}
 
-	scanned, err := parseFindings(stdout.Bytes(), req.VulnID)
+// reconcileCallGraph returns the call graph Reachability reconciles paths against, built once per
+// tree per scan through the run cache. The program load reads the process environment, so that is
+// part of the key.
+func reconcileCallGraph(ctx context.Context, buildDir string) (plugin.CallGraphResult, error) {
+	b, err := runCached("callgraph", append([]string{buildDir}, os.Environ()...), func() ([]byte, error) {
+		cg, err := CallGraph(ctx, plugin.CallGraphRequest{BuildDir: buildDir, Algorithm: "vta"})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(cg)
+	})
 	if err != nil {
-		return vulnScan{}, fmt.Errorf("parse govulncheck json: %w", err)
+		return plugin.CallGraphResult{}, err
 	}
-	return scanned, nil
+	var cg plugin.CallGraphResult
+	if err := json.Unmarshal(b, &cg); err != nil {
+		return plugin.CallGraphResult{}, fmt.Errorf("decode cached call graph: %w", err)
+	}
+	return cg, nil
 }
 
 // --- LOCAL structs for govulncheck's -json stream schema ---

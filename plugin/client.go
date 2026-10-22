@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/ferralon-ai/ferralon-assay/capability"
+	"github.com/ferralon-ai/ferralon-assay/internal/brand"
 )
 
 // goPlugin is the out-of-process client stub: it implements LanguagePlugin by execing
@@ -16,7 +17,8 @@ import (
 // libraries (x/tools, x/vuln) — the analysis code links only into the subprocess
 // binary. That import-light boundary is the inv.8 mechanism (§6).
 type goPlugin struct {
-	bin string // resolved path to the assay-plugin-go binary
+	bin string   // resolved path to the assay-plugin-go binary
+	env []string // KEY=VALUE pairs added to the subprocess environment
 
 	metricsOnce sync.Once
 	metrics     pluginMetrics
@@ -32,6 +34,19 @@ type Option func(*goPlugin)
 func WithBinaryPath(path string) Option {
 	return func(p *goPlugin) { p.bin = path }
 }
+
+// WithRunCacheDir hands the subprocess a directory, owned by the caller for one scan over one
+// checkout, where it keeps per-tree results every advisory's reachability run would otherwise
+// recompute: the govulncheck stream and the reconciliation call graph. The caller removes the
+// directory after the scan. An empty dir turns the cache off, including one the host process's own
+// environment would otherwise pass down, and every run computes its own.
+func WithRunCacheDir(dir string) Option {
+	return func(p *goPlugin) { p.env = append(p.env, goRunCacheDirEnv+"="+dir) }
+}
+
+// goRunCacheDirEnv is read by cmd/assay-plugin-go (see internal/plugin/goanalysis), so the run
+// cache travels on the child's environment rather than on the plugin protocol.
+const goRunCacheDirEnv = brand.EnvPrefix + "_GO_RUN_CACHE_DIR"
 
 // NewGoPlugin constructs the subprocess-backed plugin client. Binary discovery (§4.4):
 // an explicit path via WithBinaryPath takes precedence; otherwise exec.LookPath resolves
@@ -59,7 +74,7 @@ func (*goPlugin) Language() string { return "go" }
 // instrument site covers them all, and it cannot drift per-language since there is only one body.
 func (p *goPlugin) run(ctx context.Context, req Request) (*Response, error) {
 	p.ensureMetrics()
-	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req)
+	return runSubprocessCall(ctx, p.bin, p.Language(), &p.metrics, req, p.env...)
 }
 
 func (p *goPlugin) IndexSymbols(ctx context.Context, req IndexSymbolsRequest) (SymbolIndexResult, error) {

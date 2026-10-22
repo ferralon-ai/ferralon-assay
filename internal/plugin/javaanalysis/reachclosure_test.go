@@ -294,6 +294,15 @@ func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
 			a.dep(libDep(a, "b-base", "", base(nil)))
 			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
 		}, true},
+		{"a duplicate class only a multi-release entry defines", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "b-base", "", map[string][]byte{
+				"META-INF/MANIFEST.MF":                    []byte("Manifest-Version: 1.0\r\nMulti-Release: true\r\n"),
+				"META-INF/versions/11/com/dep/Base.class": base(nil)["com/dep/Base.class"],
+			}))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
+		}, true},
 		{"a duplicate class, the linkable copy kept", func(a *appFixture) {
 			a.deps = a.deps[:1]
 			a.dep(libDep(a, "a-base", "", base(nil)))

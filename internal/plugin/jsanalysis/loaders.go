@@ -372,18 +372,18 @@ func chainHead(clean []rune, i int) int {
 	}
 }
 
-// wordsShown reports whether clean shows every Symbol and with word of src, a with as
-// much as a comment that could hide its parenthesis (`//`, `/*`, `<!--` or `-->`), and
-// whether src spells Symbol with no escape, since stripJS may blank an escape it holds.
+// wordsShown reports whether clean shows, as itself, every Symbol word of src and every
+// with that a parenthesis or a comment (`//`, `/*`, `<!--` or `-->`) follows. A Symbol
+// spelled with an escape is never shown, since clean either keeps the escape or blanks it.
 func wordsShown(clean, src []rune) bool {
 	for i := 0; i < len(src); {
 		if !isIdentPart(src[i]) && src[i] != '\\' {
 			i++
 			continue
 		}
-		w, escaped, next := readEscapedWord(src, i)
+		w, next := readEscapedWord(src, i)
 		switch {
-		case w == "Symbol" && (escaped || string(clean[i:next]) != w):
+		case w == "Symbol" && string(clean[i:next]) != w:
 			return false
 		case w == "with" && string(clean[i:next]) != w:
 			if q := skipSpace(src, next); q < len(src) && strings.ContainsRune("(/<-", src[q]) {
@@ -396,10 +396,10 @@ func wordsShown(clean, src []rune) bool {
 }
 
 // readEscapedWord reads the identifier at i as the runtime names it, decoding its \uXXXX
-// and \u{...} escapes, and reports whether it held one.
-func readEscapedWord(r []rune, i int) (string, bool, int) {
+// and \u{...} escapes.
+func readEscapedWord(r []rune, i int) (string, int) {
 	var b strings.Builder
-	start, escaped := i, false
+	start := i
 	for i < len(r) {
 		if isIdentPart(r[i]) {
 			b.WriteRune(r[i])
@@ -411,12 +411,12 @@ func readEscapedWord(r []rune, i int) (string, bool, int) {
 			break
 		}
 		b.WriteRune(c)
-		escaped, i = true, next
+		i = next
 	}
 	if i == start {
-		return "", false, i + 1
+		return "", i + 1
 	}
-	return b.String(), escaped, i
+	return b.String(), i
 }
 
 // identEscape decodes the \uXXXX or \u{...} escape at i.

@@ -43,9 +43,10 @@ var scriptSpec = scriptsurface.Spec{
 	Absent:      absent,
 }
 
-// laneEnvRE matches an npm_config_* (any case) or YARN_* name that is not a $, ${ or
-// attribute reference, so is being set.
-var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+)`)
+// laneEnvRE matches an npm_config_* (any case), YARN_*, or NPM_FLAGS/PNPM_FLAGS/BUN_FLAGS
+// (which Netlify passes to its own install) name that is not a $, ${ or attribute reference,
+// so is being set.
+var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+|(?:P?NPM|BUN)_FLAGS)`)
 
 // laneToken reports whether word is a JavaScript package manager or package runner, an alias
 // or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nlx, nu, na), or a tool

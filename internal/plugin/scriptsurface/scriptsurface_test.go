@@ -121,6 +121,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"token behind sudo", tree(map[string]string{"install.sh": "sudo inst add x\n"}), true, ""},
 		{"token behind xargs", tree(map[string]string{"install.sh": "xargs -a extra.txt inst install\n"}), true, ""},
 		{"chained allowed then named", tree(map[string]string{"install.sh": "inst sync && inst add x\n"}), true, ""},
+		{"hyphenated action name", tree(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/inst-action@v1\n"}), true, ""},
+		{"hyphenated tool name", tree(map[string]string{"install.sh": "inst_wrapper x\n"}), true, ""},
+		{"input key naming a token", tree(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/setup@v1\n        with:\n          inst-args: x==2\n"}), true, ""},
 		{"installer variable set", tree(map[string]string{"install.sh": "export INST_INDEX=https://x\ninst sync\n"}), true, ""},
 
 		// Expansions, redirects and lines that do not tokenise.
@@ -154,6 +157,7 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"Dockerfile COPY glob with a wildcard directory", tree(map[string]string{"svc/inst.toml": "[deps]\n", "Dockerfile": "FROM base\nWORKDIR /app\nCOPY inst.toml inst.lock ./\nCOPY */inst.toml ./\nRUN inst sync\n"}), true, ""},
 
 		// Controls.
+		{"job key naming a token opens a block", tree(map[string]string{".gitlab-ci.yml": "inst-build: &job\n  script:\n    - inst sync\n"}), false, ""},
 		{"surface with no installer", tree(map[string]string{"install.sh": "#!/bin/sh\nset -e\nserve\n"}), false, ""},
 		{"allowed forms", tree(map[string]string{"Makefile": "deps:\n\tinst sync -q\n\tinst install -r reqs.txt\n\tinst run build\n"}), false, ""},
 		{"package.json script running an allowed form", tree(map[string]string{"package.json": `{"scripts":{"build":"inst run build"}}`}), false, ""},

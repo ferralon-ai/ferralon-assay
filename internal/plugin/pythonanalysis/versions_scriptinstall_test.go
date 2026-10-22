@@ -50,6 +50,7 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"unknown installer: conda", map[string]string{"requirements.txt": reqs, "install.sh": "conda install jinja2\n"}, false, ""},
 		{"unknown installer: mamba", map[string]string{"requirements.txt": reqs, "install.sh": "mamba install jinja2\n"}, false, ""},
 		{"unknown installer: easy_install", map[string]string{"requirements.txt": reqs, "install.sh": "easy_install jinja2\n"}, false, ""},
+		{"action input named for an installer", map[string]string{"requirements.txt": reqs, ".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: org/py-deps@v1\n        with:\n          uv-install: jinja2==3.1.2\n"}, false, ""},
 		{"hatch run of a hatch script", map[string]string{"uv.lock": lockUV,
 			"pyproject.toml": project + "[tool.hatch.envs.default.scripts]\nsetup = \"pip install jinja2==3.1.2\"\n", "install.sh": "hatch run setup\n"}, false, ""},
 		{"poe task", map[string]string{"uv.lock": lockUV,

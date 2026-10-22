@@ -79,6 +79,9 @@ func TestResolveVersions_ScriptInstallVeto(t *testing.T) {
 		{"cli: ncu upgrades and installs", npm(map[string]string{"install.sh": "ncu -u --install always\n"}), false, ""},
 		{"unknown: vlt install", npm(map[string]string{"install.sh": "vlt install express@4.18.2\n"}), false, ""},
 
+		{"action named for a manager", npm(map[string]string{".github/workflows/ci.yml": "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: bahmutov/npm-install@v1\n        with:\n          useLockFile: false\n"}), false, ""},
+		{"hyphenated runner: npm-run-all", npm(map[string]string{"install.sh": "npm-run-all build\n"}), false, ""},
+
 		// package.json scripts, every value whatever its key.
 		{"script body npm install", npm(map[string]string{"package.json": pkg(`"setup":"npm install"`)}), false, ""},
 		{"prebuild hook runs yarn", npm(map[string]string{"package.json": pkg(`"prebuild":"yarn","build":"tsc"`)}), false, ""},

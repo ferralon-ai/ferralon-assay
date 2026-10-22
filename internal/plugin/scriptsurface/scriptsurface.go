@@ -370,6 +370,9 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		}
 		for _, line := range lines {
 			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown}
+			if kind == kindData && v.hasToken(valuedKey(line)) {
+				return "install key: " + strings.TrimSpace(line)
+			}
 			segs, ok := commandSegments(kind, line)
 			if !ok {
 				if v.hasToken(line) {
@@ -523,10 +526,21 @@ func FlagsOnly(args []string, allowed map[string]bool, need ...string) bool {
 // wordRE splits text into the words installer tokens are matched against.
 var wordRE = regexp.MustCompile(`[A-Za-z0-9_.+-]+`)
 
+// hasToken reports whether a word of text, or a part of one split at - or _, names a token,
+// so a hyphenated tool or action name (npm-install, setup-uv) names its installer too.
 func (v *Veto) hasToken(text string) bool {
 	for _, w := range wordRE.FindAllString(text, -1) {
 		if v.spec.Token(w) {
 			return true
+		}
+		parts := strings.FieldsFunc(w, func(r rune) bool { return r == '-' || r == '_' })
+		if len(parts) < 2 {
+			continue
+		}
+		for _, p := range parts {
+			if v.spec.Token(p) {
+				return true
+			}
 		}
 	}
 	return false

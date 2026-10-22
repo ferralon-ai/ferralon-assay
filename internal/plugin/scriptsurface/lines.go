@@ -47,6 +47,27 @@ var dataKeys = map[string]bool{
 // keyRE matches a leading YAML, TOML, INI or Procfile key and its separator.
 var keyRE = regexp.MustCompile(`^("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_.\-/]+)\s*(?::|=)(?:\s+|$)`)
 
+// valuedKey returns the key of a data line that gives it a value on the line (an action
+// input, an option), or "" for a key that only opens a nested block, such as a CI job name,
+// whose lines are read on their own.
+func valuedKey(line string) string {
+	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+	m := keyRE.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	val := strings.TrimSpace(s[len(m[0]):])
+	for _, f := range strings.Fields(val) {
+		if strings.HasPrefix(f, "#") {
+			break
+		}
+		if !strings.HasPrefix(f, "&") && !strings.HasPrefix(f, "!") {
+			return strings.Trim(m[1], `"'`)
+		}
+	}
+	return ""
+}
+
 // commandSegments unwraps a logical line by its surface kind and splits the command it
 // holds. ok is false when the line does not tokenise.
 func commandSegments(kind, line string) ([]segment, bool) {

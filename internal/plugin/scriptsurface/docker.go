@@ -185,7 +185,7 @@ type dockerCursor struct {
 	st    *dockerStage
 	dir   string
 	known bool
-	made  string
+	mark  venvMark
 }
 
 func (c *dockerCursor) cd(words []string) {
@@ -223,7 +223,18 @@ func (c *dockerCursor) at(p string) (string, bool) {
 	return path.Join(c.dir, p), true
 }
 
-func (c *dockerCursor) venv() *string { return &c.made }
+// present is true for a path the stage has bound or tainted: a file copied in, or one a
+// command may have written.
+func (c *dockerCursor) present(p string) bool {
+	f, ok := c.at(p)
+	if !ok {
+		return true
+	}
+	_, state := c.st.lookup(c.v, f)
+	return state != pathAbsent
+}
+
+func (c *dockerCursor) venv() *venvMark { return &c.mark }
 
 func (c *dockerCursor) Hosts(p string) []string {
 	if !path.IsAbs(p) && !c.known || strings.ContainsAny(p, "*?[~") {
@@ -389,7 +400,7 @@ func (v *Veto) dockerfile(file, src string) string {
 			if strings.HasPrefix(rest, "[") {
 				segs, ok = execForm(rest)
 			} else {
-				segs, ok = shellSegments(rest)
+				segs, ok, _ = shellSegments(rest)
 			}
 			if !ok {
 				if hasTok {

@@ -39,7 +39,9 @@
 // command before it, directory changes aside, created. That command must be in the same
 // cursor: the same shell text on the host, the same shell unit of a GitHub workflow (a step's
 // run:) or GitLab pipeline (a job's before_script then script), the same line of any other
-// host surface, the same RUN in a Dockerfile.
+// host surface, the same RUN in a Dockerfile. A creation that may not run (after &&, ||, | or
+// &, or inside an if, case or loop) creates nothing here, nor does one whose bin/activate is
+// already a file the build holds.
 //
 // Across the whole build, a command that is not an installer and names a bound file's base
 // name among its arguments (sed -i, curl -o, mv, a redirect) could rewrite that file before
@@ -447,21 +449,25 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 			}
 			// Lookups run from every directory the lines so far may have left; only the venv
 			// rule carries its mark and the unit's one directory from line to line.
-			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, made: carry.made, wd: carry.wd}
+			cur := &hostCursor{v: v, dirs: append([]string(nil), carry.dirs...), unknown: carry.unknown, mark: carry.mark, wd: carry.wd}
 			su, inShell := shells[starts[rl.start]]
 			if prev := inUnit[su.id]; inShell && prev != nil {
-				cur.made, cur.wd = prev.made, prev.wd
+				cur.mark, cur.wd = prev.mark, prev.wd
 			} else if inShell {
-				cur.made, cur.wd = "", su.dir
+				cur.mark, cur.wd = venvMark{}, su.dir
 			}
 			if lineKind == kindData && v.hasToken(valuedKey(line)) {
 				return "install key: " + strings.TrimSpace(line)
 			}
-			segs, ok := commandSegments(lineKind, line)
+			segs, ok, dangles := commandSegments(lineKind, line)
+			if cur.mark.dangle && len(segs) > 0 {
+				segs[0].guarded = true
+			}
+			cur.mark.dangle = dangles
 			if !ok {
 				// A line this cannot split may hold a subshell, group or function body: the venv
 				// rule cannot say what ran, or where.
-				cur.made, cur.wd = "", ""
+				cur.mark.made, cur.wd = "", ""
 				if v.hasToken(line) {
 					return "install command that does not tokenise"
 				}
@@ -538,11 +544,13 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 	if len(words) == 0 {
 		return ""
 	}
-	made := *cur.venv()
-	*cur.venv() = venvMade(seg, cur)
+	mark := cur.venv()
+	made := mark.made
+	mark.made = venvMade(seg, cur)
+	mark.open += blockDepth[words[0]]
 	switch words[0] {
 	case "cd", "pushd", "popd":
-		*cur.venv() = made // the venv's key was taken where it was made
+		mark.made = made // the venv's key was taken where it was made
 		if seg.expands {
 			cur.cd(nil)
 		} else {
@@ -609,18 +617,27 @@ func pathOnly(seg segment, cur cursor, made string) bool {
 	return ok && made != "" && key == made
 }
 
+// blockDepth is how far each word opening or closing an if, case or loop moves a command into
+// or out of a body that may not run.
+var blockDepth = map[string]int{
+	"if": 1, "case": 1, "for": 1, "while": 1, "until": 1, "select": 1,
+	"fi": -1, "esac": -1, "done": -1,
+}
+
 var pythonRE = regexp.MustCompile(`^python(?:\d+(?:\.\d+)?)?$`)
 
 // venvMade returns the key of the virtual environment a command creates: python -m venv <dir>,
 // virtualenv <dir>, or uv venv [<dir>] (.venv when there is none), with flags before or after
-// <dir> and -p, --python or --prompt taking the next word. "" when it is none of these, or
-// its directory is not one place.
+// <dir> and -p, --python or --prompt taking the next word. "" when it is none of these, when
+// its directory is not one place, when it may not run (after &&, ||, | or &, or inside an if,
+// case or loop), or when <dir>/bin/activate is already a file the build holds, which a creation
+// that did not run would leave in place.
 func venvMade(seg segment, cur cursor) string {
 	words := seg.words
 	head, ok := CommandName(words[0])
 	var args []string
 	switch {
-	case seg.expands || !ok:
+	case seg.expands || !ok || seg.guarded || cur.venv().open != 0:
 		return ""
 	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
 		args = words[3:]
@@ -648,7 +665,10 @@ func venvMade(seg segment, cur cursor) string {
 	case len(dirs) != 1:
 		return ""
 	}
-	key, _ := cur.at(dirs[0])
+	key, ok := cur.at(dirs[0])
+	if !ok || cur.present(filepath.Join(dirs[0], "bin", "activate")) {
+		return ""
+	}
 	return key
 }
 

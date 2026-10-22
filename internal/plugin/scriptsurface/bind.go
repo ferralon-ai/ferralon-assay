@@ -31,9 +31,18 @@ type cursor interface {
 	// keyed so that two keys are equal only when they name the same place; false when it names
 	// no one place.
 	at(p string) (string, bool)
-	// venv is the key of the virtual environment the last command other than a directory
-	// change created, or "".
-	venv() *string
+	// present reports whether a literal path from the directory the command runs in may name
+	// a file the build already holds.
+	present(p string) bool
+	// venv is the state of the venv rule at this command.
+	venv() *venvMark
+}
+
+// venvMark is what the venv rule carries from command to command in one shell.
+type venvMark struct {
+	made   string // key of the venv the last command but for directory changes created, or ""
+	open   int    // if, case and loop bodies the command is inside
+	dangle bool   // the last line ended in &&, || or |
 }
 
 // hostCursor is the set of host directories a command may run in.
@@ -41,7 +50,7 @@ type hostCursor struct {
 	v       *Veto
 	dirs    []string
 	unknown bool
-	made    string
+	mark    venvMark
 	// wd is the one directory a CI shell unit runs in, which only the venv rule reads; "" when
 	// it is not known.
 	wd string
@@ -105,20 +114,41 @@ func (c *hostCursor) sourced(p string) bool {
 }
 
 func (c *hostCursor) at(p string) (string, bool) {
+	loc, ok := c.loc(p)
+	if ok && filepath.IsAbs(p) {
+		return "abs:" + loc, true
+	}
+	return "rel:" + loc, ok
+}
+
+func (c *hostCursor) present(p string) bool {
+	loc, ok := c.loc(p)
+	if !ok {
+		return true
+	}
+	if filepath.IsAbs(p) && !c.v.inRoot(loc) {
+		return false
+	}
+	_, there, known := c.v.stat(loc)
+	return there || !known
+}
+
+// loc is the one place a literal path names from the directory the command runs in.
+func (c *hostCursor) loc(p string) (string, bool) {
 	switch {
 	case p == "" || strings.ContainsAny(p, "$`*?[~"):
 		return "", false
 	case filepath.IsAbs(p):
-		return "abs:" + filepath.Clean(p), true
+		return filepath.Clean(p), true
 	case c.wd != "":
-		return "rel:" + filepath.Join(c.wd, p), true
+		return filepath.Join(c.wd, p), true
 	case c.unknown || len(c.dirs) != 1:
 		return "", false
 	}
-	return "rel:" + filepath.Join(c.dirs[0], p), true
+	return filepath.Join(c.dirs[0], p), true
 }
 
-func (c *hostCursor) venv() *string { return &c.made }
+func (c *hostCursor) venv() *venvMark { return &c.mark }
 
 func (c *hostCursor) Hosts(p string) []string {
 	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {

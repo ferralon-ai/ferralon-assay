@@ -3,6 +3,7 @@ package javaanalysis
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/buildgraph"
@@ -192,6 +193,171 @@ func TestBytecodeReach_ClosureRunsOnTheStatedJDK(t *testing.T) {
 		res := a.reach(netkitSinkID)
 		if got := len(res.Paths) > 0; got != tc.wantPath {
 			t.Errorf("JDK %q, toolchains %q, unread %t: path found = %t, want %t: Paths %v, partiality %+v", tc.jdk, tc.toolchains, tc.unread, got, tc.wantPath, res.Paths, res.Partiality)
+		}
+	}
+}
+
+// A dependency class whose supertype no loaded class and no JDK package defines cannot link,
+// so the JDK never runs its methods, but only when the loaded classes are the whole runtime
+// classpath and a licensed launch runs on it: each gap in that keeps the method a root. (A
+// first-party class with an unreadable ancestor already unlicenses the launch as a possible
+// container callback.)
+func TestBytecodeReach_LinkBoundLoadability(t *testing.T) {
+	libDep := func(a *appFixture, artifact, scope string, entries map[string][]byte) graphDep {
+		p := filepath.Join(a.build, ".m2", "repository", "com", "dep", artifact, "1.0.0", artifact+"-1.0.0.jar")
+		writeJarEntries(t, p, entries)
+		return graphDep{group: "com.dep", artifact: artifact, version: "1.0.0", scope: scope, jar: p}
+	}
+	// graphOn records the build's outputs, so its class output and local repository hold no
+	// unlisted archive, and the JDK the program runs on.
+	graphOn := func(jdk string, complete bool, deps ...graphDep) Option {
+		m := testModule(t, ".", "app", deps...)
+		m.JDKToolchainsKnown = true
+		return writeGraph(t, buildgraph.Graph{
+			Schema:     buildgraph.Schema,
+			Tool:       buildgraph.Tool{Name: "maven", Version: "test"},
+			JVM:        buildgraph.JVM{Version: "21.0.4"},
+			Conditions: buildgraph.Conditions{JDK: jdk},
+			Subject:    buildgraph.Subject{Outputs: []string{"target", ".m2/repository"}},
+			Modules:    []buildgraph.Module{m},
+			Complete:   complete,
+		})
+	}
+	graph := func(a *appFixture, complete bool, deps ...graphDep) Option {
+		return graphOn("21.0.4", complete, deps...)
+	}
+	// listener is a RowSetListener whose rowChanged, a method the JDK calls, reaches the sink.
+	listener := func(name, super string) map[string][]byte {
+		b := &cpb{}
+		return map[string][]byte{name + ".class": emitClassA(b, name, super, []string{"javax/sql/RowSetListener"}, 0x0021,
+			[]xmethod{{"rowChanged", "(Ljavax/sql/RowSetEvent;)V", accPublic, callFetch(b)}}, nil)}
+	}
+	base := func(ifaces []string) map[string][]byte {
+		return map[string][]byte{"com/dep/Base.class": emitClassA(&cpb{}, "com/dep/Base", "java/lang/Object", ifaces, 0x0021, nil, nil)}
+	}
+	lib := func(name string) map[string][]byte {
+		return map[string][]byte{name + ".class": emitClassX(&cpb{}, name, "java/lang/Object", 0x0021, nil)}
+	}
+	tests := []struct {
+		name     string
+		setup    func(a *appFixture)
+		wantPath bool
+	}{
+		{"whole runtime classpath, licensed launch: no path", func(*appFixture) {}, false},
+		{"a provided dependency is on it: no path", func(a *appFixture) {
+			a.dep(libDep(a, "lib", "provided", lib("com/dep/Lib")))
+		}, false},
+		{"a test dependency is not: no path", func(a *appFixture) {
+			a.dep(libDep(a, "lib", "test", lib("com/dep/Lib")))
+		}, false},
+		{"incomplete graph", func(a *appFixture) {
+			a.graph = graph(a, false, a.deps...)
+		}, true},
+		{"an archive the graph does not list", func(a *appFixture) {
+			writeJarEntries(t, filepath.Join(a.build, "lib", "extra.jar"), lib("com/extra/Extra"))
+		}, true},
+		{"a node on no classpath", func(a *appFixture) {
+			a.dep(libDep(a, "lib", buildgraph.ScopeOther, lib("com/dep/Lib")))
+		}, true},
+		{"a JAR changed since the build resolved it", func(a *appFixture) {
+			d := libDep(a, "lib", "", lib("com/dep/Lib"))
+			a.graph = graph(a, true, append(a.deps, d)...)
+			writeJarEntries(t, d.jar, lib("com/dep/Other"))
+		}, true},
+		{"a JAR class that fails to parse", func(a *appFixture) {
+			a.dep(libDep(a, "lib", "", map[string][]byte{"com/dep/Bad.class": {0xCA, 0xFE, 0xBA, 0xBE, 0, 0}}))
+		}, true},
+		{"no named launch entry", func(a *appFixture) {
+			a.editPOM(pomMainClass, "")
+		}, true},
+		{"a launch agent", func(a *appFixture) {
+			writeFileT(t, filepath.Join(a.build, "Dockerfile"), `ENTRYPOINT ["java", "-javaagent:/otel.jar", "-jar", "/app.jar"]`+"\n")
+		}, true},
+		{"first-party output missing a source's class", func(a *appFixture) {
+			a.source("src/main/java/com/acme/Extra.java", "package com.acme;\npublic class Extra {}\n")
+		}, true},
+		{"the supertype in a JDK package", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "java/lang/Object")))
+		}, true},
+		{"no recorded JDK", func(a *appFixture) {
+			a.graph = graphOn("", true, a.deps...)
+		}, true},
+		{"JDK 8, whose extension directories add to the classpath", func(a *appFixture) {
+			a.graph = graphOn("1.8.0_392", true, a.deps...)
+		}, true},
+		// Two JARs define Base; the closure keeps the copy whose coordinate sorts first, which
+		// need not be the one first on the classpath. Either order keeps the path.
+		{"a duplicate class, the unlinkable copy kept", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "b-base", "", base(nil)))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
+		}, true},
+		{"a duplicate class only a multi-release entry defines", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "b-base", "", map[string][]byte{
+				"META-INF/MANIFEST.MF":                    []byte("Manifest-Version: 1.0\r\nMulti-Release: true\r\n"),
+				"META-INF/versions/11/com/dep/Base.class": base(nil)["com/dep/Base.class"],
+			}))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
+		}, true},
+		{"a duplicate class, the linkable copy kept", func(a *appFixture) {
+			a.deps = a.deps[:1]
+			a.dep(libDep(a, "a-base", "", base(nil)))
+			a.dep(libDep(a, "b-base", "", base([]string{"org/unopened/Missing"})))
+			a.dep(libDep(a, "plug", "", listener("com/dep/Plug", "com/dep/Base")))
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newApp(t, "", false)
+			a.source("src/main/java/com/acme/App.java", appSource)
+			a.class("target/classes", "com/acme/App", mainCalling(func(b *cpb) []byte {
+				idx := b.mref("java/lang/System", "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")
+				return append([]byte{0x01, 0xB8}, append(be2(idx), 0x57, 0xB1)...)
+			}))
+			b := &cpb{}
+			a.dep(libDep(a, "plug", "", map[string][]byte{"com/dep/Plug.class": emitClassA(b, "com/dep/Plug", "java/lang/Object", []string{"org/unopened/Plugin"}, 0x0021,
+				[]xmethod{{"start", "()V", accPublic, callFetch(b)}}, nil)}))
+			tt.setup(a)
+			if a.graph == nil {
+				a.graph = graph(a, true, a.deps...)
+			}
+			for _, run := range []string{"built", "cached"} { // the second run takes the closure from the cache
+				res := a.reach(netkitSinkID)
+				if got := len(res.Paths) > 0; got != tt.wantPath {
+					t.Errorf("%s closure: path found = %t, want %t: Paths %v, Searched %v, partiality %+v", run, got, tt.wantPath, res.Paths, res.Searched, res.Partiality)
+				}
+				if !tt.wantPath && (!slices.Equal(res.Searched, []string{netkitSinkID}) || len(res.Partiality.Reasons) != 0 || len(res.Partiality.Scoped) != 0) {
+					t.Errorf("%s closure: Searched = %v, partiality %+v", run, res.Searched, res.Partiality)
+				}
+			}
+		})
+	}
+}
+
+// runtimeListed holds only when the graph lists every install and resolves no node on a
+// configuration that is no classpath.
+func TestRuntimeListed(t *testing.T) {
+	build := t.TempDir()
+	graph := func(complete bool, scope string) *buildgraph.Graph {
+		m := testModule(t, ".", "app", graphDep{group: "com.dep", artifact: "lib", version: "1", scope: scope})
+		return &buildgraph.Graph{Schema: buildgraph.Schema, Modules: []buildgraph.Module{m}, Complete: complete}
+	}
+	for _, tc := range []struct {
+		complete bool
+		scope    string
+		want     bool
+	}{
+		{true, "compile", true},
+		{true, "test", true},
+		{true, buildgraph.ScopeOther, false},
+		{false, "compile", false},
+	} {
+		if got := runtimeListed(graph(tc.complete, tc.scope), build); got != tc.want {
+			t.Errorf("complete=%t scope=%s: runtimeListed = %t, want %t", tc.complete, tc.scope, got, tc.want)
 		}
 	}
 }

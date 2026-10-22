@@ -813,6 +813,24 @@ func TestGradleComplete(t *testing.T) {
 			want:   "configurations were added after assayBuildGraph was configured",
 		},
 		{
+			name:   "toolchain declared after a script configures every task",
+			append: map[string]string{"app/build.gradle": "tasks.all { }\njava { toolchain { languageVersion = JavaLanguageVersion.of(21) } }\n"},
+			check: func(t *testing.T, g *Graph) {
+				if got := module(t, g, ":app").JDKToolchains; !reflect.DeepEqual(got, []string{"21"}) {
+					t.Errorf(":app toolchains %q, want [21]", got)
+				}
+			},
+		},
+		{
+			name: "jar in the old build directory after a script configures every task",
+			append: map[string]string{
+				"app/build.gradle": "tasks.all { }\nlayout.buildDirectory = file('target')\n" +
+					"configurations.detachedConfiguration(dependencies.create(files('build/agent.jar'))).resolve()\n",
+				"app/build/agent.jar": "agent",
+			},
+			want: "agent.jar, which no collected configuration lists",
+		},
+		{
 			name: "Zip of a file in a repository a later projectsEvaluated callback adds",
 			append: map[string]string{
 				"app/build.gradle": "tasks.register('z', Zip) { from 'build/late/x.txt'; archiveFileName = 'z.zip'; destinationDirectory = layout.buildDirectory }\n" +

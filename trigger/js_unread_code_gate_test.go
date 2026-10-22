@@ -901,6 +901,109 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"Module.prototype._compile called through an inline require('module')", `
+require('module').prototype._compile.call({}, process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.prototype._compile called through an inline require('node:module')", `
+require('node:module').prototype._compile.call({}, process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"_compile on a new Module from require('module')", `
+const Module = require('module');
+new Module('x')._compile(process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"_compile on a new Module from a node:module default import", `
+import Module from 'node:module';
+new Module('x')._compile(process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"_compile on a new Module from a named Module import", `
+import { Module } from 'module';
+new Module('x')._compile(process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.prototype.require called through .call", `
+const Module = require('module');
+Module.prototype.require.call(new Module('x'), process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.prototype.require from a node:module namespace import", `
+import * as M from 'node:module';
+M.Module.prototype.require.call(new M.Module('x'), process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.wrap", `
+const Module = require('module');
+const w = Module.wrap(process.argv[3]);
+w.length;
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.runMain", `
+const Module = require('module');
+Module.runMain(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.register", `
+import { register } from 'node:module';
+register(process.argv[3], import.meta.url);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.register through a default import", `
+import Module from 'module';
+Module.register(process.argv[3], import.meta.url);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"mainModule.require through require('process')", `
+require('process').mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"mainModule.require through require('node:process')", `
+const p = require('node:process');
+p.mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"mainModule.require through a node:process namespace import", `
+import * as p from 'node:process';
+p.mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"mainModule.require through a process default import", `
+import p from 'process';
+p.mainModule.require(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

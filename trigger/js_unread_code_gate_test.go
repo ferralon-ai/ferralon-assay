@@ -423,6 +423,40 @@ function check(s) { if (s) { s = s.trim(); } /\//.test(s) && require(process.arg
 function load(s) { return s.trim(); }
 load(process.argv[2]);
 `, true},
+		{"regex ending in a quantifier after of in a for await head", `
+async function g(s) { for await (const x of /\d+/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a star after of in a for await head", `
+async function g(s) { for await (const x of /a*/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an equals sign after of in a for await head, then a division", `
+async function g(s) { for await (const x of /=/g.exec(s)) { require(process.argv[3]); } return 1 / 2; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a quantifier after yield", `
+function* g(s) { yield /\d+/; require(process.argv[3]) // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a variable named of divided in a for head", `
+let of = 4;
+for (let i = 0; i < of / 2; i++) require(process.argv[3])(i / 2);
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a spaced JSX closing tag", `
+const A = () => <div>x< /div>; const m = require(process.argv[3]); const B = () => <b>y</b>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
 		{"two JSX apostrophes around a require", `
 function A() { return <p>Don't {require(process.argv[3]).parse("x")} won't</p>; }
 function load(s) { return s.trim(); }
@@ -438,8 +472,8 @@ function A(x) { return <p>We're {import(x)} ready, aren't we</p>; }
 function load(s) { return s.trim(); }
 load(process.argv[2]);
 `, true},
-		// Template and comment text shaped like a loader call is read as code, since a
-		// misread opener can make real code look like text; these over-declare by design.
+		// Template, comment and regex text naming a loader is read as code, since a misread
+		// opener can make real code look like text; these over-declare by design.
 		{"loader-call text in a template's literal part", `
 function load(s) { return ^require(process.argv[3]) ${s}^; }
 load(process.argv[2]);
@@ -448,6 +482,10 @@ load(process.argv[2]);
 function load(s) { return ^it's line one
 require(process.argv[3]) "here"
 and ${s.trim()} done^; }
+load(process.argv[2]);
+`, true},
+		{"loader names in a regex body", `
+function load(s) { return /require|import|eval/.test(s) ? s.trim() : s; }
 load(process.argv[2]);
 `, true},
 		{"paired backticks in JSX text", `

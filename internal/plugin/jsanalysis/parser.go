@@ -113,7 +113,8 @@ type span struct{ from, to int }
 // or end of file unclosed, which only a misread quote does; of every closed string holding
 // a '{', which two misread apostrophes around JSX code form; and of every line comment
 // opened by the "//" of "://", "\//" or "[//", which is URL text or a regex body far more
-// often than a comment.
+// often than a comment; and of every regex body, which a '/' misread as a regex start
+// (after a regex read as a division, as in /a+/) runs over code to the next '/'.
 func lexJS(src string) ([]rune, []span) {
 	r := []rune(src)
 	n := len(r)
@@ -293,6 +294,9 @@ func lexJS(src string) ([]rune, []span) {
 				i++
 				continue
 			}
+			// A '/' read as a regex start may be a division (after a regex read as a
+			// division, /a+/), so what it blanks to the next '/' may be code.
+			hide(i+1, j)
 			j++
 			for j < n && isIdentPart(r[j]) {
 				j++
@@ -429,10 +433,10 @@ func parseFile(module, src string) parseResult {
 }
 
 // hiddenLoads reads the text lexJS reports blanking (block-comment and template text,
-// unclosed strings, closed strings holding a '{', and line comments after "://", "\//" or
-// "[//") as if it were code, and returns the loads that reading finds. Lexing
-// JS without a parser cannot always tell a literal's opener from text (a quote, backtick
-// or "/*" in JSX text, or in a regex read as a division), and a misread opener either
+// unclosed strings, closed strings holding a '{', line comments after "://", "\//" or
+// "[//", and regex bodies) as if it were code, and returns the loads that reading finds. Lexing
+// JS without a parser cannot always tell a literal's opener from text (a quote, backtick,
+// "/*" or '/' in JSX text, or in a regex read as a division), and a misread opener either
 // pairs with a later real closer or runs to the end of its line, so the text it blanks
 // can be code. The text is read on its own, everything else blank, so a
 // real literal never changes how the code around it reads; the loader aliases the code

@@ -1,6 +1,7 @@
 package depreach
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ferralon-ai/ferralon-assay/internal/plugin/javaanalysis/classfile"
@@ -497,5 +498,71 @@ func TestReach_ProviderRootsLambdas(t *testing.T) {
 				staticMeth(svc, "boot", "()V", indy("verify", "()L"+hv+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
 					classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefGetField, svc, "f", "Z"), classfile.BootstrapArg{MethodType: d}))),
 				meth(svc, "handle", handleD, jdkTouch))}},
+	})
+}
+
+// TestReach_LambdaUnopenedSupertype: a lambda implementing an unopened interface, or a
+// loaded one below it, may implement any loaded interface, and an unopened interface
+// beside a loaded default may override the default the lambda inherits.
+func TestReach_LambdaUnopenedSupertype(t *testing.T) {
+	const fn = "com/fw/Fn"
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	unopenedSite := indy("apply", "()Lcom/lib/U;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: applyDesc}, staticImpl, classfile.BootstrapArg{MethodType: applyDesc}))
+	fnIface := iface(fn, abstractMeth(fn, "apply", applyDesc), abstractMeth(fn, "other", applyDesc))
+	jdkSite := indy("apply", "()Ljava/util/function/Function;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: applyDesc}, staticImpl, classfile.BootstrapArg{MethodType: applyDesc}))
+	otherFn := class("com/acme/OtherFn", "java/lang/Object", []string{fn}, meth("com/acme/OtherFn", "<init>", "()V"), meth("com/acme/OtherFn", "apply", applyDesc))
+	mixed := rowsSvc("com/acme/Base", edge(classfile.EdgeInterface, "com/acme/Rows", "describe", "()V"), nil,
+		iface("com/acme/Base", meth("com/acme/Base", "describe", "()V")))
+	mixed[1].Interfaces = []string{"com/acme/Base", "com/lib/M"}
+	runReachCases(t, []reachCase{
+		{name: "a lambda implementing an unopened interface answers a call on a loaded one", ingress: handle, want: ReachableCandidate,
+			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "apply", applyDesc), unopenedSite, fnIface)},
+		{name: "the same lambda inherits what it does not answer from the unopened interface", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "other", applyDesc), unopenedSite, fnIface)},
+		{name: "a lambda implementing a loaded interface below an unopened one", ingress: handle, want: ReachableCandidate,
+			classes: rowsSvc("com/lib/U", edge(classfile.EdgeInterface, fn, "iterator", iterD), sinkCall(), iface(fn, abstractMeth(fn, "iterator", iterD)))},
+		{name: "a lambda implementing a JDK interface is no receiver of a loaded one", ingress: handle, want: NotExploitable,
+			classes: lambdaSvc(edge(classfile.EdgeInterface, fn, "apply", applyDesc), jdkSite, fnIface, otherFn)},
+		{name: "a lambda implementing a loaded interface below an unopened one is no known implementor", ingress: handle, want: Undetermined, why: "unloaded_dependency: com/fw/Fn.iterator",
+			classes: rowsSvc("com/lib/U", edge(classfile.EdgeInterface, fn, "iterator", iterD), nil, iface(fn, abstractMeth(fn, "iterator", iterD)))},
+		{name: "an unopened interface beside the loaded default a lambda inherits", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: mixed},
+	})
+}
+
+// A lambda's inherited default is checked for an unopened override on its own, not
+// only through the CHA closure that holds the lambda's interface.
+func TestLambdaInherited_UnopenedOverride(t *testing.T) {
+	const rows, base = "com/acme/Rows", "com/acme/Base"
+	r := iface(rows)
+	r.Interfaces = []string{base, "com/lib/M"}
+	e := NewEngine([]classfile.Class{r, iface(base, meth(base, "describe", "()V"))})
+	ts, h, w := e.lambdaInherited(lambdaSite{ifaces: []string{rows}}, mref(rows, "describe", "()V"))
+	if len(ts) != 1 || ts[0].Ref.String() != mref(base, "describe", "()V").String() {
+		t.Errorf("targets = %v, want the loaded default", ts)
+	}
+	if !h || !strings.Contains(w, "unopened com/lib/M") {
+		t.Errorf("hazard = %v %q, want the unopened override", h, w)
+	}
+}
+
+// An ingress that resolves to a loaded default is searched from it, but an unopened
+// dependency interface beside the default may override it.
+func TestReach_IngressUnopenedOverride(t *testing.T) {
+	const rows, base, impl = "com/acme/Rows", "com/acme/Base", "com/acme/RowsImpl"
+	beside := func(other string) []classfile.Class {
+		r := iface(rows)
+		r.Interfaces = []string{base, other}
+		return []classfile.Class{r, iface(base, meth(base, "describe", "()V")),
+			class(impl, "java/lang/Object", []string{rows}, meth(impl, "<init>", "()V"))}
+	}
+	ingress := mref(impl, "describe", "()V")
+	runReachCases(t, []reachCase{
+		{name: "an unopened interface beside the default the ingress resolves to", ingress: ingress, want: Undetermined,
+			why: "unloaded_dependency: ingress", classes: beside("com/lib/M")},
+		{name: "a JDK interface beside it cannot override it", ingress: ingress, want: NotExploitable,
+			classes: beside("java/util/RandomAccess")},
 	})
 }

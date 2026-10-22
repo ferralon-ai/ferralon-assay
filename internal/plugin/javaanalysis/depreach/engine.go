@@ -32,6 +32,8 @@ type Engine struct {
 	defined     map[string]bool              // packages a classpath entry defines a class in
 	unlisted    bool                         // a classpath entry could not be listed
 	methodsHold bool                         // platformMethods lists the runtime's methods
+	hidden      []string                     // hiddenSubtypes cache, sorted
+	hiddenDone  bool                         // hidden is computed
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -185,10 +187,23 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 }
 
 // subtypeClosure returns owner plus all transitive subclasses/implementors, sorted
-// for deterministic target ordering.
+// for deterministic target ordering. It also holds every type below an unopened
+// dependency type (hiddenSubtypes): that type's own supertypes are unknown, so it may
+// extend owner.
 func (e *Engine) subtypeClosure(owner string) []string {
+	return e.closureFrom(owner, e.hiddenSubtypes())
+}
+
+// closureFrom returns owner, the seeds, and every loaded subtype of them.
+func (e *Engine) closureFrom(owner string, seeds []string) []string {
 	seen := map[string]bool{owner: true}
 	stack := []string{owner}
+	for _, h := range seeds {
+		if !seen[h] {
+			seen[h] = true
+			stack = append(stack, h)
+		}
+	}
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -205,6 +220,32 @@ func (e *Engine) subtypeClosure(owner string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// hiddenSubtypes returns the loaded classes and interfaces directly below an unopened
+// dependency type, and the unopened interfaces lambdas implement; subtypeClosure adds
+// everything below them. A JDK supertype hides nothing: the JDK cannot extend a class
+// or interface from the classpath.
+func (e *Engine) hiddenSubtypes() []string {
+	if e.hiddenDone {
+		return e.hidden
+	}
+	e.hiddenDone = true
+	for _, c := range e.classes {
+		for _, s := range append([]string{c.Super}, c.Interfaces...) {
+			if s != "" && e.classes[s] == nil && !e.platform(s) {
+				e.hidden = append(e.hidden, c.Name)
+				break
+			}
+		}
+	}
+	for t := range e.lambdas {
+		if e.classes[t] == nil && !e.platform(t) {
+			e.hidden = append(e.hidden, t)
+		}
+	}
+	sort.Strings(e.hidden)
+	return e.hidden
 }
 
 // initClosure returns owner plus every in-classpath class whose <clinit> the JVM
@@ -359,19 +400,18 @@ func (e *Engine) hasAppSubtype(typ string) bool {
 	return false
 }
 
-// lookupInherited resolves (owner,name,desc) walking up the superclass chain — for
-// static/special edges whose exact target may be declared on an ancestor.
-func (e *Engine) lookupInherited(ref classfile.MethodRef) *classfile.Method {
-	m, _ := e.resolveMethod(ref.Owner, ref.Name, ref.Descriptor)
-	return m
-}
-
 // resolveMethod performs JVM method resolution (JVMS §5.4.3.3) of name+desc starting
 // at class owner over the loaded classes: the superclass chain first, then the
 // transitive superinterfaces for a default method. When nothing loaded declares it,
 // unloaded lists the out-of-classpath ancestors (owner itself, if unloaded) where the
 // real body may live, so the caller can decide leaf vs hazard by who owns them. A
 // declaration found on the superclass chain wins over any interface, as at runtime.
+//
+// A loaded default is returned with unloaded listing the unopened dependency
+// interfaces it does not extend: one may extend the default's interface and override
+// it with a more specific default (JVMS §5.4.3.3), so the caller must treat the default
+// as possibly not the one that runs. A JDK interface cannot extend a classpath one, so
+// it never overrides a loaded default and is not listed.
 func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, unloaded []string) {
 	var ifaces []string
 	for cur := owner; cur != ""; {
@@ -394,6 +434,7 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		cur = c.Super
 	}
 	seen := map[string]bool{}
+	var decls []*classfile.Method
 	for len(ifaces) > 0 {
 		cur := ifaces[0]
 		ifaces = ifaces[1:]
@@ -401,8 +442,11 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 			continue
 		}
 		seen[cur] = true
-		if m, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !m.Abstract {
-			return m, nil
+		// A static or private interface method is no candidate (JVMS §5.4.3.3). The
+		// walk goes on past a default: an unopened interface above a sibling one may
+		// still override it.
+		if d, ok := e.declared[(classfile.MethodRef{Owner: cur, Name: name, Descriptor: desc}).String()]; ok && !d.Static && !d.Private {
+			decls = append(decls, d)
 		}
 		c := e.classes[cur]
 		if c == nil {
@@ -411,7 +455,46 @@ func (e *Engine) resolveMethod(owner, name, desc string) (m *classfile.Method, u
 		}
 		ifaces = append(ifaces, c.Interfaces...)
 	}
-	return nil, unloaded
+	// The default that runs is a maximally specific one: no other declaration's
+	// interface extends its own. The first one met need not be it. Where every
+	// maximally specific declaration is abstract the call fails at runtime;
+	// the first default stands in for it.
+	masked := map[string]bool{}
+	for _, d := range decls {
+		for _, a := range e.ancestors(d.Ref.Owner)[1:] {
+			masked[a] = true
+		}
+	}
+	var found, first *classfile.Method
+	for _, d := range decls {
+		if d.Abstract {
+			continue
+		}
+		if first == nil {
+			first = d
+		}
+		if !masked[d.Ref.Owner] {
+			found = d
+			break
+		}
+	}
+	if found == nil {
+		found = first
+	}
+	if found == nil {
+		return nil, unloaded
+	}
+	less := map[string]bool{}
+	for _, a := range e.ancestors(found.Ref.Owner) {
+		less[a] = true
+	}
+	var over []string
+	for _, u := range unloaded {
+		if !less[u] && !e.platform(u) {
+			over = append(over, u)
+		}
+	}
+	return found, over
 }
 
 // unloadedDependency returns the first of names that is neither loaded nor a JDK
@@ -504,6 +587,9 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 	case classfile.EdgeStatic, classfile.EdgeSpecial:
 		m, unloaded := e.resolveMethod(edge.To.Owner, edge.To.Name, edge.To.Descriptor)
 		if m != nil {
+			if len(unloaded) > 0 {
+				return []*classfile.Method{m}, true, "unloaded_dependency: " + edge.To.String() + " may resolve into unopened " + unloaded[0] + ", which can override " + m.Ref.String()
+			}
 			return []*classfile.Method{m}, false, ""
 		}
 		if dep, ok := e.unloadedDependency(unloaded); ok {
@@ -544,9 +630,16 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 		// loaded set dispatches into code the graph cannot see.
 		seen := map[*classfile.Method]bool{}
 		var outside, abstractOutside, platformExits []string
+		var lambdaWhy string
+		// Only a type known to be a subtype witnesses a loaded implementor; one that
+		// is merely below an unopened dependency type may not be a receiver at all.
+		known := map[string]bool{}
+		for _, c := range e.closureFrom(edge.To.Owner, nil) {
+			known[c] = true
+		}
 		implemented := false
 		for _, c := range e.subtypeClosure(edge.To.Owner) {
-			if e.isConcrete(c) || len(e.lambdas[c]) > 0 {
+			if known[c] && (e.isConcrete(c) || len(e.lambdas[c]) > 0) {
 				implemented = true
 			}
 			// A lambda object implementing c answers the call with its
@@ -561,8 +654,8 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				} else {
 					ts, h, w = e.lambdaInherited(site, edge.To)
 				}
-				if h {
-					return targets, true, w
+				if h && lambdaWhy == "" {
+					lambdaWhy = w
 				}
 				for _, t := range ts {
 					if !seen[t] {
@@ -590,6 +683,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				platformExits = append(platformExits, c)
 				continue
 			}
+			outside = append(outside, unloaded...)
 			if !m.Abstract && !seen[m] {
 				seen[m] = true
 				targets = append(targets, m)
@@ -602,12 +696,12 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 			// runs code the graph cannot see.
 			outside = append(outside, abstractOutside...)
 			if dep, ok := e.unloadedDependency(outside); ok {
-				return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+				return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
 			}
-			return nil, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
+			return targets, true, "no loaded implementor: " + edge.To.String() + " dispatches to a class generated at runtime or outside the classpath"
 		}
 		if dep, ok := e.unloadedDependency(outside); ok {
-			return nil, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
+			return targets, true, "unloaded_dependency: " + edge.To.String() + " inherits from unopened " + dep
 		}
 		if len(outside) > 0 {
 			// Some receiver inherits the body from an out-of-classpath platform
@@ -631,7 +725,7 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				return targets, true, w
 			}
 		}
-		return targets, false, ""
+		return targets, lambdaWhy != "", lambdaWhy
 	}
 	return nil, false, ""
 }
@@ -770,6 +864,7 @@ func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*c
 			if !m.Abstract {
 				targets = append(targets, m)
 			}
+			unloaded = append(unloaded, u...)
 			continue
 		}
 		for _, n := range u {
@@ -1568,13 +1663,18 @@ func (e *Engine) Reach(ingress, sink classfile.MethodRef) Result {
 		return res
 	}
 
-	start := e.lookupInherited(ingress)
+	start, over := e.resolveMethod(ingress.Owner, ingress.Name, ingress.Descriptor)
 	if start == nil {
 		// The ingress itself is not in the analyzed classpath: the search never
 		// began, so absence proves nothing.
 		res.Verdict = Undetermined
 		res.hazard("ingress method not found in classpath: " + ingress.String())
 		return res
+	}
+	if len(over) > 0 {
+		// The ingress resolves to a loaded default that an unopened dependency
+		// interface may override; the search still runs from the default.
+		res.hazard("unloaded_dependency: ingress " + ingress.String() + " may resolve into unopened " + over[0] + ", which can override " + start.Ref.String())
 	}
 
 	visited := map[string]bool{start.Ref.String(): true}

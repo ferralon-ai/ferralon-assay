@@ -1,7 +1,7 @@
 package jsanalysis
 
 import (
-	"strings"
+	"slices"
 	"unicode"
 )
 
@@ -77,159 +77,338 @@ type parseResult struct {
 	skipped   bool
 }
 
-// stripJS removes comments, string literals, template literals, char data, and
-// regex literals from JS/TS source, replacing each with equivalent whitespace so
-// byte offsets and newlines are preserved but no comment/string content can be
-// mistaken for code. A string/template literal collapses to a single '_' token (a
-// valid identifier char) so a literal-only argument still counts toward call-site
-// arity. This is the lexical pre-pass every scanner relies on.
+// stripJS removes comments, string literals, template literal text, and regex literals
+// from JS/TS source, replacing each with equivalent whitespace so rune offsets and
+// newlines are preserved but no comment/string content can be mistaken for code. A
+// string or template literal's opening quote becomes a single '_' token (a valid
+// identifier char) so a literal-only argument still counts toward call-site arity; a
+// template directly after an identifier character (a tagged template, tag`x`) becomes
+// '`' instead, so the tag's name does not absorb the marker. This is the lexical
+// pre-pass every scanner relies on.
 //
-// Template literals are flattened (including ${...} interpolations) to a single
-// '_' — interpolated calls inside a template are not modeled (a declared-partial
-// limitation, conservative: it never fabricates an edge).
+// A template's ${...} substitutions are code and stay in place: only the literal text
+// around them is blanked, so a call, require, eval or import inside a substitution is
+// seen. Substitutions nest (a template inside a substitution is lexed the same way).
+//
+// The lexer must never hide code it cannot classify, so every literal it opens has to
+// close where JS would close it:
+//   - a ' or " string ends at an unescaped line break (JS forbids one there; a
+//     backslash-newline continuation still continues), so a misread quote blanks at
+//     most the rest of its line, and that text is still read for loads (lexJS);
+//   - a regex never spans a line: a '/' whose regex would not close on its line is a
+//     division, and lexing continues after it;
+//   - a block comment or template literal that would run to end of file without
+//     closing is not one: its opener is lexed as code instead.
 func stripJS(src string) string {
-	var b strings.Builder
-	b.Grow(len(src))
+	clean, _ := lexJS(src)
+	return string(clean)
+}
+
+// span is a rune range [from, to) of source text.
+type span struct{ from, to int }
+
+// lexJS is stripJS returning runes, plus the text of every block comment and template it
+// blanked (between the delimiters), the two literals that span lines and so the two whose
+// misread opener can blank code far from it; of every string that ended at a line break
+// or end of file unclosed, which only a misread quote does; of every closed string holding
+// a '{', which two misread apostrophes around JSX code form; and of every line comment
+// opened by the "//" of "://", "\//" or "[//", which is URL text or a regex body far more
+// often than a comment; and of every regex body, which a '/' misread as a regex start
+// (after a regex read as a division, as in /a+/) runs over code to the next '/'.
+func lexJS(src string) ([]rune, []span) {
 	r := []rune(src)
 	n := len(r)
-	// prevSignif is the last non-space emitted rune; it disambiguates a '/' that
-	// starts a regex literal (after an operator/'(') from a division operator.
-	prevSignif := rune(0)
-	emit := func(c rune) {
-		b.WriteRune(c)
-		if !unicode.IsSpace(c) {
-			prevSignif = c
+	out := make([]rune, 0, n)
+	var hidden []span
+	hide := func(from, to int) {
+		if from < to {
+			hidden = append(hidden, span{from, to})
 		}
+	}
+	// prev is the last significant code rune; it decides whether a '/' starts a regex.
+	// litEnd stands for a just-closed string or template, after which '/' divides.
+	const litEnd = rune(-1)
+	prev := rune(0)
+	emit := func(c rune) {
+		out = append(out, c)
+		if !unicode.IsSpace(c) {
+			prev = c
+		}
+	}
+	blank := func(from, to int) {
+		for k := from; k < to; k++ {
+			if r[k] == '\n' {
+				out = append(out, '\n')
+			} else {
+				out = append(out, ' ')
+			}
+		}
+	}
+	// subst holds, per open template substitution (innermost last), the depth of
+	// code braces opened inside it; the '}' that meets depth 0 resumes the template.
+	var subst []int
+	// parens records, per open '(', the if/while/for/with keyword whose condition it
+	// opens ("" for any other); afterCond is whether the last ')' closed one (a regex may
+	// start a statement there).
+	var parens []string
+	afterCond := false
+	noCommentClose := false
+	// templateEnd finds where template text starting at i stops: the index of the
+	// closing '`' or of the next "${", or -1 when neither follows before end of file.
+	templateEnd := func(i int) int {
+		for i < n && r[i] != '`' && !(r[i] == '$' && i+1 < n && r[i+1] == '{') {
+			if r[i] == '\\' && i+1 < n {
+				i++
+			}
+			i++
+		}
+		if i >= n {
+			return -1
+		}
+		return i
+	}
+	// templateText blanks template text from i to its stop j (from templateEnd) and
+	// the closing '`' or "${" there, and returns where lexing resumes.
+	templateText := func(i, j int) int {
+		hide(i, j)
+		if r[j] == '`' {
+			blank(i, j+1)
+			prev = litEnd
+			return j + 1
+		}
+		blank(i, j+2)
+		subst = append(subst, 0)
+		prev = '{'
+		return j + 2
 	}
 	for i := 0; i < n; {
 		c := r[i]
 		switch {
 		case c == '/' && i+1 < n && r[i+1] == '/':
-			for i < n && r[i] != '\n' && r[i] != '\r' && r[i] != '\u2028' && r[i] != '\u2029' {
-				b.WriteByte(' ')
+			j := i
+			for j < n && !isLineTerminator(r[j]) {
+				j++
+			}
+			if i > 0 && (r[i-1] == ':' || r[i-1] == '\\' || r[i-1] == '[') {
+				// "://" is URL text (http://x in JSX text); "\//" and "[//" are almost
+				// always the body of a regex read as a division (/\//, /[//]/). Either
+				// way what follows on the line may be code.
+				hide(i+2, j)
+			}
+			blank(i, j)
+			i = j
+		case c == '/' && i+1 < n && r[i+1] == '*' && !noCommentClose:
+			j := i + 2
+			for j < n && !(r[j] == '*' && j+1 < n && r[j+1] == '/') {
+				j++
+			}
+			if j >= n {
+				noCommentClose = true
+				emit(c)
 				i++
+				continue
 			}
-		case c == '/' && i+1 < n && r[i+1] == '*':
-			b.WriteString("  ")
-			i += 2
-			for i < n && !(r[i] == '*' && i+1 < n && r[i+1] == '/') {
-				if r[i] == '\n' {
-					b.WriteByte('\n')
-				} else {
-					b.WriteByte(' ')
-				}
-				i++
-			}
-			if i < n {
-				b.WriteString("  ")
-				i += 2
-			}
+			hide(i+2, j)
+			blank(i, j+2)
+			i = j + 2
 		case c == '"' || c == '\'':
-			// string literal → single '_' token
-			b.WriteByte('_')
-			i++
-			for i < n && r[i] != c {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
+			j := i + 1
+			for j < n && r[j] != c && r[j] != '\n' && r[j] != '\r' {
+				if r[j] == '\\' && j+1 < n {
+					j++
+					if r[j] == '\r' && j+1 < n && r[j+1] == '\n' {
+						j++
+					}
 				}
-				b.WriteByte(' ')
-				i++
+				j++
 			}
-			if i < n {
-				b.WriteByte(' ')
-				i++
+			out = append(out, '_')
+			if j < n && r[j] == c {
+				if slices.Contains(r[i+1:j], '{') {
+					// Two apostrophes in one line of JSX text pair into a closed string
+					// (<p>Don't {f(x)} won't</p>), so a closed string holding a '{' may
+					// hold code between them.
+					hide(i+1, j)
+				}
+				j++
+			} else {
+				// A valid string closes on its line, so this one was a misread quote (an
+				// apostrophe in JSX text, or in a regex read as a division): its text may
+				// be code.
+				hide(i+1, j)
 			}
-			prevSignif = '_'
+			blank(i+1, j)
+			prev = litEnd
+			i = j
 		case c == '`':
-			// template literal (with possible ${...}) → single '_' token, rest blanked
-			b.WriteByte('_')
-			i++
-			depth := 0
-			for i < n {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if depth == 0 && r[i] == '`' {
+			if len(out) > 0 && isIdentPart(out[len(out)-1]) {
+				// A tag written flush against its template (require`x`) keeps its name:
+				// a '_' here would read as part of it.
+				out = append(out, '`')
+			} else {
+				out = append(out, '_')
+			}
+			prev = litEnd
+			j := templateEnd(i + 1)
+			if j < 0 {
+				i++
+				continue
+			}
+			i = templateText(i+1, j)
+		case c == '}' && len(subst) > 0 && subst[len(subst)-1] == 0:
+			j := templateEnd(i + 1)
+			if j < 0 {
+				// The template never closes, so none of the open ones do: what
+				// follows is code.
+				subst = subst[:0]
+				emit(c)
+				i++
+				continue
+			}
+			subst = subst[:len(subst)-1]
+			out = append(out, ' ')
+			i = templateText(i+1, j)
+		case c == '/' && regexStarts(out, prev, afterCond, len(parens) > 0 && parens[len(parens)-1] == "for"):
+			j := i + 1
+			inClass, closed := false, false
+			for j < n && !isLineTerminator(r[j]) {
+				if r[j] == '\\' {
+					if j+1 < n && !isLineTerminator(r[j+1]) {
+						j += 2
+						continue
+					}
 					break
 				}
-				if r[i] == '$' && i+1 < n && r[i+1] == '{' {
-					depth++
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if depth > 0 && r[i] == '}' {
-					depth--
-					b.WriteByte(' ')
-					i++
-					continue
-				}
-				if r[i] == '\n' {
-					b.WriteByte('\n')
-				} else {
-					b.WriteByte(' ')
-				}
-				i++
-			}
-			if i < n {
-				b.WriteByte(' ')
-				i++
-			}
-			prevSignif = '_'
-		case c == '/' && regexAllowed(prevSignif):
-			// regex literal /.../flags → blanked to spaces
-			b.WriteByte(' ')
-			i++
-			inClass := false
-			for i < n && r[i] != '\n' {
-				if r[i] == '\\' && i+1 < n {
-					b.WriteString("  ")
-					i += 2
-					continue
-				}
-				if r[i] == '[' {
+				if r[j] == '[' {
 					inClass = true
-				} else if r[i] == ']' {
+				} else if r[j] == ']' {
 					inClass = false
-				} else if r[i] == '/' && !inClass {
+				} else if r[j] == '/' && !inClass {
+					closed = true
 					break
 				}
-				b.WriteByte(' ')
-				i++
+				j++
 			}
-			if i < n && r[i] == '/' {
-				b.WriteByte(' ')
+			if !closed {
+				emit(c)
 				i++
-				// flags
-				for i < n && isIdentPart(r[i]) {
-					b.WriteByte(' ')
-					i++
+				continue
+			}
+			// A '/' read as a regex start may be a division (after a regex read as a
+			// division, /a+/), so what it blanks to the next '/' may be code.
+			hide(i+1, j)
+			j++
+			for j < n && isIdentPart(r[j]) {
+				j++
+			}
+			blank(i, j)
+			prev = litEnd
+			i = j
+		default:
+			switch c {
+			case '{':
+				if len(subst) > 0 {
+					subst[len(subst)-1]++
+				}
+			case '}':
+				if len(subst) > 0 {
+					subst[len(subst)-1]--
+				}
+			case '(':
+				w, member := lastWord(out)
+				if member || !condKeywords[w] {
+					w = ""
+				}
+				parens = append(parens, w)
+			case ')':
+				afterCond = false
+				if len(parens) > 0 {
+					afterCond = parens[len(parens)-1] != ""
+					parens = parens[:len(parens)-1]
 				}
 			}
-		default:
 			emit(c)
 			i++
 		}
 	}
-	return b.String()
+	return out, hidden
 }
 
-// regexAllowed reports whether a '/' at the current position begins a regex literal
-// rather than a division operator, based on the previous significant rune. A regex
-// may start at the program start, after an operator, '(', ',', '{', '[', ';', ':',
-// '!', '&', '|', '?', '=', or a return/typeof-like context. We approximate with the
-// punctuation set (the common cases); an identifier/')'/']'/'_' before '/' means
-// division.
+// regexStarts reports whether a '/' at the end of out begins a regex literal rather
+// than a division, from the previous significant rune and, where that rune is ambiguous,
+// the token it ends: a keyword after which an expression starts, a postfix ++/--, or
+// the ')' of a statement condition (afterCond). of is a keyword only inside a for
+// head (inFor); elsewhere it is an identifier, and so are yield and await outside a
+// generator or async function, so none of the three is in regexKeywords.
+func regexStarts(out []rune, prev rune, afterCond, inFor bool) bool {
+	switch {
+	case prev == ')':
+		return afterCond
+	case prev == '+' || prev == '-':
+		k := len(out) - 1
+		for k > 0 && unicode.IsSpace(out[k]) {
+			k--
+		}
+		return !(k > 0 && out[k-1] == prev)
+	case prev > 0 && isIdentPart(prev):
+		w, member := lastWord(out)
+		return !member && (regexKeywords[w] || inFor && w == "of")
+	case prev == '.':
+		// A spread (...) is an operator; a lone '.' cannot precede a '/'.
+		k := len(out)
+		for k > 0 && unicode.IsSpace(out[k-1]) {
+			k--
+		}
+		return k >= 3 && string(out[k-3:k]) == "..."
+	case prev == '<':
+		// "</" is a JSX closing tag; "< /" is a comparison with a regex.
+		return unicode.IsSpace(out[len(out)-1])
+	}
+	return regexAllowed(prev)
+}
+
+// regexAllowed reports whether a '/' after the punctuation prev begins a regex literal: at
+// the program start, or after an operator or an opening '(', '[', '{', ',', ';' or ':'.
+// '<' and '.' are decided by regexStarts, which sees what precedes them.
 func regexAllowed(prev rune) bool {
 	switch prev {
-	case 0, '(', ',', '{', '[', ';', ':', '!', '&', '|', '?', '=', '+', '-', '*', '%', '<', '>', '^', '~':
+	case 0, '(', ',', '{', '[', ';', ':', '!', '&', '|', '?', '=', '+', '-', '*', '%', '>', '^', '~':
 		return true
 	}
 	return false
+}
+
+// regexKeywords are the keywords after which an expression, and so a regex, may start.
+var regexKeywords = map[string]bool{
+	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true,
+	"new": true, "delete": true, "void": true, "throw": true, "instanceof": true,
+	"default": true,
+}
+
+// condKeywords open a parenthesized statement condition, after whose ')' a statement,
+// and so a regex, may start.
+var condKeywords = map[string]bool{"if": true, "while": true, "for": true, "with": true}
+
+// lastWord returns the identifier or keyword that out ends with (after trailing space),
+// and whether it is a property name (preceded by '.').
+func lastWord(out []rune) (string, bool) {
+	k := len(out)
+	for k > 0 && unicode.IsSpace(out[k-1]) {
+		k--
+	}
+	end := k
+	for k > 0 && isIdentPart(out[k-1]) {
+		k--
+	}
+	j := k
+	for j > 0 && unicode.IsSpace(out[j-1]) {
+		j--
+	}
+	return string(out[k:end]), j > 0 && out[j-1] == '.'
+}
+
+func isLineTerminator(c rune) bool {
+	return c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029'
 }
 
 // declKeywords are the leading keywords that introduce a JS/TS class declaration.
@@ -240,16 +419,198 @@ var classKeywords = map[string]bool{"class": true}
 // function declarations, the call sites, and the ingress markers. It works on a
 // comment/string-stripped copy so no literal can be mistaken for code.
 func parseFile(module, src string) parseResult {
-	clean := stripJS(src)
+	r, hidden := lexJS(src)
+	raw := []rune(src)
 	res := parseResult{module: module}
-	r := []rune(clean)
 
 	res.decls = parseDecls(r)
 	res.calls, res.ingresses = parseCallsAndIngresses(r)
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
-	res.bindings = extractModuleBindings(r, []rune(src))
+	res.bindings = extractModuleBindings(r, raw)
+	res.bindings.addLoads(hiddenLoads(r, raw, hidden))
 	return res
+}
+
+// hiddenLoads reads the text lexJS reports blanking (block-comment and template text,
+// unclosed strings, closed strings holding a '{', line comments after "://", "\//" or
+// "[//", and regex bodies) as if it were code, and returns the loads that reading finds. Lexing
+// JS without a parser cannot always tell a literal's opener from text (a quote, backtick,
+// "/*" or '/' in JSX text, or in a regex read as a division), and a misread opener either
+// pairs with a later real closer or runs to the end of its line, so the text it blanks
+// can be code. The text is read on its own, everything else blank, so a
+// real literal never changes how the code around it reads; the loader aliases the code
+// declares (clean) still apply to it. Text that the reading blanks in turn is read the
+// same way, one layer at a time. The reading adds no binding or edge, so text that really
+// was a comment or template can only over-declare; proseLoaders drops the two shapes
+// that cannot be code to keep that cost down.
+func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
+	loads := newModuleBindings()
+	req, cr := loaderNames(clean)
+	seedReq, seedCr := loaderNames(nil)
+	for layer := 0; len(hidden) > 0; layer++ {
+		view := make([]rune, len(raw))
+		for k, c := range raw {
+			if c == '\n' {
+				view[k] = '\n'
+			} else {
+				view[k] = ' '
+			}
+		}
+		// Each text's opener becomes ';' so no expression runs from one text into the next:
+		// two texts are never adjacent in the source, whatever lies between them is blank here.
+		for _, h := range hidden {
+			if h.from > 0 && !isLineTerminator(raw[h.from-1]) {
+				view[h.from-1] = ';'
+			}
+		}
+		var next []span
+		for _, h := range hidden {
+			if layer >= maxHiddenLayers {
+				// Past the bound, the text is read unlexed, which can only expose more.
+				copy(view[h.from:h.to], raw[h.from:h.to])
+				continue
+			}
+			sub, inner := lexJS(string(raw[h.from:h.to]))
+			if len(sub) != h.to-h.from {
+				copy(view[h.from:h.to], raw[h.from:h.to])
+				continue
+			}
+			copy(view[h.from:h.to], sub)
+			for _, in := range inner {
+				next = append(next, span{h.from + in.from, h.from + in.to})
+			}
+		}
+		proseLoaders(view)
+		loads.addLoads(extractBindings(view, raw, req, cr))
+		// A loader alias the text declares may be used in the code.
+		if hreq, hcr := loaderNames(view); len(hreq) > len(seedReq) || len(hcr) > len(seedCr) {
+			loads.addLoads(extractBindings(clean, raw, hreq, hcr))
+		}
+		hidden = next
+	}
+	return loads
+}
+
+// maxHiddenLayers bounds how deep hiddenLoads lexes text nested in blanked text.
+const maxHiddenLayers = 8
+
+// proseLoaders blanks, in a view of blanked text, the loader names that cannot be code
+// there: a JSDoc type expression on its tag's line (`@param {Function} f`,
+// `@type {import('x').T}`), since `@tag {` is a syntax error in JS and plain text in
+// JSX; and a name in proseNames followed on the same line by another name ("Function
+// that", "this returns"), preceded on it by one ("the real module, mutated"), or ending a
+// sentence ("to require."), since a name after a value is a syntax error unless it is one
+// of the operators in proseFollowers, a value after a name is one unless the name is one of
+// proseLeaders, and a member access needs a member name.
+func proseLoaders(view []rune) {
+	n := len(view)
+	for i := 0; i < n; i++ {
+		c := view[i]
+		if c == '@' {
+			w, e := peekWord(view, i+1)
+			if !jsdocTypeTags[w] {
+				continue
+			}
+			p := skipBlank(view, e)
+			if p >= n || view[p] != '{' {
+				continue
+			}
+			depth := 0
+			for q := p; q < n && view[q] != '\n'; q++ {
+				if view[q] == '{' {
+					depth++
+				} else if view[q] == '}' {
+					if depth--; depth == 0 {
+						blankRunes(view, p, q+1)
+						i = q
+						break
+					}
+				}
+			}
+			continue
+		}
+		if !isIdentStart(c) || i > 0 && (isIdentPart(view[i-1]) || view[i-1] == '.') {
+			continue
+		}
+		w, e := readWord(view, i)
+		if proseNames[w] {
+			p := skipBlank(view, e)
+			f, _ := peekWord(view, p)
+			switch {
+			case p > e && f != "" && !proseFollowers[f]: // "this returns", "require the"
+				blankRunes(view, i, e)
+			case p == e && p < n && view[p] == '.' && !identAt(view, skipSpace(view, p+1)): // "to require."
+				blankRunes(view, i, e)
+			case proseLeader(view, i): // "the real module"
+				blankRunes(view, i, e)
+			}
+		}
+		i = e - 1
+	}
+}
+
+// jsdocTypeTags are the JSDoc tags that take a {type} on their line.
+var jsdocTypeTags = map[string]bool{
+	"type": true, "param": true, "arg": true, "argument": true, "returns": true, "return": true,
+	"typedef": true, "property": true, "prop": true, "template": true, "throws": true,
+	"exception": true, "yields": true, "yield": true, "enum": true, "this": true,
+	"satisfies": true, "augments": true, "extends": true, "implements": true,
+	"callback": true, "member": true, "var": true, "const": true, "constant": true,
+}
+
+// proseNames are the loader and global-object names proseLoaders reads as prose. import
+// is not among them: `import x from` is code. `module Foo {` is a TypeScript declaration,
+// whose name loads nothing, so blanking module there loses no load.
+var proseNames = map[string]bool{
+	"require": true, "createRequire": true, "eval": true, "Function": true, "this": true,
+	"globalThis": true, "global": true, "window": true, "self": true, "process": true,
+	"module": true,
+}
+
+// proseLeaders are the words a value may follow on the same line in JS: the operators and
+// keywords that take an expression after them. Any other name before a value is prose, or
+// a declaration or type naming it, which loads nothing.
+var proseLeaders = map[string]bool{
+	"return": true, "typeof": true, "instanceof": true, "in": true, "of": true, "new": true,
+	"delete": true, "void": true, "throw": true, "case": true, "do": true, "else": true,
+	"yield": true, "await": true, "default": true, "extends": true,
+}
+
+// proseLeader reports whether the name at i follows, on its line, a name that is not one of
+// proseLeaders.
+func proseLeader(view []rune, i int) bool {
+	b := i - 1
+	for b >= 0 && (view[b] == ' ' || view[b] == '\t') {
+		b--
+	}
+	w, s := wordBefore(view, b)
+	return w != "" && isIdentStart(view[s]) && !proseLeaders[w]
+}
+
+// proseFollowers are the words that may follow a value on the same line in JS or TS.
+// A type predicate's `this is T` is a type, not a use of this, so "is" is not one.
+var proseFollowers = map[string]bool{
+	"in": true, "instanceof": true, "of": true, "as": true, "satisfies": true,
+	"implements": true, "extends": true,
+}
+
+func identAt(r []rune, i int) bool { return i < len(r) && isIdentStart(r[i]) }
+
+// skipBlank skips spaces and tabs, never a line break.
+func skipBlank(r []rune, i int) int {
+	for i < len(r) && (r[i] == ' ' || r[i] == '\t') {
+		i++
+	}
+	return i
+}
+
+func blankRunes(r []rune, from, to int) {
+	for k := from; k < to; k++ {
+		if r[k] != '\n' {
+			r[k] = ' '
+		}
+	}
 }
 
 // frame is one entry on the brace-block stack used by the declaration scanner. A

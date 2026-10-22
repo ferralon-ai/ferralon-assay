@@ -188,10 +188,12 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 // hasInstance builtin may be stored, since reaching the constructor from it takes
 // .constructor, the residue every function value shares. Function as instanceof's operand,
 // and the hasInstance builtin unless it is called, must end the operand (endsOperand):
-// anything else after them may read from, call or tag them.
+// anything else after them may read from, call or tag them. A line break after instanceof
+// may end its statement (ASI after a member, a hashbang or an HTML-like comment line), so
+// Function on the next line starts a new one.
 func functionConsumed(clean, src []rune, b, p int) bool {
-	if w, s := wordBefore(clean, b); w == "instanceof" && !memberName(clean, s) {
-		return endsOperand(clean, p)
+	if w, _ := wordBefore(clean, b); w == "instanceof" {
+		return !lineBreakAfter(clean, b) && endsOperand(clean, p)
 	}
 	w, q := dotWord(clean, p)
 	if w != "prototype" {
@@ -256,6 +258,17 @@ func calledHere(clean []rune, p int) bool {
 	return false
 }
 
+// lineBreakAfter reports whether a line terminator lies in the space that follows b.
+func lineBreakAfter(clean []rune, b int) bool {
+	for k := b + 1; k < len(clean) && unicode.IsSpace(clean[k]); k++ {
+		switch clean[k] {
+		case '\n', '\r', '\u2028', '\u2029':
+			return true
+		}
+	}
+	return false
+}
+
 // endsOperand reports whether the token at p ends the operand before it without reading
 // from, calling or tagging it: the end of the source, a closing bracket, a separator, a
 // ternary's `?` or `:`, `&&`, `||`, `??`, or an equality test.
@@ -283,10 +296,11 @@ func endsOperand(clean []rune, p int) bool {
 
 // symbolPlain reports whether every Symbol in the module appears where it cannot be bound
 // or assigned, so that it is the global's. Each Symbol, bare or a member (whose object may
-// be the global), must be followed by `.` or `(` and not name a function, or be read by
-// typeof. A with statement may put any object's Symbol in scope; a 'Symbol' string may key
-// a write to the global; an escaped identifier may spell Symbol unseen; and an HTML-like
-// comment, which a script reads to the end of its line, may hide a token the scan sees.
+// be the global), must be followed by `.` or `(` and not name a function, TS namespace or
+// module, or be read by a typeof on its own line. A with statement may put any object's
+// Symbol in scope; a literal 'Symbol' may key a write to the global; an escaped identifier
+// may spell Symbol unseen; and an HTML-like comment, which a script reads to the end of its
+// line, may hide a token the scan sees.
 func symbolPlain(clean, src []rune) bool {
 	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
 		return false
@@ -318,11 +332,11 @@ func symbolPlain(clean, src []rune) bool {
 // symbolRead reports whether the Symbol word at i, ending before next, is only read.
 func symbolRead(clean []rune, i, next int) bool {
 	b := skipSpaceBack(clean, i-1)
-	prev, s := wordBefore(clean, b)
-	if prev == "typeof" && !memberName(clean, s) {
+	prev, _ := wordBefore(clean, b)
+	if prev == "typeof" && !lineBreakAfter(clean, b) {
 		return true
 	}
-	if prev == "function" || b >= 0 && clean[b] == '*' {
+	if prev == "function" || prev == "namespace" || prev == "module" || b >= 0 && clean[b] == '*' {
 		return false
 	}
 	q := skipSpace(clean, next)

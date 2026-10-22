@@ -209,6 +209,12 @@ func TestUndeterminedReason_JSUnreadCodeNeverRefutes(t *testing.T) {
 
 		// G5-Object-reclassified
 		{"Object indexed by a data member", "const j = { parse: String };\nfunction g() {} const m = process.argv[4]; Object[m](Object.getPrototypeOf(g), process.argv[5]).value(process.argv[3])();\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W35-constructor-member
+		{"Function reached through own-key enumeration of a constructor member", "const j = { parse: String };\nconst r = { run: s => s, constructor: Function };\nfor (const k in r) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
+
+		// W35-member-write
+		{"Function reached through own-key enumeration after a member write", "const j = { parse: String };\nconst r = { run: s => s };\nr.constructor = Function;\nfor (const k of Object.keys(r)) { r[k](process.argv[3])(); }\nfunction load(s) { return j.parse(s); }\nload(process.argv[2]);\n", nil},
 		{"binding alias", `
 const lib = require('json5'); const p = lib;
 function load(s) { return p.parse(s); }
@@ -1180,7 +1186,31 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"a prototype-pollution guard on a constructor key", "function set(o, k, v) { if (k === '__proto__' || k === 'constructor') return; o[k] = v; }\nconst name = Reflect.get(set, 'name');\nconst j = require('./plugins');", nil},
 		{"arguments inside class methods", "class A { m() { return arguments[0]; } static s() { return arguments.length; } constructor() { this.n = arguments.length; } }\nconst j = require('./plugins');", nil},
 		{"this.constructor constructed with no arguments", "class Box { clone() { return new this.constructor(); } }\nfunction Foo() {}\nFoo.prototype.clone = function () { return new this.constructor; };\nclass Reg { static make() { return new this.constructor(); } }\nconst j = require('./plugins');", nil},
-		{"the webpack 5 runtime handing its module record to a module factory", "var __webpack_modules__ = {};\nvar __webpack_module_cache__ = {};\nfunction __webpack_require__(moduleId) {\n  var cachedModule = __webpack_module_cache__[moduleId];\n  if (cachedModule !== undefined) return cachedModule.exports;\n  var module = __webpack_module_cache__[moduleId] = { exports: {} };\n  __webpack_modules__[moduleId](module, module.exports, __webpack_require__);\n  return module.exports;\n}\nconst j = require('./plugins');", nil},
+		{"the webpack 5 runtime handing its module record to a module factory", `(() => { // webpackBootstrap
+	var __webpack_modules__ = ({
+"./src/a.js":
+((module) => {
+module.exports = { f: (s) => String(s).trim() };
+})
+	});
+	var __webpack_module_cache__ = {};
+	function __webpack_require__(moduleId) {
+		var cachedModule = __webpack_module_cache__[moduleId];
+		if (cachedModule !== undefined) {
+			return cachedModule.exports;
+		}
+		var module = __webpack_module_cache__[moduleId] = {
+			exports: {}
+		};
+		__webpack_modules__[moduleId](module, module.exports, __webpack_require__);
+		return module.exports;
+	}
+const a = __webpack_require__(/*! ./a */ "./src/a.js");
+console.log(a.f(process.argv[2]));
+})()
+;
+const j = require('./plugins');`, nil},
+		{"the minified webpack 5 runtime handing its module record to a module factory", "(()=>{var r={967:r=>{r.exports={f:r=>String(r).trim()}}},o={};const t=function t(e){var s=o[e];if(void 0!==s)return s.exports;var n=o[e]={exports:{}};return r[e](n,n.exports,t),n.exports}(967);console.log(t.f(process.argv[2]))})();\nconst j = require('./plugins');", nil},
 		{"eval and Function members assigned", "const opts = {};\nopts.eval = false;\nopts.Function = null;\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{

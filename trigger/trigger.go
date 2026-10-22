@@ -148,9 +148,9 @@ func buildBaselineReport(ctx context.Context, req BaselineRequest) (*report.Repo
 		// the whole-graph inventory above does.
 		advisory, pkg := advisoryFromArtifacts(st, assessmentID, areq, sbom.Packages)
 		// A toolchain advisory the scan could not adjudicate is a first-class `undetermined`
-		// row in tegron.report.v2, plus the scan-level limit that explains it.
-		// v1 had to withhold the row entirely, having no cell for "the advisory applies and
-		// we established nothing"; the row is what makes the omission legible at the count.
+		// row, plus the scan-level limit that explains it. The report has carried such rows
+		// since v2; v1 withheld the row entirely, having no cell for "the advisory applies and
+		// we established nothing". The row is what makes the omission legible at the count.
 		f := withInventoryLimits(findingInBuild(st, assessmentID, advisory, pkg, mods), invNotes)
 		b.AddFinding(f)
 		if note, ok := limitNoteFor(f); ok {

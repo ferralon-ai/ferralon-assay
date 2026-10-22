@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+// testDigest is validDoc's signals_digest, computed by the producer's rule (ferralon-ai/intel
+// corpus.CanonicalJSON over signals_version, record_count and records), so Load verifies it. The
+// other documents here carry it too; Parse does not check a digest.
+const testDigest = "sha256:0aaac15ef7792202e9932ea1c08d160eda5e3edfc997157759c9702518a99ec1"
 
 // validDoc is a hand-written signals 1.x document: an EPSS-only record, a listed KEV record with an
 // EPSS value, a stamped not-listed KEV record, and a GHSA-keyed record. Values are illustrative.

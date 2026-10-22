@@ -9,7 +9,9 @@
 // came from (as_of), and a KEV observation only with the catalog it was read from (catalog_version,
 // date_released); there is no file-wide "as of" date. This package keeps each stamp attached to its
 // value, and rejects a file that breaks that contract instead of loading part of it: a malformed
-// file is an error, never a silent degrade to fewer signals.
+// file is an error, never a silent degrade to fewer signals. Load also recomputes the file's
+// signals_digest from its payload and refuses a file whose stated digest does not match, so the
+// digest a report names is one this scan verified, not one the file merely asserts.
 //
 // It is ranking context only. Nothing that decides a verdict reads it (inv. 5).
 //
@@ -26,6 +28,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,8 +74,9 @@ type KEV struct {
 type Signals struct {
 	// Version is the file's signals_version (1.x).
 	Version string
-	// Digest is the file's signals_digest, as the producer wrote it. It pins the payload; it is not
-	// recomputed here (the Action verifies the release asset's sha256 before the scan).
+	// Digest is the file's signals_digest, which pins the payload. Load sets it only after
+	// recomputing it from the payload and finding the file's own value equal; Parse carries the
+	// file's value unchecked.
 	Digest string
 	// GeneratedAt is when the producer wrote the file. It is NOT the freshness of any value.
 	GeneratedAt string
@@ -88,28 +93,41 @@ var supportedVersion = regexp.MustCompile(`^1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$
 // digestPattern is the shape of a signals_digest.
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// Load reads and validates the signals file at path. Plain JSON and gzip-compressed JSON are both
-// accepted, told apart by content rather than by name.
+// Load reads and validates the signals file at path, and verifies its signals_digest: a file whose
+// stated digest is not the digest of its payload is refused, never loaded in part or in place of
+// another source. Plain JSON and gzip-compressed JSON are both accepted, told apart by content
+// rather than by name.
 func Load(path string) (*Signals, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("signals file: %w", err)
 	}
 	defer f.Close()
-	s, err := Parse(f)
+	s, records, err := parse(f)
+	if err == nil {
+		err = s.verifyDigest(records)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("signals file %s: %w", path, err)
 	}
 	return s, nil
 }
 
-// Parse reads and validates a signals document from r, which may be gzip-compressed.
+// Parse reads and validates a signals document from r, which may be gzip-compressed. It checks the
+// document's shape and stamps but not its signals_digest; Load verifies that.
 func Parse(r io.Reader) (*Signals, error) {
+	s, _, err := parse(r)
+	return s, err
+}
+
+// parse is Parse, also returning the document's records array as it appears in the document, which
+// Load hashes to verify signals_digest.
+func parse(r io.Reader) (*Signals, json.RawMessage, error) {
 	br := bufio.NewReader(r)
 	if magic, _ := br.Peek(2); bytes.Equal(magic, []byte{0x1f, 0x8b}) {
 		gz, err := gzip.NewReader(br)
 		if err != nil {
-			return nil, fmt.Errorf("open gzip stream: %w", err)
+			return nil, nil, fmt.Errorf("open gzip stream: %w", err)
 		}
 		defer gz.Close()
 		r = gz
@@ -130,20 +148,20 @@ func Parse(r io.Reader) (*Signals, error) {
 	// (unlike a stream decoder) refuses anything after the document — a damaged file errors.
 	body, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("read: %w", err)
+		return nil, nil, fmt.Errorf("read: %w", err)
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("not a signals document: %w", err)
+		return nil, nil, fmt.Errorf("not a signals document: %w", err)
 	}
 	var version string
 	if env.SignalsVersion == nil {
-		return nil, fmt.Errorf("signals_version is missing")
+		return nil, nil, fmt.Errorf("signals_version is missing")
 	}
 	if err := json.Unmarshal(env.SignalsVersion, &version); err != nil {
-		return nil, fmt.Errorf("signals_version is not a string: %w", err)
+		return nil, nil, fmt.Errorf("signals_version is not a string: %w", err)
 	}
 	if !supportedVersion.MatchString(version) {
-		return nil, fmt.Errorf("unsupported signals_version %q: this scanner reads signals_version 1.x", version)
+		return nil, nil, fmt.Errorf("unsupported signals_version %q: this scanner reads signals_version 1.x", version)
 	}
 
 	var (
@@ -153,26 +171,26 @@ func Parse(r io.Reader) (*Signals, error) {
 	)
 	if env.GeneratedAt != nil {
 		if err := json.Unmarshal(env.GeneratedAt, &generatedAt); err != nil {
-			return nil, fmt.Errorf("generated_at: %w", err)
+			return nil, nil, fmt.Errorf("generated_at: %w", err)
 		}
 	}
 	if err := json.Unmarshal(env.SignalsDigest, &digest); env.SignalsDigest == nil || err != nil || !digestPattern.MatchString(digest) {
-		return nil, fmt.Errorf("signals_digest %s is not a sha256 digest (sha256:<64 hex>)", orMissing(env.SignalsDigest))
+		return nil, nil, fmt.Errorf("signals_digest %s is not a sha256 digest (sha256:<64 hex>)", orMissing(env.SignalsDigest))
 	}
 	if env.RecordCount == nil {
-		return nil, fmt.Errorf("record_count is missing")
+		return nil, nil, fmt.Errorf("record_count is missing")
 	}
 	if err := json.Unmarshal(env.RecordCount, &count); err != nil {
-		return nil, fmt.Errorf("record_count: %w", err)
+		return nil, nil, fmt.Errorf("record_count: %w", err)
 	}
 	if env.Records == nil || bytes.Equal(env.Records, []byte("null")) {
-		return nil, fmt.Errorf("records is missing")
+		return nil, nil, fmt.Errorf("records is missing")
 	}
 	if err := json.Unmarshal(env.Records, &records); err != nil {
-		return nil, fmt.Errorf("records: %w", err)
+		return nil, nil, fmt.Errorf("records: %w", err)
 	}
 	if count != len(records) {
-		return nil, fmt.Errorf("record_count is %d but the file holds %d records", count, len(records))
+		return nil, nil, fmt.Errorf("record_count is %d but the file holds %d records", count, len(records))
 	}
 
 	s := &Signals{
@@ -186,10 +204,10 @@ func Parse(r io.Reader) (*Signals, error) {
 	seen := make(map[string]struct{}, len(records))
 	for i, rec := range records {
 		if err := s.add(rec, seen); err != nil {
-			return nil, fmt.Errorf("records[%d]: %w", i, err)
+			return nil, nil, fmt.Errorf("records[%d]: %w", i, err)
 		}
 	}
-	return s, nil
+	return s, env.Records, nil
 }
 
 type wireRecord struct {
@@ -263,6 +281,83 @@ func (s *Signals) add(rec wireRecord, seen map[string]struct{}) error {
 		s.kev[id] = v
 	}
 	return nil
+}
+
+// verifyDigest recomputes the signals_digest of the payload s was parsed from (records is its
+// records array as the document holds it) and refuses the document when that is not the digest it
+// states. Digest is then the recomputed value.
+func (s *Signals) verifyDigest(records json.RawMessage) error {
+	got, err := payloadDigest(s.Version, s.records, records)
+	if err != nil {
+		return err
+	}
+	if got != s.Digest {
+		return fmt.Errorf("signals_digest mismatch: the file states %s but its payload hashes to %s; refusing it", shortDigest(s.Digest), shortDigest(got))
+	}
+	s.Digest = got
+	return nil
+}
+
+// Digest recomputes the signals_digest of the signals document doc (plain JSON): the value Load
+// checks the document's own signals_digest against. A tool or test that writes a signals file stamps
+// it with this.
+func Digest(doc []byte) (string, error) {
+	var env struct {
+		SignalsVersion string          `json:"signals_version"`
+		RecordCount    int             `json:"record_count"`
+		Records        json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(doc, &env); err != nil {
+		return "", fmt.Errorf("not a signals document: %w", err)
+	}
+	return payloadDigest(env.SignalsVersion, env.RecordCount, env.Records)
+}
+
+// payloadDigest is the producer's signals_digest (ferralon-ai/intel, internal/signals/public
+// Build): "sha256:" and the lowercase hex SHA-256 of canonicalJSON over the object
+// {signals_version, record_count, records}. Neither generated_at nor signals_digest is covered.
+// records is decoded with UseNumber, so each number is hashed as the token the file carries, as the
+// producer hashes the corpus's own tokens; record_count is hashed as the integer, as the producer
+// hashes len(records). Key order and whitespace in the file do not matter; array order does.
+func payloadDigest(version string, count int, records json.RawMessage) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(records))
+	dec.UseNumber()
+	var recs any
+	if err := dec.Decode(&recs); err != nil {
+		return "", fmt.Errorf("records: %w", err)
+	}
+	canonical, err := canonicalJSON(map[string]any{
+		"signals_version": version,
+		"record_count":    count,
+		"records":         recs,
+	})
+	if err != nil {
+		return "", fmt.Errorf("canonicalize the signals payload: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// canonicalJSON is the producer's corpus.CanonicalJSON (ferralon-ai/intel internal/corpus), the
+// serialization signals_digest is taken over: encoding/json's Encoder, which writes map keys sorted,
+// with HTML escaping off, a two-space indent and the one trailing newline Encode adds.
+func canonicalJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// shortDigest is a digest's short form for a message: the algorithm and the first 12 hex digits.
+func shortDigest(d string) string {
+	if len(d) > len("sha256:")+12 {
+		return d[:len("sha256:")+12] + "…"
+	}
+	return d
 }
 
 // orMissing renders a raw JSON value for an error message, or "missing" when it is absent.

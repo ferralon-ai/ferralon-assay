@@ -14,8 +14,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ferralon-ai/ferralon-assay/internal/intel"
 )
 
+// signalsDigest is a placeholder signals_digest: writeSignalsFile writes a document carrying it with
+// the document's real digest in its place.
 const signalsDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
 
 // signalsDoc is a hand-written signals 1.x file whose newest EPSS value is from asOf.
@@ -27,12 +31,38 @@ func signalsDoc(asOf string) string {
 	     "kev": {"listed": true, "catalog_version": "2026.10.19", "date_released": "2026-10-19T18:00:00Z"}}]}`
 }
 
+// writeSignalsFile writes body to path, sealed (sealSignals), and returns path.
 func writeSignalsFile(t *testing.T, path string, body []byte) string {
 	t.Helper()
-	if err := os.WriteFile(path, body, 0o644); err != nil {
+	if err := os.WriteFile(path, sealSignals(t, body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// sealSignals replaces the signalsDigest placeholder in a plain-JSON signals document with the
+// document's own signals_digest, as the producer stamps one, so the document loads. A body without the
+// placeholder is returned as given.
+func sealSignals(t *testing.T, body []byte) []byte {
+	t.Helper()
+	if !bytes.Contains(body, []byte(signalsDigest)) {
+		return body
+	}
+	d, err := intel.Digest(body)
+	if err != nil {
+		t.Fatalf("seal a signals fixture: %v", err)
+	}
+	return bytes.ReplaceAll(body, []byte(signalsDigest), []byte(d))
+}
+
+// digestOf is the signals_digest a sealed doc carries.
+func digestOf(t *testing.T, doc string) string {
+	t.Helper()
+	d, err := intel.Digest([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // corpusTreeCopy copies the pipeline's fixture corpus tree into a temp dir, so a test can add (or
@@ -85,7 +115,7 @@ func TestAdvisorySignals_LoadsFromFlagEnvAndCorpus(t *testing.T) {
 	plain := writeSignalsFile(t, filepath.Join(dir, "signals.json"), []byte(signalsDoc("2026-10-19")))
 	var gz bytes.Buffer
 	zw := gzip.NewWriter(&gz)
-	zw.Write([]byte(signalsDoc("2026-10-19")))
+	zw.Write(sealSignals(t, []byte(signalsDoc("2026-10-19"))))
 	zw.Close()
 	packed := writeSignalsFile(t, filepath.Join(dir, "signals.json.gz"), gz.Bytes())
 
@@ -95,8 +125,8 @@ func TestAdvisorySignals_LoadsFromFlagEnvAndCorpus(t *testing.T) {
 		if err != nil || f.resolvedSignals == nil || f.signalsOrigin != plain {
 			t.Fatalf("resolveSignals = %v, signals %v from %q", err, f.resolvedSignals, f.signalsOrigin)
 		}
-		if got := f.intelProvenance(workSet{}).SignalsDigest; got != signalsDigest {
-			t.Errorf("intel provenance signals_digest = %q, want %q", got, signalsDigest)
+		if got, want := f.intelProvenance(workSet{}).SignalsDigest, digestOf(t, signalsDoc("2026-10-19")); got != want {
+			t.Errorf("intel provenance signals_digest = %q, want the verified %q", got, want)
 		}
 	})
 	t.Run("flag, gz", func(t *testing.T) {
@@ -165,18 +195,27 @@ func TestAdvisorySignals_NoSourceMeansNoPriority(t *testing.T) {
 	}
 }
 
-// TestAdvisorySignals_BrokenFileFailsTheRun: a named file that is missing, malformed or of another
-// signals_version fails the run — the corpus default included — and never degrades to no priority.
+// TestAdvisorySignals_BrokenFileFailsTheRun: a named file that is missing, malformed, of another
+// signals_version or whose signals_digest is not its payload's fails the run — the corpus default
+// included — and never degrades to no priority.
 func TestAdvisorySignals_BrokenFileFailsTheRun(t *testing.T) {
 	dir := t.TempDir()
+	// tampered is a sealed file with one EPSS score edited after sealing.
+	sealed := sealSignals(t, []byte(signalsDoc("2026-10-19")))
+	tampered := bytes.Replace(sealed, []byte(`"score": 0.91`), []byte(`"score": 0.92`), 1)
+	stated := digestOf(t, signalsDoc("2026-10-19"))
 	cases := map[string][]string{
 		"missing":         {"-advisory-signals", filepath.Join(dir, "absent.json")},
 		"malformed":       {"-advisory-signals", writeSignalsFile(t, filepath.Join(dir, "bad.json"), []byte(`{"signals_version": "1.0.0", "records": [`))},
 		"unknown version": {"-advisory-signals", writeSignalsFile(t, filepath.Join(dir, "v2.json"), []byte(strings.Replace(signalsDoc("2026-10-19"), `"1.0.0"`, `"2.0.0"`, 1)))},
+		"digest mismatch": {"-advisory-signals", writeSignalsFile(t, filepath.Join(dir, "tampered.json"), tampered)},
 	}
 	tree := corpusTreeCopy(t)
 	writeSignalsFile(t, filepath.Join(tree, "signals.json"), []byte(`not json`))
 	cases["corpus default malformed"] = []string{"-advisory-corpus", tree}
+	tamperedTree := corpusTreeCopy(t)
+	writeSignalsFile(t, filepath.Join(tamperedTree, "signals.json"), tampered)
+	cases["corpus default digest mismatch"] = []string{"-advisory-corpus", tamperedTree}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			clearSignalsEnv(t)
@@ -196,6 +235,15 @@ func TestAdvisorySignals_BrokenFileFailsTheRun(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+	for _, name := range []string{"digest mismatch", "corpus default digest mismatch"} {
+		t.Run(name+" names both digests", func(t *testing.T) {
+			clearSignalsEnv(t)
+			_, err := resolvedFor(t, cases[name]...)
+			if err == nil || !strings.Contains(err.Error(), "signals_digest mismatch: the file states "+stated[:len("sha256:")+12]+"… but its payload hashes to sha256:") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
 	t.Run("non-positive max age", func(t *testing.T) {
 		clearSignalsEnv(t)
 		if _, err := resolvedFor(t, "-advisory-signals-max-age", "0s"); err == nil {
@@ -216,7 +264,7 @@ func TestAdvisorySignals_StaleWarnsButLoads(t *testing.T) {
 		t.Fatalf("a stale file must still load: %v", err)
 	}
 	line := f.signalsSummary(now)
-	for _, want := range []string{path, signalsDigest, "newest EPSS as_of 2026-10-10 (10 day(s) old)", "WARNING: stale"} {
+	for _, want := range []string{path, digestOf(t, signalsDoc("2026-10-10")), "newest EPSS as_of 2026-10-10 (10 day(s) old)", "WARNING: stale"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary %q lacks %q", line, want)
 		}

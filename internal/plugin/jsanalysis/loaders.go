@@ -16,7 +16,7 @@ import (
 // import/destructure renames). Bindings may be declared after their first use, so the
 // names are collected before the module is scanned for uses.
 func loaderNames(clean []rune) (req, cr map[string]bool) {
-	req = map[string]bool{"require": true}
+	req = map[string]bool{"require": true, "__non_webpack_require__": true} // the latter is the runtime require under webpack
 	cr = map[string]bool{"createRequire": true}
 	n := len(clean)
 	for i := 0; i < n; {

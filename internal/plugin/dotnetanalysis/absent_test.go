@@ -174,6 +174,10 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"an SDK hook property", withItems(`<PropertyGroup><CodeAnalysisTargets>hooks/ca.targets</CodeAnalysisTargets></PropertyGroup>`)},
 		{"a framework search-path property", withItems(`<PropertyGroup><WinFXAssemblyDirectory>vendor</WinFXAssemblyDirectory></PropertyGroup>`)},
 		{"an unknown property", withItems(`<PropertyGroup><NewtonsoftVersion>13.0.1</NewtonsoftVersion></PropertyGroup>`)},
+		{"a response file beside the project", withFile("MSBuild.rsp", "-p:CodeAnalysisTargets=hooks/ca.targets\n")},
+		{"a toolset import climbing out", withItems(`<Import Project="$(MSBuildToolsPath)/../../../../hooks/h.targets" />`)},
+		{"a toolset import expanding a property", withItems(`<Import Project="$(MSBuildBinPath)/$(Hook)" />`)},
+		{"a toolset import with a wildcard", withItems(`<Import Project="$(MSBuildBinPath)/hooks/*.targets" />`)},
 		{"a project's PackageId", withItems(`<PropertyGroup><PackageId>Newtonsoft.Json</PackageId></PropertyGroup>`)},
 		{"a project's AssemblyName", withItems(`<PropertyGroup><AssemblyName>App.Web</AssemblyName></PropertyGroup>`)},
 	} {
@@ -216,6 +220,9 @@ func TestNotInBuild_WantSpecific(t *testing.T) {
 		{"an SDK pack", "Microsoft.NET.Sdk.Android.Manifest-8.0.100", nil},
 		{"framework reference assemblies", "Microsoft.NETFramework.ReferenceAssemblies.net48", nil},
 		{"a download restore records", "Contoso.Pack", withDownload("net8.0", "Contoso.Pack")},
+		{"a vendored front-end library", "jQuery", withFile("wwwroot/lib/jquery/dist/jquery.min.js", "")},
+		{"a vendored library named with a dash", "jQuery.Validation", withFile("wwwroot/lib/jquery-validation/dist/jquery.validate.js", "")},
+		{"a vendored file named with an underscore", "Bootstrap.Sass", withFile("assets/bootstrap_sass.scss", "")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := closedBuild(t, tc.edit)
@@ -242,6 +249,7 @@ func TestNotInBuild_ClosedControls(t *testing.T) {
 		{"content copied to output", withItems(`<ItemGroup><None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>`)},
 		{"conditioned content", withItems(`<ItemGroup><Content Include="wwwroot\site.css" Condition="'$(Configuration)' == 'Debug'" /></ItemGroup>`)},
 		{"inert properties", withItems(`<PropertyGroup><OutputType>Exe</OutputType><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>latest</LangVersion><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>`)},
+		{"restore toggles", withItems(`<PropertyGroup><RestoreLockedMode>false</RestoreLockedMode><CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled></PropertyGroup>`)},
 		{"project extensions", withItems(`<ProjectExtensions><VisualStudio><Ref Path="..\x.dll" /></VisualStudio></ProjectExtensions>`)},
 		{"solution naming the project", withFile("App.sln", "Project(\"{FAE04EC0}\") = \"App\", \"App.csproj\", \"{1}\"\nEndProject\n")},
 		{"build output assembly", withFile("bin/Debug/net8.0/App.dll", "MZ")},

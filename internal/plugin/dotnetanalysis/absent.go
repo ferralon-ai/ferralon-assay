@@ -199,17 +199,20 @@ func completeBuild(ev *evaluator, manifests []string, projects map[string]*proje
 			refs[r] = true
 		}
 	}
-	return treeClosed(ev.rootReal, ev.projects, refs)
+	return treeClosed(ev.rootReal, ev.projects, refs, want)
 }
 
 // treeClosed reports whether the tree holds nothing that brings code into the build outside
 // the projects' restore: no symlink, no assembly, native library or package file, no file named
 // exactly as a Reference (refs, normalized), which MSBuild resolves as a raw file name, no
-// script that references packages itself, no project of another kind, no Paket, and no
-// solution naming a project outside the tree's project files. Only the root's .git and each
+// script that references packages itself, no project of another kind, no Paket, no MSBuild
+// response file (MSBuild.rsp beside a project is read by dotnet build and -p: sets any
+// property), no solution naming a project outside the tree's project files, and no file or
+// directory whose name holds want (a vendored copy, such as a front-end library a NuGet
+// package also ships, with '-' and '_' read as '.'). Only the root's .git and each
 // project's own bin and obj directories, which hold its build output and restore output, are
 // not walked; no inert item may reach into them (inertOpaque).
-func treeClosed(rootReal string, projects, refs map[string]bool) bool {
+func treeClosed(rootReal string, projects, refs map[string]bool, want string) bool {
 	output := map[string]bool{filepath.Join(rootReal, ".git"): true}
 	for p := range projects {
 		output[filepath.Join(filepath.Dir(p), "bin")] = true
@@ -225,15 +228,21 @@ func treeClosed(rootReal string, projects, refs map[string]bool) bool {
 			closed = false
 			return filepath.SkipAll
 		}
-		if d.IsDir() {
-			if output[path] {
-				return filepath.SkipDir
-			}
-			return nil
+		if d.IsDir() && output[path] {
+			return filepath.SkipDir
 		}
 		name := strings.ToLower(d.Name())
+		if path != rootReal && strings.Contains(strings.NewReplacer("-", ".", "_", ".").Replace(name), want) {
+			closed = false
+			return filepath.SkipAll
+		}
+		if d.IsDir() {
+			return nil
+		}
 		ext := filepath.Ext(name)
 		switch {
+		case name == "msbuild.rsp":
+			closed = false
 		case name == "paket.dependencies", name == "paket.lock", name == "paket.references":
 			closed = false
 		case slices.Contains([]string{".dll", ".exe", ".winmd", ".nupkg", ".so", ".dylib", ".a", ".fsx", ".csx", ".cake", ".projitems", ".shproj"}, ext):

@@ -150,6 +150,18 @@ var computedProperties = map[string]func(project, thisFile string) string{
 // (MSB4004), so they are a run condition, not a project input.
 var toolsetPrefixes = []string{"$(msbuildtoolspath)", "$(msbuildbinpath)"}
 
+// toolsetEscape reports whether an Import skipped as a toolset file can name a file outside the
+// toolset: its remainder climbs out, expands, or matches a pattern.
+func toolsetEscape(project string) bool {
+	lower := strings.ToLower(project)
+	for _, prefix := range toolsetPrefixes {
+		if rest, ok := strings.CutPrefix(lower, prefix); ok {
+			return strings.Contains(rest, "..") || strings.ContainsAny(rest, "$@*?")
+		}
+	}
+	return false
+}
+
 // bundledSDKs is the exact set of SDKs the .NET SDK ships. They add no package references of
 // their own beyond the implicit ones restore records. Any other SDK, or any version on one
 // (which routes resolution through an SDK resolver), withholds.
@@ -504,7 +516,7 @@ func (e *evaluator) evaluate(real string) *projectEval {
 			}
 		}
 		for _, imp := range r.mf.imports {
-			if strings.Contains(imp.project, "%") {
+			if strings.Contains(imp.project, "%") || toolsetEscape(imp.project) {
 				pe.opaque = true
 			}
 		}

@@ -143,9 +143,10 @@ func lexJS(src string) ([]rune, []span) {
 	// subst holds, per open template substitution (innermost last), the depth of
 	// code braces opened inside it; the '}' that meets depth 0 resumes the template.
 	var subst []int
-	// parens records, per open '(', whether it opens an if/while/for/with condition;
-	// afterCond is whether the last ')' closed one (a regex may start a statement there).
-	var parens []bool
+	// parens records, per open '(', the if/while/for/with keyword whose condition it
+	// opens ("" for any other); afterCond is whether the last ')' closed one (a regex may
+	// start a statement there).
+	var parens []string
 	afterCond := false
 	noCommentClose := false
 	// templateEnd finds where template text starting at i stops: the index of the
@@ -256,7 +257,7 @@ func lexJS(src string) ([]rune, []span) {
 			subst = subst[:len(subst)-1]
 			out = append(out, ' ')
 			i = templateText(i+1, j)
-		case c == '/' && regexStarts(out, prev, afterCond):
+		case c == '/' && regexStarts(out, prev, afterCond, len(parens) > 0 && parens[len(parens)-1] == "for"):
 			j := i + 1
 			inClass, closed := false, false
 			for j < n && !isLineTerminator(r[j]) {
@@ -301,11 +302,14 @@ func lexJS(src string) ([]rune, []span) {
 				}
 			case '(':
 				w, member := lastWord(out)
-				parens = append(parens, !member && condKeywords[w])
+				if member || !condKeywords[w] {
+					w = ""
+				}
+				parens = append(parens, w)
 			case ')':
 				afterCond = false
 				if len(parens) > 0 {
-					afterCond = parens[len(parens)-1]
+					afterCond = parens[len(parens)-1] != ""
 					parens = parens[:len(parens)-1]
 				}
 			}
@@ -319,8 +323,10 @@ func lexJS(src string) ([]rune, []span) {
 // regexStarts reports whether a '/' at the end of out begins a regex literal rather
 // than a division, from the previous significant rune and, where that rune is ambiguous,
 // the token it ends: a keyword after which an expression starts, a postfix ++/--, or
-// the ')' of a statement condition (afterCond).
-func regexStarts(out []rune, prev rune, afterCond bool) bool {
+// the ')' of a statement condition (afterCond). of is a keyword only inside a for
+// head (inFor); elsewhere it is an identifier, and so are yield and await outside a
+// generator or async function, so none of the three is in regexKeywords.
+func regexStarts(out []rune, prev rune, afterCond, inFor bool) bool {
 	switch {
 	case prev == ')':
 		return afterCond
@@ -332,7 +338,7 @@ func regexStarts(out []rune, prev rune, afterCond bool) bool {
 		return !(k > 0 && out[k-1] == prev)
 	case prev > 0 && isIdentPart(prev):
 		w, member := lastWord(out)
-		return !member && regexKeywords[w]
+		return !member && (regexKeywords[w] || inFor && w == "of")
 	}
 	return regexAllowed(prev)
 }
@@ -351,8 +357,7 @@ func regexAllowed(prev rune) bool {
 // regexKeywords are the keywords after which an expression, and so a regex, may start.
 var regexKeywords = map[string]bool{
 	"return": true, "typeof": true, "case": true, "do": true, "else": true, "in": true,
-	"of": true, "new": true, "delete": true, "void": true, "throw": true,
-	"instanceof": true, "yield": true, "await": true,
+	"new": true, "delete": true, "void": true, "throw": true, "instanceof": true,
 }
 
 // condKeywords open a parenthesized statement condition, after whose ')' a statement,

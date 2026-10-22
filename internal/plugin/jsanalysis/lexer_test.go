@@ -43,6 +43,9 @@ func TestStripJS_HidesNoCode(t *testing.T) {
 		{"regex holding a quote and a backtick", "return /[^'\"]/.test(s); g()", []string{"g()"}, []string{"'", "\""}},
 		{"regex character class holding a slash", "x = /[/'\"]/; g()", []string{"g()"}, []string{"'"}},
 		{"regex after a ternary operator", "x = a ? /'/ : b; g()", []string{": b; g()"}, []string{"'"}},
+		{"division after a variable named of", "let of = 4; x = of / 2; g() // c", []string{"/ 2; g()"}, nil},
+		{"division after variables named yield and await", "x = yield / 2 + await / 3; g() // c", []string{"/ 2 + await / 3; g()"}, nil},
+		{"regex after of in a for head", "for (const m of /'/.exec(s)) g() // it's", []string{"g()"}, []string{"'", "it"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

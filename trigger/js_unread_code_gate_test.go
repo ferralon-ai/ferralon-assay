@@ -381,6 +381,9 @@ function parse(s) { return s.trim(); }
 function load(s) { return parse(s); }
 load(process.argv[2]);
 `, true},
+		{"division after a variable named of", `
+let of = 4; const x = of / 2; const m = require(process.argv[3]); const y = 1 / 3;
+` + tail, true},
 		{"regex holding a quote after a block", `
 function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
 function load(s) { return s.trim(); }

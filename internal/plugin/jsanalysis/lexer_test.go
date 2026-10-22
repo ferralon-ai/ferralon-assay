@@ -156,6 +156,7 @@ func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
 		{"name after a JSDoc tag", "a = <p>Don't @param me {eval(x)}</p>;\n", true, false, false},
 		{"eval asserted as a type after a JSX apostrophe", "a = <p>Don't {(eval as any)(x)}</p>;\n", true, false, false},
 		{"eval tested with in after a JSX apostrophe", "a = <p>Don't {eval in o}</p>;\n", true, false, false},
+		{"identifier-escaped eval after a JSX apostrophe", "a = <p>Don't {\\u0065val(x)}</p>;\n", true, false, false},
 		{"text nested within the layer bound is lexed", "x = 'a" + strings.Repeat(" \\'b", 7) + " \"require(y)\"\n", false, false, false},
 		{"text nested past the layer bound is read unlexed", "x = 'a" + strings.Repeat(" \\'b", 8) + " \"require(y)\"\n", false, true, false},
 		{"class extending Function in a comment", "/* class F extends Function {} */\n", true, false, false},

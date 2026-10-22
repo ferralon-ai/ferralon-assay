@@ -398,6 +398,31 @@ function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(proc
 function load(s) { return s.trim(); }
 load(process.argv[2]);
 `, true},
+		{"regex holding an escaped slash after yield", `
+function* g(s) { yield /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after await", `
+async function g(s) { await /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex class holding two slashes after yield", `
+function* g(s) { yield /[//]/; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after of in a for await head", `
+async function g(s) { for await (const x of /\//g.exec(s)) { require(process.argv[3]); } }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after a block", `
+function check(s) { if (s) { s = s.trim(); } /\//.test(s) && require(process.argv[3]); return s; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
 		// Template and comment text shaped like a loader call is read as code, since a
 		// misread opener can make real code look like text; these over-declare by design.
 		{"loader-call text in a template's literal part", `

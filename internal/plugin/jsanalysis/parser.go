@@ -110,7 +110,8 @@ type span struct{ from, to int }
 // blanked (between the delimiters), the two literals that span lines and so the two whose
 // misread opener can blank code far from it; of every string that ended at a line break
 // or end of file unclosed, which only a misread quote does; and of every line comment
-// opened by the "//" of "://", which is URL text far more often than a comment.
+// opened by the "//" of "://", "\//" or "[//", which is URL text or a regex body far more
+// often than a comment.
 func lexJS(src string) ([]rune, []span) {
 	r := []rune(src)
 	n := len(r)
@@ -185,9 +186,10 @@ func lexJS(src string) ([]rune, []span) {
 			for j < n && !isLineTerminator(r[j]) {
 				j++
 			}
-			if i > 0 && r[i-1] == ':' {
-				// "://" is URL text (http://x in JSX text), almost never code: what
-				// follows on the line may be code.
+			if i > 0 && (r[i-1] == ':' || r[i-1] == '\\' || r[i-1] == '[') {
+				// "://" is URL text (http://x in JSX text); "\//" and "[//" are almost
+				// always the body of a regex read as a division (/\//, /[//]/). Either
+				// way what follows on the line may be code.
 				hide(i+2, j)
 			}
 			blank(i, j)
@@ -419,7 +421,7 @@ func parseFile(module, src string) parseResult {
 }
 
 // hiddenLoads reads the text lexJS reports blanking (block-comment and template text,
-// unclosed strings, and line comments after "://") as if it were code, and returns the loads that reading finds. Lexing
+// unclosed strings, and line comments after "://", "\//" or "[//") as if it were code, and returns the loads that reading finds. Lexing
 // JS without a parser cannot always tell a literal's opener from text (a quote, backtick
 // or "/*" in JSX text, or in a regex read as a division), and a misread opener either
 // pairs with a later real closer or runs to the end of its line, so the text it blanks

@@ -372,6 +372,18 @@ const k = process.argv[4];
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"exported createRequire result", `
+export const r = module.constructor.createRequire(__filename);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"exported createRequire result declared with let", `
+export let r = module.constructor.createRequire(__filename);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };

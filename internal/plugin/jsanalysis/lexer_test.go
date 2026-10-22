@@ -101,3 +101,50 @@ function third(s) { return s; }
 		}
 	}
 }
+
+// TestStripJS_TagKeepsItsName checks that a tag written flush against its template reads as
+// its own name, so every recognizer keyed on that name still sees it.
+func TestStripJS_TagKeepsItsName(t *testing.T) {
+	for _, tc := range []struct{ src, tag string }{
+		{"require`./x`;", "require"},
+		{"Function`return 1`;", "Function"},
+		{"g.constructor`c`;", "constructor"},
+		{"x = _`a${b}c`;", "_"},
+	} {
+		clean := []rune(stripJS(tc.src))
+		i := strings.Index(tc.src, tc.tag+"`")
+		if w, _ := readWord(clean, i); w != tc.tag {
+			t.Errorf("%q: word at the tag = %q, want %q (clean %q)", tc.src, w, tc.tag, string(clean))
+		}
+	}
+}
+
+// TestHiddenLoads_DeclaresWhatBlankedTextLoads checks that a loader occurrence inside
+// block-comment or template text is declared without becoming a binding, and that JSDoc
+// types and prose naming a loader are not.
+func TestHiddenLoads_DeclaresWhatBlankedTextLoads(t *testing.T) {
+	for _, tc := range []struct {
+		name, src   string
+		ev, cr, dyn bool
+	}{
+		{"require between a stray backtick and a template", "a = <p>Run `npm i</p>;\nconst m = require(x);\nb = `ok`;\n", false, true, false},
+		{"eval between a stray opener and a comment", "a = <p>src/*</p>;\neval(x);\n/* c */\n", true, false, false},
+		{"import in a comment", "/* import(x) */\n", false, false, true},
+		{"loader alias declared in a comment", "/* const r = require; */\nr(x);\n", false, true, false},
+		{"text nested in blanked text", "a = <p>src/*</p>;\nc = <p>Run `npm i</p>;\nrequire(x);\nb = `ok`;\n/* c */\n", false, true, false},
+		{"JSDoc types", "/** @param {Function} f\n * @returns {import(x).T} */\n", false, false, false},
+		{"prose", "/* Function that this returns, eval it and require the rest; we require. */\n", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []rune(tc.src)
+			clean, hidden := lexJS(tc.src)
+			mb := hiddenLoads(clean, raw, hidden)
+			if mb.evaluated != tc.ev || mb.computedReq != tc.cr || mb.dynImport != tc.dyn {
+				t.Errorf("evaluated=%v computedReq=%v dynImport=%v; want %v %v %v", mb.evaluated, mb.computedReq, mb.dynImport, tc.ev, tc.cr, tc.dyn)
+			}
+			if len(mb.imports) != 0 {
+				t.Errorf("hidden text bound %v", mb.imports)
+			}
+		})
+	}
+}

@@ -233,8 +233,8 @@ func literalFunction(clean, src []rune, p int) (ok, open bool) {
 		}
 	}
 	body := []rune(lits[len(lits)-1])
-	// stripJS cannot always tell a regular expression from a division, nor end a
-	// comment at U+2028 or U+2029, so a body with a backtick or a slash is not read at all.
+	// stripJS cannot always tell a regular expression from a division, so a body with a
+	// backtick or a slash is not read at all.
 	if strings.ContainsAny(string(body), "`/") {
 		return false, false
 	}
@@ -486,7 +486,7 @@ func loaderTested(clean []rune, i, next int) bool {
 		}
 		p = skipSpace(clean, e)
 	}
-	if p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '.' || clean[p] == '_') {
+	if p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '.' || clean[p] == '_' || clean[p] == '`') {
 		return false // called, indexed or tagged: the chain is used, not tested
 	}
 	switch {

@@ -331,14 +331,50 @@ const m = require(process.argv[3]);
 const A = () => <p>Match files with /* globs</p>;
 const m = require(process.argv[3]);
 ` + tail, true},
-		{"require text in a template's literal part", `
+		{"a stray backtick in JSX text paired with a later template", `
+const A = () => <p>Run ^npm i</p>;
+const m = require(process.argv[3]);
+function B() { return ^ok^; }
+` + tail, true},
+		{"a stray comment opener in JSX text paired with a later comment", `
+function A() {
+  return <p>src/*</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  /* parse it */
+  return null;
+}
+` + tail, true},
+		{"require tagging a template flush against it", `
+const m = require^json5^;
+` + tail, true},
+		{"Function tagging a template flush against it", `
+const m = Function^return require(process.argv[3])^();
+` + tail, true},
+		// Template and comment text shaped like a loader call is read as code, since a
+		// misread opener can make real code look like text; these over-declare by design.
+		{"loader-call text in a template's literal part", `
 function load(s) { return ^require(process.argv[3]) ${s}^; }
 load(process.argv[2]);
-`, false},
-		{"multi-line template holding quotes and require text", `
+`, true},
+		{"loader-call text in a multi-line template holding quotes", `
 function load(s) { return ^it's line one
 require(process.argv[3]) "here"
 and ${s.trim()} done^; }
+load(process.argv[2]);
+`, true},
+		{"paired backticks in JSX text", `
+const A = () => <p>Run ^npm i^ first</p>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"JSDoc types and prose naming loaders", `
+/**
+ * Loads it. Function that this returns is safe to require.
+ * @param {Function|import('x').T} s the text
+ */
+function load(s) { return s.trim(); }
 load(process.argv[2]);
 `, false},
 		{"string continued across a line", `

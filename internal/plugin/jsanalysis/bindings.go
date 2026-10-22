@@ -1,6 +1,9 @@
 package jsanalysis
 
-import "strings"
+import (
+	"maps"
+	"strings"
+)
 
 // bindingKind classifies how a local name was bound to a module specifier.
 type bindingKind int
@@ -55,6 +58,16 @@ type loadSpec struct {
 	viaRequire bool
 }
 
+// addLoads records the loads o found (its literal specifiers and runtime-computed, native
+// and evaluated loads) without its bindings.
+func (mb *moduleBindings) addLoads(o moduleBindings) {
+	mb.specifiers = append(mb.specifiers, o.specifiers...)
+	mb.dynImport = mb.dynImport || o.dynImport
+	mb.computedReq = mb.computedReq || o.computedReq
+	mb.nativeLoad = mb.nativeLoad || o.nativeLoad
+	mb.evaluated = mb.evaluated || o.evaluated
+}
+
 func newModuleBindings() moduleBindings {
 	return moduleBindings{
 		imports:   bindingTable{},
@@ -73,6 +86,12 @@ func newModuleBindings() moduleBindings {
 // '_'. stripJS is length-preserving rune-for-rune, so clean[i] and src[i] name the same
 // source position. §3.8 evidence-only: a non-literal specifier yields NO binding.
 func extractModuleBindings(clean, src []rune) moduleBindings {
+	return extractBindings(clean, src, nil, nil)
+}
+
+// extractBindings is extractModuleBindings with loader names declared outside clean
+// (extraReq require aliases, extraCr createRequire aliases) added to those clean declares.
+func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) moduleBindings {
 	mb := newModuleBindings()
 	n := len(clean)
 	add := func(b binding) {
@@ -86,6 +105,8 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 		mb.imports[b.Local] = b
 	}
 	reqNames, crNames := loaderNames(clean)
+	maps.Copy(reqNames, extraReq)
+	maps.Copy(crNames, extraCr)
 	frames := newThisFrames(clean)
 	globals := newGlobalScope(clean, frames)
 	if globals.keyed {

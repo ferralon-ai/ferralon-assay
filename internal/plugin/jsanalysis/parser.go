@@ -80,8 +80,10 @@ type parseResult struct {
 // from JS/TS source, replacing each with equivalent whitespace so rune offsets and
 // newlines are preserved but no comment/string content can be mistaken for code. A
 // string or template literal's opening quote becomes a single '_' token (a valid
-// identifier char) so a literal-only argument still counts toward call-site arity. This
-// is the lexical pre-pass every scanner relies on.
+// identifier char) so a literal-only argument still counts toward call-site arity; a
+// template directly after an identifier character (a tagged template, tag`x`) becomes
+// '`' instead, so the tag's name does not absorb the marker. This is the lexical
+// pre-pass every scanner relies on.
 //
 // A template's ${...} substitutions are code and stay in place: only the literal text
 // around them is blanked, so a call, require, eval or import inside a substitution is
@@ -89,7 +91,7 @@ type parseResult struct {
 //
 // The lexer must never hide code it cannot classify, so every literal it opens has to
 // close where JS would close it:
-//   - a '/' or '"' string ends at an unescaped line break (JS forbids one there; a
+//   - a ' or " string ends at an unescaped line break (JS forbids one there; a
 //     backslash-newline continuation still continues), so a misread quote blanks at
 //     most the rest of its line;
 //   - a regex never spans a line: a '/' whose regex would not close on its line is a
@@ -97,9 +99,26 @@ type parseResult struct {
 //   - a block comment or template literal that would run to end of file without
 //     closing is not one: its opener is lexed as code instead.
 func stripJS(src string) string {
+	clean, _ := lexJS(src)
+	return string(clean)
+}
+
+// span is a rune range [from, to) of source text.
+type span struct{ from, to int }
+
+// lexJS is stripJS returning runes, plus the text of every block comment and template it
+// blanked (between the delimiters): the two literals that span lines, so the two whose
+// misread opener can blank code far from it.
+func lexJS(src string) ([]rune, []span) {
 	r := []rune(src)
 	n := len(r)
 	out := make([]rune, 0, n)
+	var hidden []span
+	hide := func(from, to int) {
+		if from < to {
+			hidden = append(hidden, span{from, to})
+		}
+	}
 	// prev is the last significant code rune; it decides whether a '/' starts a regex.
 	// litEnd stands for a just-closed string or template, after which '/' divides.
 	const litEnd = rune(-1)
@@ -144,6 +163,7 @@ func stripJS(src string) string {
 	// templateText blanks template text from i to its stop j (from templateEnd) and
 	// the closing '`' or "${" there, and returns where lexing resumes.
 	templateText := func(i, j int) int {
+		hide(i, j)
 		if r[j] == '`' {
 			blank(i, j+1)
 			prev = litEnd
@@ -159,7 +179,7 @@ func stripJS(src string) string {
 		switch {
 		case c == '/' && i+1 < n && r[i+1] == '/':
 			j := i
-			for j < n && r[j] != '\n' && r[j] != '\r' && r[j] != ' ' && r[j] != ' ' {
+			for j < n && !isLineTerminator(r[j]) {
 				j++
 			}
 			blank(i, j)
@@ -175,6 +195,7 @@ func stripJS(src string) string {
 				i++
 				continue
 			}
+			hide(i+2, j)
 			blank(i, j+2)
 			i = j + 2
 		case c == '"' || c == '\'':
@@ -196,7 +217,13 @@ func stripJS(src string) string {
 			prev = litEnd
 			i = j
 		case c == '`':
-			out = append(out, '_')
+			if len(out) > 0 && isIdentPart(out[len(out)-1]) {
+				// A tag written flush against its template (require`x`) keeps its name:
+				// a '_' here would read as part of it.
+				out = append(out, '`')
+			} else {
+				out = append(out, '_')
+			}
 			prev = litEnd
 			j := templateEnd(i + 1)
 			if j < 0 {
@@ -274,7 +301,7 @@ func stripJS(src string) string {
 			i++
 		}
 	}
-	return string(out)
+	return out, hidden
 }
 
 // regexStarts reports whether a '/' at the end of out begins a regex literal rather
@@ -350,16 +377,163 @@ var classKeywords = map[string]bool{"class": true}
 // function declarations, the call sites, and the ingress markers. It works on a
 // comment/string-stripped copy so no literal can be mistaken for code.
 func parseFile(module, src string) parseResult {
-	clean := stripJS(src)
+	r, hidden := lexJS(src)
+	raw := []rune(src)
 	res := parseResult{module: module}
-	r := []rune(clean)
 
 	res.decls = parseDecls(r)
 	res.calls, res.ingresses = parseCallsAndIngresses(r)
 	// Binding extraction scans the cleaned runes for structure and reads specifier
 	// literals from the position-identical raw source (stripJS is length-preserving).
-	res.bindings = extractModuleBindings(r, []rune(src))
+	res.bindings = extractModuleBindings(r, raw)
+	res.bindings.addLoads(hiddenLoads(r, raw, hidden))
 	return res
+}
+
+// hiddenLoads reads the block-comment and template text the lexer blanked as if it
+// were code, and returns the loads that reading finds. Lexing JS without a parser cannot
+// always tell a literal's opener from text (a backtick or "/*" in JSX text, or in a
+// regex read as a division), and a misread opener pairs with a later real closer, so the
+// text it blanks can be code. The text is read on its own, everything else blank, so a
+// real literal never changes how the code around it reads; the loader aliases the code
+// declares (clean) still apply to it. Text that the reading blanks in turn is read the
+// same way, one layer at a time. The reading adds no binding or edge, so text that really
+// was a comment or template can only over-declare; proseLoaders drops the two shapes
+// that cannot be code to keep that cost down.
+func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
+	loads := newModuleBindings()
+	req, cr := loaderNames(clean)
+	for layer := 0; len(hidden) > 0; layer++ {
+		view := make([]rune, len(raw))
+		for k, c := range raw {
+			if c == '\n' {
+				view[k] = '\n'
+			} else {
+				view[k] = ' '
+			}
+		}
+		var next []span
+		for _, h := range hidden {
+			if layer >= maxHiddenLayers {
+				// Past the bound, the text is read unlexed, which can only expose more.
+				copy(view[h.from:h.to], raw[h.from:h.to])
+				continue
+			}
+			sub, inner := lexJS(string(raw[h.from:h.to]))
+			if len(sub) != h.to-h.from {
+				copy(view[h.from:h.to], raw[h.from:h.to])
+				continue
+			}
+			copy(view[h.from:h.to], sub)
+			for _, in := range inner {
+				next = append(next, span{h.from + in.from, h.from + in.to})
+			}
+		}
+		proseLoaders(view)
+		loads.addLoads(extractBindings(view, raw, req, cr))
+		// A loader alias the text declares may be used in the code.
+		if hreq, hcr := loaderNames(view); len(hreq) > 1 || len(hcr) > 1 {
+			loads.addLoads(extractBindings(clean, raw, hreq, hcr))
+		}
+		hidden = next
+	}
+	return loads
+}
+
+// maxHiddenLayers bounds how deep hiddenLoads lexes text nested in blanked text.
+const maxHiddenLayers = 8
+
+// proseLoaders blanks, in a view of blanked text, the loader names that cannot be code
+// there: a JSDoc type expression on its tag's line (`@param {Function} f`,
+// `@type {import('x').T}`), since `@tag {` is a syntax error in JS and plain text in
+// JSX; and a name in proseNames followed on the same line by another name ("Function
+// that", "this returns") or ending a sentence ("to require."), since a name after a value
+// is a syntax error unless it is one of the operators in proseFollowers, and a member
+// access needs a member name.
+func proseLoaders(view []rune) {
+	n := len(view)
+	for i := 0; i < n; i++ {
+		c := view[i]
+		if c == '@' {
+			w, e := peekWord(view, i+1)
+			if !jsdocTypeTags[w] {
+				continue
+			}
+			p := skipBlank(view, e)
+			if p >= n || view[p] != '{' {
+				continue
+			}
+			depth := 0
+			for q := p; q < n && view[q] != '\n'; q++ {
+				if view[q] == '{' {
+					depth++
+				} else if view[q] == '}' {
+					if depth--; depth == 0 {
+						blankRunes(view, p, q+1)
+						i = q
+						break
+					}
+				}
+			}
+			continue
+		}
+		if !isIdentStart(c) || i > 0 && (isIdentPart(view[i-1]) || view[i-1] == '.') {
+			continue
+		}
+		w, e := readWord(view, i)
+		if proseNames[w] {
+			p := skipBlank(view, e)
+			f, _ := peekWord(view, p)
+			switch {
+			case p > e && f != "" && !proseFollowers[f]: // "this returns", "require the"
+				blankRunes(view, i, e)
+			case p == e && p < n && view[p] == '.' && !identAt(view, skipSpace(view, p+1)): // "to require."
+				blankRunes(view, i, e)
+			}
+		}
+		i = e - 1
+	}
+}
+
+// jsdocTypeTags are the JSDoc tags that take a {type} on their line.
+var jsdocTypeTags = map[string]bool{
+	"type": true, "param": true, "arg": true, "argument": true, "returns": true, "return": true,
+	"typedef": true, "property": true, "prop": true, "template": true, "throws": true,
+	"exception": true, "yields": true, "yield": true, "enum": true, "this": true,
+	"satisfies": true, "augments": true, "extends": true, "implements": true,
+	"callback": true, "member": true, "var": true, "const": true, "constant": true,
+}
+
+// proseNames are the loader and global-object names proseLoaders reads as prose. module
+// and import are not among them: `module Foo {` and `import x from` are code.
+var proseNames = map[string]bool{
+	"require": true, "createRequire": true, "eval": true, "Function": true, "this": true,
+	"globalThis": true, "global": true, "window": true, "self": true, "process": true,
+}
+
+// proseFollowers are the words that may follow a value on the same line in JS or TS.
+// A type predicate's `this is T` is a type, not a use of this, so "is" is not one.
+var proseFollowers = map[string]bool{
+	"in": true, "instanceof": true, "of": true, "as": true, "satisfies": true,
+	"implements": true, "extends": true,
+}
+
+func identAt(r []rune, i int) bool { return i < len(r) && isIdentStart(r[i]) }
+
+// skipBlank skips spaces and tabs, never a line break.
+func skipBlank(r []rune, i int) int {
+	for i < len(r) && (r[i] == ' ' || r[i] == '\t') {
+		i++
+	}
+	return i
+}
+
+func blankRunes(r []rune, from, to int) {
+	for k := from; k < to; k++ {
+		if r[k] != '\n' {
+			r[k] = ' '
+		}
+	}
 }
 
 // frame is one entry on the brace-block stack used by the declaration scanner. A

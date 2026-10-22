@@ -1030,6 +1030,47 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"vm through process.getBuiltinModule", `
+process.getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Module.prototype._compile through process.getBuiltinModule", `
+const M = process.getBuiltinModule('node:module');
+new M('x')._compile(process.argv[3], 'x.js');
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through globalThis.process.getBuiltinModule", `
+const vm = globalThis.process.getBuiltinModule('vm');
+vm.runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"vm through a destructured getBuiltinModule", `
+const { getBuiltinModule } = process;
+getBuiltinModule('vm').runInThisContext(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"ContextifyScript through process.binding", `
+const { ContextifyScript } = process.binding('contextify');
+new ContextifyScript(process.argv[3]).runInThisContext();
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"a linked binding through process._linkedBinding", `
+const b = process._linkedBinding(process.argv[4]);
+b.run(process.argv[3]);
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

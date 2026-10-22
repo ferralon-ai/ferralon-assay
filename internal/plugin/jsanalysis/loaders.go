@@ -1402,13 +1402,16 @@ func moduleKey(name string) bool {
 	return false
 }
 
-// processMember accepts every member of process but dlopen, which loads a native addon, and
-// mainModule, the main module object.
+// processMember accepts every member of process but those that hand back a loader or native
+// internals: dlopen, which loads a native addon; binding and _linkedBinding, which return
+// native bindings (contextify's ContextifyScript and compileFunction evaluate code);
+// mainModule, the main module object; and getBuiltinModule, which returns any core module,
+// vm and module included.
 func processMember(_ []rune, name string, _ int) (bool, bool) {
 	switch name {
-	case "dlopen":
+	case "dlopen", "binding", "_linkedBinding":
 		return false, true
-	case "mainModule":
+	case "mainModule", "getBuiltinModule":
 		return false, false
 	}
 	return true, false

@@ -898,7 +898,7 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		}
 		return
 	}
-	if specifierAt(src, a) == "constructor" && (destructuredLiteralKey(clean, a) || literalArgument(clean, a)) {
+	if specifierAt(src, a) == "constructor" && (destructuredLiteralKey(clean, a) || literalArgument(clean, a) || arrayElement(clean, a) && !denyListSearch(clean, a)) {
 		mb.evaluated = true
 		return
 	}
@@ -921,12 +921,58 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 		b := skipSpaceBack(clean, a-1)
 		op, ok := indexOperator(clean, b)
 		if !ok {
-			return // an array literal holding the string
+			return // a computed key, or a deny list (denyListSearch)
 		}
 		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1) {
 			mb.evaluated = true
 		}
 	}
+}
+
+// arrayElement reports whether the string literal at a is a whole element of an array
+// literal, which any code may index or iterate to take the key; a computed object or class
+// key (`{ ['k']: v }`, `['k']() {}`) is not one.
+func arrayElement(clean []rune, a int) bool {
+	b := skipSpaceBack(clean, a-1)
+	if b < 0 || clean[b] != '[' && clean[b] != ',' {
+		return false
+	}
+	if e := skipSpace(clean, a+1); e >= len(clean) || clean[e] != ']' && clean[e] != ',' {
+		return false
+	}
+	o := b
+	if clean[b] == ',' {
+		o = enclosingOpen(clean, b)
+	}
+	if o < 0 || clean[o] != '[' {
+		return false
+	}
+	if _, ok := indexOperator(clean, o); ok {
+		return false
+	}
+	q := skipSpace(clean, closeOf(clean, o)+1)
+	return !(q < len(clean) && (clean[q] == ':' || clean[q] == '('))
+}
+
+// denyListSearch reports whether the array literal holding the element at a is searched in
+// place by includes, indexOf or some, which compare the key against it rather than read it.
+func denyListSearch(clean []rune, a int) bool {
+	o := enclosingOpen(clean, a)
+	p := skipSpace(clean, closeOf(clean, o)+1)
+	switch {
+	case optionalDot(clean, p):
+		p = skipSpace(clean, p+2)
+	case p < len(clean) && clean[p] == '.':
+		p = skipSpace(clean, p+1)
+	default:
+		return false
+	}
+	w, e := peekWord(clean, p)
+	if w != "includes" && w != "indexOf" && w != "some" {
+		return false
+	}
+	q := skipSpace(clean, e)
+	return q < len(clean) && clean[q] == '('
 }
 
 // destructuredLiteralKey reports whether the string literal at a is a quoted key
@@ -1007,55 +1053,6 @@ func reflectiveKey(clean []rune, a int) bool {
 		return method == "getOwnPropertyDescriptor"
 	}
 	return false
-}
-
-// computedIndexPair reports whether clean holds two computed member reads in a row
-// (`o[a][b]`, `o?.[a]?.[b]`) whose value may be called or handed on (indexPairRead). With
-// both keys 'constructor' the pair reads the constructor of a constructor, which is
-// Function, and neither key is known.
-func computedIndexPair(clean, src []rune) bool {
-	n := len(clean)
-	for p := 0; p < n; p++ {
-		if clean[p] != '[' || !computedKey(clean, src, p) {
-			continue
-		}
-		op, ok := indexOperator(clean, p)
-		if !ok {
-			continue
-		}
-		e := closeBracket(clean, p)
-		if e >= n {
-			continue
-		}
-		q := skipSpace(clean, e+1)
-		if optionalDot(clean, q) {
-			q = skipSpace(clean, q+2)
-		}
-		if q >= n || clean[q] != '[' || !computedKey(clean, src, q) {
-			continue
-		}
-		if e2 := closeBracket(clean, q); e2 >= n || !indexPairRead(clean, receiverStart(clean, op), e2+1) {
-			return true
-		}
-	}
-	return false
-}
-
-// computedKey reports whether the bracket access opening at p has a key this lane does not
-// know: anything but one string literal with no interpolation or one run of digits.
-func computedKey(clean, src []rune, p int) bool {
-	a := skipSpace(clean, p+1)
-	if a >= len(clean) {
-		return false
-	}
-	if clean[a] == '_' && src[a] != '_' {
-		return !wholeKey(clean, src, a)
-	}
-	e := a
-	for e < len(clean) && clean[e] >= '0' && clean[e] <= '9' {
-		e++
-	}
-	return e == a || skipSpace(clean, e) >= len(clean) || clean[skipSpace(clean, e)] != ']'
 }
 
 // indexPairRead reports whether the value of a computed index pair, whose chain starts at

@@ -50,6 +50,11 @@ type moduleBindings struct {
 	computedReq   bool               // saw a runtime-computed CJS target `require(var)`
 	nativeLoad    bool               // saw process.dlopen, which loads a native addon this lane never reads
 	evaluated     bool               // saw eval or the Function constructor, which run code built at run time
+	// literalExempt: a computed read that may be a constructor key was accepted only because
+	// its receiver is a literal receiver, which holds only while no module rewrites a
+	// prototype (protoWrite).
+	literalExempt bool
+	protoWrite    bool // may set an object's prototype to a value the lane does not see
 }
 
 // loadSpec is one literal specifier a module loads. viaRequire marks a require() load,
@@ -68,6 +73,8 @@ func (mb *moduleBindings) addLoads(o moduleBindings) {
 	mb.computedReq = mb.computedReq || o.computedReq
 	mb.nativeLoad = mb.nativeLoad || o.nativeLoad
 	mb.evaluated = mb.evaluated || o.evaluated
+	mb.literalExempt = mb.literalExempt || o.literalExempt
+	mb.protoWrite = mb.protoWrite || o.protoWrite
 }
 
 func newModuleBindings() moduleBindings {
@@ -112,9 +119,11 @@ func extractBindings(clean, src []rune, extraReq, extraCr map[string]bool) modul
 	reqNames, crNames := ls.req, ls.cr
 	maps.Copy(reqNames, extraReq)
 	maps.Copy(crNames, extraCr)
-	if globals.keyed || computedIndexPair(clean, src) || identifierEscape(clean) {
+	evaluated, exempt, protoWrite := indexScan(clean, src, globals)
+	if globals.keyed || evaluated || identifierEscape(clean) {
 		mb.evaluated = true
 	}
+	mb.literalExempt, mb.protoWrite = exempt, protoWrite
 	i := 0
 	for i < n {
 		if !isIdentStart(clean[i]) {

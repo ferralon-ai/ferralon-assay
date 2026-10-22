@@ -46,6 +46,8 @@ type globalScope struct {
 	retThis  map[int]bool             // function block → whether it returns its own this (memo)
 	keyed    bool                     // a pattern takes a computed, Function, eval or require key from the global
 	patterns [][3]int                 // destructuring pattern bracket, source start and end
+	occ      map[string][]int         // name → positions it is written at, other than as a member (lazy)
+	keyMemo  map[keyMemoKey]keyMemoVal
 }
 
 // globalDecl is one declared name; start == end when it has no initialiser.
@@ -55,6 +57,11 @@ type globalDecl struct {
 	topVar     bool // a var at the top level
 	bare       bool // declared outside every block, so it runs before what follows it
 	weak       bool // declared in a block that may not be the scope it is read as; never shadows
+	at, scope  int  // the declared name's position and the scope that holds it
+	pat        int  // the bracket of the destructuring pattern declaring it, or -1
+	// kind is how the name is bound: 'p' a parameter, 'f' a function, 'i' an import, 'c',
+	// 'l' or 'v' a const, let or var, and 'a' an assignment.
+	kind byte
 }
 
 func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
@@ -70,13 +77,15 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 	// hoisted marks declarations made in a scope other than the block they appear in, out
 	// of a block that may be a method body: they hold values there but never shadow.
 	hoisted := false
+	var kind byte
+	pat := -1
 	add := func(scope, at int, name string, start, end int, topVar, bare bool) {
 		if gs.byScope[scope] == nil {
 			gs.byScope[scope] = map[string][]int{}
 		}
 		weak := scope >= 0 && tf.weak[scope] || hoisted
 		gs.byScope[scope][name] = append(gs.byScope[scope][name], len(gs.decls))
-		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak})
+		gs.decls = append(gs.decls, globalDecl{name, start, end, topVar, bare, weak, at, scope, pat, kind})
 		if !weak {
 			gs.sites[at] = true // a weak declaration's name may be a use, so it stays one
 		}
@@ -106,10 +115,12 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 				gs.patterns = append(gs.patterns, [3]int{at, start, end})
 			}
 			sites, _ := patternSites(clean, at)
+			pat = at
 			for _, s := range sites {
 				name, _ := readWord(clean, s)
 				withDefault(scope, s, name, start, end, topVar, bare)
 			}
+			pat = -1
 		case at+3 <= n && string(clean[at:at+3]) == "...":
 			if s := skipSpace(clean, at+3); s < n && isIdentStart(clean[s]) {
 				name, _ := readWord(clean, s)
@@ -142,6 +153,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			gs.flows = append(gs.flows, thisArg) // the function's own this, judged as one
 		}
 		j := 0
+		kind = 'p'
 		for _, at := range paramSites(clean, pr[0], pr[1]) {
 			if w, _ := peekWord(clean, at); w == "this" {
 				continue // a TypeScript this parameter takes no argument
@@ -182,6 +194,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			if name, _ := peekWord(clean, at); name != "" {
 				// Strict code scopes a function declared in a block to that block; read it so
 				// in sloppy code too, so it never shadows outside the block.
+				kind = 'f'
 				add(tf.block(i), at, name, 0, 0, false, false)
 				if k, ok := gs.kwFrame[i]; ok {
 					gs.fnDecl[len(gs.decls)-1] = k
@@ -191,6 +204,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			if ambient(clean, tf, tf.block(i)) {
 				break
 			}
+			kind = 'i'
 			for _, at := range importSites(clean, next) {
 				name, _ := readWord(clean, at)
 				add(tf.block(i), at, name, 0, 0, false, false) // inside a block, a namespace's alias
@@ -202,6 +216,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 			}
 			scope := block
 			header := -2
+			kind = word[0]
 			if word == "var" {
 				for scope >= 0 && !tf.scope[scope] && !namespaceBlock(clean, tf.opens[scope]) {
 					hoisted = hoisted || tf.weak[scope]
@@ -277,6 +292,7 @@ func newGlobalScope(clean []rune, tf *thisFrames) *globalScope {
 		for _, d := range gs.byScope[k][a.name] {
 			hoisted = hoisted && gs.decls[d].weak
 		}
+		kind = 'a'
 		add(k, a.at, a.name, a.start, a.end, false, false)
 		hoisted = false
 		gs.flows = append(gs.flows, [2]int{a.start, a.end})

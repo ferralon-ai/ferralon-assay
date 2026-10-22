@@ -569,6 +569,10 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 			cur.cd(words)
 		}
 		switch {
+		case seg.background || seg.end == "|" || seg.end == "||":
+			// A cd before & or | runs in a subshell, and what follows a cd before || runs only
+			// if it failed: the shell is not where the cd went.
+			mark.made, mark.lost, mark.chain = "", true, false
 		case seg.and && mark.open == 0:
 			// The cd may not have run, but what follows it in its && list runs only if it did.
 			mark.chain = true

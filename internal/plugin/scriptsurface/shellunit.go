@@ -21,7 +21,9 @@ type shellUnit struct {
 // shellUnits maps the source line, from 0, of each scalar a shell unit is read from to its
 // unit. Only a GitHub workflow and a GitLab pipeline or its include have units; any other
 // file, or one that does not decode, has none, and its lines are each read on their own.
-func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
+// included is true for a GitLab pipeline set with an include, where a job in one file may
+// extend or reference a job in another.
+func (v *Veto) shellUnits(path, src string, included bool) map[int]shellUnit {
 	slash := "/" + strings.ToLower(filepath.ToSlash(path))
 	github := strings.Contains(slash, "/.github/workflows/")
 	gitlab := gitlabCI[strings.ToLower(filepath.Base(path))]
@@ -71,9 +73,10 @@ func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
 				// written above its before_script is read as a shell of its own. So is each of
 				// a job another job may take them from (a hidden, extended, referenced or
 				// anchored one) or one that takes keys from another (by extends or a << merge),
-				// as what runs with its script may be another job's before_script.
+				// as what runs with its script may be another job's before_script. In a set of
+				// files joined by include, that is any job: another file may extend it.
 				name := top.Content[i].Value
-				alone := strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil
+				alone := included || strings.HasPrefix(name, ".") || reused[name] || anchored(job) || mapValue(job, "extends") != nil || mapValue(job, "<<") != nil
 				pre := 0
 				for j := 0; j+1 < len(job.Content); j += 2 {
 					switch job.Content[j].Value {
@@ -135,6 +138,30 @@ func (v *Veto) shellUnits(path, src string) map[int]shellUnit {
 		}
 	}
 	return units
+}
+
+// gitlabIncluded reports whether path is a GitLab pipeline and any of its units, the pipeline
+// and the files it includes, has an include: key.
+func gitlabIncluded(path string, units []unit) bool {
+	if !gitlabCI[strings.ToLower(filepath.Base(path))] {
+		return false
+	}
+	for _, u := range units {
+		dec := yaml.NewDecoder(bytes.NewReader([]byte(u.text)))
+		for {
+			var doc yaml.Node
+			if err := dec.Decode(&doc); err != nil {
+				if !errors.Is(err, io.EOF) {
+					return true
+				}
+				break
+			}
+			if len(doc.Content) == 1 && mapValue(doc.Content[0], "include") != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // reusedJobs returns the name of each GitLab job another job in the file extends or takes a

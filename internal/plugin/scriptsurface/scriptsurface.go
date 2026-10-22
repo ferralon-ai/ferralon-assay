@@ -414,6 +414,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		dirs, ok := v.workingDirs(units)
 		base, unknown = append(base, dirs...), !ok
 	}
+	included := yaml && gitlabIncluded(path, units)
 	for _, u := range units {
 		carry := &hostCursor{v: v, dirs: append([]string(nil), base...), unknown: unknown}
 		if u.bad {
@@ -439,7 +440,7 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 		var shells map[int]shellUnit
 		if yaml {
 			read = foldYAML(lines)
-			shells = v.shellUnits(path, u.text)
+			shells = v.shellUnits(path, u.text, included)
 		}
 		inUnit := map[int]*hostCursor{}
 		for _, rl := range read {

@@ -1,6 +1,7 @@
 package jsanalysis
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -115,7 +116,7 @@ func chainUsed(clean []rune, next int) bool {
 		}
 		p = skipSpace(clean, e)
 	}
-	return p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '_' || optionalDot(clean, p))
+	return p < n && (clean[p] == '(' || clean[p] == '[' || clean[p] == '_' || clean[p] == '`' || optionalDot(clean, p))
 }
 
 // objectKey reports whether the name between the token ending at b and the one starting at p
@@ -228,9 +229,10 @@ func memberDot(clean []rune, b int) int {
 
 // functionUse records a use of the Function constructor at i. Every reference to Function
 // counts, whatever follows it: a call, `new Function`, a member, an alias or a value handed
-// on may each reach the constructor by a path the walk does not follow. The one exception is
+// on may each reach the constructor by a path the walk does not follow. The exceptions are
 // a direct call whose source is all plain literals with no way to run other code
-// (literalFunction) and whose result is not called at once.
+// (literalFunction) and whose result is not called at once, and the two consumed shapes
+// functionConsumed accepts.
 func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 	b := skipSpaceBack(clean, i-1)
 	p := skipSpace(clean, next)
@@ -247,7 +249,287 @@ func (mb *moduleBindings) functionUse(clean, src []rune, i, next int) {
 			}
 		}
 	}
+	if functionConsumed(clean, src, b, p) {
+		return
+	}
 	mb.evaluated = true
+}
+
+// functionConsumed reports whether the bare Function whose previous token ends at b and
+// whose next token starts at p is used up where it stands, never reaching a value that can
+// run code. That holds for the right operand of instanceof, and for Function.prototype read
+// at once for one of its builtins: apply, call, bind or toString called on the spot (or
+// through .call, .apply or .bind), or [Symbol.hasInstance] when Symbol is the global's. The
+// hasInstance builtin may be stored, since reaching the constructor from it takes
+// .constructor, the residue every function value shares. Function as instanceof's operand,
+// and the hasInstance builtin unless it is called, must end the operand (endsOperand):
+// anything else after them may read from, call or tag them. A line break after instanceof
+// may end its statement (ASI after a member, a hashbang or an HTML-like comment line), so
+// Function on the next line starts a new one.
+func functionConsumed(clean, src []rune, b, p int) bool {
+	if w, _ := wordBefore(clean, b); w == "instanceof" {
+		return !lineBreakAfter(clean, src, b) && endsOperand(clean, p)
+	}
+	w, q := dotWord(clean, p)
+	if w != "prototype" {
+		return false
+	}
+	switch w, q := dotWord(clean, q); w {
+	case "apply", "call", "bind", "toString":
+		return calledHere(clean, q)
+	case "":
+		e, ok := hasInstanceKey(clean, q)
+		if !ok {
+			return false
+		}
+		q = skipSpace(clean, e+1)
+		return (endsOperand(clean, q) || calledHere(clean, q)) && symbolPlain(clean, src)
+	}
+	return false
+}
+
+// hasInstanceKey reports whether `[Symbol.hasInstance]` opens at p, and returns the index of
+// its closing bracket.
+func hasInstanceKey(clean []rune, p int) (int, bool) {
+	if p >= len(clean) || clean[p] != '[' {
+		return 0, false
+	}
+	w, e := peekWord(clean, skipSpace(clean, p+1))
+	if w != "Symbol" {
+		return 0, false
+	}
+	if w, e = dotWord(clean, skipSpace(clean, e)); w != "hasInstance" {
+		return 0, false
+	}
+	if e >= len(clean) || clean[e] != ']' {
+		return 0, false
+	}
+	return e, true
+}
+
+// dotWord reads `.name` at p, a static member and not an optional one, and returns the name
+// and the next token's start, or "" and p when no static member starts there.
+func dotWord(clean []rune, p int) (string, int) {
+	if p >= len(clean) || clean[p] != '.' {
+		return "", p
+	}
+	w, e := peekWord(clean, skipSpace(clean, p+1))
+	if w == "" {
+		return "", p
+	}
+	return w, skipSpace(clean, e)
+}
+
+// calledHere reports whether the builtin read just before p is called at once: `(` at p, or
+// `.call(`, `.apply(` or `.bind(`.
+func calledHere(clean []rune, p int) bool {
+	if p < len(clean) && clean[p] == '(' {
+		return true
+	}
+	switch w, q := dotWord(clean, p); w {
+	case "call", "apply", "bind":
+		return q < len(clean) && clean[q] == '('
+	}
+	return false
+}
+
+// lineBreakAfter reports whether a line terminator lies in the space that follows b. It
+// reads src, since a block comment blanked in clean keeps only its line feeds and any line
+// terminator inside one breaks the line.
+func lineBreakAfter(clean, src []rune, b int) bool {
+	for k := b + 1; k < len(clean) && unicode.IsSpace(clean[k]); k++ {
+		switch src[k] {
+		case '\n', '\r', '\u2028', '\u2029':
+			return true
+		}
+	}
+	return false
+}
+
+// endsOperand reports whether the token at p ends the operand before it without reading
+// from, calling or tagging it: the end of the source, a closing bracket, a separator, a
+// ternary's `?` or `:`, `&&`, `||`, `??`, or an equality test.
+func endsOperand(clean []rune, p int) bool {
+	n := len(clean)
+	if p >= n {
+		return true
+	}
+	var next rune
+	if p+1 < n {
+		next = clean[p+1]
+	}
+	switch clean[p] {
+	case ')', ']', '}', ';', ',', ':':
+		return true
+	case '?':
+		return next != '.'
+	case '&', '|':
+		return next == clean[p]
+	case '=', '!':
+		return next == '='
+	}
+	return false
+}
+
+// symbolPlain reports whether every Symbol in the module appears where it cannot be bound
+// or assigned, so that it is the global's. Each Symbol, bare or a member (whose object may
+// be the global), must be followed by `.` or `(` and not name a function, or a TS namespace
+// or module (dotted or not), or be read by a typeof on the same line. A with statement may
+// put any object's Symbol in scope; an escaped identifier may spell Symbol unseen; and an
+// HTML-like comment, which a script reads to the end of its line, may show the scan a
+// token the runtime skips. The scan reads clean, which stripJS lexes by approximation, so
+// the module also counts only when no escape in the source spells Symbol, clean shows
+// every Symbol of the source and every with a parenthesis or comment follows, and clean
+// hides nothing between a Symbol (or the head of its dotted name) and its neighbouring
+// tokens. U+FEFF, which is space to the runtime but not to the scan, is refused outright.
+// These checks hold where stripJS reads the module as the runtime does, the bound every
+// check in this lane shares: a module that stripJS misreads can hide a binding of Symbol
+// from them, as it can hide an eval.
+func symbolPlain(clean, src []rune) bool {
+	if text := string(clean); strings.ContainsRune(text, '\\') || strings.Contains(text, "<!--") || strings.Contains(text, "-->") {
+		return false
+	}
+	if strings.ContainsRune(string(src), '\uFEFF') || !wordsShown(clean, src) {
+		return false
+	}
+	for i := 0; i < len(clean); {
+		if !isIdentPart(clean[i]) {
+			i++
+			continue
+		}
+		w, next := readWord(clean, i)
+		switch {
+		case w == "Symbol":
+			if !symbolRead(clean, src, i, next) || blanked(clean, src, skipSpaceBack(clean, chainHead(clean, i)-1)+1, i) || blanked(clean, src, next, skipSpace(clean, next)) {
+				return false
+			}
+		case w == "with" && !memberName(clean, i):
+			if q := skipSpace(clean, next); q < len(clean) && clean[q] == '(' {
+				return false
+			}
+		}
+		i = next
+	}
+	return true
+}
+
+// symbolRead reports whether the Symbol word at i, ending before next, is only read.
+func symbolRead(clean, src []rune, i, next int) bool {
+	b := skipSpaceBack(clean, i-1)
+	prev, _ := wordBefore(clean, b)
+	if prev == "typeof" && !lineBreakAfter(clean, src, b) {
+		return true
+	}
+	if prev == "function" || b >= 0 && clean[b] == '*' {
+		return false
+	}
+	if head, _ := wordBefore(clean, skipSpaceBack(clean, chainHead(clean, i)-1)); head == "namespace" || head == "module" {
+		return false
+	}
+	q := skipSpace(clean, next)
+	return q < len(clean) && (clean[q] == '(' || clean[q] == '.')
+}
+
+// chainHead returns the start of the dotted name the word at i ends, so that the Symbol in
+// `namespace A.Symbol.x` is seen to be named by the namespace.
+func chainHead(clean []rune, i int) int {
+	for {
+		b := skipSpaceBack(clean, i-1)
+		if b < 1 || clean[b] != '.' || clean[b-1] == '.' {
+			return i
+		}
+		w, s := wordBefore(clean, skipSpaceBack(clean, b-1))
+		if w == "" {
+			return i
+		}
+		i = s
+	}
+}
+
+// wordsShown reports whether clean shows, as itself, every Symbol word of src and every
+// with that a parenthesis or a comment (`//`, `/*`, `<!--` or `-->`) follows. A Symbol
+// spelled with an escape is never shown, since clean either keeps the escape or blanks it.
+func wordsShown(clean, src []rune) bool {
+	for i := 0; i < len(src); {
+		if !isIdentPart(src[i]) && src[i] != '\\' {
+			i++
+			continue
+		}
+		w, next := readEscapedWord(src, i)
+		switch {
+		case w == "Symbol" && string(clean[i:next]) != w:
+			return false
+		case w == "with" && string(clean[i:next]) != w:
+			if q := skipSpace(src, next); q < len(src) && strings.ContainsRune("(/<-", src[q]) {
+				return false
+			}
+		}
+		i = next
+	}
+	return true
+}
+
+// readEscapedWord reads the identifier at i as the runtime names it, decoding its \uXXXX
+// and \u{...} escapes.
+func readEscapedWord(r []rune, i int) (string, int) {
+	var b strings.Builder
+	start := i
+	for i < len(r) {
+		if isIdentPart(r[i]) {
+			b.WriteRune(r[i])
+			i++
+			continue
+		}
+		c, next, ok := identEscape(r, i)
+		if !ok {
+			break
+		}
+		b.WriteRune(c)
+		i = next
+	}
+	if i == start {
+		return "", i + 1
+	}
+	return b.String(), i
+}
+
+// identEscape decodes the \uXXXX or \u{...} escape at i.
+func identEscape(r []rune, i int) (rune, int, bool) {
+	if i+1 >= len(r) || r[i] != '\\' || r[i+1] != 'u' {
+		return 0, i, false
+	}
+	j, end := i+2, i+6
+	if j < len(r) && r[j] == '{' {
+		j++
+		end = j
+		for end < len(r) && r[end] != '}' {
+			end++
+		}
+		if end == len(r) {
+			return 0, i, false
+		}
+	}
+	if end > len(r) {
+		return 0, i, false
+	}
+	v, err := strconv.ParseUint(string(r[j:end]), 16, 32)
+	if err != nil {
+		return 0, i, false
+	}
+	if r[i+2] == '{' {
+		end++
+	}
+	return rune(v), end, true
+}
+
+// blanked reports whether clean blanks to space any source that is not space in [from, to).
+func blanked(clean, src []rune, from, to int) bool {
+	for k := max(from, 0); k < to && k < len(clean); k++ {
+		if unicode.IsSpace(clean[k]) && !unicode.IsSpace(src[k]) {
+			return true
+		}
+	}
+	return false
 }
 
 // literalFunction reports whether the Function constructor call whose argument list opens
@@ -307,8 +589,8 @@ func literalFunction(clean, src []rune, p int) (ok, open bool) {
 		}
 	}
 	body := []rune(lits[len(lits)-1])
-	// stripJS cannot tell a regular expression from a division after a keyword, nor end a
-	// comment at U+2028 or U+2029, so a body with a backtick or a slash is not read at all.
+	// stripJS cannot always tell a regular expression from a division, so a body with a
+	// backtick or a slash is not read at all.
 	if strings.ContainsAny(string(body), "`/") {
 		return false, false
 	}
@@ -590,7 +872,7 @@ func operandEnds(clean []rune, p int) bool {
 		return true
 	}
 	switch clean[p] {
-	case '(', '[', '.', '_':
+	case '(', '[', '.', '_', '`':
 		return false
 	case '!':
 		return p+1 < n && clean[p+1] == '='

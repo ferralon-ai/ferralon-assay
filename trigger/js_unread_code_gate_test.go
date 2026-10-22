@@ -1858,3 +1858,314 @@ func gateStoreAt(t *testing.T, dir string) (*artifact.MemStore, int) {
 	}
 	return store, len(cg.Edges)
 }
+
+// TestUndeterminedReason_JSLexerHidesNoCode runs programs whose only unread load sits where the
+// lexer once blanked code: inside a template substitution, or after a quote, backtick or comment
+// opener the lexer misread as starting a literal. Each held program must declare; each control,
+// whose require text really is inside a literal, must stay refutable. Sources write a backtick
+// as '^'.
+func TestUndeterminedReason_JSLexerHidesNoCode(t *testing.T) {
+	const tail = "function load(s) { return m.parse(s); }\nload(process.argv[2]);\n"
+	cases := []struct {
+		name string
+		src  string
+		held bool
+	}{
+		{"require inside a template substitution", `
+function load(s) { return ^${require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"eval inside a template substitution", `
+function load(s) { return ^v=${eval(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"dynamic import inside a template substitution", `
+function load(s) { return ^${import(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"require inside a nested template", `
+function load(s) { return ^a${^b${require(process.argv[3]).parse(s)}^}^; }
+load(process.argv[2]);
+`, true},
+		{"require after a block and a brace in a string inside a substitution", `
+function load(s) { return ^${[s].map(x => { return '}' + x; }).join() + require(process.argv[3]).parse(s)}^; }
+load(process.argv[2]);
+`, true},
+		{"regex holding a quote after return", `
+function check(s) { return /'/.test(s); }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"regex holding a quote after a control condition", `
+function check(s) { if (s) /'/.test(s); return s; }
+const m = require(process.argv[3]); // it's dynamic
+` + tail, true},
+		{"division after a postfix increment", `
+let i = 0;
+const n = i++ / 2; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"JSX text with apostrophes", `
+function A() {
+  return <p>Don't panic</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  return <p>That's all</p>;
+}
+` + tail, true},
+		{"JSX closing tag followed by code on the same line", `
+const A = () => <p>hi</p>; const m = require(process.argv[3]); // c
+` + tail, true},
+		{"a backtick in JSX text that never closes", `
+const A = () => <p>Press ^ to search</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"a comment opener in JSX text that never closes", `
+const A = () => <p>Match files with /* globs</p>;
+const m = require(process.argv[3]);
+` + tail, true},
+		{"a stray backtick in JSX text paired with a later template", `
+const A = () => <p>Run ^npm i</p>;
+const m = require(process.argv[3]);
+function B() { return ^ok^; }
+` + tail, true},
+		{"a stray comment opener in JSX text paired with a later comment", `
+function A() {
+  return <p>src/*</p>;
+}
+const m = require(process.argv[3]);
+function B() {
+  /* parse it */
+  return null;
+}
+` + tail, true},
+		{"require tagging a template flush against it", `
+const m = require^json5^;
+` + tail, true},
+		{"Function tagging a template flush against it", `
+const m = Function^return require(process.argv[3])^();
+` + tail, true},
+		{"JSX apostrophe followed by a require on its line", `
+function A(name) { return <p>Don't forget {require(process.argv[3]).parse(name)}</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"JSX apostrophe followed by an eval on its own line", `
+function A(x) {
+  return (
+    <div>
+      <p>It's {eval(x)}</p>
+    </div>
+  );
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a stray backtick in JSX text inverting a template that holds an apostrophe", `
+const A = () => <p>Press ^ to search</p>;
+function B(x) { return ^it's ${require(x)}^; }
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
+		{"URL text in JSX followed by an import on its line", `
+const A = () => <p>See http://example.com {import(process.argv[3])}</p>;
+function parse(s) { return s.trim(); }
+function load(s) { return parse(s); }
+load(process.argv[2]);
+`, true},
+		{"division after a variable named of", `
+let of = 4; const x = of / 2; const m = require(process.argv[3]); const y = 1 / 3;
+` + tail, true},
+		{"regex holding a quote after export default", `
+export default /'/; const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spread", `
+function check(s) { return [.../'/.exec(s)]; } const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a spaced less-than", `
+function check(x, s) { return x < /'/.exec(s); } const m = require(process.argv[3]);
+` + tail, true},
+		{"regex holding a quote after a block", `
+function check(s) { if (s) { s = s.trim(); } /'/.test(s); const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after yield", `
+function* g(s) { yield /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after await", `
+async function g(s) { await /\//; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex class holding two slashes after yield", `
+function* g(s) { yield /[//]/; const m = require(process.argv[3]); return m; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after of in a for await head", `
+async function g(s) { for await (const x of /\//g.exec(s)) { require(process.argv[3]); } }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an escaped slash after a block", `
+function check(s) { if (s) { s = s.trim(); } /\//.test(s) && require(process.argv[3]); return s; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a quantifier after of in a for await head", `
+async function g(s) { for await (const x of /\d+/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a star after of in a for await head", `
+async function g(s) { for await (const x of /a*/g.exec(s)) { require(process.argv[3]); } // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex holding an equals sign after of in a for await head, then a division", `
+async function g(s) { for await (const x of /=/g.exec(s)) { require(process.argv[3]); } return 1 / 2; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"regex ending in a quantifier after yield", `
+function* g(s) { yield /\d+/; require(process.argv[3]) // c
+}
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a variable named of divided in a for head", `
+let of = 4;
+for (let i = 0; i < of / 2; i++) require(process.argv[3])(i / 2);
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"a spaced JSX closing tag", `
+const A = () => <div>x< /div>; const m = require(process.argv[3]); const B = () => <b>y</b>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around a require", `
+function A() { return <p>Don't {require(process.argv[3]).parse("x")} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around an eval", `
+function A(x) { return <p>It's {eval(x)}, isn't it</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"two JSX apostrophes around a dynamic import", `
+function A(x) { return <p>We're {import(x)} ready, aren't we</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		// Template, comment and regex text naming a loader is read as code, since a misread
+		// opener can make real code look like text; these over-declare by design.
+		{"loader-call text in a template's literal part", `
+function load(s) { return ^require(process.argv[3]) ${s}^; }
+load(process.argv[2]);
+`, true},
+		{"loader-call text in a multi-line template holding quotes", `
+function load(s) { return ^it's line one
+require(process.argv[3]) "here"
+and ${s.trim()} done^; }
+load(process.argv[2]);
+`, true},
+		{"loader names in a regex body", `
+function load(s) { return /require|import|eval/.test(s) ? s.trim() : s; }
+load(process.argv[2]);
+`, true},
+		{"paired backticks in JSX text", `
+const A = () => <p>Run ^npm i^ first</p>;
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"JSDoc types and prose naming loaders", `
+/**
+ * Loads it. Function that this returns is safe to require.
+ * @param {Function|import('x').T} s the text
+ */
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"string continued across a line", `
+function load(s) { return 'a \
+require(process.argv[3]) b' + s.trim(); }
+load(process.argv[2]);
+`, false},
+		{"constructor of a function tagged flush against a template", `
+const g = function () {};
+function run(s) { return g.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function reached as [].constructor.constructor, tagged flush", `
+function run(s) { return [].constructor.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"Function tagged flush against a template", `
+function run(s) { return Function^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"optional constructor of a function tagged flush", `
+const g = function () {};
+function run(s) { return g?.constructor^a${s}^; }
+run(process.argv[3]);
+` + tail, true},
+		{"new this.constructor tagged flush in a class method called on a function", `
+class A { m(s) { return new this.constructor^a${s}^; } }
+A.prototype.m.call(function () {}, process.argv[3]);
+` + tail, true},
+		{"typeof of require.bind tagged flush, then called", `
+function run(s) { return typeof require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"typeof of require.bind tagged flush, then called, after a JSX apostrophe", `
+function A(s) { return <p>Don't {typeof require.bind^x^(s)}</p>; }
+A(process.argv[3]);
+` + tail, true},
+		{"negated require.bind tagged flush, then called", `
+function run(s) { return !require.bind^x^(s); }
+run(process.argv[3]);
+` + tail, true},
+		{"a static import between a stray backtick in JSX text and a later template", `
+const A = () => <p>Run ^npm i</p>;
+import m from 'json5';
+function B() { return ^ok^; }
+` + tail, true},
+		{"two JSX apostrophes around process.dlopen", `
+function A(m, p) { return <p>Don't {process.dlopen(m, p)} won't</p>; }
+function load(s) { return s.trim(); }
+load(process.argv[2]);
+`, true},
+		{"strings holding braces", `
+const t = '{ "a": 1 }';
+const f = "{0} items";
+function load(s) { return s.trim() + t + f; }
+load(process.argv[2]);
+`, false},
+		{"regex holding a quote and a backtick after return", `
+function load(s) { return /[^'"]/.test(s) ? s.trim() : s; }
+load(process.argv[2]);
+`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, edges := gateStoreFromJS(t, strings.ReplaceAll(tc.src, "^", "`"), nil)
+			if edges == 0 {
+				t.Fatalf("program must have call edges")
+			}
+			reason, ok := undeterminedReason(store, "a1", json5Package)
+			if tc.held && (!ok || reason != report.ReasonAnalysisDidNotRun) {
+				t.Errorf("undeterminedReason = (%q, %v); want (%q, true): not_exploitable would stand", reason, ok, report.ReasonAnalysisDidNotRun)
+			}
+			if !tc.held && ok {
+				t.Errorf("undeterminedReason = (%q, true); want refutable", reason)
+			}
+		})
+	}
+}

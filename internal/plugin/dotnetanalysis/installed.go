@@ -729,18 +729,19 @@ func knownSDK(sdk string) bool {
 	return true
 }
 
+// restoreProperty reports whether a property (lowercased) is one of restoreProperties,
+// matched with any leading underscore removed.
+func restoreProperty(name string) bool {
+	name = strings.TrimLeft(name, "_")
+	return slices.ContainsFunc(restoreProperties, func(prefix string) bool { return strings.HasPrefix(name, prefix) })
+}
+
 // restoreSafe reports whether setting the lowercased property name to value (lowercased,
 // trimmed) leaves every version this reader reads in place.
 func restoreSafe(name string, conditioned bool, value string) bool {
 	name = strings.TrimLeft(name, "_")
-	restore := false
-	for _, prefix := range restoreProperties {
-		if strings.HasPrefix(name, prefix) {
-			restore = true
-		}
-	}
 	switch {
-	case !restore:
+	case !restoreProperty(name):
 		return true
 	case conditioned:
 		return false

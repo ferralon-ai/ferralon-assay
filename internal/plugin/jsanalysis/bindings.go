@@ -89,7 +89,7 @@ func extractModuleBindings(clean, src []rune) moduleBindings {
 	globals := newGlobalScope(clean, frames)
 	ls := newLoaderScope(clean, globals)
 	reqNames, crNames := ls.req, ls.cr
-	if globals.keyed {
+	if globals.keyed || computedIndexPair(clean, src) {
 		mb.evaluated = true
 	}
 	i := 0

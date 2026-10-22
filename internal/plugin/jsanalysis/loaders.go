@@ -592,19 +592,337 @@ func (mb *moduleBindings) keyedUse(clean, src []rune, a int) {
 	case "eval", "Function":
 		mb.evaluated = true
 	case "constructor":
-		if b := skipSpaceBack(clean, a-1); constructorReachesFunction(clean, src, b) {
+		b := skipSpaceBack(clean, a-1)
+		op, ok := indexOperator(clean, b)
+		if !ok {
+			return // an array literal holding the string
+		}
+		if constructorReachesFunction(clean, src, b) || !constructorRead(clean, op, skipSpace(clean, a+1)+1) {
 			mb.evaluated = true
 		}
 	}
 }
 
-// constructorUse records `.constructor` (or `?.constructor`) at i when it reaches a function
-// constructor (constructorReachesFunction).
+// computedIndexPair reports whether clean holds two computed member reads in a row
+// (`o[a][b]`, `o?.[a]?.[b]`) whose value may be called or handed on (indexPairRead). With
+// both keys 'constructor' the pair reads the constructor of a constructor, which is
+// Function, and neither key is known.
+func computedIndexPair(clean, src []rune) bool {
+	n := len(clean)
+	for p := 0; p < n; p++ {
+		if clean[p] != '[' || !computedKey(clean, src, p) {
+			continue
+		}
+		op, ok := indexOperator(clean, p)
+		if !ok {
+			continue
+		}
+		e := closeBracket(clean, p)
+		if e >= n {
+			continue
+		}
+		q := skipSpace(clean, e+1)
+		if optionalDot(clean, q) {
+			q = skipSpace(clean, q+2)
+		}
+		if q >= n || clean[q] != '[' || !computedKey(clean, src, q) {
+			continue
+		}
+		if e2 := closeBracket(clean, q); e2 >= n || !indexPairRead(clean, receiverStart(clean, op), e2+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// computedKey reports whether the bracket access opening at p has a key this lane does not
+// know: anything but one string literal with no interpolation or one run of digits.
+func computedKey(clean, src []rune, p int) bool {
+	a := skipSpace(clean, p+1)
+	if a >= len(clean) {
+		return false
+	}
+	if clean[a] == '_' && src[a] != '_' {
+		return !wholeKey(clean, src, a)
+	}
+	e := a
+	for e < len(clean) && clean[e] >= '0' && clean[e] <= '9' {
+		e++
+	}
+	return e == a || skipSpace(clean, e) >= len(clean) || clean[skipSpace(clean, e)] != ']'
+}
+
+// indexPairRead reports whether the value of a computed index pair, whose chain starts at
+// start and ends before next, is used only where it is neither called nor handed on: indexed
+// again (the next pair is judged in turn); read for a member other than constructor, call,
+// apply or bind; tested (objectTested); written by an assignment, an update or a compound
+// assignment that does not yield the old value; an operand of an arithmetic, bitwise or
+// comparison operator, typeof, void, delete, in or instanceof; a case label; or iterated by
+// for-of. None of these calls a function operand's body or yields it.
+func indexPairRead(clean []rune, start, next int) bool {
+	n := len(clean)
+	if start < 0 {
+		return false
+	}
+	p := skipSpace(clean, next)
+	if p < n && clean[p] == '[' || optionalDot(clean, p) && skipSpace(clean, p+2) < n && clean[skipSpace(clean, p+2)] == '[' {
+		return true
+	}
+	if ok, member := memberReadAt(clean, p); member {
+		return ok
+	}
+	if !operandEnds(clean, p) {
+		return false
+	}
+	prev := skipSpaceBack(clean, start-1)
+	if w, _ := wordBefore(clean, prev); w == "new" {
+		return false
+	}
+	if objectTested(clean, start, next, prev) {
+		return true
+	}
+	if assignTarget(clean, p) || safeOperatorAfter(clean, p) {
+		return true
+	}
+	if w, _ := wordBefore(clean, prev); w != "" {
+		switch w {
+		case "typeof", "void", "delete", "in", "instanceof", "of", "case":
+			return true
+		}
+		return false
+	}
+	return safeOperatorBefore(clean, prev)
+}
+
+// operatorRunes are the runes that make up JS punctuator operators.
+const operatorRunes = "+-*/%&|^~!<>=?"
+
+// safeOperatorAfter reports whether the operator at p, following a value, consumes that value
+// without calling or yielding it: an update, a compound assignment other than ||= and ??=, or
+// an arithmetic, bitwise or comparison operator, `in` or `instanceof`. A lone '<' may open a
+// TypeScript type argument list of a call (`f<T>(x)`), so it counts only when no '>' follows
+// before the expression ends.
+func safeOperatorAfter(clean []rune, p int) bool {
+	n := len(clean)
+	if w, _ := peekWord(clean, p); w == "in" || w == "instanceof" {
+		return true
+	}
+	e := p
+	for e < n && strings.ContainsRune(operatorRunes, clean[e]) {
+		e++
+	}
+	op := string(clean[p:e])
+	switch {
+	case op == "":
+		return false
+	case strings.HasPrefix(op, "==") || strings.HasPrefix(op, "!="):
+		return true
+	case strings.HasPrefix(op, "&&") || strings.HasPrefix(op, "||") || op[0] == '?' || op[0] == '!' || op[0] == '=' || op[0] == '~':
+		return false
+	case op == "<":
+		for k := p + 1; k < n; k++ {
+			switch clean[k] {
+			case '>':
+				return false
+			case ';', ')', ',', '\n', '}', ']':
+				return true
+			}
+		}
+		return true
+	}
+	return true // + - * / % ^ & | < > and their doubled, compound and update forms
+}
+
+// safeOperatorBefore reports whether the operator run ending at prev, preceding a value,
+// consumes it without calling or yielding it: a unary or binary arithmetic, bitwise or
+// comparison operator, an update, or a compound assignment other than ||=, &&= and ??=. A
+// lone '>' may end a TypeScript type assertion (`<T>x`) or an arrow, which yield the value.
+func safeOperatorBefore(clean []rune, prev int) bool {
+	if prev < 0 || !strings.ContainsRune(operatorRunes, clean[prev]) {
+		return false
+	}
+	s := prev
+	for s > 0 && strings.ContainsRune(operatorRunes, clean[s-1]) {
+		s--
+	}
+	op := string(clean[s : prev+1])
+	switch last := clean[prev]; last {
+	case '+', '-', '*', '/', '%', '^', '~', '!', '<':
+		return true
+	case '&', '|':
+		return !strings.HasSuffix(op, string([]rune{last, last}))
+	case '>':
+		return strings.HasSuffix(op, ">>")
+	case '=':
+		switch op {
+		case "=", "&&=", "||=", "??=":
+			return false
+		}
+		return len(op) > 1 && op[len(op)-2] != '>' || strings.HasSuffix(op, ">>=") || op == ">="
+	}
+	return false
+}
+
+// indexOperator reports whether the '[' at b indexes a value (`x[k]`, `f()[k]`, `x?.[k]`)
+// rather than opening an array literal, and where its member operator starts: b, or the '?'
+// of `?.[`.
+func indexOperator(clean []rune, b int) (int, bool) {
+	op := b
+	k := skipSpaceBack(clean, b-1)
+	if k >= 1 && clean[k] == '.' && clean[k-1] == '?' {
+		op = k - 1
+		k = skipSpaceBack(clean, k-2)
+	}
+	if k < 0 {
+		return 0, false
+	}
+	switch c := clean[k]; {
+	case c == ')' || c == ']' || c == '}':
+		return op, true
+	case isIdentPart(c):
+		return op, !operatorWord(clean, k)
+	}
+	return 0, false
+}
+
+// constructorUse records `.constructor` (or `?.constructor`) at i. The constructor of a
+// function is Function, which runs source built at run time, and this lane cannot tell a
+// function receiver from any other value, so the member is accepted only when it does not
+// reach a function constructor on any receiver (constructorReachesFunction) and its value is
+// neither called nor handed on (constructorRead).
 func (mb *moduleBindings) constructorUse(clean, src []rune, i int) {
 	b := skipSpaceBack(clean, i-1)
-	if b >= 0 && clean[b] == '.' && !(b >= 1 && clean[b-1] == '.') && constructorReachesFunction(clean, src, memberDot(clean, b)) {
+	if b < 0 || clean[b] != '.' || b >= 2 && clean[b-1] == '.' && clean[b-2] == '.' {
+		return // a constructor method, an object key, a local name or a spread
+	}
+	op := memberDot(clean, b)
+	if constructorReachesFunction(clean, src, op) || !constructorRead(clean, op, i+len("constructor")) {
 		mb.evaluated = true
 	}
+}
+
+// constructorRead reports whether the constructor member read by the operator starting at
+// op ('.', the '?' of `?.`, or the '[' of a literal key) and ending before next is used only
+// where its value is neither called nor handed on: read for a further member other than
+// constructor, call, apply or bind; tested (objectTested: !, ==, ===, !=, !==, the left
+// operand of && or of a ternary, an if or while condition); the right operand of instanceof;
+// the target of a plain assignment (`F.prototype.constructor = F`); or constructed as
+// `new this.constructor`, the receiver's own class. A call, an alias, an argument, a
+// computed index or any other use may reach Function.
+func constructorRead(clean []rune, op, next int) bool {
+	start := receiverStart(clean, op)
+	if start < 0 {
+		return false
+	}
+	p := skipSpace(clean, next)
+	if ok, member := memberReadAt(clean, p); member {
+		return ok
+	}
+	if assignTarget(clean, p) {
+		return true
+	}
+	prev := skipSpaceBack(clean, start-1)
+	if objectTested(clean, start, next, prev) {
+		return true
+	}
+	w, _ := wordBefore(clean, prev)
+	if w == "instanceof" && operandEnds(clean, p) {
+		return true
+	}
+	if w == "new" && clean[op] == '.' {
+		if recv, rs := wordBefore(clean, skipSpaceBack(clean, op-1)); recv == "this" && rs == start {
+			return true
+		}
+	}
+	return false
+}
+
+// memberReadAt reports whether a member is read with `.` or `?.` at p (member), and whether
+// that member is one through which a function's constructor is not reached or invoked:
+// any name but constructor, call, apply and bind.
+func memberReadAt(clean []rune, p int) (ok, member bool) {
+	n := len(clean)
+	q := -1
+	switch {
+	case optionalDot(clean, p):
+		q = p + 2
+	case p < n && clean[p] == '.' && !(p+1 < n && clean[p+1] == '.'):
+		q = p + 1
+	default:
+		return false, false
+	}
+	w, _ := peekWord(clean, skipSpace(clean, q))
+	switch w {
+	case "", "constructor", "call", "apply", "bind":
+		return false, true
+	}
+	return true, true
+}
+
+// assignTarget reports whether the token at p is a plain assignment, so the expression
+// before it is written, not read.
+func assignTarget(clean []rune, p int) bool {
+	n := len(clean)
+	return p < n && clean[p] == '=' && !(p+1 < n && (clean[p+1] == '=' || clean[p+1] == '>'))
+}
+
+// receiverStart returns where the member chain whose operator starts at op begins: the
+// first name, literal or group of a run of names, members, calls and indexes
+// (`a.b(c)[d].constructor`), or -1 when no receiver precedes op.
+func receiverStart(clean []rune, op int) int {
+	k := skipSpaceBack(clean, op-1)
+	for k >= 0 {
+		var s int
+		switch c := clean[k]; {
+		case c == ')' || c == ']':
+			s = openBefore(clean, k)
+			if s < 0 {
+				return -1
+			}
+		case isIdentPart(c):
+			_, s = wordBefore(clean, k)
+		default:
+			return -1
+		}
+		d := skipSpaceBack(clean, s-1)
+		switch {
+		case d >= 0 && clean[d] == '.' && !(d >= 1 && clean[d-1] == '.'):
+			k = skipSpaceBack(clean, memberDot(clean, d)-1)
+		case (clean[k] == ')' || clean[k] == ']') && d >= 0 && (clean[d] == ')' || clean[d] == ']' || isIdentPart(clean[d]) && !operatorWord(clean, d)):
+			k = d // a call or an index applied to what precedes it
+		default:
+			return s
+		}
+	}
+	return -1
+}
+
+// operatorWord reports whether the identifier ending at k is a keyword after which a
+// bracket opens a new expression rather than calling or indexing a value.
+func operatorWord(clean []rune, k int) bool {
+	switch w, _ := wordBefore(clean, k); w {
+	case "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+		"case", "do", "else", "yield", "await":
+		return true
+	}
+	return false
+}
+
+// openBefore returns the index of the bracket that opens the group closing at close, or -1.
+func openBefore(clean []rune, close int) int {
+	depth := 0
+	for k := close; k >= 0; k-- {
+		switch clean[k] {
+		case ')', ']', '}':
+			depth++
+		case '(', '[', '{':
+			depth--
+			if depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
 }
 
 // constructorReachesFunction reports whether a constructor member, accessed by the operator

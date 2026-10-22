@@ -287,6 +287,91 @@ load(process.argv[2]);
 			"packages/m/esm.js":       "export function parse(s) { return s; }\n",
 			"packages/m/cjs.js":       "function parse(s) { return s; }\nmodule.exports = { parse };\n",
 		}},
+		{"Function called as a named function's constructor", `
+const j = { parse: String };
+function g() {}
+g.constructor(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function aliased from a named function's constructor", `
+const j = { parse: String };
+function g() {}
+const F = g.constructor;
+F(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as the constructor of a member function", `
+const j = { parse: String };
+[].map.constructor(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as a constructor reached by a literal key and called", `
+const j = { parse: String };
+function g() {}
+g['constructor'](process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as a constructor called through .call", `
+const j = { parse: String };
+function g() {}
+g.constructor.call(null, process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as an optionally read constructor, called", `
+const j = { parse: String };
+function g() {}
+g?.constructor(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as a constructor passed as a value", `
+const j = { parse: String };
+function g() {}
+Reflect.construct(g.constructor, [process.argv[3]])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function as a constructor constructed off a non-this receiver", `
+const j = { parse: String };
+function g() {}
+new g.constructor(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by two computed keys and called", `
+const j = { parse: String };
+const k = process.argv[4];
+({})[k][k](process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by two optional computed keys and called", `
+const j = { parse: String };
+const k = process.argv[4];
+({})?.[k]?.[k](process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by two computed keys and aliased", `
+const j = { parse: String };
+const k = process.argv[4];
+const F = ({})[k][k];
+F(process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
+		{"Function reached by a computed key after a constructor member", `
+const j = { parse: String };
+const k = process.argv[4];
+({}).constructor[k](process.argv[3])();
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };
@@ -342,7 +427,8 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require as an object key", "const cfg = { require: ['./plugins'] };\nconst j = require('./plugins');", nil},
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
-		{"constructor of a value and of this", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nconst C = b.constructor;\nconst P = Object.getPrototypeOf(b).constructor;\nconst j = require('./plugins');", nil},
+		{"constructor of a value and of this read, tested and assigned", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nfunction Sub() {}\nSub.prototype.constructor = Sub;\nconst same = b.constructor === Box && b instanceof b.constructor && b.constructor.name !== '' && Object.getPrototypeOf(b).constructor !== Object;\nconst j = require('./plugins');", nil},
+		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
 		}},

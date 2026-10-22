@@ -34,6 +34,8 @@ type Engine struct {
 	methodsHold bool                         // platformMethods lists the runtime's methods
 	hidden      []string                     // hiddenSubtypes cache, sorted
 	hiddenDone  bool                         // hidden is computed
+	linked      bool                         // every class the run's classpath defines is loaded (SetLinked)
+	unlinked    map[string]bool              // unlinkable cache
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
@@ -148,6 +150,7 @@ func NewEngineOn(classes []classfile.Class, cp Classpath) *Engine {
 		subtypes:    map[string][]string{},
 		overridable: map[string]bool{},
 		loadable:    map[string]bool{},
+		unlinked:    map[string]bool{},
 		lambdas:     map[string][]lambdaSite{},
 		held:        map[string]heldTypes{},
 		defined:     map[string]bool{},
@@ -1312,14 +1315,15 @@ var deniedLoadable = map[string]bool{
 // platformLoadable reports whether the JDK could instantiate loaded class c by name
 // from a provider lookup, or hold one and call its methods: c reaches a platform
 // supertype outside deniedLoadable, or an unopened dependency supertype (whose own
-// supertypes are unknown).
+// supertypes are unknown). On a linked classpath a class that cannot link is neither
+// (SetLinked).
 func (e *Engine) platformLoadable(c string) bool {
 	if v, ok := e.loadable[c]; ok {
 		return v
 	}
 	e.loadable[c] = false // cycle guard
 	found := false
-	if cls := e.classes[c]; cls != nil {
+	if cls := e.classes[c]; cls != nil && !(e.linked && e.unlinkable(c)) {
 		for _, s := range append([]string{cls.Super}, cls.Interfaces...) {
 			if s != "" && e.loadableType(s) {
 				found = true
@@ -1329,6 +1333,51 @@ func (e *Engine) platformLoadable(c string) bool {
 	}
 	e.loadable[c] = found
 	return found
+}
+
+// SetLinked declares whether the loaded classes are every class the run's classpath
+// defines: the build lists every dependency it installs, each one's JAR was read, the
+// class output covers the sources, and the program is launched on that classpath. A
+// loaded class with a supertype that is neither loaded nor the JDK's then cannot link,
+// since loading a class resolves its superclass and each direct superinterface (JVMS
+// 5.3.5), so the JDK can neither instantiate it nor hold one (platformLoadable). This
+// trusts the launch the way the build graph does: an agent that appends to the system
+// classpath at run time, or a JDK vendor's own additions, could supply the supertype.
+// An unlisted classpath (Classpath.Unlisted) is never linked.
+func (e *Engine) SetLinked(linked bool) {
+	linked = linked && !e.unlisted
+	if linked != e.linked {
+		e.linked = linked
+		e.loadable = map[string]bool{}
+	}
+}
+
+// unlinkable reports whether loaded class c cannot link on a linked classpath: some
+// supertype is neither loaded nor a type the JDK may define, or is a loaded class that
+// cannot link. A type the JDK may define is one in a package some JDK release occupies
+// (BootOnly at an unrecorded release), even where a classpath entry also defines that
+// package; every platform package is one.
+func (e *Engine) unlinkable(c string) bool {
+	if v, ok := e.unlinked[c]; ok {
+		return v
+	}
+	e.unlinked[c] = false // cycle guard
+	out := false
+	for _, s := range append([]string{e.classes[c].Super}, e.classes[c].Interfaces...) {
+		if s == "" {
+			continue
+		}
+		if e.classes[s] != nil {
+			out = e.unlinkable(s)
+		} else {
+			out = !BootOnly(s, 0)
+		}
+		if out {
+			break
+		}
+	}
+	e.unlinked[c] = out
+	return out
 }
 
 // loadableType reports whether type t can be the static type under which the JDK

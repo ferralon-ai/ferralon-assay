@@ -66,6 +66,20 @@ func listsEveryInstall(g *buildgraph.Graph, buildDir string) bool {
 	return err == nil && len(archives) == 0
 }
 
+// runtimeListed reports whether g lists every JAR its build puts on the runtime classpath:
+// g lists every install (listsEveryInstall), and no node is one the build resolves on no
+// classpath (buildgraph.ScopeOther), which a distribution can still copy in.
+func runtimeListed(g *buildgraph.Graph, buildDir string) bool {
+	for _, m := range g.Modules {
+		for _, n := range m.Nodes {
+			if n.Scope == buildgraph.ScopeOther {
+				return false
+			}
+		}
+	}
+	return listsEveryInstall(g, buildDir)
+}
+
 // unlisted reports whether any module of g installs something g does not list.
 func unlisted(g *buildgraph.Graph) bool {
 	for _, m := range g.Modules {

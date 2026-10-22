@@ -71,6 +71,12 @@ type reachClosure struct {
 	// releaseReasons are the run-wide reasons loading the JARs incurred, kept with the cached
 	// engine.
 	releaseReasons []string
+	// Listed is set when the loaded classes are every class the build's runtime classpath
+	// defines: the graph lists the runtime classpath (runtimeListed), every entry was listed,
+	// and every class each JAR holds was read. The launch is the caller's to check.
+	Listed bool
+	// unread is set when a JAR could not be opened or holds a class that failed to parse.
+	unread bool
 }
 
 // gav is one loaded dependency JAR: a coordinate at a version, and its classifier when the
@@ -133,6 +139,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	var cp depreach.Classpath
 	cp.Merge(fpClasspath)
 	fp := sha256.New()
+	whole := g != nil && runtimeListed(g, buildDir)
 	if g == nil {
 		cp.Unlisted = true
 		reasons = append([]string{PartialReasonBuildGraphAbsent}, reasons...)
@@ -175,6 +182,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 		out := *hit.rc
 		out.Scoped = append(rc.Scoped, hit.rc.Scoped...)
 		out.Reasons = append(reasons, hit.rc.releaseReasons...)
+		out.Listed = whole && !cp.Unlisted && !hit.rc.unread
 		return &out, nil
 	}
 
@@ -190,10 +198,12 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	for ji, j := range jars {
 		jr, err := loadJarCached(j.jar)
 		if err != nil {
+			built.unread = true
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+": "+err.Error()))
 			continue
 		}
 		if len(jr.Failed) > 0 {
+			built.unread = true
 			built.Scoped = append(built.Scoped, scoped(plugin.PartialReasonToolFailure, j.gav.coordinate, j.gav.String()+"!"+strings.SplitN(jr.Failed[0], ": ", 2)[0]))
 		}
 		built.Loaded[j.gav.String()] = j.jar.path
@@ -228,6 +238,7 @@ func loadReachClosure(buildDir string, firstParty []classfile.Class, fpClasspath
 	out := *built
 	out.Scoped = append(rc.Scoped, built.Scoped...)
 	out.Reasons = append(reasons, built.releaseReasons...)
+	out.Listed = whole && !cp.Unlisted && !built.unread
 	return &out, nil
 }
 

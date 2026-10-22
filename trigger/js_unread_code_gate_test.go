@@ -269,6 +269,24 @@ const j = F('return require("json5")')();
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"imports entry whose worker branch is another in-tree module", `
+const j = require('#j');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./other.js"}},"dependencies":{"json5":"2.2.1"}}`,
+			"other.js":     "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+		}},
+		{"workspace member whose require branch is another in-tree module", `
+const j = require('m');
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, map[string]string{
+			"package.json":            `{"name":"fixture","workspaces":["packages/*"],"dependencies":{"json5":"2.2.1"}}`,
+			"packages/m/package.json": `{"name":"m","exports":{".":{"import":"./esm.js","require":"./cjs.js"}}}`,
+			"packages/m/esm.js":       "export function parse(s) { return s; }\n",
+			"packages/m/cjs.js":       "function parse(s) { return s; }\nmodule.exports = { parse };\n",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -313,6 +331,9 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"require.main tested against module", "const j = require('./plugins');\nif (require.main === module) load('x');", nil},
 		{"module and process data members", "const j = require('./plugins');\nmodule.exports = { id: module.id };\nconst { env } = process;\nif (module.hot) module.hot.accept();", nil},
 		{"constructor of a value and of this", "class Box { constructor(v) { this.v = v; } clone() { return new this.constructor(this.v); } }\nconst b = new Box(1);\nconst C = b.constructor;\nconst P = Object.getPrototypeOf(b).constructor;\nconst j = require('./plugins');", nil},
+		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
+			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
+		}},
 		{"imports entry whose types branch is a declaration file", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"types":"./plugins/index.d.ts","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,
 		}},

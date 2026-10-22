@@ -255,3 +255,60 @@ func TestValueReceiverMethods_TakeNoApplicationObject(t *testing.T) {
 		}
 	}
 }
+
+// A framework holds application callbacks it found reflectively (a Spring @Bean
+// CommandLineRunner) and calls them from its own code. Each kind the platform model
+// narrows (a lambda, a string concatenation, a value receiver) must still reach the
+// callback through the framework's call, or leave the run undetermined.
+func TestReach_FrameworkHeldCallbacks(t *testing.T) {
+	const (
+		runner  = "com/fw/CommandLineRunner"
+		fwApp   = "com/fw/SpringApplication"
+		runDesc = "([Ljava/lang/String;)V"
+		bootDsc = "(Ljava/lang/Class;)V"
+		beanIf  = "com/fw/Bean"
+	)
+	main := mref(appClass, "main", runDesc)
+	getBean := edge(classfile.EdgeVirtual, "java/lang/reflect/Method", "invoke", "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;")
+	// App is `static void main(String[] a) { SpringApplication.run(App.class); }
+	// @Bean static CommandLineRunner runner() { return args -> sink(); }`.
+	appWith := func(site classfile.Edge) classfile.Class {
+		return class(appClass, "java/lang/Object", nil,
+			staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
+			staticMeth(appClass, "runner", "()L"+runner+";", site),
+			staticMeth(appClass, "lambda$runner$0", runDesc, sinkCall()...))
+	}
+	runnerSite := indy("run", "()L"+runner+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: runDesc}, handleArg(classfile.RefInvokeStatic, appClass, "lambda$runner$0", runDesc), classfile.BootstrapArg{MethodType: runDesc}))
+	runnerIf := iface(runner, abstractMeth(runner, "run", runDesc))
+	framework := func(calls ...classfile.Edge) classfile.Class {
+		return class(fwApp, "java/lang/Object", nil, staticMeth(fwApp, "run", bootDsc, calls...))
+	}
+	// AppBean implements the framework's Bean with a toString reaching the sink.
+	appBean := class("com/acme/AppBean", "java/lang/Object", []string{beanIf},
+		meth("com/acme/AppBean", "<init>", "()V"),
+		meth("com/acme/AppBean", "toString", toStr, sinkCall()...))
+	runReachCases(t, []reachCase{
+		{name: "lambda the framework calls through its interface", ingress: main, want: ReachableCandidate, classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, framework(getBean, edge(classfile.EdgeInterface, runner, "run", runDesc))}},
+		{name: "lambda held by an unopened framework", ingress: main, want: Undetermined, why: "unloaded_dependency:", classes: []classfile.Class{
+			appWith(runnerSite)}},
+		{name: "lambda the framework calls only reflectively", ingress: main, want: Undetermined, why: "reflection:", classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, framework(getBean)}},
+		{name: "lambda handed to the JDK", ingress: main, want: Undetermined, why: "higher-order re-entry", classes: []classfile.Class{
+			class(appClass, "java/lang/Object", nil,
+				staticMeth(appClass, "main", runDesc,
+					edge(classfile.EdgeStatic, "java/util/concurrent/CompletableFuture", "runAsync", "(Ljava/lang/Runnable;)Ljava/util/concurrent/CompletableFuture;")),
+				staticMeth(appClass, "task", "()Ljava/lang/Runnable;", lambda(handleArg(classfile.RefInvokeStatic, appClass, "lambda$task$0", "()V"))),
+				staticMeth(appClass, "lambda$task$0", "()V", sinkCall()...))}},
+		{name: "bean the framework concatenates", ingress: main, want: ReachableCandidate, classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, iface(beanIf), appBean,
+			framework(concat("(L" + beanIf + ";)"))}},
+		{name: "bean the framework concatenates as an Object", ingress: main, want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/lang/Object", classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, iface(beanIf), appBean,
+			framework(concat("(Ljava/lang/Object;)"))}},
+		{name: "bean the framework appends to a StringBuilder", ingress: main, want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/lang/StringBuilder", classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, iface(beanIf), appBean,
+			framework(edge(classfile.EdgeVirtual, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;"))}},
+	})
+}

@@ -829,6 +829,19 @@ func TestGradleComplete(t *testing.T) {
 			want: "task :app:jar reads /etc/hostname, outside the build",
 		},
 		{
+			// bad is in no task graph the producer runs, so only the producer realizes it.
+			name:   "configure action that throws",
+			append: map[string]string{"app/build.gradle": "tasks.register('bad') { throw new GradleException('boom') }\n"},
+			want:   "boom",
+		},
+		{
+			// :lib records after :app, so realizing each project's tasks as it records them records :app:jar first.
+			name: "task in another project whose configuration adds an input to jar",
+			append: map[string]string{"lib/build.gradle": "def vendor = tasks.register('vendorJar') { project(':app').tasks.getByName('jar').from('/etc/hostname') }\n" +
+				"tasks.register('release') { dependsOn vendor }\n"},
+			want: "task :app:jar reads /etc/hostname, outside the build",
+		},
+		{
 			name: "jar in the old build directory after a script configures every task",
 			append: map[string]string{
 				"app/build.gradle": "tasks.all { }\nlayout.buildDirectory = file('target')\n" +

@@ -822,6 +822,13 @@ func TestGradleComplete(t *testing.T) {
 			},
 		},
 		{
+			// vendorJar sorts after jar, so recording each task as it is realized records jar first.
+			name: "task whose configuration adds an input to a task recorded before it",
+			append: map[string]string{"app/build.gradle": "def vendor = tasks.register('vendorJar') { tasks.getByName('jar').from('/etc/hostname') }\n" +
+				"tasks.register('release') { dependsOn vendor }\n"},
+			want: "task :app:jar reads /etc/hostname, outside the build",
+		},
+		{
 			name: "jar in the old build directory after a script configures every task",
 			append: map[string]string{
 				"app/build.gradle": "tasks.all { }\nlayout.buildDirectory = file('target')\n" +

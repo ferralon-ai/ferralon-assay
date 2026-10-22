@@ -169,6 +169,33 @@ gradle.settingsEvaluated { s ->
     settingsRepositories << s.pluginManagement.repositories << s.buildscript.repositories
 }
 
+// realizeTasks realizes every task of the build once, before any is recorded: a task's configuration
+// can change another task, so a task recorded before another is realized could be recorded stale.
+// A task that fails to realize here fails again when it is recorded, and that failure is recorded.
+def tasksRealized = false
+def realizeTasks = { root ->
+    if (tasksRealized) {
+        return
+    }
+    tasksRealized = true
+    def seen = [] as Set
+    def more = true
+    while (more) {
+        more = false
+        root.allprojects.each { q ->
+            (q.tasks.names.toList() - ['assayBuildGraph']).each { n ->
+                if (seen.add(q.path + ' ' + n)) {
+                    more = true
+                    try {
+                        q.tasks.named(n).get()
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
+    }
+}
+
 // foreignRoots are the directories p's resolutions fetch files into or from: the Gradle user home
 // and the root of every file repository p, its build script or the settings declare (mavenLocal,
 // a file: URL, a Maven repository's file artifact URLs, a flatDir), each as given and canonical.
@@ -308,6 +335,7 @@ allprojects { p ->
         def resolvable = { p.configurations.findAll { it.canBeResolved }.collect { it.name }.sort() }
         def configured = resolvable()
         p.gradle.taskGraph.whenReady {
+            realizeTasks(p.rootProject)
             described = describe()
             repos = foreignRoots(p)
             tasks = observeTasks(p, repos.roots)

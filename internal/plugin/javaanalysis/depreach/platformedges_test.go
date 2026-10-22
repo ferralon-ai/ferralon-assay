@@ -313,5 +313,149 @@ func TestReach_FrameworkHeldCallbacks(t *testing.T) {
 		{name: "bean the framework appends to a StringBuilder", ingress: main, want: Undetermined, why: "virtual/interface call on out-of-classpath receiver java/lang/StringBuilder", classes: []classfile.Class{
 			appWith(runnerSite), runnerIf, iface(beanIf), appBean,
 			framework(edge(classfile.EdgeVirtual, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;"))}},
+		{name: "lambda the framework iterates through an inherited platform default", ingress: main, want: Undetermined, why: "higher-order re-entry: inherited platform body forEach", classes: []classfile.Class{
+			class(appClass, "java/lang/Object", nil,
+				staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
+				staticMeth(appClass, "callbacks", "()Lcom/fw/Callbacks;", indy("iterator", "()Lcom/fw/Callbacks;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+					classfile.BootstrapArg{MethodType: iterD}, handleArg(classfile.RefInvokeStatic, appClass, "lambda$callbacks$0", iterD), classfile.BootstrapArg{MethodType: iterD}))),
+				staticMeth(appClass, "lambda$callbacks$0", iterD, sinkCall()...)),
+			ifaceExtending("com/fw/Callbacks", "java/lang/Iterable"),
+			framework(edge(classfile.EdgeInterface, "com/fw/Callbacks", "forEach", "(Ljava/util/function/Consumer;)V"))}},
+		{name: "lambda the framework calls through Supplier.get", ingress: main, want: Undetermined, classes: []classfile.Class{
+			class(appClass, "java/lang/Object", nil,
+				staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
+				staticMeth(appClass, "supplier", "()Ljava/util/function/Supplier;", indy("get", "()Ljava/util/function/Supplier;", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+					classfile.BootstrapArg{MethodType: "()Ljava/lang/Object;"}, handleArg(classfile.RefInvokeStatic, appClass, "lambda$supplier$0", "()Ljava/lang/Object;"), classfile.BootstrapArg{MethodType: "()Ljava/lang/Object;"}))),
+				staticMeth(appClass, "lambda$supplier$0", "()Ljava/lang/Object;", sinkCall()...)),
+			framework(edge(classfile.EdgeInterface, "java/util/function/Supplier", "get", "()Ljava/lang/Object;"))}},
+		{name: "lambda the framework calls through Runnable.run", ingress: main, want: Undetermined, classes: []classfile.Class{
+			class(appClass, "java/lang/Object", nil,
+				staticMeth(appClass, "main", runDesc, edge(classfile.EdgeStatic, fwApp, "run", bootDsc)),
+				staticMeth(appClass, "task", "()Ljava/lang/Runnable;", lambda(handleArg(classfile.RefInvokeStatic, appClass, "lambda$task$0", "()V"))),
+				staticMeth(appClass, "lambda$task$0", "()V", sinkCall()...)),
+			framework(edge(classfile.EdgeInterface, "java/lang/Runnable", "run", "()V"))}},
+		{name: "lambda created where main reaches, handed to the JDK", ingress: main, want: ReachableCandidate, classes: []classfile.Class{
+			class(appClass, "java/lang/Object", nil,
+				staticMeth(appClass, "main", runDesc,
+					lambda(handleArg(classfile.RefInvokeStatic, appClass, "lambda$main$0", "()V")),
+					edge(classfile.EdgeStatic, "java/util/concurrent/CompletableFuture", "runAsync", "(Ljava/lang/Runnable;)Ljava/util/concurrent/CompletableFuture;")),
+				staticMeth(appClass, "lambda$main$0", "()V", sinkCall()...))}},
+		{name: "bean the framework compares with String.equals", ingress: main, want: NotExploitable, classes: []classfile.Class{
+			appWith(runnerSite), runnerIf, iface(beanIf),
+			class("com/acme/AppBean", "java/lang/Object", []string{beanIf},
+				meth("com/acme/AppBean", "<init>", "()V"),
+				meth("com/acme/AppBean", "equals", "(Ljava/lang/Object;)Z", sinkCall()...)),
+			framework(edge(classfile.EdgeVirtual, "java/lang/String", "equals", "(Ljava/lang/Object;)Z"))}},
+		{name: "bean the framework compares with String.contentEquals", ingress: main, want: Undetermined, classes: []classfile.Class{
+			appWith(runnerSite), runnerIf,
+			class("com/acme/AppBean", "java/lang/Object", []string{"java/lang/CharSequence"},
+				meth("com/acme/AppBean", "<init>", "()V"),
+				meth("com/acme/AppBean", "charAt", "(I)C", sinkCall()...)),
+			framework(edge(classfile.EdgeVirtual, "java/lang/String", "contentEquals", "(Ljava/lang/CharSequence;)Z"))}},
+	})
+}
+
+const iterD = "()Ljava/util/Iterator;"
+
+// ifaceExtending is an interface extending super, declaring nothing.
+func ifaceExtending(name, super string) classfile.Class {
+	c := iface(name)
+	c.Interfaces = []string{super}
+	return c
+}
+
+// rowsSvc is `interface Rows extends super {}`, with Svc.make returning a lambda
+// implementing Rows whose iterator() is implBody, and Svc.handle making call.
+func rowsSvc(super string, call classfile.Edge, implBody []classfile.Edge, extra ...classfile.Class) []classfile.Class {
+	const rows = "com/acme/Rows"
+	site := indy("iterator", "()L"+rows+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: iterD}, handleArg(classfile.RefInvokeStatic, svc, "lambda$make$0", iterD), classfile.BootstrapArg{MethodType: iterD}))
+	return append([]classfile.Class{
+		class(svc, "java/lang/Object", nil,
+			meth(svc, "<init>", "()V"),
+			staticMeth(svc, "make", "()L"+rows+";", site),
+			meth(svc, "handle", "(Ljava/lang/String;)V", call),
+			staticMeth(svc, "lambda$make$0", iterD, implBody...)),
+		ifaceExtending(rows, super),
+	}, extra...)
+}
+
+// TestReach_LambdaInheritedMembers: a lambda object runs the defaults its interfaces
+// inherit, with itself as `this`. A loaded default is followed; one that may sit in the
+// JDK or an unopened dependency keeps the run undetermined.
+func TestReach_LambdaInheritedMembers(t *testing.T) {
+	const rows = "com/acme/Rows"
+	handle := mref(svc, "handle", "(Ljava/lang/String;)V")
+	forEach := edge(classfile.EdgeInterface, rows, "forEach", "(Ljava/util/function/Consumer;)V")
+	visitor := class("com/acme/Visitor", "java/lang/Object", []string{"java/util/function/Consumer"},
+		meth("com/acme/Visitor", "<init>", "()V"),
+		meth("com/acme/Visitor", "accept", "(Ljava/lang/Object;)V", sinkCall()...))
+	loadedDefault := iface("com/acme/Base", meth("com/acme/Base", "describe", "()V", sinkCall()...))
+	runReachCases(t, []reachCase{
+		{name: "platform default calling the implementation (Iterable.forEach)", ingress: handle, want: Undetermined, why: "higher-order re-entry: inherited platform body forEach",
+			classes: rowsSvc("java/lang/Iterable", forEach, sinkCall())},
+		{name: "platform default with no arguments (Iterable.spliterator)", ingress: handle, want: Undetermined, why: "higher-order re-entry: inherited platform body spliterator",
+			classes: rowsSvc("java/lang/Iterable", edge(classfile.EdgeInterface, rows, "spliterator", "()Ljava/util/Spliterator;"), sinkCall())},
+		{name: "platform default calling back an application argument", ingress: handle, want: Undetermined, why: "higher-order re-entry",
+			classes: rowsSvc("java/lang/Iterable", forEach, nil, visitor)},
+		{name: "default of an unopened dependency", ingress: handle, want: Undetermined, why: "unloaded_dependency:",
+			classes: rowsSvc("com/lib/Listener", edge(classfile.EdgeInterface, rows, "onClose", "()V"), nil)},
+		{name: "loaded default reaching the sink", ingress: handle, want: ReachableCandidate,
+			classes: rowsSvc("com/acme/Base", edge(classfile.EdgeInterface, rows, "describe", "()V"), nil, loadedDefault)},
+		{name: "Object method on the lambda", ingress: handle, want: NotExploitable,
+			classes: rowsSvc("com/acme/Base", edge(classfile.EdgeInterface, rows, "hashCode", "()I"), sinkCall(), loadedDefault)},
+		{name: "lambda beside a named implementor overriding forEach", ingress: handle, want: Undetermined,
+			classes: rowsSvc("java/lang/Iterable", forEach, nil,
+				class("com/acme/RowsImpl", "java/lang/Object", []string{rows},
+					meth("com/acme/RowsImpl", "<init>", "()V"),
+					meth("com/acme/RowsImpl", "forEach", "(Ljava/util/function/Consumer;)V")))},
+	})
+}
+
+// TestReach_LambdaOnPlatformMethod: a lambda whose implementation is a JDK method
+// (Charset::forName) is platform code, so the JDK's service providers are rooted.
+func TestReach_LambdaOnPlatformMethod(t *testing.T) {
+	const lookup = "com/acme/CharsetLookup"
+	const d = "(Ljava/lang/String;)Ljava/nio/charset/Charset;"
+	provider := class("com/acme/XProvider", "java/nio/charset/spi/CharsetProvider", nil,
+		meth("com/acme/XProvider", "<init>", "()V"),
+		meth("com/acme/XProvider", "charsetForName", d, sinkCall()...))
+	provider.Public = true
+	provider.Methods[0].Public = true
+	site := indy("apply", "()L"+lookup+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefInvokeStatic, "java/nio/charset/Charset", "forName", d), classfile.BootstrapArg{MethodType: d}))
+	runReachCases(t, []reachCase{
+		{name: "Charset::forName applied from a handler", ingress: mref(svc, "handle", "(Ljava/lang/String;)V"), want: ReachableCandidate, classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil,
+				meth(svc, "<init>", "()V"),
+				staticMeth(svc, "make", "()L"+lookup+";", site),
+				meth(svc, "handle", "(Ljava/lang/String;)V", edge(classfile.EdgeInterface, lookup, "apply", d))),
+			iface(lookup, abstractMeth(lookup, "apply", d)),
+			provider}},
+	})
+}
+
+// TestReach_ProviderRootsLambdas: a lambda implementing a JDK interface can be held by
+// the JDK and called from any platform code, as a named implementor can.
+func TestReach_ProviderRootsLambdas(t *testing.T) {
+	const hv = "javax/net/ssl/HostnameVerifier"
+	const d = "(Ljava/lang/String;Ljavax/net/ssl/SSLSession;)Z"
+	const handleD = "(Ljava/lang/String;)V"
+	jdkTouch := edge(classfile.EdgeStatic, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I")
+	site := indy("verify", "()L"+hv+";", bootstrap(classfile.RefInvokeStatic, lmfOwner, "metafactory", lmfDesc,
+		classfile.BootstrapArg{MethodType: d}, handleArg(classfile.RefInvokeStatic, svc, "lambda$boot$0", d), classfile.BootstrapArg{MethodType: d}))
+	ingress := mref(svc, "handle", handleD)
+	runReachCases(t, []reachCase{
+		{name: "named HostnameVerifier", ingress: ingress, want: ReachableCandidate, classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil, meth(svc, "<init>", "()V"), meth(svc, "handle", handleD, jdkTouch)),
+			class("com/acme/TrustAll", "java/lang/Object", []string{hv},
+				meth("com/acme/TrustAll", "<init>", "()V"),
+				meth("com/acme/TrustAll", "verify", d, sinkCall()...))}},
+		{name: "lambda HostnameVerifier", ingress: ingress, want: ReachableCandidate, classes: []classfile.Class{
+			class(svc, "java/lang/Object", nil,
+				meth(svc, "<init>", "()V"),
+				staticMeth(svc, "boot", "()V", site, edge(classfile.EdgeStatic, "javax/net/ssl/HttpsURLConnection", "setDefaultHostnameVerifier", "(L"+hv+";)V")),
+				meth(svc, "handle", handleD, jdkTouch),
+				staticMeth(svc, "lambda$boot$0", d, sinkCall()...))}},
 	})
 }

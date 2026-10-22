@@ -35,11 +35,13 @@ type Engine struct {
 }
 
 // lambdaSite is a LambdaMetafactory call site in class from. The object it produces
-// answers a call to name with one of descs by running handle.
+// implements ifaces and answers a call to name with one of descs by running handle;
+// every other method it runs is java/lang/Object's or a default it inherits.
 type lambdaSite struct {
 	from   string
 	name   string
 	descs  []string
+	ifaces []string
 	handle classfile.MethodHandle
 }
 
@@ -548,14 +550,19 @@ func (e *Engine) resolveTargets(from string, edge classfile.Edge) (targets []*cl
 				implemented = true
 			}
 			// A lambda object implementing c answers the call with its
-			// implementation, wherever the object was created.
+			// implementation, or runs what it inherits, wherever the object was
+			// created.
 			for _, site := range e.lambdas[c] {
-				if !site.answers(edge.To.Name, edge.To.Descriptor) {
-					continue
+				var ts []*classfile.Method
+				var h bool
+				var w string
+				if site.answers(edge.To.Name, edge.To.Descriptor) {
+					ts, h, w = e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
+				} else {
+					ts, h, w = e.lambdaInherited(site, edge.To)
 				}
-				ts, h, w := e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+c)
 				if h {
-					return nil, true, w
+					return targets, true, w
 				}
 				for _, t := range ts {
 					if !seen[t] {
@@ -723,6 +730,7 @@ func lambdaSiteOf(from string, edge classfile.Edge) (lambdaSite, []string) {
 			site.descs = append(site.descs, d)
 		}
 	}
+	site.ifaces = ifaces
 	return site, ifaces
 }
 
@@ -741,6 +749,41 @@ func (s lambdaSite) answers(name, desc string) bool {
 		}
 	}
 	return false
+}
+
+// lambdaInherited resolves a call to ref on site's object that its implementation
+// does not answer. The object's class is generated: its superclass is
+// java/lang/Object, whose bodies on it call nothing it defines, and it inherits every
+// default of its interfaces, which runs with the object as `this`. A loaded default
+// is a target. A default that may sit in an unopened dependency is a hazard, and so
+// is one that may sit in the JDK, which can call the implementation back.
+func (e *Engine) lambdaInherited(site lambdaSite, ref classfile.MethodRef) ([]*classfile.Method, bool, string) {
+	if objectMethods[ref.Name+ref.Descriptor] {
+		return nil, false, ""
+	}
+	var targets []*classfile.Method
+	var unloaded []string
+	for _, t := range site.ifaces {
+		m, u := e.resolveMethod(t, ref.Name, ref.Descriptor)
+		if m != nil {
+			if !m.Abstract {
+				targets = append(targets, m)
+			}
+			continue
+		}
+		for _, n := range u {
+			if n != objectClass {
+				unloaded = append(unloaded, n)
+			}
+		}
+	}
+	if len(targets) > 0 || len(unloaded) == 0 {
+		return targets, false, ""
+	}
+	if dep, ok := e.unloadedDependency(unloaded); ok {
+		return nil, true, "unloaded_dependency: " + ref.String() + " on a lambda inherits from unopened " + dep
+	}
+	return nil, true, "higher-order re-entry: inherited platform body " + ref.Name + ref.Descriptor + " of " + unloaded[0] + " runs on a lambda implementing " + site.ifaces[0] + ", which it can call back"
 }
 
 // resolveHandle resolves the call a lambda's implementation method handle makes,
@@ -1351,6 +1394,26 @@ func (e *Engine) providerRoots() (roots []*classfile.Method, hazard string) {
 			}
 		}
 	}
+	// A lambda the JDK can hold (a HostnameVerifier handed to
+	// HttpsURLConnection.setDefaultHostnameVerifier) runs its implementation when the
+	// JDK calls it.
+	ifaces := make([]string, 0, len(e.lambdas))
+	for t := range e.lambdas {
+		ifaces = append(ifaces, t)
+	}
+	sort.Strings(ifaces)
+	for _, t := range ifaces {
+		if !e.loadableType(t) {
+			continue
+		}
+		for _, site := range e.lambdas[t] {
+			ts, h, w := e.lambdaImpl(site.from, site.handle, "invokedynamic (runtime-bound target): lambda implementing "+t)
+			roots = append(roots, ts...)
+			if h && hazard == "" {
+				hazard = w
+			}
+		}
+	}
 	return roots, hazard
 }
 
@@ -1396,6 +1459,13 @@ func (e *Engine) touchesPlatform(edge classfile.Edge) bool {
 		owners = e.subtypeClosure(o)
 	}
 	for _, c := range owners {
+		// A lambda answering the call runs its implementation, which can be a JDK
+		// method (Charset::forName).
+		for _, site := range e.lambdas[c] {
+			if o := site.handle.Ref.Owner; site.answers(edge.To.Name, edge.To.Descriptor) && e.classes[o] == nil && e.platformBody(o) {
+				return true
+			}
+		}
 		if m, unloaded := e.resolveMethod(c, edge.To.Name, edge.To.Descriptor); m == nil {
 			for _, u := range unloaded {
 				if e.platformBody(u) {

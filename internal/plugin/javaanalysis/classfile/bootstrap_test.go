@@ -195,6 +195,47 @@ func TestParseClass_BindsBootstrapMethods(t *testing.T) {
 	}
 }
 
+// TestParseClass_AltMetafactoryIntegerArgs: altMetafactory's flags and counts are
+// CONSTANT_Integer arguments, which decode as empty, between the marker class and the
+// bridge method type.
+func TestParseClass_AltMetafactoryIntegerArgs(t *testing.T) {
+	const altDesc = "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/invoke/MethodType;[Ljava/lang/Object;)Ljava/lang/invoke/CallSite;"
+	b := newClassBuilder()
+	alt := b.methodHandle(RefInvokeStatic, b.methodref(cpMethodref, "java/lang/invoke/LambdaMetafactory", "altMetafactory", altDesc))
+	impl := b.methodHandle(RefInvokeStatic, b.methodref(cpMethodref, "com/example/App", "lambda$run$0", "()V"))
+	samType := b.methodType("()V")
+	integer := func(v uint32) uint16 { return b.add("int:"+string(be4(v)), append([]byte{cpInteger}, be4(v)...)) }
+	flags := integer(6) // FLAG_MARKERS | FLAG_BRIDGES
+	one := integer(1)
+	marker := b.class("com/example/Marker")
+	bridge := b.methodType("()Ljava/lang/Object;")
+	site := b.invokeDynamicAt(0, "run", "()Ljava/lang/Runnable;")
+	data := b.buildClass("com/example/App", "java/lang/Object", 0x0021,
+		[]testMethod{{access: 0x0001, name: "go", desc: "()V", code: append(indyInsn(site), 0xB1)}},
+		map[string][]byte{attrBootstrapMethods: bootstrapAttr([]bootstrapEntry{
+			{method: alt, args: []uint16{samType, impl, samType, flags, one, marker, one, bridge}},
+		})})
+	got, err := ParseClass(data)
+	if err != nil {
+		t.Fatalf("ParseClass: %v", err)
+	}
+	want := &Bootstrap{
+		Method: MethodHandle{Kind: RefInvokeStatic, Ref: MethodRef{"java/lang/invoke/LambdaMetafactory", "altMetafactory", altDesc}},
+		Args: []BootstrapArg{
+			{MethodType: "()V"},
+			{Handle: &MethodHandle{Kind: RefInvokeStatic, Ref: MethodRef{"com/example/App", "lambda$run$0", "()V"}}},
+			{MethodType: "()V"},
+			{}, {},
+			{Class: "com/example/Marker"},
+			{},
+			{MethodType: "()Ljava/lang/Object;"},
+		},
+	}
+	if edges := got.Methods[0].Edges; len(edges) != 1 || !reflect.DeepEqual(edges[0].Bootstrap, want) {
+		t.Errorf("edges = %+v, want one bound to %+v", edges, want)
+	}
+}
+
 // TestParseClass_AccessFlags: abstract classes and interfaces are Abstract; static and private
 // methods are flagged.
 func TestParseClass_AccessFlags(t *testing.T) {

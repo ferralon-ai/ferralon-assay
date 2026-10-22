@@ -378,6 +378,9 @@ func (v *Veto) host(s surfaceType, kind, path string, units []unit) string {
 				if v.hasToken(line) {
 					return "install command that does not tokenise"
 				}
+				if expandedInstallLine(line) {
+					return "install verb after an expansion that does not tokenise"
+				}
 				v.mention(strings.Fields(line))
 				cur.unknown = cur.unknown || cdRE.MatchString(line)
 			}
@@ -454,6 +457,9 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		}
 		return ""
 	}
+	if expandedInstall(words) {
+		return "install verb after an expansion: " + strings.Join(words, " ")
+	}
 	if !v.segmentHasToken(words) {
 		v.mention(words[1:])
 		cur.other()
@@ -474,6 +480,42 @@ func (v *Veto) command(seg segment, cur cursor, depth int) string {
 		return "install command: " + strings.Join(words, " ")
 	}
 	return ""
+}
+
+// installVerbs are the subcommands with which a package manager installs or re-locks.
+var installVerbs = map[string]bool{
+	"install": true, "i": true, "add": true, "sync": true, "ci": true, "update": true,
+	"upgrade": true, "up": true, "dlx": true,
+}
+
+// expandedInstall reports whether a word that expands is followed by an install verb: a
+// package manager named by a variable set outside the tree ($PM add x), which names no token.
+// make's own variable is left out: the target it runs is a recipe read here.
+func expandedInstall(words []string) bool {
+	for i := 0; i+1 < len(words); i++ {
+		if strings.ContainsAny(words[i], "$`") && installVerbs[words[i+1]] && !makeVarRE.MatchString(words[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	makeVarRE = regexp.MustCompile(`^\$+(?:\(MAKE\)|\{MAKE\}|MAKE)$`)
+	// expandedInstallRE finds the same in a line that does not tokenise, such as a make
+	// recipe calling $(PIP); its group is the expansion.
+	expandedInstallRE = regexp.MustCompile(`(?:^|[\s;&|(])(\$+(?:\([^()\s]*\)|\{[^{}\s]*\}|[A-Za-z_][A-Za-z0-9_]*)|` +
+		"`[^`]*`" + `)\S*\s+(?:install|i|add|sync|ci|update|upgrade|up|dlx)\b`)
+)
+
+// expandedInstallLine is expandedInstall for a line that does not tokenise.
+func expandedInstallLine(line string) bool {
+	for _, m := range expandedInstallRE.FindAllStringSubmatch(line, -1) {
+		if !makeVarRE.MatchString(m[1]) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasRedirect(words []string) bool {

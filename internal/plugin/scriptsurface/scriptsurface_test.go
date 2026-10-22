@@ -131,6 +131,9 @@ func TestVeto_LaneNeutral(t *testing.T) {
 		{"$VAR in place of a name an allowed form takes", tree(map[string]string{"install.sh": "inst run $X\n"}), true, ""},
 		{"redirect in place of a name an allowed form takes", tree(map[string]string{"install.sh": "inst run >log\n"}), true, ""},
 		{"variable installer", tree(map[string]string{"Makefile": "deps:\n\t$(VENV)/bin/inst sync\n"}), true, ""},
+		{"variable package manager then an install verb", tree(map[string]string{"install.sh": "\"$PM\" add x\n"}), true, ""},
+		{"variable package manager behind sudo", tree(map[string]string{"install.sh": "sudo -E $INSTALLER install x\n"}), true, ""},
+		{"make variable installer then an install verb", tree(map[string]string{"Makefile": "deps:\n\t$(PKG) install x\n"}), true, ""},
 		{"redirect", tree(map[string]string{"install.sh": "inst sync > /tmp/log\n"}), true, ""},
 		{"unterminated quote", tree(map[string]string{"install.sh": "echo 'x && inst sync\n"}), true, ""},
 		{"unjoined continuation", tree(map[string]string{"install.sh": "inst sync \\"}), true, ""},
@@ -158,6 +161,8 @@ func TestVeto_LaneNeutral(t *testing.T) {
 
 		// Controls.
 		{"job key naming a token opens a block", tree(map[string]string{".gitlab-ci.yml": "inst-build: &job\n  script:\n    - inst sync\n"}), false, ""},
+		{"make variable", tree(map[string]string{"Makefile": "all:\n\t$(MAKE) -C sub\n\t$(MAKE) install\n\t${MAKE} build\n\t$(CC) -o x x.c\n"}), false, ""},
+		{"expansion not followed by an install verb", tree(map[string]string{"install.sh": "$TOOL build\necho \"$X\" done\n"}), false, ""},
 		{"surface with no installer", tree(map[string]string{"install.sh": "#!/bin/sh\nset -e\nserve\n"}), false, ""},
 		{"allowed forms", tree(map[string]string{"Makefile": "deps:\n\tinst sync -q\n\tinst install -r reqs.txt\n\tinst run build\n"}), false, ""},
 		{"package.json script running an allowed form", tree(map[string]string{"package.json": `{"scripts":{"build":"inst run build"}}`}), false, ""},

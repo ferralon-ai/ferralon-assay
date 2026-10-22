@@ -650,14 +650,14 @@ var pythonRE = regexp.MustCompile(`^python(?:\d+(?:\.\d+)?)?$`)
 // virtualenv <dir>, or uv venv [<dir>] (.venv when there is none), with flags before or after
 // <dir> and -p, --python or --prompt taking the next word. "" when it is none of these, when
 // its directory is not one place, when it may not run (after &&, ||, | or &, or inside an if,
-// case or loop), or when <dir>/bin/activate is already a file the build holds, which a creation
+// case or loop) or not finish first (before a lone &), or when <dir>/bin/activate is already a file the build holds, which a creation
 // that did not run would leave in place.
 func venvMade(seg segment, cur cursor) string {
 	words := seg.words
 	head, ok := CommandName(words[0])
 	var args []string
 	switch {
-	case seg.expands || !ok || seg.guarded || cur.venv().open != 0:
+	case seg.expands || !ok || seg.guarded || seg.background || cur.venv().open != 0:
 		return ""
 	case pythonRE.MatchString(head) && len(words) >= 3 && words[1] == "-m" && words[2] == "venv":
 		args = words[3:]

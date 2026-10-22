@@ -40,12 +40,13 @@ func logicalLinesAt(src string) (lines []string, starts []int, joined bool) {
 // segment is one simple command: its words, unquoted, and whether its text holds a $ or
 // a backtick anywhere. guarded marks one that follows &&, ||, | or &, which may not run, or not
 // before what follows it; and marks one that follows &&, which runs only if the command before
-// it did.
+// it did; background marks one a lone & ends, which may not have finished when what follows runs.
 type segment struct {
-	words   []string
-	expands bool
-	guarded bool
-	and     bool
+	words      []string
+	expands    bool
+	guarded    bool
+	and        bool
+	background bool
 }
 
 // dataKeys are keys whose values a build never runs as a command.
@@ -248,6 +249,7 @@ func shellSegments(s string) (segs []segment, ok, dangles bool) {
 		case c == '(' || c == ')' || (c == '{' || c == '}') && !inWord:
 			return nil, false, false
 		case c == ';' || c == '&' || c == '|':
+			cur.background = c == '&' && (i == 0 || !strings.ContainsRune("&|>", rune(s[i-1]))) && (i+1 == len(s) || !strings.ContainsRune("&>", rune(s[i+1])))
 			endSeg()
 			cur.guarded = c != ';'
 			cur.and = c == '&' && i > 0 && s[i-1] == '&'

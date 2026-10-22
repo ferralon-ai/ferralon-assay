@@ -27,6 +27,24 @@ type cursor interface {
 	// sourced reports whether p, from every directory the command may run in, names an in-tree
 	// script surface the walk checks on its own.
 	sourced(p string) bool
+	// at returns the one place a literal path names from the directory the command runs in,
+	// keyed so that two keys are equal only when they name the same place; false when it names
+	// no one place.
+	at(p string) (string, bool)
+	// present reports whether a literal path from the directory the command runs in may name
+	// a file the build already holds.
+	present(p string) bool
+	// venv is the state of the venv rule at this command.
+	venv() *venvMark
+}
+
+// venvMark is what the venv rule carries from command to command in one shell.
+type venvMark struct {
+	made   string // key of the venv the last command but for directory changes created, or ""
+	open   int    // if, case and loop bodies the command is inside; below 0 when not known
+	dangle bool   // the last line ended in &&, || or |
+	lost   bool   // a cd that may not have run left the rule not knowing where the shell is
+	chain  bool   // a cd after && moved the directory: known only while the && list goes on
 }
 
 // hostCursor is the set of host directories a command may run in.
@@ -34,9 +52,23 @@ type hostCursor struct {
 	v       *Veto
 	dirs    []string
 	unknown bool
+	mark    venvMark
+	// wd is the one directory a CI shell unit runs in, which only the venv rule reads; "" when
+	// it is not known.
+	wd string
 }
 
 func (c *hostCursor) cd(words []string) {
+	if c.wd != "" {
+		n := ""
+		if len(words) == 2 && words[0] != "popd" && words[1] != "-" && !strings.HasPrefix(words[1], "~") && !filepath.IsAbs(words[1]) {
+			n = filepath.Join(c.wd, words[1])
+		}
+		if n == "" || !c.v.inRoot(n) || !isDir(n) {
+			n = ""
+		}
+		c.wd = n
+	}
 	if c.unknown {
 		return
 	}
@@ -82,6 +114,45 @@ func (c *hostCursor) sourced(p string) bool {
 	}
 	return true
 }
+
+func (c *hostCursor) at(p string) (string, bool) {
+	loc, ok := c.loc(p)
+	if ok && filepath.IsAbs(p) {
+		return "abs:" + loc, true
+	}
+	return "rel:" + loc, ok
+}
+
+func (c *hostCursor) present(p string) bool {
+	loc, ok := c.loc(p)
+	if !ok {
+		return true
+	}
+	if filepath.IsAbs(p) && !c.v.inRoot(loc) {
+		return false
+	}
+	_, there, known := c.v.stat(loc)
+	return there || !known
+}
+
+// loc is the one place a literal path names from the directory the command runs in.
+func (c *hostCursor) loc(p string) (string, bool) {
+	switch {
+	case p == "" || strings.ContainsAny(p, "$`*?[~"):
+		return "", false
+	case filepath.IsAbs(p):
+		return filepath.Clean(p), true
+	case c.mark.lost:
+		return "", false
+	case c.wd != "":
+		return filepath.Join(c.wd, p), true
+	case c.unknown || len(c.dirs) != 1:
+		return "", false
+	}
+	return filepath.Join(c.dirs[0], p), true
+}
+
+func (c *hostCursor) venv() *venvMark { return &c.mark }
 
 func (c *hostCursor) Hosts(p string) []string {
 	if c.unknown || len(c.dirs) == 0 || p == "" || filepath.IsAbs(p) || strings.ContainsAny(p, "*?[~") {

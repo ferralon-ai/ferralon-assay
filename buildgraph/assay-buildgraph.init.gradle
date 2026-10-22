@@ -171,8 +171,10 @@ gradle.settingsEvaluated { s ->
 
 // realizeTasks realizes every task of the build once, before any is recorded: a task's configuration
 // can change another task, so a task recorded before another is realized could be recorded stale.
-// A task that fails to realize here fails again when it is recorded, and that failure is recorded.
+// A task that fails to realize in this pass is recorded with its failure here and not realized
+// again, however Gradle would answer a second get() on it.
 def tasksRealized = false
+def realizeFailures = [:].withDefault { [] }
 def realizeTasks = { root ->
     if (tasksRealized) {
         return
@@ -188,7 +190,8 @@ def realizeTasks = { root ->
                     more = true
                     try {
                         q.tasks.named(n).get()
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        realizeFailures[q.path] << [name: n, path: q.path + (q.path == ':' ? '' : ':') + n, failure: failureText(e)]
                     }
                 }
             }
@@ -225,7 +228,7 @@ def foreignRoots = { p ->
 
 // observeTasks records each of p's tasks. Reading a task's input files resolves whatever a lazy
 // input would at execution, so the listener sees that resolution too.
-def observeTasks = { p, List<String> foreign ->
+def observeTasks = { p, List<String> foreign, List<String> failed ->
     def root = p.rootDir.toPath()
     // A Gradle user home or file repository inside the checkout (CI caches set one) holds what
     // resolution fetched, so a file under it is outside the build however the paths nest.
@@ -233,7 +236,7 @@ def observeTasks = { p, List<String> foreign ->
     def tasks = []
     try {
         // assayBuildGraph only writes the graph.
-        def names = p.tasks.names.toList() - ['assayBuildGraph']
+        def names = p.tasks.names.toList() - ['assayBuildGraph'] - failed
         names.each { n ->
             def k = p.tasks.named(n).get()
             def t = [path: k.path, type: k.getClass().name.replace('_Decorated', '')]
@@ -249,7 +252,7 @@ def observeTasks = { p, List<String> foreign ->
             }
             tasks << t
         }
-        if (p.tasks.names.toList() - ['assayBuildGraph'] != names) {
+        if (p.tasks.names.toList() - ['assayBuildGraph'] - failed != names) {
             tasks << [path: p.path, failure: 'tasks were registered while the tasks were observed']
         }
     } catch (Exception e) {
@@ -338,7 +341,8 @@ allprojects { p ->
             realizeTasks(p.rootProject)
             described = describe()
             repos = foreignRoots(p)
-            tasks = observeTasks(p, repos.roots)
+            def failed = realizeFailures[p.path]
+            tasks = observeTasks(p, repos.roots, failed*.name) + failed.collect { [path: it.path, failure: it.failure] }
             if (resolvable() != configured) {
                 tasks << [path: p.path, failure: 'configurations were added after assayBuildGraph was configured']
             }

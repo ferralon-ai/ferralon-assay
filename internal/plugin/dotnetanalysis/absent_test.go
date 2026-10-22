@@ -181,6 +181,8 @@ func TestNotInBuild_OpenBuildKeepsMainsAnswer(t *testing.T) {
 		{"an import listing two files", withItems(`<Import Project="build/a.targets;build/hook.targets" Condition="Exists('build/a.targets;build/hook.targets')" />`)},
 		{"a vendored script", withFile("wwwroot/lib/moment/moment.min.js", "")},
 		{"a vendored stylesheet source", withFile("wwwroot/lib/bs/less/variables.less", "")},
+		{"a vendored script committed gzip-compressed only", withFile("wwwroot/lib/moment/moment.min.js.gz", "")},
+		{"a vendored script committed brotli-compressed only", withFile("wwwroot/lib/moment/moment.min.js.br", "")},
 		{"a toolset import with a wildcard", withItems(`<Import Project="$(MSBuildBinPath)/hooks/*.targets" />`)},
 		{"a project's PackageId", withItems(`<PropertyGroup><PackageId>Newtonsoft.Json</PackageId></PropertyGroup>`)},
 		{"a project's AssemblyName", withItems(`<PropertyGroup><AssemblyName>App.Web</AssemblyName></PropertyGroup>`)},

@@ -208,8 +208,9 @@ var vendorName = strings.NewReplacer("-", ".", "_", ".")
 
 // frontEndAssets are the file kinds a front-end library is vendored as. Their names need not
 // hold the NuGet id that ships the same library (moment.min.js for Moment.js), so any of them
-// keeps the build open.
-var frontEndAssets = []string{".js", ".mjs", ".cjs", ".ts", ".css", ".less", ".scss", ".sass", ".map"}
+// keeps the build open, and so does a precompressed copy (moment.min.js.gz), which the build
+// serves in its place.
+var frontEndAssets = []string{".js", ".mjs", ".cjs", ".ts", ".css", ".less", ".scss", ".sass", ".map", ".gz", ".br"}
 
 // treeClosed reports whether the tree holds nothing that brings code into the build outside
 // the projects' restore: no symlink, no assembly, native library or package file, no file named

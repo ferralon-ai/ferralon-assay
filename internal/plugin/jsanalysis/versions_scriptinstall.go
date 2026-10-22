@@ -28,9 +28,10 @@ import (
 // lock read here. Anything else that names a package manager withholds: a package argument,
 // another flag, a bare npm install, yarn or pnpm install (each re-locks), yarn install
 // --immutable (yarn 1 ignores it), npm exec, npx, pnpx, bunx, yarn dlx, pnpm run (pnpm
-// installs before it runs), bun, deno and corepack. An npm_config_* or YARN_* variable set in
-// any script surface withholds, since every npm or yarn the build runs reads it. How a
-// surface is read, and what binds a command to a file, is lane-neutral, in scriptsurface.
+// installs before it runs), bun, deno, corepack and the aliases, wrappers and tools laneToken
+// names. An npm_config_* or YARN_* variable set in any script surface withholds, since every
+// npm or yarn the build runs reads it. How a surface is read, and what binds a command to a
+// file, is lane-neutral, in scriptsurface.
 
 // scriptSpec is the JavaScript lane's part of the rule. It names no run wrapper: npm and yarn
 // run a package.json script, gated where it is written, not a command line.
@@ -46,10 +47,15 @@ var scriptSpec = scriptsurface.Spec{
 // attribute reference, so is being set.
 var laneEnvRE = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_{.])(?:(?i:npm_config_)[A-Za-z0-9_]+|YARN_[A-Z0-9_]+)`)
 
-// laneToken reports whether word is a JavaScript package manager or package runner.
+// laneToken reports whether word is a JavaScript package manager or package runner, an alias
+// or wrapper that runs one (yarnpkg, cnpm, ni and its nci, nr, nlx, nu, nun, na), or a tool
+// that installs packages itself or runs commands a file not read here defines (volta, lerna,
+// rush, nx, ng, ncu, vlt).
 func laneToken(word string) bool {
 	switch word {
-	case "npm", "npx", "yarn", "pnpm", "pnpx", "bun", "bunx", "deno", "corepack":
+	case "npm", "npx", "yarn", "pnpm", "pnpx", "bun", "bunx", "deno", "corepack",
+		"yarnpkg", "cnpm", "ni", "nci", "nr", "nlx", "nu", "nun", "na",
+		"volta", "lerna", "rush", "nx", "ng", "ncu", "vlt":
 		return true
 	}
 	return false

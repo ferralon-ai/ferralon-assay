@@ -125,12 +125,13 @@ func objectKey(clean []rune, b, p int) bool {
 	return p < n && clean[p] == ':' && !(p+1 < n && clean[p+1] == ':') && b >= 0 && (clean[b] == '{' || clean[b] == ',')
 }
 
-// argumentsUse records an `arguments` at i outside every function body (arrow bodies
-// included, since an arrow binds none). In a CommonJS module that is the module wrapper's
-// argument list, whose second entry is require, so any use but a member name or an object
-// key may hand require on where this lane cannot follow its calls (`arguments[1](x)`).
+// argumentsUse records an `arguments` at i outside every function body (arrow bodies and
+// class bodies included, since neither binds arguments). In a CommonJS module that is the
+// module wrapper's argument list, whose second entry is require, so any use but a member
+// name or an object key may hand require on where this lane cannot follow its calls
+// (`arguments[1](x)`).
 func (mb *moduleBindings) argumentsUse(clean []rune, i, next int, frames *thisFrames) {
-	if !frames.topLevel(i) || memberName(clean, i) || objectKey(clean, skipSpaceBack(clean, i-1), skipSpace(clean, next)) {
+	if !frames.outsideFunctions(i) || memberName(clean, i) || objectKey(clean, skipSpaceBack(clean, i-1), skipSpace(clean, next)) {
 		return
 	}
 	mb.computedReq = true

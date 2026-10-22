@@ -492,6 +492,12 @@ const j = { parse: String };
 function load(s) { return j.parse(s); }
 load(process.argv[2]);
 `, nil},
+		{"the module wrapper's require read through arguments in a class's computed key", `
+class A { [arguments[1](process.argv[3]).k]() {} }
+const j = { parse: String };
+function load(s) { return j.parse(s); }
+load(process.argv[2]);
+`, nil},
 		{"require optionally called on the right of a comparison", `
 let j = { parse: String };
 if (j === require?.(process.argv[3])) j = { parse: String };
@@ -554,6 +560,7 @@ func TestUndeterminedReason_JSRecognizedLoadsCanRefute(t *testing.T) {
 		{"local values exported under the names module, require and process", "const own = {};\nexport { own as module, own as require, own as process };\nconst j = require('./plugins');", nil},
 		{"constructor as a class method and an object-literal key", "class Box { constructor(v) { this.v = v; } }\nfunction inherit(sub, sup) { sub.prototype = Object.create(sup && sup.prototype, { constructor: { value: sub, writable: true } }); }\nconst desc = { constructor: Box, f({ a }) { return a; } };\nconst j = require('./plugins');", nil},
 		{"a prototype-pollution guard on a constructor key", "function set(o, k, v) { if (k === '__proto__' || k === 'constructor') return; o[k] = v; }\nconst name = Reflect.get(set, 'name');\nconst j = require('./plugins');", nil},
+		{"arguments inside class methods", "class A { m() { return arguments[0]; } static s() { return arguments.length; } constructor() { this.n = arguments.length; } }\nconst j = require('./plugins');", nil},
 		{"a two-dimensional array read, written and compared", "const grid = [[0]];\nlet n = 0;\nfor (let i = 0; i < 1; i++) { grid[i][0] = grid[i][n] + 1; n += grid[n][i]; if (grid[i][n] === 0) n--; }\nconst j = require('./plugins');", nil},
 		{"imports entry whose condition branches are one module", "const j = require('#j');", map[string]string{
 			"package.json": `{"name":"fixture","imports":{"#j":{"worker":"./plugins/index.js","default":"./plugins/index.js"}},"dependencies":{"json5":"2.2.1"}}`,

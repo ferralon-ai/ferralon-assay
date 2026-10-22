@@ -1441,6 +1441,18 @@ func (tf *thisFrames) topLevel(i int) bool {
 	return true
 }
 
+// outsideFunctions reports whether position i is outside every function body, counting a
+// class body (which binds this but not arguments) as outside: a computed member key in a
+// class body is evaluated in the scope enclosing the class.
+func (tf *thisFrames) outsideFunctions(i int) bool {
+	for k := tf.block(i); k >= 0; k = tf.parent[k] {
+		if tf.fn[k] && !tf.members[k] {
+			return false
+		}
+	}
+	return true
+}
+
 // globalAt reports whether this at position i is the global object.
 func (tf *thisFrames) globalAt(i int) bool {
 	k := tf.block(i)

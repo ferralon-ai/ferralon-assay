@@ -44,6 +44,11 @@ func emitClassI(b *cpb, owner, super string, ifaces []string, flags uint16, meth
 // emitClassA is emitClassI with class annotations (type descriptors, no elements) in a
 // RuntimeVisibleAnnotations attribute.
 func emitClassA(b *cpb, owner, super string, ifaces []string, flags uint16, methods []xmethod, annos []string) []byte {
+	return emitClassF(b, owner, super, ifaces, flags, methods, annos, nil)
+}
+
+// emitClassF is emitClassA with private instance fields, each a name and descriptor.
+func emitClassF(b *cpb, owner, super string, ifaces []string, flags uint16, methods []xmethod, annos []string, fields [][2]string) []byte {
 	var rva bytes.Buffer
 	var rvaName uint16
 	if len(annos) > 0 {
@@ -62,6 +67,10 @@ func emitClassA(b *cpb, owner, super string, ifaces []string, flags uint16, meth
 	}
 	codeAttr := b.utf8("Code")
 	type built struct{ nameIdx, descIdx uint16 }
+	bf := make([]built, len(fields))
+	for i, f := range fields {
+		bf[i] = built{b.utf8(f[0]), b.utf8(f[1])}
+	}
 	bm := make([]built, len(methods))
 	for i, m := range methods {
 		bm[i] = built{b.utf8(m.name), b.utf8(m.desc)}
@@ -81,7 +90,13 @@ func emitClassA(b *cpb, owner, super string, ifaces []string, flags uint16, meth
 	for _, i := range ifaceIdx {
 		buf.Write(be2(i))
 	}
-	buf.Write(be2(0))
+	buf.Write(be2(uint16(len(bf))))
+	for _, f := range bf {
+		buf.Write(be2(0x0012))
+		buf.Write(be2(f.nameIdx))
+		buf.Write(be2(f.descIdx))
+		buf.Write(be2(0))
+	}
 	buf.Write(be2(uint16(len(methods))))
 	for i, m := range methods {
 		buf.Write(be2(m.flags))
@@ -1149,6 +1164,18 @@ func utilPair(super string, more ...xmethod) map[string][]byte {
 	return entries
 }
 
+// levelPair is a base Util and its META-INF/versions/11 override, both extending super, whose
+// field level changes type between the two, as snakeyaml's Logger$Level does.
+func levelPair(super string) map[string][]byte {
+	b := &cpb{}
+	entries := map[string][]byte{"META-INF/versions/11/com/evil/netkit/Util.class": emitClassF(b, "com/evil/netkit/Util", super, nil, 0x0021,
+		[]xmethod{{"run", "()V", accPublicStatic, ret}}, nil, [][2]string{{"level", "Ljava/lang/System$Logger$Level;"}})}
+	b = &cpb{}
+	entries["com/evil/netkit/Util.class"] = emitClassF(b, "com/evil/netkit/Util", super, nil, 0x0021,
+		[]xmethod{{"run", "()V", accPublicStatic, ret}}, nil, [][2]string{{"level", "Ljava/util/logging/Level;"}})
+	return entries
+}
+
 // accessor is a one-sided static synthetic method with descriptor desc, as javac emits
 // access$000 for a nested class reaching a private member.
 func accessor(desc string) xmethod { return xmethod{"access$000", desc, 0x1008, ret} }
@@ -1193,6 +1220,17 @@ func TestBytecodeReach_MultiReleaseOverrides(t *testing.T) {
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 		{"one-sided method naming a type a JDK release may define: multi_release_unmerged", func() map[string][]byte {
 			return utilPair("java/lang/Enum", accessor("(Ljavax/net/SocketFactory;)V"))
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		// The graph reads a field only for the class a getstatic or putstatic initializes, and
+		// a java/ declarer's initializer is JDK code.
+		{"one-sided field under an unread java/ ancestor: searched", func() map[string][]byte {
+			return levelPair("java/lang/Enum")
+		}, "com/evil/netkit/Util", false, ""},
+		{"one-sided field under an unread JDK-package ancestor outside java/: multi_release_unmerged", func() map[string][]byte {
+			return levelPair("javax/net/SocketFactory")
+		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
+		{"one-sided field under an unread classpath ancestor: multi_release_unmerged", func() map[string][]byte {
+			return levelPair("org/absent/Base")
 		}, "com/evil/netkit/Util", false, reasonMultiReleaseUnmerged},
 		{"one-sided accessor under an unread JDK-package ancestor outside java/: multi_release_unmerged", func() map[string][]byte {
 			return utilPair("javax/net/SocketFactory", accessor("(Lcom/evil/netkit/Util;)V"))

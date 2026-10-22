@@ -20,12 +20,15 @@ import (
 // name on the release that lacks it, so the ancestor's body would never be a target. Such a
 // one-sided member is admitted only when no ancestor can declare it: every ancestor is
 // loaded and none declares it, or the ancestor is java/lang/Object and the member is not one
-// of Object's, or the ancestor is an unread java/ class and the member's descriptor names a
-// type no JDK release defines (ReleaseMerge.JDKType). Only the boot and platform loaders
-// define a java/ class, and they resolve its supertypes too, so it and everything above it is
-// JDK code, which names only JDK types: javac's synthetic accessors, which take or return the
-// class they serve, are the members this admits. Private methods, constructors and static initializers are never resolved
-// through an ancestor, so they are always admitted. A class whose two bodies disagree on the
+// of Object's, or the ancestor is an unread java/ class and the member is a field or its
+// descriptor names a type no JDK release defines (ReleaseMerge.JDKType). Only the boot and
+// platform loaders define a java/ class, and they resolve its supertypes too, so it and
+// everything above it is JDK code. JDK code names only JDK types, so it declares none of
+// javac's synthetic accessors, which take or return the class they serve. A field matters
+// only for the class a getstatic or putstatic initializes, and a JDK class's initializer is
+// JDK code, so a field the merged class hides from a java/ ancestor loses no application
+// target. Private methods, constructors and static initializers are never resolved through
+// an ancestor, so they are always admitted. A class whose two bodies disagree on the
 // super class, the interfaces, or a shared method's flags cannot be merged at all.
 
 // ReleaseMerge accumulates the override bodies of one class set.
@@ -192,7 +195,7 @@ func (m *ReleaseMerge) ancestorMayDeclare(name string, s member) (string, bool) 
 		}
 		ac, ok := m.classes[a]
 		if !ok {
-			if strings.HasPrefix(a, "java/") && m.namesNonJDKType(s.desc) {
+			if strings.HasPrefix(a, "java/") && (s.field || m.namesNonJDKType(s.desc)) {
 				continue
 			}
 			return "under ancestor " + a + ", whose members are unread", true

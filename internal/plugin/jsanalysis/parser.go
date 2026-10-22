@@ -456,6 +456,13 @@ func hiddenLoads(clean, raw []rune, hidden []span) moduleBindings {
 				view[k] = ' '
 			}
 		}
+		// Each text's opener becomes ';' so no expression runs from one text into the next:
+		// two texts are never adjacent in the source, whatever lies between them is blank here.
+		for _, h := range hidden {
+			if h.from > 0 && !isLineTerminator(raw[h.from-1]) {
+				view[h.from-1] = ';'
+			}
+		}
 		var next []span
 		for _, h := range hidden {
 			if layer >= maxHiddenLayers {
